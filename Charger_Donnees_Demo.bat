@@ -2,6 +2,10 @@
 setlocal
 cd /d "%~dp0"
 
+echo OUTIL OPTIONNEL - donnees de demonstration SQLite uniquement.
+echo Le demarrage normal de RessourcePlanner ne requiert pas ce script.
+echo.
+
 if not exist ".venv-web\Scripts\python.exe" (
     echo L'environnement Python Web .venv-web est introuvable.
     echo Lance Installer_Web.bat avant de charger les donnees demo.
@@ -34,7 +38,8 @@ if not "%EXIT_CODE%"=="0" (
 
 echo.
 echo Donnees demo pretes dans resourceplanner_server.db.
-echo Tu peux maintenant lancer Lancer_Web.bat.
+echo Elles ont ete chargees uniquement parce que cet outil a ete lance explicitement.
+echo Le runtime normal peut etre lance sans donnees demo avec Lancer_Web.bat.
 echo Pour le developpement React avec Vite, Lancer_Serveur.bat + npm run dev restent disponibles.
 pause
 exit /b 0
