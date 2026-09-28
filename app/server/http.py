@@ -27,6 +27,7 @@ from ..application import (
     OperationalContactService,
     PlannerQueryPort,
     ProjectSourcePort,
+    ProjectTaskCatalogSourcePort,
 )
 from ..application.approval_progress import ApprovalProgressService
 from ..application.approval_scopes import ApprovalScopeService
@@ -459,6 +460,7 @@ def create_api_app(
     project_source: ProjectSourcePort | None = None,
     employee_source: EmployeeSourcePort | None = None,
     user_source: ErpUserSourcePort | None = None,
+    project_task_source: ProjectTaskCatalogSourcePort | None = None,
     acumatica_info: dict[str, Any] | None = None,
     auth_resolver: AuthResolver | None = None,
     api_docs_enabled: bool = True,
@@ -713,6 +715,7 @@ def create_api_app(
             project_source=project_source,
             employee_source=employee_source,
             user_source=user_source,
+            project_task_source=project_task_source,
             acumatica_info=acumatica_info,
         )
     )

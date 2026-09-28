@@ -107,11 +107,17 @@ def required_permission(method: str, path: str) -> str | None:
         or path.startswith("/api/v1/planning/")
     ):
         return PERMISSION_MANAGE_PLANNING
-    if path in {
-        "/api/v1/integrations/acumatica/projects/sync",
-        "/api/v1/integrations/acumatica/employees/sync",
-        "/api/v1/integrations/acumatica/users/sync",
-    }:
+    if (
+        path in {
+            "/api/v1/integrations/acumatica/projects/sync",
+            "/api/v1/integrations/acumatica/employees/sync",
+            "/api/v1/integrations/acumatica/users/sync",
+        }
+        or (
+            path.startswith("/api/v1/integrations/acumatica/projects/")
+            and path.endswith("/tasks/sync")
+        )
+    ):
         return PERMISSION_SYNC_PROJECTS
     return "__unassigned_mutation__"
 

@@ -69,6 +69,30 @@ class ReactProjectsContractTests(unittest.TestCase):
         self.assertIn("overflow-y: auto", css)
         self.assertIn("position: sticky", css)
 
+    def test_selected_project_can_refresh_erp_tasks_through_fastapi(self) -> None:
+        page = (ROOT / "frontend" / "src" / "ProjectsPage.tsx").read_text(
+            encoding="utf-8"
+        )
+        api = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
+
+        self.assertIn("syncAcumaticaProjectTasks(selectedProject.id)", page)
+        self.assertIn('getTaskCatalog(selectedProject.number, "", false)', page)
+        self.assertIn("getAcumaticaProjectTaskSyncMetadata(selectedProject.id)", page)
+        self.assertIn("integration?.project_tasks_configured", page)
+        self.assertIn("selectedProject.erp_external_id", page)
+        self.assertIn("Synchroniser les tâches ERP", page)
+        self.assertIn("lignes reçues", page)
+        self.assertIn("tâches", page)
+        self.assertIn("rejet", page)
+        self.assertIn(
+            "/api/v1/integrations/acumatica/projects/",
+            api,
+        )
+        self.assertIn("/tasks/sync", api)
+        self.assertIn("/tasks/sync-metadata", api)
+        self.assertNotIn("/oDATA/RP_ProjectTasks", page)
+        self.assertNotIn("RESOURCEPLANNER_ACUMATICA_PASSWORD", page)
+
     def test_manual_sync_is_only_rendered_when_backend_reports_configured(self) -> None:
         page = (ROOT / "frontend" / "src" / "ProjectsPage.tsx").read_text(
             encoding="utf-8"

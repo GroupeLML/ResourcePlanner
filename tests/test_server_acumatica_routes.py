@@ -73,6 +73,11 @@ class StubEmployeeSource:
         return tuple(self.rows)
 
 
+class StubProjectTaskSource:
+    def fetch_project_snapshot(self, *, project_external_id: str, project_number: str):
+        raise AssertionError("Le statut d'intégration ne doit pas lire RP_ProjectTasks.")
+
+
 class FailingProjectSource:
     def list_projects(self):
         raise ApplicationOperationError(
@@ -113,7 +118,13 @@ class ServerAcumaticaRouteTests(unittest.TestCase):
                 employee_sync = client.post("/api/v1/integrations/acumatica/employees/sync")
 
             self.assertEqual(status.status_code, 200)
-            self.assertEqual(status.json(), {"configured": False})
+            self.assertEqual(
+                status.json(),
+                {
+                    "configured": False,
+                    "project_tasks_configured": False,
+                },
+            )
             self.assertEqual(sync.status_code, 503)
             self.assertEqual(sync.json()["error"]["code"], "acumatica_not_configured")
             self.assertEqual(employee_sync.status_code, 503)
@@ -146,6 +157,7 @@ class ServerAcumaticaRouteTests(unittest.TestCase):
                 status.json(),
                 {
                     "configured": True,
+                    "project_tasks_configured": False,
                     "protocol": "odata",
                     "feed_path": "/oDATA/RP_Projects",
                 },
@@ -178,6 +190,24 @@ class ServerAcumaticaRouteTests(unittest.TestCase):
                 self.assertGreater(sample["db_query_count"], 0)
                 self.assertGreaterEqual(sample["external_seconds"], 0.0)
                 self.assertGreaterEqual(sample["compute_seconds"], 0.0)
+
+    def test_project_task_source_sets_project_tasks_configured_status(self) -> None:
+        with TemporaryDirectory() as directory:
+            app = create_api_app(
+                self._database(directory),
+                project_task_source=StubProjectTaskSource(),
+            )
+            with TestClient(app) as client:
+                status = client.get("/api/v1/integrations/acumatica")
+
+            self.assertEqual(status.status_code, 200)
+            self.assertEqual(
+                status.json(),
+                {
+                    "configured": True,
+                    "project_tasks_configured": True,
+                },
+            )
 
     def test_employee_sync_requires_local_activation_and_respects_erp_state(self) -> None:
         with TemporaryDirectory() as directory:
