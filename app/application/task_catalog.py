@@ -89,7 +89,12 @@ class TaskCatalogProjectSnapshot:
 class ProjectTaskCatalogSourcePort(Protocol):
     """Source contract for targeted RP_ProjectTasks synchronization."""
 
-    def fetch_project_snapshot(self, project_number: str) -> TaskCatalogProjectSnapshot: ...
+    def fetch_project_snapshot(
+        self,
+        *,
+        project_external_id: str,
+        project_number: str,
+    ) -> TaskCatalogProjectSnapshot: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -327,8 +332,19 @@ class TaskCatalogSyncService:
             )
         return self._synchronize_rows(tuple(list_tasks()))
 
-    def synchronize_project(self, project_number: str) -> TaskCatalogProjectSyncResult:
+    def synchronize_project(
+        self,
+        *,
+        project_external_id: str,
+        project_number: str,
+    ) -> TaskCatalogProjectSyncResult:
+        project_external = str(project_external_id or "").strip()
         project = str(project_number or "").strip()
+        if not project_external:
+            raise ApplicationValidationError(
+                "L'identifiant ERP du projet est requis pour synchroniser RP_ProjectTasks.",
+                code="task_catalog_project_external_id_required",
+            )
         if not project:
             raise ApplicationValidationError(
                 "Un projet est requis pour synchroniser RP_ProjectTasks.",
@@ -344,7 +360,10 @@ class TaskCatalogSyncService:
             )
 
         started_at = perf_counter()
-        snapshot = fetch_snapshot(project)
+        snapshot = fetch_snapshot(
+            project_external_id=project_external,
+            project_number=project,
+        )
         snapshot_project = str(snapshot.project_number or "").strip()
         if snapshot_project != project:
             raise ApplicationValidationError(
