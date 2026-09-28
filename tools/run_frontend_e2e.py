@@ -25,6 +25,7 @@ from app.application.communications import (
     CommunicationTransportMessage,
     CommunicationTransportResult,
 )
+from app.application.resource_classes import ResourceClassConfigurationService
 from app.application.security import (
     AuthPrincipal,
     ROLE_ADMIN,
@@ -39,6 +40,7 @@ from app.infrastructure.sql.approval_scope_models import (
     ApprovalScopeApprover,
     TaskApprovalScopeMapping,
 )
+from app.infrastructure.sql.resource_class_repository import SqlResourceClassRepository
 from app.infrastructure.sql import (
     Asset,
     AssetType,
@@ -201,6 +203,35 @@ def _seed(database_url: str) -> None:
                     ),
                 ]
             )
+            resource_classes = ResourceClassConfigurationService(
+                SqlResourceClassRepository(session)
+            )
+            for code, label, average_cost in (
+                ("INSTALLATEUR_ELECTRIQUE", "Installateur électrique", "100.00"),
+                ("PROGRAMMEUR", "Programmeur", "125.00"),
+                (
+                    "INSTALLATEUR_AUTOMATISATION",
+                    "Installateur automatisation",
+                    "110.00",
+                ),
+            ):
+                resource_classes.create_resource_class(
+                    code=code,
+                    label=label,
+                    average_hourly_cost_cad=average_cost,
+                    active=True,
+                )
+            for task_code, class_code in (
+                ("117", "INSTALLATEUR_ELECTRIQUE"),
+                ("216", "PROGRAMMEUR"),
+                ("217", "INSTALLATEUR_AUTOMATISATION"),
+            ):
+                resource_classes.create_task_standard(
+                    task_code=task_code,
+                    resource_class_code=class_code,
+                    active=True,
+                )
+
             session.add(
                 AssetType(
                     id="AT-LIFT",
@@ -240,7 +271,7 @@ def _seed(database_url: str) -> None:
                         external_id="EMP-ALICE",
                         name="Alice",
                         email=f"alice{chr(64)}{address_domain}",
-                        resource_class="Programmation",
+                        resource_class="PROGRAMMEUR",
                         competencies="SCADA; MES",
                         active=True,
                         sort_order=10,
@@ -250,7 +281,7 @@ def _seed(database_url: str) -> None:
                         external_id="EMP-BOB",
                         name="Bob",
                         email=f"bob{chr(64)}{address_domain}",
-                        resource_class="Programmation",
+                        resource_class="PROGRAMMEUR",
                         competencies="PLC; SCADA",
                         active=True,
                         sort_order=20,

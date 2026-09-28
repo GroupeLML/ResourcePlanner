@@ -85,7 +85,10 @@ from .routes_erp_users import build_erp_user_admin_router
 from .routes_integrations import build_integration_router
 from .routes_me import build_me_router
 from .routes_reads import build_read_router
-from .routes_resource_classes import build_resource_class_router
+from .routes_resource_classes import (
+    build_operational_resource_class_router,
+    build_resource_class_router,
+)
 from .routes_task_catalog import build_task_catalog_router
 from .routes_user_admin import build_user_admin_router
 from .security import AuthResolver, install_authorization_middleware
@@ -665,6 +668,9 @@ def create_api_app(
     app.include_router(build_admin_settings_router(smtp_settings_dependency))
     app.include_router(build_approval_scope_router(approval_scope_dependency))
     app.include_router(build_resource_class_router(session_dependency))
+    app.include_router(
+        build_operational_resource_class_router(session_dependency)
+    )
     app.include_router(
         build_command_router(
             facade_dependency,

@@ -27,6 +27,7 @@ import {
 import CompetencyCatalogPanel from "./CompetencyCatalogPanel";
 import CompetencyPicker from "./CompetencyPicker";
 import { ContactSelect } from "./BusinessContactUi";
+import { ResourceClassOptionReadModel, getResourceClassOptions } from "./resourceClassesApi";
 
 const WEEKDAYS = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"] as const;
 const DEFAULT_WEEKDAYS = "Lun,Mar,Mer,Jeu,Ven";
@@ -227,6 +228,7 @@ function RuleEditor({ resourceId, rule, forcedType, onSaved, onCancel }: RuleEdi
 export default function ResourcesPage() {
   const [resources, setResources] = useState<ResourceReadModel[]>([]);
   const [competencies, setCompetencies] = useState<CompetencyReadModel[]>([]);
+  const [resourceClasses, setResourceClasses] = useState<ResourceClassOptionReadModel[]>([]);
   const [contacts, setContacts] = useState<BusinessContactReadModel[]>([]);
   const [resourceContactLink, setResourceContactLink] = useState<ContactLinkReadModel | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -253,6 +255,12 @@ export default function ResourcesPage() {
     () => resources.find((resource) => resource.id === selectedId) ?? null,
     [resources, selectedId],
   );
+  const activeResourceClasses = useMemo(
+    () => resourceClasses
+      .filter((row) => row.active)
+      .sort((left, right) => left.label.localeCompare(right.label, "fr-CA")),
+    [resourceClasses],
+  );
 
   useEffect(() => {
     const controller = new AbortController();
@@ -262,11 +270,13 @@ export default function ResourcesPage() {
       getResources(false, controller.signal),
       getAvailabilityRules(null, true, false, controller.signal),
       getCompetencies("", false, controller.signal),
+      getResourceClassOptions(controller.signal),
       getBusinessContacts(false, controller.signal),
     ])
-      .then(([resourceRows, availabilityRows, competencyRows, contactRows]) => {
+      .then(([resourceRows, availabilityRows, competencyRows, classRows, contactRows]) => {
         setResources(resourceRows);
         setCompetencies(competencyRows);
+        setResourceClasses(classRows);
         setContacts(contactRows);
         setHolidays(
           availabilityRows.filter(
@@ -550,7 +560,22 @@ export default function ResourcesPage() {
                 <div className="form-grid two-columns">
                   <label>Nom<input value={profile.name} onChange={(event) => profileField("name", event.target.value)} required /></label>
                   <label>Courriel<input type="email" value={profile.email ?? ""} onChange={(event) => profileField("email", event.target.value)} /></label>
-                  <label>Classe<input value={profile.resource_class ?? ""} onChange={(event) => profileField("resource_class", event.target.value)} placeholder="Programmation, Installation…" /></label>
+                  <label>
+                    Classe
+                    <select
+                      value={profile.resource_class ?? ""}
+                      onChange={(event) => profileField("resource_class", event.target.value)}
+                      disabled={pendingProfile}
+                    >
+                      <option value="">Aucune classe</option>
+                      {profile.resource_class && !activeResourceClasses.some((row) => row.code === profile.resource_class) && (
+                        <option value={profile.resource_class}>{profile.resource_class} — historique/inactive</option>
+                      )}
+                      {activeResourceClasses.map((row) => (
+                        <option value={row.code} key={row.code}>{row.code} · {row.label}</option>
+                      ))}
+                    </select>
+                  </label>
                   <label>Ordre<input type="number" min="0" value={profile.sort_order} onChange={(event) => profileField("sort_order", Number(event.target.value))} /></label>
                 </div>
                 <CompetencyPicker

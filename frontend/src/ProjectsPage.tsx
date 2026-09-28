@@ -51,7 +51,7 @@ export default function ProjectsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [activityFilter, setActivityFilter] = useState<"all" | "active" | "inactive">("all");
+  const [statusFilter, setStatusFilter] = useState("actif");
   const [managerFilter, setManagerFilter] = useState("all");
   const [sourceFilter, setSourceFilter] = useState<"all" | "erp" | "local">("all");
   const [syncing, setSyncing] = useState(false);
@@ -113,11 +113,21 @@ export default function ProjectsPage() {
     return [...values].sort((left, right) => left.localeCompare(right, "fr-CA"));
   }, [projects]);
 
+  const projectStatuses = useMemo(() => {
+    const values = new Map<string, string>();
+    projects.forEach((project) => {
+      const status = project.status?.trim();
+      if (!status) return;
+      const key = normalize(status);
+      if (!values.has(key)) values.set(key, status);
+    });
+    return [...values.entries()].sort(([, left], [, right]) => left.localeCompare(right, "fr-CA"));
+  }, [projects]);
+
   const filteredProjects = useMemo(() => {
     const query = normalize(search);
     return projects.filter((project) => {
-      if (activityFilter === "active" && !project.active) return false;
-      if (activityFilter === "inactive" && project.active) return false;
+      if (statusFilter !== "all" && normalize(project.status) !== statusFilter) return false;
       const manager = project.project_manager || "Non assigné";
       if (managerFilter !== "all" && manager !== managerFilter) return false;
       if (sourceFilter === "erp" && !project.erp_external_id) return false;
@@ -132,7 +142,7 @@ export default function ProjectsPage() {
         sourceLabel(project),
       ].filter(Boolean).join(" ")).includes(query);
     });
-  }, [projects, search, activityFilter, managerFilter, sourceFilter]);
+  }, [projects, search, statusFilter, managerFilter, sourceFilter]);
 
   const activeCount = projects.filter((project) => project.active).length;
   const inactiveCount = projects.length - activeCount;
@@ -271,10 +281,10 @@ export default function ProjectsPage() {
         </label>
         <label>
           <span>État</span>
-          <select value={activityFilter} onChange={(event) => setActivityFilter(event.target.value as typeof activityFilter)}>
+          <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
             <option value="all">Tous</option>
-            <option value="active">Actifs</option>
-            <option value="inactive">Inactifs</option>
+            {!projectStatuses.some(([key]) => key === "actif") && <option value="actif">Actif</option>}
+            {projectStatuses.map(([key, status]) => <option value={key} key={key}>{status}</option>)}
           </select>
         </label>
         <label>

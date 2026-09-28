@@ -21,10 +21,10 @@
 .projects-table-header { display: flex; align-items: center; justify-content: space-between; gap: .8rem; padding: .72rem .85rem; border-bottom: 1px solid var(--border); background: #f8fafc; }
 .projects-table-header strong { font-size: .76rem; }
 .projects-table-header span { color: var(--muted); font-size: .62rem; }
-.projects-table-scroll { overflow-x: auto; }
+.projects-table-scroll { max-height: min(62vh, 720px); overflow-x: auto; overflow-y: auto; }
 .projects-table { width: 100%; min-width: 850px; border-collapse: collapse; }
 .projects-table th, .projects-table td { padding: .62rem .7rem; border-bottom: 1px solid #e8ecf2; text-align: left; vertical-align: middle; }
-.projects-table th { background: #fbfcfe; color: #596579; font-size: .6rem; text-transform: uppercase; letter-spacing: .04em; }
+.projects-table th { position: sticky; top: 0; z-index: 1; background: #fbfcfe; color: #596579; font-size: .6rem; text-transform: uppercase; letter-spacing: .04em; }
 .projects-table td { color: #465267; font-size: .68rem; }
 .projects-table tbody tr:last-child td { border-bottom: 0; }
 .projects-table tbody tr:hover { background: #fbfcff; }
