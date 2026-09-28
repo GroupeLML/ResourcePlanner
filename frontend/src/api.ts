@@ -15,6 +15,7 @@ export type ProjectReadModel = {
 
 export type AcumaticaIntegrationStatus = {
   configured: boolean;
+  project_tasks_configured?: boolean;
   endpoint?: string;
   version?: string;
   entity?: string;
@@ -26,6 +27,29 @@ export type ProjectSyncResult = {
   created: number;
   updated: number;
   unchanged: number;
+};
+
+export type ProjectTaskSyncResult = {
+  project_number: string;
+  source_rows: number;
+  task_count: number;
+  rejected_rows: number;
+  created: number;
+  updated: number;
+  unchanged: number;
+  deactivated: number;
+  ignored: number;
+  duration_ms: number | null;
+};
+
+export type ProjectTaskSyncMetadata = {
+  project_number: string;
+  last_success_at: string;
+  source_rows: number;
+  task_count: number;
+  rejected_rows: number;
+  duration_ms: number | null;
+  last_error_code: string | null;
 };
 
 export type BusinessContactReadModel = {
@@ -1167,6 +1191,22 @@ export function getAcumaticaIntegrationStatus(signal?: AbortSignal) {
 
 export function syncAcumaticaProjects() {
   return postJson<ProjectSyncResult>("/api/v1/integrations/acumatica/projects/sync");
+}
+
+export function syncAcumaticaProjectTasks(projectId: string) {
+  return postJson<ProjectTaskSyncResult>(
+    `/api/v1/integrations/acumatica/projects/${encodeURIComponent(projectId)}/tasks/sync`,
+  );
+}
+
+export function getAcumaticaProjectTaskSyncMetadata(
+  projectId: string,
+  signal?: AbortSignal,
+) {
+  return getJson<ProjectTaskSyncMetadata | null>(
+    `/api/v1/integrations/acumatica/projects/${encodeURIComponent(projectId)}/tasks/sync-metadata`,
+    signal,
+  );
 }
 
 export function getBusinessContacts(activeOnly = false, signal?: AbortSignal) {
