@@ -42,9 +42,10 @@ Le Compose local :
 1. construit l'image backend depuis `requirements-server.txt`;
 2. construit React avec Node 22 puis sert `dist` avec Nginx;
 3. exécute le service one-shot `migrate` sur la base SQLite locale;
-4. exécute ensuite `seed-dev`, qui recharge uniquement les données `DEMO-*` et six identités locales de test;
-5. ne démarre le backend qu'après migration + seed réussis;
-6. ne démarre le frontend qu'après le healthcheck du backend.
+4. ne démarre le backend qu'après la migration réussie;
+5. ne démarre le frontend qu'après le healthcheck du backend.
+
+Le démarrage normal ne lance aucun seed. Une base SQLite neuve contient donc uniquement le schéma migré et aucune donnée métier `DEMO-*`.
 
 URL par défaut :
 
@@ -96,11 +97,19 @@ Copier `.env.example` vers `.env` seulement si une surcharge est nécessaire.
 
 Le fichier `.env` réel est ignoré par Git. Ne jamais y committer de secret.
 
-Le Compose local active explicitement le mode d'authentification local sur le réseau Docker ainsi que `RESOURCEPLANNER_DEV_USER_SWITCHER=true`. Ce choix sert au développement/smoke sur une machine de confiance et ne constitue pas une configuration de production exposée sur le LAN.
+Le Compose local active explicitement le mode d'authentification local sur le réseau Docker et utilise par défaut le principal ADMIN statique `RESOURCEPLANNER_LOCAL_AUTH_*`. Ce principal n'est pas persisté dans `app_users` et reste utilisable sur une base fraîche sans aucun seed. `RESOURCEPLANNER_DEV_USER_SWITCHER` est désactivé par défaut.
 
-Après `docker compose up -d --build`, le sélecteur **Identité de test** permet de passer sans redémarrage entre Administrateur, Coordonnateur, Chargé de projet, Gestionnaire, Technicien A et Technicien B. Les techniciens sont liés à deux ressources démo distinctes et affichent donc leurs propres quarts.
+Ce mode sert uniquement au développement/smoke sur une machine de confiance. Il ne constitue ni une configuration de production exposée sur le LAN ni le futur mécanisme break-glass de #457.
 
-Le sélecteur ne crée aucune permission dans React : chaque changement ouvre une session locale vers un vrai `AppUser`, puis `/api/v1/auth/me` reste la source de vérité. Le bouton disparaît lorsque le backend ne publie pas la route dev.
+### Données de démonstration opt-in
+
+Le service `seed-dev` est conservé sous le profil Compose explicite `demo`. Pour charger volontairement les données de démonstration dans la SQLite locale :
+
+```bash
+docker compose --profile demo run --rm seed-dev
+```
+
+Le script reste limité à SQLite. Il ne fait jamais partie de `docker compose up` normal et ne sert pas à créer l'administrateur local. Si un scénario multi-utilisateur de démonstration exige le Dev User Switcher, activer aussi explicitement `RESOURCEPLANNER_DEV_USER_SWITCHER=true` après avoir chargé ces `AppUser` de démo.
 
 ## 3. Migrations Alembic
 
