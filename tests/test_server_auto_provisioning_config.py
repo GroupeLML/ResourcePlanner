@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import unittest
 
-from app.server.runtime import OIDC_AUTO_PROVISION_ENV, ServerSettings
+from app.server.runtime import (
+    OIDC_AUTO_PROVISION_ENV,
+    OIDC_CLAIM_DIAGNOSTICS_ENV,
+    ServerSettings,
+)
 
 
 class ServerAutoProvisioningConfigTests(unittest.TestCase):
@@ -24,6 +28,16 @@ class ServerAutoProvisioningConfigTests(unittest.TestCase):
         environment[OIDC_AUTO_PROVISION_ENV] = "true"
         settings = ServerSettings.from_environment(environment)
         self.assertTrue(settings.oidc_auto_provision)
+
+    def test_claim_diagnostics_are_disabled_by_default(self) -> None:
+        settings = ServerSettings.from_environment(self._environment())
+        self.assertFalse(settings.oidc_claim_diagnostics)
+
+    def test_claim_diagnostics_require_explicit_true(self) -> None:
+        environment = self._environment()
+        environment[OIDC_CLAIM_DIAGNOSTICS_ENV] = "true"
+        settings = ServerSettings.from_environment(environment)
+        self.assertTrue(settings.oidc_claim_diagnostics)
 
 
 if __name__ == "__main__":

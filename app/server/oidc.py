@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import timedelta
+import hashlib
 import secrets
 from typing import Any
 
@@ -23,9 +24,55 @@ class OidcRuntime:
     secure_cookie: bool = True
     cookie_samesite: str = "lax"
     auto_provisioning: AutoProvisioningPolicy = field(default_factory=AutoProvisioningPolicy)
+    claim_diagnostics_enabled: bool = False
     login_cookie_name: str = "resourceplanner_oidc_login"
     csrf_cookie_name: str = "resourceplanner_csrf"
     csrf_header_name: str = "X-CSRF-Token"
+    _diagnostics_by_session: dict[str, dict[str, Any]] = field(
+        default_factory=dict,
+        repr=False,
+        compare=False,
+    )
+
+    @staticmethod
+    def _diagnostic_session_key(raw_session_token: str) -> str:
+        return hashlib.sha256(raw_session_token.encode("utf-8")).hexdigest()
+
+    def remember_claim_diagnostics(
+        self,
+        raw_session_token: str,
+        diagnostics: dict[str, Any] | None,
+    ) -> None:
+        if not self.claim_diagnostics_enabled or not raw_session_token or diagnostics is None:
+            return
+        self._diagnostics_by_session[self._diagnostic_session_key(raw_session_token)] = {
+            "claim_names": list(diagnostics.get("claim_names") or ()),
+            "identity_candidates": dict(diagnostics.get("identity_candidates") or {}),
+        }
+
+    def claim_diagnostics_for_session(
+        self,
+        raw_session_token: str,
+    ) -> dict[str, Any] | None:
+        if not self.claim_diagnostics_enabled or not raw_session_token:
+            return None
+        diagnostics = self._diagnostics_by_session.get(
+            self._diagnostic_session_key(raw_session_token)
+        )
+        if diagnostics is None:
+            return None
+        return {
+            "claim_names": list(diagnostics.get("claim_names") or ()),
+            "identity_candidates": dict(diagnostics.get("identity_candidates") or {}),
+        }
+
+    def forget_claim_diagnostics(self, raw_session_token: str) -> None:
+        if not raw_session_token:
+            return
+        self._diagnostics_by_session.pop(
+            self._diagnostic_session_key(raw_session_token),
+            None,
+        )
 
     @property
     def login_ttl(self) -> timedelta:

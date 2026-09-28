@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 import base64
 import hashlib
@@ -17,6 +18,58 @@ class OidcProtocolError(RuntimeError):
     pass
 
 
+_DIAGNOSTIC_IDENTITY_CLAIMS = (
+    "iss",
+    "sub",
+    "preferred_username",
+    "name",
+    "email",
+    "unique_name",
+    "username",
+    "user_id",
+    "userid",
+    "employee_id",
+)
+_DIAGNOSTIC_FORBIDDEN_CLAIM_NAMES = frozenset(
+    {
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "client_secret",
+        "authorization_code",
+        "code",
+        "session_cookie",
+        "cookie",
+        "csrf_token",
+        "code_verifier",
+        "pkce_verifier",
+        "state",
+    }
+)
+
+
+def _claim_diagnostics_projection(claims: Mapping[str, Any]) -> dict[str, Any]:
+    claim_names = sorted(
+        str(name)
+        for name in claims.keys()
+        if str(name).casefold() not in _DIAGNOSTIC_FORBIDDEN_CLAIM_NAMES
+    )
+    identity_candidates: dict[str, str] = {}
+    for name in _DIAGNOSTIC_IDENTITY_CLAIMS:
+        if name not in claims:
+            continue
+        value = claims.get(name)
+        if not isinstance(value, (str, int, float, bool)):
+            continue
+        normalized = str(value).strip()
+        if normalized:
+            identity_candidates[name] = normalized
+    return {
+        "claim_names": claim_names,
+        "identity_candidates": identity_candidates,
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class OidcClientSettings:
     discovery_url: str
@@ -32,6 +85,7 @@ class OidcIdentity:
     subject: str
     display_name: str
     email: str | None
+    diagnostic_claims: dict[str, Any] | None = None
 
 
 def pkce_s256(verifier: str) -> str:
@@ -46,10 +100,12 @@ class OidcClient:
         *,
         transport: httpx.AsyncBaseTransport | None = None,
         timeout: float = 10.0,
+        claim_diagnostics: bool = False,
     ) -> None:
         self.settings = settings
         self._transport = transport
         self._timeout = timeout
+        self._claim_diagnostics = bool(claim_diagnostics)
         self._metadata: dict[str, Any] | None = None
 
     async def _get_json(self, url: str) -> dict[str, Any]:
@@ -166,9 +222,15 @@ class OidcClient:
             or subject
         ).strip()
         email = str(claims.get("email") or "").strip() or None
+        diagnostic_claims = (
+            _claim_diagnostics_projection(claims)
+            if self._claim_diagnostics
+            else None
+        )
         return OidcIdentity(
             issuer=issuer,
             subject=subject,
             display_name=display_name,
             email=email,
+            diagnostic_claims=diagnostic_claims,
         )

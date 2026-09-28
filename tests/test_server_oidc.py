@@ -27,6 +27,16 @@ from tests.sqlite_test_template import SqliteDatabaseTemplate
 
 ISSUER = "https://identity.example.invalid"
 COOKIE = "rp_test_session"
+DIAGNOSTICS = {
+    "claim_names": ["aud", "email", "exp", "iss", "name", "preferred_username", "sub"],
+    "identity_candidates": {
+        "iss": ISSUER,
+        "sub": "subject-1",
+        "preferred_username": "ERPUSER42",
+        "name": "Utilisateur OIDC",
+        "email": "person" + chr(64) + "example.invalid",
+    },
+}
 
 
 class FakeOidcClient:
@@ -97,6 +107,7 @@ class ServerOidcTests(unittest.TestCase):
         secure_cookie: bool = False,
         cookie_samesite: str = "lax",
         auto_provision: bool = False,
+        claim_diagnostics: bool = False,
     ):
         runtime = OidcRuntime(
             client=fake_client,  # type: ignore[arg-type]
@@ -105,6 +116,7 @@ class ServerOidcTests(unittest.TestCase):
             secure_cookie=secure_cookie,
             cookie_samesite=cookie_samesite,
             auto_provisioning=AutoProvisioningPolicy(enabled=auto_provision),
+            claim_diagnostics_enabled=claim_diagnostics,
         )
         return create_api_app(
             self.database_url,
@@ -193,6 +205,75 @@ class ServerOidcTests(unittest.TestCase):
         self.assertIn("httponly", set_cookie)
         self.assertIn("secure", set_cookie)
         self.assertIn("samesite=none", set_cookie)
+
+    def test_claim_diagnostic_route_is_not_registered_when_disabled(self) -> None:
+        fake = FakeOidcClient(
+            OidcIdentity(
+                issuer=ISSUER,
+                subject="subject-1",
+                display_name="Technicien OIDC",
+                email=None,
+                diagnostic_claims=DIAGNOSTICS,
+            )
+        )
+        app = self._app(fake)
+        with TestClient(app) as client:
+            callback = self._login_callback(client)
+            self.assertEqual(callback.status_code, 303)
+            response = client.get("/api/v1/auth/oidc-claims")
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_claim_diagnostic_route_requires_valid_session_and_returns_projection(self) -> None:
+        fake = FakeOidcClient(
+            OidcIdentity(
+                issuer=ISSUER,
+                subject="subject-1",
+                display_name="Technicien OIDC",
+                email=None,
+                diagnostic_claims=DIAGNOSTICS,
+            )
+        )
+        app = self._app(fake, claim_diagnostics=True)
+        with TestClient(app) as client:
+            before = client.get("/api/v1/auth/oidc-claims")
+            callback = self._login_callback(client)
+            response = client.get("/api/v1/auth/oidc-claims")
+
+        self.assertEqual(before.status_code, 401)
+        self.assertEqual(callback.status_code, 303)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), DIAGNOSTICS)
+
+    def test_unknown_identity_remains_refused_but_can_surface_opt_in_diagnostics(self) -> None:
+        diagnostics = {
+            "claim_names": list(DIAGNOSTICS["claim_names"]),
+            "identity_candidates": {
+                **DIAGNOSTICS["identity_candidates"],
+                "sub": "unknown-subject",
+            },
+        }
+        fake = FakeOidcClient(
+            OidcIdentity(
+                issuer=ISSUER,
+                subject="unknown-subject",
+                display_name="Utilisateur inconnu",
+                email=None,
+                diagnostic_claims=diagnostics,
+            )
+        )
+        app = self._app(fake, claim_diagnostics=True)
+        with TestClient(app) as client:
+            callback = self._login_callback(client)
+            me = client.get("/api/v1/auth/me")
+
+        self.assertEqual(callback.status_code, 403)
+        self.assertEqual(callback.json()["error"]["code"], "oidc_user_not_registered")
+        self.assertEqual(
+            callback.json()["error"]["context"]["oidc_claim_diagnostics"],
+            diagnostics,
+        )
+        self.assertEqual(me.status_code, 401)
 
     def test_callback_rejects_identity_not_registered_locally_by_default(self) -> None:
         fake = FakeOidcClient(

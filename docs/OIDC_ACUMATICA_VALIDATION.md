@@ -34,6 +34,25 @@ Ne jamais inscrire de secret ou token réel dans ce document ou dans Git.
 9. confirmer les attributs de cookie en HTTPS (`HttpOnly`, `Secure`, `SameSite=Lax`);
 10. documenter uniquement les métadonnées non sensibles retenues : issuer, discovery URL, redirect URI, scopes et procédure de provisionnement.
 
+## Diagnostic temporaire des claims validés
+
+Pour le smoke réel seulement, le serveur peut exposer une projection filtrée des claims déjà validés en activant explicitement :
+
+```text
+RESOURCEPLANNER_OIDC_CLAIM_DIAGNOSTICS=true
+```
+
+La valeur par défaut est `false`. Lorsque le flag est actif :
+
+- un utilisateur local déjà reconnu peut lire `GET /api/v1/auth/oidc-claims` avec sa session OIDC valide;
+- si l'identité OIDC est valide mais non provisionnée localement, le callback reste refusé avec `403 oidc_user_not_registered`, mais la projection filtrée est disponible dans `error.context.oidc_claim_diagnostics`;
+- la projection contient `claim_names` et uniquement les candidats d'identité explicitement autorisés : `iss`, `sub`, `preferred_username`, `name`, `email`, `unique_name`, `username`, `user_id`, `userid`, `employee_id`, lorsqu'ils existent;
+- aucune valeur de token, secret, authorization code, cookie, CSRF, PKCE, state ou nonce de transaction n'est exposée;
+- aucune projection n'est écrite dans les logs généraux et aucun token n'est persisté;
+- la projection liée à une session reconnue reste uniquement en mémoire du processus et est retirée au logout.
+
+Désactiver le flag immédiatement après le smoke.
+
 ## Séparation des credentials
 
 L'OIDC interactif ne doit pas réutiliser `RESOURCEPLANNER_ACUMATICA_ACCESS_TOKEN`. Ce dernier appartient à la synchronisation ERP serveur-à-serveur et reste une frontière séparée.
