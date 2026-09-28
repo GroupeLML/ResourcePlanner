@@ -27,7 +27,7 @@ import {
 import CompetencyCatalogPanel from "./CompetencyCatalogPanel";
 import CompetencyPicker from "./CompetencyPicker";
 import { ContactSelect } from "./BusinessContactUi";
-import { ResourceClassConfigReadModel, getResourceClasses } from "./resourceClassesApi";
+import { ResourceClassOptionReadModel, getResourceClassOptions } from "./resourceClassesApi";
 
 const WEEKDAYS = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"] as const;
 const DEFAULT_WEEKDAYS = "Lun,Mar,Mer,Jeu,Ven";
@@ -228,7 +228,7 @@ function RuleEditor({ resourceId, rule, forcedType, onSaved, onCancel }: RuleEdi
 export default function ResourcesPage() {
   const [resources, setResources] = useState<ResourceReadModel[]>([]);
   const [competencies, setCompetencies] = useState<CompetencyReadModel[]>([]);
-  const [resourceClasses, setResourceClasses] = useState<ResourceClassConfigReadModel[]>([]);
+  const [resourceClasses, setResourceClasses] = useState<ResourceClassOptionReadModel[]>([]);
   const [contacts, setContacts] = useState<BusinessContactReadModel[]>([]);
   const [resourceContactLink, setResourceContactLink] = useState<ContactLinkReadModel | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -270,7 +270,7 @@ export default function ResourcesPage() {
       getResources(false, controller.signal),
       getAvailabilityRules(null, true, false, controller.signal),
       getCompetencies("", false, controller.signal),
-      getResourceClasses(controller.signal),
+      getResourceClassOptions(controller.signal),
       getBusinessContacts(false, controller.signal),
     ])
       .then(([resourceRows, availabilityRows, competencyRows, classRows, contactRows]) => {

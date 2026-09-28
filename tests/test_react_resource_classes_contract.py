@@ -55,16 +55,25 @@ class ReactResourceClassesContractTests(unittest.TestCase):
             ROOT / "frontend" / "src" / "DemandLinesEditor.tsx"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("getResourceClasses(controller.signal)", resources)
+        self.assertIn("getResourceClassOptions(controller.signal)", resources)
         self.assertIn("setResourceClasses(classRows)", resources)
         self.assertIn("activeResourceClasses", resources)
         self.assertIn("{row.code} · {row.label}", resources)
         self.assertIn("historique/inactive", resources)
         self.assertNotIn('placeholder="Programmation, Installation…"', resources)
 
-        self.assertIn("getResourceClasses(controller.signal)", demands)
+        self.assertIn("getResourceClassOptions(controller.signal)", demands)
         self.assertIn("resourceClasses={resourceClasses}", demands)
-        self.assertIn("resourceClasses: ResourceClassConfigReadModel[]", editor)
+        client = (
+            ROOT / "frontend" / "src" / "resourceClassesApi.ts"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"/api/v1/resource-classes"', client)
+        self.assertIn('"/api/v1/admin/resource-classes"', client)
+        operational = client.split(
+            "export function getResourceClassOptions", 1
+        )[1].split("export function getResourceClasses", 1)[0]
+        self.assertNotIn("average_hourly_cost_cad", operational)
+        self.assertIn("resourceClasses: ResourceClassOptionReadModel[]", editor)
         self.assertIn("activeResourceClasses", editor)
         self.assertIn("Aucune classe imposée", editor)
         self.assertIn("{row.code} · {row.label}", editor)

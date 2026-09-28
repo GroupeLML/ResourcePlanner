@@ -10,7 +10,7 @@ import {
 } from "./api";
 import CompetencyPicker from "./CompetencyPicker";
 import { AssetCatalogItem, AssetTypeCatalogItem } from "./assetApi";
-import { ResourceClassConfigReadModel } from "./resourceClassesApi";
+import { ResourceClassOptionReadModel } from "./resourceClassesApi";
 
 export type DemandLineDraft = {
   key: string;
@@ -195,7 +195,7 @@ export default function DemandLinesEditor({
   generationCount: string;
   onGenerationCountChange: (value: string) => void;
   competencies: CompetencyReadModel[];
-  resourceClasses: ResourceClassConfigReadModel[];
+  resourceClasses: ResourceClassOptionReadModel[];
   resources: ResourceReadModel[];
   workPackages: WorkPackageReadModel[];
   tasks: TaskCatalogItemReadModel[];
