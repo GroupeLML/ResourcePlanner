@@ -46,6 +46,10 @@ class DockerDeploymentContractTests(unittest.TestCase):
         self.assertIn('command: ["python", "tools/seed_demo_data.py"]', compose)
         self.assertIn("RESOURCEPLANNER_DEV_USER_SWITCHER", compose)
         self.assertIn("RESOURCEPLANNER_CONFIG_ENCRYPTION_KEY", compose)
+        self.assertIn(
+            'RESOURCEPLANNER_OIDC_CLAIM_DIAGNOSTICS: "${RESOURCEPLANNER_OIDC_CLAIM_DIAGNOSTICS:-false}"',
+            compose,
+        )
         self.assertIn("import-projects:", compose)
         self.assertIn("import-tasks:", compose)
         self.assertIn('entrypoint: ["python", "tools/import_erp_tasks.py"]', compose)
