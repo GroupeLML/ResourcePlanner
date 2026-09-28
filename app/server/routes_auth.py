@@ -19,10 +19,16 @@ from .oidc import (
 )
 
 
-def _auth_error(status: int, code: str, message: str) -> JSONResponse:
+def _auth_error(
+    status: int,
+    code: str,
+    message: str,
+    *,
+    context: dict[str, Any] | None = None,
+) -> JSONResponse:
     return JSONResponse(
         status_code=status,
-        content={"error": {"code": code, "message": message, "context": {}}},
+        content={"error": {"code": code, "message": message, "context": dict(context or {})}},
     )
 
 
@@ -47,6 +53,21 @@ def build_auth_router(oidc_runtime: OidcRuntime | None = None) -> APIRouter:
 
     if oidc_runtime is None:
         return router
+
+    if oidc_runtime.claim_diagnostics_enabled:
+        @router.get("/oidc-claims")
+        def oidc_claim_diagnostics(request: Request) -> Any:
+            raw_session = str(
+                request.cookies.get(oidc_runtime.cookie_name) or ""
+            ).strip()
+            diagnostics = oidc_runtime.claim_diagnostics_for_session(raw_session)
+            if diagnostics is None:
+                return _auth_error(
+                    404,
+                    "oidc_claim_diagnostics_unavailable",
+                    "Aucun diagnostic OIDC n'est disponible pour cette session.",
+                )
+            return diagnostics
 
     @router.get("/login")
     async def login(request: Request) -> Response:
@@ -141,11 +162,20 @@ def build_auth_router(oidc_runtime: OidcRuntime | None = None) -> APIRouter:
                 auth_mode="oidc",
             )
         if principal is None or principal.local_user_id is None:
+            diagnostic_context = None
+            if (
+                oidc_runtime.claim_diagnostics_enabled
+                and identity.diagnostic_claims is not None
+            ):
+                diagnostic_context = {
+                    "oidc_claim_diagnostics": identity.diagnostic_claims,
+                }
             return _clear_login_cookie(
                 _auth_error(
                     403,
                     "oidc_user_not_registered",
                     "Cette identité Acumatica n'est pas autorisée dans RessourcePlanner.",
+                    context=diagnostic_context,
                 ),
                 oidc_runtime,
             )
@@ -154,6 +184,10 @@ def build_auth_router(oidc_runtime: OidcRuntime | None = None) -> APIRouter:
             factory,
             oidc_runtime,
             user_id=principal.local_user_id,
+        )
+        oidc_runtime.remember_claim_diagnostics(
+            raw_session,
+            identity.diagnostic_claims,
         )
         response = RedirectResponse("/", status_code=303)
         response.set_cookie(
@@ -179,6 +213,8 @@ def build_auth_router(oidc_runtime: OidcRuntime | None = None) -> APIRouter:
     @router.post("/logout", status_code=204)
     def logout(request: Request) -> Response:
         factory = request.app.state.session_factory
+        raw_session = str(request.cookies.get(oidc_runtime.cookie_name) or "").strip()
+        oidc_runtime.forget_claim_diagnostics(raw_session)
         revoke_server_session(
             factory,
             cookie_name=oidc_runtime.cookie_name,

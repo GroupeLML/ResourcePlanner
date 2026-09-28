@@ -54,6 +54,7 @@ OIDC_COOKIE_NAME_ENV = "RESOURCEPLANNER_OIDC_COOKIE_NAME"
 OIDC_SESSION_HOURS_ENV = "RESOURCEPLANNER_OIDC_SESSION_HOURS"
 OIDC_SECURE_COOKIE_ENV = "RESOURCEPLANNER_OIDC_SECURE_COOKIE"
 OIDC_AUTO_PROVISION_ENV = "RESOURCEPLANNER_OIDC_AUTO_PROVISION"
+OIDC_CLAIM_DIAGNOSTICS_ENV = "RESOURCEPLANNER_OIDC_CLAIM_DIAGNOSTICS"
 API_DOCS_ENABLED_ENV = "RESOURCEPLANNER_API_DOCS_ENABLED"
 ACUMATICA_BASE_URL_ENV = "RESOURCEPLANNER_ACUMATICA_BASE_URL"
 ACUMATICA_USERNAME_ENV = "RESOURCEPLANNER_ACUMATICA_USERNAME"
@@ -304,6 +305,7 @@ class ServerSettings:
     oidc_session_hours: int = 8
     oidc_secure_cookie: bool = True
     oidc_auto_provision: bool = False
+    oidc_claim_diagnostics: bool = False
     api_docs_enabled: bool = True
     embedding: EmbeddingSettings = field(default_factory=EmbeddingSettings)
     acumatica: ODataProjectSourceSettings | None = field(default=None, repr=False)
@@ -344,6 +346,7 @@ class ServerSettings:
         )
         oidc_secure_cookie = True
         oidc_auto_provision = False
+        oidc_claim_diagnostics = False
         dev_user_switcher = _bool(values.get(DEV_USER_SWITCHER_ENV), default=False)
         if dev_user_switcher and auth_mode != "local":
             raise ServerConfigurationError(
@@ -366,6 +369,10 @@ class ServerSettings:
             )
             oidc_auto_provision = _bool(
                 values.get(OIDC_AUTO_PROVISION_ENV),
+                default=False,
+            )
+            oidc_claim_diagnostics = _bool(
+                values.get(OIDC_CLAIM_DIAGNOSTICS_ENV),
                 default=False,
             )
 
@@ -397,6 +404,7 @@ class ServerSettings:
             oidc_session_hours=oidc_session_hours,
             oidc_secure_cookie=oidc_secure_cookie,
             oidc_auto_provision=oidc_auto_provision,
+            oidc_claim_diagnostics=oidc_claim_diagnostics,
             api_docs_enabled=api_docs_enabled,
             embedding=embedding,
             acumatica=_acumatica_settings(values),
@@ -472,12 +480,16 @@ def create_configured_app(settings: ServerSettings | None = None) -> FastAPI:
         if resolved.oidc is None:
             raise ServerConfigurationError("La configuration OIDC est absente.")
         oidc_runtime = OidcRuntime(
-            client=OidcClient(resolved.oidc),
+            client=OidcClient(
+                resolved.oidc,
+                claim_diagnostics=resolved.oidc_claim_diagnostics,
+            ),
             cookie_name=resolved.oidc_cookie_name,
             session_hours=resolved.oidc_session_hours,
             secure_cookie=resolved.oidc_secure_cookie,
             cookie_samesite=resolved.embedding.oidc_cookie_samesite,
             auto_provisioning=AutoProvisioningPolicy(enabled=resolved.oidc_auto_provision),
+            claim_diagnostics_enabled=resolved.oidc_claim_diagnostics,
         )
         auth_resolver = oidc_session_auth_resolver(resolved.oidc_cookie_name)
     else:
