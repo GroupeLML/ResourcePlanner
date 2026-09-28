@@ -210,6 +210,7 @@ jobs:
       - name: Validate Docker Compose configuration
         run: |
           docker compose config >/tmp/resourceplanner-compose.yml
+          docker compose --profile demo config >/tmp/resourceplanner-compose-demo.yml
           RESOURCEPLANNER_IMAGE_TAG=ci \
           RESOURCEPLANNER_DATABASE_URL=sqlite+pysqlite:////data/resourceplanner.db \
           RESOURCEPLANNER_AUTH_MODE=local \
@@ -217,10 +218,11 @@ jobs:
           docker compose -f deploy/synology/compose.yml config >/tmp/resourceplanner-synology-compose.yml
       - name: Build and start Docker runtime
         run: docker compose up -d --build
-      - name: Assert dev-only services stay stopped by default
+      - name: Assert opt-in services stay out of normal startup
         run: |
-          ! docker compose ps --services --status running | grep -qx 'dev-cockpit'
-      - name: Smoke same-origin frontend, API and readiness
+          ! docker compose ps --all --services | grep -qx 'dev-cockpit'
+          ! docker compose ps --all --services | grep -qx 'seed-dev'
+      - name: Smoke clean bootstrap, local admin and empty business data
         run: |
           ready=0
           for attempt in $(seq 1 45); do
@@ -233,12 +235,35 @@ jobs:
           test "$ready" = "1"
           curl -fsS http://127.0.0.1:18080/health | grep -q '"status":"ok"'
           curl -fsS http://127.0.0.1:18080/ | grep -qi '<html'
+          curl -fsS 'http://127.0.0.1:18080/api/v1/auth/me' >/tmp/auth.json
+          curl -fsS 'http://127.0.0.1:18080/api/v1/admin/users' >/tmp/users.json
           curl -fsS 'http://127.0.0.1:18080/api/v1/projects?active_only=true' >/tmp/projects.json
-          curl -fsS 'http://127.0.0.1:18080/api/v1/dev/user-switcher' >/tmp/switcher.json
-          grep -q 'Technicien Démo A' /tmp/switcher.json
-          tech_id="$(python -c 'import json; data=json.load(open("/tmp/switcher.json")); print(next(row["user_id"] for row in data["users"] if row["display_name"]=="Technicien Démo A"))')"
-          curl -fsS -c /tmp/dev-cookie.txt             -H 'Content-Type: application/json'             -d "{\"user_id\":\"$tech_id\"}"             'http://127.0.0.1:18080/api/v1/dev/user-switcher/select' >/tmp/select.json
-          curl -fsS -b /tmp/dev-cookie.txt             'http://127.0.0.1:18080/api/v1/auth/me' | grep -q '"TECHNICIAN"'
+          curl -fsS 'http://127.0.0.1:18080/api/v1/task-catalog?active_only=true' >/tmp/tasks.json
+          curl -fsS 'http://127.0.0.1:18080/api/v1/work-packages?active_only=true' >/tmp/work-packages.json
+          curl -fsS 'http://127.0.0.1:18080/api/v1/demands' >/tmp/demands.json
+          curl -fsS 'http://127.0.0.1:18080/api/v1/resources?active_only=true' >/tmp/resources.json
+          python - <<'PY'
+          import json
+
+          def load(path):
+              with open(path, encoding="utf-8") as handle:
+                  return json.load(handle)
+
+          auth = load("/tmp/auth.json")
+          assert auth["auth_mode"] == "local", auth
+          assert auth["local_user_id"] is None, auth
+          assert "ADMIN" in auth["roles"], auth
+
+          for path in (
+              "/tmp/users.json",
+              "/tmp/projects.json",
+              "/tmp/tasks.json",
+              "/tmp/work-packages.json",
+              "/tmp/demands.json",
+              "/tmp/resources.json",
+          ):
+              assert load(path) == [], (path, load(path))
+          PY
       - name: Show Docker diagnostics on failure
         if: failure()
         run: |
