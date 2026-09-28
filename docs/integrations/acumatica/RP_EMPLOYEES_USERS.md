@@ -122,6 +122,51 @@ RP_Users.UserID
 
 Le nom et le courriel ne doivent jamais être utilisés comme jointure autoritaire.
 
+## Relations projet / employé confirmées
+
+Le feed `RP_Projects` expose le chargé de projet dans le même domaine d'identité `EmployeID`.
+
+Mapping réel confirmé :
+
+```text
+trim(RP_Projects.ProjectManagerId)
+        =
+trim(RP_Employees.EmployeID)
+        =
+trim(RP_Users.EmployeID)
+```
+
+Exemple observé :
+
+```text
+RP_Projects.ProjectManagerId = "TROTJCHA  "
+RP_Users.EmployeID           = "TROTJCHA  "
+RP_Employees.EmployeID       = "TROTJCHA  "
+RP_Users.UserID              = "JCTROTTIER"
+```
+
+Conséquences :
+
+- `ProjectManagerId` doit être interprété comme un `EmployeID`;
+- `RP_Users.UserID` reste la clé du compte utilisateur ERP et ne participe pas à la jointure projet → employé;
+- `ProjectManagerName`, `UserDisplayName`, `DisplayName` et les courriels sont descriptifs uniquement;
+- tous les identifiants paddés doivent être normalisés avec `strip()`;
+- `RP_Employees.SupervisordID` référence lui aussi un `EmployeID` et appartient au même domaine d'identité.
+
+Le chemin de rattachement métier RessourcePlanner est :
+
+```text
+RP_Projects.ProjectManagerId
+        ↓ EmployeID
+AppUser.employee_external_id
+        ↓
+AppUser.business_contact_id
+        ↓
+Project.project_manager_contact_id
+```
+
+Si aucun `AppUser` ou `BusinessContact` local correspondant n'existe, la synchronisation doit conserver l'identité ERP et les libellés descriptifs sans inventer une relation par nom ou courriel.
+
 ### Champs observés
 
 | Champ OData | Sémantique | Usage cible |
