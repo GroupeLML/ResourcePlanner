@@ -300,28 +300,17 @@ De même, `RP_Users` ne doit pas créer un `AppUser` actif uniquement parce qu'u
 
 ## OIDC
 
-La relation suivante reste à confirmer dans #223/#256 :
+Le smoke réel #223 a confirmé le pont suivant sur un compte réel, et le PO l'a accepté comme contrat d'implémentation :
 
-```text
-OIDC (issuer, subject)
-        ↓
-RP_Users.UserID
-```
+- OIDC `(issuer, sub)` = identité d'authentification autoritaire;
+- `preferred_username.strip()` = correspondance exacte vers `RP_Users.UserID`;
+- `RP_Users.UserID → EmployeID → RP_Employees.EmployeID → Resource.external_id`.
 
-Ne pas supposer que `subject == UserID`.
+`preferred_username` sert uniquement de pont. Ne jamais utiliser `name`, le courriel ou un display name comme clé, ne pas supposer que `sub == UserID` et ne pas dériver le `sub` ou le `UserID` depuis une convention de chaîne.
 
-Une fois cette relation confirmée, le chemin complet sera :
+Après résolution, RessourcePlanner persiste toujours `(issuer, sub)` sur `AppUser` et `RP_Users.EmployeID` dans `AppUser.employee_external_id`. Les rôles proviennent uniquement de la configuration locale `erp_user_directory.roles_json`.
 
-```text
-OIDC (issuer, subject)
-      ↓
-RP_Users.UserID
-      ↓ EmployeID
-RP_Employees.EmployeID
-      ↓
-Resource.external_id
-```
-
+Cette relation a été observée sur un compte OIDC réel; elle reste à confirmer sur un deuxième compte réel.
 ## Tâches / budgets
 
 Le PO a confirmé qu'un feed OData Acumatica existe également pour les tâches et inclut les budgets.

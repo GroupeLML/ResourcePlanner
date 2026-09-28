@@ -11,6 +11,7 @@ from ...application.erp_user_directory import (
 )
 from ...application.security import normalize_roles
 from .erp_user_models import ErpUserDirectoryEntry
+from .identity_models import AppUser
 from .models import Resource
 
 
@@ -36,6 +37,23 @@ class SqlErpUserDirectoryRepository:
         )
         raw_roles = json.loads(row.roles_json or "[]")
         roles = normalize_roles(tuple(str(role) for role in raw_roles))
+        linked_user = self._session.scalar(
+            select(AppUser).where(
+                AppUser.employee_external_id == row.employee_external_id
+            )
+        )
+        candidate_user_ids = self._session.scalars(
+            select(ErpUserDirectoryEntry.user_id).where(
+                ErpUserDirectoryEntry.employee_external_id
+                == row.employee_external_id
+            )
+        ).all()
+        if linked_user is None:
+            oidc_state = "pending"
+        elif len(candidate_user_ids) == 1:
+            oidc_state = "linked"
+        else:
+            oidc_state = "conflict"
         return ErpUserDirectoryRecord(
             user_id=row.user_id,
             employee_external_id=row.employee_external_id,
@@ -50,6 +68,10 @@ class SqlErpUserDirectoryRepository:
             resource_id=resource.id if resource is not None else None,
             resource_name=resource.name if resource is not None else None,
             resource_erp_active=bool(resource.erp_active) if resource is not None else None,
+            oidc_state=oidc_state,
+            oidc_user_active=(
+                bool(linked_user.active) if linked_user is not None else None
+            ),
         )
 
     def upsert_external_user(self, user: ExternalErpUserRecord) -> str:

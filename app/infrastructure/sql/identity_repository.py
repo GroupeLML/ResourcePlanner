@@ -119,6 +119,20 @@ class SqlUserIdentityRepository:
         )
         return self._record(row) if row is not None else None
 
+    def get_by_employee_external_id(
+        self,
+        employee_external_id: str,
+    ) -> UserIdentityRecord | None:
+        employee_value = _optional_text(employee_external_id)
+        if employee_value is None:
+            return None
+        row = self._session.scalar(
+            select(AppUser).where(
+                AppUser.employee_external_id == employee_value
+            )
+        )
+        return self._record(row) if row is not None else None
+
     def upsert(
         self,
         *,

@@ -156,6 +156,7 @@ class OidcIdentity:
     subject: str
     display_name: str
     email: str | None
+    preferred_username: str | None = None
     diagnostic_claims: dict[str, Any] | None = None
 
 
@@ -374,6 +375,7 @@ class OidcClient:
             or subject
         ).strip()
         email = str(claims.get("email") or "").strip() or None
+        preferred_username = str(claims.get("preferred_username") or "").strip() or None
         diagnostic_claims = (
             _claim_diagnostics_projection(claims)
             if self._claim_diagnostics
@@ -384,5 +386,6 @@ class OidcClient:
             subject=subject,
             display_name=display_name,
             email=email,
+            preferred_username=preferred_username,
             diagnostic_claims=diagnostic_claims,
         )

@@ -6,10 +6,18 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 import httpx
 
-from ..application.identity_provisioning import IdentityProvisioningService
+from ..application.identity_provisioning import (
+    ErpControlledIdentityProvisioningService,
+    ErpIdentityProvisioningConflict,
+    ErpIdentityProvisioningDenied,
+    IdentityProvisioningService,
+)
 from ..application.security import AuthPrincipal
 from ..infrastructure.acumatica.oidc import OidcProtocolError
-from ..infrastructure.sql import SqlUserIdentityRepository
+from ..infrastructure.sql import (
+    SqlErpUserDirectoryRepository,
+    SqlUserIdentityRepository,
+)
 from .oidc import (
     OidcRuntime,
     consume_login_transaction,
@@ -157,17 +165,47 @@ def build_auth_router(oidc_runtime: OidcRuntime | None = None) -> APIRouter:
                 oidc_runtime,
             )
 
-        with factory.begin() as session:
-            principal = IdentityProvisioningService(
-                SqlUserIdentityRepository(session),
-                oidc_runtime.auto_provisioning,
-            ).resolve_or_provision(
-                issuer=identity.issuer,
-                subject=identity.subject,
-                display_name=identity.display_name,
-                email=identity.email,
-                auth_mode="oidc",
+        principal = None
+        try:
+            with factory.begin() as session:
+                identities = SqlUserIdentityRepository(session)
+                principal = ErpControlledIdentityProvisioningService(
+                    identities,
+                    SqlErpUserDirectoryRepository(session),
+                ).resolve_or_provision(
+                    issuer=identity.issuer,
+                    subject=identity.subject,
+                    preferred_username=identity.preferred_username,
+                    display_name=identity.display_name,
+                    email=identity.email,
+                    auth_mode="oidc",
+                )
+                if principal is None:
+                    # Preserve the historical explicit generic policy for
+                    # providers/fixtures without preferred_username. A real
+                    # preferred_username never bypasses RP_Users authorization.
+                    principal = IdentityProvisioningService(
+                        identities,
+                        oidc_runtime.auto_provisioning,
+                    ).resolve_or_provision(
+                        issuer=identity.issuer,
+                        subject=identity.subject,
+                        display_name=identity.display_name,
+                        email=identity.email,
+                        auth_mode="oidc",
+                    )
+        except ErpIdentityProvisioningConflict:
+            return _clear_login_cookie(
+                _auth_error(
+                    403,
+                    "oidc_identity_conflict",
+                    "Cette identité Acumatica entre en conflit avec une liaison RessourcePlanner existante.",
+                ),
+                oidc_runtime,
             )
+        except ErpIdentityProvisioningDenied:
+            principal = None
+
         if principal is None or principal.local_user_id is None:
             diagnostic_context = None
             if (
