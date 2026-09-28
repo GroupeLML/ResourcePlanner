@@ -15,6 +15,22 @@ from joserfc.errors import JoseError as JoseRfcError
 
 
 class OidcProtocolError(RuntimeError):
+    _DIAGNOSTIC_FAILURE_STAGES = frozenset(
+        {
+            "discovery",
+            "token_endpoint",
+            "token_response_invalid",
+            "id_token_missing",
+            "jwks_fetch",
+            "id_token_decode",
+            "id_token_validation",
+            "unexpected",
+        }
+    )
+    _SAFE_PROVIDER_ERROR_CHARS = frozenset(
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-"
+    )
+
     def __init__(
         self,
         message: str,
@@ -24,9 +40,25 @@ class OidcProtocolError(RuntimeError):
         provider_error: str | None = None,
     ) -> None:
         super().__init__(message)
-        self.failure_stage = str(failure_stage or "").strip() or None
+        normalized_stage = str(failure_stage or "").strip()
+        self.failure_stage = (
+            normalized_stage
+            if normalized_stage in self._DIAGNOSTIC_FAILURE_STAGES
+            else ("unexpected" if normalized_stage else None)
+        )
         self.http_status = int(http_status) if http_status is not None else None
-        self.provider_error = str(provider_error or "").strip() or None
+
+        normalized_provider_error = str(provider_error or "").strip()
+        self.provider_error = (
+            normalized_provider_error
+            if normalized_provider_error
+            and len(normalized_provider_error) <= 64
+            and all(
+                character in self._SAFE_PROVIDER_ERROR_CHARS
+                for character in normalized_provider_error
+            )
+            else None
+        )
 
     def diagnostic_context(self) -> dict[str, Any]:
         context: dict[str, Any] = {}
