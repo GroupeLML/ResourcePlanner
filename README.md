@@ -170,7 +170,15 @@ docker compose down -v
 
 Cette dernière commande est destructive pour les données Docker locales.
 
-Le Compose local charge des données et identités de démonstration et active le sélecteur d’identité de test. Ce mode est réservé au développement.
+Le démarrage Docker normal migre la base SQLite jusqu’à `alembic head` puis démarre le backend/frontend **sans charger de données de démonstration**. En mode local, l’accès utilise le principal ADMIN statique configuré par `RESOURCEPLANNER_LOCAL_AUTH_*`; aucun `AppUser` seedé ni Dev User Switcher n’est requis.
+
+Le jeu de données de démonstration reste volontairement opt-in pour le développement SQLite :
+
+```bash
+docker compose --profile demo run --rm seed-dev
+```
+
+Ce seed n’est ni un bootstrap de production ni le futur mécanisme break-glass suivi dans #457.
 
 Voir [`docs/DEPLOYMENT_UBUNTU_VM.md`](docs/DEPLOYMENT_UBUNTU_VM.md) pour la cible de déploiement actuelle sur VM Ubuntu. [`docs/DOCKER_SYNOLOGY.md`](docs/DOCKER_SYNOLOGY.md) est conservé comme référence historique du déploiement direct sur DSM/Container Manager.
 
@@ -233,7 +241,7 @@ Installer_Web.bat
 
 L’installateur crée `.venv-web`, installe le profil serveur Web/SQL et construit React.
 
-Pour charger les données de démonstration SQLite :
+Le démarrage normal ne nécessite aucune donnée de démonstration. Pour charger volontairement le jeu de démo SQLite, utiliser l’outil opt-in :
 
 ```bat
 Charger_Donnees_Demo.bat
