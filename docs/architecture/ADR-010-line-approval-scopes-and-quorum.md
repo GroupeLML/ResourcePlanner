@@ -21,7 +21,9 @@ ApprovalScope est le périmètre métier stable qui porte l'autorité d'approbat
 
 ApprovalScope reste distinct de RequestLine.required_resource_class. La classe technique décrit le besoin du moteur; le périmètre d'approbation décrit qui possède l'autorité métier. Aucun des deux ne devient l'alias de l'autre.
 
-Les premiers périmètres attendus sont « Installation électrique » et « Automatisation ». Les conventions de codes de tâches 110–119 et 210–219 servent uniquement de classement/préremplissage. L'autorité finale utilise une association explicite entre TaskCatalogEntry.id et ApprovalScope.id; aucun parsing de libellé ERP ne crée une autorité.
+Les premiers périmètres attendus sont « Installation électrique » et « Automatisation ». Les conventions de codes de tâches 110–119 et 210–219 servent uniquement de classement/préremplissage; aucun parsing de libellé ERP ne crée une autorité.
+
+Depuis l'extension 276E, le chemin normal de résolution réutilise la **classe effective #454 déjà persistée sur `TaskCatalogEntry.resource_class_code`** pour résoudre un `ApprovalScope` via une relation administrable `ResourceClass → ApprovalScope`. La classe technique et le périmètre restent deux concepts distincts. L'association explicite `TaskCatalogEntry → ApprovalScope` est conservée comme override métier prioritaire pour les exceptions.
 
 ### Identité des approbateurs
 
@@ -43,7 +45,31 @@ avec déduplication par AppUser.id et conservation de la provenance.
 
 La persistance Resource ↔ AppUser approver est différée; 276A ne persiste que les approbateurs de périmètre.
 
-Une tâche sans mapping, plusieurs mappings, une tâche ou un périmètre inactif, ou l'absence d'un approbateur actif possédant approve_demands constituent des diagnostics bloquants explicites. Aucun ordre SQL, nom, courriel ou libellé libre ne décide silencieusement du résultat.
+La résolution du périmètre suit l'ordre suivant :
+
+1. si une tâche possède exactement un mapping explicite actif `TaskCatalogEntry → ApprovalScope`, ce mapping est l'override autoritaire;
+2. sinon, utiliser `TaskCatalogEntry.resource_class_code` — classe effective déjà produite par #454 après standard global et éventuel override projet — puis résoudre `ResourceClass → ApprovalScope`;
+3. si aucun scope unique et actif ne peut être résolu, produire un diagnostic bloquant.
+
+Plusieurs mappings explicites, plusieurs scopes pour une même classe, une tâche/classe/périmètre inactif, une classe absente ou l'absence d'un approbateur actif possédant `approve_demands` constituent des diagnostics bloquants explicites. Aucun ordre SQL, nom, courriel ou libellé libre ne décide silencieusement du résultat.
+
+### Extension 276E — routage par classe effective #454
+
+Le catalogue #454 résout déjà les standards `TaskCD → ResourceClass` et les overrides projet, puis persiste la classe effective dans `TaskCatalogEntry.resource_class_code`. #276 réutilise cette projection pour éviter une configuration d'approbation répétée tâche par tâche sur chaque projet.
+
+Exemples :
+
+```text
+216 → PROGRAMMEUR                  → AUTOMATION              → AppUser X
+217 → INSTALLATEUR_AUTOMATISATION → AUTOMATION              → AppUser X
+117 → INSTALLATEUR_ELECTRIQUE     → ELECTRICAL_INSTALLATION → AppUser Y
+```
+
+Le mapping `ResourceClass → ApprovalScope` est administrable et appartient à #276. #454 reste autoritaire sur la résolution de la classe workforce; #276 reste autoritaire sur l'autorité d'approbation.
+
+Une association explicite `TaskCatalogEntry → ApprovalScope` a priorité comme exception métier. Elle ne doit pas devenir nécessaire pour chaque occurrence d'un même TaskCD dans chaque projet.
+
+Le résultat résolu — scope et AppUser admissibles — continue d'être figé dans le `RequestApprovalCycle` à la soumission. Modifier ensuite un standard #454, un override projet, un mapping classe→scope ou les approbateurs ne réécrit jamais un cycle déjà ouvert.
 
 ### Snapshot à la soumission
 
@@ -81,7 +107,9 @@ Rejetée. Le contact métier et l'identité d'autorisation ont des responsabilit
 
 ### Utiliser required_resource_class comme périmètre
 
-Rejetée. Cette classe appartient au moteur technique et n'est pas une identité durable d'autorité métier.
+Rejetée. La classe appartient au moteur technique et n'est pas une identité durable d'autorité métier.
+
+L'extension 276E n'invalide pas cette décision : elle utilise la **classe effective du catalogue #454 comme entrée de routage vers un ApprovalScope distinct**, et non comme périmètre d'autorité en soi. Le champ libre/candidat `RequestLine.required_resource_class` ne décide pas directement de l'autorité.
 
 ### Recalculer dynamiquement les approbateurs après chaque vote
 
@@ -100,7 +128,7 @@ Rejetée. Une modification de configuration pourrait changer les règles d'un cy
 ### Trade-offs / negative
 
 - #276 nécessite un cycle persistant et des décisions par ligne avant d'activer le nouveau workflow;
-- l'administration doit maintenir explicitement les associations tâche → périmètre et périmètre → approbateurs;
+- l'administration doit maintenir les associations classe effective → périmètre et périmètre → approbateurs; les associations tâche → périmètre restent disponibles seulement comme overrides explicites;
 - une configuration ambiguë ou incomplète bloque volontairement la constitution d'un cycle au lieu d'utiliser un fallback implicite.
 
 ## References
@@ -111,6 +139,7 @@ Rejetée. Une modification de configuration pourrait changer les règles d'un cy
 - GitHub Issue #289
 - GitHub Issue #327
 - GitHub Issue #328
+- GitHub Issue #454
 - ADR-002
 - ADR-003
 - ADR-004
