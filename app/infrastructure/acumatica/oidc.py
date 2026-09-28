@@ -15,7 +15,28 @@ from joserfc.errors import JoseError as JoseRfcError
 
 
 class OidcProtocolError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure_stage: str | None = None,
+        http_status: int | None = None,
+        provider_error: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.failure_stage = str(failure_stage or "").strip() or None
+        self.http_status = int(http_status) if http_status is not None else None
+        self.provider_error = str(provider_error or "").strip() or None
+
+    def diagnostic_context(self) -> dict[str, Any]:
+        context: dict[str, Any] = {}
+        if self.failure_stage:
+            context["oidc_failure_stage"] = self.failure_stage
+        if self.http_status is not None:
+            context["http_status"] = self.http_status
+        if self.provider_error:
+            context["provider_error"] = self.provider_error
+        return context
 
 
 _DIAGNOSTIC_IDENTITY_CLAIMS = (
@@ -46,6 +67,24 @@ _DIAGNOSTIC_FORBIDDEN_CLAIM_NAMES = frozenset(
         "state",
     }
 )
+
+_SAFE_OAUTH_ERROR_CODE_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-"
+)
+
+
+def _safe_oauth_error_code(payload: object) -> str | None:
+    if not isinstance(payload, Mapping):
+        return None
+    value = payload.get("error")
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if not normalized or len(normalized) > 64:
+        return None
+    if any(character not in _SAFE_OAUTH_ERROR_CODE_CHARS for character in normalized):
+        return None
+    return normalized
 
 
 def _claim_diagnostics_projection(claims: Mapping[str, Any]) -> dict[str, Any]:
@@ -150,7 +189,14 @@ class OidcClient:
         code_verifier: str,
         nonce: str,
     ) -> OidcIdentity:
-        metadata = await self.metadata()
+        try:
+            metadata = await self.metadata()
+        except (httpx.HTTPError, OidcProtocolError, ValueError) as exc:
+            raise OidcProtocolError(
+                "Le document de découverte OIDC n'a pas pu être chargé.",
+                failure_stage="discovery",
+            ) from exc
+
         form = {
             "grant_type": "authorization_code",
             "code": code,
@@ -161,21 +207,77 @@ class OidcClient:
         if self.settings.client_credential:
             form["client_secret"] = self.settings.client_credential
 
-        async with httpx.AsyncClient(transport=self._transport, timeout=self._timeout) as client:
-            response = await client.post(
-                str(metadata["token_endpoint"]),
-                data=form,
-                headers={"Accept": "application/json"},
+        try:
+            async with httpx.AsyncClient(
+                transport=self._transport,
+                timeout=self._timeout,
+            ) as client:
+                response = await client.post(
+                    str(metadata["token_endpoint"]),
+                    data=form,
+                    headers={"Accept": "application/json"},
+                )
+        except httpx.HTTPError as exc:
+            raise OidcProtocolError(
+                "Le token endpoint OIDC n'a pas pu être joint.",
+                failure_stage="token_endpoint",
+            ) from exc
+
+        token_http_status = response.status_code
+        if not response.is_success:
+            provider_payload: object = None
+            try:
+                provider_payload = response.json()
+            except ValueError:
+                pass
+            raise OidcProtocolError(
+                "Le token endpoint OIDC a refusé la requête.",
+                failure_stage="token_endpoint",
+                http_status=token_http_status,
+                provider_error=_safe_oauth_error_code(provider_payload),
             )
-            response.raise_for_status()
+
+        try:
             token = response.json()
+        except ValueError as exc:
+            raise OidcProtocolError(
+                "La réponse token OIDC n'est pas un JSON valide.",
+                failure_stage="token_response_invalid",
+                http_status=token_http_status,
+            ) from exc
         if not isinstance(token, dict):
-            raise OidcProtocolError("La réponse token OIDC doit être un objet JSON.")
+            raise OidcProtocolError(
+                "La réponse token OIDC doit être un objet JSON.",
+                failure_stage="token_response_invalid",
+                http_status=token_http_status,
+            )
+
+        provider_error = _safe_oauth_error_code(token)
+        if provider_error:
+            raise OidcProtocolError(
+                "La réponse token OIDC contient une erreur fournisseur.",
+                failure_stage="token_response_invalid",
+                http_status=token_http_status,
+                provider_error=provider_error,
+            )
+
         id_token = str(token.get("id_token") or "").strip()
         if not id_token:
-            raise OidcProtocolError("Acumatica n'a retourné aucun id_token OIDC.")
+            raise OidcProtocolError(
+                "Acumatica n'a retourné aucun id_token OIDC.",
+                failure_stage="id_token_missing",
+                http_status=token_http_status,
+            )
 
-        jwks = await self._get_json(str(metadata["jwks_uri"]))
+        try:
+            jwks = await self._get_json(str(metadata["jwks_uri"]))
+        except (httpx.HTTPError, OidcProtocolError, ValueError) as exc:
+            raise OidcProtocolError(
+                "Les clés de signature OIDC n'ont pas pu être chargées.",
+                failure_stage="jwks_fetch",
+                http_status=token_http_status,
+            ) from exc
+
         advertised = metadata.get("id_token_signing_alg_values_supported") or ["RS256"]
         if not isinstance(advertised, list) or not advertised:
             advertised = ["RS256"]
@@ -186,7 +288,9 @@ class OidcClient:
         ]
         if not algorithms:
             raise OidcProtocolError(
-                "Le fournisseur OIDC ne publie aucun algorithme de signature sûr pour l'id_token."
+                "Le fournisseur OIDC ne publie aucun algorithme de signature sûr pour l'id_token.",
+                failure_stage="id_token_validation",
+                http_status=token_http_status,
             )
 
         try:
@@ -207,14 +311,30 @@ class OidcClient:
                     "access_token": token.get("access_token"),
                 },
             )
+        except (AuthlibJoseError, JoseRfcError, ValueError) as exc:
+            raise OidcProtocolError(
+                "L'id_token OIDC est invalide.",
+                failure_stage="id_token_decode",
+                http_status=token_http_status,
+            ) from exc
+
+        try:
             claims.validate(leeway=120)
-        except (AuthlibJoseError, JoseRfcError) as exc:
-            raise OidcProtocolError("L'id_token OIDC est invalide.") from exc
+        except (AuthlibJoseError, JoseRfcError, ValueError) as exc:
+            raise OidcProtocolError(
+                "L'id_token OIDC est invalide.",
+                failure_stage="id_token_validation",
+                http_status=token_http_status,
+            ) from exc
 
         issuer = str(claims.get("iss") or "").strip()
         subject = str(claims.get("sub") or "").strip()
         if not issuer or not subject:
-            raise OidcProtocolError("L'id_token OIDC ne contient pas iss/sub.")
+            raise OidcProtocolError(
+                "L'id_token OIDC ne contient pas iss/sub.",
+                failure_stage="id_token_validation",
+                http_status=token_http_status,
+            )
         display_name = str(
             claims.get("name")
             or claims.get("preferred_username")
