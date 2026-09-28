@@ -9,14 +9,17 @@ import {
   BusinessContactReadModel,
   ContactLinkReadModel,
   ProjectReadModel,
+  ProjectTaskSyncMetadata,
   TaskCatalogItemReadModel,
   getAcumaticaIntegrationStatus,
+  getAcumaticaProjectTaskSyncMetadata,
   getBusinessContacts,
   getProjectBusinessContacts,
   getProjects,
   getTaskCatalog,
   setProjectManagerContact,
   setTaskBusinessContacts,
+  syncAcumaticaProjectTasks,
   syncAcumaticaProjects,
 } from "./api";
 import { ContactSelect } from "./BusinessContactUi";
@@ -57,7 +60,15 @@ export default function ProjectsPage() {
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [taskSyncing, setTaskSyncing] = useState(false);
+  const [taskSyncMessage, setTaskSyncMessage] = useState<string | null>(null);
+  const [taskSyncError, setTaskSyncError] = useState<string | null>(null);
+  const [taskSyncMetadata, setTaskSyncMetadata] = useState<ProjectTaskSyncMetadata | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const selectedProject = useMemo(
+    () => projects.find((project) => project.number === selectedProjectNumber) ?? null,
+    [projects, selectedProjectNumber],
+  );
 
   useEffect(() => {
     if (scopeLoading) return;
@@ -85,26 +96,29 @@ export default function ProjectsPage() {
   }, [refreshKey, scope, scopeLoading]);
 
   useEffect(() => {
-    if (!selectedProjectNumber) {
+    if (!selectedProject) {
       setProjectContactLink(null);
       setProjectTasks([]);
+      setTaskSyncMetadata(null);
       return;
     }
     const controller = new AbortController();
     Promise.all([
-      getProjectBusinessContacts(selectedProjectNumber, controller.signal),
-      getTaskCatalog(selectedProjectNumber, "", false, controller.signal),
+      getProjectBusinessContacts(selectedProject.number, controller.signal),
+      getTaskCatalog(selectedProject.number, "", false, controller.signal),
+      getAcumaticaProjectTaskSyncMetadata(selectedProject.id, controller.signal),
     ])
-      .then(([link, taskRows]) => {
+      .then(([link, taskRows, metadata]) => {
         setProjectContactLink(link);
         setProjectTasks(taskRows);
+        setTaskSyncMetadata(metadata);
       })
       .catch((reason: unknown) => {
         if (reason instanceof DOMException && reason.name === "AbortError") return;
-        setError(apiErrorMessage(reason, "Impossible de charger les contacts métier du projet."));
+        setError(apiErrorMessage(reason, "Impossible de charger les données du projet."));
       });
     return () => controller.abort();
-  }, [selectedProjectNumber, refreshKey]);
+  }, [selectedProject, refreshKey]);
 
   const managers = useMemo(() => {
     const values = new Set(
@@ -207,6 +221,39 @@ export default function ProjectsPage() {
       setSyncError(apiErrorMessage(reason, "La synchronisation Acumatica a échoué."));
     } finally {
       setSyncing(false);
+    }
+  }
+
+  async function synchronizeProjectTasks() {
+    if (!selectedProject || taskSyncing || !canSyncProjects) return;
+    setTaskSyncMessage(null);
+    setTaskSyncError(null);
+    if (!selectedProject.erp_external_id) {
+      setTaskSyncError("Ce projet local ne possède pas d’identifiant ERP.");
+      return;
+    }
+    if (!integration?.project_tasks_configured) {
+      setTaskSyncError("La synchronisation des tâches ERP n’est pas configurée sur ce serveur.");
+      return;
+    }
+
+    setTaskSyncing(true);
+    try {
+      const result = await syncAcumaticaProjectTasks(selectedProject.id);
+      setTaskSyncMessage(
+        `${result.source_rows} lignes reçues · ${result.task_count} tâches · ${result.rejected_rows} rejet · `
+        + `${result.created} créées · ${result.updated} mises à jour · ${result.unchanged} inchangées`,
+      );
+      const [taskRows, metadata] = await Promise.all([
+        getTaskCatalog(selectedProject.number, "", false),
+        getAcumaticaProjectTaskSyncMetadata(selectedProject.id),
+      ]);
+      setProjectTasks(taskRows);
+      setTaskSyncMetadata(metadata);
+    } catch (reason: unknown) {
+      setTaskSyncError(apiErrorMessage(reason, "La synchronisation des tâches ERP a échoué."));
+    } finally {
+      setTaskSyncing(false);
     }
   }
 
@@ -379,6 +426,43 @@ export default function ProjectsPage() {
             </div>
             <button className="quiet-button" type="button" onClick={() => setSelectedProjectNumber(null)}>Fermer</button>
           </div>
+
+          {canSyncProjects && selectedProject && (
+            <div className="acumatica-card">
+              <div>
+                <span className="eyebrow">Catalogue tâches</span>
+                <h3>RP_ProjectTasks</h3>
+                {selectedProject.erp_external_id ? (
+                  <p>
+                    Projet ERP <strong>{selectedProject.number}</strong> · identité technique disponible.
+                    {taskSyncMetadata?.last_success_at
+                      ? ` Dernier succès : ${new Date(taskSyncMetadata.last_success_at).toLocaleString("fr-CA")}.`
+                      : " Aucune synchronisation réussie enregistrée."}
+                  </p>
+                ) : (
+                  <p>Projet local sans identité ERP : aucune synchronisation OData ne sera tentée.</p>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => void synchronizeProjectTasks()}
+                disabled={
+                  taskSyncing
+                  || !selectedProject.erp_external_id
+                  || !integration?.project_tasks_configured
+                }
+              >
+                {taskSyncing ? "Synchronisation…" : "Synchroniser les tâches ERP"}
+              </button>
+            </div>
+          )}
+          {taskSyncMessage && <div className="projects-sync-message" role="status">{taskSyncMessage}</div>}
+          {taskSyncError && (
+            <div className="error-panel">
+              <strong>La synchronisation des tâches n’a pas été complétée.</strong>
+              <span>{taskSyncError}</span>
+            </div>
+          )}
 
           <label>
             Chargé de projet
