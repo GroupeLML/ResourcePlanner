@@ -65,8 +65,14 @@ class OidcClientTests(unittest.TestCase):
         algorithms: list[str] | None = None,
         extra_claims: dict[str, object] | None = None,
         token_response_extra: dict[str, object] | None = None,
+        token_status: int = 200,
+        token_response_json: object | None = None,
+        token_response_text: str | None = None,
+        omit_id_token: bool = False,
+        id_token_override: str | None = None,
+        jwks_status: int = 200,
     ) -> httpx.MockTransport:
-        token = self._id_token(nonce=nonce, extra_claims=extra_claims)
+        token = id_token_override or self._id_token(nonce=nonce, extra_claims=extra_claims)
 
         def handler(request: httpx.Request) -> httpx.Response:
             if str(request.url) == DISCOVERY:
@@ -84,11 +90,17 @@ class OidcClientTests(unittest.TestCase):
                 body = request.content.decode("utf-8")
                 self.assertIn("grant_type=authorization_code", body)
                 self.assertIn("code_verifier=verifier-123", body)
-                token_response: dict[str, object] = {"id_token": token}
+                if token_response_text is not None:
+                    return httpx.Response(token_status, text=token_response_text)
+                if token_response_json is not None:
+                    return httpx.Response(token_status, json=token_response_json)
+                token_response: dict[str, object] = {}
+                if not omit_id_token:
+                    token_response["id_token"] = token
                 token_response.update(token_response_extra or {})
-                return httpx.Response(200, json=token_response)
+                return httpx.Response(token_status, json=token_response)
             if str(request.url) == f"{ISSUER}/jwks":
-                return httpx.Response(200, json={"keys": [self.public_jwk]})
+                return httpx.Response(jwks_status, json={"keys": [self.public_jwk]})
             return httpx.Response(404)
 
         return httpx.MockTransport(handler)
@@ -101,6 +113,12 @@ class OidcClientTests(unittest.TestCase):
         claim_diagnostics: bool = False,
         extra_claims: dict[str, object] | None = None,
         token_response_extra: dict[str, object] | None = None,
+        token_status: int = 200,
+        token_response_json: object | None = None,
+        token_response_text: str | None = None,
+        omit_id_token: bool = False,
+        id_token_override: str | None = None,
+        jwks_status: int = 200,
     ) -> OidcClient:
         return OidcClient(
             OidcClientSettings(
@@ -114,9 +132,31 @@ class OidcClientTests(unittest.TestCase):
                 algorithms=algorithms,
                 extra_claims=extra_claims,
                 token_response_extra=token_response_extra,
+                token_status=token_status,
+                token_response_json=token_response_json,
+                token_response_text=token_response_text,
+                omit_id_token=omit_id_token,
+                id_token_override=id_token_override,
+                jwks_status=jwks_status,
             ),
             claim_diagnostics=claim_diagnostics,
         )
+
+    def _exchange_error(
+        self,
+        client: OidcClient,
+        *,
+        nonce: str = "nonce-123",
+    ) -> OidcProtocolError:
+        with self.assertRaises(OidcProtocolError) as caught:
+            asyncio.run(
+                client.exchange_code(
+                    code="code-123",
+                    code_verifier="verifier-123",
+                    nonce=nonce,
+                )
+            )
+        return caught.exception
 
     def test_authorization_url_uses_code_flow_nonce_and_pkce_s256(self) -> None:
         client = self._client(nonce="nonce-123")
@@ -264,30 +304,137 @@ class OidcClientTests(unittest.TestCase):
         self.assertNotIn("userid", candidates)
         self.assertNotIn("employee_id", candidates)
 
+    def test_token_endpoint_failure_diagnostic_is_safe_and_structured(self) -> None:
+        client = self._client(
+            nonce="nonce-123",
+            token_status=400,
+            token_response_json={
+                "error": "invalid_grant",
+                "error_description": "provider detail must stay hidden",
+            },
+        )
+
+        error = self._exchange_error(client)
+
+        self.assertEqual(
+            error.diagnostic_context(),
+            {
+                "oidc_failure_stage": "token_endpoint",
+                "http_status": 400,
+                "provider_error": "invalid_grant",
+            },
+        )
+        self.assertNotIn("provider detail", str(error.diagnostic_context()))
+
+    def test_provider_error_is_omitted_when_not_a_safe_oauth_code(self) -> None:
+        client = self._client(
+            nonce="nonce-123",
+            token_status=400,
+            token_response_json={"error": "invalid_grant provider detail"},
+        )
+
+        error = self._exchange_error(client)
+
+        self.assertEqual(
+            error.diagnostic_context(),
+            {
+                "oidc_failure_stage": "token_endpoint",
+                "http_status": 400,
+            },
+        )
+
+    def test_token_response_invalid_stage_for_malformed_json(self) -> None:
+        client = self._client(
+            nonce="nonce-123",
+            token_response_text="not-json",
+        )
+
+        error = self._exchange_error(client)
+
+        self.assertEqual(
+            error.diagnostic_context(),
+            {
+                "oidc_failure_stage": "token_response_invalid",
+                "http_status": 200,
+            },
+        )
+
+    def test_id_token_missing_stage(self) -> None:
+        client = self._client(
+            nonce="nonce-123",
+            omit_id_token=True,
+        )
+
+        error = self._exchange_error(client)
+
+        self.assertEqual(
+            error.diagnostic_context(),
+            {
+                "oidc_failure_stage": "id_token_missing",
+                "http_status": 200,
+            },
+        )
+
+    def test_jwks_fetch_stage_preserves_only_token_endpoint_status(self) -> None:
+        client = self._client(
+            nonce="nonce-123",
+            jwks_status=503,
+        )
+
+        error = self._exchange_error(client)
+
+        self.assertEqual(
+            error.diagnostic_context(),
+            {
+                "oidc_failure_stage": "jwks_fetch",
+                "http_status": 200,
+            },
+        )
+
+    def test_id_token_decode_stage(self) -> None:
+        client = self._client(
+            nonce="nonce-123",
+            id_token_override="not-a-jwt",
+        )
+
+        error = self._exchange_error(client)
+
+        self.assertEqual(
+            error.diagnostic_context(),
+            {
+                "oidc_failure_stage": "id_token_decode",
+                "http_status": 200,
+            },
+        )
+
     def test_exchange_rejects_wrong_nonce(self) -> None:
         client = self._client(
             nonce="nonce-from-provider",
             claim_diagnostics=True,
         )
-        with self.assertRaises(OidcProtocolError):
-            asyncio.run(
-                client.exchange_code(
-                    code="code-123",
-                    code_verifier="verifier-123",
-                    nonce="different-nonce",
-                )
-            )
+
+        error = self._exchange_error(client, nonce="different-nonce")
+
+        self.assertEqual(
+            error.diagnostic_context(),
+            {
+                "oidc_failure_stage": "id_token_validation",
+                "http_status": 200,
+            },
+        )
 
     def test_exchange_refuses_none_signing_algorithm(self) -> None:
         client = self._client(nonce="nonce-123", algorithms=["none"])
-        with self.assertRaises(OidcProtocolError):
-            asyncio.run(
-                client.exchange_code(
-                    code="code-123",
-                    code_verifier="verifier-123",
-                    nonce="nonce-123",
-                )
-            )
+
+        error = self._exchange_error(client)
+
+        self.assertEqual(
+            error.diagnostic_context(),
+            {
+                "oidc_failure_stage": "id_token_validation",
+                "http_status": 200,
+            },
+        )
 
 
 if __name__ == "__main__":

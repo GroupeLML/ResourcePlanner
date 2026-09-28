@@ -140,12 +140,19 @@ def build_auth_router(oidc_runtime: OidcRuntime | None = None) -> APIRouter:
                 code_verifier=transaction.code_verifier,
                 nonce=transaction.nonce,
             )
-        except (httpx.HTTPError, OidcProtocolError, ValueError):
+        except (httpx.HTTPError, OidcProtocolError, ValueError) as exc:
+            diagnostic_context = None
+            if oidc_runtime.claim_diagnostics_enabled:
+                if isinstance(exc, OidcProtocolError):
+                    diagnostic_context = exc.diagnostic_context()
+                else:
+                    diagnostic_context = {"oidc_failure_stage": "unexpected"}
             return _clear_login_cookie(
                 _auth_error(
                     401,
                     "oidc_token_invalid",
                     "La réponse OIDC n'a pas pu être validée.",
+                    context=diagnostic_context,
                 ),
                 oidc_runtime,
             )
