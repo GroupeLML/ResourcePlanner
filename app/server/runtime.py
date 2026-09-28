@@ -14,6 +14,8 @@ from ..infrastructure.acumatica import (
     ODataEmployeeSourceSettings,
     ODataProjectSource,
     ODataProjectSourceSettings,
+    ODataProjectTaskSource,
+    ODataProjectTaskSourceSettings,
     ODataUserSource,
     ODataUserSourceSettings,
 )
@@ -412,6 +414,17 @@ def create_configured_app(settings: ServerSettings | None = None) -> FastAPI:
         if resolved.acumatica is not None
         else None
     )
+    project_task_source = None
+    if resolved.acumatica is not None:
+        project_task_source = ODataProjectTaskSource(
+            ODataProjectTaskSourceSettings(
+                base_url=resolved.acumatica.base_url,
+                username=resolved.acumatica.username,
+                credential=resolved.acumatica.credential,
+                page_size=resolved.acumatica.page_size,
+                timeout_seconds=resolved.acumatica.timeout_seconds,
+            )
+        )
     employee_source = None
     if resolved.acumatica is not None:
         employee_source = ODataEmployeeSource(
@@ -484,6 +497,7 @@ def create_configured_app(settings: ServerSettings | None = None) -> FastAPI:
         project_source=project_source,
         employee_source=employee_source,
         user_source=user_source,
+        project_task_source=project_task_source,
         acumatica_info=(
             resolved.acumatica.safe_summary() if resolved.acumatica is not None else None
         ),
