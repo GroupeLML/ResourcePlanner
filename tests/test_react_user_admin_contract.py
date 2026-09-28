@@ -39,6 +39,17 @@ class ReactUserAdminContractTests(unittest.TestCase):
         self.assertIn('definition.role === "ADMIN"', source)
         self.assertIn("disabled={isSelf}", source)
 
+    def test_long_user_lists_scroll_without_hiding_editors(self) -> None:
+        css = (FRONTEND / "user-admin.css").read_text(encoding="utf-8")
+
+        self.assertIn(".user-admin-user-list", css)
+        self.assertIn("max-height: min(58vh, 620px)", css)
+        self.assertIn("overflow-y: auto", css)
+        self.assertIn(".erp-user-directory-table-wrap", css)
+        self.assertIn("overflow: auto", css)
+        self.assertIn(".erp-user-directory-table th", css)
+        self.assertIn("position: sticky", css)
+
 
 if __name__ == "__main__":
     unittest.main()

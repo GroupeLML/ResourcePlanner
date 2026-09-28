@@ -1,6 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
 
-import AcumaticaProjectSyncPanel from "./AcumaticaProjectSyncPanel";
 import ApprovalScopesPanel from "./ApprovalScopesPanel";
 import ResourceClassesPanel from "./ResourceClassesPanel";
 import {
@@ -204,8 +203,6 @@ export default function ConfigurationPage() {
 
       {error && <div className="error-panel"><strong>Erreur</strong><span>{error}</span></div>}
       {notice && <div className="configuration-notice">{notice}</div>}
-
-      <AcumaticaProjectSyncPanel />
 
       <ResourceClassesPanel />
 

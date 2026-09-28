@@ -44,6 +44,45 @@ class ReactResourceClassesContractTests(unittest.TestCase):
         self.assertNotIn("average_hourly_cost_cad /", panel)
         self.assertNotIn("/ row.average_hourly_cost_cad", panel)
 
+    def test_resource_editors_use_canonical_resource_class_catalog(self) -> None:
+        resources = (
+            ROOT / "frontend" / "src" / "ResourcesPage.tsx"
+        ).read_text(encoding="utf-8")
+        demands = (
+            ROOT / "frontend" / "src" / "DemandsPage.tsx"
+        ).read_text(encoding="utf-8")
+        editor = (
+            ROOT / "frontend" / "src" / "DemandLinesEditor.tsx"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("getResourceClassOptions(controller.signal)", resources)
+        self.assertIn("setResourceClasses(classRows)", resources)
+        self.assertIn("activeResourceClasses", resources)
+        self.assertIn("{row.code} · {row.label}", resources)
+        self.assertIn("historique/inactive", resources)
+        self.assertNotIn('placeholder="Programmation, Installation…"', resources)
+
+        self.assertIn("getResourceClassOptions(controller.signal)", demands)
+        self.assertIn("resourceClasses={resourceClasses}", demands)
+        client = (
+            ROOT / "frontend" / "src" / "resourceClassesApi.ts"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"/api/v1/resource-classes"', client)
+        self.assertIn('"/api/v1/admin/resource-classes"', client)
+        operational = client.split(
+            "export function getResourceClassOptions", 1
+        )[1].split("export function getResourceClasses", 1)[0]
+        self.assertNotIn("average_hourly_cost_cad", operational)
+        self.assertIn("resourceClasses: ResourceClassOptionReadModel[]", editor)
+        self.assertIn("activeResourceClasses", editor)
+        self.assertIn("Aucune classe imposée", editor)
+        self.assertIn("{row.code} · {row.label}", editor)
+        self.assertIn("historique/inactive", editor)
+        self.assertNotIn(
+            "resources.map((row) => row.resource_class?.trim())",
+            editor,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

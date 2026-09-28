@@ -10,8 +10,10 @@ from app.application.security import (
     AuthPrincipal,
     ROLE_ADMIN,
     ROLE_MANAGER,
+    ROLE_TECHNICIAN,
 )
 from app.infrastructure.sql import Base, Project
+from app.infrastructure.sql.resource_class_models import ResourceClassConfig
 from app.server import create_api_app
 from app.server.security import static_auth_resolver
 
@@ -181,6 +183,73 @@ class ServerResourceClassRouteTests(unittest.TestCase):
         )
         self.assertEqual(zero.status_code, 422)
         self.assertEqual(staged.status_code, 201)
+
+    def test_read_only_role_can_read_operational_catalog_without_admin_fields(self) -> None:
+        app = self._app(role=ROLE_TECHNICIAN)
+        factory = app.state.session_factory
+        with factory() as session, session.begin():
+            session.add_all(
+                [
+                    ResourceClassConfig(
+                        code="PROGRAMMEUR",
+                        label="Programmeur",
+                        average_hourly_cost_cad="125.00",
+                        active=True,
+                        version=3,
+                    ),
+                    ResourceClassConfig(
+                        code="HISTORIQUE",
+                        label="Classe historique",
+                        average_hourly_cost_cad="90.00",
+                        active=False,
+                        version=2,
+                    ),
+                ]
+            )
+
+        with TestClient(app) as client:
+            response = client.get("/api/v1/resource-classes")
+            admin_read = client.get("/api/v1/admin/resource-classes")
+            admin_mutation = client.post(
+                "/api/v1/admin/resource-classes",
+                json={
+                    "code": "INTERDIT",
+                    "label": "Interdit",
+                    "average_hourly_cost_cad": "100.00",
+                    "active": True,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            [
+                {
+                    "code": "HISTORIQUE",
+                    "label": "Classe historique",
+                    "active": False,
+                },
+                {
+                    "code": "PROGRAMMEUR",
+                    "label": "Programmeur",
+                    "active": True,
+                },
+            ],
+        )
+        self.assertNotIn(
+            "average_hourly_cost_cad",
+            response.json()[0],
+        )
+        self.assertNotIn("version", response.json()[0])
+        self.assertEqual(admin_read.status_code, 403)
+        self.assertEqual(admin_mutation.status_code, 403)
+        for denied in (admin_read, admin_mutation):
+            self.assertEqual(
+                denied.json()["error"]["context"][
+                    "required_permission"
+                ],
+                "admin_settings",
+            )
 
     def test_non_admin_is_denied_admin_surface(self) -> None:
         app = self._app(role=ROLE_MANAGER)

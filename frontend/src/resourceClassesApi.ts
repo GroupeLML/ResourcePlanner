@@ -9,6 +9,12 @@ export type ResourceClassConfigReadModel = {
   version: number;
 };
 
+export type ResourceClassOptionReadModel = {
+  code: string;
+  label: string;
+  active: boolean;
+};
+
 export type TaskClassStandardReadModel = {
   task_code: string;
   resource_class_code: string;
@@ -69,6 +75,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     );
   }
   return response.json() as Promise<T>;
+}
+
+export function getResourceClassOptions(signal?: AbortSignal) {
+  return request<ResourceClassOptionReadModel[]>(
+    "/api/v1/resource-classes",
+    { signal },
+  );
 }
 
 export function getResourceClasses(signal?: AbortSignal) {

@@ -92,6 +92,16 @@ def _class_payload(row: ResourceClassConfigRecord) -> dict[str, object]:
     }
 
 
+def _operational_class_payload(
+    row: ResourceClassConfigRecord,
+) -> dict[str, object]:
+    return {
+        "code": row.code,
+        "label": row.label,
+        "active": row.active,
+    }
+
+
 def _standard_payload(row: TaskClassStandardRecord) -> dict[str, object]:
     return {
         "task_code": row.task_code,
@@ -159,6 +169,29 @@ def _projection_payload(
         "resolution_status": row.resolution_status,
         "diagnostics": list(row.diagnostics),
     }
+
+
+def build_operational_resource_class_router(
+    session_dependency: SessionProvider,
+) -> APIRouter:
+    router = APIRouter(
+        prefix="/api/v1/resource-classes",
+        tags=["resource-classes"],
+    )
+
+    @router.get("")
+    def list_resource_classes(
+        session: Session = Depends(session_dependency),
+    ) -> list[dict[str, object]]:
+        service = ResourceClassConfigurationService(
+            SqlResourceClassRepository(session)
+        )
+        return [
+            _operational_class_payload(row)
+            for row in service.list_resource_classes()
+        ]
+
+    return router
 
 
 def build_resource_class_router(
