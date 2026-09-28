@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from app.application.identity_provisioning import AutoProvisioningPolicy
 from app.application.security import ROLE_TECHNICIAN
-from app.infrastructure.acumatica.oidc import OidcIdentity
+from app.infrastructure.acumatica.oidc import OidcIdentity, OidcProtocolError
 from app.infrastructure.sql import (
     AuthSession,
     Base,
@@ -40,8 +40,14 @@ DIAGNOSTICS = {
 
 
 class FakeOidcClient:
-    def __init__(self, identity: OidcIdentity) -> None:
+    def __init__(
+        self,
+        identity: OidcIdentity,
+        *,
+        exchange_error: Exception | None = None,
+    ) -> None:
         self.identity = identity
+        self.exchange_error = exchange_error
         self.last_verifier: str | None = None
         self.last_nonce: str | None = None
 
@@ -61,6 +67,8 @@ class FakeOidcClient:
             raise ValueError("invalid code")
         if code_verifier != self.last_verifier or nonce != self.last_nonce:
             raise ValueError("invalid transaction")
+        if self.exchange_error is not None:
+            raise self.exchange_error
         return self.identity
 
 
@@ -205,6 +213,68 @@ class ServerOidcTests(unittest.TestCase):
         self.assertIn("httponly", set_cookie)
         self.assertIn("secure", set_cookie)
         self.assertIn("samesite=none", set_cookie)
+
+    def test_token_failure_diagnostics_are_absent_when_flag_is_disabled(self) -> None:
+        fake = FakeOidcClient(
+            OidcIdentity(
+                issuer=ISSUER,
+                subject="subject-1",
+                display_name="Technicien OIDC",
+                email=None,
+            ),
+            exchange_error=OidcProtocolError(
+                "provider detail must stay hidden",
+                failure_stage="token_endpoint",
+                http_status=400,
+                provider_error="invalid_grant",
+            ),
+        )
+        app = self._app(fake)
+        with TestClient(app) as client:
+            callback = self._login_callback(client)
+
+        self.assertEqual(callback.status_code, 401)
+        self.assertEqual(
+            callback.json(),
+            {
+                "error": {
+                    "code": "oidc_token_invalid",
+                    "message": "La réponse OIDC n'a pas pu être validée.",
+                    "context": {},
+                }
+            },
+        )
+
+    def test_token_failure_diagnostics_surface_only_safe_fields_when_enabled(self) -> None:
+        fake = FakeOidcClient(
+            OidcIdentity(
+                issuer=ISSUER,
+                subject="subject-1",
+                display_name="Technicien OIDC",
+                email=None,
+            ),
+            exchange_error=OidcProtocolError(
+                "provider detail must stay hidden",
+                failure_stage="token_endpoint",
+                http_status=400,
+                provider_error="invalid_grant",
+            ),
+        )
+        app = self._app(fake, claim_diagnostics=True)
+        with TestClient(app) as client:
+            callback = self._login_callback(client)
+
+        self.assertEqual(callback.status_code, 401)
+        self.assertEqual(callback.json()["error"]["code"], "oidc_token_invalid")
+        self.assertEqual(
+            callback.json()["error"]["context"],
+            {
+                "oidc_failure_stage": "token_endpoint",
+                "http_status": 400,
+                "provider_error": "invalid_grant",
+            },
+        )
+        self.assertNotIn("provider detail", callback.text)
 
     def test_claim_diagnostic_route_is_not_registered_when_disabled(self) -> None:
         fake = FakeOidcClient(
