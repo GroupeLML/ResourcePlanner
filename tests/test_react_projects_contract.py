@@ -35,7 +35,7 @@ class ReactProjectsContractTests(unittest.TestCase):
         self.assertNotIn("/entity/", page)
         self.assertNotIn("ACUMATICA_ACCESS_TOKEN", page)
 
-    def test_projects_page_uses_backend_active_state_and_expected_filters(self) -> None:
+    def test_projects_page_uses_real_erp_status_filter_and_keeps_backend_metrics(self) -> None:
         page = (ROOT / "frontend" / "src" / "ProjectsPage.tsx").read_text(
             encoding="utf-8"
         )
@@ -44,6 +44,12 @@ class ReactProjectsContractTests(unittest.TestCase):
         self.assertIn("active: boolean", api)
         self.assertIn("project.active", page)
         self.assertIn("État calculé par le backend", page)
+        self.assertIn('const [statusFilter, setStatusFilter] = useState("actif")', page)
+        self.assertIn("normalize(project.status) !== statusFilter", page)
+        self.assertIn("projectStatuses.map", page)
+        self.assertIn('<option value="all">Tous</option>', page)
+        self.assertIn('<option value="actif">Actif</option>', page)
+        self.assertNotIn("activityFilter", page)
         self.assertIn("Chargé de projet", page)
         self.assertIn("Source", page)
         self.assertIn("Acumatica", page)
@@ -52,6 +58,16 @@ class ReactProjectsContractTests(unittest.TestCase):
         self.assertNotIn('includes("terminé")', page)
         self.assertNotIn('includes("fermé")', page)
         self.assertNotIn('includes("annulé")', page)
+
+    def test_projects_table_scrolls_vertically_with_sticky_header(self) -> None:
+        css = (ROOT / "frontend" / "src" / "projects.css").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(".projects-table-scroll", css)
+        self.assertIn("max-height: min(62vh, 720px)", css)
+        self.assertIn("overflow-y: auto", css)
+        self.assertIn("position: sticky", css)
 
     def test_manual_sync_is_only_rendered_when_backend_reports_configured(self) -> None:
         page = (ROOT / "frontend" / "src" / "ProjectsPage.tsx").read_text(
