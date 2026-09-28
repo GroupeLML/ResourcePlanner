@@ -190,6 +190,23 @@ class OidcClientTests(unittest.TestCase):
         self.assertEqual(identity.subject, "subject-123")
         self.assertEqual(identity.display_name, "Utilisateur OIDC")
         self.assertEqual(identity.email, "person" + chr(64) + "example.invalid")
+        self.assertIsNone(identity.preferred_username)
+        self.assertIsNone(identity.diagnostic_claims)
+
+    def test_preferred_username_is_available_when_claim_diagnostics_are_disabled(self) -> None:
+        client = self._client(
+            nonce="nonce-123",
+            extra_claims={"preferred_username": "  ERPUSER42  "},
+        )
+        identity = asyncio.run(
+            client.exchange_code(
+                code="code-123",
+                code_verifier="verifier-123",
+                nonce="nonce-123",
+            )
+        )
+
+        self.assertEqual(identity.preferred_username, "ERPUSER42")
         self.assertIsNone(identity.diagnostic_claims)
 
     def test_claim_diagnostics_exposes_filtered_validated_claims_when_enabled(self) -> None:

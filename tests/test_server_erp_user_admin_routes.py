@@ -85,13 +85,14 @@ class ServerErpUserAdminTests(unittest.TestCase):
         self.assertTrue(row["source_admissible"])
         self.assertFalse(row["local_active"])
         self.assertEqual(row["roles"], [])
-        self.assertEqual(row["oidc_state"], "unresolved")
+        self.assertEqual(row["oidc_state"], "pending")
         self.assertFalse(row["access_ready"])
 
         self.assertEqual(updated.status_code, 200, updated.text)
         self.assertTrue(updated.json()["local_active"])
         self.assertEqual(updated.json()["roles"], [ROLE_TECHNICIAN])
-        self.assertFalse(updated.json()["access_ready"])
+        self.assertEqual(updated.json()["oidc_state"], "pending")
+        self.assertTrue(updated.json()["access_ready"])
 
         factory = app.state.session_factory
         with factory() as session:

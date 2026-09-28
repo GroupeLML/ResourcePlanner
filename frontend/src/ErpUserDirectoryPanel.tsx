@@ -10,6 +10,12 @@ import {
 import { UserRoleDefinition } from "./userAdminApi";
 
 
+function oidcLabel(state: string) {
+  if (state === "linked") return "Résolu";
+  if (state === "conflict") return "Conflit";
+  return "En attente";
+}
+
 function message(reason: unknown, fallback: string) {
   if (reason instanceof ApiError) {
     return `${reason.message}${reason.code ? ` (${reason.code})` : ""}`;
@@ -118,8 +124,8 @@ export default function ErpUserDirectoryPanel({
           <span className="eyebrow">Acumatica</span>
           <h3>Annuaire RP_Users</h3>
           <p>
-            UserID et EmployeID proviennent de l’ERP. L’activation et les rôles sont locaux;
-            aucun compte OIDC n’est créé tant que le lien autoritaire n’est pas confirmé.
+            UserID et EmployeID proviennent de l’ERP. Le login OIDC utilise
+            preferred_username → UserID; l’activation et les rôles restent locaux.
           </p>
         </div>
         <button className="quiet-button" type="button" onClick={synchronize} disabled={pending}>
@@ -143,6 +149,7 @@ export default function ErpUserDirectoryPanel({
                   <th>EmployeID / ressource</th>
                   <th>ERP User</th>
                   <th>ERP Employé</th>
+                  <th>OIDC</th>
                   <th>RP</th>
                 </tr>
               </thead>
@@ -161,6 +168,7 @@ export default function ErpUserDirectoryPanel({
                     </td>
                     <td>{user.erp_user_active ? "Actif" : "Inactif"}</td>
                     <td>{user.employee_status ?? "—"}</td>
+                    <td>{oidcLabel(user.oidc_state)}</td>
                     <td>{user.local_active ? "Activé" : "Désactivé"}</td>
                   </tr>
                 ))}
@@ -176,7 +184,7 @@ export default function ErpUserDirectoryPanel({
               <div><dt>UserID</dt><dd>{selected.user_id}</dd></div>
               <div><dt>EmployeID</dt><dd>{selected.employee_external_id}</dd></div>
               <div><dt>Ressource</dt><dd>{selected.resource_name ?? "Non résolue"}</dd></div>
-              <div><dt>OIDC</dt><dd>Non résolu (#223)</dd></div>
+              <div><dt>OIDC</dt><dd>{oidcLabel(selected.oidc_state)}</dd></div>
             </dl>
 
             <fieldset className="user-role-fieldset">
@@ -209,7 +217,8 @@ export default function ErpUserDirectoryPanel({
               <span>
                 <strong>Activation RessourcePlanner</strong>
                 <small>
-                  Cette activation ne crée pas un AppUser et ne contourne pas la résolution OIDC.
+                  Cette activation autorise le provisionnement contrôlé au premier login;
+                  aucun rôle n’est dérivé des claims OIDC ou de l’ERP.
                 </small>
               </span>
             </label>

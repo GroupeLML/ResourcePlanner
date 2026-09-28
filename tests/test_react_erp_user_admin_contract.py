@@ -21,7 +21,10 @@ class ReactErpUserAdminContractTests(unittest.TestCase):
         self.assertIn("ERP User", page)
         self.assertIn("ERP Employé", page)
         self.assertIn("Activation RessourcePlanner", page)
-        self.assertIn("Non résolu (#223)", page)
+        self.assertIn('state === "linked"', page)
+        self.assertIn('return "Résolu"', page)
+        self.assertIn('return "Conflit"', page)
+        self.assertIn('return "En attente"', page)
         self.assertIn("<ErpUserDirectoryPanel roleCatalog={roleCatalog}", user_page)
 
     def test_api_uses_erp_directory_without_app_user_creation_contract(self) -> None:
@@ -30,7 +33,7 @@ class ReactErpUserAdminContractTests(unittest.TestCase):
 
         self.assertIn('"/api/v1/admin/erp-users"', api)
         self.assertIn('"/api/v1/integrations/acumatica/users/sync"', api)
-        self.assertIn("aucun compte OIDC n’est créé", page)
+        self.assertIn("preferred_username → UserID", page)
         self.assertNotIn("issuer:", page)
         self.assertNotIn("subject:", page)
 

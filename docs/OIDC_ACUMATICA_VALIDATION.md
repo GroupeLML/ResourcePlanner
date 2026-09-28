@@ -1,6 +1,6 @@
 # Validation réelle OIDC Acumatica
 
-L'implémentation OIDC de RessourcePlanner est testée avec un fournisseur simulé. Ce document sert de checklist lorsque les paramètres de l'instance Acumatica réelle seront disponibles.
+L'implémentation OIDC de RessourcePlanner est testée avec un fournisseur simulé et le contrat d'identité a maintenant été observé sur un compte Acumatica réel. Le login complet reste à revalider après ce branchement applicatif, notamment sur un deuxième compte et sur HTTPS réel.
 
 ## Paramètres requis
 
@@ -16,7 +16,7 @@ Ne jamais inscrire de secret ou token réel dans ce document ou dans Git.
 ## Préparation RessourcePlanner
 
 1. exécuter `alembic upgrade head` afin d'inclure `0010_app_users_identity` et `0011_oidc_sessions`;
-2. provisionner un utilisateur de test actif dans `app_users` avec le couple exact `(issuer, subject)` et un rôle RessourcePlanner contrôlé;
+2. synchroniser `RP_Users`, puis activer explicitement l'utilisateur cible et lui attribuer au moins un rôle RessourcePlanner local;
 3. configurer `RESOURCEPLANNER_AUTH_MODE=oidc`;
 4. configurer les variables `RESOURCEPLANNER_OIDC_*` uniquement dans l'environnement d'exécution;
 5. utiliser HTTPS et conserver le cookie sécurisé en environnement partagé.
@@ -51,8 +51,23 @@ La valeur par défaut est `false`. Lorsque le flag est actif :
 - aucune projection n'est écrite dans les logs généraux et aucun token n'est persisté;
 - la projection liée à une session reconnue reste uniquement en mémoire du processus et est retirée au logout.
 
-Désactiver le flag immédiatement après le smoke.
+Le mapping normal `preferred_username → RP_Users.UserID` est indépendant de ce flag. La configuration normale reste `RESOURCEPLANNER_OIDC_CLAIM_DIAGNOSTICS=false`.
 
 ## Séparation des credentials
 
 L'OIDC interactif ne doit pas réutiliser `RESOURCEPLANNER_ACUMATICA_ACCESS_TOKEN`. Ce dernier appartient à la synchronisation ERP serveur-à-serveur et reste une frontière séparée.
+
+## Contrat d'identité confirmé par #223
+
+Le smoke réel a confirmé sur un compte et le PO a accepté le contrat suivant pour l'implémentation :
+
+- `(issuer, sub)` reste l'identité d'authentification persistée dans `AppUser`;
+- `preferred_username.strip()` est le pont exact vers `RP_Users.UserID`;
+- `RP_Users.EmployeID` devient `AppUser.employee_external_id`;
+- les rôles proviennent uniquement de `erp_user_directory.roles_json` et l'activation locale ADMIN demeure obligatoire;
+- `name`, `email` et les display names sont descriptifs uniquement et ne sont jamais des clés de jointure;
+- `sub == UserID` ne doit jamais être supposé et aucune convention comme `@Company` ne doit être inversée.
+
+Le client OIDC extrait `preferred_username` pour le fonctionnement normal même lorsque les diagnostics de claims sont désactivés. Le provisionnement contrôlé est distinct de l'ancien `RESOURCEPLANNER_OIDC_AUTO_PROVISION`; ce dernier ne peut pas contourner une correspondance `preferred_username` présente mais non autorisée.
+
+Validation réelle encore requise : deuxième compte OIDC, cookies HTTPS/Secure sur l'environnement cible, production et SQL Server. Aucun de ces points n'est déclaré validé par cette livraison.

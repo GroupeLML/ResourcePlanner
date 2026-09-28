@@ -16,6 +16,7 @@ from app.infrastructure.sql import (
     ErpUserDirectoryEntry,
     Resource,
     SqlErpUserDirectoryRepository,
+    SqlUserIdentityRepository,
     create_session_factory,
     create_sql_engine,
     transactional_session,
@@ -111,6 +112,40 @@ class ErpUserDirectoryTests(unittest.TestCase):
             self.assertEqual(record.employee_status, "Inactif")
             self.assertFalse(record.source_admissible)
             self.assertFalse(record.access_ready)
+            self.assertEqual(record.oidc_state, "pending")
+
+    def test_projection_marks_ready_pending_then_linked_without_new_persistence(self) -> None:
+        self._sync(StubUserSource([user("ERP-LINK", "EMP-LINK")]))
+        with transactional_session(self.factory) as session:
+            service = ErpUserDirectoryService(
+                SqlErpUserDirectoryRepository(session)
+            )
+            service.update_local_access(
+                "ERP-LINK",
+                active=True,
+                roles=(ROLE_COORDINATOR,),
+            )
+            pending = SqlErpUserDirectoryRepository(session).get_by_user_id(
+                "ERP-LINK"
+            )
+            assert pending is not None
+            self.assertEqual(pending.oidc_state, "pending")
+            self.assertTrue(pending.access_ready)
+
+            SqlUserIdentityRepository(session).upsert(
+                issuer="issuer",
+                subject="subject",
+                display_name="Utilisateur lié",
+                email=None,
+                roles=(ROLE_COORDINATOR,),
+                employee_external_id="EMP-LINK",
+            )
+            linked = SqlErpUserDirectoryRepository(session).get_by_user_id(
+                "ERP-LINK"
+            )
+            assert linked is not None
+            self.assertEqual(linked.oidc_state, "linked")
+            self.assertTrue(linked.access_ready)
 
     def test_partial_snapshot_does_not_disable_or_delete_missing_user(self) -> None:
         source = StubUserSource([user("ERP-A", "EMP-A"), user("ERP-B", "EMP-B")])

@@ -38,7 +38,8 @@ class ErpUserDirectoryRecord:
     resource_id: str | None
     resource_name: str | None
     resource_erp_active: bool | None
-    oidc_state: str = "unresolved"
+    oidc_state: str = "pending"
+    oidc_user_active: bool | None = None
 
     @property
     def source_admissible(self) -> bool:
@@ -46,8 +47,14 @@ class ErpUserDirectoryRecord:
 
     @property
     def access_ready(self) -> bool:
-        # #223 has not yet established the authoritative OIDC -> UserID mapping.
-        return False
+        return (
+            self.source_admissible
+            and self.local_active
+            and bool(self.roles)
+            and bool(str(self.employee_external_id or "").strip())
+            and self.oidc_state != "conflict"
+            and self.oidc_user_active is not False
+        )
 
 
 class ErpUserDirectoryRepositoryPort(Protocol):

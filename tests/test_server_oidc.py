@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -10,11 +11,13 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.application.identity_provisioning import AutoProvisioningPolicy
-from app.application.security import ROLE_TECHNICIAN
+from app.application.security import ROLE_ADMIN, ROLE_TECHNICIAN
 from app.infrastructure.acumatica.oidc import OidcIdentity, OidcProtocolError
 from app.infrastructure.sql import (
+    AppUser,
     AuthSession,
     Base,
+    ErpUserDirectoryEntry,
     SqlAuthSessionRepository,
     SqlUserIdentityRepository,
     create_session_factory,
@@ -132,6 +135,28 @@ class ServerOidcTests(unittest.TestCase):
             oidc_runtime=runtime,
         )
 
+    def _seed_erp_user(
+        self,
+        app,
+        *,
+        user_id: str = "ERPUSER42",
+        employee_external_id: str = "EMP-42",
+        local_active: bool = True,
+        roles: tuple[str, ...] = (ROLE_ADMIN,),
+    ) -> None:
+        with app.state.session_factory.begin() as session:
+            session.add(
+                ErpUserDirectoryEntry(
+                    user_id=user_id,
+                    employee_external_id=employee_external_id,
+                    display_name="Utilisateur ERP",
+                    erp_user_active=True,
+                    employee_status="Actif",
+                    local_active=local_active,
+                    roles_json=json.dumps(list(roles)),
+                )
+            )
+
     def _login_callback(self, client: TestClient) -> object:
         login = client.get("/api/v1/auth/login", follow_redirects=False)
         state = parse_qs(urlparse(login.headers["location"]).query)["state"][0]
@@ -194,6 +219,67 @@ class ServerOidcTests(unittest.TestCase):
         self.assertEqual(before.status_code, 401)
         self.assertEqual(before.json()["error"]["code"], "authentication_required")
         self.assertEqual(after.status_code, 401)
+
+    def test_controlled_erp_first_login_creates_app_user_and_session_with_diagnostics_disabled(self) -> None:
+        fake = FakeOidcClient(
+            OidcIdentity(
+                issuer=ISSUER,
+                subject="subject-erp-controlled",
+                display_name="Nom OIDC",
+                email=None,
+                preferred_username="  ERPUSER42  ",
+            )
+        )
+        app = self._app(fake, claim_diagnostics=False)
+        self._seed_erp_user(app)
+
+        with TestClient(app) as client:
+            callback = self._login_callback(client)
+            me = client.get("/api/v1/auth/me")
+
+        self.assertEqual(callback.status_code, 303, callback.text)
+        self.assertEqual(me.status_code, 200, me.text)
+        self.assertEqual(me.json()["subject"], "subject-erp-controlled")
+        self.assertEqual(me.json()["roles"], [ROLE_ADMIN])
+        self.assertEqual(me.json()["employee_external_id"], "EMP-42")
+
+        with app.state.session_factory() as session:
+            rows = session.scalars(
+                select(AppUser).where(
+                    AppUser.subject == "subject-erp-controlled"
+                )
+            ).all()
+            self.assertEqual(len(rows), 1)
+            self.assertIsNotNone(rows[0].business_contact_id)
+
+    def test_preferred_username_unknown_is_refused_even_when_legacy_auto_provision_is_enabled(self) -> None:
+        fake = FakeOidcClient(
+            OidcIdentity(
+                issuer=ISSUER,
+                subject="subject-not-in-directory",
+                display_name="Utilisateur inconnu",
+                email=None,
+                preferred_username="UNKNOWN-ERP-USER",
+            )
+        )
+        app = self._app(fake, auto_provision=True)
+
+        with TestClient(app) as client:
+            callback = self._login_callback(client)
+
+        self.assertEqual(callback.status_code, 403)
+        self.assertEqual(
+            callback.json()["error"]["code"],
+            "oidc_user_not_registered",
+        )
+        with app.state.session_factory() as session:
+            self.assertIsNone(
+                session.scalar(
+                    select(AppUser).where(
+                        AppUser.subject == "subject-not-in-directory"
+                    )
+                )
+            )
 
     def test_cross_site_cookie_mode_sets_none_and_secure(self) -> None:
         fake = FakeOidcClient(
