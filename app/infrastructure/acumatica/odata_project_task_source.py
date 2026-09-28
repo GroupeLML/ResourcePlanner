@@ -47,6 +47,7 @@ class ODataProjectTaskFeedError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class ODataProjectTaskRecord:
+    project_erp_id: int
     project_code: str
     task_id: int
     task_code: str
@@ -130,15 +131,25 @@ def parse_rp_project_tasks_feed(
     records: list[ODataProjectTaskRecord] = []
     for entry_index, entry in enumerate(feed.entries):
         values = entry.values()
+        project_erp_id_text = _required_text(
+            values,
+            "ProjetID",
+            entry_index=entry_index,
+        )
         project_code = _required_text(
             values,
-            "ProjectCD",
-            aliases=("ProjetCD",),
+            "ProjectID",
+            aliases=("ProjectCD", "ProjetCD"),
             entry_index=entry_index,
         )
         task_id_text = _required_text(values, "TaskID", entry_index=entry_index)
         records.append(
             ODataProjectTaskRecord(
+                project_erp_id=_parse_int32(
+                    project_erp_id_text,
+                    "ProjetID",
+                    entry_index=entry_index,
+                ),
                 project_code=project_code,
                 task_id=_parse_int32(
                     task_id_text,
@@ -274,8 +285,8 @@ class ODataProjectTaskSourceSettings:
     """Runtime-independent settings for the observed RP_ProjectTasks contract.
 
     The query shape is intentionally not wired into ServerSettings yet: the exact
-    ProjectCD/DEPMO filtering and ordering capabilities still require the #452 PO
-    smoke on the real Acumatica instance.
+    ProjetID/DEPMO filtering and ordering capabilities still require the remaining
+    #452 PO smoke on the real Acumatica instance.
     """
 
     base_url: str
@@ -310,8 +321,9 @@ class ODataProjectTaskSourceSettings:
 class ODataProjectTaskSource:
     """Read-only targeted RP_ProjectTasks source.
 
-    The server-side ProjectCD and DEPMO filters reduce volume, while both constraints
-    are reapplied after parsing before any TaskCatalogItem can reach persistence.
+    The server-side ProjetID and DEPMO filters reduce volume. The technical project
+    identity and DEPMO constraint are reapplied after parsing; the padded business
+    project code is checked separately before any TaskCatalogItem reaches persistence.
     Multiple DEPMO budget rows with the same TaskID are aggregated into one task.
     """
 
@@ -329,10 +341,6 @@ class ODataProjectTaskSource:
     def _url(self) -> str:
         base = self._settings.base_url.rstrip("/") + "/"
         return urljoin(base, self._settings.feed_path.lstrip("/"))
-
-    @staticmethod
-    def _odata_string(value: str) -> str:
-        return "'" + value.replace("'", "''") + "'"
 
     def _safe_context(
         self,
@@ -377,10 +385,24 @@ class ODataProjectTaskSource:
             reason or "-",
         )
 
-    def fetch_project_snapshot(self, project_number: str) -> TaskCatalogProjectSnapshot:
+    def fetch_project_snapshot(
+        self,
+        *,
+        project_external_id: str,
+        project_number: str,
+    ) -> TaskCatalogProjectSnapshot:
+        external_id = str(project_external_id or "").strip()
         project = str(project_number or "").strip()
+        if not external_id:
+            raise ValueError("project_external_id is required")
         if not project:
             raise ValueError("project_number is required")
+        try:
+            project_erp_id = int(external_id, 10)
+        except ValueError as exc:
+            raise ValueError("project_external_id must be an Edm.Int32 value") from exc
+        if not _INT32_MIN <= project_erp_id <= _INT32_MAX:
+            raise ValueError("project_external_id must be an Edm.Int32 value")
 
         headers = {
             "Accept": "application/atom+xml, application/xml;q=0.9",
@@ -406,9 +428,8 @@ class ODataProjectTaskSource:
                         headers=headers,
                         params={
                             "$filter": (
-                                "ProjectCD eq "
-                                + self._odata_string(project)
-                                + " and AccountGroup eq 'DEPMO'"
+                                f"ProjetID eq {project_erp_id} "
+                                "and AccountGroup eq 'DEPMO'"
                             ),
                             "$orderby": "TaskID asc",
                             "$top": str(self._settings.page_size),
@@ -485,7 +506,13 @@ class ODataProjectTaskSource:
         aggregated: dict[int, _AggregatedTask] = {}
         rejected_rows = 0
         for entry_index, row in enumerate(raw_rows):
-            if row.project_code != project or row.account_group.strip() != _WORKFORCE_ACCOUNT_GROUP:
+            if (
+                row.project_erp_id != project_erp_id
+                or row.account_group.strip() != _WORKFORCE_ACCOUNT_GROUP
+            ):
+                rejected_rows += 1
+                continue
+            if row.project_code != project:
                 rejected_rows += 1
                 continue
 

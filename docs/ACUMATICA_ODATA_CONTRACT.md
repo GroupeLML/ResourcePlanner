@@ -239,13 +239,17 @@ Le PO a observé environ **41 073 entrées** sans filtre. Le runtime ne doit don
 Décisions PO confirmées :
 
 ```text
-RP_ProjectTasks.TaskID = clé unique/stable de la tâche ERP
-trim(RP_ProjectTasks.ProjectCD) = RP_Projects.ProjectCode
-BudgetAmount = montant CAD
-BudgetActual = montant réalisé CAD
+RP_ProjectTasks.TaskID   = clé unique/stable de la tâche ERP
+RP_ProjectTasks.ProjetID = RP_Projects.ProjectId
+Project.erp_external_id  = RP_Projects.ProjectId
+Project.number           = trim(RP_Projects.ProjectCode)
+BudgetAmount             = montant CAD
+BudgetActual             = montant réalisé CAD
 ```
 
-`ProjectID_2` reste un numéro interne ERP du projet; la relation métier autoritaire retenue ici est `ProjectCD → ProjectCode`.
+Le smoke réel du 2026-09-28 a confirmé que `ProjetID = ProjectId`, que `ProjectID_2` porte actuellement la même valeur numérique et que `ProjectID` est le code métier paddé correspondant à `ProjectCode`. `ProjectID_2` reste non canonique tant qu'aucun besoin concret ne justifie de l'utiliser comme clé.
+
+La jointure technique ERP et le numéro métier affiché sont donc deux concepts distincts. `TaskCatalogItem.project_number` continue d'utiliser `Project.number`, jamais l'identifiant numérique ERP.
 
 `TaskCD` est le code métier utilisé par les standards workforce administrables (#454). Exemples initiaux : 117 → installateur électrique, 216 → programmeur, 217 → installateur automatisation. Les standards peuvent être surchargés ou exclus par projet et restent distincts des `ApprovalScope` #276.
 
@@ -269,7 +273,7 @@ tests/fixtures/acumatica/rp_project_tasks_atom.xml
 
 Documentation détaillée : [integrations/acumatica/RP_PROJECT_TASKS.md](integrations/acumatica/RP_PROJECT_TASKS.md).
 
-Restent à valider : filtre OData par `ProjectCD`, pagination/ordre stable sur `TaskID`, présence éventuelle d'un LastModified réel et cas où un TaskCD workforce contiendrait des montants non main-d'œuvre exigeant une règle `AccountGroup` supplémentaire.
+Restent à valider : filtre OData par `ProjetID`, filtre `AccountGroup=DEPMO`, pagination/ordre stable sur `TaskID`, présence éventuelle de `rel=next`, taille maximale de page et cas représentatifs 117/216/217. L'absence de `LastModifiedDateTime` métier demeure inchangée.
 
 ## Outillage contractuel local
 

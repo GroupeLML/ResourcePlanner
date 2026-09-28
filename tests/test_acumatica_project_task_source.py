@@ -16,7 +16,8 @@ from app.infrastructure.acumatica import (
 
 def _entry(
     *,
-    project: str,
+    project_erp_id: int,
+    project_number: str,
     task_id: int,
     task_code: str,
     label: str,
@@ -37,7 +38,9 @@ def _entry(
   <category term="PX.Data.RP_ProjectTasks" />
   <content type="application/xml">
     <m:properties>
-      {prop("ProjectCD", project)}
+      {prop("ProjetID", str(project_erp_id), "Edm.Int32")}
+      {prop("ProjectID", project_number)}
+      {prop("ProjectID_2", str(project_erp_id), "Edm.Int32")}
       {prop("TaskID", str(task_id), "Edm.Int32")}
       {prop("TaskCD", task_code)}
       {prop("TaskDescription", label)}
@@ -64,35 +67,36 @@ def _feed(*entries: str) -> bytes:
 
 
 class ODataProjectTaskSourceTests(unittest.TestCase):
-    def test_parser_keeps_decimal_exact_and_accepts_projectcd_alias(self) -> None:
+    def test_parser_separates_numeric_project_identity_from_padded_business_number(self) -> None:
         payload = _feed(
             _entry(
-                project=" P-0100 ",
+                project_erp_id=5469,
+                project_number="5118      ",
                 task_id=42,
                 task_code=" 216 ",
                 label="Programmation",
                 budget_amount="1234.5678901234",
                 budget_actual="-25.1250",
             )
-        ).replace(b"<d:ProjectCD>", b"<d:ProjetCD>").replace(
-            b"</d:ProjectCD>", b"</d:ProjetCD>"
         )
 
         rows = parse_rp_project_tasks_feed(payload)
 
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0].project_code, "P-0100")
+        self.assertEqual(rows[0].project_erp_id, 5469)
+        self.assertEqual(rows[0].project_code, "5118")
         self.assertEqual(rows[0].task_id, 42)
         self.assertEqual(rows[0].task_code, "216")
         self.assertEqual(rows[0].budget_amount_cad, Decimal("1234.5678901234"))
         self.assertEqual(rows[0].budget_actual_cad, Decimal("-25.1250"))
 
-    def test_targeted_source_paginates_aggregates_taskid_and_reapplies_depmo(self) -> None:
+    def test_targeted_source_uses_projetid_paginates_and_keeps_business_number(self) -> None:
         requests: list[httpx.Request] = []
         pages = {
             "0": _feed(
                 _entry(
-                    project="P-0100",
+                    project_erp_id=5469,
+                    project_number="5118      ",
                     task_id=101,
                     task_code="216",
                     label="Programmation",
@@ -101,7 +105,8 @@ class ODataProjectTaskSourceTests(unittest.TestCase):
                     cost_code="C1",
                 ),
                 _entry(
-                    project="P-0100",
+                    project_erp_id=5469,
+                    project_number="5118      ",
                     task_id=101,
                     task_code="216",
                     label="Programmation",
@@ -112,7 +117,8 @@ class ODataProjectTaskSourceTests(unittest.TestCase):
             ),
             "2": _feed(
                 _entry(
-                    project="P-0100",
+                    project_erp_id=5469,
+                    project_number="5118      ",
                     task_id=102,
                     task_code="999",
                     label="Matériel",
@@ -134,13 +140,17 @@ class ODataProjectTaskSourceTests(unittest.TestCase):
             transport=httpx.MockTransport(handler),
         )
 
-        snapshot = source.fetch_project_snapshot(" P-0100 ")
+        snapshot = source.fetch_project_snapshot(
+            project_external_id="5469",
+            project_number="5118",
+        )
 
-        self.assertEqual(snapshot.project_number, "P-0100")
+        self.assertEqual(snapshot.project_number, "5118")
         self.assertEqual(snapshot.source_rows, 3)
         self.assertEqual(snapshot.rejected_rows, 1)
         self.assertEqual(len(snapshot.items), 1)
         task = snapshot.items[0]
+        self.assertEqual(task.project_number, "5118")
         self.assertEqual(task.erp_task_id, "101")
         self.assertEqual(task.code, "216")
         self.assertEqual(task.account_group, "DEPMO")
@@ -154,31 +164,42 @@ class ODataProjectTaskSourceTests(unittest.TestCase):
         second = requests[1].url.params
         self.assertEqual(
             first["$filter"],
-            "ProjectCD eq 'P-0100' and AccountGroup eq 'DEPMO'",
+            "ProjetID eq 5469 and AccountGroup eq 'DEPMO'",
         )
+        self.assertNotIn("'5469'", first["$filter"])
         self.assertEqual(first["$orderby"], "TaskID asc")
         self.assertEqual(first["$top"], "2")
         self.assertEqual(first["$skip"], "0")
         self.assertEqual(second["$skip"], "2")
 
-    def test_adapter_rejects_other_project_and_non_depmo_even_if_server_returns_them(self) -> None:
+    def test_adapter_rejects_other_projetid_non_depmo_and_code_mismatch(self) -> None:
         payload = _feed(
             _entry(
-                project="P-OTHER",
+                project_erp_id=9999,
+                project_number="5118",
                 task_id=1,
                 task_code="216",
-                label="Autre projet",
+                label="Autre projet technique",
             ),
             _entry(
-                project="P-TARGET",
+                project_erp_id=5469,
+                project_number="5118",
                 task_id=2,
                 task_code="117",
                 label="Matériel",
                 account_group="MAT",
             ),
             _entry(
-                project="P-TARGET",
+                project_erp_id=5469,
+                project_number="9999",
                 task_id=3,
+                task_code="117",
+                label="Code projet incohérent",
+            ),
+            _entry(
+                project_erp_id=5469,
+                project_number="5118      ",
+                task_id=4,
                 task_code="117",
                 label="Main-d'oeuvre",
                 account_group=" DEPMO ",
@@ -195,24 +216,30 @@ class ODataProjectTaskSourceTests(unittest.TestCase):
             ),
         )
 
-        snapshot = source.fetch_project_snapshot("P-TARGET")
+        snapshot = source.fetch_project_snapshot(
+            project_external_id="5469",
+            project_number="5118",
+        )
 
-        self.assertEqual(snapshot.source_rows, 3)
-        self.assertEqual(snapshot.rejected_rows, 2)
-        self.assertEqual([item.erp_task_id for item in snapshot.items], ["3"])
+        self.assertEqual(snapshot.source_rows, 4)
+        self.assertEqual(snapshot.rejected_rows, 3)
+        self.assertEqual([item.erp_task_id for item in snapshot.items], ["4"])
+        self.assertEqual(snapshot.items[0].project_number, "5118")
         self.assertEqual(snapshot.items[0].account_group, "DEPMO")
 
     def test_zero_and_negative_budget_are_kept_with_diagnostic(self) -> None:
         payload = _feed(
             _entry(
-                project="P-1",
+                project_erp_id=1001,
+                project_number="P-1",
                 task_id=1,
                 task_code="117",
                 label="Installation",
                 budget_amount="0.0000000000",
             ),
             _entry(
-                project="P-1",
+                project_erp_id=1001,
+                project_number="P-1",
                 task_id=2,
                 task_code="216",
                 label="Programmation",
@@ -229,7 +256,10 @@ class ODataProjectTaskSourceTests(unittest.TestCase):
             ),
         )
 
-        items = source.fetch_project_snapshot("P-1").items
+        items = source.fetch_project_snapshot(
+            project_external_id="1001",
+            project_number="P-1",
+        ).items
 
         self.assertEqual(items[0].budget_amount_cad, Decimal("0.0000000000"))
         self.assertEqual(items[0].budget_diagnostic, "budget_amount_zero")
@@ -240,7 +270,8 @@ class ODataProjectTaskSourceTests(unittest.TestCase):
         marker = "sensitive-not-a-decimal"
         payload = _feed(
             _entry(
-                project="P-1",
+                project_erp_id=1001,
+                project_number="P-1",
                 task_id=1,
                 task_code="216",
                 label="Programmation",
@@ -258,7 +289,10 @@ class ODataProjectTaskSourceTests(unittest.TestCase):
         )
 
         with self.assertRaises(ApplicationOperationError) as raised:
-            source.fetch_project_snapshot("P-1")
+            source.fetch_project_snapshot(
+                project_external_id="1001",
+                project_number="P-1",
+            )
 
         self.assertEqual(
             raised.exception.code,
