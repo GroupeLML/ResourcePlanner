@@ -326,6 +326,23 @@ class OidcClientTests(unittest.TestCase):
         )
         self.assertNotIn("provider detail", str(error.diagnostic_context()))
 
+    def test_provider_error_is_omitted_when_not_a_safe_oauth_code(self) -> None:
+        client = self._client(
+            nonce="nonce-123",
+            token_status=400,
+            token_response_json={"error": "invalid_grant provider detail"},
+        )
+
+        error = self._exchange_error(client)
+
+        self.assertEqual(
+            error.diagnostic_context(),
+            {
+                "oidc_failure_stage": "token_endpoint",
+                "http_status": 400,
+            },
+        )
+
     def test_token_response_invalid_stage_for_malformed_json(self) -> None:
         client = self._client(
             nonce="nonce-123",
