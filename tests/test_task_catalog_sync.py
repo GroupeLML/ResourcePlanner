@@ -197,10 +197,15 @@ class TaskCatalogSyncTests(unittest.TestCase):
 class StubProjectTaskSource:
     def __init__(self, snapshot: TaskCatalogProjectSnapshot) -> None:
         self.snapshot = snapshot
-        self.calls: list[str] = []
+        self.calls: list[tuple[str, str]] = []
 
-    def fetch_project_snapshot(self, project_number: str) -> TaskCatalogProjectSnapshot:
-        self.calls.append(project_number)
+    def fetch_project_snapshot(
+        self,
+        *,
+        project_external_id: str,
+        project_number: str,
+    ) -> TaskCatalogProjectSnapshot:
+        self.calls.append((project_external_id, project_number))
         return self.snapshot
 
 
@@ -217,6 +222,7 @@ class TargetedTaskCatalogSyncTests(unittest.TestCase):
         self,
         snapshot: TaskCatalogProjectSnapshot,
         project_number: str = "P-1",
+        project_external_id: str = "1001",
     ):
         source = StubProjectTaskSource(snapshot)
         with self.factory.begin() as session:
@@ -225,7 +231,10 @@ class TargetedTaskCatalogSyncTests(unittest.TestCase):
                 source,
                 repository,
                 sync_metadata_repository=repository,
-            ).synchronize_project(project_number)
+            ).synchronize_project(
+                project_external_id=project_external_id,
+                project_number=project_number,
+            )
         return result, source
 
     def test_taskid_replay_is_idempotent_and_never_creates_duplicate_task(self) -> None:
@@ -245,9 +254,10 @@ class TargetedTaskCatalogSyncTests(unittest.TestCase):
             items=(item,),
         )
 
-        first, _ = self._sync_project(snapshot)
+        first, first_source = self._sync_project(snapshot)
         second, _ = self._sync_project(snapshot)
 
+        self.assertEqual(first_source.calls, [("1001", "P-1")])
         self.assertEqual((first.created, first.updated, first.unchanged), (1, 0, 0))
         self.assertEqual((second.created, second.updated, second.unchanged), (0, 0, 1))
         with self.factory() as session:
@@ -515,7 +525,10 @@ class TaskCatalogResourceClassIntegrationTests(unittest.TestCase):
                 repository,
                 sync_metadata_repository=repository,
                 workforce_policy=SqlTaskCatalogWorkforcePolicy(session),
-            ).synchronize_project("P-1")
+            ).synchronize_project(
+                project_external_id="1001",
+                project_number="P-1",
+            )
 
     def test_classified_task_persists_class_cost_and_budget_hours(self) -> None:
         self._seed_project()
