@@ -47,6 +47,7 @@ import {
   getAssetCatalog,
 } from "./assetApi";
 import ViewScopeSelector from "./ViewScopeSelector";
+import { ResourceClassConfigReadModel, getResourceClasses } from "./resourceClassesApi";
 
 type FormState = {
   project_number: string;
@@ -236,6 +237,7 @@ export default function DemandsPage({ initialDemandNumber = null }: DemandsPageP
   const [projects, setProjects] = useState<ProjectReadModel[]>([]);
   const [resources, setResources] = useState<ResourceReadModel[]>([]);
   const [competencies, setCompetencies] = useState<CompetencyReadModel[]>([]);
+  const [resourceClasses, setResourceClasses] = useState<ResourceClassConfigReadModel[]>([]);
   const [assetTypes, setAssetTypes] = useState<AssetTypeCatalogItem[]>([]);
   const [assets, setAssets] = useState<AssetCatalogItem[]>([]);
   const [contacts, setContacts] = useState<BusinessContactReadModel[]>([]);
@@ -294,17 +296,19 @@ export default function DemandsPage({ initialDemandNumber = null }: DemandsPageP
       getProjects(true, controller.signal, scope),
       getResources(true, controller.signal),
       getCompetencies("", false, controller.signal),
+      getResourceClasses(controller.signal),
       getAssetCatalog(controller.signal),
       getBusinessContacts(false, controller.signal),
       canManageDemands
         ? getDemandRequesters(controller.signal)
         : Promise.resolve([] as DemandRequesterReadModel[]),
     ])
-      .then(([demandRows, projectRows, resourceRows, competencyRows, assetCatalog, contactRows, requesterRows]) => {
+      .then(([demandRows, projectRows, resourceRows, competencyRows, classRows, assetCatalog, contactRows, requesterRows]) => {
         setDemands(demandRows);
         setProjects(projectRows);
         setResources(resourceRows);
         setCompetencies(competencyRows);
+        setResourceClasses(classRows);
         setAssetTypes(assetCatalog.types);
         setAssets(assetCatalog.assets);
         setContacts(contactRows);
@@ -934,6 +938,7 @@ export default function DemandsPage({ initialDemandNumber = null }: DemandsPageP
                   generationCount={generationCount}
                   onGenerationCountChange={setGenerationCount}
                   competencies={competencies}
+                  resourceClasses={resourceClasses}
                   resources={resources}
                   workPackages={workPackages}
                   tasks={tasks}
