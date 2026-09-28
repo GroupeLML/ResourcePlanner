@@ -53,6 +53,11 @@ class FrontendConfigurationContractTests(unittest.TestCase):
         main = MAIN.read_text(encoding="utf-8")
         self.assertIn('import "./configuration.css"', main)
 
+    def test_project_sync_is_not_duplicated_in_configuration(self) -> None:
+        page = PAGE.read_text(encoding="utf-8")
+        self.assertNotIn("AcumaticaProjectSyncPanel", page)
+        self.assertNotIn("Synchroniser les projets", page)
+
 
 if __name__ == "__main__":
     unittest.main()
