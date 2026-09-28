@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
+from fastapi import FastAPI
+
+from app.infrastructure.acumatica import ODataProjectTaskSource
 from app.server.runtime import (
     ACUMATICA_ACCESS_TOKEN_ENV,
     ACUMATICA_BASE_URL_ENV,
@@ -20,6 +24,7 @@ from app.server.runtime import (
     DATABASE_URL_ENV,
     ServerConfigurationError,
     ServerSettings,
+    create_configured_app,
 )
 
 
@@ -61,6 +66,35 @@ class ServerAcumaticaRuntimeTests(unittest.TestCase):
             },
         )
         diagnostic = repr(settings) + repr(settings.acumatica) + str(settings.acumatica.safe_summary())
+        self.assertNotIn("odata-user", diagnostic)
+        self.assertNotIn("dummy-passphrase", diagnostic)
+
+    def test_configured_runtime_composes_targeted_project_task_source(self) -> None:
+        settings = ServerSettings.from_environment(
+            {
+                DATABASE_URL_ENV: "sqlite+pysqlite:///:memory:",
+                ACUMATICA_BASE_URL_ENV: "https://erp.example.test/Instance",
+                ACUMATICA_USERNAME_ENV: "odata-user",
+                ACUMATICA_PASSWORD_ENV: "dummy-passphrase",
+                ACUMATICA_PAGE_SIZE_ENV: "37",
+                ACUMATICA_TIMEOUT_SECONDS_ENV: "14.5",
+            }
+        )
+
+        with patch("app.server.runtime.create_api_app") as create_api_app_mock:
+            create_api_app_mock.return_value = FastAPI()
+            create_configured_app(settings)
+
+        source = create_api_app_mock.call_args.kwargs["project_task_source"]
+        self.assertIsInstance(source, ODataProjectTaskSource)
+        task_settings = source._settings
+        self.assertEqual(task_settings.base_url, "https://erp.example.test/Instance")
+        self.assertEqual(task_settings.username, "odata-user")
+        self.assertEqual(task_settings.credential, "dummy-passphrase")
+        self.assertEqual(task_settings.page_size, 37)
+        self.assertEqual(task_settings.timeout_seconds, 14.5)
+        self.assertTrue(task_settings.safe_summary()["runtime_wired"])
+        diagnostic = repr(source) + repr(task_settings) + str(task_settings.safe_summary())
         self.assertNotIn("odata-user", diagnostic)
         self.assertNotIn("dummy-passphrase", diagnostic)
 
