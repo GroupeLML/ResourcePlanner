@@ -282,12 +282,7 @@ class _AggregatedTask:
 
 @dataclass(frozen=True, slots=True)
 class ODataProjectTaskSourceSettings:
-    """Runtime-independent settings for the observed RP_ProjectTasks contract.
-
-    The query shape is intentionally not wired into ServerSettings yet: the exact
-    ProjetID/DEPMO filtering and ordering capabilities still require the remaining
-    #452 PO smoke on the real Acumatica instance.
-    """
+    """Settings for the validated RP_ProjectTasks targeted synchronization contract."""
 
     base_url: str
     feed_path: str = "/oDATA/RP_ProjectTasks"
@@ -314,7 +309,7 @@ class ODataProjectTaskSourceSettings:
                 "orderby": "TaskID asc",
                 "page_size": self.page_size,
             },
-            "runtime_wired": False,
+            "runtime_wired": True,
         }
 
 
