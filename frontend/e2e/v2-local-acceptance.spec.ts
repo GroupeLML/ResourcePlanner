@@ -1116,12 +1116,12 @@ test("multi-line demand editor generates independent RequestLines and materializ
 
   const line1 = cards.nth(0);
   const line2 = cards.nth(1);
-  await labelled(line1, "Classe de ressource", "select").selectOption("Programmation");
+  await labelled(line1, "Classe de ressource", "select").selectOption("PROGRAMMEUR");
   await line1.locator('select[aria-label="Compétences requises — ligne 1"]').selectOption(["C-SCADA"]);
   await labelled(line1, "Ressource proposée", "select").selectOption("R-ALICE");
   await labelled(line1, "Description spécifique", "textarea").fill("SCADA en début de fenêtre");
 
-  await labelled(line2, "Classe de ressource", "select").selectOption("Programmation");
+  await labelled(line2, "Classe de ressource", "select").selectOption("PROGRAMMEUR");
   await line2.locator('select[aria-label="Compétences requises — ligne 2"]').selectOption(["C-PLC"]);
   await labelled(line2, "Début", "input").fill(d2);
   await labelled(line2, "Fin", "input").fill(d2);
@@ -1155,8 +1155,8 @@ test("multi-line demand editor generates independent RequestLines and materializ
   expect(detail.line_mode).toBeTruthy();
   expect(activeLines).toHaveLength(2);
   expect(activeLines.map((line) => line.required_resource_class)).toEqual([
-    "Programmation",
-    "Programmation",
+    "PROGRAMMEUR",
+    "PROGRAMMEUR",
   ]);
   expect(activeLines.map((line) => line.required_competency_ids)).toEqual([
     ["C-SCADA"],
@@ -1285,7 +1285,7 @@ test("mixed asset demand uses authoritative reservations, conflicts, refresh and
   await expect(workforceLine.getByLabel("Type de besoin — ligne 2")).toHaveValue("WORKFORCE");
   await labelled(workforceLine, "Début", "input").fill(d1);
   await labelled(workforceLine, "Fin", "input").fill(d2);
-  await labelled(workforceLine, "Classe de ressource", "select").selectOption("Programmation");
+  await labelled(workforceLine, "Classe de ressource", "select").selectOption("PROGRAMMEUR");
   await labelled(workforceLine, "Ressource proposée", "select").selectOption("R-ALICE");
   await labelled(workforceLine, "Heures", "input").fill("8");
   await labelled(workforceLine, "Description spécifique", "textarea").fill("Support humain associé à la nacelle");
