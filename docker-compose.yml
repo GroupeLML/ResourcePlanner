@@ -47,6 +47,7 @@ services:
     restart: "no"
 
   seed-dev:
+    profiles: ["demo"]
     build:
       context: .
       dockerfile: Dockerfile.backend
@@ -67,7 +68,7 @@ services:
       dockerfile: Dockerfile.backend
     image: ${RESOURCEPLANNER_BACKEND_IMAGE:-resourceplanner-backend}:${RESOURCEPLANNER_IMAGE_TAG:-local}
     depends_on:
-      seed-dev:
+      migrate:
         condition: service_completed_successfully
     environment:
       RESOURCEPLANNER_DATABASE_URL: "${RESOURCEPLANNER_DATABASE_URL:-sqlite+pysqlite:////data/resourceplanner.db}"
@@ -76,8 +77,8 @@ services:
       RESOURCEPLANNER_LOG_LEVEL: "${RESOURCEPLANNER_LOG_LEVEL:-info}"
       RESOURCEPLANNER_AUTH_MODE: "${RESOURCEPLANNER_AUTH_MODE:-local}"
       RESOURCEPLANNER_ALLOW_LOCAL_AUTH_NETWORK: "${RESOURCEPLANNER_ALLOW_LOCAL_AUTH_NETWORK:-true}"
-      RESOURCEPLANNER_DEV_USER_SWITCHER: "${RESOURCEPLANNER_DEV_USER_SWITCHER:-true}"
-      RESOURCEPLANNER_LOCAL_AUTH_NAME: "${RESOURCEPLANNER_LOCAL_AUTH_NAME:-Administrateur Docker local}"
+      RESOURCEPLANNER_DEV_USER_SWITCHER: "${RESOURCEPLANNER_DEV_USER_SWITCHER:-false}"
+      RESOURCEPLANNER_LOCAL_AUTH_NAME: "${RESOURCEPLANNER_LOCAL_AUTH_NAME:-Administrateur local}"
       RESOURCEPLANNER_LOCAL_AUTH_ROLES: "${RESOURCEPLANNER_LOCAL_AUTH_ROLES:-ADMIN}"
       RESOURCEPLANNER_OIDC_DISCOVERY_URL: "${RESOURCEPLANNER_OIDC_DISCOVERY_URL:-}"
       RESOURCEPLANNER_OIDC_CLIENT_ID: "${RESOURCEPLANNER_OIDC_CLIENT_ID:-}"
