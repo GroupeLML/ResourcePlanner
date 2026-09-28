@@ -42,10 +42,10 @@ tests/fixtures/acumatica/rp_project_tasks_atom.xml
 
 | Champ OData | Type observé | Sémantique / usage |
 | --- | --- | --- |
-| `ProjetCD` | string paddée | numéro/code projet descriptif |
+| `ProjetCD` | string paddée | code projet descriptif observé; non autoritaire pour la jointure |
 | `TaskCD` | string paddée | code tâche métier |
 | `AccountGroup` | string paddée | groupe de compte du budget |
-| `ProjetID` | `Edm.Int32` | identifiant projet candidat |
+| `ProjetID` | `Edm.Int32` | identifiant technique projet autoritaire pour le ciblage/jointure |
 | `TaskID` | `Edm.Int32` | identifiant tâche candidat |
 | `TaskDescription` | string | libellé tâche |
 | `Status` | string | état tâche; `Actif` observé |
@@ -56,8 +56,8 @@ tests/fixtures/acumatica/rp_project_tasks_atom.xml
 | `BudgetAmount` | `Edm.Decimal` | montant budgétaire de la ligne |
 | `BudgetActual` | `Edm.Decimal` | réalisé budgétaire de la ligne |
 | `BaseType` | string | type de base ERP |
-| `ProjectID` | string paddée | code/identité projet ERP descriptive |
-| `ProjectID_2` | `Edm.Int32` | identifiant projet candidat; correspond aux valeurs projet numériques observées |
+| `ProjectID` | string paddée | numéro métier descriptif correspondant à `RP_Projects.ProjectCode` |
+| `ProjectID_2` | `Edm.Int32` | valeur numérique observée égale à `ProjectId`; utile au diagnostic mais non canonique |
 | `ProjectTaskID` | `Edm.Int32` | identifiant technique candidat de tâche projet |
 | `CostCode` | string | code coût |
 | `InventoryID` | string paddée | article/inventaire ou `<N/A>` |
@@ -71,11 +71,21 @@ Les montants doivent rester des `Decimal`; ne pas les convertir en `float`.
 Décisions PO confirmées :
 
 ```text
-RP_ProjectTasks.TaskID = clé unique/stable de la tâche ERP
-trim(RP_ProjectTasks.ProjectCD) = RP_Projects.ProjectCode
+RP_ProjectTasks.TaskID   = clé unique/stable de la tâche ERP
+RP_ProjectTasks.ProjetID = RP_Projects.ProjectId
 ```
 
-`ProjectID_2` est le numéro interne ERP du projet, mais RessourcePlanner utilise `ProjectCD → ProjectCode` comme relation métier autoritaire pour ce contrat.
+Le smoke réel du 2026-09-28 a confirmé sur un même projet que `ProjetID` et `ProjectID_2` portent la valeur numérique de `RP_Projects.ProjectId`, tandis que `ProjectID` porte le numéro métier paddé correspondant à `RP_Projects.ProjectCode`.
+
+Côté modèle local, les concepts restent séparés :
+
+```text
+Project.erp_external_id = RP_Projects.ProjectId
+Project.number          = trim(RP_Projects.ProjectCode)
+TaskCatalogItem.project_number = Project.number
+```
+
+`ProjectID_2` n'est pas promu en clé canonique. Les champs texte `ProjectID`/`ProjectCD` restent utiles pour la cohérence et le diagnostic, mais ne portent plus la relation technique autoritaire.
 
 L'identifiant Atom expose plusieurs colonnes techniques de la vue OData, mais ces colonnes ne remplacent pas `TaskID` comme identité fonctionnelle de la tâche.
 
@@ -193,7 +203,7 @@ nouveau last_synced_at projet
 
 Pour un refresh projet, préférer un snapshot de **toutes les tâches du projet**, et non uniquement `Status eq 'Actif'`, afin que les passages Actif → Inactif puissent être observés explicitement sans interpréter une absence d'un résultat partiel.
 
-La relation métier autoritaire est `trim(ProjectCD) → RP_Projects.ProjectCode`. Le filtre serveur candidat est donc `ProjectCD eq '<code projet>'`; sa syntaxe exacte doit être validée contre l'instance avant de brancher ce chemin dans le runtime HTTP.
+La relation technique autoritaire est `RP_ProjectTasks.ProjetID → RP_Projects.ProjectId`. Le filtre serveur candidat est donc numérique, par exemple `ProjetID eq 5469`, sans guillemets. Le numéro métier `Project.number` reste utilisé pour la projection locale du catalogue et l'affichage.
 
 ### Cache
 
@@ -265,9 +275,9 @@ Ne pas faire passer les lignes budgétaires brutes directement dans le service a
 
 La tranche réutilise maintenant directement le référentiel #454 fusionné; aucun second modèle `TaskCD → classe` n'est introduit.
 
-- parser Atom/XML `RP_ProjectTasks` avec `TaskID`, `TaskCD`, `ProjectCD`/`ProjetCD`, `AccountGroup`, `BudgetAmount` et `BudgetActual`;
-- source OData ciblée par projet avec pagination `$top/$skip` et ordre candidat `TaskID asc`;
-- filtre serveur candidat `ProjectCD + DEPMO`, puis garde-fou applicatif qui rejette toute ligne hors projet ou hors `DEPMO`;
+- parser Atom/XML `RP_ProjectTasks` avec `ProjetID` (Int32), `ProjectID` descriptif, `TaskID`, `TaskCD`, `AccountGroup`, `BudgetAmount` et `BudgetActual`;
+- source OData ciblée par `Project.erp_external_id` avec pagination `$top/$skip` et ordre candidat `TaskID asc`, tout en recevant séparément `Project.number`;
+- filtre serveur candidat `ProjetID + DEPMO`, puis garde-fou applicatif autoritaire sur `ProjetID` et `DEPMO`; le code projet texte reste une vérification secondaire;
 - agrégation des lignes budgétaires `DEPMO` par `TaskID`;
 - adoption additive du `TaskID` sur une ligne historique #271 ayant le même `(project_number, TaskCD)`, sans changer son identifiant SQL local;
 - résolution de classe via les standards et overrides de #454;
@@ -284,7 +294,7 @@ Le branchement HTTP réel dans `ServerSettings` / les routes FastAPI reste volon
 
 Sur un projet test connu contenant plusieurs lignes `DEPMO`, valider successivement :
 
-1. `/oDATA/RP_ProjectTasks?$filter=ProjectCD eq '<PROJECT_CODE>'` ne retourne que le projet ciblé;
+1. `/oDATA/RP_ProjectTasks?$filter=ProjetID eq <PROJECT_ID>` ne retourne que le projet ciblé;
 2. ajouter `and AccountGroup eq 'DEPMO'` et confirmer que les lignes retournées sont strictement `DEPMO`;
 3. ajouter `$orderby=TaskID asc&$top=2&$skip=0`, puis `$skip=2`, et vérifier qu'aucune ligne n'est perdue ou dupliquée entre pages;
 4. répéter avec une taille de page qui coupe plusieurs lignes partageant le même `TaskID`, afin de confirmer que `TaskID asc` suffit comme ordre stable ou d'identifier les champs secondaires nécessaires;
@@ -297,7 +307,7 @@ Ces smokes doivent conserver le même mécanisme d'authentification Basic déjà
 
 Avant implémentation complète :
 
-1. valider une requête OData ciblée sur **un seul projet** via `ProjectCD`;
+1. poursuivre la validation d'une requête OData ciblée sur **un seul projet** via `ProjetID`;
 2. valider le filtre serveur `AccountGroup eq 'DEPMO'`; même s'il est supporté, conserver le garde-fou applicatif `trim(AccountGroup) == "DEPMO"`;
 3. valider `$orderby=TaskID asc`, `$top/$skip` et la présence éventuelle de `rel=next`;
 4. déterminer si un champ LastModified fiable peut être ajouté à la vue OData;
