@@ -10,6 +10,7 @@ import {
 } from "./api";
 import CompetencyPicker from "./CompetencyPicker";
 import { AssetCatalogItem, AssetTypeCatalogItem } from "./assetApi";
+import { ResourceClassConfigReadModel } from "./resourceClassesApi";
 
 export type DemandLineDraft = {
   key: string;
@@ -180,6 +181,7 @@ export default function DemandLinesEditor({
   generationCount,
   onGenerationCountChange,
   competencies,
+  resourceClasses,
   resources,
   workPackages,
   tasks,
@@ -193,6 +195,7 @@ export default function DemandLinesEditor({
   generationCount: string;
   onGenerationCountChange: (value: string) => void;
   competencies: CompetencyReadModel[];
+  resourceClasses: ResourceClassConfigReadModel[];
   resources: ResourceReadModel[];
   workPackages: WorkPackageReadModel[];
   tasks: TaskCatalogItemReadModel[];
@@ -200,9 +203,11 @@ export default function DemandLinesEditor({
   assets: AssetCatalogItem[];
   disabled?: boolean;
 }) {
-  const resourceClasses = useMemo(
-    () => [...new Set(resources.map((row) => row.resource_class?.trim()).filter((value): value is string => Boolean(value)))].sort((a, b) => a.localeCompare(b, "fr-CA")),
-    [resources],
+  const activeResourceClasses = useMemo(
+    () => resourceClasses
+      .filter((row) => row.active)
+      .sort((left, right) => left.label.localeCompare(right.label, "fr-CA")),
+    [resourceClasses],
   );
   const totalHours = useMemo(
     () => lines.reduce((sum, line) => sum + lineProjectedHours(line), 0),
@@ -486,11 +491,11 @@ export default function DemandLinesEditor({
                     disabled={disabled}
                   >
                     <option value="">Aucune classe imposée</option>
-                    {line.required_resource_class && !resourceClasses.includes(line.required_resource_class) && (
-                      <option value={line.required_resource_class}>{line.required_resource_class} — historique</option>
+                    {line.required_resource_class && !activeResourceClasses.some((row) => row.code === line.required_resource_class) && (
+                      <option value={line.required_resource_class}>{line.required_resource_class} — historique/inactive</option>
                     )}
-                    {resourceClasses.map((resourceClass) => (
-                      <option value={resourceClass} key={resourceClass}>{resourceClass}</option>
+                    {activeResourceClasses.map((row) => (
+                      <option value={row.code} key={row.code}>{row.code} · {row.label}</option>
                     ))}
                   </select>
                 </label>
