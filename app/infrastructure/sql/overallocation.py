@@ -6,7 +6,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, true
 from sqlalchemy.orm import Session
 
 from ...application.errors import ApplicationValidationError
@@ -61,7 +61,7 @@ def _segment_metrics(session: Session, identifier: str) -> dict[str, float] | No
     locked = session.scalar(
         select(func.coalesce(func.sum(Shift.hours), 0)).where(
             Shift.resource_requirement_id == requirement.id,
-            Shift.locked.is_(True),
+            Shift.locked == true(),
         )
     )
     planned = float(requirement.planned_hours)
@@ -448,7 +448,7 @@ class SqlOverallocationAllocationCommandAdapter(SqlAllocationCommandAdapter):
                 self._overallocation_session.scalar(
                     select(func.coalesce(func.sum(Shift.hours), 0)).where(
                         Shift.resource_requirement_id == requirement.id,
-                        Shift.locked.is_(True),
+                        Shift.locked == true(),
                     )
                 )
                 or 0
@@ -456,7 +456,7 @@ class SqlOverallocationAllocationCommandAdapter(SqlAllocationCommandAdapter):
         )
         other_statement = select(func.coalesce(func.sum(Shift.hours), 0)).where(
             Shift.resource_requirement_id == requirement.id,
-            Shift.locked.is_(True),
+            Shift.locked == true(),
         )
         if exclude_shift_id:
             other_statement = other_statement.where(Shift.id != exclude_shift_id)
