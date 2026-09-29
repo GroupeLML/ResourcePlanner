@@ -78,6 +78,13 @@ class ReactDeliveryContractTests(unittest.TestCase):
         self.assertIn("const created = await runMutation(", page)
         self.assertIn("if (created) {", page)
 
+    def test_delivery_estimate_inputs_accept_normal_decimal_hours(self) -> None:
+        page = (FRONTEND / "DeliveryPage.tsx").read_text(encoding="utf-8")
+
+        self.assertEqual(page.count('min="0.1"'), 2)
+        self.assertEqual(page.count('step="0.1"'), 2)
+        self.assertNotIn('min="0.1"\n                step="0.5"', page)
+
     def test_delivery_ui_covers_epics_stories_assignment_estimates_and_remaining(self) -> None:
         page = (FRONTEND / "DeliveryPage.tsx").read_text(encoding="utf-8")
 

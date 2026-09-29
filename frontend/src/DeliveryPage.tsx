@@ -240,7 +240,7 @@ function StoryCard({
               <input
                 type="number"
                 min="0.1"
-                step="0.5"
+                step="0.1"
                 value={estimate}
                 disabled={disabled || pending}
                 onChange={(event) => setEstimate(event.target.value)}
@@ -882,7 +882,7 @@ export default function DeliveryPage() {
                           <input
                             type="number"
                             min="0.1"
-                            step="0.5"
+                            step="0.1"
                             value={itemEstimate}
                             disabled={pending}
                             onChange={(event) => setItemEstimate(event.target.value)}
