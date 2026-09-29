@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { useAuth } from "./AuthContext";
+import BreakGlassLogin from "./BreakGlassLogin";
 import CommunicationsPage from "./CommunicationsPage";
 import CoordinatorDashboardPage from "./CoordinatorDashboardPage";
 import ConfigurationPage from "./ConfigurationPage";
@@ -123,6 +124,7 @@ export default function App() {
           <div className="week-navigation">
             <button type="button" onClick={login}>Se connecter avec Acumatica</button>
           </div>
+          <BreakGlassLogin />
         </section>
       </main>
     );
@@ -208,7 +210,7 @@ export default function App() {
           >
             {displayInitials(principal.display_name)}
           </span>
-          {principal.auth_mode === "oidc" && (
+          {["oidc", "break_glass"].includes(principal.auth_mode) && (
             <button
               type="button"
               className="sidebar-logout-button"
