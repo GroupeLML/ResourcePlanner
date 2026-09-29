@@ -55,6 +55,7 @@ Voir :
 - `ADR-008-delivery-planning-boundary.md`
 - `ADR-009-persistent-cancellation-intent.md`
 - `ADR-010-line-approval-scopes-and-quorum.md`
+- `ADR-011-sql-server-authoritative-database.md`
 
 Chaîne métier actuelle :
 
@@ -173,8 +174,9 @@ Exemples qui ne nécessitent normalement pas d'ADR :
 | ADR-008 | séparer Delivery de Planning; WorkPackage comme jonction, capacité Planning read-only, progression/forecast et concurrence Delivery propres |
 | ADR-009 | persister l’intention d’annulation sur WorkforceRequest, décider selon la matérialisation réelle et séparer CAS de demande de CAS planning |
 | ADR-010 | routage par `ApprovalScope` et quorum ET entre lignes / OU entre approbateurs admissibles, sans matérialisation partielle |
+| ADR-011 | SQL Server comme base de référence intégration/staging/production; SQLite réservé au local/test lorsque sa sémantique suffit |
 
-Ces dix ADR sont en statut `Accepted`. ADR-006 reste le socle de concurrence globale. ADR-010 guide #276 pour la multi-approbation par ligne et ses référentiels. ADR-007 guide #291 pour les actifs réservables. ADR-008 guide #362 : `DeliveryPlan`/Epics/Stories restent distincts des `Shift`, les heures WorkPackage actuelles sont une référence de planification et non un budget approuvé, et Delivery consomme une projection read-only du plan actif/approuvé.
+Ces onze ADR sont en statut `Accepted`. ADR-006 reste le socle de concurrence globale. ADR-011 établit SQL Server comme base de référence d'exploitation et réserve SQLite aux usages local/test adaptés. ADR-010 guide #276 pour la multi-approbation par ligne et ses référentiels. ADR-007 guide #291 pour les actifs réservables. ADR-008 guide #362 : `DeliveryPlan`/Epics/Stories restent distincts des `Shift`, les heures WorkPackage actuelles sont une référence de planification et non un budget approuvé, et Delivery consomme une projection read-only du plan actif/approuvé.
 
 ---
 
