@@ -64,7 +64,7 @@ class DockerDeploymentContractTests(unittest.TestCase):
         self.assertIn('command: ["python", "-m", "alembic", "upgrade", "head"]', compose)
         self.assertIn("condition: service_completed_successfully", compose)
         self.assertIn("seed-dev:", compose)
-        self.assertIn('command: ["python", "tools/seed_demo_data.py"]', compose)
+        self.assertIn('command: ["python", "tools/seed_demo_data.py", "--confirm-dev-only"]', compose)
         self.assertIn("RESOURCEPLANNER_DEV_USER_SWITCHER", compose)
         self.assertIn("RESOURCEPLANNER_CONFIG_ENCRYPTION_KEY", compose)
         self.assertIn(
