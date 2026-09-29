@@ -14,6 +14,7 @@ from tools.check_server_runtime import (
     check_database_preflight,
 )
 from tools.check_sqlserver_readiness import (
+    check_mssql_cascade_paths,
     check_mssql_query_compilation,
     check_mssql_schema_compilation,
 )
@@ -24,9 +25,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class SqlServerReadinessTests(unittest.TestCase):
     def test_schema_and_critical_queries_compile_with_mssql_dialect(self) -> None:
+        cascades = check_mssql_cascade_paths()
         schema = check_mssql_schema_compilation()
         queries = check_mssql_query_compilation()
 
+        self.assertEqual(cascades.status, "ok")
+        self.assertIn("sans cycle ni chemin multiple", cascades.details)
         self.assertEqual(schema.status, "ok")
         self.assertEqual(queries.status, "ok")
         self.assertIn("requêtes compilées", queries.details)

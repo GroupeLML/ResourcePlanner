@@ -107,11 +107,13 @@ def upgrade() -> None:
         sa.Column("error_code", sa.String(length=128), nullable=True),
         sa.Column("error_detail", sa.String(length=255), nullable=True),
         sa.Column("last_actor", sa.String(length=255), nullable=True),
+        # The message already belongs to the batch with ON DELETE CASCADE.
+        # Keeping this denormalized batch FK non-cascading avoids a second
+        # batch -> delivery cascade path, which SQL Server rejects.
         sa.ForeignKeyConstraint(
             ["batch_id"],
             ["communication_batches.id"],
             name="fk_communication_deliveries_batch_id_communication_batches",
-            ondelete="CASCADE",
         ),
         sa.ForeignKeyConstraint(
             ["message_id"],

@@ -171,7 +171,9 @@ class CommunicationDeliveryRow(Base):
     id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True, default=new_id)
     batch_id: Mapped[str] = mapped_column(
         String(ID_LENGTH),
-        ForeignKey("communication_batches.id", ondelete="CASCADE"),
+        # message_id owns the delete cascade. Keeping this denormalized
+        # query key non-cascading avoids SQL Server multiple cascade paths.
+        ForeignKey("communication_batches.id"),
         nullable=False,
     )
     message_id: Mapped[str] = mapped_column(

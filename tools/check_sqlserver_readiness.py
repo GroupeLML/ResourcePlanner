@@ -15,7 +15,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import bindparam, insert, select, update
 from sqlalchemy.dialects import mssql
-from sqlalchemy import UniqueConstraint
+from sqlalchemy import ForeignKeyConstraint, UniqueConstraint
 from sqlalchemy.schema import CreateIndex, CreateTable
 from sqlalchemy.sql.sqltypes import Integer, String, Text
 
@@ -209,6 +209,55 @@ def _estimated_key_bytes(expressions, *, name: str) -> int:
     return total
 
 
+def check_mssql_cascade_paths() -> ReadinessCheck:
+    """Reject ON DELETE CASCADE graphs that SQL Server cannot create."""
+
+    graph: dict[str, list[str]] = {}
+    cascade_edges = 0
+    for table in Base.metadata.sorted_tables:
+        for constraint in table.constraints:
+            if not isinstance(constraint, ForeignKeyConstraint):
+                continue
+            if str(constraint.ondelete or "").upper() != "CASCADE":
+                continue
+            parent_tables = {
+                element.column.table.name
+                for element in constraint.elements
+            }
+            if len(parent_tables) != 1:
+                raise SqlServerReadinessError(
+                    f"FK cascade composite ambiguë sur {table.name}: {constraint.name or '<unnamed>'}"
+                )
+            parent = next(iter(parent_tables))
+            graph.setdefault(parent, []).append(table.name)
+            cascade_edges += 1
+
+    for source in graph:
+        path_counts: dict[str, int] = {}
+        stack: list[tuple[str, tuple[str, ...]]] = [(source, (source,))]
+        while stack:
+            node, path = stack.pop()
+            for target in graph.get(node, ()):
+                if target in path:
+                    cycle = " -> ".join((*path, target))
+                    raise SqlServerReadinessError(
+                        f"Cycle ON DELETE CASCADE incompatible SQL Server: {cycle}"
+                    )
+                path_counts[target] = path_counts.get(target, 0) + 1
+                if path_counts[target] > 1:
+                    raise SqlServerReadinessError(
+                        "Chemins ON DELETE CASCADE multiples incompatibles SQL Server: "
+                        f"{source} atteint {target} par plus d'un chemin."
+                    )
+                stack.append((target, (*path, target)))
+
+    return ReadinessCheck(
+        "mssql_cascade_paths",
+        "ok",
+        f"{cascade_edges} relations ON DELETE CASCADE sans cycle ni chemin multiple",
+    )
+
+
 def check_mssql_schema_compilation() -> ReadinessCheck:
     """Compile all tables/indexes and enforce conservative SQL Server invariants."""
 
@@ -370,6 +419,7 @@ def run_checks() -> list[ReadinessCheck]:
     return [
         check_sqlite_migrations(),
         check_mssql_offline_migrations(),
+        check_mssql_cascade_paths(),
         check_mssql_schema_compilation(),
         check_mssql_query_compilation(),
     ]
