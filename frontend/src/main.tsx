@@ -16,6 +16,7 @@ import "./demand-periods.css";
 import "./demand-workflow.css";
 import "./medium-term.css";
 import "./projects.css";
+import "./delivery.css";
 import "./resource-admin.css";
 import "./business-contacts.css";
 import "./segments.css";

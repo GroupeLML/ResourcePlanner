@@ -5,6 +5,7 @@ import CommunicationsPage from "./CommunicationsPage";
 import CoordinatorDashboardPage from "./CoordinatorDashboardPage";
 import ConfigurationPage from "./ConfigurationPage";
 import DevUserSwitcher from "./DevUserSwitcher";
+import DeliveryPage from "./DeliveryPage";
 import DemandsWorkspace from "./DemandsWorkspace";
 import MediumTermPage from "./MediumTermPage";
 import PlanningPage from "./PlanningPage";
@@ -14,7 +15,7 @@ import TechnicianSchedulePage from "./TechnicianSchedulePage";
 import UserAdminPage from "./UserAdminPage";
 import { useViewScope } from "./ViewScopeContext";
 
-type View = "my-schedule" | "coordinator-dashboard" | "planning" | "medium-term" | "demands" | "projects" | "resources" | "users" | "communications" | "configuration";
+type View = "my-schedule" | "coordinator-dashboard" | "planning" | "medium-term" | "demands" | "projects" | "delivery" | "resources" | "users" | "communications" | "configuration";
 
 type NavItem = { key: View; label: string; eyebrow: string; shortLabel: string; permission?: string; role?: string };
 
@@ -25,6 +26,7 @@ const navItems: NavItem[] = [
   { key: "medium-term", label: "Moyen terme", eyebrow: "Capacité", shortLabel: "MT" },
   { key: "demands", label: "Demandes", eyebrow: "Main-d’œuvre", shortLabel: "DE" },
   { key: "projects", label: "Projets", eyebrow: "Portefeuille", shortLabel: "PR" },
+  { key: "delivery", label: "Delivery", eyebrow: "WorkPackages", shortLabel: "DL" },
   { key: "communications", label: "Communications", eyebrow: "Révision", shortLabel: "CO", permission: "manage_communications" },
   { key: "resources", label: "Ressources", eyebrow: "Administration", shortLabel: "RE", permission: "manage_resources" },
   { key: "users", label: "Utilisateurs", eyebrow: "Sécurité", shortLabel: "UT", permission: "admin_users" },
@@ -273,6 +275,8 @@ export default function App() {
             )
           ) : view === "projects" ? (
             <ProjectsPage />
+          ) : view === "delivery" ? (
+            <DeliveryPage />
           ) : view === "communications" && can("manage_communications") ? (
             <CommunicationsPage />
           ) : view === "resources" && can("manage_resources") ? (
