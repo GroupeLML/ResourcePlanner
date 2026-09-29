@@ -14,6 +14,7 @@ from app.infrastructure.sql import (
     Base,
     CommandIdempotencyReceipt,
     Project,
+    RequestLine,
     TaskCatalogEntry,
     WorkforceRequest,
     WorkPackage,
@@ -107,10 +108,19 @@ class ServerWorkPackageCommandTests(unittest.TestCase):
                     status="planned",
                     legacy_effort_id="EFF-FREE",
                 ),
+                WorkPackage(
+                    id="WP-LINEONLY",
+                    project_id="P1",
+                    code="LINE",
+                    name="Référence ligne seulement",
+                    status="planned",
+                    legacy_effort_id="EFF-LINEONLY",
+                ),
             ]
         )
         session.flush()
-        session.add(
+        session.add_all(
+            [
             WorkforceRequest(
                 id="REQ-1",
                 legacy_demand_number="DMO-2026-0001",
@@ -118,6 +128,28 @@ class ServerWorkPackageCommandTests(unittest.TestCase):
                 work_package_id="WP-LINKED",
                 desired_start=date(2026, 9, 14),
                 status="Brouillon",
+            ),
+            WorkforceRequest(
+                id="REQ-LINEONLY",
+                legacy_demand_number="DMO-2026-0002",
+                project_id="P1",
+                work_package_id=None,
+                desired_start=date(2026, 9, 14),
+                status="Brouillon",
+                line_mode=True,
+            ),
+            ]
+        )
+        session.flush()
+        session.add(
+            RequestLine(
+                id="LINE-ONLY",
+                workforce_request_id="REQ-LINEONLY",
+                position=0,
+                kind="WORKFORCE",
+                slot_count=1,
+                work_package_id="WP-LINEONLY",
+                active=True,
             )
         )
 
@@ -183,8 +215,9 @@ class ServerWorkPackageCommandTests(unittest.TestCase):
             self.assertEqual(created[0]["task_catalog_item_id"], "TASK-P2-210")
             self.assertEqual(created[0]["task_code"], "210")
             self.assertEqual(created[0]["version"], 1)
-            self.assertEqual(self._count(database_url, WorkPackage), 3)
+            self.assertEqual(self._count(database_url, WorkPackage), 4)
             self.assertEqual(self._count(database_url, CommandIdempotencyReceipt), 1)
+            self.assertEqual(self._count(database_url, WorkPackageAudit), 1)
 
     def test_patch_updates_editable_fields_and_can_clear_optional_values(self) -> None:
         with TemporaryDirectory() as directory:
@@ -296,6 +329,65 @@ class ServerWorkPackageCommandTests(unittest.TestCase):
             self.assertEqual(
                 ineligible.json()["error"]["code"],
                 "work_package_task_ineligible",
+            )
+
+    def test_multiple_work_packages_can_share_the_same_task_and_unused_task_can_change(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url)
+            with TestClient(app, raise_server_exceptions=False) as client:
+                first = client.post(
+                    "/api/v1/work-packages",
+                    headers={"Idempotency-Key": "wp-shared-task-1"},
+                    json={
+                        "project_number": "P-1",
+                        "task_catalog_item_id": "TASK-P1-210",
+                        "name": "Lot A",
+                    },
+                )
+                second = client.post(
+                    "/api/v1/work-packages",
+                    headers={"Idempotency-Key": "wp-shared-task-2"},
+                    json={
+                        "project_number": "P-1",
+                        "task_catalog_item_id": "TASK-P1-210",
+                        "name": "Lot B",
+                    },
+                )
+                changed = client.patch(
+                    f"/api/v1/work-packages/{first.json().get('reference', '')}",
+                    json={
+                        "expected_version": 1,
+                        "task_catalog_item_id": "TASK-P1-211",
+                    },
+                )
+
+            self.assertEqual(first.status_code, 201, first.text)
+            self.assertEqual(second.status_code, 201, second.text)
+            self.assertEqual(changed.status_code, 200, changed.text)
+            self.assertEqual(changed.json()["version"], 2)
+
+    def test_request_line_dependency_blocks_project_change_even_without_parent_summary(self) -> None:
+        with TemporaryDirectory() as directory:
+            app = create_api_app(self._database(directory))
+            with TestClient(app, raise_server_exceptions=False) as client:
+                response = client.patch(
+                    "/api/v1/work-packages/EFF-LINEONLY",
+                    json={
+                        "expected_version": 1,
+                        "project_number": "P-2",
+                        "task_catalog_item_id": "TASK-P2-210",
+                    },
+                )
+
+            self.assertEqual(response.status_code, 409, response.text)
+            self.assertEqual(
+                response.json()["error"]["code"],
+                "work_package_project_change_in_use",
+            )
+            self.assertEqual(
+                response.json()["error"]["context"]["request_lines"],
+                1,
             )
 
     def test_historical_regularization_then_in_use_task_change_is_blocked(self) -> None:
