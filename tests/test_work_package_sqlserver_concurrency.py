@@ -16,6 +16,7 @@ from app.infrastructure.sql.models import (
     RequestLine,
     TaskCatalogEntry,
     WorkforceRequest,
+    WorkforceRequestHistory,
     WorkPackage,
     WorkPackageAudit,
 )
@@ -23,13 +24,13 @@ from app.infrastructure.sql.work_package_repository import SqlWorkPackageReposit
 from app.application.errors import ApplicationConflictError
 
 
-DATABASE_URL = str(os.getenv("RESOURCEPLANNER_DATABASE_URL") or "").strip()
+DATABASE_URL = str(os.getenv("RESOURCEPLANNER_SQLSERVER_TEST_URL") or "").strip()
 IS_MSSQL = DATABASE_URL.lower().startswith("mssql")
 
 
 @unittest.skipUnless(
     IS_MSSQL,
-    "Validation multi-session réservée à SQL Server réel via RESOURCEPLANNER_DATABASE_URL.",
+    "Validation multi-session réservée à une base SQL Server de test via RESOURCEPLANNER_SQLSERVER_TEST_URL.",
 )
 class WorkPackageSqlServerConcurrencyTests(unittest.TestCase):
     """ADR-011 proof for the 502A dependency-vs-task race.
@@ -172,6 +173,11 @@ class WorkPackageSqlServerConcurrencyTests(unittest.TestCase):
                     ).all()
                 )
                 if request_ids:
+                    session.execute(
+                        delete(WorkforceRequestHistory).where(
+                            WorkforceRequestHistory.workforce_request_id.in_(request_ids)
+                        )
+                    )
                     session.execute(
                         delete(RequestLine).where(
                             RequestLine.workforce_request_id.in_(request_ids)
