@@ -221,7 +221,11 @@ def build_sql_query_port(session: Session) -> PlannerQueryPort:
 def build_user_admin_service(session: Session) -> UserAdminService:
     """Compose local identity administration inside the request transaction."""
 
-    return UserAdminService(\n        SqlUserIdentityRepository(session),\n        erp_directory=SqlErpUserDirectoryRepository(session),\n        audit=SqlIdentityAdminAuditRepository(session),\n    )
+    return UserAdminService(
+        SqlUserIdentityRepository(session),
+        erp_directory=SqlErpUserDirectoryRepository(session),
+        audit=SqlIdentityAdminAuditRepository(session),
+    )
 
 
 def build_approval_scope_service(session: Session) -> ApprovalScopeService:
