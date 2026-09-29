@@ -127,7 +127,12 @@ class DeliveryProjectionTests(unittest.TestCase):
         }
 
         with self.factory.begin() as session:
+            # Keep the fixture ordering explicit because these SQL models deliberately
+            # avoid ORM relationships. SQLite foreign-key checks therefore need each
+            # parent layer persisted before its dependent layer is flushed.
             session.add(Project(id="P-1", number="P-1", name="Projet"))
+            session.flush()
+
             session.add_all(
                 [
                     WorkPackage(
@@ -144,8 +149,17 @@ class DeliveryProjectionTests(unittest.TestCase):
                         name="WorkPackage 200",
                         planned_hours=Decimal("20"),
                     ),
+                    Resource(id="R-1", name="Alice", active=True),
+                    AssetType(
+                        id="AT-1",
+                        code="LIFT",
+                        label="Nacelle",
+                        category="VEHICLE",
+                    ),
                 ]
             )
+            session.flush()
+
             session.add(
                 WorkforceRequest(
                     id="D-1",
@@ -156,6 +170,8 @@ class DeliveryProjectionTests(unittest.TestCase):
                     aggregate_version=4,
                 )
             )
+            session.flush()
+
             session.add_all(
                 [
                     RequestLine(
@@ -179,6 +195,8 @@ class DeliveryProjectionTests(unittest.TestCase):
                     ),
                 ]
             )
+            session.flush()
+
             session.add(
                 RequestApprovalRevision(
                     id="REV-1",
@@ -191,9 +209,6 @@ class DeliveryProjectionTests(unittest.TestCase):
                     authorization_fingerprint=envelope.authorization_fingerprint,
                 )
             )
-            # RequestApprovalReference points at the immutable revision. Flush the
-            # revision first because these models intentionally have no ORM relationship
-            # that would otherwise order the two pending inserts for the test fixture.
             session.flush()
             session.add(
                 RequestApprovalReference(
@@ -202,7 +217,16 @@ class DeliveryProjectionTests(unittest.TestCase):
                     status=APPROVAL_REFERENCE_CAPTURED,
                 )
             )
-            session.add(Resource(id="R-1", name="Alice", active=True))
+            session.flush()
+
+            session.add(
+                Asset(
+                    id="ASSET-1",
+                    code="LIFT-01",
+                    label="Nacelle 01",
+                    asset_type_id="AT-1",
+                )
+            )
             session.add(
                 ResourceRequirement(
                     id="REQ-1",
@@ -220,33 +244,6 @@ class DeliveryProjectionTests(unittest.TestCase):
                 )
             )
             session.add(
-                Shift(
-                    id="SHIFT-1",
-                    resource_requirement_id="REQ-1",
-                    resource_id="R-1",
-                    work_date=D1,
-                    hours=Decimal("6"),
-                    source="MANUAL",
-                    locked=True,
-                )
-            )
-            session.add(
-                AssetType(
-                    id="AT-1",
-                    code="LIFT",
-                    label="Nacelle",
-                    category="VEHICLE",
-                )
-            )
-            session.add(
-                Asset(
-                    id="ASSET-1",
-                    code="LIFT-01",
-                    label="Nacelle 01",
-                    asset_type_id="AT-1",
-                )
-            )
-            session.add(
                 AssetRequirement(
                     id="AREQ-1",
                     project_id="P-1",
@@ -261,6 +258,28 @@ class DeliveryProjectionTests(unittest.TestCase):
                 )
             )
             session.add(
+                DeliveryPlanRow(
+                    id="DP-1",
+                    work_package_id="WP-1",
+                    status="ACTIVE",
+                    delivery_version=4,
+                )
+            )
+            session.add(PlanningMutationState(id="GLOBAL", version=7))
+            session.flush()
+
+            session.add(
+                Shift(
+                    id="SHIFT-1",
+                    resource_requirement_id="REQ-1",
+                    resource_id="R-1",
+                    work_date=D1,
+                    hours=Decimal("6"),
+                    source="MANUAL",
+                    locked=True,
+                )
+            )
+            session.add(
                 AssetAllocation(
                     id="AALLOC-1",
                     asset_requirement_id="AREQ-1",
@@ -269,15 +288,6 @@ class DeliveryProjectionTests(unittest.TestCase):
                     end_date=D3,
                     locked=True,
                     source="MANUAL",
-                )
-            )
-            session.add(PlanningMutationState(id="GLOBAL", version=7))
-            session.add(
-                DeliveryPlanRow(
-                    id="DP-1",
-                    work_package_id="WP-1",
-                    status="ACTIVE",
-                    delivery_version=4,
                 )
             )
             session.add_all(
