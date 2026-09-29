@@ -28,7 +28,7 @@ class StubUserSource:
         )
 
 
-def principal(role: str) -> AuthPrincipal:
+def principal(role: str, *, auth_mode: str = "test") -> AuthPrincipal:
     return AuthPrincipal.from_roles(
         local_user_id="admin-test" if role == ROLE_ADMIN else "pm-test",
         issuer="urn:test",
@@ -36,7 +36,7 @@ def principal(role: str) -> AuthPrincipal:
         display_name="Test",
         email=None,
         roles=(role,),
-        auth_mode="test",
+        auth_mode=auth_mode,
     )
 
 
@@ -50,6 +50,32 @@ class ServerErpUserAdminTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+
+    def _sync_with_auth_mode(self, auth_mode: str):
+        app = create_api_app(
+            self.database_url,
+            auth_resolver=static_auth_resolver(
+                principal(ROLE_ADMIN, auth_mode=auth_mode)
+            ),
+            user_source=StubUserSource(),
+        )
+        Base.metadata.create_all(app.state.session_factory.kw["bind"])
+        with TestClient(app) as client:
+            response = client.post("/api/v1/integrations/acumatica/users/sync")
+        return response
+
+    def test_rp_users_sync_is_available_in_local_auth_mode(self) -> None:
+        response = self._sync_with_auth_mode("local")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["created"], 1)
+
+    def test_rp_users_sync_is_available_in_oidc_auth_mode(self) -> None:
+        response = self._sync_with_auth_mode("oidc")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["created"], 1)
 
     def test_admin_syncs_then_configures_local_access_without_app_user_provisioning(self) -> None:
         app = create_api_app(

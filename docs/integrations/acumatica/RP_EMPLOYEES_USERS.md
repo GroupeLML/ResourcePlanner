@@ -69,7 +69,7 @@ Les champs paddés avec `xml:space="preserve"` doivent être normalisés avec `s
 
 ## RP_Users
 
-### Feed / requête validée
+### Feed / synchronisation complète
 
 Chemin de base :
 
@@ -77,11 +77,15 @@ Chemin de base :
 /oDATA/RP_Users
 ```
 
-Requête validée par le PO pour le périmètre courant :
+Requête utilisée par la synchronisation complète 468B :
 
 ```text
-/oDATA/RP_Users?$filter=EmployeStatus eq 'Actif'&$orderby=UserID asc
+/oDATA/RP_Users?$orderby=UserID asc
 ```
+
+Le runtime ne filtre plus le feed sur `EmployeStatus`. Il importe l'annuaire retourné avec ses états source afin de conserver séparément `UserActif`, `EmployeStatus`, `local_active` et les rôles locaux. L'admissibilité reste calculée localement; une entrée ERP inactive n'est ni supprimée ni activée localement par la synchronisation.
+
+Cette évolution est couverte par fixtures/tests locaux. Elle ne constitue pas un nouveau smoke réel Acumatica.
 
 Format observé : OData Atom/XML.
 
@@ -166,6 +170,8 @@ Project.project_manager_contact_id
 ```
 
 Si aucun `AppUser` ou `BusinessContact` local correspondant n'existe, la synchronisation doit conserver l'identité ERP et les libellés descriptifs sans inventer une relation par nom ou courriel.
+
+468B maintient ce rattachement lors de la synchronisation des projets : lorsque `ProjectManagerId` est explicitement fourni, il est normalisé avec `strip()` puis résolu uniquement contre `AppUser.employee_external_id`. Le `business_contact_id` déjà porté par cet `AppUser` est copié vers `Project.project_manager_contact_id`; aucun `AppUser` ni `BusinessContact` n'est créé par cette synchronisation. Une relation explicitement non résolue laisse le contact à `null`; un import incomplet qui omet entièrement l'identité du chargé de projet conserve le rattachement local existant. Plusieurs `RP_Users` partageant le même `EmployeID` n'influencent pas cette résolution.
 
 ### Champs observés
 

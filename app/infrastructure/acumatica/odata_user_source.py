@@ -190,7 +190,6 @@ class ODataUserSource(ErpUserSourcePort):
                         self._url(),
                         headers=headers,
                         params={
-                            "$filter": "EmployeStatus eq 'Actif'",
                             "$orderby": "UserID asc",
                             "$top": str(self._settings.page_size),
                             "$skip": str(skip),
