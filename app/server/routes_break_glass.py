@@ -10,7 +10,7 @@ from ..application.break_glass import (
     BreakGlassAuthenticationService,
     BreakGlassRateLimited,
 )
-from ..infrastructure.secret_hashing import ScryptSecretHasher
+from ..infrastructure.sql.secret_hashing import ScryptSecretHasher
 from ..infrastructure.sql import SqlBreakGlassRepository
 from ..infrastructure.sql.base import utc_now
 from .break_glass import BreakGlassRuntime
