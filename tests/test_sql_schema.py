@@ -62,6 +62,7 @@ EXPECTED_TABLES = {
     "project_task_class_overrides",
     "resources",
     "work_packages",
+    "work_package_audit",
     "workforce_requests",
     "workforce_request_competencies",
     "workforce_request_history",
@@ -110,6 +111,8 @@ class SqlSchemaTests(unittest.TestCase):
         planning_history = Base.metadata.tables["planning_change_history"].c
         planning_state = Base.metadata.tables["planning_mutation_state"].c
         task_catalog = Base.metadata.tables["task_catalog_items"].c
+        work_packages = Base.metadata.tables["work_packages"].c
+        work_package_audit = Base.metadata.tables["work_package_audit"].c
         task_sync_state = Base.metadata.tables["task_catalog_project_sync_state"].c
         competencies = Base.metadata.tables["competencies"].c
         resource_competencies = Base.metadata.tables["resource_competencies"].c
@@ -132,6 +135,11 @@ class SqlSchemaTests(unittest.TestCase):
         project_task_overrides = Base.metadata.tables["project_task_class_overrides"].c
 
         self.assertFalse(operational_states.budget_overrides_text.nullable)
+        self.assertTrue(work_packages.task_catalog_item_id.nullable)
+        self.assertFalse(work_packages.version.nullable)
+        self.assertFalse(work_package_audit.work_package_id.nullable)
+        self.assertFalse(work_package_audit.actor_user_id.nullable)
+        self.assertFalse(work_package_audit.resulting_version.nullable)
         self.assertFalse(resource_classes.code.nullable)
         self.assertTrue(resource_classes.average_hourly_cost_cad.nullable)
         self.assertFalse(resource_classes.version.nullable)
