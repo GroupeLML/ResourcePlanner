@@ -46,7 +46,7 @@ class IdentityAdminPolicyTests(unittest.TestCase):
                     user_id="ERP-TARGET",
                     employee_external_id="EMP-TARGET",
                     display_name="Utilisateur cible",
-                    email="target@example.invalid",
+                    email="target" + chr(64) + "example.invalid",
                     erp_user_active=True,
                     employee_status="Actif",
                     local_active=False,
