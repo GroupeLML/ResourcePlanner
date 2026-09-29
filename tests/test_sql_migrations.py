@@ -24,6 +24,9 @@ EXPECTED_TABLES = {
     "resource_class_approval_scope_mappings",
     "task_approval_scope_mappings",
     "business_contacts",
+    "delivery_plans",
+    "delivery_items",
+    "delivery_change_history",
     "command_idempotency_receipts",
     "planning_mutation_state",
     "projects",
@@ -181,6 +184,10 @@ class SqlMigrationTests(unittest.TestCase):
             self.assertIn("REQUIRED_RESOURCE_CLASS", ddl, url)
             self.assertIn("CREATE TABLE BUSINESS_CONTACTS", ddl, url)
             self.assertIn("CREATE TABLE APPROVAL_SCOPES", ddl, url)
+            self.assertIn("CREATE TABLE DELIVERY_PLANS", ddl, url)
+            self.assertIn("CREATE TABLE DELIVERY_ITEMS", ddl, url)
+            self.assertIn("CREATE TABLE DELIVERY_CHANGE_HISTORY", ddl, url)
+            self.assertIn("DELIVERY_VERSION", ddl, url)
             self.assertIn("CREATE TABLE REQUEST_APPROVAL_CYCLES", ddl, url)
             self.assertIn("CREATE TABLE APPROVAL_REQUIREMENTS", ddl, url)
             self.assertIn("CREATE TABLE APPROVAL_REQUIREMENT_APPROVERS", ddl, url)
