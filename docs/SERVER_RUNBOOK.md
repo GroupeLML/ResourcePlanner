@@ -17,7 +17,7 @@ Deux modes d'identité sont disponibles :
 - `local` pour le développement/test explicite;
 - `oidc` pour l'Authorization Code Flow vers Acumatica avec PKCE S256 et session serveur.
 
-SQL Server est la base de référence pour les environnements intégrés/staging/production (ADR-011). SQLite reste un dialecte local/test. L'accès au serveur SQL réel est disponible depuis le 2026-09-29; la validation finale reste à exécuter dans #162. L'implémentation OIDC est couverte par un fournisseur simulé en tests; la validation contre l'instance Acumatica réelle reste dépendante de ses paramètres issuer/client/redirect.
+SQL Server est la base de référence pour les environnements intégrés/staging/production (ADR-011). SQLite reste un dialecte local/test. La validation réelle ENV-162 sur SQL Server 2017 a confirmé les migrations, le préflight FastAPI, le runtime Uvicorn, commit/rollback et le CAS global. Le packaging Docker embarque désormais le même chemin driver validé : `pyodbc==5.3.0` et Microsoft ODBC Driver 18. L'implémentation OIDC est couverte par un fournisseur simulé en tests; la validation contre l'instance Acumatica réelle reste dépendante de ses paramètres issuer/client/redirect.
 
 ## 1. Dépendances serveur
 
@@ -27,7 +27,7 @@ Le profil canonique est :
 python -m pip install -r requirements-server.txt -c constraints-release.txt
 ```
 
-`requirements-server.txt` reste indépendant de NiceGUI, xlwings et openpyxl.
+`requirements-server.txt` reste indépendant de NiceGUI, xlwings et openpyxl. Il inclut `pyodbc==5.3.0`, version validée sur la VM Ubuntu cible. L'image backend installe `msodbcsql18` depuis le dépôt Debian officiel Microsoft; la sous-version système exacte n'est pas figée dans Git afin de rester compatible avec la version Debian portée par `python:3.12-slim`.
 
 Pour une installation Web Windows reproductible, utiliser plutôt :
 
