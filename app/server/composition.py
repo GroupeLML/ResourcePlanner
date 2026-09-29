@@ -48,6 +48,8 @@ from ..infrastructure.sql import (
     SqlDemandApprovalEnvelopePolicyRepository,
     SqlDemandPeriodRepository,
     SqlEmergencyDemandRepository,
+    SqlErpUserDirectoryRepository,
+    SqlIdentityAdminAuditRepository,
     SqlOverallocationAllocationCommandAdapter,
     SqlPeriodAwareApprovedDemandSyncAdapter,
     SqlOperationalContactRepository,
