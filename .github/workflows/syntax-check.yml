@@ -218,6 +218,17 @@ jobs:
           docker compose -f deploy/synology/compose.yml config >/tmp/resourceplanner-synology-compose.yml
       - name: Build and start Docker runtime
         run: docker compose up -d --build
+      - name: Validate packaged SQL Server driver
+        run: |
+          docker compose exec -T backend python - <<'PY'
+          import pyodbc
+
+          assert pyodbc.version == "5.3.0", pyodbc.version
+          drivers = pyodbc.drivers()
+          assert "ODBC Driver 18 for SQL Server" in drivers, drivers
+          print("pyodbc:", pyodbc.version)
+          print("ODBC drivers:", drivers)
+          PY
       - name: Assert opt-in services stay out of normal startup
         run: |
           ! docker compose ps --all --services | grep -qx 'dev-cockpit'
