@@ -378,10 +378,15 @@ def _primary_key_tuple(table: Table, row: dict[str, Any]) -> tuple[Any, ...]:
 
 def _identity_columns(table: Table) -> set[str]:
     columns = {column.name for column in table.primary_key.columns}
+    for column in table.columns:
+        if column.name == "id" or column.name.endswith("_id") or column.name.endswith("_number"):
+            columns.add(column.name)
     for fk in table.foreign_key_constraints:
         columns.update(element.parent.name for element in fk.elements)
     explicit = {
         "number",
+        "code",
+        "task_code",
         "project_number",
         "legacy_demand_number",
         "legacy_effort_id",
