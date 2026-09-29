@@ -667,7 +667,7 @@ def create_api_app(
     if dev_user_switcher_runtime is not None:
         app.include_router(build_dev_user_switcher_router(dev_user_switcher_runtime))
     app.include_router(build_user_admin_router(user_admin_dependency))
-    app.include_router(build_erp_user_admin_router(session_dependency))
+    app.include_router(build_erp_user_admin_router(user_admin_dependency))
     app.include_router(build_admin_settings_router(smtp_settings_dependency))
     app.include_router(build_approval_scope_router(approval_scope_dependency))
     app.include_router(build_resource_class_router(session_dependency))

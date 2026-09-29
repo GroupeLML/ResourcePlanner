@@ -39,8 +39,8 @@ function blankDraft(): Draft {
 
 function draftFrom(user: UserAdminReadModel): Draft {
   return {
-    issuer: user.issuer,
-    subject: user.subject,
+    issuer: user.issuer ?? "",
+    subject: user.subject ?? "",
     display_name: user.display_name,
     email: user.email ?? "",
     phone: user.phone ?? "",
@@ -116,8 +116,8 @@ export default function UserAdminPage() {
       return [
         user.display_name,
         user.email ?? "",
-        user.issuer,
-        user.subject,
+        user.issuer ?? "",
+        user.subject ?? "",
         user.roles.join(" "),
       ].some((value) => value.toLocaleLowerCase("fr").includes(query));
     });
