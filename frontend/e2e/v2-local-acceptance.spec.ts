@@ -1494,7 +1494,9 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   await requirementCard.getByRole("button", { name: "Réserver cette unité" }).click();
   await expect(assetPanel.locator(".asset-planning-feedback")).toContainText("Réservation enregistrée");
 
-  requirementCard = assetPanel.locator(".asset-requirement-card").filter({ hasText: "Nacelle #63" }).first();
+  requirementCard = assetPanel.locator(".asset-requirement-card").filter({
+    has: coordinator.page.locator(".asset-current-allocation strong").filter({ hasText: "Nacelle #63" }),
+  }).first();
   await expect(requirementCard).toContainText("décision manuelle verrouillée");
   let operatorSelect = requirementCard.getByLabel(/Opérateur qualifiant/);
   await expect(operatorSelect.locator('option[value="R-ALICE"]')).toBeAttached();
@@ -1508,7 +1510,9 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   await secondRequirement.getByRole("button", { name: "Réserver cette unité" }).click();
   await expect(assetPanel.locator(".asset-planning-feedback")).toContainText("Réservation enregistrée");
 
-  const secondAllocated = assetPanel.locator(".asset-requirement-card").filter({ hasText: "Nacelle #64" }).first();
+  const secondAllocated = assetPanel.locator(".asset-requirement-card").filter({
+    has: coordinator.page.locator(".asset-current-allocation strong").filter({ hasText: "Nacelle #64" }),
+  }).first();
   operatorSelect = secondAllocated.getByLabel(/Opérateur qualifiant/);
   await expect(operatorSelect.locator('option[value="R-ALICE"]')).toBeAttached();
   await operatorSelect.selectOption("R-ALICE");
