@@ -1,20 +1,16 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
-from typing import Callable
+from typing import Any, Callable
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy.orm import Session
 
-from ..application.erp_user_directory import (
-    ErpUserDirectoryRecord,
-    ErpUserDirectoryService,
-)
-from ..infrastructure.sql import SqlErpUserDirectoryRepository
+from ..application.erp_user_directory import ErpUserDirectoryRecord
+from ..application.security import AuthPrincipal
+from ..application.user_admin import UserAdminService
 
 
-SessionProvider = Callable[[], Iterator[Session]]
+UserAdminProvider = Callable[..., Any]
 
 
 class StrictRequest(BaseModel):
@@ -42,33 +38,35 @@ def _payload(record: ErpUserDirectoryRecord) -> dict[str, object]:
         "resource_id": record.resource_id,
         "resource_name": record.resource_name,
         "resource_erp_active": record.resource_erp_active,
+        "app_user_id": record.app_user_id,
         "oidc_state": record.oidc_state,
         "access_ready": record.access_ready,
     }
 
 
-def build_erp_user_admin_router(session_dependency: SessionProvider) -> APIRouter:
+def build_erp_user_admin_router(user_admin_dependency: UserAdminProvider) -> APIRouter:
     router = APIRouter(prefix="/api/v1/admin/erp-users", tags=["user-admin"])
 
     @router.get("")
     def list_erp_users(
-        session: Session = Depends(session_dependency),
+        service: UserAdminService = Depends(user_admin_dependency),
     ) -> list[dict[str, object]]:
-        service = ErpUserDirectoryService(SqlErpUserDirectoryRepository(session))
-        return [_payload(record) for record in service.list_users()]
+        return [_payload(record) for record in service.list_erp_users()]
 
     @router.patch("/{user_id}")
     def update_erp_user_access(
         user_id: str,
         body: ErpUserAccessUpdate,
-        session: Session = Depends(session_dependency),
+        request: Request,
+        service: UserAdminService = Depends(user_admin_dependency),
     ) -> dict[str, object]:
-        service = ErpUserDirectoryService(SqlErpUserDirectoryRepository(session))
+        principal: AuthPrincipal = request.state.auth_principal
         return _payload(
-            service.update_local_access(
+            service.update_erp_user_access(
                 user_id,
                 active=body.active,
                 roles=tuple(body.roles),
+                actor_user_id=principal.local_user_id,
             )
         )
 
