@@ -4,7 +4,7 @@ from collections.abc import Mapping, Sequence
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import select, true
 from sqlalchemy.orm import Session
 
 from ...application.read_models import DemandPeriodReadModel
@@ -148,7 +148,7 @@ class SqlDemandPeriodRepository(DemandPeriodRepositoryPort):
                 WorkforceRequestPeriod.request_line_id == scoped_line_id
             )
         if not include_inactive:
-            statement = statement.where(WorkforceRequestPeriod.active.is_(True))
+            statement = statement.where(WorkforceRequestPeriod.active == true())
         periods = self._session.scalars(
             statement.order_by(
                 WorkforceRequestPeriod.sequence,
@@ -248,7 +248,7 @@ class SqlDemandPeriodRepository(DemandPeriodRepositoryPort):
                 WorkforceRequestPeriod.period_key == wanted,
                 WorkforceRequestPeriod.workforce_request_id == request.id,
                 WorkforceRequestPeriod.request_line_id == scoped_line_id,
-                WorkforceRequestPeriod.active.is_(True),
+                WorkforceRequestPeriod.active == true(),
             )
         )
         if period is None:
@@ -280,7 +280,7 @@ class SqlDemandPeriodRepository(DemandPeriodRepositoryPort):
             select(WorkforceRequestPeriod).where(
                 WorkforceRequestPeriod.workforce_request_id == request.id,
                 WorkforceRequestPeriod.request_line_id == scoped_line_id,
-                WorkforceRequestPeriod.active.is_(True),
+                WorkforceRequestPeriod.active == true(),
             )
         ).all()
         for row in current:
@@ -345,7 +345,7 @@ class SqlDemandPeriodRepository(DemandPeriodRepositoryPort):
                 WorkforceRequestPeriod.period_key == wanted,
                 WorkforceRequestPeriod.workforce_request_id == request.id,
                 WorkforceRequestPeriod.request_line_id == scoped_line_id,
-                WorkforceRequestPeriod.active.is_(True),
+                WorkforceRequestPeriod.active == true(),
             )
         )
         if period is None:
