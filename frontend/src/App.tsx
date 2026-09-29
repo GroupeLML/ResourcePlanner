@@ -210,7 +210,7 @@ export default function App() {
           >
             {displayInitials(principal.display_name)}
           </span>
-          {["oidc", "break_glass"].includes(principal.auth_mode) && (
+          {(principal.auth_mode === "oidc" || principal.auth_mode === "break_glass") && (
             <button
               type="button"
               className="sidebar-logout-button"
