@@ -191,6 +191,10 @@ class DeliveryProjectionTests(unittest.TestCase):
                     authorization_fingerprint=envelope.authorization_fingerprint,
                 )
             )
+            # RequestApprovalReference points at the immutable revision. Flush the
+            # revision first because these models intentionally have no ORM relationship
+            # that would otherwise order the two pending inserts for the test fixture.
+            session.flush()
             session.add(
                 RequestApprovalReference(
                     workforce_request_id="D-1",
