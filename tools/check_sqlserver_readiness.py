@@ -13,7 +13,7 @@ from typing import Iterable
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import bindparam, insert, select, update
+from sqlalchemy import bindparam, insert, select, true, update
 from sqlalchemy.dialects import mssql
 from sqlalchemy import ForeignKeyConstraint, UniqueConstraint
 from sqlalchemy.schema import CreateIndex, CreateTable
@@ -367,7 +367,7 @@ def _critical_statements():
     yield "projects", select(Project).where(Project.status == "Actif").order_by(Project.number)
     yield "resources", (
         select(Resource)
-        .where(Resource.active.is_(True))
+        .where(Resource.active == true())
         .order_by(Resource.sort_order, Resource.name)
     )
     yield "demands", (
