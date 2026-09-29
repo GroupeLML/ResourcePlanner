@@ -749,6 +749,8 @@ class SqlDemandRepository(DemandRepositoryPort):
     def _guard_work_packages(
         self,
         work_packages: Sequence[WorkPackage | None],
+        *,
+        project_id: str | None = None,
     ) -> None:
         unique = {
             work_package.id: work_package
@@ -769,6 +771,16 @@ class SqlDemandRepository(DemandRepositoryPort):
                 raise KeyError(f"WorkPackage {identifier} introuvable")
             self._session.flush()
             self._session.refresh(work_package)
+            if project_id is not None and work_package.project_id != project_id:
+                raise ApplicationConflictError(
+                    "Le WorkPackage a changé de projet pendant le rattachement.",
+                    code="work_package_project_changed_during_link",
+                    context={
+                        "work_package_id": work_package.id,
+                        "expected_project_id": project_id,
+                        "current_project_id": work_package.project_id,
+                    },
+                )
 
     def _effective_task(
         self,
@@ -891,7 +903,10 @@ class SqlDemandRepository(DemandRepositoryPort):
             )
             for raw in values
         ]
-        self._guard_work_packages(resolved_work_packages)
+        self._guard_work_packages(
+            resolved_work_packages,
+            project_id=project.id,
+        )
 
         for index, raw in enumerate(values):
             supplied_id = _optional_text(raw.get("id"))
@@ -1090,7 +1105,10 @@ class SqlDemandRepository(DemandRepositoryPort):
             if request.work_package_id
             else None
         )
-        self._guard_work_packages((work_package,))
+        self._guard_work_packages(
+            (work_package,),
+            project_id=request.project_id,
+        )
         explicit_task = (
             self._task(request.erp_task_code, project_number=project.number)
             if project is not None and request.erp_task_code
@@ -1152,7 +1170,10 @@ class SqlDemandRepository(DemandRepositoryPort):
             values.get("SourceEffortID"),
             project_id=project.id,
         )
-        self._guard_work_packages((work_package,))
+        self._guard_work_packages(
+            (work_package,),
+            project_id=project.id,
+        )
         explicit_task = self._task(
             values.get("TaskCode"),
             project_number=project.number,
@@ -1616,7 +1637,10 @@ class SqlDemandRepository(DemandRepositoryPort):
             elif project_changed:
                 request.work_package_id = None
 
-        self._guard_work_packages((work_package,))
+        self._guard_work_packages(
+            (work_package,),
+            project_id=request.project_id,
+        )
         explicit_task = None
         if "TaskCode" in updates:
             explicit_task = self._task(
