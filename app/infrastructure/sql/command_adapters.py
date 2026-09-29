@@ -4,7 +4,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any, Mapping
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, true
 from sqlalchemy.orm import Session
 
 from ...application.command_ports import (
@@ -70,7 +70,7 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
                     Shift.resource_requirement_id == ResourceRequirement.id,
                 )
                 .where(
-                    Shift.locked.is_(True),
+                    Shift.locked == true(),
                     ResourceRequirement.status.not_in(INACTIVE_REQUIREMENT_STATUSES),
                 )
                 .order_by(Shift.id)
@@ -262,7 +262,7 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
 
         locked_statement = select(func.coalesce(func.sum(Shift.hours), 0)).where(
             Shift.resource_requirement_id == requirement.id,
-            Shift.locked.is_(True),
+            Shift.locked == true(),
         )
         if exclude_shift_id:
             locked_statement = locked_statement.where(Shift.id != exclude_shift_id)
