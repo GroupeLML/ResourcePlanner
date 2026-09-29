@@ -230,7 +230,9 @@ Une ressource devenue inactive dans l'ERP ne peut plus être planifiée, même s
 
 ### Utilisateurs
 
-`RP_Users` est un annuaire ERP des utilisateurs candidats; il ne doit pas être confondu avec `AppUser`, dont l'identité autoritaire reste OIDC `(issuer, subject)`.
+`RP_Users` est un annuaire ERP des utilisateurs candidats; il ne doit pas être confondu avec `AppUser`.
+
+Avec ADR-012, `AppUser.id` reste l'identité interne stable. La paire OIDC `(issuer, subject)` reste l'identité d'authentification autoritaire une fois liée, mais elle devient optionnelle avant le premier login afin de permettre un vrai compte pré-provisionné. Le compte ERP sélectionné par l'ADMIN doit être persisté séparément par `AppUser.erp_user_id → RP_Users.UserID`; `AppUser.employee_external_id` continue de représenter `EmployeID`.
 
 Le modèle cible doit conserver au minimum :
 
@@ -238,15 +240,19 @@ Le modèle cible doit conserver au minimum :
 - `EmployeID` lié;
 - attributs descriptifs;
 - état source `UserActif`;
-- activation locale RessourcePlanner, par défaut `false`;
-- lien éventuel vers `AppUser` une fois la relation OIDC résolue.
+- configuration préparatoire locale tant qu'aucun `AppUser` n'existe;
+- `AppUser.erp_user_id = UserID` dès le pré-provisionnement;
+- `AppUser.employee_external_id = EmployeID`;
+- `AppUser.active` et `AppUser.roles_json` comme autorités locales après création;
+- paire OIDC éventuellement absente jusqu'au premier login.
 
 Un utilisateur peut accéder à RessourcePlanner uniquement si :
 
+- un `AppUser` a déjà été explicitement pré-provisionné par un ADMIN;
 - son compte source ERP est admissible/actif;
-- il a été explicitement activé dans RessourcePlanner par un ADMIN;
-- son identité OIDC a été résolue de manière autoritaire;
-- ses rôles RessourcePlanner ont été attribués localement.
+- `AppUser.active` est vrai;
+- ses rôles RessourcePlanner ont été attribués localement dans `AppUser.roles_json`;
+- son identité OIDC a été liée de manière autoritaire au premier login, ou résolue par la paire déjà liée lors des logins suivants.
 
 Aucun rôle privilégié n'est dérivé automatiquement de `RP_Users`.
 
@@ -314,7 +320,11 @@ Le smoke réel #223 a confirmé le pont suivant sur un compte réel, et le PO l'
 
 `preferred_username` sert uniquement de pont. Ne jamais utiliser `name`, le courriel ou un display name comme clé, ne pas supposer que `sub == UserID` et ne pas dériver le `sub` ou le `UserID` depuis une convention de chaîne.
 
-Après résolution, RessourcePlanner persiste toujours `(issuer, sub)` sur `AppUser` et `RP_Users.EmployeID` dans `AppUser.employee_external_id`. Les rôles proviennent uniquement de la configuration locale `erp_user_directory.roles_json`.
+La cible ADR-012 conserve ce contrat de rapprochement mais change la responsabilité du premier login. L'ADMIN doit d'abord créer un `AppUser` avec `erp_user_id = RP_Users.UserID`, `employee_external_id = RP_Users.EmployeID`, ses rôles locaux et son état actif. La paire `(issuer, sub)` est alors absente. Au premier login, RessourcePlanner vérifie `preferred_username → RP_Users.UserID`, `AppUser.erp_user_id`, `EmployeID`, l'activation locale et l'admissibilité ERP, puis lie atomiquement `(issuer, sub)` au compte existant. Aucun rôle ni état d'activation n'est copié pendant le login.
+
+Une fois l'`AppUser` créé, `AppUser.active` et `AppUser.roles_json` sont les valeurs autoritaires; `erp_user_directory.local_active/roles_json` ne peuvent rester qu'une préparation avant création du compte. Aucune synchronisation ERP ne réactive ni ne modifie les rôles d'un `AppUser`.
+
+Le runtime actuellement livré par #223 provisionne encore au premier login; cette divergence est volontairement reportée aux tranches d'implémentation postérieures à IDENTITY-A. Le fallback générique d'auto-provisionnement OIDC est incompatible avec ADR-012 et doit être neutralisé plus tard.
 
 Cette relation a été observée sur un compte OIDC réel; elle reste à confirmer sur un deuxième compte réel.
 ## Tâches / budgets

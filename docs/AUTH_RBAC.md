@@ -97,6 +97,22 @@ La table `app_users` stocke :
 
 La paire `(issuer, subject)` est unique. Un utilisateur inactif ne peut pas être résolu en principal authentifié.
 
+## Cible de pré-provisionnement — ADR-012
+
+IDENTITY-A fixe une évolution du modèle sans modifier encore le runtime :
+
+- `AppUser.id` reste l'identité interne stable;
+- un ADMIN doit pouvoir créer et activer un véritable `AppUser` avant le premier login OIDC;
+- la paire `(issuer, subject)` devient optionnelle mais atomique : les deux valeurs sont absentes ou présentes ensemble;
+- `AppUser.erp_user_id` doit persister explicitement le `RP_Users.UserID` sélectionné;
+- `AppUser.employee_external_id` reste l'identité employé `EmployeID`, distincte du compte ERP `UserID`;
+- une fois l'`AppUser` créé, `AppUser.active` et `AppUser.roles_json` sont autoritaires;
+- le premier login OIDC ne devra plus créer, activer, réactiver ni attribuer de rôles : il liera seulement `(issuer, subject)` au compte pré-provisionné après vérifications fail-closed;
+- `AuthSession.user_id → AppUser.id` reste inchangé;
+- le pré-provisionnement d'un utilisateur ne crée ni n'active automatiquement une `Resource`.
+
+Le contrat détaillé, les invariants de sécurité, la concurrence du premier login et la matrice d'acceptation sont documentés dans `IDENTITY_PREPROVISIONING.md`. Le comportement actuel de #223 reste transitoirement présent jusqu'aux tranches d'implémentation suivantes.
+
 ## Audit
 
 Lorsque le contexte utilisateur existe, la façade applicative et l'idempotence reçoivent son nom d'affichage comme acteur. Les services métier n'ont pas besoin de connaître FastAPI ou OIDC.

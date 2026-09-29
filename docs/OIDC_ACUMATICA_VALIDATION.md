@@ -2,6 +2,8 @@
 
 L'implémentation OIDC de RessourcePlanner est testée avec un fournisseur simulé et le contrat d'identité a maintenant été observé sur un compte Acumatica réel. Le login interactif complet post-implémentation a également été validé sur ce compte, avec résolution d'un vrai `AppUser` et `/api/v1/auth/me`. Restent à valider un deuxième compte ainsi que le comportement HTTPS/cookies Secure sur l'environnement cible.
 
+> **Transition IDENTITY-A / ADR-012.** Le smoke ci-dessous décrit le runtime actuellement livré par #223. La cible acceptée est désormais différente : l'ADMIN pré-provisionne d'abord un véritable `AppUser`, puis le premier login OIDC lie seulement `(issuer, subject)` à ce compte. Le login ne devra plus créer/activer le compte ni copier ses rôles. Voir `IDENTITY_PREPROVISIONING.md` et ADR-012. Cette cible n'est pas implémentée par IDENTITY-A.
+
 ## Paramètres requis
 
 - URL de découverte OIDC de l'instance;
