@@ -97,6 +97,20 @@ class IdentityPreprovisioningTests(unittest.TestCase):
                         )
                     )
 
+    def test_database_rejects_empty_oidc_identity_pair(self) -> None:
+        with self.assertRaises(IntegrityError):
+            with self.factory.begin() as session:
+                session.add(
+                    AppUser(
+                        id="U-EMPTY",
+                        issuer="",
+                        subject="",
+                        display_name="Identité vide",
+                        roles_json='["TECHNICIAN"]',
+                        active=True,
+                    )
+                )
+
     def test_create_update_and_lookup_preprovisioned_account_without_oidc(self) -> None:
         with self.factory.begin() as session:
             self._seed_erp_user(session, "ERP-1", "EMP-1")
