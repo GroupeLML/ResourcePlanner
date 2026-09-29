@@ -39,8 +39,8 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--display-name",
-        default="Administrateur break-glass",
-        help="Local AppUser display name.",
+        default=None,
+        help="Local AppUser display name. Existing values are preserved when omitted.",
     )
     parser.add_argument("--email", default=None)
     parser.add_argument(
