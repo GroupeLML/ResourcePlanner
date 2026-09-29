@@ -360,7 +360,9 @@ When changing a user-visible workflow, prefer exercising the actual browser/API 
 
 Schema changes use Alembic under `migrations/`.
 
-The development/runtime architecture currently supports SQLite while preserving SQL Server readiness.
+SQL Server is the reference database for integrated validation, staging and production. SQLite remains permitted for local development and fast tests when the scenario does not depend on database-engine semantics. See `docs/architecture/ADR-011-sql-server-authoritative-database.md`.
+
+A SQLite result alone is not sufficient evidence for behavior that depends on multi-session concurrency, transaction isolation, SQL Server constraints/types, migrations or production performance.
 
 For schema changes:
 
