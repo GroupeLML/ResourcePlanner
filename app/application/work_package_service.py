@@ -14,10 +14,11 @@ class WorkPackageService:
         self._repository = repository
 
     def create_command(self, command: WorkPackageCreateCommand) -> WorkPackageMutationResult:
-        reference = call_application_port(
+        row = call_application_port(
             lambda: self._repository.create(
                 {
                     "project_number": command.project_number,
+                    "task_catalog_item_id": command.task_catalog_item_id,
                     "code": command.code,
                     "name": command.name,
                     "description": command.description,
@@ -30,7 +31,11 @@ class WorkPackageService:
             code_prefix="work_package_create",
             context={"project_number": command.project_number},
         )
-        return WorkPackageMutationResult(reference=str(reference), action="created")
+        return WorkPackageMutationResult(
+            reference=row.reference,
+            action="created",
+            version=row.version,
+        )
 
     def update_command(self, command: WorkPackageUpdateCommand) -> WorkPackageMutationResult:
         current = call_application_port(
@@ -50,9 +55,17 @@ class WorkPackageService:
         end = changes.get("end_date", current.end_date)
         validate_date_window(start, end, prefix="work_package")  # type: ignore[arg-type]
 
-        reference = call_application_port(
-            lambda: self._repository.update(command.reference, changes),
+        row = call_application_port(
+            lambda: self._repository.update(
+                command.reference,
+                changes,
+                expected_version=command.expected_version,
+            ),
             code_prefix="work_package_update",
             context={"reference": command.reference},
         )
-        return WorkPackageMutationResult(reference=str(reference), action="updated")
+        return WorkPackageMutationResult(
+            reference=row.reference,
+            action="updated",
+            version=row.version,
+        )

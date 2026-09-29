@@ -17,6 +17,7 @@ from .models import (
     ResourceAvailabilityRule,
     WorkforceRequest,
     WorkforceRequestHistory,
+    TaskCatalogEntry,
     WorkPackage,
 )
 from .planning_audit import PlanningChangeHistory
@@ -59,8 +60,12 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
         project_ids: Sequence[str] | None = None,
     ) -> tuple[WorkPackageReadModel, ...]:
         statement = (
-            select(WorkPackage, Project)
+            select(WorkPackage, Project, TaskCatalogEntry)
             .join(Project, WorkPackage.project_id == Project.id)
+            .outerjoin(
+                TaskCatalogEntry,
+                WorkPackage.task_catalog_item_id == TaskCatalogEntry.id,
+            )
             .order_by(Project.number, WorkPackage.start_date, WorkPackage.name, WorkPackage.id)
         )
         if project_ids is not None:
@@ -75,7 +80,7 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
 
         rows = self._web_session.execute(statement).all()
         result: list[WorkPackageReadModel] = []
-        for work_package, project in rows:
+        for work_package, project, task in rows:
             status = _text(work_package.status) or "planned"
             if active_only and status.casefold() in INACTIVE_WORK_PACKAGE_STATUSES:
                 continue
@@ -96,6 +101,10 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                         else None
                     ),
                     status=status,
+                    task_catalog_item_id=work_package.task_catalog_item_id,
+                    task_code=_optional_text(task.task_code) if task is not None else None,
+                    task_label=_optional_text(task.label) if task is not None else None,
+                    version=int(work_package.version or 1),
                 )
             )
         return tuple(result)

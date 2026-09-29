@@ -163,10 +163,15 @@ export type WorkPackageReadModel = {
   end_date: string | null;
   planned_hours: number | null;
   status: string;
+  task_catalog_item_id: string | null;
+  task_code: string | null;
+  task_label: string | null;
+  version: number;
 };
 
 export type WorkPackageWrite = {
   project_number: string;
+  task_catalog_item_id: string | null;
   code: string | null;
   name: string;
   description: string | null;
@@ -179,6 +184,7 @@ export type WorkPackageWrite = {
 export type WorkPackageMutationResult = {
   reference: string;
   action: string;
+  version: number;
 };
 
 export type ResourceReadModel = {
@@ -1382,11 +1388,15 @@ export function createWorkPackage(payload: WorkPackageWrite, idempotencyKey: str
   );
 }
 
-export function updateWorkPackage(reference: string, payload: WorkPackageWrite) {
+export function updateWorkPackage(
+  reference: string,
+  payload: WorkPackageWrite,
+  expectedVersion: number,
+) {
   return sendJson<WorkPackageMutationResult>(
     `/api/v1/work-packages/${encodeURIComponent(reference)}`,
     "PATCH",
-    payload,
+    { ...payload, expected_version: expectedVersion },
   );
 }
 

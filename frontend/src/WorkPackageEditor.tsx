@@ -3,9 +3,11 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiError,
   ProjectReadModel,
+  TaskCatalogItemReadModel,
   WorkPackageReadModel,
   WorkPackageWrite,
   createWorkPackage,
+  getTaskCatalog,
   updateWorkPackage,
 } from "./api";
 
@@ -18,6 +20,7 @@ const STATUS_OPTIONS = [
 
 type FormState = {
   projectNumber: string;
+  taskCatalogItemId: string;
   code: string;
   name: string;
   description: string;
@@ -33,6 +36,7 @@ function initialState(
 ): FormState {
   return {
     projectNumber: workPackage?.project_number || defaultProjectNumber,
+    taskCatalogItemId: workPackage?.task_catalog_item_id || "",
     code: workPackage?.code || "",
     name: workPackage?.name || "",
     description: workPackage?.description || "",
@@ -47,6 +51,7 @@ function toPayload(form: FormState): WorkPackageWrite {
   const hours = form.plannedHours.trim();
   return {
     project_number: form.projectNumber,
+    task_catalog_item_id: form.taskCatalogItemId.trim() || null,
     code: form.code.trim() || null,
     name: form.name.trim(),
     description: form.description.trim() || null,
@@ -72,6 +77,8 @@ export default function WorkPackageEditor({
 }) {
   const [form, setForm] = useState(() => initialState(workPackage, defaultProjectNumber));
   const [saving, setSaving] = useState(false);
+  const [tasks, setTasks] = useState<TaskCatalogItemReadModel[]>([]);
+  const [tasksLoading, setTasksLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const createRetry = useRef<{ fingerprint: string; key: string } | null>(null);
   const editing = Boolean(workPackage);
@@ -87,6 +94,56 @@ export default function WorkPackageEditor({
     [projects],
   );
 
+  useEffect(() => {
+    const projectNumber = form.projectNumber.trim();
+    if (!projectNumber) {
+      setTasks([]);
+      return;
+    }
+    const controller = new AbortController();
+    setTasksLoading(true);
+    getTaskCatalog(projectNumber, "", true, controller.signal)
+      .then((rows) => {
+        const current = workPackage?.task_catalog_item_id
+          && workPackage.project_number === projectNumber
+          && !rows.some((row) => row.id === workPackage.task_catalog_item_id)
+          ? [{
+              id: workPackage.task_catalog_item_id,
+              project_number: projectNumber,
+              code: workPackage.task_code || "",
+              label: workPackage.task_label || "Tâche actuelle",
+              status: "Actuel",
+              active: true,
+              billing_rule: null,
+              allocation_rule: null,
+              completion_percent: null,
+              erp_created_at: null,
+              branch: null,
+              approver_name: null,
+              cv_enabled: null,
+              time_entry_enabled: null,
+              expenses_enabled: null,
+              operational_responsible_contact_id: null,
+              coordinator_contact_id: null,
+            } satisfies TaskCatalogItemReadModel]
+          : [];
+        setTasks([...current, ...rows]);
+      })
+      .catch((reason: unknown) => {
+        if (reason instanceof DOMException && reason.name === "AbortError") return;
+        setTasks([]);
+        setError(reason instanceof Error ? reason.message : "Impossible de charger les tâches ERP.");
+      })
+      .finally(() => setTasksLoading(false));
+    return () => controller.abort();
+  }, [
+    form.projectNumber,
+    workPackage?.project_number,
+    workPackage?.task_catalog_item_id,
+    workPackage?.task_code,
+    workPackage?.task_label,
+  ]);
+
   function field<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((current) => ({ ...current, [key]: value }));
   }
@@ -99,6 +156,10 @@ export default function WorkPackageEditor({
     const payload = toPayload(form);
     if (!payload.project_number) {
       setError("Choisis un projet.");
+      return;
+    }
+    if (!payload.task_catalog_item_id && !workPackage) {
+      setError("Choisis une tâche ERP pour ce WorkPackage.");
       return;
     }
     if (!payload.name) {
@@ -117,7 +178,7 @@ export default function WorkPackageEditor({
     setSaving(true);
     try {
       if (workPackage) {
-        await updateWorkPackage(workPackage.reference, payload);
+        await updateWorkPackage(workPackage.reference, payload, workPackage.version);
       } else {
         const fingerprint = JSON.stringify(payload);
         const previous = createRetry.current;
@@ -130,7 +191,11 @@ export default function WorkPackageEditor({
       onSaved();
     } catch (reason: unknown) {
       if (reason instanceof ApiError) {
-        setError(`${reason.message}${reason.code ? ` (${reason.code})` : ""}`);
+        if (reason.code === "work_package_version_conflict") {
+          setError("Ce WorkPackage a changé depuis son ouverture. Tes valeurs sont conservées; recharge la vue avant de réessayer.");
+        } else {
+          setError(`${reason.message}${reason.code ? ` (${reason.code})` : ""}`);
+        }
       } else {
         setError(reason instanceof Error ? reason.message : "Impossible d’enregistrer le WorkPackage.");
       }
@@ -163,7 +228,16 @@ export default function WorkPackageEditor({
             <select
               required
               value={form.projectNumber}
-              onChange={(event) => field("projectNumber", event.target.value)}
+              onChange={(event) => {
+                const projectNumber = event.target.value;
+                setForm((current) => ({
+                  ...current,
+                  projectNumber,
+                  taskCatalogItemId: projectNumber === current.projectNumber
+                    ? current.taskCatalogItemId
+                    : "",
+                }));
+              }}
             >
               <option value="">Choisir un projet</option>
               {projectOptions.map((project) => (
@@ -175,6 +249,32 @@ export default function WorkPackageEditor({
             {editing && (
               <small>
                 Le projet peut être changé seulement si aucune demande n’est déjà liée à ce WorkPackage.
+              </small>
+            )}
+          </label>
+
+          <label className="wp-full">
+            <span>Tâche ERP *</span>
+            <select
+              required={!editing}
+              value={form.taskCatalogItemId}
+              onChange={(event) => field("taskCatalogItemId", event.target.value)}
+              disabled={!form.projectNumber || tasksLoading}
+            >
+              <option value="">
+                {tasksLoading ? "Chargement des tâches…" : "Choisir une tâche ERP"}
+              </option>
+              {tasks
+                .filter((task) => task.id)
+                .map((task) => (
+                  <option value={task.id || ""} key={task.id || `${task.project_number}-${task.code}`}>
+                    {task.code} — {task.label}
+                  </option>
+                ))}
+            </select>
+            {editing && !workPackage?.task_catalog_item_id && (
+              <small>
+                WorkPackage historique non classé : choisis explicitement sa tâche ERP pour le régulariser.
               </small>
             )}
           </label>

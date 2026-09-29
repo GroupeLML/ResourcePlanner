@@ -100,6 +100,7 @@ class AvailabilityRuleUpdateRequest(StrictRequest):
 
 class WorkPackageCreateRequest(StrictRequest):
     project_number: str = Field(min_length=1)
+    task_catalog_item_id: str = Field(min_length=1)
     name: str = Field(min_length=1)
     code: str | None = None
     description: str | None = None
@@ -110,7 +111,9 @@ class WorkPackageCreateRequest(StrictRequest):
 
 
 class WorkPackageUpdateRequest(StrictRequest):
+    expected_version: int = Field(ge=1)
     project_number: str | None = None
+    task_catalog_item_id: str | None = None
     code: str | None = None
     name: str | None = None
     description: str | None = None

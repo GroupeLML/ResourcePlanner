@@ -219,6 +219,11 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await page.getByRole("button", { name: /WorkPackage/ }).click();
     const workPackageDialog = page.getByRole("dialog", { name: "Créer un lot" });
     await labelled(workPackageDialog, "Projet", "select").selectOption("P-251");
+    const workPackageTask = labelled(workPackageDialog, "Tâche ERP", "select");
+    await expect(
+      workPackageTask.locator("option", { hasText: "210 — AUTOMATISATION E2E" }),
+    ).toBeAttached();
+    await workPackageTask.selectOption({ label: "210 — AUTOMATISATION E2E" });
     await labelled(workPackageDialog, "Code", "input").fill("WP-E2E");
     await labelled(workPackageDialog, "Nom", "input").fill("Lot acceptation Playwright");
     await labelled(workPackageDialog, "Début", "input").fill(d1);

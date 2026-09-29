@@ -109,6 +109,7 @@ from .models import (
     WorkforceRequestCompetency,
     WorkforceRequestHistory,
     WorkPackage,
+    WorkPackageAudit,
 )
 from .identity_constraints import (
     RESOURCE_REQUIREMENT_NUMBER_INDEX,
@@ -264,6 +265,7 @@ __all__ = [
     "SqlWorkPackageRepository",
     "WORKFORCE_REQUEST_NUMBER_INDEX",
     "WorkPackage",
+    "WorkPackageAudit",
     "WorkforceRequest",
     "WorkforceRequestCompetency",
     "WorkforceRequestHistory",

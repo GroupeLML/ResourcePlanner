@@ -10,6 +10,7 @@ from .common import UNSET, UnsetType, required_text, validate_date_window
 @dataclass(frozen=True, slots=True)
 class WorkPackageCreateCommand:
     project_number: str
+    task_catalog_item_id: str
     name: str
     code: str | None = None
     description: str | None = None
@@ -23,6 +24,11 @@ class WorkPackageCreateCommand:
             self.project_number,
             field="work_package_project",
             message="Le projet est requis.",
+        )
+        required_text(
+            self.task_catalog_item_id,
+            field="work_package_task_catalog_item",
+            message="La tâche ERP du WorkPackage est requise.",
         )
         required_text(
             self.name,
@@ -46,7 +52,9 @@ class WorkPackageCreateCommand:
 @dataclass(frozen=True, slots=True)
 class WorkPackageUpdateCommand:
     reference: str
+    expected_version: int
     project_number: str | UnsetType = UNSET
+    task_catalog_item_id: str | None | UnsetType = UNSET
     code: str | None | UnsetType = UNSET
     name: str | UnsetType = UNSET
     description: str | None | UnsetType = UNSET
@@ -61,6 +69,12 @@ class WorkPackageUpdateCommand:
             field="work_package_reference",
             message="La référence du WorkPackage est requise.",
         )
+        if self.expected_version < 1:
+            raise ApplicationValidationError(
+                "La version attendue du WorkPackage doit être au moins 1.",
+                code="work_package_version_invalid",
+                context={"expected_version": self.expected_version},
+            )
         if self.project_number is not UNSET:
             required_text(
                 self.project_number,
@@ -90,6 +104,7 @@ class WorkPackageUpdateCommand:
         values: dict[str, object] = {}
         for field in (
             "project_number",
+            "task_catalog_item_id",
             "code",
             "name",
             "description",
