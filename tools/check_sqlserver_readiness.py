@@ -432,9 +432,9 @@ def _critical_statements():
         update(WorkPackage)
         .where(WorkPackage.id == bindparam("work_package_id"))
         .values(
-                version=WorkPackage.version,
-                updated_at=WorkPackage.updated_at,
-            )
+            version=WorkPackage.version,
+            updated_at=WorkPackage.updated_at,
+        )
     )
     yield "work_package_version_cas", (
         update(WorkPackage)
