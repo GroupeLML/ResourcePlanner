@@ -95,6 +95,7 @@ La matrice est codée explicitement dans tools/cutover_sqlite_v2_to_sqlserver.py
 | project_task_class_overrides | KEEP | overrides projet/tâche |
 | resources | KEEP + RESYNC | préserver UUID, activation/config locale, puis resynchroniser RP_Employees |
 | work_packages | KEEP | WorkPackages locaux |
+| work_package_audit | KEEP | audit durable des mutations WorkPackage / version CAS |
 | workforce_requests | KEEP | demandes V2 |
 | workforce_request_competencies | KEEP | compétences historiques |
 | workforce_request_history | KEEP | historique des demandes |
