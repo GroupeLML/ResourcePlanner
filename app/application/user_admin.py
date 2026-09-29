@@ -53,6 +53,43 @@ class UserAdminRepositoryPort(Protocol):
 
     def get_by_external_identity(self, issuer: str, subject: str) -> UserIdentityRecord | None: ...
 
+    def get_by_employee_external_id(
+        self,
+        employee_external_id: str,
+    ) -> UserIdentityRecord | None: ...
+
+    def get_by_erp_user_id(self, erp_user_id: str) -> UserIdentityRecord | None: ...
+
+    def create_account(
+        self,
+        *,
+        display_name: str,
+        email: str | None,
+        roles: tuple[str, ...] | list[str] | set[str],
+        active: bool = True,
+        employee_external_id: str | None = None,
+        erp_user_id: str | None = None,
+    ) -> UserIdentityRecord: ...
+
+    def update_account(
+        self,
+        app_user_id: str,
+        *,
+        display_name: str,
+        email: str | None,
+        roles: tuple[str, ...] | list[str] | set[str],
+        active: bool,
+        employee_external_id: str | None,
+        erp_user_id: str | None,
+    ) -> UserIdentityRecord: ...
+
+    def bind_external_identity(
+        self,
+        app_user_id: str,
+        issuer: str,
+        subject: str,
+    ) -> UserIdentityRecord: ...
+
     def upsert(
         self,
         *,
