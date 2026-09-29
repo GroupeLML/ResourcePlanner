@@ -1,6 +1,6 @@
 # Validation réelle OIDC Acumatica
 
-L'implémentation OIDC de RessourcePlanner est testée avec un fournisseur simulé et le contrat d'identité a maintenant été observé sur un compte Acumatica réel. Le login complet reste à revalider après ce branchement applicatif, notamment sur un deuxième compte et sur HTTPS réel.
+L'implémentation OIDC de RessourcePlanner est testée avec un fournisseur simulé et le contrat d'identité a maintenant été observé sur un compte Acumatica réel. Le login interactif complet post-implémentation a également été validé sur ce compte, avec résolution d'un vrai `AppUser` et `/api/v1/auth/me`. Restent à valider un deuxième compte ainsi que le comportement HTTPS/cookies Secure sur l'environnement cible.
 
 ## Paramètres requis
 
@@ -70,4 +70,4 @@ Le smoke réel a confirmé sur un compte et le PO a accepté le contrat suivant 
 
 Le client OIDC extrait `preferred_username` pour le fonctionnement normal même lorsque les diagnostics de claims sont désactivés. Le provisionnement contrôlé est distinct de l'ancien `RESOURCEPLANNER_OIDC_AUTO_PROVISION`; ce dernier ne peut pas contourner une correspondance `preferred_username` présente mais non autorisée.
 
-Validation réelle encore requise : deuxième compte OIDC, cookies HTTPS/Secure sur l'environnement cible, production et SQL Server. Aucun de ces points n'est déclaré validé par cette livraison.
+Validation réelle acquise sur un compte : login, callback, provisionnement contrôlé, session et `/api/v1/auth/me`. Validation réelle encore requise : deuxième compte OIDC, logout/révocation complet, cookies HTTPS/Secure sur l'environnement cible, production et SQL Server. Le correctif CSRF du proxy avec port non standard a été fusionné séparément via PR #476; son smoke de mutation ADMIN post-correctif reste à exécuter.
