@@ -17,6 +17,7 @@ from app.application.security import (
     PERMISSION_SYNC_PROJECTS,
     ROLE_ADMIN,
     ROLE_COORDINATOR,
+    ROLE_DELIVERY_CONTRIBUTOR,
     ROLE_MANAGER,
     ROLE_PROJECT_MANAGER,
     ROLE_TECHNICIAN,
@@ -53,10 +54,7 @@ class SecurityPolicyTests(unittest.TestCase):
         project_manager = set(permissions_for_roles((ROLE_PROJECT_MANAGER,)))
         coordinator = set(permissions_for_roles((ROLE_COORDINATOR,)))
 
-        self.assertEqual(
-            technician,
-            {PERMISSION_READ, PERMISSION_CONTRIBUTE_DELIVERY},
-        )
+        self.assertEqual(technician, {PERMISSION_READ})
         self.assertIn(PERMISSION_APPROVE_DEMANDS, manager)
         self.assertNotIn(PERMISSION_MANAGE_DEMANDS, manager)
         self.assertIn(PERMISSION_MANAGE_DEMANDS, project_manager)
@@ -66,13 +64,19 @@ class SecurityPolicyTests(unittest.TestCase):
         self.assertNotIn(PERMISSION_MANAGE_PLANNING, project_manager)
         self.assertNotIn(PERMISSION_MANAGE_COMMUNICATIONS, project_manager)
         self.assertIn(PERMISSION_MANAGE_PLANNING, coordinator)
-        self.assertIn(PERMISSION_CONTRIBUTE_DELIVERY, coordinator)
         self.assertIn(PERMISSION_MANAGE_RESOURCES, coordinator)
         self.assertIn(PERMISSION_MANAGE_COMMUNICATIONS, coordinator)
         self.assertNotIn(PERMISSION_SYNC_PROJECTS, coordinator)
         self.assertNotIn(PERMISSION_ADMIN_SETTINGS, coordinator)
-        self.assertIn(PERMISSION_CONTRIBUTE_DELIVERY, manager)
+        self.assertNotIn(PERMISSION_CONTRIBUTE_DELIVERY, manager)
         self.assertNotIn(PERMISSION_MANAGE_DELIVERY, manager)
+        delivery_contributor = set(
+            permissions_for_roles((ROLE_DELIVERY_CONTRIBUTOR,))
+        )
+        self.assertEqual(
+            delivery_contributor,
+            {PERMISSION_READ, PERMISSION_CONTRIBUTE_DELIVERY},
+        )
 
     def test_invalid_role_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
