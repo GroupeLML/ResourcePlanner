@@ -100,6 +100,7 @@ def _seed_source(path: Path) -> None:
                     },
                     {
                         "id": "DEMO-PROJECT",
+                        "erp_external_id": None,
                         "number": "DEMO-1001",
                         "name": "Projet démo",
                         "status": "active",
@@ -121,6 +122,8 @@ def _seed_source(path: Path) -> None:
                 [
                     {
                         "id": "USER-REAL",
+                        "issuer": None,
+                        "subject": None,
                         "display_name": "Utilisateur réel",
                         "roles_json": '["ADMIN"]',
                         "active": True,
