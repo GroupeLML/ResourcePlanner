@@ -16,7 +16,7 @@ from app.application.break_glass import (
 from app.application.errors import ApplicationConflictError
 from app.application.security import ROLE_ADMIN, ROLE_TECHNICIAN
 from app.application.user_admin import UserAdminService
-from app.infrastructure.secret_hashing import ScryptSecretHasher
+from app.infrastructure.sql.secret_hashing import ScryptSecretHasher
 from app.infrastructure.sql import (
     AppUser,
     AuthSecurityAudit,
