@@ -85,6 +85,127 @@ export function getAssetCatalog(signal?: AbortSignal) {
   return getJson<AssetCatalog>("/api/v1/assets/catalog", signal);
 }
 
+
+export type AssetUnavailabilityCatalogItem = {
+  id: string;
+  asset_id: string;
+  start_date: string;
+  end_date: string;
+  reason: string | null;
+};
+
+export type AssetPlanningState = {
+  unavailability: AssetUnavailabilityCatalogItem[];
+  planning_version: number;
+};
+
+export function getAssetPlanningState(signal?: AbortSignal) {
+  return getJson<AssetPlanningState>("/api/v1/assets/requirements", signal);
+}
+
+export function createAssetType(payload: {
+  code: string;
+  label: string;
+  category: string;
+  metadata?: Record<string, unknown> | null;
+}) {
+  return sendJson<{ id: string; code: string }>(
+    "/api/v1/assets/types",
+    "POST",
+    payload,
+  );
+}
+
+export function updateAssetType(
+  assetTypeId: string,
+  payload: {
+    code: string;
+    label: string;
+    category: string;
+    expected_planning_version: number;
+  },
+) {
+  return sendJson<{ id: string; planning_version: number }>(
+    "/api/v1/assets/types/" + encodeURIComponent(assetTypeId),
+    "PATCH",
+    payload,
+  );
+}
+
+export function setAssetTypeActive(
+  assetTypeId: string,
+  active: boolean,
+  expectedPlanningVersion: number,
+) {
+  return sendJson<{ id: string; active: boolean; planning_version: number }>(
+    "/api/v1/assets/types/" + encodeURIComponent(assetTypeId) + "/active",
+    "PATCH",
+    {
+      active,
+      expected_planning_version: expectedPlanningVersion,
+    },
+  );
+}
+
+export function setAssetTypeQualification(
+  assetTypeId: string,
+  payload: {
+    competency_ids: string[];
+    qualification_policy: string;
+    expected_planning_version: number;
+  },
+) {
+  return sendJson<{ id: string; planning_version: number }>(
+    "/api/v1/assets/types/" + encodeURIComponent(assetTypeId) + "/qualification",
+    "PUT",
+    payload,
+  );
+}
+
+export function createAsset(payload: {
+  code: string;
+  label: string;
+  asset_type_id: string;
+  metadata?: Record<string, unknown> | null;
+}) {
+  return sendJson<{ id: string; code: string }>(
+    "/api/v1/assets",
+    "POST",
+    payload,
+  );
+}
+
+export function updateAsset(
+  assetId: string,
+  payload: {
+    code: string;
+    label: string;
+    asset_type_id: string;
+    expected_planning_version: number;
+  },
+) {
+  return sendJson<{ id: string; planning_version: number }>(
+    "/api/v1/assets/" + encodeURIComponent(assetId),
+    "PATCH",
+    payload,
+  );
+}
+
+export function setAssetActive(
+  assetId: string,
+  active: boolean,
+  expectedPlanningVersion: number,
+) {
+  return sendJson<{ id: string; active: boolean; planning_version: number }>(
+    "/api/v1/assets/" + encodeURIComponent(assetId) + "/active",
+    "PATCH",
+    {
+      active,
+      expected_planning_version: expectedPlanningVersion,
+    },
+  );
+}
+
 export type AssetOperatorCandidate = {
   resource_id: string;
   resource_name: string;

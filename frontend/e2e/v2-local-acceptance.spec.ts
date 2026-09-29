@@ -1248,10 +1248,88 @@ test("multi-line demand editor generates independent RequestLines and materializ
 
 
 
-test("mixed asset demand uses authoritative reservations, conflicts, refresh and reapproval", async ({ browser }) => {
-  test.setTimeout(180_000);
+test("asset UX creates Nacelle #63 and links only real operator allocations on human shifts", async ({ browser }) => {
+  test.setTimeout(240_000);
   const { d1, d2, d3, d4, d5 } = acceptanceDates();
   let demandNumber = "";
+  let assetTypeId = "";
+  let lift63Id = "";
+  let lift64Id = "";
+  let lift65Id = "";
+
+  const catalogManager = await openAs(browser, "COORDINATOR");
+  await navigateMain(catalogManager.page, "Ressources");
+  const catalogPanel = catalogManager.page.locator(".asset-catalog-card");
+  await expect(catalogPanel.getByRole("heading", { name: "Catalogue des actifs" })).toBeVisible();
+
+  await catalogPanel.getByRole("button", { name: "+ Type d’actif" }).click();
+  const typeEditor = catalogPanel.locator(".asset-type-editor");
+  await labelled(typeEditor, "Code", "input").fill("LIFT496");
+  await labelled(typeEditor, "Libellé", "input").fill("Nacelle");
+  await labelled(typeEditor, "Catégorie", "select").selectOption("EQUIPMENT");
+  await typeEditor.getByLabel("Compétences / permis requis", { exact: true }).selectOption(["C-SCADA"]);
+  await typeEditor.getByRole("button", { name: "Enregistrer le type" }).click();
+  await expect(catalogPanel.locator(".asset-catalog-notice")).toContainText("Type d’actif créé");
+
+  const typeRow = catalogPanel.locator(".asset-type-row").filter({ hasText: "LIFT496" }).first();
+  await expect(typeRow).toContainText("Nacelle");
+  await typeRow.click();
+  await catalogPanel.getByRole("button", { name: "+ Unité" }).click();
+  const unitEditor = catalogPanel.locator(".asset-unit-editor");
+  await labelled(unitEditor, "Code", "input").fill("NAC-63");
+  await labelled(unitEditor, "Libellé", "input").fill("Nacelle #63");
+  await unitEditor.getByRole("button", { name: "Enregistrer l’unité" }).click();
+  await expect(catalogPanel.locator(".asset-catalog-notice")).toContainText("Unité physique créée");
+  await expect(catalogPanel.locator(".asset-unit-row").filter({ hasText: "Nacelle #63" })).toBeVisible();
+
+  let catalogResponse = await catalogManager.page.request.get("/api/v1/assets/catalog");
+  expect(catalogResponse.ok()).toBeTruthy();
+  let catalog = await catalogResponse.json() as {
+    types: Array<{ id: string; code: string }>;
+    assets: Array<{ id: string; code: string }>;
+    planning_version: number;
+  };
+  assetTypeId = catalog.types.find((row) => row.code === "LIFT496")?.id ?? "";
+  lift63Id = catalog.assets.find((row) => row.code === "NAC-63")?.id ?? "";
+  expect(assetTypeId).not.toBe("");
+  expect(lift63Id).not.toBe("");
+
+  for (const unit of [
+    { code: "NAC-64", label: "Nacelle #64" },
+    { code: "NAC-65", label: "Nacelle #65" },
+  ]) {
+    const created = await catalogManager.page.request.post("/api/v1/assets", {
+      data: {
+        code: unit.code,
+        label: unit.label,
+        asset_type_id: assetTypeId,
+      },
+    });
+    expect(created.status(), await created.text()).toBe(201);
+  }
+  catalogResponse = await catalogManager.page.request.get("/api/v1/assets/catalog");
+  catalog = await catalogResponse.json() as typeof catalog;
+  lift64Id = catalog.assets.find((row) => row.code === "NAC-64")?.id ?? "";
+  lift65Id = catalog.assets.find((row) => row.code === "NAC-65")?.id ?? "";
+  expect(lift64Id).not.toBe("");
+  expect(lift65Id).not.toBe("");
+
+  await catalogPanel.locator(".asset-unit-row").filter({ hasText: "Nacelle #63" }).first().click();
+  const catalogUnavailability = catalogPanel.locator(".asset-catalog-unavailability-form");
+  await labelled(catalogUnavailability, "Début", "input").fill(d5);
+  await labelled(catalogUnavailability, "Fin", "input").fill(d5);
+  await labelled(catalogUnavailability, "Raison", "input").fill("Entretien catalogue #496");
+  await catalogUnavailability.getByRole("button", { name: "Ajouter l’indisponibilité" }).click();
+  const catalogMaintenance = catalogPanel
+    .locator(".asset-catalog-unavailability-list article")
+    .filter({ hasText: "Entretien catalogue #496" })
+    .first();
+  await expect(catalogMaintenance).toContainText(d5);
+  await catalogMaintenance.getByRole("button", { name: "Retirer" }).click();
+  await expect(
+    catalogPanel.locator(".asset-catalog-unavailability-list article").filter({ hasText: "Entretien catalogue #496" }),
+  ).toHaveCount(0);
+  await closeContext(catalogManager.context);
 
   const projectManager = await openAs(browser, "PROJECT_MANAGER");
   await navigateMain(projectManager.page, "Demandes");
@@ -1263,7 +1341,7 @@ test("mixed asset demand uses authoritative reservations, conflicts, refresh and
   await expect(mixedTaskSelect.locator("option", { hasText: "210 — AUTOMATISATION E2E" })).toBeAttached();
   await mixedTaskSelect.selectOption("210");
   await labelled(editor, "Description / contexte de la demande", "textarea").fill(
-    "Demande mixte main-d’œuvre + nacelle #291F",
+    "Demande mixte main-d’œuvre + nacelles #496",
   );
   await editor.getByRole("button", { name: "Passer aux lignes multiples" }).click();
 
@@ -1273,27 +1351,49 @@ test("mixed asset demand uses authoritative reservations, conflicts, refresh and
   await assetLine.getByLabel("Type de besoin — ligne 1").selectOption("ASSET");
   await labelled(assetLine, "Début", "input").fill(d1);
   await labelled(assetLine, "Fin", "input").fill(d2);
-  await assetLine.getByLabel("Type d’actif — ligne 1").selectOption("AT-LIFT");
-  await assetLine.getByLabel("Unité proposée — ligne 1").selectOption("A-LIFT-1");
+  await assetLine.getByLabel("Type d’actif — ligne 1").selectOption(assetTypeId);
+  await assetLine.getByLabel("Unité proposée — ligne 1").selectOption(lift63Id);
   await labelled(assetLine, "Budget d’usage (h, optionnel)", "input").fill("4");
-  await labelled(assetLine, "Description spécifique", "textarea").fill("Nacelle suggérée sans affectation automatique");
+  await labelled(assetLine, "Description spécifique", "textarea").fill("Nacelle #63 proposée seulement");
 
   await editor.getByRole("button", { name: "+ Ajouter une ligne" }).click();
   cards = editor.locator(".request-line-card");
   await expect(cards).toHaveCount(2);
-  const workforceLine = cards.nth(1);
-  await expect(workforceLine.getByLabel("Type de besoin — ligne 2")).toHaveValue("WORKFORCE");
-  await labelled(workforceLine, "Début", "input").fill(d1);
-  await labelled(workforceLine, "Fin", "input").fill(d2);
-  await labelled(workforceLine, "Classe de ressource", "select").selectOption("PROGRAMMEUR");
-  await labelled(workforceLine, "Ressource proposée", "select").selectOption("R-ALICE");
-  await labelled(workforceLine, "Heures", "input").fill("8");
-  await labelled(workforceLine, "Description spécifique", "textarea").fill("Support humain associé à la nacelle");
+  const secondAssetLine = cards.nth(1);
+  await secondAssetLine.getByLabel("Type de besoin — ligne 2").selectOption("ASSET");
+  await labelled(secondAssetLine, "Début", "input").fill(d1);
+  await labelled(secondAssetLine, "Fin", "input").fill(d2);
+  await secondAssetLine.getByLabel("Type d’actif — ligne 2").selectOption(assetTypeId);
+  await secondAssetLine.getByLabel("Unité proposée — ligne 2").selectOption(lift64Id);
+  await labelled(secondAssetLine, "Budget d’usage (h, optionnel)", "input").fill("2");
+  await labelled(secondAssetLine, "Description spécifique", "textarea").fill("Nacelle #64 proposée seulement");
+
+  await editor.getByRole("button", { name: "+ Ajouter une ligne" }).click();
+  cards = editor.locator(".request-line-card");
+  await expect(cards).toHaveCount(3);
+  const aliceLine = cards.nth(2);
+  await labelled(aliceLine, "Début", "input").fill(d1);
+  await labelled(aliceLine, "Fin", "input").fill(d2);
+  await labelled(aliceLine, "Classe de ressource", "select").selectOption("PROGRAMMEUR");
+  await labelled(aliceLine, "Ressource proposée", "select").selectOption("R-ALICE");
+  await labelled(aliceLine, "Heures", "input").fill("8");
+  await labelled(aliceLine, "Description spécifique", "textarea").fill("Support Alice pour les nacelles");
+
+  await editor.getByRole("button", { name: "+ Ajouter une ligne" }).click();
+  cards = editor.locator(".request-line-card");
+  await expect(cards).toHaveCount(4);
+  const bobLine = cards.nth(3);
+  await labelled(bobLine, "Début", "input").fill(d1);
+  await labelled(bobLine, "Fin", "input").fill(d2);
+  await labelled(bobLine, "Classe de ressource", "select").selectOption("PROGRAMMEUR");
+  await labelled(bobLine, "Ressource proposée", "select").selectOption("R-BOB");
+  await labelled(bobLine, "Heures", "input").fill("8");
+  await labelled(bobLine, "Description spécifique", "textarea").fill("Support Bob sans actif associé");
 
   const summary = editor.locator(".request-lines-summary");
-  await expect(summary).toContainText("1ligne(s) main-d’œuvre");
-  await expect(summary).toContainText("1ligne(s) actif");
-  await expect(summary).toContainText("8heure(s) humaines projetées");
+  await expect(summary).toContainText("2ligne(s) main-d’œuvre");
+  await expect(summary).toContainText("2ligne(s) actif");
+  await expect(summary).toContainText("16heure(s) humaines projetées");
 
   await editor.getByRole("button", { name: "Créer le brouillon" }).click();
   const createdNotice = projectManager.page.locator(".demand-notice");
@@ -1313,17 +1413,13 @@ test("mixed asset demand uses authoritative reservations, conflicts, refresh and
       estimated_hours: number | null;
     }>;
   };
-  const activeAsset = draft.lines.find((line) => line.kind === "ASSET");
-  const activeWorkforce = draft.lines.find((line) => line.kind === "WORKFORCE");
-  expect(activeAsset).toMatchObject({
-    asset_type_id: "AT-LIFT",
-    proposed_asset_id: "A-LIFT-1",
-    estimated_hours: 4,
-  });
-  expect(activeWorkforce).toMatchObject({
-    proposed_resource_id: "R-ALICE",
-    estimated_hours: 8,
-  });
+  const activeAssets = draft.lines.filter((line) => line.kind === "ASSET");
+  const activeWorkforce = draft.lines.filter((line) => line.kind === "WORKFORCE");
+  expect(activeAssets).toHaveLength(2);
+  expect(new Set(activeAssets.map((line) => line.proposed_asset_id))).toEqual(new Set([lift63Id, lift64Id]));
+  expect(activeAssets.every((line) => line.asset_type_id === assetTypeId)).toBeTruthy();
+  expect(activeWorkforce).toHaveLength(2);
+  expect(new Set(activeWorkforce.map((line) => line.proposed_resource_id))).toEqual(new Set(["R-ALICE", "R-BOB"]));
 
   await workflowSelect(projectManager.page, demandNumber);
   await projectManager.page.getByRole("button", { name: "Soumettre", exact: true }).click();
@@ -1335,28 +1431,46 @@ test("mixed asset demand uses authoritative reservations, conflicts, refresh and
   const coordinator = await openAs(browser, "COORDINATOR");
   await navigateMain(coordinator.page, "Demandes");
   await workflowSelect(coordinator.page, demandNumber);
-  await coordinator.page.getByLabel(/Commentaire d’approbation/).fill("Approbation demande mixte #291F");
+  await coordinator.page.getByLabel(/Commentaire d’approbation/).fill("Approbation demande mixte #496");
   await coordinator.page.getByRole("button", { name: "Approuver", exact: true }).click();
   await expect(coordinator.page.locator(".demand-notice").filter({ hasText: "Demande approuvée" })).toContainText(
     "Demande approuvée",
   );
 
-  const materializedAsset = coordinator.page.locator(".asset-detail-row").filter({ hasText: "LIFT — Nacelle" }).first();
-  await expect(materializedAsset).toBeVisible();
-  await expect(materializedAsset).toContainText("À réserver");
-  await expect(materializedAsset).toContainText("Budget d’usage : 4 h");
-  await expect(materializedAsset).not.toContainText("Nacelle 01");
+  const materializedAssets = coordinator.page.locator(".asset-detail-row").filter({ hasText: "LIFT496 — Nacelle" });
+  await expect(materializedAssets).toHaveCount(2);
+  await expect(materializedAssets.nth(0)).toContainText("À réserver");
+  await expect(materializedAssets.nth(1)).toContainText("À réserver");
+  await expect(materializedAssets.nth(0)).not.toContainText("Nacelle #63");
+  await expect(materializedAssets.nth(1)).not.toContainText("Nacelle #64");
 
   await navigateMain(coordinator.page, "Planning opérationnel");
   await coordinator.page.getByRole("button", { name: /Suivante/ }).click();
   const assetPanel = coordinator.page.locator(".asset-planning-panel");
   await expect(assetPanel.getByRole("heading", { name: "Actifs et réservations" })).toBeVisible();
-  let requirementCard = assetPanel.locator(".asset-requirement-card").filter({ hasText: demandNumber }).first();
-  await expect(requirementCard).toContainText("À réserver");
+  const orderedPlanningPanels = await coordinator.page
+    .locator(".planning-layout, .asset-planning-panel")
+    .evaluateAll((nodes) => nodes.map((node) => (
+      node.classList.contains("planning-layout") ? "human" : "assets"
+    )));
+  expect(orderedPlanningPanels.slice(0, 2)).toEqual(["human", "assets"]);
+  let demandRequirements = assetPanel.locator(".asset-requirement-card").filter({ hasText: demandNumber });
+  await expect(demandRequirements).toHaveCount(2);
+  await expect(demandRequirements.nth(0)).toContainText("À réserver");
+  await expect(demandRequirements.nth(1)).toContainText("À réserver");
 
-  const catalogResponse = await coordinator.page.request.get("/api/v1/assets/catalog");
+  const aliceRow = coordinator.page.locator(".resource-row").filter({ hasText: "Alice" }).first();
+  const bobRow = coordinator.page.locator(".resource-row").filter({ hasText: "Bob" }).first();
+  let aliceShift = aliceRow.locator(".shift-card").filter({ hasText: demandNumber }).first();
+  let bobShift = bobRow.locator(".shift-card").filter({ hasText: demandNumber }).first();
+  await expect(aliceShift).toBeVisible();
+  await expect(bobShift).toBeVisible();
+  await expect(aliceShift).not.toContainText("Nacelle #63");
+  await expect(bobShift).not.toContainText("Nacelle #63");
+
+  catalogResponse = await coordinator.page.request.get("/api/v1/assets/catalog");
   expect(catalogResponse.ok()).toBeTruthy();
-  const catalog = await catalogResponse.json() as { planning_version: number };
+  catalog = await catalogResponse.json() as typeof catalog;
   const bumpVersion = await coordinator.page.request.post("/api/v1/assets/A-LIFT-2/unavailability", {
     data: {
       start_date: d5,
@@ -1367,22 +1481,50 @@ test("mixed asset demand uses authoritative reservations, conflicts, refresh and
   });
   expect(bumpVersion.status(), await bumpVersion.text()).toBe(201);
 
-  let unitSelect = requirementCard.getByRole("combobox");
-  await unitSelect.selectOption("A-LIFT-1");
+  let requirementCard = demandRequirements.nth(0);
+  await requirementCard.getByRole("combobox").first().selectOption(lift63Id);
   await requirementCard.getByRole("button", { name: "Réserver cette unité" }).click();
   await expect(assetPanel.locator(".asset-planning-feedback")).toContainText(
     "Le planning a changé depuis l’ouverture de cette vue",
   );
 
-  requirementCard = assetPanel.locator(".asset-requirement-card").filter({ hasText: demandNumber }).first();
-  await expect(requirementCard).toBeVisible();
-  unitSelect = requirementCard.getByRole("combobox");
-  await unitSelect.selectOption("A-LIFT-1");
+  demandRequirements = assetPanel.locator(".asset-requirement-card").filter({ hasText: demandNumber });
+  requirementCard = demandRequirements.nth(0);
+  await requirementCard.getByRole("combobox").first().selectOption(lift63Id);
   await requirementCard.getByRole("button", { name: "Réserver cette unité" }).click();
   await expect(assetPanel.locator(".asset-planning-feedback")).toContainText("Réservation enregistrée");
-  requirementCard = assetPanel.locator(".asset-requirement-card").filter({ hasText: demandNumber }).first();
-  await expect(requirementCard).toContainText("NAC-01 — Nacelle 01");
+
+  requirementCard = assetPanel.locator(".asset-requirement-card").filter({
+    has: coordinator.page.locator(".asset-current-allocation strong").filter({ hasText: "Nacelle #63" }),
+  }).first();
   await expect(requirementCard).toContainText("décision manuelle verrouillée");
+  let operatorSelect = requirementCard.getByLabel(/Opérateur qualifiant/);
+  await expect(operatorSelect.locator('option[value="R-ALICE"]')).toBeAttached();
+  await operatorSelect.selectOption("R-ALICE");
+  await requirementCard.getByRole("button", { name: "Enregistrer l’opérateur" }).click();
+  await expect(assetPanel.locator(".asset-planning-feedback")).toContainText("Opérateur qualifiant enregistré");
+
+  demandRequirements = assetPanel.locator(".asset-requirement-card").filter({ hasText: demandNumber });
+  const secondRequirement = demandRequirements.filter({ hasText: "À réserver" }).first();
+  await secondRequirement.getByRole("combobox").first().selectOption(lift64Id);
+  await secondRequirement.getByRole("button", { name: "Réserver cette unité" }).click();
+  await expect(assetPanel.locator(".asset-planning-feedback")).toContainText("Réservation enregistrée");
+
+  const secondAllocated = assetPanel.locator(".asset-requirement-card").filter({
+    has: coordinator.page.locator(".asset-current-allocation strong").filter({ hasText: "Nacelle #64" }),
+  }).first();
+  operatorSelect = secondAllocated.getByLabel(/Opérateur qualifiant/);
+  await expect(operatorSelect.locator('option[value="R-ALICE"]')).toBeAttached();
+  await operatorSelect.selectOption("R-ALICE");
+  await secondAllocated.getByRole("button", { name: "Enregistrer l’opérateur" }).click();
+  await expect(assetPanel.locator(".asset-planning-feedback")).toContainText("Opérateur qualifiant enregistré");
+
+  aliceShift = aliceRow.locator(".shift-card").filter({ hasText: demandNumber }).first();
+  bobShift = bobRow.locator(".shift-card").filter({ hasText: demandNumber }).first();
+  await expect(aliceShift).toContainText("Nacelle #63");
+  await expect(aliceShift).toContainText("Nacelle #64");
+  await expect(bobShift).not.toContainText("Nacelle #63");
+  await expect(bobShift).not.toContainText("Nacelle #64");
 
   const unavailabilityForm = assetPanel.locator(".asset-unavailability-form");
   await labelled(unavailabilityForm, "Actif", "select").selectOption("A-LIFT-2");
@@ -1399,7 +1541,7 @@ test("mixed asset demand uses authoritative reservations, conflicts, refresh and
     data: {
       project_number: "P-251",
       priority: "Normale",
-      description: "Deuxième besoin d’actif en conflit #291F",
+      description: "Deuxième besoin d’actif en conflit #496",
       lines: [{
         position: 0,
         kind: "ASSET",
@@ -1412,7 +1554,7 @@ test("mixed asset demand uses authoritative reservations, conflicts, refresh and
         work_package_ref: null,
         task_code: "210",
         proposed_resource_id: null,
-        asset_type_id: "AT-LIFT",
+        asset_type_id: assetTypeId,
         proposed_asset_id: null,
         confirmation: "Confirmée",
         description: "Conflit exclusif attendu",
@@ -1429,7 +1571,7 @@ test("mixed asset demand uses authoritative reservations, conflicts, refresh and
   const approvalVersion = (await approvalSnapshot.json()).planning_version as number;
   const conflictApproved = await coordinator.page.request.post(
     "/api/v1/demands/" + encodeURIComponent(conflictNumber) + "/approve",
-    { data: { comment: "Approbation conflit actif #291F", expected_planning_version: approvalVersion } },
+    { data: { comment: "Approbation conflit actif #496", expected_planning_version: approvalVersion } },
   );
   expect(conflictApproved.status(), await conflictApproved.text()).toBe(200);
 
@@ -1439,18 +1581,18 @@ test("mixed asset demand uses authoritative reservations, conflicts, refresh and
   const refreshedAssetPanel = coordinator.page.locator(".asset-planning-panel");
   let conflictCard = refreshedAssetPanel.locator(".asset-requirement-card").filter({ hasText: conflictNumber }).first();
   await expect(conflictCard).toBeVisible();
-  await conflictCard.getByRole("combobox").selectOption("A-LIFT-1");
+  await conflictCard.getByRole("combobox").first().selectOption(lift63Id);
   await conflictCard.getByRole("button", { name: "Réserver cette unité" }).click();
   await expect(refreshedAssetPanel.locator(".asset-planning-feedback")).toContainText("Actif déjà réservé");
   await expect(refreshedAssetPanel.locator(".asset-planning-feedback")).toContainText("asset_double_booking");
 
   conflictCard = refreshedAssetPanel.locator(".asset-requirement-card").filter({ hasText: conflictNumber }).first();
-  await conflictCard.getByRole("combobox").selectOption("A-LIFT-2");
+  await conflictCard.getByRole("combobox").first().selectOption(lift65Id);
   await conflictCard.getByRole("button", { name: "Réserver cette unité" }).click();
   await expect(refreshedAssetPanel.locator(".asset-planning-feedback")).toContainText("Réservation enregistrée");
   await expect(
     refreshedAssetPanel.locator(".asset-requirement-card").filter({ hasText: conflictNumber }).first(),
-  ).toContainText("NAC-02 — Nacelle 02");
+  ).toContainText("Nacelle #65");
   await closeContext(coordinator.context);
 
   const editorContext = await openAs(browser, "PROJECT_MANAGER");
@@ -1469,15 +1611,16 @@ test("mixed asset demand uses authoritative reservations, conflicts, refresh and
   const reapprover = await openAs(browser, "COORDINATOR");
   await navigateMain(reapprover.page, "Demandes");
   await workflowSelect(reapprover.page, demandNumber);
-  await reapprover.page.getByLabel(/Commentaire d’approbation/).fill("Réapprobation actif étendu #291F");
+  await reapprover.page.getByLabel(/Commentaire d’approbation/).fill("Réapprobation actif étendu #496");
   await reapprover.page.getByRole("button", { name: "Approuver", exact: true }).click();
   await expect(reapprover.page.locator(".demand-notice").filter({ hasText: "Demande approuvée" })).toContainText(
     "Demande approuvée",
   );
-  const preservedAsset = reapprover.page.locator(".asset-detail-row").filter({ hasText: "LIFT — Nacelle" }).first();
-  await expect(preservedAsset).toContainText(d1 + " → " + d3);
-  await expect(preservedAsset).toContainText("Nacelle 01");
-  await expect(preservedAsset).toContainText("NAC-01 · verrouillée");
+  const preserved63 = reapprover.page.locator(".asset-detail-row").filter({ hasText: "Nacelle #63" }).first();
+  const preserved64 = reapprover.page.locator(".asset-detail-row").filter({ hasText: "Nacelle #64" }).first();
+  await expect(preserved63).toContainText(d1 + " → " + d3);
+  await expect(preserved63).toContainText("NAC-63 · verrouillée");
+  await expect(preserved64).toContainText("NAC-64 · verrouillée");
   await closeContext(reapprover.context);
 });
 
