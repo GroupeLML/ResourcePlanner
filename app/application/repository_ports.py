@@ -16,9 +16,15 @@ class WorkPackageRepositoryPort(Protocol):
 
     def get(self, reference: str) -> WorkPackageReadModel | None: ...
 
-    def create(self, values: Mapping[str, Any]) -> str: ...
+    def create(self, values: Mapping[str, Any]) -> WorkPackageReadModel: ...
 
-    def update(self, reference: str, updates: Mapping[str, Any]) -> str: ...
+    def update(
+        self,
+        reference: str,
+        updates: Mapping[str, Any],
+        *,
+        expected_version: int,
+    ) -> WorkPackageReadModel: ...
 
 
 class DemandRepositoryPort(Protocol):
