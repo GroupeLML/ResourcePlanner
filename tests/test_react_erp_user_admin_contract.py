@@ -27,7 +27,7 @@ class ReactErpUserAdminContractTests(unittest.TestCase):
         self.assertIn('return "En attente"', page)
         self.assertIn("<ErpUserDirectoryPanel roleCatalog={roleCatalog}", user_page)
 
-    def test_api_uses_erp_directory_without_app_user_creation_contract(self) -> None:
+    def test_api_exposes_preprovisioned_app_user_without_oidc_coordinates(self) -> None:
         api = API.read_text(encoding="utf-8")
         page = PAGE.read_text(encoding="utf-8")
 
@@ -36,6 +36,7 @@ class ReactErpUserAdminContractTests(unittest.TestCase):
         self.assertIn('import { csrfHeaders } from "./csrf"', api)
         self.assertIn("...csrfHeaders()", api)
         self.assertIn('credentials: "include"', api)
+        self.assertIn("app_user_id", api)
         self.assertIn("preferred_username → UserID", page)
         self.assertNotIn("issuer:", page)
         self.assertNotIn("subject:", page)

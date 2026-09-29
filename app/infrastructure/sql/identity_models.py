@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, String, Text, text, true
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, String, Text, func, text, true
 from sqlalchemy.orm import Mapped, mapped_column
 
-from .base import Base, TimestampMixin, new_id
+from .base import Base, TimestampMixin, new_id, utc_now
 
 
 class AppUser(TimestampMixin, Base):
@@ -69,6 +69,35 @@ class AppUser(TimestampMixin, Base):
     )
     roles_json: Mapped[str] = mapped_column(Text, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=true(), index=True)
+
+
+class IdentityAdminAudit(Base):
+    __tablename__ = "identity_admin_audit"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    actor_user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("app_users.id"),
+        nullable=False,
+        index=True,
+    )
+    target_user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("app_users.id"),
+        nullable=False,
+        index=True,
+    )
+    erp_user_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    action: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    old_state_json: Mapped[str] = mapped_column(Text, nullable=False)
+    new_state_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        server_default=func.now(),
+        nullable=False,
+        index=True,
+    )
 
 
 class AuthLoginTransaction(TimestampMixin, Base):

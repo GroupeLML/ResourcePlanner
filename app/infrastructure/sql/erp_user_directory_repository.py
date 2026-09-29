@@ -35,8 +35,10 @@ class SqlErpUserDirectoryRepository:
         resource = self._session.scalar(
             select(Resource).where(Resource.external_id == row.employee_external_id)
         )
-        raw_roles = json.loads(row.roles_json or "[]")
-        roles = normalize_roles(tuple(str(role) for role in raw_roles))
+        raw_directory_roles = json.loads(row.roles_json or "[]")
+        directory_roles = normalize_roles(
+            tuple(str(role) for role in raw_directory_roles)
+        )
         linked_user = self._session.scalar(
             select(AppUser).where(AppUser.erp_user_id == row.user_id)
         )
@@ -46,23 +48,24 @@ class SqlErpUserDirectoryRepository:
                 == row.employee_external_id
             )
         ).all()
+
+        oidc_state = "pending"
         if linked_user is None:
-            # Compatibility for accounts created before IDENTITY-B: until
-            # IDENTITY-D switches the runtime, a historically linked AppUser may
-            # still have no explicit erp_user_id. Reuse it only when EmployeID maps
-            # to a single RP_Users account; never guess among several UserID values.
-            employee_linked_user = self._session.scalar(
+            # Compatibility only for identities already linked before erp_user_id
+            # existed. Never adopt a pending account by EmployeID, and never guess
+            # among multiple RP_Users UserID values.
+            legacy_user = self._session.scalar(
                 select(AppUser).where(
                     AppUser.employee_external_id == row.employee_external_id,
                     AppUser.erp_user_id.is_(None),
+                    AppUser.issuer.is_not(None),
+                    AppUser.subject.is_not(None),
                 )
             )
-            if employee_linked_user is not None and len(candidate_user_ids) == 1:
-                linked_user = employee_linked_user
-            elif employee_linked_user is not None:
+            if legacy_user is not None and len(candidate_user_ids) == 1:
+                linked_user = legacy_user
+            elif legacy_user is not None:
                 oidc_state = "conflict"
-            else:
-                oidc_state = "pending"
 
         if linked_user is not None:
             issuer = _optional(linked_user.issuer)
@@ -72,9 +75,14 @@ class SqlErpUserDirectoryRepository:
             elif issuer is not None and subject is not None:
                 oidc_state = "linked"
             else:
-                # The database CHECK prevents this state after IDENTITY-B, but
-                # keep the read projection fail-closed for unexpected legacy data.
                 oidc_state = "conflict"
+            raw_roles = json.loads(linked_user.roles_json or "[]")
+            roles = normalize_roles(tuple(str(role) for role in raw_roles))
+            local_active = bool(linked_user.active)
+        else:
+            roles = directory_roles
+            local_active = bool(row.local_active)
+
         return ErpUserDirectoryRecord(
             user_id=row.user_id,
             employee_external_id=row.employee_external_id,
@@ -84,7 +92,7 @@ class SqlErpUserDirectoryRepository:
             email=_optional(row.email),
             erp_user_active=bool(row.erp_user_active),
             employee_status=_optional(row.employee_status),
-            local_active=bool(row.local_active),
+            local_active=local_active,
             roles=roles,
             resource_id=resource.id if resource is not None else None,
             resource_name=resource.name if resource is not None else None,
@@ -93,6 +101,7 @@ class SqlErpUserDirectoryRepository:
             oidc_user_active=(
                 bool(linked_user.active) if linked_user is not None else None
             ),
+            app_user_id=linked_user.id if linked_user is not None else None,
         )
 
     def upsert_external_user(self, user: ExternalErpUserRecord) -> str:

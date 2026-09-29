@@ -40,6 +40,7 @@ class ErpUserDirectoryRecord:
     resource_erp_active: bool | None
     oidc_state: str = "pending"
     oidc_user_active: bool | None = None
+    app_user_id: str | None = None
 
     @property
     def source_admissible(self) -> bool:

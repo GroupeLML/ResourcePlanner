@@ -34,6 +34,7 @@ EXPECTED_TABLES = {
     "asset_allocations",
     "app_users",
     "erp_user_directory",
+    "identity_admin_audit",
     "business_contacts",
     "auth_login_transactions",
     "auth_sessions",
@@ -99,6 +100,7 @@ class SqlSchemaTests(unittest.TestCase):
         idempotency = Base.metadata.tables["command_idempotency_receipts"].c
         users = Base.metadata.tables["app_users"].c
         erp_users = Base.metadata.tables["erp_user_directory"].c
+        identity_audit = Base.metadata.tables["identity_admin_audit"].c
         login_transactions = Base.metadata.tables["auth_login_transactions"].c
         auth_sessions = Base.metadata.tables["auth_sessions"].c
         communication_contacts = Base.metadata.tables["communication_contacts"].c
@@ -246,6 +248,13 @@ class SqlSchemaTests(unittest.TestCase):
         self.assertTrue(users.email.nullable)
         self.assertFalse(users.roles_json.nullable)
         self.assertFalse(users.active.nullable)
+        self.assertFalse(identity_audit.actor_user_id.nullable)
+        self.assertFalse(identity_audit.target_user_id.nullable)
+        self.assertTrue(identity_audit.erp_user_id.nullable)
+        self.assertFalse(identity_audit.action.nullable)
+        self.assertFalse(identity_audit.old_state_json.nullable)
+        self.assertFalse(identity_audit.new_state_json.nullable)
+        self.assertFalse(identity_audit.created_at.nullable)
         self.assertFalse(login_transactions.state_hash.nullable)
         self.assertFalse(login_transactions.nonce.nullable)
         self.assertFalse(login_transactions.code_verifier.nullable)

@@ -16,6 +16,7 @@ export type ErpUserDirectoryReadModel = {
   resource_id: string | null;
   resource_name: string | null;
   resource_erp_active: boolean | null;
+  app_user_id: string | null;
   oidc_state: string;
   access_ready: boolean;
 };
