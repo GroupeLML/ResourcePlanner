@@ -761,9 +761,9 @@ class SqlDemandRepository(DemandRepositoryPort):
                 update(WorkPackage)
                 .where(WorkPackage.id == identifier)
                 .values(
-                version=WorkPackage.version,
-                updated_at=WorkPackage.updated_at,
-            )
+                    version=WorkPackage.version,
+                    updated_at=WorkPackage.updated_at,
+                )
             )
             if int(result.rowcount or 0) != 1:
                 raise KeyError(f"WorkPackage {identifier} introuvable")
