@@ -1,6 +1,6 @@
 # Identité — pré-provisionnement AppUser et première liaison OIDC
 
-Status: Target contract accepted by IDENTITY-A
+Status: Target contract implemented through IDENTITY-D
 Date: 2026-09-29
 ADR: `docs/architecture/ADR-012-preprovision-app-users-before-oidc-link.md`
 
@@ -8,9 +8,9 @@ ADR: `docs/architecture/ADR-012-preprovision-app-users-before-oidc-link.md`
 
 Ce document fixe les contrats fonctionnels et de sécurité qui guideront les tranches d'implémentation suivant IDENTITY-A.
 
-IDENTITY-A est documentaire uniquement. Le runtime de `main` continue temporairement de refléter #223 tant que les tranches suivantes n'ont pas remplacé le provisionnement au premier login.
+IDENTITY-A a fixé ce contrat de manière documentaire. IDENTITY-B a livré le schéma/persistance, IDENTITY-C le pré-provisionnement ADMIN autoritaire et IDENTITY-D remplace maintenant le provisionnement au premier login par une liaison OIDC uniquement.
 
-Aucune exigence ci-dessous n'autorise IDENTITY-A à modifier modèles SQL, migrations Alembic, repositories, routes, services OIDC, frontend, sessions ou tests fonctionnels runtime.
+La projection/UX finale et la reprise/acceptation transversale restent suivies par les tranches suivantes du roadmap.
 
 ## 2. Concepts et identités
 
@@ -353,7 +353,7 @@ Le principe autoritaire devient :
 aucune identité OIDC ne crée elle-même un compte RessourcePlanner
 ```
 
-IDENTITY-A documente cette incompatibilité. Sa suppression/neutralisation est reportée à IDENTITY-D.
+IDENTITY-D neutralise ce fallback dans le callback OIDC : même si la configuration legacy `RESOURCEPLANNER_OIDC_AUTO_PROVISION` est encore parseable pour compatibilité, elle ne peut plus créer un `AppUser` lors d'un login.
 
 ## 18. Matrice d'acceptation pour les tranches suivantes
 
@@ -418,3 +418,25 @@ Sur `main` au départ de cette tranche, #223 est encore le comportement impléme
 - le fallback `RESOURCEPLANNER_OIDC_AUTO_PROVISION` existe encore pour certains providers/fixtures.
 
 Ces écarts sont attendus et volontairement non corrigés par IDENTITY-A.
+
+
+## 22. État après IDENTITY-D
+
+La tranche IDENTITY-D implémente désormais le flux cible du premier login :
+
+```text
+OIDC validé
+  → paire déjà liée : validation AppUser + ERP puis résolution
+  → sinon preferred_username.strip() → RP_Users.UserID
+  → AppUser.erp_user_id exact requis
+  → EmployeID exact requis
+  → AppUser actif + rôles locaux requis
+  → ERP admissible requis
+  → bind_external_identity() atomique
+  → audit OIDC_IDENTITY_LINKED
+  → session
+```
+
+Le callback ne crée, n'active, ne réactive et ne rerôle plus aucun `AppUser`. Il ne met pas à jour le nom/courriel depuis les claims OIDC. Un replay de la même paire réutilise le même UUID. Une deuxième paire pour le même compte, une paire déjà liée visant un autre `erp_user_id`, un mismatch d'EmployeID ou un compte ERP inadmissible sont refusés fail-closed.
+
+La configuration legacy d'auto-provisionnement reste temporairement lisible afin d'éviter un changement de configuration adjacent, mais n'est plus consultée par le callback.

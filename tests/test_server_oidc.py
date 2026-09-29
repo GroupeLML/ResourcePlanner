@@ -78,12 +78,31 @@ class FakeOidcClient:
 class ServerOidcTests(unittest.TestCase):
     @classmethod
     def _seed_database(cls, session) -> None:
-        user = SqlUserIdentityRepository(session).upsert(
-            issuer=ISSUER,
-            subject="subject-1",
+        session.add(
+            ErpUserDirectoryEntry(
+                user_id="ERP-BASE",
+                employee_external_id="EMP-BASE",
+                display_name="Technicien ERP",
+                erp_user_active=True,
+                employee_status="Actif",
+                local_active=True,
+                roles_json=json.dumps([ROLE_TECHNICIAN]),
+            )
+        )
+        session.flush()
+        repository = SqlUserIdentityRepository(session)
+        user = repository.create_account(
             display_name="Technicien OIDC",
             email=None,
             roles=(ROLE_TECHNICIAN,),
+            active=True,
+            employee_external_id="EMP-BASE",
+            erp_user_id="ERP-BASE",
+        )
+        repository.bind_external_identity(
+            user.user_id,
+            ISSUER,
+            "subject-1",
         )
         cls.user_id = user.user_id
 
@@ -143,7 +162,7 @@ class ServerOidcTests(unittest.TestCase):
         employee_external_id: str = "EMP-42",
         local_active: bool = True,
         roles: tuple[str, ...] = (ROLE_ADMIN,),
-    ) -> None:
+    ) -> str:
         with app.state.session_factory.begin() as session:
             session.add(
                 ErpUserDirectoryEntry(
@@ -156,6 +175,16 @@ class ServerOidcTests(unittest.TestCase):
                     roles_json=json.dumps(list(roles)),
                 )
             )
+            session.flush()
+            account = SqlUserIdentityRepository(session).create_account(
+                display_name="Utilisateur pré-provisionné",
+                email=None,
+                roles=roles,
+                active=local_active,
+                employee_external_id=employee_external_id,
+                erp_user_id=user_id,
+            )
+            return account.user_id
 
     def _login_callback(self, client: TestClient) -> object:
         login = client.get("/api/v1/auth/login", follow_redirects=False)
@@ -198,7 +227,7 @@ class ServerOidcTests(unittest.TestCase):
             self.assertEqual(me.json()["display_name"], "Technicien OIDC")
             self.assertEqual(me.json()["roles"], [ROLE_TECHNICIAN])
             self.assertEqual(me.json()["auth_mode"], "oidc")
-            self.assertIsNone(me.json()["employee_external_id"])
+            self.assertEqual(me.json()["employee_external_id"], "EMP-BASE")
 
             with app.state.session_factory.begin() as session:
                 stored = session.scalar(select(AuthSession))
@@ -220,7 +249,7 @@ class ServerOidcTests(unittest.TestCase):
         self.assertEqual(before.json()["error"]["code"], "authentication_required")
         self.assertEqual(after.status_code, 401)
 
-    def test_controlled_erp_first_login_creates_app_user_and_session_with_diagnostics_disabled(self) -> None:
+    def test_controlled_erp_first_login_links_preprovisioned_app_user_and_creates_session(self) -> None:
         fake = FakeOidcClient(
             OidcIdentity(
                 issuer=ISSUER,
@@ -231,7 +260,7 @@ class ServerOidcTests(unittest.TestCase):
             )
         )
         app = self._app(fake, claim_diagnostics=False)
-        self._seed_erp_user(app)
+        expected_user_id = self._seed_erp_user(app)
 
         with TestClient(app) as client:
             callback = self._login_callback(client)
@@ -239,17 +268,21 @@ class ServerOidcTests(unittest.TestCase):
 
         self.assertEqual(callback.status_code, 303, callback.text)
         self.assertEqual(me.status_code, 200, me.text)
+        self.assertEqual(me.json()["local_user_id"], expected_user_id)
         self.assertEqual(me.json()["subject"], "subject-erp-controlled")
+        self.assertEqual(me.json()["display_name"], "Utilisateur pré-provisionné")
         self.assertEqual(me.json()["roles"], [ROLE_ADMIN])
         self.assertEqual(me.json()["employee_external_id"], "EMP-42")
 
         with app.state.session_factory() as session:
             rows = session.scalars(
                 select(AppUser).where(
-                    AppUser.subject == "subject-erp-controlled"
+                    AppUser.erp_user_id == "ERPUSER42"
                 )
             ).all()
             self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0].id, expected_user_id)
+            self.assertEqual(rows[0].subject, "subject-erp-controlled")
             self.assertIsNotNone(rows[0].business_contact_id)
 
     def test_preferred_username_unknown_is_refused_even_when_legacy_auto_provision_is_enabled(self) -> None:
@@ -447,7 +480,7 @@ class ServerOidcTests(unittest.TestCase):
         self.assertEqual(callback.status_code, 403)
         self.assertEqual(callback.json()["error"]["code"], "oidc_user_not_registered")
 
-    def test_callback_can_auto_provision_unknown_identity_when_explicitly_enabled(self) -> None:
+    def test_legacy_auto_provision_flag_cannot_create_unknown_identity(self) -> None:
         fake = FakeOidcClient(
             OidcIdentity(
                 issuer=ISSUER,
@@ -459,20 +492,21 @@ class ServerOidcTests(unittest.TestCase):
         app = self._app(fake, auto_provision=True)
         with TestClient(app) as client:
             callback = self._login_callback(client)
-            self.assertEqual(callback.status_code, 303)
             me = client.get("/api/v1/auth/me")
-            self.assertEqual(me.status_code, 200)
-            self.assertEqual(me.json()["roles"], [ROLE_TECHNICIAN])
-            self.assertEqual(me.json()["permissions"], ["read"])
-            self.assertIsNone(me.json()["employee_external_id"])
 
+        self.assertEqual(callback.status_code, 403)
+        self.assertEqual(
+            callback.json()["error"]["code"],
+            "oidc_user_not_registered",
+        )
+        self.assertEqual(me.status_code, 401)
         with app.state.session_factory() as session:
-            stored = SqlUserIdentityRepository(session).get_by_external_identity(
-                ISSUER,
-                "auto-subject",
+            self.assertIsNone(
+                SqlUserIdentityRepository(session).get_by_external_identity(
+                    ISSUER,
+                    "auto-subject",
+                )
             )
-            assert stored is not None
-            self.assertEqual(stored.roles, (ROLE_TECHNICIAN,))
 
     def test_login_state_is_one_time_use(self) -> None:
         fake = FakeOidcClient(
