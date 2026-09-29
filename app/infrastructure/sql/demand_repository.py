@@ -7,7 +7,7 @@ import json
 import re
 from typing import Any
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, true
 from sqlalchemy.orm import Session, aliased
 
 from ...application.demand_completion import (
@@ -214,7 +214,7 @@ class SqlDemandRepository(DemandRepositoryPort):
                 ResourceRequirement.origin == "REQUEST",
                 (Shift.allocation_type.is_(None))
                 | (Shift.allocation_type != MISSING_ALLOCATION_TYPE),
-                Shift.locked.is_(True),
+                Shift.locked == true(),
             )
             .correlate(WorkforceRequest)
             .scalar_subquery()
@@ -241,7 +241,7 @@ class SqlDemandRepository(DemandRepositoryPort):
             )
             .where(
                 AssetRequirement.workforce_request_id == WorkforceRequest.id,
-                AssetAllocation.locked.is_(True),
+                AssetAllocation.locked == true(),
             )
             .correlate(WorkforceRequest)
             .scalar_subquery()
@@ -1406,7 +1406,7 @@ class SqlDemandRepository(DemandRepositoryPort):
                 select(RequestLine).where(
                     RequestLine.id == wanted,
                     RequestLine.workforce_request_id == request.id,
-                    RequestLine.active.is_(True),
+                    RequestLine.active == true(),
                 )
             )
             if line is None or line.desired_start is None:
@@ -1423,7 +1423,7 @@ class SqlDemandRepository(DemandRepositoryPort):
                     select(RequestLine)
                     .where(
                         RequestLine.workforce_request_id == request.id,
-                        RequestLine.active.is_(True),
+                        RequestLine.active == true(),
                     )
                     .order_by(RequestLine.position, RequestLine.id)
                 ).all()
