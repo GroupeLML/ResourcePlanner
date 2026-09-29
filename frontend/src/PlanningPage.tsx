@@ -177,11 +177,13 @@ function ProjectLabel({ number, name }: { number: string | null; name: string | 
 function ShiftCard({
   shift,
   diagnostic,
+  assetLabels,
   onEdit,
   dragEnabled,
 }: {
   shift: ShiftReadModel;
   diagnostic: PlanningSegmentCapacityDiagnosticReadModel | null;
+  assetLabels: string[];
   onEdit: (shift: ShiftReadModel) => void;
   dragEnabled: boolean;
 }) {
@@ -246,6 +248,11 @@ function ShiftCard({
         {shift.demand_number && <span>#{shift.demand_number}</span>}
       </div>
       {meta.length > 0 && <small>{meta.join(" · ")}</small>}
+      {assetLabels.length > 0 && (
+        <small className="shift-assets" aria-label="Actifs réservés">
+          {assetLabels.length === 1 ? "Actif : " : "Actifs : "}{assetLabels.join(" · ")}
+        </small>
+      )}
     </button>
   );
 }
@@ -331,6 +338,7 @@ function ResourceRow({
   capacity,
   pendingLoads,
   diagnostics,
+  assetsByShift,
   onEditShift,
   onOpenDemand,
   dragEnabled,
@@ -343,6 +351,7 @@ function ResourceRow({
   capacity: PlanningResourceCapacityReadModel | null;
   pendingLoads: PendingDemandLoadReadModel[];
   diagnostics: Map<string, PlanningSegmentCapacityDiagnosticReadModel>;
+  assetsByShift: Map<string, string[]>;
   onEditShift: (shift: ShiftReadModel) => void;
   onOpenDemand?: (demandNumber: string) => void;
   dragEnabled: boolean;
@@ -450,6 +459,7 @@ function ResourceRow({
               <ShiftCard
                 shift={shift}
                 diagnostic={diagnostics.get(shift.segment_id) ?? null}
+                assetLabels={assetsByShift.get(shift.allocation_id) ?? []}
                 onEdit={onEditShift}
                 dragEnabled={dragEnabled}
                 key={shift.allocation_id}
@@ -586,6 +596,32 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
     () => new Map((capacityGrid?.segment_diagnostics ?? []).map((row) => [row.segment_id, row])),
     [capacityGrid],
   );
+
+  const assetsByShift = useMemo(() => {
+    const linked = new Map<string, string[]>();
+    if (!snapshot) return linked;
+    const requirementById = new Map(
+      snapshot.asset_requirements.map((requirement) => [requirement.requirement_id, requirement]),
+    );
+    snapshot.shifts.forEach((shift) => {
+      if (!shift.demand_number) return;
+      const labels = new Map<string, string>();
+      snapshot.asset_allocations.forEach((allocation) => {
+        if (allocation.operator_resource_id !== shift.resource_id) return;
+        if (allocation.start_date > shift.work_date || allocation.end_date < shift.work_date) return;
+        const requirement = requirementById.get(allocation.requirement_id);
+        if (!requirement || requirement.demand_number !== shift.demand_number) return;
+        labels.set(allocation.asset_id, allocation.asset_label || allocation.asset_code);
+      });
+      if (labels.size > 0) {
+        linked.set(
+          shift.allocation_id,
+          [...labels.values()].sort((left, right) => left.localeCompare(right, "fr-CA")),
+        );
+      }
+    });
+    return linked;
+  }, [snapshot]);
 
   const query = normalize(search);
 
@@ -1082,14 +1118,6 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
         </section>
       )}
 
-      {snapshot && (
-        <AssetPlanningPanel
-          snapshot={snapshot}
-          canManage={canManagePlanning && !loading}
-          onRefresh={() => setRefreshKey((value) => value + 1)}
-        />
-      )}
-
       <div className="planning-layout">
         <div className="planning-board-panel">
           <div className="planning-board-toolbar">
@@ -1145,6 +1173,7 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
                       capacity={capacity}
                       pendingLoads={pendingLoads}
                       diagnostics={diagnosticsBySegment}
+                      assetsByShift={assetsByShift}
                       onEditShift={setEditingShift}
                       onOpenDemand={setDetailDemandNumber}
                       dragEnabled={canManagePlanning && !dropBusy}
@@ -1184,6 +1213,14 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
           )}
         </aside>
       </div>
+
+      {snapshot && (
+        <AssetPlanningPanel
+          snapshot={snapshot}
+          canManage={canManagePlanning && !loading}
+          onRefresh={() => setRefreshKey((value) => value + 1)}
+        />
+      )}
 
       {dropDialog && dropSourceShift && (
         <PlanningDropDialog

@@ -25,6 +25,7 @@ import {
   updateAvailabilityRule,
   updateResource,
 } from "./api";
+import AssetCatalogPanel from "./AssetCatalogPanel";
 import CompetencyCatalogPanel from "./CompetencyCatalogPanel";
 import CompetencyPicker from "./CompetencyPicker";
 import { ContactSelect } from "./BusinessContactUi";
@@ -690,6 +691,8 @@ export default function ResourcesPage() {
           )}
         </div>
       </div>
+
+      <AssetCatalogPanel competencies={competencies} />
 
       <CompetencyCatalogPanel
         competencies={competencies}
