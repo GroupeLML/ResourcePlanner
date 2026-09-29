@@ -206,5 +206,167 @@ class WorkPackageSqlServerConcurrencyTests(unittest.TestCase):
             engine.dispose()
 
 
+    def test_project_change_vs_new_request_dependency_is_serialized(self) -> None:
+        marker = uuid4().hex[:12]
+        project_1_id = f"WP-GUARD-P1-{marker}"
+        project_2_id = f"WP-GUARD-P2-{marker}"
+        project_1_number = f"WPG1-{marker}"
+        project_2_number = f"WPG2-{marker}"
+        work_package_id = f"WP-GUARD-WP2-{marker}"
+        actor_id = f"WP-GUARD-U2-{marker}"
+
+        engine = create_sql_engine(DATABASE_URL)
+        factory = create_session_factory(engine)
+        try:
+            with factory.begin() as session:
+                session.add_all(
+                    [
+                        Project(
+                            id=project_1_id,
+                            number=project_1_number,
+                            name="502A guard source",
+                            status="Actif",
+                        ),
+                        Project(
+                            id=project_2_id,
+                            number=project_2_number,
+                            name="502A guard target",
+                            status="Actif",
+                        ),
+                        AppUser(
+                            id=actor_id,
+                            issuer=f"urn:resourceplanner:502a:project:{marker}",
+                            subject=marker,
+                            display_name="502A SQL Server project guard",
+                            email=None,
+                            roles_json='["ADMIN"]',
+                            active=True,
+                        ),
+                    ]
+                )
+                session.flush()
+                session.add(
+                    WorkPackage(
+                        id=work_package_id,
+                        project_id=project_1_id,
+                        task_catalog_item_id=None,
+                        version=1,
+                        name="WP project guard",
+                        status="planned",
+                    )
+                )
+
+            def change_project() -> str:
+                with factory.begin() as session:
+                    try:
+                        SqlWorkPackageRepository(
+                            session,
+                            actor_user_id=actor_id,
+                        ).update(
+                            work_package_id,
+                            {"project_number": project_2_number},
+                            expected_version=1,
+                        )
+                    except ApplicationConflictError as exc:
+                        if exc.code != "work_package_project_change_in_use":
+                            raise
+                        return "dependency_won"
+                    return "project_change_won"
+
+            def attach_request() -> tuple[str, str]:
+                with factory.begin() as session:
+                    try:
+                        number = SqlDemandRepository(
+                            session,
+                            actor_name="502A SQL Server project guard",
+                            actor_user_id=actor_id,
+                        ).create(
+                            {
+                                "NumeroProjet": project_1_number,
+                                "SourceEffortID": work_package_id,
+                                "DateDebutSouhaitee": date(2026, 10, 5),
+                                "TempsEstimeHeures": 8,
+                            }
+                        )
+                    except ApplicationConflictError as exc:
+                        if exc.code != "work_package_project_changed_during_link":
+                            raise
+                        return "project_change_won", ""
+                    return "dependency_won", number
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                project_future = executor.submit(change_project)
+                demand_future = executor.submit(attach_request)
+                project_outcome = project_future.result(timeout=30)
+                demand_outcome, demand_number = demand_future.result(timeout=30)
+
+            self.assertEqual(project_outcome, demand_outcome)
+
+            with factory() as session:
+                work_package = session.get(WorkPackage, work_package_id)
+                self.assertIsNotNone(work_package)
+                requests = list(
+                    session.scalars(
+                        select(WorkforceRequest).where(
+                            WorkforceRequest.project_id == project_1_id
+                        )
+                    ).all()
+                )
+                if project_outcome == "project_change_won":
+                    self.assertEqual(work_package.project_id, project_2_id)
+                    self.assertEqual(requests, [])
+                    self.assertEqual(work_package.version, 2)
+                else:
+                    self.assertEqual(work_package.project_id, project_1_id)
+                    self.assertEqual(len(requests), 1)
+                    self.assertEqual(requests[0].legacy_demand_number, demand_number)
+                    line = session.get(RequestLine, requests[0].id)
+                    self.assertIsNotNone(line)
+                    self.assertEqual(line.work_package_id, work_package_id)
+                    self.assertEqual(work_package.version, 1)
+        finally:
+            with factory.begin() as session:
+                request_ids = tuple(
+                    session.scalars(
+                        select(WorkforceRequest.id).where(
+                            WorkforceRequest.project_id.in_(
+                                (project_1_id, project_2_id)
+                            )
+                        )
+                    ).all()
+                )
+                if request_ids:
+                    session.execute(
+                        delete(WorkforceRequestHistory).where(
+                            WorkforceRequestHistory.workforce_request_id.in_(request_ids)
+                        )
+                    )
+                    session.execute(
+                        delete(RequestLine).where(
+                            RequestLine.workforce_request_id.in_(request_ids)
+                        )
+                    )
+                    session.execute(
+                        delete(WorkforceRequest).where(
+                            WorkforceRequest.id.in_(request_ids)
+                        )
+                    )
+                session.execute(
+                    delete(WorkPackageAudit).where(
+                        WorkPackageAudit.work_package_id == work_package_id
+                    )
+                )
+                session.execute(
+                    delete(WorkPackage).where(WorkPackage.id == work_package_id)
+                )
+                session.execute(delete(AppUser).where(AppUser.id == actor_id))
+                session.execute(
+                    delete(Project).where(
+                        Project.id.in_((project_1_id, project_2_id))
+                    )
+                )
+            engine.dispose()
+
+
 if __name__ == "__main__":
     unittest.main()
