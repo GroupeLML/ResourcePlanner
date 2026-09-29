@@ -559,16 +559,24 @@ class SqliteV2CutoverTests(unittest.TestCase):
                     self.assertIsNone(request.requester_user_id)
 
                     line = connection.execute(
-                        select(RequestLine).where(RequestLine.id == "LINE-REAL")
-                    ).scalar_one()
+                        select(
+                            RequestLine.id,
+                            RequestLine.workforce_request_id,
+                        ).where(RequestLine.id == "LINE-REAL")
+                    ).one()
                     requirement = connection.execute(
-                        select(ResourceRequirement).where(
-                            ResourceRequirement.id == "REQUIREMENT-REAL"
-                        )
-                    ).scalar_one()
+                        select(
+                            ResourceRequirement.id,
+                            ResourceRequirement.source_request_line_id,
+                        ).where(ResourceRequirement.id == "REQUIREMENT-REAL")
+                    ).one()
                     shift = connection.execute(
-                        select(Shift).where(Shift.id == "SHIFT-REAL")
-                    ).scalar_one()
+                        select(
+                            Shift.id,
+                            Shift.resource_requirement_id,
+                            Shift.resource_id,
+                        ).where(Shift.id == "SHIFT-REAL")
+                    ).one()
                     self.assertEqual(line.workforce_request_id, "REQUEST-REAL")
                     self.assertEqual(requirement.source_request_line_id, "LINE-REAL")
                     self.assertEqual(shift.resource_requirement_id, "REQUIREMENT-REAL")
@@ -618,10 +626,11 @@ class SqliteV2CutoverTests(unittest.TestCase):
                         0,
                     )
                     asset_allocation = connection.execute(
-                        select(AssetAllocation).where(
-                            AssetAllocation.id == "ASSET-ALLOC-REAL"
-                        )
-                    ).scalar_one()
+                        select(
+                            AssetAllocation.id,
+                            AssetAllocation.asset_requirement_id,
+                        ).where(AssetAllocation.id == "ASSET-ALLOC-REAL")
+                    ).one()
                     self.assertEqual(
                         asset_allocation.asset_requirement_id,
                         "ASSET-REQ-REAL",
