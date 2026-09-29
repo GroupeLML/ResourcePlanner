@@ -8,6 +8,8 @@ Voir #457 pour la baseline de schéma, le retrait des seeds de développement et
 
 ## Principes
 
+- SQL Server est la base de référence intégration/staging/production conformément à ADR-011;
+- SQLite reste réservé au développement local et aux tests rapides lorsque sa sémantique suffit;
 - aucune période hybride Excel/SQL;
 - aucune double écriture;
 - aucun fallback silencieux vers Excel;
@@ -167,4 +169,5 @@ Une fois SQL déclaré autoritaire :
 - #208 — mise en service SQL autoritaire;
 - #218/#224 — identité, RBAC et administration utilisateurs;
 - #336 — nettoyage post-cutover;
-- #457 — baseline propre, retrait seeds dev et admin break-glass.
+- #457 — baseline propre, retrait seeds dev et admin break-glass;
+- `docs/architecture/ADR-011-sql-server-authoritative-database.md` — autorité SQL Server et rôle de SQLite.
