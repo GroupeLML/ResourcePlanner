@@ -8,6 +8,7 @@ import secrets
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ...application.break_glass import BREAK_GLASS_AUTH_MODE, BREAK_GLASS_ISSUER
 from ...application.security import AuthPrincipal
 from .base import utc_now
 from .identity_models import AppUser, AuthLoginTransaction, AuthSession
@@ -87,12 +88,14 @@ class SqlAuthSessionRepository:
         csrf_token: str | None = None,
         user_id: str,
         expires_at: datetime,
+        auth_mode: str = "oidc",
     ) -> None:
         self._session.add(
             AuthSession(
                 token_hash=_hash(raw_token),
                 csrf_token_hash=_hash(csrf_token) if csrf_token else None,
                 user_id=user_id,
+                auth_mode=str(auth_mode).strip(),
                 expires_at=expires_at,
             )
         )
@@ -103,7 +106,7 @@ class SqlAuthSessionRepository:
         raw_token: str,
         *,
         now: datetime | None = None,
-        auth_mode: str = "oidc",
+        auth_mode: str | None = None,
     ) -> AuthPrincipal | None:
         row = self._session.scalar(
             select(AuthSession).where(
@@ -118,17 +121,23 @@ class SqlAuthSessionRepository:
         if user is None or not user.active:
             return None
         record = SqlUserIdentityRepository(self._session)._record(user)
+        effective_mode = str(auth_mode or row.auth_mode or "oidc").strip()
+        issuer = record.issuer or (
+            BREAK_GLASS_ISSUER if effective_mode == BREAK_GLASS_AUTH_MODE else ""
+        )
+        subject = record.subject or (
+            f"app-user:{record.user_id}" if effective_mode == BREAK_GLASS_AUTH_MODE else ""
+        )
         return AuthPrincipal.from_roles(
             local_user_id=record.user_id,
-            issuer=record.issuer,
-            subject=record.subject,
+            issuer=issuer,
+            subject=subject,
             display_name=record.display_name,
             email=record.email,
             employee_external_id=record.employee_external_id,
             roles=record.roles,
-            auth_mode=auth_mode,
+            auth_mode=effective_mode,
         )
-
 
     def validate_csrf(
         self,
