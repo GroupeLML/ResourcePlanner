@@ -1513,7 +1513,10 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   );
 
   demandRequirements = assetPanel.locator(".asset-requirement-card").filter({ hasText: demandNumber });
-  requirementCard = demandRequirements.nth(0);
+  requirementCard = assetPanel.locator(
+    `.asset-requirement-card[data-requirement-id="${extendedRequirementId}"]`,
+  );
+  await expect(requirementCard).toBeVisible();
   await requirementCard.getByRole("combobox").first().selectOption(lift63Id);
   await requirementCard.getByRole("button", { name: "Réserver cette unité" }).click();
   await expect(assetPanel.locator(".asset-planning-feedback")).toContainText("Réservation enregistrée");
