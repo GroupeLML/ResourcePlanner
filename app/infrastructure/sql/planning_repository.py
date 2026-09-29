@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, true
 from sqlalchemy.orm import Session
 
 from ...application.repository_ports import PlanningReadRepositoryPort
@@ -183,8 +183,8 @@ class SqlPlanningReadRepository(PlanningReadRepositoryPort):
         resources = self._session.scalars(
             select(Resource)
             .where(
-                Resource.active.is_(True),
-                Resource.erp_active.is_(True),
+                Resource.active == true(),
+                Resource.erp_active == true(),
             )
             .order_by(Resource.sort_order, Resource.name)
         ).all()
