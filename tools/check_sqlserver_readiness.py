@@ -32,6 +32,7 @@ from app.infrastructure.sql.models import (  # noqa: E402
     Shift,
     WorkforceRequest,
     WorkforceRequestHistory,
+    WorkPackage,
 )
 
 
@@ -426,6 +427,19 @@ def _critical_statements():
         update(Resource)
         .where(Resource.id == bindparam("resource_id"))
         .values(active=bindparam("active"))
+    )
+    yield "work_package_dependency_guard", (
+        update(WorkPackage)
+        .where(WorkPackage.id == bindparam("work_package_id"))
+        .values(version=WorkPackage.version)
+    )
+    yield "work_package_version_cas", (
+        update(WorkPackage)
+        .where(
+            WorkPackage.id == bindparam("work_package_id"),
+            WorkPackage.version == bindparam("expected_version"),
+        )
+        .values(version=WorkPackage.version + 1)
     )
     # Prevent accidental removal of timestamp compilation coverage.
     yield "timestamp_bind", select(Project.id).where(Project.created_at >= start)
