@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from sqlalchemy import select
+from sqlalchemy import select, true
 from sqlalchemy.orm import Session
 
 from ...application import (
@@ -117,7 +117,7 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
             )
         )
         if active_only:
-            statement = statement.where(ResourceAvailabilityRule.active.is_(True))
+            statement = statement.where(ResourceAvailabilityRule.active == true())
 
         wanted_resource = _text(resource_id)
         if wanted_resource:
