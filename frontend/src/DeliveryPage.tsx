@@ -68,6 +68,7 @@ type StoryCardProps = {
   disabled: boolean;
   onChanged: (board: DeliveryBoardReadModel) => Promise<void> | void;
   onError: (message: string) => void;
+  onMutationFailure: (reason: unknown, fallback: string) => Promise<void> | void;
 };
 
 function StoryCard({
@@ -77,6 +78,7 @@ function StoryCard({
   disabled,
   onChanged,
   onError,
+  onMutationFailure,
 }: StoryCardProps) {
   const [status, setStatus] = useState<DeliveryItemStatus>(item.status);
   const [remaining, setRemaining] = useState(
@@ -143,7 +145,7 @@ function StoryCard({
       });
       await onChanged(board);
     } catch (reason) {
-      onError(errorMessage(reason, "Impossible de modifier la Story."));
+      await onMutationFailure(reason, "Impossible de modifier la Story.");
     } finally {
       setPending(false);
     }
@@ -163,7 +165,7 @@ function StoryCard({
       setBlockageNote("");
       await onChanged(board);
     } catch (reason) {
-      onError(errorMessage(reason, "Impossible d'enregistrer le blocage."));
+      await onMutationFailure(reason, "Impossible d'enregistrer le blocage.");
     } finally {
       setPending(false);
     }
@@ -238,7 +240,7 @@ function StoryCard({
               <input
                 type="number"
                 min="0.1"
-                step="0.5"
+                step="0.1"
                 value={estimate}
                 disabled={disabled || pending}
                 onChange={(event) => setEstimate(event.target.value)}
@@ -423,16 +425,39 @@ export default function DeliveryPage() {
     }
   }
 
+  async function handleMutationFailure(reason: unknown, fallback: string) {
+    const message = errorMessage(reason, fallback);
+    if (!(reason instanceof ApiError) || reason.code !== "delivery_version_conflict") {
+      setError(message);
+      return;
+    }
+    try {
+      await reloadDelivery();
+      setError(
+        `${message} Le board a été rechargé avec la version courante. Réessayez l'action.`,
+      );
+    } catch (reloadReason) {
+      setError(
+        `${message} Le rechargement automatique du board a échoué: ${errorMessage(
+          reloadReason,
+          "Impossible de recharger Delivery.",
+        )}`,
+      );
+    }
+  }
+
   async function runMutation(
     operation: () => Promise<DeliveryBoardReadModel>,
     fallback: string,
-  ) {
+  ): Promise<boolean> {
     setPending(true);
     setError("");
     try {
       await adoptBoard(await operation());
+      return true;
     } catch (reason) {
-      setError(errorMessage(reason, fallback));
+      await handleMutationFailure(reason, fallback);
+      return false;
     } finally {
       setPending(false);
     }
@@ -462,7 +487,7 @@ export default function DeliveryPage() {
     if (!board || !itemTitle.trim()) return;
     const estimate = itemEstimate.trim() ? Number(itemEstimate) : null;
     const remaining = itemRemaining.trim() ? Number(itemRemaining) : null;
-    await runMutation(
+    const created = await runMutation(
       () => createDeliveryItem(board.plan.id, {
         expected_delivery_version: board.plan.delivery_version,
         item_type: itemType,
@@ -477,12 +502,14 @@ export default function DeliveryPage() {
       }),
       "Impossible de créer l'élément Delivery.",
     );
-    setItemTitle("");
-    setItemDescription("");
-    setItemAssignee("");
-    setItemEstimate("");
-    setItemRemaining("");
-    setItemDueDate("");
+    if (created) {
+      setItemTitle("");
+      setItemDescription("");
+      setItemAssignee("");
+      setItemEstimate("");
+      setItemRemaining("");
+      setItemDueDate("");
+    }
   }
 
   const selectedWorkPackage = workPackages.find((row) => row.id === workPackageId) ?? null;
@@ -775,6 +802,7 @@ export default function DeliveryPage() {
                                   disabled={pending || !planIsEditable}
                                   onChanged={adoptBoard}
                                   onError={setError}
+                                  onMutationFailure={handleMutationFailure}
                                 />
                               ))}
                             </div>
@@ -854,7 +882,7 @@ export default function DeliveryPage() {
                           <input
                             type="number"
                             min="0.1"
-                            step="0.5"
+                            step="0.1"
                             value={itemEstimate}
                             disabled={pending}
                             onChange={(event) => setItemEstimate(event.target.value)}
