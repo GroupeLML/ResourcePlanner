@@ -158,7 +158,7 @@ export default function WorkPackageEditor({
       setError("Choisis un projet.");
       return;
     }
-    if (!payload.task_catalog_item_id) {
+    if (!payload.task_catalog_item_id && !workPackage) {
       setError("Choisis une tâche ERP pour ce WorkPackage.");
       return;
     }
@@ -256,7 +256,7 @@ export default function WorkPackageEditor({
           <label className="wp-full">
             <span>Tâche ERP *</span>
             <select
-              required
+              required={!editing}
               value={form.taskCatalogItemId}
               onChange={(event) => field("taskCatalogItemId", event.target.value)}
               disabled={!form.projectNumber || tasksLoading}
