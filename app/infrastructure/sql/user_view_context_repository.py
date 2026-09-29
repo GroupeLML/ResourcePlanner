@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import exists, or_, select
+from sqlalchemy import exists, or_, select, true
 from sqlalchemy.orm import Session
 
 from ...application.operational_contacts import OperationalContactService
@@ -182,7 +182,7 @@ class SqlUserViewContextRepository(UserViewContextRepositoryPort):
                 RequestLine.workforce_request_id == WorkforceRequest.id,
             )
             .where(
-                RequestLine.active.is_(True),
+                RequestLine.active == true(),
                 WorkforceRequest.status == "Soumise",
             )
         )
