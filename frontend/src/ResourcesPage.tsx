@@ -20,6 +20,7 @@ import {
   getCompetencies,
   getResourceBusinessContacts,
   getResources,
+  reactivateResource,
   setResourceCoordinatorContact,
   updateAvailabilityRule,
   updateResource,
@@ -428,6 +429,20 @@ export default function ResourcesPage() {
     }
   }
 
+  async function enableResource() {
+    if (!selected || pendingProfile) return;
+    setPendingProfile(true);
+    setError(null);
+    try {
+      await reactivateResource(selected.id);
+      setRefreshKey((value) => value + 1);
+    } catch (reason) {
+      setError(apiMessage(reason, "Impossible de réactiver la ressource."));
+    } finally {
+      setPendingProfile(false);
+    }
+  }
+
   async function changeCoordinator(contactId: string | null) {
     if (!selectedId || pendingCoordinator) return;
     setPendingCoordinator(true);
@@ -598,7 +613,7 @@ export default function ResourcesPage() {
                     <button className="danger-button" type="button" disabled={pendingProfile} onClick={disableResource}>Désactiver</button>
                   )}
                   {!creatingResource && selected && !selected.active && (
-                    <button className="quiet-button" type="button" disabled={pendingProfile} onClick={() => profileField("active", true)}>Réactiver dans le profil</button>
+                    <button className="quiet-button" type="button" disabled={pendingProfile} onClick={enableResource}>Réactiver</button>
                   )}
                   <span />
                   {creatingResource && <button className="quiet-button" type="button" onClick={() => setCreatingResource(false)}>Annuler</button>}
