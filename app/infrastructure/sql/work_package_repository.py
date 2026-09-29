@@ -394,7 +394,11 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
         if project_changed and self._has_dependencies(dependencies):
             raise ApplicationConflictError(
                 "Le projet d'un WorkPackage déjà utilisé ne peut pas être changé.",
-                code="work_package_project_change_in_use",
+                code=(
+                    "work_package_project_change_linked_demands"
+                    if dependencies["workforce_requests"] > 0
+                    else "work_package_project_change_in_use"
+                ),
                 context={
                     "reference": _optional_text(work_package.legacy_effort_id)
                     or work_package.id,
