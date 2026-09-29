@@ -68,7 +68,7 @@ def _entry(
         start_date=start,
         end_date=end,
         hours=hours,
-        kind="BASE",
+        kind="CUMULATIVE",
         group=None,
         source_period_id=None,
         confirmation="Confirmée",
