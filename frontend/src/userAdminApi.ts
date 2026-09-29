@@ -3,11 +3,12 @@ import { csrfHeaders } from "./csrf";
 
 export type UserAdminReadModel = {
   user_id: string;
-  issuer: string;
-  subject: string;
+  issuer: string | null;
+  subject: string | null;
   display_name: string;
   email: string | null;
   employee_external_id: string | null;
+  erp_user_id: string | null;
   business_contact_id: string | null;
   phone: string | null;
   roles: string[];
