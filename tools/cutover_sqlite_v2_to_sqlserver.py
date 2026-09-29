@@ -129,7 +129,7 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
         "Configuration contenant un credential chiffré; reconfiguration explicite requise."
     ),
     "smtp_configuration_audit": _keep(
-        "Audit non secret: type d'événement et noms de champs modifiés."
+        "Audit SMTP sans données sensibles; type d'événement et noms de champs modifiés."
     ),
     "shifts": _keep("Affectations réelles et décisions Planning."),
     "task_catalog_items": _keep(
