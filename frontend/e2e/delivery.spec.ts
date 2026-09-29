@@ -129,6 +129,7 @@ test("362F Delivery traverse PM, Team Lead et technicien sans élargir Planning"
   await projectManager.page.getByRole("button", { name: /WorkPackage/ }).click();
   const dialog = projectManager.page.getByRole("dialog", { name: "Créer un lot" });
   await labelled(dialog, "Projet", "select").selectOption("P-251");
+  await selectOptionContaining(labelled(dialog, "Tâche ERP", "select"), "210 — AUTOMATISATION E2E");
   await labelled(dialog, "Code", "input").fill(workPackageCode);
   await labelled(dialog, "Nom", "input").fill("WP-DELIVERY-362F — Lot Delivery acceptation");
   await labelled(dialog, "Début", "input").fill(start);

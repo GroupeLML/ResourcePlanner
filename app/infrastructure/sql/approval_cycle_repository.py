@@ -41,6 +41,7 @@ from .base import new_id, utc_now
 from .identity_models import AppUser
 from .models import (
     RequestLine,
+    WorkPackage,
     WorkforceRequest,
     WorkforceRequestHistory,
 )
@@ -148,10 +149,43 @@ class SqlApprovalCycleRepository:
             )
             .order_by(RequestLine.id)
         ).all()
+        work_package_ids = {
+            line.work_package_id for line in lines if line.work_package_id
+        }
+        work_packages = {
+            row.id: row
+            for row in self._session.scalars(
+                select(WorkPackage).where(WorkPackage.id.in_(work_package_ids))
+            ).all()
+        } if work_package_ids else {}
+
+        def effective_task_id(line: RequestLine) -> str | None:
+            work_package = work_packages.get(line.work_package_id or "")
+            package_task_id = (
+                work_package.task_catalog_item_id
+                if work_package is not None
+                else None
+            )
+            if (
+                package_task_id
+                and line.task_catalog_item_id
+                and package_task_id != line.task_catalog_item_id
+            ):
+                raise ApplicationConflictError(
+                    "La ligne d'approbation contredit la tâche ERP classée du WorkPackage.",
+                    code="request_line_work_package_task_conflict",
+                    context={
+                        "request_line_id": line.id,
+                        "work_package_id": line.work_package_id,
+                    },
+                )
+            return package_task_id or line.task_catalog_item_id
+
+        effective_task_ids = {
+            line.id: effective_task_id(line) for line in lines
+        }
         task_ids = {
-            line.task_catalog_item_id
-            for line in lines
-            if line.task_catalog_item_id
+            task_id for task_id in effective_task_ids.values() if task_id
         }
         mappings: dict[str, list[str]] = defaultdict(list)
         if task_ids:
@@ -176,12 +210,12 @@ class SqlApprovalCycleRepository:
         return tuple(
             ApprovalCycleRoutingInput(
                 request_line_id=line.id,
-                task_catalog_item_id=line.task_catalog_item_id,
+                task_catalog_item_id=effective_task_ids.get(line.id),
                 approval_scope_ids=tuple(
                     sorted(
                         set(
                             mappings.get(
-                                line.task_catalog_item_id or "",
+                                effective_task_ids.get(line.id) or "",
                                 [],
                             )
                         )

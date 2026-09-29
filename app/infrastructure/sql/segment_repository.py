@@ -6,7 +6,7 @@ from decimal import Decimal
 import re
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from ...application.read_models import SegmentReadModel
@@ -23,6 +23,7 @@ from .models import (
     ResourceRequirement,
     ResourceRequirementCompetency,
     WorkforceRequest,
+    WorkPackage,
 )
 
 
@@ -325,12 +326,54 @@ class SqlSegmentRepository(SegmentRepositoryPort):
             self._line_competency_ids(line),
         )
 
+    def _guard_work_package_dependency(
+        self,
+        reference: object,
+        *,
+        project_id: str,
+    ) -> WorkPackage | None:
+        wanted = _optional_text(reference)
+        if wanted is None:
+            return None
+        work_package = self._session.scalar(
+            select(WorkPackage).where(
+                (WorkPackage.id == wanted)
+                | (WorkPackage.legacy_effort_id == wanted)
+            )
+        )
+        if work_package is None:
+            return None
+        result = self._session.execute(
+            update(WorkPackage)
+            .where(WorkPackage.id == work_package.id)
+            .values(
+                version=WorkPackage.version,
+                updated_at=WorkPackage.updated_at,
+            )
+        )
+        if int(result.rowcount or 0) != 1:
+            raise KeyError(f"WorkPackage {wanted} introuvable")
+        self._session.flush()
+        self._session.refresh(work_package)
+        if work_package.project_id != project_id:
+            raise ValueError(
+                "Le WorkPackage du segment n'appartient pas au projet sélectionné."
+            )
+        return work_package
+
     def create(self, values: Mapping[str, Any]) -> str:
         project, request = self._resolve_project_and_request(
             project_number=values.get("NumeroProjet"),
             demand_number=values.get("NoDemande"),
         )
         resource = self._resource(values.get("Technicien"))
+        source_effort_ref = _optional_text(
+            values.get("SourceEffortID") or values.get("SourceEffortRow")
+        )
+        self._guard_work_package_dependency(
+            source_effort_ref,
+            project_id=project.id,
+        )
         identifier = self._next_segment_id()
         origin = _text(values.get("OrigineSegment")) or ORIGIN_REQUEST
         supplied_confirmation = _optional_text(values.get("Confirmation"))
@@ -360,9 +403,7 @@ class SqlSegmentRepository(SegmentRepositoryPort):
             load_profile=normalize_load_profile(values.get("ProfilCharge")),
             status=_text(values.get("Statut")) or "Planifié",
             description=_optional_text(values.get("Description")),
-            source_effort_id=_optional_text(
-                values.get("SourceEffortID") or values.get("SourceEffortRow")
-            ),
+            source_effort_id=source_effort_ref,
             required_resource_class=_optional_text(values.get("ClasseRessourceRequise")),
             required_competency=_optional_text(values.get("CompetenceRequise")),
             planning_type=_text(values.get("TypePlanification")) or "Flexible",
@@ -416,6 +457,16 @@ class SqlSegmentRepository(SegmentRepositoryPort):
             raise ValueError(
                 "Le projet du segment ne correspond pas au projet de la demande."
             )
+
+        effective_source_effort = requirement.source_effort_id
+        if "SourceEffortID" in updates or "SourceEffortRow" in updates:
+            effective_source_effort = _optional_text(
+                updates.get("SourceEffortID") or updates.get("SourceEffortRow")
+            )
+        self._guard_work_package_dependency(
+            effective_source_effort,
+            project_id=requirement.project_id,
+        )
 
         if "Technicien" in updates:
             resource = self._resource(updates.get("Technicien"))

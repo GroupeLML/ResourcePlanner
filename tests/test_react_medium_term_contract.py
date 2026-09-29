@@ -100,7 +100,7 @@ class ReactMediumTermContractTests(unittest.TestCase):
         api = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
 
         self.assertIn("await createWorkPackage(payload, key)", editor)
-        self.assertIn("await updateWorkPackage(workPackage.reference, payload)", editor)
+        self.assertIn("await updateWorkPackage(workPackage.reference, payload, workPackage.version)", editor)
         self.assertIn("previous?.fingerprint === fingerprint", editor)
         self.assertIn("createRetry.current = { fingerprint, key }", editor)
         self.assertIn("if (saving) return", editor)
@@ -108,6 +108,13 @@ class ReactMediumTermContractTests(unittest.TestCase):
         self.assertIn('"/api/v1/work-packages"', api)
         self.assertIn('/api/v1/work-packages/${encodeURIComponent(reference)}', api)
         self.assertIn('"Idempotency-Key"', api)
+        self.assertIn("getTaskCatalog", editor)
+        self.assertIn("task_catalog_item_id", editor)
+        self.assertIn("required={!editing}", editor)
+        self.assertIn("workPackage.version", editor)
+        self.assertIn('"work_package_version_conflict"', editor)
+        self.assertIn("WorkPackage historique non classé", editor)
+        self.assertIn("expected_version: expectedVersion", api)
 
 
 if __name__ == "__main__":

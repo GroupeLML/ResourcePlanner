@@ -35,6 +35,7 @@ from .models import (
     TaskCatalogEntry,
     WorkforceRequest,
     WorkforceRequestCompetency,
+    WorkPackage,
 )
 
 
@@ -140,6 +141,10 @@ class SqlRequestApprovalRevisionRepository:
         }
 
     def _legacy_task_ref(self, request: WorkforceRequest) -> str | None:
+        if request.work_package_id:
+            work_package = self._session.get(WorkPackage, request.work_package_id)
+            if work_package is not None and work_package.task_catalog_item_id:
+                return work_package.task_catalog_item_id
         code = _optional_text(request.erp_task_code)
         if not code:
             return None
@@ -153,6 +158,23 @@ class SqlRequestApprovalRevisionRepository:
             )
         )
         return identifier or code
+
+    def _line_task_ref(self, line: RequestLine) -> str | None:
+        package_task_id = None
+        if line.work_package_id:
+            work_package = self._session.get(WorkPackage, line.work_package_id)
+            if work_package is not None:
+                package_task_id = _optional_text(work_package.task_catalog_item_id)
+        line_task_id = _optional_text(line.task_catalog_item_id)
+        if package_task_id and line_task_id and package_task_id != line_task_id:
+            raise ValueError(
+                "La ligne contredit la tâche ERP classée du WorkPackage."
+            )
+        return (
+            package_task_id
+            or line_task_id
+            or _optional_text(line.erp_task_code)
+        )
 
     def _envelope_lines(
         self,
@@ -209,10 +231,7 @@ class SqlRequestApprovalRevisionRepository:
                         line.required_resource_class
                     ),
                     competency_ids=line_competencies.get(line.id, ()),
-                    task_ref=(
-                        _optional_text(line.task_catalog_item_id)
-                        or _optional_text(line.erp_task_code)
-                    ),
+                    task_ref=self._line_task_ref(line),
                     work_package_ref=_optional_text(line.work_package_id),
                     start_date=line.desired_start,
                     end_date=line.desired_end,

@@ -103,7 +103,7 @@ def build_sql_facade(
         ),
         journal,
     )
-    work_packages = SqlWorkPackageRepository(session)
+    work_packages = SqlWorkPackageRepository(session, actor_user_id=actor_user_id)
     resources = SqlResourceAdminRepository(session)
     planning_versions = SqlPlanningMutationVersionRepository(session)
     planning_commands = SqlPlanningCommandAdapter(

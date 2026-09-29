@@ -205,12 +205,22 @@ class WorkPackage(TimestampMixin, Base):
             "planned_hours IS NULL OR planned_hours >= 0",
             name="work_package_hours_non_negative",
         ),
+        CheckConstraint("version >= 1", name="work_package_version_positive"),
         Index("ix_work_packages_project_status", "project_id", "status"),
+        Index("ix_work_packages_task_catalog_item", "task_catalog_item_id"),
     )
 
     id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True, default=new_id)
     project_id: Mapped[str] = mapped_column(
         String(ID_LENGTH), ForeignKey("projects.id"), nullable=False, index=True
+    )
+    task_catalog_item_id: Mapped[str | None] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("task_catalog_items.id"),
+        nullable=True,
+    )
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("1")
     )
     code: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -220,6 +230,27 @@ class WorkPackage(TimestampMixin, Base):
     planned_hours: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, server_default=text("'planned'"), index=True)
     legacy_effort_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+
+
+class WorkPackageAudit(TimestampMixin, Base):
+    __tablename__ = "work_package_audit"
+    __table_args__ = (
+        CheckConstraint("resulting_version >= 1", name="work_package_audit_version_positive"),
+        Index("ix_work_package_audit_package_created", "work_package_id", "created_at"),
+        Index("ix_work_package_audit_actor", "actor_user_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True, default=new_id)
+    work_package_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH), ForeignKey("work_packages.id"), nullable=False
+    )
+    actor_user_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH), ForeignKey("app_users.id"), nullable=False
+    )
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    resulting_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    old_values_json: Mapped[str] = mapped_column(Text, nullable=False)
+    new_values_json: Mapped[str] = mapped_column(Text, nullable=False)
 
 
 class WorkforceRequest(TimestampMixin, Base):
