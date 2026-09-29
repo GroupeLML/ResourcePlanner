@@ -5,7 +5,7 @@ from datetime import date, timedelta
 from typing import Any
 from collections.abc import Sequence
 
-from sqlalchemy import select
+from sqlalchemy import select, true
 from sqlalchemy.orm import Session
 
 from ...application.query_models import MediumTermCapacityBucketReadModel
@@ -101,7 +101,7 @@ def build_medium_term_capacity_buckets(
         start, end = end, start
 
     rules = session.scalars(
-        select(ResourceAvailabilityRule).where(ResourceAvailabilityRule.active.is_(True))
+        select(ResourceAvailabilityRule).where(ResourceAvailabilityRule.active == true())
     ).all()
     availability_records = tuple(_availability_record(rule) for rule in rules)
     all_resources = queries.list_resources(active_only=True)

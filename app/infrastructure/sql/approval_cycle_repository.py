@@ -4,7 +4,7 @@ import json
 from collections import defaultdict
 from collections.abc import Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, true
 from sqlalchemy.orm import Session
 
 from ...application.approval_progress import ApprovalUserSummaryRecord
@@ -110,7 +110,7 @@ class SqlApprovalCycleRepository:
                 select(RequestLine.id)
                 .where(
                     RequestLine.workforce_request_id == _text(request_id),
-                    RequestLine.active.is_(True),
+                    RequestLine.active == true(),
                 )
                 .order_by(RequestLine.id)
             ).all()
@@ -144,7 +144,7 @@ class SqlApprovalCycleRepository:
             select(RequestLine)
             .where(
                 RequestLine.workforce_request_id == _text(request_id),
-                RequestLine.active.is_(True),
+                RequestLine.active == true(),
             )
             .order_by(RequestLine.id)
         ).all()

@@ -7,7 +7,7 @@ import json
 from decimal import Decimal
 from typing import Sequence
 
-from sqlalchemy import select
+from sqlalchemy import select, true
 from sqlalchemy.orm import Session
 
 from ...domain.active_days import normalize_active_day_target, split_total_workforce_hours
@@ -107,7 +107,7 @@ class SqlRequestPlanPreparer:
                 select(WorkforceRequestPeriod)
                 .where(
                     WorkforceRequestPeriod.workforce_request_id == request_id,
-                    WorkforceRequestPeriod.active.is_(True),
+                    WorkforceRequestPeriod.active == true(),
                 )
                 .order_by(
                     WorkforceRequestPeriod.request_line_id,
@@ -135,7 +135,7 @@ class SqlRequestPlanPreparer:
                 select(RequestLine)
                 .where(
                     RequestLine.workforce_request_id == request_id,
-                    RequestLine.active.is_(True),
+                    RequestLine.active == true(),
                 )
                 .order_by(RequestLine.position, RequestLine.id)
             ).all()
@@ -855,7 +855,7 @@ class SqlRequestPlanPreparer:
                 select(Shift)
                 .where(
                     Shift.resource_requirement_id.in_(requirement_ids),
-                    Shift.locked.is_(True),
+                    Shift.locked == true(),
                 )
                 .order_by(Shift.resource_requirement_id, Shift.work_date, Shift.id)
             ).all()

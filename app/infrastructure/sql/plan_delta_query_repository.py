@@ -5,7 +5,7 @@ from datetime import timedelta
 import json
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import select, true
 from sqlalchemy.orm import Session
 
 from ...application.plan_delta import (
@@ -309,7 +309,7 @@ class SqlPlannerQueryRepositoryWithPlanDelta(SqlPlannerQueryRepositoryWeb):
                 select(WorkforceRequestPeriod)
                 .where(
                     WorkforceRequestPeriod.workforce_request_id == request_id,
-                    WorkforceRequestPeriod.active.is_(True),
+                    WorkforceRequestPeriod.active == true(),
                 )
                 .order_by(WorkforceRequestPeriod.sequence, WorkforceRequestPeriod.id)
             ).all()
@@ -442,7 +442,7 @@ class SqlPlannerQueryRepositoryWithPlanDelta(SqlPlannerQueryRepositoryWeb):
                 select(RequestLine)
                 .where(
                     RequestLine.workforce_request_id == request.id,
-                    RequestLine.active.is_(True),
+                    RequestLine.active == true(),
                 )
                 .order_by(RequestLine.position, RequestLine.id)
             ).all()

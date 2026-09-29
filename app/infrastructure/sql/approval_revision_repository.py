@@ -4,7 +4,7 @@ from collections import defaultdict
 from datetime import datetime
 import json
 
-from sqlalchemy import select
+from sqlalchemy import select, true
 from sqlalchemy.orm import Session
 
 from ...domain.approval_envelope import (
@@ -63,7 +63,7 @@ class SqlRequestApprovalRevisionRepository:
                 select(RequestLine)
                 .where(
                     RequestLine.workforce_request_id == request.id,
-                    RequestLine.active.is_(True),
+                    RequestLine.active == true(),
                 )
                 .order_by(RequestLine.position, RequestLine.id)
             ).all()
@@ -114,7 +114,7 @@ class SqlRequestApprovalRevisionRepository:
                 select(WorkforceRequestPeriod)
                 .where(
                     WorkforceRequestPeriod.workforce_request_id == request_id,
-                    WorkforceRequestPeriod.active.is_(True),
+                    WorkforceRequestPeriod.active == true(),
                 )
                 .order_by(
                     WorkforceRequestPeriod.request_line_id,

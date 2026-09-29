@@ -5,7 +5,7 @@ from decimal import Decimal
 import json
 from typing import Sequence
 
-from sqlalchemy import select, update
+from sqlalchemy import select, update, true
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -224,7 +224,7 @@ class SqlCommunicationRepository(CommunicationRepositoryPort):
 
     def weekly_technician_ids(self) -> tuple[str, ...]:
         rows = self._session.scalars(
-            select(Resource).where(Resource.active.is_(True)).order_by(Resource.sort_order, Resource.name)
+            select(Resource).where(Resource.active == true()).order_by(Resource.sort_order, Resource.name)
         ).all()
         return tuple(_technician_id(row.id) for row in rows)
 

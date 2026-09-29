@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import json
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, true
 from sqlalchemy.orm import Session
 
 from ...application.errors import ApplicationConflictError
@@ -203,9 +203,9 @@ class SqlTaskCatalogRepository(
             statement = statement.where(TaskCatalogEntry.project_number == project)
         if active_only:
             statement = statement.where(
-                TaskCatalogEntry.active.is_(True),
+                TaskCatalogEntry.active == true(),
                 or_(
-                    TaskCatalogEntry.workforce_eligible.is_(True),
+                    TaskCatalogEntry.workforce_eligible == true(),
                     TaskCatalogEntry.workforce_eligible.is_(None),
                 ),
             )

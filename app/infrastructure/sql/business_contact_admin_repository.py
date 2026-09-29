@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any, Mapping
 
-from sqlalchemy import select
+from sqlalchemy import select, true
 from sqlalchemy.orm import Session
 
 from ...application.business_contact_admin import (
@@ -109,7 +109,7 @@ class SqlBusinessContactAdminRepository(BusinessContactAdminRepositoryPort):
                 AppUser.business_contact_id == BusinessContact.id,
             )
         if active_only:
-            statement = statement.where(BusinessContact.active.is_(True))
+            statement = statement.where(BusinessContact.active == true())
         rows = self._session.scalars(
             statement.order_by(BusinessContact.display_name, BusinessContact.id)
         ).all()

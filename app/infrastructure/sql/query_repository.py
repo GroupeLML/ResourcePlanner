@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from datetime import date, timedelta
 import unicodedata
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, true
 from sqlalchemy.orm import Session
 
 from ...application.query_models import (
@@ -251,8 +251,8 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         statement = select(Resource)
         if active_only:
             statement = statement.where(
-                Resource.active.is_(True),
-                Resource.erp_active.is_(True),
+                Resource.active == true(),
+                Resource.erp_active == true(),
             )
         rows = self._session.scalars(
             statement.order_by(Resource.sort_order, Resource.name)
@@ -277,7 +277,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             start, end = end, start
         scheduled_ids = select(ResourceAvailabilityRule.resource_id).where(
             ResourceAvailabilityRule.availability_type == "Horaire standard",
-            ResourceAvailabilityRule.active.is_(True),
+            ResourceAvailabilityRule.active == true(),
             ResourceAvailabilityRule.resource_id.is_not(None),
             or_(
                 ResourceAvailabilityRule.start_date.is_(None),
@@ -291,8 +291,8 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         rows = self._session.scalars(
             select(Resource)
             .where(
-                Resource.active.is_(True),
-                Resource.erp_active.is_(True),
+                Resource.active == true(),
+                Resource.erp_active == true(),
                 Resource.id.in_(scheduled_ids),
             )
             .order_by(Resource.sort_order, Resource.name)
@@ -895,7 +895,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             identifiers = tuple(str(value) for value in project_ids if str(value))
 
         rules = self._session.scalars(
-            select(ResourceAvailabilityRule).where(ResourceAvailabilityRule.active.is_(True))
+            select(ResourceAvailabilityRule).where(ResourceAvailabilityRule.active == true())
         ).all()
         availability = tuple(_availability_record(rule) for rule in rules)
 
@@ -1224,7 +1224,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         if not resources:
             return ()
         rules = self._session.scalars(
-            select(ResourceAvailabilityRule).where(ResourceAvailabilityRule.active.is_(True))
+            select(ResourceAvailabilityRule).where(ResourceAvailabilityRule.active == true())
         ).all()
         availability = tuple(_availability_record(rule) for rule in rules)
         shifts = self.list_shifts(start=start, end=end)

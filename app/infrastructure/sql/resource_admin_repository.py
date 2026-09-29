@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, true
 from sqlalchemy.orm import Session
 
 from ...application.query_models import ResourceAvailabilityRuleReadModel, ResourceReadModel
@@ -98,8 +98,8 @@ class SqlResourceAdminRepository(ResourceAdminRepositoryPort):
         statement = select(Resource)
         if active_only:
             statement = statement.where(
-                Resource.active.is_(True),
-                Resource.erp_active.is_(True),
+                Resource.active == true(),
+                Resource.erp_active == true(),
             )
         rows = self._session.scalars(statement.order_by(Resource.sort_order, Resource.name)).all()
         competency_ids = self._competency_ids_by_resource(tuple(row.id for row in rows))
@@ -185,7 +185,7 @@ class SqlResourceAdminRepository(ResourceAdminRepositoryPort):
             )
         )
         if active_only:
-            statement = statement.where(ResourceAvailabilityRule.active.is_(True))
+            statement = statement.where(ResourceAvailabilityRule.active == true())
         wanted = _text(resource_id)
         if wanted:
             if include_global:
