@@ -147,6 +147,45 @@ class ErpUserDirectoryTests(unittest.TestCase):
             self.assertEqual(linked.oidc_state, "linked")
             self.assertTrue(linked.access_ready)
 
+    def test_preprovisioned_app_user_remains_oidc_pending_until_bound(self) -> None:
+        self._sync(StubUserSource([user("ERP-PRE", "EMP-PRE")]))
+        with transactional_session(self.factory) as session:
+            directory = ErpUserDirectoryService(
+                SqlErpUserDirectoryRepository(session)
+            )
+            directory.update_local_access(
+                "ERP-PRE",
+                active=True,
+                roles=(ROLE_COORDINATOR,),
+            )
+            identities = SqlUserIdentityRepository(session)
+            created = identities.create_account(
+                display_name="Utilisateur pré-provisionné",
+                email=None,
+                roles=(ROLE_COORDINATOR,),
+                active=True,
+                employee_external_id="EMP-PRE",
+                erp_user_id="ERP-PRE",
+            )
+            pending = SqlErpUserDirectoryRepository(session).get_by_user_id(
+                "ERP-PRE"
+            )
+            assert pending is not None
+            self.assertEqual(pending.oidc_state, "pending")
+            self.assertTrue(pending.access_ready)
+
+            identities.bind_external_identity(
+                created.user_id,
+                "issuer-pre",
+                "subject-pre",
+            )
+            linked = SqlErpUserDirectoryRepository(session).get_by_user_id(
+                "ERP-PRE"
+            )
+            assert linked is not None
+            self.assertEqual(linked.oidc_state, "linked")
+            self.assertTrue(linked.access_ready)
+
     def test_partial_snapshot_does_not_disable_or_delete_missing_user(self) -> None:
         source = StubUserSource([user("ERP-A", "EMP-A"), user("ERP-B", "EMP-B")])
         self._sync(source)

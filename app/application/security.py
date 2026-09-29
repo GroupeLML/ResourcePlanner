@@ -154,13 +154,14 @@ class AuthPrincipal:
 @dataclass(frozen=True, slots=True)
 class UserIdentityRecord:
     user_id: str
-    issuer: str
-    subject: str
+    issuer: str | None
+    subject: str | None
     display_name: str
     email: str | None
     roles: tuple[str, ...]
     active: bool
     employee_external_id: str | None = None
+    erp_user_id: str | None = None
     business_contact_id: str | None = None
     phone: str | None = None
 
@@ -175,7 +176,12 @@ class IdentityService:
 
     def resolve(self, *, issuer: str, subject: str, auth_mode: str = "oidc") -> AuthPrincipal | None:
         record = self._repository.get_by_external_identity(issuer, subject)
-        if record is None or not record.active:
+        if (
+            record is None
+            or not record.active
+            or not record.issuer
+            or not record.subject
+        ):
             return None
         return AuthPrincipal.from_roles(
             local_user_id=record.user_id,
