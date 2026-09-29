@@ -4,7 +4,8 @@ from logging.config import fileConfig
 import os
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from alembic.ddl.mssql import MSSQLImpl
+from sqlalchemy import String, engine_from_config, pool
 
 from app.infrastructure.sql import Base
 
@@ -20,6 +21,31 @@ if runtime_url:
     config.set_main_option("sqlalchemy.url", runtime_url.replace("%", "%%"))
 
 target_metadata = Base.metadata
+
+ALEMBIC_VERSION_NUM_LENGTH = 128
+
+
+class ResourcePlannerMSSQLImpl(MSSQLImpl):
+    """Keep descriptive RessourcePlanner revision IDs valid on SQL Server."""
+
+    __dialect__ = "mssql"
+
+    def version_table_impl(
+        self,
+        *,
+        version_table: str,
+        version_table_schema: str | None,
+        version_table_pk: bool,
+        **kw,
+    ):
+        table = super().version_table_impl(
+            version_table=version_table,
+            version_table_schema=version_table_schema,
+            version_table_pk=version_table_pk,
+            **kw,
+        )
+        table.c.version_num.type = String(ALEMBIC_VERSION_NUM_LENGTH)
+        return table
 
 
 def run_migrations_offline() -> None:

@@ -36,6 +36,7 @@ from app.infrastructure.sql.models import (  # noqa: E402
 
 
 MSSQL_IDENTIFIER_MAX = 128
+MSSQL_ALEMBIC_VERSION_NUM_LENGTH = 128
 # Keep index keys inside the conservative historical SQL Server limit. Current
 # SQL Server versions allow larger nonclustered keys, but staying under 900 bytes
 # avoids depending on server-version details before #162 validates the target.
@@ -126,14 +127,44 @@ def check_mssql_offline_migrations() -> ReadinessCheck:
     sql = result.stdout
     if "CREATE TABLE" not in sql.upper():
         raise SqlServerReadinessError("La génération MSSQL offline ne contient aucun CREATE TABLE.")
-    if "ALEMBIC_VERSION" not in sql.upper():
+    upper_sql = sql.upper()
+    if "ALEMBIC_VERSION" not in upper_sql:
         raise SqlServerReadinessError(
             "La génération MSSQL offline ne contient pas la table/version Alembic."
         )
+
+    normalized_sql = upper_sql.replace("[", "").replace("]", "")
+    expected_version_column = (
+        f"VERSION_NUM VARCHAR({MSSQL_ALEMBIC_VERSION_NUM_LENGTH})"
+    )
+    if expected_version_column not in normalized_sql:
+        raise SqlServerReadinessError(
+            "La table alembic_version MSSQL n'utilise pas la capacité attendue "
+            f"VARCHAR({MSSQL_ALEMBIC_VERSION_NUM_LENGTH})."
+        )
+
+    config = Config(str(ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(ROOT / "migrations"))
+    revisions = [
+        revision.revision
+        for revision in ScriptDirectory.from_config(config).walk_revisions()
+        if revision.revision
+    ]
+    longest_revision = max(revisions, key=len, default="")
+    if len(longest_revision) > MSSQL_ALEMBIC_VERSION_NUM_LENGTH:
+        raise SqlServerReadinessError(
+            "Un identifiant Alembic dépasse la capacité de alembic_version: "
+            f"{longest_revision} ({len(longest_revision)} caractères)."
+        )
+
     return ReadinessCheck(
         "mssql_offline_migrations",
         "ok",
-        f"{len(sql.splitlines())} lignes de DDL générées sans connexion ni pyodbc",
+        (
+            f"{len(sql.splitlines())} lignes de DDL générées; "
+            f"alembic_version=VARCHAR({MSSQL_ALEMBIC_VERSION_NUM_LENGTH}); "
+            f"révision max={len(longest_revision)} caractères"
+        ),
     )
 
 
