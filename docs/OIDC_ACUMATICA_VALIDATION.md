@@ -2,7 +2,7 @@
 
 L'implémentation OIDC de RessourcePlanner est testée avec un fournisseur simulé et le contrat d'identité a maintenant été observé sur un compte Acumatica réel. Le login interactif complet post-implémentation a également été validé sur ce compte, avec résolution d'un vrai `AppUser` et `/api/v1/auth/me`. Restent à valider un deuxième compte ainsi que le comportement HTTPS/cookies Secure sur l'environnement cible.
 
-> **Transition IDENTITY-A / ADR-012.** Le smoke ci-dessous décrit le runtime actuellement livré par #223. La cible acceptée est désormais différente : l'ADMIN pré-provisionne d'abord un véritable `AppUser`, puis le premier login OIDC lie seulement `(issuer, subject)` à ce compte. Le login ne devra plus créer/activer le compte ni copier ses rôles. Voir `IDENTITY_PREPROVISIONING.md` et ADR-012. Cette cible n'est pas implémentée par IDENTITY-A.
+> **ADR-012 / IDENTITY-D.** Le runtime cible est maintenant implémenté : l'ADMIN pré-provisionne d'abord un véritable `AppUser`; le premier login OIDC lie seulement `(issuer, subject)` au compte existant après vérification de `preferred_username → RP_Users.UserID → AppUser.erp_user_id` et de l'EmployeID. Le callback ne crée, n'active, ne réactive ni ne rerôle un compte.
 
 ## Paramètres requis
 
@@ -66,10 +66,10 @@ Le smoke réel a confirmé sur un compte et le PO a accepté le contrat suivant 
 - `(issuer, sub)` reste l'identité d'authentification persistée dans `AppUser`;
 - `preferred_username.strip()` est le pont exact vers `RP_Users.UserID`;
 - `RP_Users.EmployeID` devient `AppUser.employee_external_id`;
-- les rôles proviennent uniquement de `erp_user_directory.roles_json` et l'activation locale ADMIN demeure obligatoire;
+- après pré-provisionnement, les rôles et l'activation autoritaires proviennent uniquement de `AppUser.roles_json` et `AppUser.active`; l'annuaire ERP fournit le UserID, l'EmployeID et l'admissibilité source;
 - `name`, `email` et les display names sont descriptifs uniquement et ne sont jamais des clés de jointure;
 - `sub == UserID` ne doit jamais être supposé et aucune convention comme `@Company` ne doit être inversée.
 
-Le client OIDC extrait `preferred_username` pour le fonctionnement normal même lorsque les diagnostics de claims sont désactivés. Le provisionnement contrôlé est distinct de l'ancien `RESOURCEPLANNER_OIDC_AUTO_PROVISION`; ce dernier ne peut pas contourner une correspondance `preferred_username` présente mais non autorisée.
+Le client OIDC extrait `preferred_username` pour le fonctionnement normal même lorsque les diagnostics de claims sont désactivés. Depuis IDENTITY-D, `RESOURCEPLANNER_OIDC_AUTO_PROVISION` est un réglage legacy sans pouvoir de création dans le callback : aucune identité OIDC ne peut créer implicitement un `AppUser`.
 
-Validation réelle acquise sur un compte : login, callback, provisionnement contrôlé, session et `/api/v1/auth/me`. Validation réelle encore requise : deuxième compte OIDC, logout/révocation complet, cookies HTTPS/Secure sur l'environnement cible, production et SQL Server. Le correctif CSRF du proxy avec port non standard a été fusionné séparément via PR #476; son smoke de mutation ADMIN post-correctif reste à exécuter.
+Validation réelle historique acquise sur un compte avec le runtime antérieur : login, callback, provisionnement contrôlé, session et `/api/v1/auth/me`. Le nouveau flux IDENTITY-D doit être re-smoké avec un compte pré-provisionné avant de considérer la validation environnementale équivalente. Validation réelle encore requise : deuxième compte OIDC, logout/révocation complet, cookies HTTPS/Secure sur l'environnement cible, production et SQL Server. Le correctif CSRF du proxy avec port non standard a été fusionné séparément via PR #476; son smoke de mutation ADMIN post-correctif reste à exécuter.
