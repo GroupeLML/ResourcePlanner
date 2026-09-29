@@ -52,7 +52,7 @@ services:
       context: .
       dockerfile: Dockerfile.backend
     image: ${RESOURCEPLANNER_BACKEND_IMAGE:-resourceplanner-backend}:${RESOURCEPLANNER_IMAGE_TAG:-local}
-    command: ["python", "tools/seed_demo_data.py"]
+    command: ["python", "tools/seed_demo_data.py", "--confirm-dev-only"]
     depends_on:
       migrate:
         condition: service_completed_successfully
