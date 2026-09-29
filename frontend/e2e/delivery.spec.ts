@@ -215,7 +215,11 @@ test("362F Delivery traverse PM, Team Lead et technicien sans élargir Planning"
   await expect(storyFact(leadStory, "Restant")).toContainText("5 h");
   await expect(leadA.page.locator(".delivery-summary").locator("article").filter({ hasText: "Progression" }).locator("strong")).toHaveText("0 %");
   await expect(leadA.page.locator(".delivery-summary").locator("article").filter({ hasText: "Travail restant" }).locator("strong")).toHaveText("5 h");
-  await expect(leadA.page.locator(".delivery-summary").locator("article").filter({ hasText: "Capacité réservée" }).locator("strong")).toHaveText("0 h");
+  await expect(
+    leadA.page.locator(".delivery-summary article").filter({
+      has: leadA.page.getByText("Capacité réservée", { exact: true }),
+    }).locator("strong"),
+  ).toHaveText("0 h");
 
   const technician = await openAs(browser, "DELIVERY_TECHNICIAN");
   await openDelivery(technician.page, workPackageCode, true);
