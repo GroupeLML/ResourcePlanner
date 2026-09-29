@@ -33,6 +33,9 @@ class ReactErpUserAdminContractTests(unittest.TestCase):
 
         self.assertIn('"/api/v1/admin/erp-users"', api)
         self.assertIn('"/api/v1/integrations/acumatica/users/sync"', api)
+        self.assertIn('import { csrfHeaders } from "./csrf"', api)
+        self.assertIn("...csrfHeaders()", api)
+        self.assertIn('credentials: "include"', api)
         self.assertIn("preferred_username → UserID", page)
         self.assertNotIn("issuer:", page)
         self.assertNotIn("subject:", page)
