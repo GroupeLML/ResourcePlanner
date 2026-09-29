@@ -116,6 +116,7 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
         post_action="RESYNC_ACUMATICA_RP_EMPLOYEES",
     ),
     "work_packages": _keep("WorkPackages planifiés localement."),
+    "work_package_audit": _keep("Audit durable des mutations WorkPackage et de leur version CAS."),
     "workforce_requests": _keep("Demandes métier V2."),
     "workforce_request_competencies": _keep("Compétences historiques des demandes."),
     "workforce_request_history": _keep("Historique métier des demandes."),
