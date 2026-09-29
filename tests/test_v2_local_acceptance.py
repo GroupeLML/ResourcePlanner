@@ -301,6 +301,7 @@ class V2LocalAcceptanceTests(unittest.TestCase):
                 headers={"Idempotency-Key": "wp-250"},
                 json={
                     "project_number": "P-250",
+                    "task_catalog_item_id": "TASK-P250-APPROVAL",
                     "code": "WP-E2E",
                     "name": "Lot acceptation",
                     "description": "Parcours métier V2",
