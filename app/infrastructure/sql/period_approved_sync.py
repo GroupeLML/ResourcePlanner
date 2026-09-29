@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 import json
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, true
 from sqlalchemy.orm import Session
 
 from ...application.command_ports import ApprovedDemandSyncPort
@@ -195,7 +195,7 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                 select(WorkforceRequestPeriod)
                 .where(
                     WorkforceRequestPeriod.workforce_request_id == request_id,
-                    WorkforceRequestPeriod.active.is_(True),
+                    WorkforceRequestPeriod.active == true(),
                 )
                 .order_by(
                     WorkforceRequestPeriod.request_line_id,
@@ -465,7 +465,7 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                 select(RequestLine)
                 .where(
                     RequestLine.workforce_request_id == request_id,
-                    RequestLine.active.is_(True),
+                    RequestLine.active == true(),
                 )
                 .order_by(RequestLine.position, RequestLine.id)
             ).all()
@@ -693,7 +693,7 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             select(Shift)
             .where(
                 Shift.resource_requirement_id.in_(requirement_ids),
-                Shift.locked.is_(True),
+                Shift.locked == true(),
             )
             .order_by(Shift.work_date, Shift.id)
         ).all()
