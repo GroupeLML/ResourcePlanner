@@ -194,6 +194,44 @@ class ErpUserDirectoryTests(unittest.TestCase):
             self.assertEqual(record.resource_id, "RESOURCE-1")
             self.assertEqual(record.resource_name, "Nom ressource différent")
 
+    def test_same_name_and_email_never_link_different_employee_identity(self) -> None:
+        shared_email = "shared" + chr(64) + "example.invalid"
+        with transactional_session(self.factory) as session:
+            session.add(
+                Resource(
+                    id="RESOURCE-OTHER",
+                    external_id="EMP-OTHER",
+                    name="Même personne affichée",
+                    email=shared_email,
+                    active=True,
+                    erp_active=True,
+                )
+            )
+
+        source = StubUserSource(
+            [
+                ExternalErpUserRecord(
+                    user_id="ERP-NO-FALLBACK",
+                    employee_external_id="EMP-EXPECTED",
+                    display_name="Même personne affichée",
+                    first_name="Même",
+                    last_name="Personne",
+                    email=shared_email,
+                    erp_user_active=True,
+                    employee_status="Actif",
+                )
+            ]
+        )
+        self._sync(source)
+
+        with self.factory() as session:
+            record = SqlErpUserDirectoryRepository(session).get_by_user_id(
+                "ERP-NO-FALLBACK"
+            )
+            assert record is not None
+            self.assertEqual(record.employee_external_id, "EMP-EXPECTED")
+            self.assertIsNone(record.resource_id)
+
     def test_activation_requires_local_role_but_inactive_entry_may_keep_none(self) -> None:
         self._sync(StubUserSource([user("ERP-3", "EMP-3")]))
         with transactional_session(self.factory) as session:
