@@ -250,7 +250,6 @@ def create_readonly_sqlite_engine(source_path: str | Path) -> Engine:
         connection = sqlite3.connect(
             f"file:{uri_path}?mode=ro",
             uri=True,
-            detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
         )
         connection.execute("PRAGMA query_only=ON")
         connection.execute("PRAGMA foreign_keys=ON")
