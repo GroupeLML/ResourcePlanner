@@ -74,6 +74,8 @@ from .demand_period_models import (
 )
 from .demand_period_repository import SqlDemandPeriodRepository
 from .demand_repository import SqlDemandRepository
+from .delivery_models import DeliveryChangeHistory, DeliveryItemRow, DeliveryPlanRow
+from .delivery_repository import DeliveryVersionConflict, SqlDeliveryRepository
 from .emergency_demand_repository import SqlEmergencyDemandRepository
 from .emergency_query_repository import SqlPlannerQueryRepositoryWithEmergencyOverride
 from .employee_sync_repository import SqlEmployeeSyncRepository
@@ -166,6 +168,10 @@ __all__ = [
     "BusinessContact",
     "CommandIdempotencyReceipt",
     "Competency",
+    "DeliveryChangeHistory",
+    "DeliveryItemRow",
+    "DeliveryPlanRow",
+    "DeliveryVersionConflict",
     "CommunicationBatchRow",
     "CommunicationContact",
     "CommunicationDeliveryRow",
@@ -220,6 +226,7 @@ __all__ = [
     "SqlDemandApprovalEnvelopePolicyRepository",
     "SqlDemandPeriodRepository",
     "SqlDemandRepository",
+    "SqlDeliveryRepository",
     "SqlEmergencyDemandRepository",
     "SqlEmployeeSyncRepository",
     "SqlErpUserDirectoryRepository",

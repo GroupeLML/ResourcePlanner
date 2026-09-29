@@ -6,6 +6,8 @@ from app.application.security import (
     PERMISSION_ADMIN_SETTINGS,
     PERMISSION_ADMIN_USERS,
     PERMISSION_APPROVE_DEMANDS,
+    PERMISSION_CONTRIBUTE_DELIVERY,
+    PERMISSION_MANAGE_DELIVERY,
     PERMISSION_MANAGE_COMMUNICATIONS,
     PERMISSION_MANAGE_DEMANDS,
     PERMISSION_MANAGE_PLANNING,
@@ -15,6 +17,7 @@ from app.application.security import (
     PERMISSION_SYNC_PROJECTS,
     ROLE_ADMIN,
     ROLE_COORDINATOR,
+    ROLE_DELIVERY_CONTRIBUTOR,
     ROLE_MANAGER,
     ROLE_PROJECT_MANAGER,
     ROLE_TECHNICIAN,
@@ -35,6 +38,8 @@ class SecurityPolicyTests(unittest.TestCase):
                 PERMISSION_APPROVE_DEMANDS,
                 PERMISSION_MANAGE_PLANNING,
                 PERMISSION_MANAGE_WORK_PACKAGES,
+                PERMISSION_MANAGE_DELIVERY,
+                PERMISSION_CONTRIBUTE_DELIVERY,
                 PERMISSION_MANAGE_RESOURCES,
                 PERMISSION_MANAGE_COMMUNICATIONS,
                 PERMISSION_SYNC_PROJECTS,
@@ -54,6 +59,8 @@ class SecurityPolicyTests(unittest.TestCase):
         self.assertNotIn(PERMISSION_MANAGE_DEMANDS, manager)
         self.assertIn(PERMISSION_MANAGE_DEMANDS, project_manager)
         self.assertIn(PERMISSION_MANAGE_WORK_PACKAGES, project_manager)
+        self.assertIn(PERMISSION_MANAGE_DELIVERY, project_manager)
+        self.assertIn(PERMISSION_CONTRIBUTE_DELIVERY, project_manager)
         self.assertNotIn(PERMISSION_MANAGE_PLANNING, project_manager)
         self.assertNotIn(PERMISSION_MANAGE_COMMUNICATIONS, project_manager)
         self.assertIn(PERMISSION_MANAGE_PLANNING, coordinator)
@@ -61,6 +68,15 @@ class SecurityPolicyTests(unittest.TestCase):
         self.assertIn(PERMISSION_MANAGE_COMMUNICATIONS, coordinator)
         self.assertNotIn(PERMISSION_SYNC_PROJECTS, coordinator)
         self.assertNotIn(PERMISSION_ADMIN_SETTINGS, coordinator)
+        self.assertNotIn(PERMISSION_CONTRIBUTE_DELIVERY, manager)
+        self.assertNotIn(PERMISSION_MANAGE_DELIVERY, manager)
+        delivery_contributor = set(
+            permissions_for_roles((ROLE_DELIVERY_CONTRIBUTOR,))
+        )
+        self.assertEqual(
+            delivery_contributor,
+            {PERMISSION_READ, PERMISSION_CONTRIBUTE_DELIVERY},
+        )
 
     def test_invalid_role_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
@@ -160,6 +176,10 @@ class SecurityPolicyTests(unittest.TestCase):
                 "/api/v1/demands/DMO-1/operational-responsible",
             ),
             PERMISSION_MANAGE_DEMANDS,
+        )
+        self.assertEqual(
+            required_permission("POST", "/api/v1/delivery/plans"),
+            PERMISSION_CONTRIBUTE_DELIVERY,
         )
         self.assertEqual(
             required_permission("POST", "/api/v1/future-command"),

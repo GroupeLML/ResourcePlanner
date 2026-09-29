@@ -11,6 +11,7 @@ from .errors import (
 from .security import (
     ROLE_ADMIN,
     ROLE_COORDINATOR,
+    ROLE_DELIVERY_CONTRIBUTOR,
     ROLE_MANAGER,
     ROLE_PROJECT_MANAGER,
     ROLE_TECHNICIAN,
@@ -27,6 +28,7 @@ ROLE_LABELS = {
     ROLE_PROJECT_MANAGER: "Chargé de projet",
     ROLE_MANAGER: "Gestionnaire",
     ROLE_TECHNICIAN: "Technicien",
+    ROLE_DELIVERY_CONTRIBUTOR: "Contributeur Delivery",
 }
 
 
