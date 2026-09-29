@@ -8,10 +8,14 @@ from fastapi import APIRouter, Depends, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
+from ..application.delivery_projection import DeliveryProjectionService
 from ..application.delivery_service import DeliveryService
 from ..application.security import AuthPrincipal
 from ..domain.delivery import DeliveryItemStatus, DeliveryItemType, DeliveryPlanStatus
-from ..infrastructure.sql import SqlDeliveryRepository
+from ..infrastructure.sql import (
+    SqlDeliveryPlanningReadRepository,
+    SqlDeliveryRepository,
+)
 
 
 class StrictBody(BaseModel):
@@ -72,6 +76,11 @@ def build_delivery_router(
     def service(session: Session) -> DeliveryService:
         return DeliveryService(SqlDeliveryRepository(session))
 
+    def projection_service(session: Session) -> DeliveryProjectionService:
+        repository = SqlDeliveryRepository(session)
+        planning = SqlDeliveryPlanningReadRepository(session)
+        return DeliveryProjectionService(repository, planning, planning)
+
     def principal(request: Request) -> AuthPrincipal:
         return request.state.auth_principal
 
@@ -92,6 +101,13 @@ def build_delivery_router(
         return service(session).board_for_work_package(
             work_package_id, principal(request)
         )
+
+    @router.get("/work-packages/{work_package_id}/summary")
+    def get_work_package_summary(
+        work_package_id: str,
+        session: Session = Depends(session_dependency),
+    ) -> dict[str, object]:
+        return projection_service(session).work_package_rollup(work_package_id)
 
     @router.post("/plans", status_code=status.HTTP_201_CREATED)
     def create_plan(
