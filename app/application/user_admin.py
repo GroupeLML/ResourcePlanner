@@ -335,6 +335,12 @@ class UserAdminService:
                 code="user_admin_erp_source_ineligible",
                 context={"erp_user_id": existing.erp_user_id},
             )
+        if source.employee_external_id != existing.employee_external_id:
+            raise ApplicationConflictError(
+                "Le compte ERP lié référence maintenant un EmployeID différent; aucune réattribution automatique n'est permise.",
+                code="user_admin_erp_employee_conflict",
+                context={"erp_user_id": existing.erp_user_id},
+            )
 
     def update_user(
         self,
