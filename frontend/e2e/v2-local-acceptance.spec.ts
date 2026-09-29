@@ -1406,6 +1406,8 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   expect(draftResponse.ok()).toBeTruthy();
   const draft = await draftResponse.json() as {
     lines: Array<{
+      line_id: string;
+      position: number;
       kind: "WORKFORCE" | "ASSET";
       asset_type_id: string | null;
       proposed_asset_id: string | null;
@@ -1420,6 +1422,9 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   expect(activeAssets.every((line) => line.asset_type_id === assetTypeId)).toBeTruthy();
   expect(activeWorkforce).toHaveLength(2);
   expect(new Set(activeWorkforce.map((line) => line.proposed_resource_id))).toEqual(new Set(["R-ALICE", "R-BOB"]));
+  const extendedAssetLine = [...activeAssets].sort((left, right) => left.position - right.position)[0];
+  expect(extendedAssetLine?.line_id).toBeTruthy();
+  const extendedAssetLineId = extendedAssetLine.line_id;
 
   await workflowSelect(projectManager.page, demandNumber);
   await projectManager.page.getByRole("button", { name: "Soumettre", exact: true }).click();
@@ -1459,6 +1464,22 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   await expect(demandRequirements.nth(0)).toContainText("À réserver");
   await expect(demandRequirements.nth(1)).toContainText("À réserver");
 
+  const requirementSnapshotResponse = await coordinator.page.request.get(
+    "/api/v1/planning/snapshot?start=" + d1 + "&end=" + d5 + "&scope=global",
+  );
+  expect(requirementSnapshotResponse.ok()).toBeTruthy();
+  const requirementSnapshot = await requirementSnapshotResponse.json() as {
+    asset_requirements: Array<{
+      requirement_id: string;
+      demand_number: string;
+      source_request_line_id: string;
+    }>;
+  };
+  const extendedRequirementId = requirementSnapshot.asset_requirements.find(
+    (row) => row.demand_number === demandNumber && row.source_request_line_id === extendedAssetLineId,
+  )?.requirement_id ?? "";
+  expect(extendedRequirementId).not.toBe("");
+
   const aliceRow = coordinator.page.locator(".resource-row").filter({ hasText: "Alice" }).first();
   const bobRow = coordinator.page.locator(".resource-row").filter({ hasText: "Bob" }).first();
   let aliceShift = aliceRow.locator(".shift-card").filter({ hasText: demandNumber }).first();
@@ -1481,7 +1502,10 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   });
   expect(bumpVersion.status(), await bumpVersion.text()).toBe(201);
 
-  let requirementCard = demandRequirements.nth(0);
+  let requirementCard = assetPanel.locator(
+    `.asset-requirement-card[data-requirement-id="${extendedRequirementId}"]`,
+  );
+  await expect(requirementCard).toBeVisible();
   await requirementCard.getByRole("combobox").first().selectOption(lift63Id);
   await requirementCard.getByRole("button", { name: "Réserver cette unité" }).click();
   await expect(assetPanel.locator(".asset-planning-feedback")).toContainText(
