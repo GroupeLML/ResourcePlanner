@@ -165,7 +165,10 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
         result = self._session.execute(
             update(WorkPackage)
             .where(WorkPackage.id == work_package.id)
-            .values(version=WorkPackage.version)
+            .values(
+                version=WorkPackage.version,
+                updated_at=WorkPackage.updated_at,
+            )
         )
         if int(result.rowcount or 0) != 1:
             raise KeyError(f"WorkPackage {work_package.id} introuvable")
