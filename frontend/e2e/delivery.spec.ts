@@ -169,7 +169,13 @@ test("362F Delivery traverse PM, Team Lead et technicien sans élargir Planning"
   await labelled(createForm, "Estimation (h)", "input").fill("8");
   await labelled(createForm, "Restant (h)", "input").fill("8");
   await labelled(createForm, "Description", "textarea").fill("Story traversant frontend et backend");
+  const storyCreateResponse = leadA.page.waitForResponse(
+    (response) => response.request().method() === "POST"
+      && /\/api\/v1\/delivery\/plans\/[^/]+\/items$/.test(new URL(response.url()).pathname),
+  );
   await createForm.getByRole("button", { name: "Ajouter la Story" }).click();
+  const storyCreated = await storyCreateResponse;
+  expect(storyCreated.status(), await storyCreated.text()).toBe(201);
 
   let leadStory = storyCard(leadA.page, storyTitle);
   await expect(leadStory).toBeVisible();

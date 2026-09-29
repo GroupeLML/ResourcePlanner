@@ -449,13 +449,15 @@ export default function DeliveryPage() {
   async function runMutation(
     operation: () => Promise<DeliveryBoardReadModel>,
     fallback: string,
-  ) {
+  ): Promise<boolean> {
     setPending(true);
     setError("");
     try {
       await adoptBoard(await operation());
+      return true;
     } catch (reason) {
       await handleMutationFailure(reason, fallback);
+      return false;
     } finally {
       setPending(false);
     }
@@ -485,7 +487,7 @@ export default function DeliveryPage() {
     if (!board || !itemTitle.trim()) return;
     const estimate = itemEstimate.trim() ? Number(itemEstimate) : null;
     const remaining = itemRemaining.trim() ? Number(itemRemaining) : null;
-    await runMutation(
+    const created = await runMutation(
       () => createDeliveryItem(board.plan.id, {
         expected_delivery_version: board.plan.delivery_version,
         item_type: itemType,
@@ -500,12 +502,14 @@ export default function DeliveryPage() {
       }),
       "Impossible de créer l'élément Delivery.",
     );
-    setItemTitle("");
-    setItemDescription("");
-    setItemAssignee("");
-    setItemEstimate("");
-    setItemRemaining("");
-    setItemDueDate("");
+    if (created) {
+      setItemTitle("");
+      setItemDescription("");
+      setItemAssignee("");
+      setItemEstimate("");
+      setItemRemaining("");
+      setItemDueDate("");
+    }
   }
 
   const selectedWorkPackage = workPackages.find((row) => row.id === workPackageId) ?? null;

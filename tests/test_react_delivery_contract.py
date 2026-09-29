@@ -75,6 +75,8 @@ class ReactDeliveryContractTests(unittest.TestCase):
         self.assertIn("version courante", page)
         self.assertIn("Réessayez l'action", page)
         self.assertIn("onMutationFailure={handleMutationFailure}", page)
+        self.assertIn("const created = await runMutation(", page)
+        self.assertIn("if (created) {", page)
 
     def test_delivery_ui_covers_epics_stories_assignment_estimates_and_remaining(self) -> None:
         page = (FRONTEND / "DeliveryPage.tsx").read_text(encoding="utf-8")
