@@ -291,17 +291,18 @@ class SqlUserIdentityRepository:
             raise ValueError("Cette identité OIDC appartient déjà à un autre AppUser")
 
         try:
-            with self._session.begin_nested():
-                self._session.execute(
-                    update(AppUser)
-                    .where(
-                        AppUser.id == user_id_value,
-                        AppUser.issuer.is_(None),
-                        AppUser.subject.is_(None),
-                    )
-                    .values(issuer=issuer_value, subject=subject_value)
+            result = self._session.execute(
+                update(AppUser)
+                .where(
+                    AppUser.id == user_id_value,
+                    AppUser.issuer.is_(None),
+                    AppUser.subject.is_(None),
                 )
-                self._session.flush()
+                .values(issuer=issuer_value, subject=subject_value)
+            )
+            if result.rowcount != 1:
+                raise ValueError("Cet AppUser possède déjà une autre identité OIDC")
+            self._session.flush()
         except IntegrityError as exc:
             raise ValueError(
                 "Cette identité OIDC appartient déjà à un autre AppUser"
