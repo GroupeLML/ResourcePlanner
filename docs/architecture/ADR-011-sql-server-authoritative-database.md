@@ -7,7 +7,7 @@ Date: 2026-09-29
 
 RessourcePlanner utilise SQLAlchemy 2.x et Alembic afin de garder la couche de persistance indépendante du transport HTTP et du frontend.
 
-SQLite a permis de développer et tester rapidement le backend Web/SQL sans dépendre de l'environnement cible. Le projet possède maintenant un accès au serveur SQL Server réel et les travaux #162, #208 et #457 définissent déjà le chemin de validation et de mise en service sur une base neuve.
+SQLite a permis de développer et tester rapidement le backend Web/SQL sans dépendre de l'environnement cible. Le projet possède maintenant un accès au serveur SQL Server réel et les travaux #162, #208 et #457 définissent déjà la trajectoire de validation et de mise en service sur une base neuve.
 
 Certaines propriétés importantes de RessourcePlanner — concurrence multi-session, transactions composites, contraintes, migrations, verrouillage/CAS, rollback et performance — ne doivent pas être considérées comme validées pour la production uniquement parce qu'elles fonctionnent sous SQLite.
 
