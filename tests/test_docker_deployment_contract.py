@@ -37,6 +37,27 @@ class DockerDeploymentContractTests(unittest.TestCase):
         self.assertIn("location = /ready", nginx)
         self.assertIn("try_files $uri $uri/ /index.html", nginx)
 
+    def test_frontend_proxy_preserves_original_host_and_port(self) -> None:
+        nginx = (ROOT / "frontend" / "default.conf.template").read_text(encoding="utf-8")
+        proxy_locations = (
+            "location /api/ {",
+            "location = /health {",
+            "location = /ready {",
+            "location /docs {",
+            "location = /openapi.json {",
+        )
+        for location in proxy_locations:
+            with self.subTest(location=location):
+                block = nginx.split(location, 1)[1].split("}", 1)[0]
+                self.assertIn("proxy_set_header Host $http_host;", block)
+                self.assertIn(
+                    "proxy_set_header X-Forwarded-Host $http_host;",
+                    block,
+                )
+
+        self.assertNotIn("proxy_set_header Host $host;", nginx)
+        self.assertNotIn("proxy_set_header X-Forwarded-Host $host;", nginx)
+
     def test_local_compose_has_explicit_migration_gate_and_no_database_container(self) -> None:
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
         self.assertIn("migrate:", compose)
