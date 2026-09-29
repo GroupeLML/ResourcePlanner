@@ -17,7 +17,9 @@ from app.infrastructure.sql import (
     create_session_factory,
     create_sql_engine,
 )
+from app.infrastructure.sql.identity_models import AppUser
 from app.server import create_api_app
+from tests.approval_test_support import TEST_ADMIN_USER_ID
 from tests.http_test_auth import TEST_ADMIN_AUTH_RESOLVER
 
 
@@ -36,6 +38,15 @@ class WorkPackageRequestLineInvariantTests(unittest.TestCase):
             session.add_all(
                 [
                     Project(id="P1", number="P-1", name="Projet 1", status="Actif"),
+                    AppUser(
+                        id=TEST_ADMIN_USER_ID,
+                        issuer="urn:resourceplanner:test",
+                        subject="explicit-test-admin",
+                        display_name="Administrateur de test explicite",
+                        email=None,
+                        roles_json='["ADMIN"]',
+                        active=True,
+                    ),
                     TaskCatalogEntry(
                         id="TASK-210",
                         project_number="P-1",
