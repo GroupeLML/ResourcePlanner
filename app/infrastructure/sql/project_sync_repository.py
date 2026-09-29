@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from ...application.errors import ApplicationConflictError, ApplicationValidationError
 from ...application.project_sync import ExternalProjectRecord, ProjectSyncRepositoryPort
+from .identity_models import AppUser
 from .models import Project
 
 
@@ -22,6 +23,30 @@ class SqlProjectSyncRepository(ProjectSyncRepositoryPort):
 
     def __init__(self, session: Session) -> None:
         self._session = session
+
+    def _resolve_project_manager_contact_id(
+        self,
+        employee_external_id: str,
+    ) -> str | None:
+        """Resolve an ERP EmployeID through the canonical AppUser employee link only."""
+        employee_id = _text(employee_external_id)
+        if not employee_id:
+            return None
+        matches = self._session.scalars(
+            select(AppUser).where(AppUser.employee_external_id == employee_id)
+        ).all()
+        if len(matches) > 1:
+            # The SQL model already forbids this state. Keep the sync fail-closed
+            # rather than selecting an arbitrary identity if legacy/corrupt data
+            # bypassed the uniqueness constraint.
+            raise ApplicationConflictError(
+                "Plusieurs utilisateurs locaux partagent le même identifiant employé ERP.",
+                code="project_sync_manager_identity_conflict",
+                context={"employee_external_id": employee_id},
+            )
+        if not matches:
+            return None
+        return _optional_text(matches[0].business_contact_id)
 
     def upsert_external_project(self, project: ExternalProjectRecord) -> str:
         external_id = _text(project.external_id)
@@ -56,16 +81,20 @@ class SqlProjectSyncRepository(ProjectSyncRepositoryPort):
 
         row = by_external or by_number
         if row is None:
+            manager_external_id = _optional_text(project.project_manager_external_id)
             self._session.add(
                 Project(
                     erp_external_id=external_id or None,
                     number=number,
                     name=name,
                     client=_optional_text(project.client),
-                    project_manager_external_id=_optional_text(
-                        project.project_manager_external_id
-                    ),
+                    project_manager_external_id=manager_external_id,
                     project_manager_name=_optional_text(project.project_manager_name),
+                    project_manager_contact_id=(
+                        self._resolve_project_manager_contact_id(manager_external_id)
+                        if manager_external_id is not None
+                        else None
+                    ),
                     status=_text(project.status) or "active",
                 )
             )
@@ -98,6 +127,11 @@ class SqlProjectSyncRepository(ProjectSyncRepositoryPort):
         # stable mapping. A future Acumatica contract may add explicit clear semantics.
         if incoming_manager_external_id is not None:
             values["project_manager_external_id"] = incoming_manager_external_id
+            values["project_manager_contact_id"] = (
+                self._resolve_project_manager_contact_id(
+                    incoming_manager_external_id
+                )
+            )
         if incoming_manager_name is not None:
             values["project_manager_name"] = incoming_manager_name
         if external_id:
