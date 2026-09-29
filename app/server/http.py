@@ -82,6 +82,7 @@ from .routes_competencies import build_competency_router
 from .routes_communications import build_communication_router
 from .routes_project_communications import build_project_communication_router
 from .routes_dev_user_switcher import build_dev_user_switcher_router
+from .routes_delivery import build_delivery_router
 from .routes_erp_users import build_erp_user_admin_router
 from .routes_integrations import build_integration_router
 from .routes_me import build_me_router
@@ -699,6 +700,7 @@ def create_api_app(
     )
     app.include_router(build_task_catalog_router(session_dependency))
     app.include_router(build_asset_router(session_dependency))
+    app.include_router(build_delivery_router(session_dependency))
     app.include_router(
         build_me_router(
             query_dependency,
