@@ -1267,7 +1267,7 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   await labelled(typeEditor, "Code", "input").fill("LIFT496");
   await labelled(typeEditor, "Libellé", "input").fill("Nacelle");
   await labelled(typeEditor, "Catégorie", "select").selectOption("EQUIPMENT");
-  await typeEditor.getByLabel("Compétences / permis requis").selectOption(["C-SCADA"]);
+  await typeEditor.getByLabel("Compétences / permis requis", { exact: true }).selectOption(["C-SCADA"]);
   await typeEditor.getByRole("button", { name: "Enregistrer le type" }).click();
   await expect(catalogPanel.locator(".asset-catalog-notice")).toContainText("Type d’actif créé");
 
