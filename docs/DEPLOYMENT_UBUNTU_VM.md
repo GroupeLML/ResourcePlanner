@@ -151,9 +151,11 @@ Pour un diagnostic ponctuel sur une **VM de développement**, conserver l'écout
 
 ## SQL Server
 
-La validation réelle du driver ODBC, des migrations et de la connectivité SQL Server reste suivie par #162.
+La validation réelle #162 a confirmé le runtime cible avec SQL Server 2017, SQLAlchemy 2.0.52, `pyodbc 5.3.0` et Microsoft ODBC Driver 18.
 
-La VM Ubuntu devient l'environnement depuis lequel seront effectués les smokes réseau et ODBC de production.
+L'image backend installe elle-même le paquet Debian `msodbcsql18` depuis le dépôt Microsoft et `requirements-server.txt` épingle `pyodbc==5.3.0`. La CI `docker-smoke` vérifie que l'image finale expose bien `ODBC Driver 18 for SQL Server` via `pyodbc.drivers()`.
+
+La sous-version système du paquet ODBC 18 n'est pas figée dans Git : le build suit le paquet `msodbcsql18` compatible avec la version Debian de l'image `python:3.12-slim`. Le secret SQL et les paramètres de connexion restent injectés à l'exécution via `RESOURCEPLANNER_DATABASE_URL`.
 
 ## Mise à jour et rollback
 
