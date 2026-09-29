@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import select, true
 from sqlalchemy.orm import Session
 
 from .asset_models import AssetAllocation, AssetRequirement, AssetTypeCompetency
@@ -166,7 +166,7 @@ def eligible_operator_resources(
     }
     resources = session.scalars(
         select(Resource)
-        .where(Resource.active.is_(True))
+        .where(Resource.active == true())
         .order_by(Resource.sort_order, Resource.name, Resource.id)
     ).all()
     result: list[Resource] = []
