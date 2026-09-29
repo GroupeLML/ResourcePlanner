@@ -6,6 +6,7 @@ import tempfile
 import unittest
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.application.security import (
     AuthPrincipal,
@@ -13,7 +14,17 @@ from app.application.security import (
     ROLE_PROJECT_MANAGER,
     ROLE_TECHNICIAN,
 )
-from app.infrastructure.sql import AppUser, Base, Project, WorkPackage
+from app.infrastructure.sql import (
+    AppUser,
+    Base,
+    DeliveryChangeHistory,
+    DeliveryItemRow,
+    DeliveryPlanRow,
+    PlanningMutationState,
+    Project,
+    Shift,
+    WorkPackage,
+)
 from app.server import create_api_app
 from app.server.security import static_auth_resolver
 
@@ -42,6 +53,7 @@ class DeliveryBoardApiTests(unittest.TestCase):
         with factory() as session, session.begin():
             session.add(Project(id="P-1", number="P-1", name="Projet"))
             session.add(WorkPackage(id="WP-1", project_id="P-1", name="WP"))
+            session.add(PlanningMutationState(id="GLOBAL", version=37))
             session.add_all(
                 [
                     AppUser(
@@ -260,6 +272,61 @@ class DeliveryBoardApiTests(unittest.TestCase):
             self.assertEqual(
                 archived_edit.json()["error"]["code"],
                 "delivery_plan_archived",
+            )
+
+        with pm_app.state.session_factory() as session:
+            planning_state = session.get(PlanningMutationState, "GLOBAL")
+            self.assertIsNotNone(planning_state)
+            assert planning_state is not None
+            self.assertEqual(planning_state.version, 37)
+            self.assertEqual(len(session.scalars(select(Shift)).all()), 0)
+
+            plan_row = session.get(DeliveryPlanRow, plan_id)
+            story_db = session.get(DeliveryItemRow, story_id)
+            self.assertIsNotNone(plan_row)
+            self.assertIsNotNone(story_db)
+            assert plan_row is not None
+            assert story_db is not None
+            self.assertEqual(plan_row.id, plan_id)
+            self.assertEqual(plan_row.status, "ARCHIVED")
+            self.assertIsNotNone(plan_row.archived_at)
+            self.assertEqual(story_db.id, story_id)
+            self.assertEqual(story_db.delivery_plan_id, plan_id)
+            self.assertEqual(story_db.status, "IN_PROGRESS")
+            self.assertEqual(float(story_db.reference_estimate_hours or 0), 8)
+            self.assertEqual(float(story_db.remaining_hours or 0), 5)
+
+            history = session.scalars(
+                select(DeliveryChangeHistory)
+                .where(DeliveryChangeHistory.delivery_plan_id == plan_id)
+                .order_by(
+                    DeliveryChangeHistory.delivery_version,
+                    DeliveryChangeHistory.occurred_at,
+                )
+            ).all()
+            self.assertEqual(
+                [row.action for row in history],
+                [
+                    "PLAN_CREATED",
+                    "PLAN_ACTIVE",
+                    "ITEM_CREATED",
+                    "ITEM_CREATED",
+                    "ITEM_UPDATED",
+                    "BLOCKAGE_DOCUMENTED",
+                    "PLAN_ARCHIVED",
+                ],
+            )
+            self.assertEqual(
+                [row.delivery_version for row in history],
+                [1, 2, 3, 4, 5, 6, 7],
+            )
+            self.assertEqual(
+                [row.actor_user_id for row in history],
+                ["PM", "PM", "LEAD", "LEAD", "TECH", "TECH", "PM"],
+            )
+            self.assertEqual(
+                [row.delivery_item_id for row in history],
+                [None, None, epic_id, story_id, story_id, story_id, None],
             )
 
     def test_plan_uniqueness_and_missing_links_are_structured(self) -> None:

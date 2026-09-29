@@ -68,6 +68,7 @@ type StoryCardProps = {
   disabled: boolean;
   onChanged: (board: DeliveryBoardReadModel) => Promise<void> | void;
   onError: (message: string) => void;
+  onMutationFailure: (reason: unknown, fallback: string) => Promise<void> | void;
 };
 
 function StoryCard({
@@ -77,6 +78,7 @@ function StoryCard({
   disabled,
   onChanged,
   onError,
+  onMutationFailure,
 }: StoryCardProps) {
   const [status, setStatus] = useState<DeliveryItemStatus>(item.status);
   const [remaining, setRemaining] = useState(
@@ -143,7 +145,7 @@ function StoryCard({
       });
       await onChanged(board);
     } catch (reason) {
-      onError(errorMessage(reason, "Impossible de modifier la Story."));
+      await onMutationFailure(reason, "Impossible de modifier la Story.");
     } finally {
       setPending(false);
     }
@@ -163,7 +165,7 @@ function StoryCard({
       setBlockageNote("");
       await onChanged(board);
     } catch (reason) {
-      onError(errorMessage(reason, "Impossible d'enregistrer le blocage."));
+      await onMutationFailure(reason, "Impossible d'enregistrer le blocage.");
     } finally {
       setPending(false);
     }
@@ -423,6 +425,27 @@ export default function DeliveryPage() {
     }
   }
 
+  async function handleMutationFailure(reason: unknown, fallback: string) {
+    const message = errorMessage(reason, fallback);
+    if (!(reason instanceof ApiError) || reason.code !== "delivery_version_conflict") {
+      setError(message);
+      return;
+    }
+    try {
+      await reloadDelivery();
+      setError(
+        `${message} Le board a été rechargé avec la version courante. Réessayez l'action.`,
+      );
+    } catch (reloadReason) {
+      setError(
+        `${message} Le rechargement automatique du board a échoué: ${errorMessage(
+          reloadReason,
+          "Impossible de recharger Delivery.",
+        )}`,
+      );
+    }
+  }
+
   async function runMutation(
     operation: () => Promise<DeliveryBoardReadModel>,
     fallback: string,
@@ -432,7 +455,7 @@ export default function DeliveryPage() {
     try {
       await adoptBoard(await operation());
     } catch (reason) {
-      setError(errorMessage(reason, fallback));
+      await handleMutationFailure(reason, fallback);
     } finally {
       setPending(false);
     }
@@ -775,6 +798,7 @@ export default function DeliveryPage() {
                                   disabled={pending || !planIsEditable}
                                   onChanged={adoptBoard}
                                   onError={setError}
+                                  onMutationFailure={handleMutationFailure}
                                 />
                               ))}
                             </div>

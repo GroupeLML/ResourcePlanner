@@ -30,6 +30,7 @@ from app.application.security import (
     AuthPrincipal,
     ROLE_ADMIN,
     ROLE_COORDINATOR,
+    ROLE_DELIVERY_CONTRIBUTOR,
     ROLE_MANAGER,
     ROLE_PROJECT_MANAGER,
     ROLE_TECHNICIAN,
@@ -63,12 +64,15 @@ from app.server.dev_user_switcher import (
 from app.server.frontend import attach_frontend
 
 
+E2E_TEAM_LEAD = "TEAM_LEAD"
+
 ROLE_IDENTITIES = {
     ROLE_ADMIN: ("Administrateur E2E", None),
     ROLE_PROJECT_MANAGER: ("Chargé E2E", "EMP-PM"),
     ROLE_COORDINATOR: ("Coordonnateur E2E", None),
     ROLE_MANAGER: ("Gestionnaire E2E", None),
     ROLE_TECHNICIAN: ("Technicien Alice", "EMP-ALICE"),
+    E2E_TEAM_LEAD: ("Team Lead E2E", None),
 }
 
 ROLE_APP_USER_SUBJECTS = {
@@ -77,6 +81,16 @@ ROLE_APP_USER_SUBJECTS = {
     ROLE_COORDINATOR: "coordinator",
     ROLE_MANAGER: "manager",
     ROLE_TECHNICIAN: "technician-a",
+    E2E_TEAM_LEAD: "team-lead",
+}
+
+ROLE_ASSIGNED_ROLES = {
+    ROLE_ADMIN: (ROLE_ADMIN,),
+    ROLE_PROJECT_MANAGER: (ROLE_PROJECT_MANAGER,),
+    ROLE_COORDINATOR: (ROLE_COORDINATOR,),
+    ROLE_MANAGER: (ROLE_MANAGER,),
+    ROLE_TECHNICIAN: (ROLE_TECHNICIAN, ROLE_DELIVERY_CONTRIBUTOR),
+    E2E_TEAM_LEAD: (ROLE_DELIVERY_CONTRIBUTOR,),
 }
 
 
@@ -113,7 +127,8 @@ def _principal_for_request(request: Request) -> AuthPrincipal | None:
     role = str(request.headers.get("X-E2E-Role") or "").strip().upper()
     identity = ROLE_IDENTITIES.get(role)
     subject = ROLE_APP_USER_SUBJECTS.get(role)
-    if identity is None or subject is None:
+    assigned_roles = ROLE_ASSIGNED_ROLES.get(role)
+    if identity is None or subject is None or assigned_roles is None:
         return None
 
     factory = request.app.state.session_factory
@@ -133,7 +148,7 @@ def _principal_for_request(request: Request) -> AuthPrincipal | None:
         display_name=display_name,
         email=record.email,
         employee_external_id=employee_external_id,
-        roles=(role,),
+        roles=assigned_roles,
         auth_mode="test",
     )
 
@@ -314,13 +329,14 @@ def _seed(database_url: str) -> None:
             project_manager_contact_id = None
             approval_user_ids: list[str] = []
             manager_user_id = None
-            for subject, display_name, role, employee_external_id, email_local in (
-                ("admin", "Administrateur Démo", ROLE_ADMIN, None, "admin"),
-                ("coordinator", "Coordonnateur Démo", ROLE_COORDINATOR, None, "coord"),
-                ("project-manager", "Chargé de projet Démo", ROLE_PROJECT_MANAGER, "EMP-PM", "pm"),
-                ("manager", "Gestionnaire Démo", ROLE_MANAGER, None, "manager"),
-                ("technician-a", "Technicien Démo A", ROLE_TECHNICIAN, "EMP-ALICE", "alice"),
-                ("technician-b", "Technicien Démo B", ROLE_TECHNICIAN, "EMP-BOB", "bob"),
+            for subject, display_name, roles, employee_external_id, email_local in (
+                ("admin", "Administrateur Démo", (ROLE_ADMIN,), None, "admin"),
+                ("coordinator", "Coordonnateur Démo", (ROLE_COORDINATOR,), None, "coord"),
+                ("project-manager", "Chargé de projet Démo", (ROLE_PROJECT_MANAGER,), "EMP-PM", "pm"),
+                ("manager", "Gestionnaire Démo", (ROLE_MANAGER,), None, "manager"),
+                ("team-lead", "Team Lead Démo", (ROLE_DELIVERY_CONTRIBUTOR,), None, "lead"),
+                ("technician-a", "Technicien Démo A", (ROLE_TECHNICIAN, ROLE_DELIVERY_CONTRIBUTOR), "EMP-ALICE", "alice"),
+                ("technician-b", "Technicien Démo B", (ROLE_TECHNICIAN, ROLE_DELIVERY_CONTRIBUTOR), "EMP-BOB", "bob"),
             ):
                 record = users.upsert(
                     issuer="urn:resourceplanner:e2e-dev",
@@ -328,12 +344,12 @@ def _seed(database_url: str) -> None:
                     display_name=display_name,
                     email=f"{email_local}{chr(64)}{address_domain}",
                     employee_external_id=employee_external_id,
-                    roles=(role,),
+                    roles=roles,
                     active=True,
                 )
-                if role in {ROLE_ADMIN, ROLE_COORDINATOR, ROLE_MANAGER}:
+                if set(roles).intersection({ROLE_ADMIN, ROLE_COORDINATOR, ROLE_MANAGER}):
                     approval_user_ids.append(record.user_id)
-                if role == ROLE_MANAGER:
+                if ROLE_MANAGER in roles:
                     manager_user_id = record.user_id
                 if employee_external_id == "EMP-PM":
                     project_manager_contact_id = record.business_contact_id

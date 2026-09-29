@@ -67,6 +67,15 @@ class ReactDeliveryContractTests(unittest.TestCase):
         self.assertNotIn("expected_planning_version", api)
         self.assertNotIn("/api/v1/planning", api)
 
+    def test_delivery_version_conflict_reloads_authoritative_board_for_retry(self) -> None:
+        page = (FRONTEND / "DeliveryPage.tsx").read_text(encoding="utf-8")
+
+        self.assertIn('reason.code !== "delivery_version_conflict"', page)
+        self.assertIn("await reloadDelivery()", page)
+        self.assertIn("version courante", page)
+        self.assertIn("Réessayez l'action", page)
+        self.assertIn("onMutationFailure={handleMutationFailure}", page)
+
     def test_delivery_ui_covers_epics_stories_assignment_estimates_and_remaining(self) -> None:
         page = (FRONTEND / "DeliveryPage.tsx").read_text(encoding="utf-8")
 
