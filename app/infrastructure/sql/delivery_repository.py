@@ -17,6 +17,8 @@ from app.domain.delivery import (
 
 from .base import utc_now
 from .delivery_models import DeliveryChangeHistory, DeliveryItemRow, DeliveryPlanRow
+from .identity_models import AppUser
+from .models import WorkPackage
 
 
 class DeliveryVersionConflict(RuntimeError):
@@ -98,6 +100,14 @@ class SqlDeliveryRepository:
         ).all()
         return tuple(_item_from_row(row) for row in rows)
 
+    def work_package_exists(self, work_package_id: str) -> bool:
+        return (
+            self._session.get(WorkPackage, str(work_package_id).strip()) is not None
+        )
+
+    def user_exists(self, user_id: str) -> bool:
+        return self._session.get(AppUser, str(user_id).strip()) is not None
+
     def add_plan(self, plan: DeliveryPlan) -> None:
         row = DeliveryPlanRow(
             id=plan.id,
@@ -135,6 +145,36 @@ class SqlDeliveryRepository:
                 sprint=item.sprint,
             )
         )
+        self._session.flush()
+
+    def save_plan(self, plan: DeliveryPlan) -> None:
+        row = self._session.get(DeliveryPlanRow, plan.id)
+        if row is None:
+            raise KeyError(f"DeliveryPlan not found: {plan.id}")
+        row.status = plan.status.value
+        row.lead_user_id = plan.lead_user_id
+        row.delivery_version = plan.delivery_version
+        row.activated_at = plan.activated_at
+        row.archived_at = plan.archived_at
+        row.updated_at = plan.updated_at or utc_now()
+        self._session.flush()
+
+    def save_item(self, item: DeliveryItem) -> None:
+        row = self._session.get(DeliveryItemRow, item.id)
+        if row is None:
+            raise KeyError(f"DeliveryItem not found: {item.id}")
+        row.parent_id = item.parent_id
+        row.title = item.title
+        row.description = item.description
+        row.priority = item.priority
+        row.status = item.status.value
+        row.assignee_user_id = item.assignee_user_id
+        row.current_estimate_hours = item.current_estimate_hours
+        row.reference_estimate_hours = item.reference_estimate_hours
+        row.remaining_hours = item.remaining_hours
+        row.due_date = item.due_date
+        row.position = item.position
+        row.sprint = item.sprint
         self._session.flush()
 
     def compare_and_increment_version(
