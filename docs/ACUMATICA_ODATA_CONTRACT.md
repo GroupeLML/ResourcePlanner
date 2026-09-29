@@ -67,7 +67,7 @@ Les URI Atom `self` / `edit` peuvent exposer d'autres composantes de clé OData,
 | `ProjectName` | nom/description du projet | nom |
 | `CustomerID` | identifiant client ERP | donnée ERP descriptive/référence si utile |
 | `CustomerName` | nom du client | client |
-| `ProjectManagerId` | identifiant ERP du chargé de projet | référence externe lorsque le contrat identité sera stabilisé |
+| `ProjectManagerId` | `EmployeID` ERP du chargé de projet | `Project.project_manager_external_id`, puis résolution stable vers `AppUser.employee_external_id → business_contact_id` |
 | `ProjectManagerName` | nom affiché du chargé de projet | chargé de projet descriptif |
 | `Status` | statut ERP | statut projet |
 | `StartDate` | date de début | date de début si utilisée |
@@ -102,6 +102,24 @@ L'adaptateur OData devra au minimum :
 - convertir les `Edm.DateTime` en valeurs temporelles Python cohérentes;
 - exiger `ProjectId`, `ProjectCode` et `ProjectName` pour un projet exploitable;
 - ne jamais utiliser le nom du projet ou du chargé de projet comme clé d'identité.
+
+Le mapping chargé de projet confirmé est :
+
+```text
+trim(RP_Projects.ProjectManagerId)
+        =
+trim(RP_Employees.EmployeID)
+        =
+trim(RP_Users.EmployeID)
+        ↓
+AppUser.employee_external_id
+        ↓
+AppUser.business_contact_id
+        ↓
+Project.project_manager_contact_id
+```
+
+`RP_Users.UserID` reste l'identité du compte ERP et ne participe jamais à cette jointure. En absence d'`AppUser`/contact correspondant, l'identité et le libellé ERP sont conservés et le contact projet reste nul; aucun fallback par nom ou courriel n'est autorisé.
 
 ## Statuts
 
@@ -184,11 +202,13 @@ Feed :
 /oDATA/RP_Users
 ```
 
-Requête PO validée pour le périmètre courant :
+Requête de synchronisation complète utilisée par 468B :
 
 ```text
-/oDATA/RP_Users?$filter=EmployeStatus eq 'Actif'&$orderby=UserID asc
+/oDATA/RP_Users?$orderby=UserID asc
 ```
+
+Le filtre historique `EmployeStatus eq 'Actif'` n'est plus appliqué par le runtime : `UserActif` et `EmployeStatus` sont conservés comme états source distincts, tandis que l'activation et les rôles RessourcePlanner restent locaux. Cette modification est validée contre fixtures/tests locaux; aucun nouveau smoke réel Acumatica n'est déclaré par 468B.
 
 Décisions PO confirmées :
 

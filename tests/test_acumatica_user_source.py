@@ -32,7 +32,7 @@ class ODataUserSourceTests(unittest.TestCase):
         self.assertTrue(employee_inactive.user_active)
         self.assertEqual(employee_inactive.employee_status, "Inactif")
 
-    def test_source_uses_validated_filter_order_and_stable_user_id(self) -> None:
+    def test_source_reads_full_directory_without_employee_status_filter(self) -> None:
         requests: list[httpx.Request] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -55,7 +55,7 @@ class ODataUserSourceTests(unittest.TestCase):
         self.assertEqual(rows[0].employee_external_id, "EXEMALI")
         self.assertEqual(len(requests), 1)
         request = requests[0]
-        self.assertEqual(request.url.params.get("$filter"), "EmployeStatus eq 'Actif'")
+        self.assertIsNone(request.url.params.get("$filter"))
         self.assertEqual(request.url.params.get("$orderby"), "UserID asc")
         self.assertEqual(request.url.params.get("$top"), "100")
         self.assertEqual(request.url.params.get("$skip"), "0")
