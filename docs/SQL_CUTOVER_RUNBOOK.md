@@ -6,6 +6,8 @@ La décision produit est de **ne pas importer l'historique Excel/V1**. La produc
 
 Voir #457 pour la baseline de schéma, le retrait des seeds de développement et l'accès administrateur break-glass.
 
+Le transfert contrôlé des données métier déjà présentes dans SQLite V2 est documenté dans `docs/SQLITE_V2_SQLSERVER_CUTOVER.md` (#492). Il intervient après création de la baseline propre et avant le bootstrap/synchronisations finales; il ne réintroduit aucun import Excel/V1.
+
 ## Principes
 
 - SQL Server est la base de référence intégration/staging/production conformément à ADR-011;
