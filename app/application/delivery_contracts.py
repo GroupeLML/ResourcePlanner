@@ -91,3 +91,30 @@ def delivery_actions_for(actor: DeliveryActorContext, plan: DeliveryPlan, item: 
     if 'TECHNICIAN' in roles and item is not None and (item.item_type is DeliveryItemType.STORY) and (item.assignee_user_id == actor.user_id):
         actions.update({DeliveryAction.UPDATE_OWN_STORY_STATUS, DeliveryAction.UPDATE_OWN_REMAINING_HOURS, DeliveryAction.DOCUMENT_OWN_BLOCKAGE})
     return frozenset(actions)
+
+
+@dataclass(frozen=True, slots=True)
+class WorkPackageDeliveryReferenceReadModel:
+    work_package_id: str
+    reference: str
+    name: str
+    status: str
+    reference_hours: float | None
+
+    def __post_init__(self) -> None:
+        if not str(self.work_package_id or '').strip():
+            raise ValueError('work_package_id requires a stable identifier')
+        if not str(self.reference or '').strip():
+            raise ValueError('WorkPackage reference is required')
+        if not str(self.name or '').strip():
+            raise ValueError('WorkPackage name is required')
+        if self.reference_hours is not None and self.reference_hours < 0:
+            raise ValueError('WorkPackage reference hours cannot be negative')
+
+
+class DeliveryWorkPackageReadPort(Protocol):
+    def get_work_package_delivery_reference(
+        self,
+        work_package_id: str,
+    ) -> WorkPackageDeliveryReferenceReadModel | None:
+        ...
