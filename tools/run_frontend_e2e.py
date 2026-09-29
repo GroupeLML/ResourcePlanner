@@ -65,6 +65,7 @@ from app.server.frontend import attach_frontend
 
 
 E2E_TEAM_LEAD = "TEAM_LEAD"
+E2E_DELIVERY_TECHNICIAN = "DELIVERY_TECHNICIAN"
 
 ROLE_IDENTITIES = {
     ROLE_ADMIN: ("Administrateur E2E", None),
@@ -73,6 +74,7 @@ ROLE_IDENTITIES = {
     ROLE_MANAGER: ("Gestionnaire E2E", None),
     ROLE_TECHNICIAN: ("Technicien Alice", "EMP-ALICE"),
     E2E_TEAM_LEAD: ("Team Lead E2E", None),
+    E2E_DELIVERY_TECHNICIAN: ("Technicien Delivery E2E", None),
 }
 
 ROLE_APP_USER_SUBJECTS = {
@@ -82,6 +84,7 @@ ROLE_APP_USER_SUBJECTS = {
     ROLE_MANAGER: "manager",
     ROLE_TECHNICIAN: "technician-a",
     E2E_TEAM_LEAD: "team-lead",
+    E2E_DELIVERY_TECHNICIAN: "delivery-technician",
 }
 
 ROLE_ASSIGNED_ROLES = {
@@ -89,8 +92,9 @@ ROLE_ASSIGNED_ROLES = {
     ROLE_PROJECT_MANAGER: (ROLE_PROJECT_MANAGER,),
     ROLE_COORDINATOR: (ROLE_COORDINATOR,),
     ROLE_MANAGER: (ROLE_MANAGER,),
-    ROLE_TECHNICIAN: (ROLE_TECHNICIAN, ROLE_DELIVERY_CONTRIBUTOR),
+    ROLE_TECHNICIAN: (ROLE_TECHNICIAN,),
     E2E_TEAM_LEAD: (ROLE_DELIVERY_CONTRIBUTOR,),
+    E2E_DELIVERY_TECHNICIAN: (ROLE_TECHNICIAN, ROLE_DELIVERY_CONTRIBUTOR),
 }
 
 
@@ -335,8 +339,9 @@ def _seed(database_url: str) -> None:
                 ("project-manager", "Chargé de projet Démo", (ROLE_PROJECT_MANAGER,), "EMP-PM", "pm"),
                 ("manager", "Gestionnaire Démo", (ROLE_MANAGER,), None, "manager"),
                 ("team-lead", "Team Lead Démo", (ROLE_DELIVERY_CONTRIBUTOR,), None, "lead"),
-                ("technician-a", "Technicien Démo A", (ROLE_TECHNICIAN, ROLE_DELIVERY_CONTRIBUTOR), "EMP-ALICE", "alice"),
-                ("technician-b", "Technicien Démo B", (ROLE_TECHNICIAN, ROLE_DELIVERY_CONTRIBUTOR), "EMP-BOB", "bob"),
+                ("delivery-technician", "Technicien Delivery Démo", (ROLE_TECHNICIAN, ROLE_DELIVERY_CONTRIBUTOR), None, "delivery"),
+                ("technician-a", "Technicien Démo A", (ROLE_TECHNICIAN,), "EMP-ALICE", "alice"),
+                ("technician-b", "Technicien Démo B", (ROLE_TECHNICIAN,), "EMP-BOB", "bob"),
             ):
                 record = users.upsert(
                     issuer="urn:resourceplanner:e2e-dev",

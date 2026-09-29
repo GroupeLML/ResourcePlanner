@@ -2,12 +2,12 @@ import { Browser, BrowserContext, Locator, Page, expect, test } from "@playwrigh
 
 const BASE_URL = process.env.RESOURCEPLANNER_E2E_BASE_URL || "http://127.0.0.1:8765";
 
-type Role = "PROJECT_MANAGER" | "TEAM_LEAD" | "TECHNICIAN";
+type Role = "PROJECT_MANAGER" | "TEAM_LEAD" | "DELIVERY_TECHNICIAN";
 
 const DISPLAY_NAMES: Record<Role, string> = {
   PROJECT_MANAGER: "Chargé E2E",
   TEAM_LEAD: "Team Lead E2E",
-  TECHNICIAN: "Technicien Alice",
+  DELIVERY_TECHNICIAN: "Technicien Delivery E2E",
 };
 
 function addDays(value: Date, days: number) {
@@ -87,8 +87,11 @@ async function openDelivery(page: Page, workPackageCode: string, useGlobalScope 
   }
   const selectors = page.locator(".delivery-selector-panel");
   await labelled(selectors, "Projet", "select").selectOption("P-251");
-  await selectOptionContaining(labelled(selectors, "WorkPackage", "select"), workPackageCode);
-  await expect(selectors.locator(".delivery-selected-reference")).toContainText(workPackageCode);
+  const selectedWorkPackageId = await selectOptionContaining(
+    labelled(selectors, "WorkPackage", "select"),
+    workPackageCode,
+  );
+  await expect(selectors.locator(".delivery-selected-reference")).toContainText(selectedWorkPackageId);
 }
 
 function storyCard(page: Page, title: string) {
@@ -113,7 +116,7 @@ test("362F Delivery traverse PM, Team Lead et technicien sans élargir Planning"
   expect(leadPrincipal.permissions).not.toContain("manage_planning");
   await closeContext(leadIdentity.context);
 
-  const techIdentity = await openAs(browser, "TECHNICIAN");
+  const techIdentity = await openAs(browser, "DELIVERY_TECHNICIAN");
   const techPrincipal = await principal(techIdentity.page);
   expect(techPrincipal.roles).toContain("TECHNICIAN");
   expect(techPrincipal.roles).toContain("DELIVERY_CONTRIBUTOR");
@@ -127,7 +130,7 @@ test("362F Delivery traverse PM, Team Lead et technicien sans élargir Planning"
   const dialog = projectManager.page.getByRole("dialog", { name: "Créer un lot" });
   await labelled(dialog, "Projet", "select").selectOption("P-251");
   await labelled(dialog, "Code", "input").fill(workPackageCode);
-  await labelled(dialog, "Nom", "input").fill("Lot Delivery acceptation 362F");
+  await labelled(dialog, "Nom", "input").fill("WP-DELIVERY-362F — Lot Delivery acceptation");
   await labelled(dialog, "Début", "input").fill(start);
   await labelled(dialog, "Fin", "input").fill(end);
   await labelled(dialog, "Heures prévues", "input").fill("40");
@@ -208,7 +211,7 @@ test("362F Delivery traverse PM, Team Lead et technicien sans élargir Planning"
   await expect(leadA.page.locator(".delivery-summary").locator("article").filter({ hasText: "Travail restant" }).locator("strong")).toHaveText("5 h");
   await expect(leadA.page.locator(".delivery-summary").locator("article").filter({ hasText: "Capacité réservée" }).locator("strong")).toHaveText("0 h");
 
-  const technician = await openAs(browser, "TECHNICIAN");
+  const technician = await openAs(browser, "DELIVERY_TECHNICIAN");
   await openDelivery(technician.page, workPackageCode, true);
   let techStory = storyCard(technician.page, storyTitle);
   await expect(labelled(techStory, "AppUser assigné", "input")).toHaveCount(0);
