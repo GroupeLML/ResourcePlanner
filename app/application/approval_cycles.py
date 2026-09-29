@@ -418,7 +418,12 @@ class ApprovalCycleService:
                 ApprovalSubjectRoutingEntry(
                     request_line_id=row.request_line_id,
                     task_catalog_item_id=row.task_catalog_item_id,
-                    approval_scope_ids=row.approval_scope_ids,
+                    approval_scope_ids=(
+                        (submitted.approval_scope_id,)
+                        if submitted is not None
+                        and submitted.approval_scope_id is not None
+                        else row.approval_scope_ids
+                    ),
                     source_kinds=source_kinds,
                     proposed_resource_id=row.proposed_resource_id,
                 )

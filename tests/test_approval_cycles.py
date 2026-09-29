@@ -39,6 +39,8 @@ from app.infrastructure.sql import (
     RequestApprovalRevision,
     RequestLine,
     Resource,
+    ResourceClassApprovalScopeMapping,
+    ResourceClassConfig,
     ResourceRequirement,
     Shift,
     SqlApprovalCycleRepository,
@@ -293,6 +295,84 @@ class ApprovalCycleTests(unittest.TestCase):
                     row.request_line_id: tuple(
                         (approver.app_user_id, approver.sources)
                         for approver in row.approvers
+                    )
+                    for row in refreshed.requirements
+                },
+                original,
+            )
+            self.assertEqual(
+                service.validate_active_cycle("D1").id,
+                cycle.id,
+            )
+
+    def test_open_cycle_snapshot_ignores_later_resource_class_mapping_changes(self) -> None:
+        with self.factory() as session:
+            session.execute(delete(TaskApprovalScopeMapping))
+            session.add_all(
+                [
+                    ResourceClassConfig(
+                        code="RC-AUT",
+                        label="Automation",
+                        active=True,
+                        version=1,
+                    ),
+                    ResourceClassConfig(
+                        code="RC-ELEC",
+                        label="Electrical",
+                        active=True,
+                        version=1,
+                    ),
+                    ResourceClassApprovalScopeMapping(
+                        resource_class_code="RC-AUT",
+                        approval_scope_id="S1",
+                    ),
+                    ResourceClassApprovalScopeMapping(
+                        resource_class_code="RC-ELEC",
+                        approval_scope_id="S2",
+                    ),
+                ]
+            )
+            session.get(TaskCatalogEntry, "T1").resource_class_code = "RC-AUT"
+            session.get(TaskCatalogEntry, "T2").resource_class_code = "RC-ELEC"
+            session.commit()
+
+            service = self._service(session)
+            cycle = service.initialize_cycle("D1", expected_version=1)
+            session.commit()
+            original = {
+                row.request_line_id: (
+                    row.approval_scope_id,
+                    tuple(
+                        (approver.app_user_id, approver.sources)
+                        for approver in row.approvers
+                    ),
+                )
+                for row in cycle.requirements
+            }
+
+            session.execute(
+                delete(ResourceClassApprovalScopeMapping).where(
+                    ResourceClassApprovalScopeMapping.resource_class_code
+                    == "RC-AUT"
+                )
+            )
+            session.add(
+                ResourceClassApprovalScopeMapping(
+                    resource_class_code="RC-AUT",
+                    approval_scope_id="S2",
+                )
+            )
+            session.commit()
+
+            refreshed = service.get_active_cycle("D1")
+            self.assertEqual(
+                {
+                    row.request_line_id: (
+                        row.approval_scope_id,
+                        tuple(
+                            (approver.app_user_id, approver.sources)
+                            for approver in row.approvers
+                        ),
                     )
                     for row in refreshed.requirements
                 },

@@ -21,6 +21,7 @@ EXPECTED_TABLES = {
     "approval_requirements",
     "approval_scopes",
     "approval_scope_approvers",
+    "resource_class_approval_scope_mappings",
     "task_approval_scope_mappings",
     "business_contacts",
     "command_idempotency_receipts",

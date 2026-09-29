@@ -19,6 +19,7 @@ from app.infrastructure.sql import (
     BusinessContact,
     Project,
     RequestLine,
+    ResourceClassConfig,
     TaskCatalogEntry,
     WorkforceRequest,
 )
@@ -237,6 +238,68 @@ class ServerApprovalScopeRouteTests(unittest.TestCase):
             {"admin-1", "manager-1"},
         )
         self.assertFalse(payload["blocked"])
+
+    def test_admin_adds_and_removes_covered_resource_class_with_scope_cas(
+        self,
+    ) -> None:
+        app = self._app()
+        factory = app.state.session_factory
+        with factory() as session, session.begin():
+            session.add(
+                ResourceClassConfig(
+                    code="PROGRAMMEUR",
+                    label="Programmeur",
+                    average_hourly_cost_cad=100,
+                    active=True,
+                    version=1,
+                )
+            )
+
+        with TestClient(app) as client:
+            scope = self._create_scope(
+                client,
+                "AUTOMATION",
+                "Automatisation",
+            )
+            assigned = client.put(
+                f"/api/v1/admin/approval-scopes/"
+                f"{scope['id']}/resource-classes/PROGRAMMEUR",
+                json={"expected_version": scope["version"]},
+            )
+            self.assertEqual(assigned.status_code, 200)
+            assigned_payload = assigned.json()
+            self.assertEqual(
+                assigned_payload["resource_class_codes"],
+                ["PROGRAMMEUR"],
+            )
+            self.assertEqual(
+                assigned_payload["version"],
+                scope["version"] + 1,
+            )
+
+            stale = client.request(
+                "DELETE",
+                f"/api/v1/admin/approval-scopes/"
+                f"{scope['id']}/resource-classes/PROGRAMMEUR",
+                json={"expected_version": scope["version"]},
+            )
+            self.assertEqual(stale.status_code, 409)
+            self.assertEqual(
+                stale.json()["error"]["code"],
+                "approval_scope_version_conflict",
+            )
+
+            removed = client.request(
+                "DELETE",
+                f"/api/v1/admin/approval-scopes/"
+                f"{scope['id']}/resource-classes/PROGRAMMEUR",
+                json={"expected_version": assigned_payload["version"]},
+            )
+            self.assertEqual(removed.status_code, 200)
+            self.assertEqual(
+                removed.json()["resource_class_codes"],
+                [],
+            )
 
     def test_inadmissible_user_cannot_be_assigned(
         self,

@@ -12,7 +12,12 @@ from .approval_cycle_models import (
     RequestApprovalCycle,
 )
 from .approval_cycle_repository import SqlApprovalCycleRepository
-from .approval_scope_models import ApprovalScope, ApprovalScopeApprover, TaskApprovalScopeMapping
+from .approval_scope_models import (
+    ApprovalScope,
+    ApprovalScopeApprover,
+    ResourceClassApprovalScopeMapping,
+    TaskApprovalScopeMapping,
+)
 from .approval_scope_repository import SqlApprovalScopeRepository
 from .resource_class_models import (
     ProjectTaskClassOverride,
@@ -188,6 +193,7 @@ __all__ = [
     "RESOURCE_EXTERNAL_ID_INDEX",
     "RESOURCE_REQUIREMENT_NUMBER_INDEX",
     "Resource",
+    "ResourceClassApprovalScopeMapping",
     "ResourceClassConfig",
     "ResourceAvailabilityRule",
     "ResourceCompetency",

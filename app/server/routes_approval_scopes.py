@@ -42,6 +42,7 @@ def _scope_payload(row: ApprovalScopeRecord) -> dict[str, object]:
         "active": row.active,
         "version": row.version,
         "approver_user_ids": list(row.approver_user_ids),
+        "resource_class_codes": list(row.resource_class_codes),
         "task_catalog_item_ids": list(row.task_catalog_item_ids),
     }
 
@@ -115,6 +116,38 @@ def build_approval_scope_router(
             service.set_approver(
                 scope_id,
                 user_id,
+                assigned=False,
+                expected_version=body.expected_version,
+            )
+        )
+
+    @router.put("/{scope_id}/resource-classes/{class_code}")
+    def assign_resource_class(
+        scope_id: str,
+        class_code: str,
+        body: ApprovalScopeAssociationRequest,
+        service: ApprovalScopeService = Depends(dependency),
+    ) -> dict[str, object]:
+        return _scope_payload(
+            service.set_resource_class(
+                scope_id,
+                class_code,
+                assigned=True,
+                expected_version=body.expected_version,
+            )
+        )
+
+    @router.delete("/{scope_id}/resource-classes/{class_code}")
+    def remove_resource_class(
+        scope_id: str,
+        class_code: str,
+        body: ApprovalScopeAssociationRequest,
+        service: ApprovalScopeService = Depends(dependency),
+    ) -> dict[str, object]:
+        return _scope_payload(
+            service.set_resource_class(
+                scope_id,
+                class_code,
                 assigned=False,
                 expected_version=body.expected_version,
             )

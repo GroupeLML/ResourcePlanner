@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from ...application.approval_scopes import (
     ApprovalRequestLineRecord,
+    ApprovalResourceClassRecord,
     ApprovalScopeRecord,
     ApprovalScopeRepositoryPort,
     ApprovalTaskRecord,
@@ -18,11 +19,13 @@ from ...application.security import normalize_roles, permissions_for_roles
 from .approval_scope_models import (
     ApprovalScope,
     ApprovalScopeApprover,
+    ResourceClassApprovalScopeMapping,
     TaskApprovalScopeMapping,
 )
 from .base import new_id
 from .identity_models import AppUser
 from .models import RequestLine, TaskCatalogEntry
+from .resource_class_models import ResourceClassConfig
 
 
 def _text(value: object) -> str:
@@ -41,6 +44,18 @@ class SqlApprovalScopeRepository(ApprovalScopeRepositoryPort):
                 .order_by(ApprovalScopeApprover.app_user_id)
             ).all()
         )
+        resource_classes = tuple(
+            self._session.scalars(
+                select(ResourceClassApprovalScopeMapping.resource_class_code)
+                .where(
+                    ResourceClassApprovalScopeMapping.approval_scope_id
+                    == row.id
+                )
+                .order_by(
+                    ResourceClassApprovalScopeMapping.resource_class_code
+                )
+            ).all()
+        )
         tasks = tuple(
             self._session.scalars(
                 select(TaskApprovalScopeMapping.task_catalog_item_id)
@@ -55,6 +70,7 @@ class SqlApprovalScopeRepository(ApprovalScopeRepositoryPort):
             active=bool(row.active),
             version=int(row.version or 1),
             approver_user_ids=approvers,
+            resource_class_codes=resource_classes,
             task_catalog_item_ids=tasks,
         )
 
@@ -215,6 +231,42 @@ class SqlApprovalScopeRepository(ApprovalScopeRepositoryPort):
         self._session.flush()
         return self._record(row)
 
+    def set_resource_class_scope(
+        self,
+        scope_id: str,
+        resource_class_code: str,
+        *,
+        assigned: bool,
+        expected_version: int,
+    ) -> ApprovalScopeRecord:
+        row = self._acquire_scope_version(scope_id, expected_version)
+        class_code = _text(resource_class_code)
+        if self._session.get(ResourceClassConfig, class_code) is None:
+            raise KeyError(f"Classe {class_code} introuvable")
+        if assigned:
+            existing = self._session.get(
+                ResourceClassApprovalScopeMapping,
+                (class_code, row.id),
+            )
+            if existing is None:
+                self._session.add(
+                    ResourceClassApprovalScopeMapping(
+                        resource_class_code=class_code,
+                        approval_scope_id=row.id,
+                    )
+                )
+        else:
+            self._session.execute(
+                delete(ResourceClassApprovalScopeMapping).where(
+                    ResourceClassApprovalScopeMapping.resource_class_code
+                    == class_code,
+                    ResourceClassApprovalScopeMapping.approval_scope_id
+                    == row.id,
+                )
+            )
+        self._session.flush()
+        return self._record(row)
+
     def get_request_line(
         self,
         line_id: str,
@@ -236,6 +288,19 @@ class SqlApprovalScopeRepository(ApprovalScopeRepositoryPort):
             id=row.id,
             code=row.task_code,
             active=bool(row.active),
+            resource_class_code=_text(row.resource_class_code) or None,
+        )
+
+    def get_resource_class(
+        self,
+        class_code: str,
+    ) -> ApprovalResourceClassRecord | None:
+        row = self._session.get(ResourceClassConfig, _text(class_code))
+        if row is None:
+            return None
+        return ApprovalResourceClassRecord(
+            code=row.code,
+            active=bool(row.active),
         )
 
     def list_task_scopes(
@@ -252,6 +317,25 @@ class SqlApprovalScopeRepository(ApprovalScopeRepositoryPort):
             .where(
                 TaskApprovalScopeMapping.task_catalog_item_id
                 == _text(task_id)
+            )
+            .order_by(ApprovalScope.code, ApprovalScope.id)
+        ).all()
+        return tuple(self._record(row) for row in rows)
+
+    def list_resource_class_scopes(
+        self,
+        class_code: str,
+    ) -> tuple[ApprovalScopeRecord, ...]:
+        rows = self._session.scalars(
+            select(ApprovalScope)
+            .join(
+                ResourceClassApprovalScopeMapping,
+                ResourceClassApprovalScopeMapping.approval_scope_id
+                == ApprovalScope.id,
+            )
+            .where(
+                ResourceClassApprovalScopeMapping.resource_class_code
+                == _text(class_code)
             )
             .order_by(ApprovalScope.code, ApprovalScope.id)
         ).all()

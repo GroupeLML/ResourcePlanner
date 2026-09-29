@@ -24,6 +24,7 @@ EXPECTED_TABLES = {
     "approval_requirements",
     "approval_scopes",
     "approval_scope_approvers",
+    "resource_class_approval_scope_mappings",
     "task_approval_scope_mappings",
     "asset_types",
     "asset_type_competencies",
