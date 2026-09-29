@@ -108,7 +108,24 @@ class SqlDeliveryRepository:
     def user_exists(self, user_id: str) -> bool:
         return self._session.get(AppUser, str(user_id).strip()) is not None
 
+    def _guard_work_package_dependency(self, work_package_id: str) -> None:
+        identifier = str(work_package_id or "").strip()
+        if not identifier:
+            raise KeyError("WorkPackage id is required")
+        result = self._session.execute(
+            update(WorkPackage)
+            .where(WorkPackage.id == identifier)
+            .values(
+                version=WorkPackage.version,
+                updated_at=WorkPackage.updated_at,
+            )
+        )
+        if int(result.rowcount or 0) != 1:
+            raise KeyError(f"WorkPackage not found: {identifier}")
+        self._session.flush()
+
     def add_plan(self, plan: DeliveryPlan) -> None:
+        self._guard_work_package_dependency(plan.work_package_id)
         row = DeliveryPlanRow(
             id=plan.id,
             work_package_id=plan.work_package_id,
