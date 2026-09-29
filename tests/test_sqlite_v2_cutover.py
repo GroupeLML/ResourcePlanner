@@ -788,7 +788,7 @@ class SqliteV2CutoverTests(unittest.TestCase):
 
             app = create_configured_app(ServerSettings(database_url=_url(target)))
             with TestClient(app) as client:
-                response = client.get("/health")
+                response = client.get("/ready")
             self.assertEqual(response.status_code, 200)
 
 
