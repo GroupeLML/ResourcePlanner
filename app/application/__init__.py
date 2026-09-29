@@ -152,7 +152,13 @@ from .idempotency import (
     request_fingerprint,
 )
 from .identity_provisioning import (
+    AUDIT_OIDC_IDENTITY_LINKED,
     AutoProvisioningPolicy,
+    ErpIdentityLinkConflict,
+    ErpIdentityLinkDenied,
+    ErpIdentityLinkRepositoryPort,
+    ErpPreprovisionedIdentityLinkService,
+    IdentityLinkAuditPort,
     IdentityProvisioningRepositoryPort,
     IdentityProvisioningService,
 )
