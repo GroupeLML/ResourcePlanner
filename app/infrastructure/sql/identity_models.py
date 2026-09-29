@@ -13,7 +13,8 @@ class AppUser(TimestampMixin, Base):
     __table_args__ = (
         CheckConstraint(
             "(issuer IS NULL AND subject IS NULL) OR "
-            "(issuer IS NOT NULL AND subject IS NOT NULL)",
+            "(issuer IS NOT NULL AND subject IS NOT NULL "
+            "AND issuer <> '' AND subject <> '')",
             name="oidc_identity_complete",
         ),
         Index(
