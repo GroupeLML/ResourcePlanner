@@ -323,10 +323,31 @@ def _database_revision(engine: Engine) -> str | None:
     return str(values[0])
 
 
+def _detected_tables(engine: Engine) -> list[str]:
+    return sorted(inspect(engine).get_table_names())
+
+
 def _schema_compatibility(engine: Engine, *, label: str) -> list[dict[str, Any]]:
     inspector = inspect(engine)
     detected = set(inspector.get_table_names())
     anomalies: list[dict[str, Any]] = []
+    expected_database_tables = set(Base.metadata.tables) | {"alembic_version"}
+    unexpected_tables = sorted(
+        table_name
+        for table_name in detected - expected_database_tables
+        if not table_name.startswith("sqlite_")
+    )
+    for table_name in unexpected_tables:
+        anomalies.append(
+            {
+                "code": f"{label}_unmapped_table",
+                "severity": "BLOCKING",
+                "table": table_name,
+                "message": (
+                    f"{label}: table non classifiée par #492; mapping/baseline à revalider."
+                ),
+            }
+        )
     for table_name, model_table in Base.metadata.tables.items():
         if table_name not in detected:
             anomalies.append(
@@ -922,6 +943,7 @@ def run_cutover(
 
         source_engine = create_readonly_sqlite_engine(source)
         payload["source"]["alembic_revision"] = _database_revision(source_engine)
+        payload["source"]["detected_tables"] = _detected_tables(source_engine)
         payload["anomalies"].extend(
             _schema_compatibility(source_engine, label="source")
         )
@@ -971,6 +993,7 @@ def run_cutover(
             raise CutoverBlocked(f"La variable {DATABASE_ENV} est requise.")
         target_engine = create_sql_engine(target_database_url)
         payload["target"] = _safe_target_info(target_engine)
+        payload["target"]["detected_tables"] = _detected_tables(target_engine)
         if target_engine.dialect.name != "mssql" and not allow_test_target:
             raise CutoverBlocked(
                 "La cible réelle #492 doit être SQL Server (dialecte mssql)."
