@@ -117,7 +117,7 @@ class IdentityPreprovisioningTests(unittest.TestCase):
             repository = SqlUserIdentityRepository(session)
             created = repository.create_account(
                 display_name="Utilisateur pré-provisionné",
-                email="preprovisioned@example.invalid",
+                email="preprovisioned" + chr(64) + "example.invalid",
                 roles=(ROLE_TECHNICIAN,),
                 active=True,
                 employee_external_id="EMP-1",
