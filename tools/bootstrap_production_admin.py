@@ -10,7 +10,7 @@ import sys
 from sqlalchemy.engine import make_url
 
 from app.application.break_glass import BreakGlassBootstrapService
-from app.infrastructure.secret_hashing import ScryptSecretHasher
+from app.infrastructure.sql.secret_hashing import ScryptSecretHasher
 from app.infrastructure.sql import (
     SqlBreakGlassRepository,
     SqlUserIdentityRepository,
