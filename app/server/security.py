@@ -12,6 +12,7 @@ from ..application.security import (
     PERMISSION_ADMIN_SETTINGS,
     PERMISSION_ADMIN_USERS,
     PERMISSION_APPROVE_DEMANDS,
+    PERMISSION_CONTRIBUTE_DELIVERY,
     PERMISSION_MANAGE_COMMUNICATIONS,
     PERMISSION_MANAGE_DEMANDS,
     PERMISSION_MANAGE_PLANNING,
@@ -89,6 +90,8 @@ def required_permission(method: str, path: str) -> str | None:
         return PERMISSION_MANAGE_RESOURCES
     if path.startswith("/api/v1/work-packages"):
         return PERMISSION_MANAGE_WORK_PACKAGES
+    if path.startswith("/api/v1/delivery"):
+        return PERMISSION_CONTRIBUTE_DELIVERY
     if path.startswith("/api/v1/demands"):
         if (
             path.endswith("/approve")
