@@ -5,8 +5,13 @@ import {
   createApprovalScope,
   getApprovalScopes,
   setApprovalScopeApprover,
+  setApprovalScopeResourceClass,
   updateApprovalScope,
 } from "./approvalScopesApi";
+import {
+  getResourceClasses,
+  type ResourceClassConfigReadModel,
+} from "./resourceClassesApi";
 import {
   getAdminRoleCatalog,
   getAdminUsers,
@@ -23,6 +28,7 @@ export default function ApprovalScopesPanel() {
   const [scopes, setScopes] = useState<ApprovalScopeReadModel[]>([]);
   const [users, setUsers] = useState<UserAdminReadModel[]>([]);
   const [roles, setRoles] = useState<UserRoleDefinition[]>([]);
+  const [resourceClasses, setResourceClasses] = useState<ResourceClassConfigReadModel[]>([]);
   const [code, setCode] = useState("");
   const [label, setLabel] = useState("");
   const [pending, setPending] = useState<string | null>(null);
@@ -35,11 +41,13 @@ export default function ApprovalScopesPanel() {
       getApprovalScopes(controller.signal),
       getAdminUsers(controller.signal),
       getAdminRoleCatalog(controller.signal),
+      getResourceClasses(controller.signal),
     ])
-      .then(([scopeRows, userRows, roleRows]) => {
+      .then(([scopeRows, userRows, roleRows, classRows]) => {
         setScopes(scopeRows);
         setUsers(userRows);
         setRoles(roleRows);
+        setResourceClasses(classRows);
       })
       .catch((reason: unknown) => {
         if (!(reason instanceof DOMException && reason.name === "AbortError")) {
@@ -95,6 +103,30 @@ export default function ApprovalScopesPanel() {
       const next = await updateApprovalScope(scope.id, scope.version, { active });
       replaceScope(next);
       setNotice(`Périmètre ${next.code} mis à jour.`);
+    } catch (reason) {
+      setError(message(reason));
+    } finally {
+      setPending(null);
+    }
+  }
+
+  async function toggleResourceClass(
+    scope: ApprovalScopeReadModel,
+    resourceClass: ResourceClassConfigReadModel,
+    assigned: boolean,
+  ) {
+    setPending(`resource-class:${scope.id}:${resourceClass.code}`);
+    setError(null);
+    setNotice(null);
+    try {
+      const next = await setApprovalScopeResourceClass(
+        scope.id,
+        resourceClass.code,
+        assigned,
+        scope.version,
+      );
+      replaceScope(next);
+      setNotice(`Classes couvertes de ${next.code} mises à jour.`);
     } catch (reason) {
       setError(message(reason));
     } finally {
@@ -175,6 +207,33 @@ export default function ApprovalScopesPanel() {
               </label>
             </div>
 
+            <div className="approval-scope-approvers approval-scope-classes">
+              <span>Classes couvertes</span>
+              {resourceClasses.length === 0 ? (
+                <small>Aucune classe du catalogue canonique #454.</small>
+              ) : resourceClasses.map((resourceClass) => {
+                const assigned = scope.resource_class_codes.includes(resourceClass.code);
+                return (
+                  <label key={resourceClass.code}>
+                    <input
+                      type="checkbox"
+                      checked={assigned}
+                      disabled={pending !== null || (!resourceClass.active && !assigned)}
+                      onChange={(event) => void toggleResourceClass(
+                        scope,
+                        resourceClass,
+                        event.target.checked,
+                      )}
+                    />
+                    {resourceClass.label}
+                    <small>
+                      {resourceClass.code}{resourceClass.active ? "" : " · inactive"}
+                    </small>
+                  </label>
+                );
+              })}
+            </div>
+
             <div className="approval-scope-approvers">
               <span>Approbateurs admissibles</span>
               {eligibleUsers.length === 0 ? (
@@ -193,11 +252,14 @@ export default function ApprovalScopesPanel() {
               ))}
             </div>
 
-            <small>
-              Tâches explicitement liées : {scope.task_catalog_item_ids.length
-                ? scope.task_catalog_item_ids.join(", ")
-                : "aucune"}
-            </small>
+            <div className="approval-scope-approvers approval-scope-overrides">
+              <span>Overrides de tâches</span>
+              <small>
+                Associations exceptionnelles : {scope.task_catalog_item_ids.length
+                  ? scope.task_catalog_item_ids.join(", ")
+                  : "aucune"}
+              </small>
+            </div>
           </article>
         ))}
       </div>

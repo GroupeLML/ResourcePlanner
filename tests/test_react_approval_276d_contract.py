@@ -22,6 +22,20 @@ class ReactApproval276DContractTests(unittest.TestCase):
         self.assertIn("Approbateur(s) admissible(s)", page)
         self.assertIn("Les champs globaux d’approbation restent vides", page)
 
+    def test_configuration_administers_276e_resource_class_routing(self) -> None:
+        panel = (ROOT / "frontend" / "src" / "ApprovalScopesPanel.tsx").read_text(encoding="utf-8")
+        client = (ROOT / "frontend" / "src" / "approvalScopesApi.ts").read_text(encoding="utf-8")
+
+        self.assertIn("getResourceClasses", panel)
+        self.assertIn("Classes couvertes", panel)
+        self.assertIn("scope.resource_class_codes.includes", panel)
+        self.assertIn("setApprovalScopeResourceClass", panel)
+        self.assertIn("Overrides de tâches", panel)
+        self.assertIn("Associations exceptionnelles", panel)
+        self.assertIn("resource_class_codes: string[]", client)
+        self.assertIn("/resource-classes/", client)
+        self.assertIn("expected_version", client)
+
     def test_configuration_administers_scopes_and_explicit_approvers(self) -> None:
         config = (ROOT / "frontend" / "src" / "ConfigurationPage.tsx").read_text(encoding="utf-8")
         panel = (ROOT / "frontend" / "src" / "ApprovalScopesPanel.tsx").read_text(encoding="utf-8")
