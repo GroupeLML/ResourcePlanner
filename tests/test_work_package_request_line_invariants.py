@@ -30,6 +30,7 @@ class WorkPackageRequestLineInvariantTests(unittest.TestCase):
         database = Path(directory) / "wp-request-lines.db"
         url = f"sqlite+pysqlite:///{database.as_posix()}"
         engine = create_sql_engine(url)
+        Base.metadata.create_all(engine)
         factory = create_session_factory(engine)
         with factory.begin() as session:
             session.add_all(
