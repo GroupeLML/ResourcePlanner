@@ -12,7 +12,7 @@ from app.application.security import (
     ROLE_PROJECT_MANAGER,
     AuthPrincipal,
 )
-from app.infrastructure.sql import AppUser, Base
+from app.infrastructure.sql import AppUser, Base, ErpUserDirectoryEntry
 from app.server import create_api_app
 from app.server.security import static_auth_resolver
 
@@ -101,6 +101,56 @@ class ServerUserAdminRouteTests(unittest.TestCase):
         self.assertEqual(updated.json()["display_name"], "Utilisateur modifié")
         self.assertEqual(updated.json()["phone"], "450" + "-" + "555" + "-" + "0042")
         self.assertTrue(any(item["user_id"] == user_id for item in listing.json()))
+
+    def test_pending_oidc_account_can_be_updated_by_app_user_id(self) -> None:
+        app = self._app()
+        factory = app.state.session_factory
+        with factory.begin() as session:
+            session.add(
+                ErpUserDirectoryEntry(
+                    user_id="ERP-PENDING",
+                    employee_external_id="EMP-PENDING",
+                    display_name="Utilisateur pending",
+                    erp_user_active=True,
+                    employee_status="Actif",
+                    local_active=True,
+                    roles_json=json.dumps([ROLE_PROJECT_MANAGER]),
+                )
+            )
+            session.add(
+                AppUser(
+                    id="pending-1",
+                    issuer=None,
+                    subject=None,
+                    display_name="Utilisateur pending",
+                    employee_external_id="EMP-PENDING",
+                    erp_user_id="ERP-PENDING",
+                    roles_json=json.dumps([ROLE_PROJECT_MANAGER]),
+                    active=True,
+                )
+            )
+
+        with TestClient(app) as client:
+            response = client.patch(
+                "/api/v1/admin/users/pending-1",
+                json={
+                    "display_name": "Utilisateur pending modifié",
+                    "email": None,
+                    "roles": [ROLE_PROJECT_MANAGER],
+                    "active": True,
+                },
+            )
+            listing = client.get("/api/v1/admin/users")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["user_id"], "pending-1")
+        self.assertIsNone(response.json()["issuer"])
+        self.assertIsNone(response.json()["subject"])
+        self.assertEqual(response.json()["erp_user_id"], "ERP-PENDING")
+        row = next(item for item in listing.json() if item["user_id"] == "pending-1")
+        self.assertIsNone(row["issuer"])
+        self.assertIsNone(row["subject"])
+        self.assertEqual(row["erp_user_id"], "ERP-PENDING")
 
     def test_non_admin_cannot_even_read_user_admin_surface(self) -> None:
         app = self._app(ROLE_PROJECT_MANAGER, seed_self=False)
