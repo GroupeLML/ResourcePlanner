@@ -1418,6 +1418,14 @@ export function deactivateResource(resourceId: string) {
   );
 }
 
+export function reactivateResource(resourceId: string) {
+  return sendJson<ResourceMutationResult>(
+    `/api/v1/resources/${encodeURIComponent(resourceId)}`,
+    "PATCH",
+    { active: true },
+  );
+}
+
 export function getAvailabilityRules(
   resourceId: string | null = null,
   includeGlobal = true,
