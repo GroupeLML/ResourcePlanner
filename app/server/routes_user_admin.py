@@ -42,6 +42,7 @@ def _user_payload(record: UserIdentityRecord) -> dict[str, object]:
         "display_name": record.display_name,
         "email": record.email,
         "employee_external_id": record.employee_external_id,
+        "erp_user_id": record.erp_user_id,
         "business_contact_id": record.business_contact_id,
         "phone": record.phone,
         "roles": list(record.roles),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -8,31 +9,53 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.application.erp_user_directory import ExternalErpUserRecord
-from app.application.security import ROLE_ADMIN, ROLE_PROJECT_MANAGER, ROLE_TECHNICIAN, AuthPrincipal
-from app.infrastructure.sql import AppUser, Base, ErpUserDirectoryEntry
+from app.application.security import (
+    ROLE_ADMIN,
+    ROLE_PROJECT_MANAGER,
+    ROLE_TECHNICIAN,
+    AuthPrincipal,
+)
+from app.infrastructure.sql import (
+    AppUser,
+    Base,
+    ErpUserDirectoryEntry,
+    IdentityAdminAudit,
+)
 from app.server import create_api_app
 from app.server.security import static_auth_resolver
 
 
+def erp_user(
+    user_id: str,
+    employee_id: str,
+    *,
+    active: bool = True,
+    employee_status: str = "Actif",
+) -> ExternalErpUserRecord:
+    return ExternalErpUserRecord(
+        user_id=user_id,
+        employee_external_id=employee_id,
+        display_name=f"Utilisateur {user_id}",
+        email=f"{user_id.casefold()}@example.invalid",
+        erp_user_active=active,
+        employee_status=employee_status,
+    )
+
+
 class StubUserSource:
+    def __init__(self, rows: tuple[ExternalErpUserRecord, ...] | None = None) -> None:
+        self.rows = rows or (erp_user("ERP-ADMIN-CANDIDATE", "EMP-100"),)
+
     def list_users(self):
-        return (
-            ExternalErpUserRecord(
-                user_id="ERP-ADMIN-CANDIDATE",
-                employee_external_id="EMP-100",
-                display_name="Utilisateur ERP candidat",
-                email="candidate" + chr(64) + "example.invalid",
-                erp_user_active=True,
-                employee_status="Actif",
-            ),
-        )
+        return self.rows
 
 
-def principal(role: str, *, auth_mode: str = "test") -> AuthPrincipal:
+def principal(role: str, *, auth_mode: str = "test", user_id: str | None = None) -> AuthPrincipal:
+    local_user_id = user_id or ("admin-test" if role == ROLE_ADMIN else "pm-test")
     return AuthPrincipal.from_roles(
-        local_user_id="admin-test" if role == ROLE_ADMIN else "pm-test",
+        local_user_id=local_user_id,
         issuer="urn:test",
-        subject="subject-test",
+        subject=f"subject-{local_user_id}",
         display_name="Test",
         email=None,
         roles=(role,),
@@ -51,93 +74,236 @@ class ServerErpUserAdminTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-
-    def _sync_with_auth_mode(self, auth_mode: str):
+    def _app(
+        self,
+        *,
+        role: str = ROLE_ADMIN,
+        auth_mode: str = "test",
+        source: StubUserSource | None = None,
+        seed_actor: bool = True,
+    ):
         app = create_api_app(
             self.database_url,
-            auth_resolver=static_auth_resolver(
-                principal(ROLE_ADMIN, auth_mode=auth_mode)
-            ),
-            user_source=StubUserSource(),
+            auth_resolver=static_auth_resolver(principal(role, auth_mode=auth_mode)),
+            user_source=source or StubUserSource(),
         )
-        Base.metadata.create_all(app.state.session_factory.kw["bind"])
+        factory = app.state.session_factory
+        Base.metadata.create_all(factory.kw["bind"])
+        if seed_actor and role == ROLE_ADMIN:
+            with factory.begin() as session:
+                if session.get(AppUser, "admin-test") is None:
+                    session.add(
+                        AppUser(
+                            id="admin-test",
+                            issuer="urn:test",
+                            subject="subject-admin-test",
+                            display_name="Administrateur test",
+                            roles_json=json.dumps([ROLE_ADMIN]),
+                            active=True,
+                        )
+                    )
+        return app
+
+    def _sync_with_auth_mode(self, auth_mode: str):
+        app = self._app(auth_mode=auth_mode, seed_actor=False)
         with TestClient(app) as client:
             response = client.post("/api/v1/integrations/acumatica/users/sync")
         return response
 
     def test_rp_users_sync_is_available_in_local_auth_mode(self) -> None:
         response = self._sync_with_auth_mode("local")
-
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["created"], 1)
 
     def test_rp_users_sync_is_available_in_oidc_auth_mode(self) -> None:
         response = self._sync_with_auth_mode("oidc")
-
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["created"], 1)
 
-    def test_admin_syncs_then_configures_local_access_without_app_user_provisioning(self) -> None:
-        app = create_api_app(
-            self.database_url,
-            auth_resolver=static_auth_resolver(principal(ROLE_ADMIN)),
-            user_source=StubUserSource(),
-        )
-        Base.metadata.create_all(app.state.session_factory.kw["bind"])
+    def test_admin_activation_preprovisions_app_user_and_replay_is_idempotent(self) -> None:
+        app = self._app()
         with TestClient(app) as client:
             synced = client.post("/api/v1/integrations/acumatica/users/sync")
-            listing = client.get("/api/v1/admin/erp-users")
-            updated = client.patch(
+            before = client.get("/api/v1/admin/erp-users")
+            first = client.patch(
+                "/api/v1/admin/erp-users/ERP-ADMIN-CANDIDATE",
+                json={"active": True, "roles": [ROLE_TECHNICIAN]},
+            )
+            replay = client.patch(
                 "/api/v1/admin/erp-users/ERP-ADMIN-CANDIDATE",
                 json={"active": True, "roles": [ROLE_TECHNICIAN]},
             )
 
         self.assertEqual(synced.status_code, 200, synced.text)
-        self.assertEqual(
-            synced.json(),
-            {
-                "received": 1,
-                "created": 1,
-                "updated": 0,
-                "unchanged": 0,
-                "errors": 0,
-            },
-        )
-        self.assertEqual(listing.status_code, 200)
-        row = listing.json()[0]
-        self.assertEqual(row["user_id"], "ERP-ADMIN-CANDIDATE")
-        self.assertEqual(row["employee_external_id"], "EMP-100")
-        self.assertTrue(row["erp_user_active"])
-        self.assertTrue(row["source_admissible"])
-        self.assertFalse(row["local_active"])
-        self.assertEqual(row["roles"], [])
-        self.assertEqual(row["oidc_state"], "pending")
-        self.assertFalse(row["access_ready"])
-
-        self.assertEqual(updated.status_code, 200, updated.text)
-        self.assertTrue(updated.json()["local_active"])
-        self.assertEqual(updated.json()["roles"], [ROLE_TECHNICIAN])
-        self.assertEqual(updated.json()["oidc_state"], "pending")
-        self.assertTrue(updated.json()["access_ready"])
+        self.assertIsNone(before.json()[0]["app_user_id"])
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertEqual(first.json()["app_user_id"], replay.json()["app_user_id"])
+        self.assertEqual(first.json()["oidc_state"], "pending")
+        self.assertTrue(first.json()["local_active"])
+        self.assertEqual(first.json()["roles"], [ROLE_TECHNICIAN])
 
         factory = app.state.session_factory
         with factory() as session:
-            self.assertIsNotNone(
-                session.scalar(
-                    select(ErpUserDirectoryEntry).where(
-                        ErpUserDirectoryEntry.user_id == "ERP-ADMIN-CANDIDATE"
-                    )
+            row = session.scalar(
+                select(AppUser).where(
+                    AppUser.erp_user_id == "ERP-ADMIN-CANDIDATE"
                 )
             )
-            self.assertIsNone(session.scalar(select(AppUser)))
+            assert row is not None
+            self.assertEqual(row.id, first.json()["app_user_id"])
+            self.assertEqual(row.employee_external_id, "EMP-100")
+            self.assertIsNone(row.issuer)
+            self.assertIsNone(row.subject)
+            self.assertTrue(row.active)
+            self.assertIsNotNone(row.business_contact_id)
+            self.assertEqual(
+                session.scalars(
+                    select(AppUser).where(
+                        AppUser.erp_user_id == "ERP-ADMIN-CANDIDATE"
+                    )
+                ).all().__len__(),
+                1,
+            )
+            actions = session.scalars(
+                select(IdentityAdminAudit.action).where(
+                    IdentityAdminAudit.target_user_id == row.id
+                )
+            ).all()
+            self.assertIn("APP_USER_PREPROVISIONED", actions)
+            self.assertIn("APP_USER_ACTIVATED", actions)
+            self.assertIn("APP_USER_ROLES_CHANGED", actions)
+
+    def test_roles_deactivation_and_reactivation_use_same_app_user(self) -> None:
+        app = self._app()
+        with TestClient(app) as client:
+            client.post("/api/v1/integrations/acumatica/users/sync")
+            created = client.patch(
+                "/api/v1/admin/erp-users/ERP-ADMIN-CANDIDATE",
+                json={"active": True, "roles": [ROLE_TECHNICIAN]},
+            )
+            changed = client.patch(
+                "/api/v1/admin/erp-users/ERP-ADMIN-CANDIDATE",
+                json={"active": True, "roles": [ROLE_PROJECT_MANAGER]},
+            )
+            disabled = client.patch(
+                "/api/v1/admin/erp-users/ERP-ADMIN-CANDIDATE",
+                json={"active": False, "roles": [ROLE_PROJECT_MANAGER]},
+            )
+            reenabled = client.patch(
+                "/api/v1/admin/erp-users/ERP-ADMIN-CANDIDATE",
+                json={"active": True, "roles": [ROLE_TECHNICIAN]},
+            )
+
+        user_id = created.json()["app_user_id"]
+        self.assertEqual(changed.json()["app_user_id"], user_id)
+        self.assertEqual(changed.json()["roles"], [ROLE_PROJECT_MANAGER])
+        self.assertFalse(disabled.json()["local_active"])
+        self.assertEqual(disabled.json()["app_user_id"], user_id)
+        self.assertTrue(reenabled.json()["local_active"])
+        self.assertEqual(reenabled.json()["app_user_id"], user_id)
+
+    def test_ineligible_source_cannot_be_activated(self) -> None:
+        source = StubUserSource(
+            (erp_user("ERP-INACTIVE", "EMP-INACTIVE", employee_status="Inactif"),)
+        )
+        app = self._app(source=source)
+        with TestClient(app) as client:
+            client.post("/api/v1/integrations/acumatica/users/sync")
+            response = client.patch(
+                "/api/v1/admin/erp-users/ERP-INACTIVE",
+                json={"active": True, "roles": [ROLE_TECHNICIAN]},
+            )
+
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(response.json()["error"]["code"], "erp_user_source_ineligible")
+        with app.state.session_factory() as session:
+            self.assertIsNone(
+                session.scalar(
+                    select(AppUser).where(AppUser.erp_user_id == "ERP-INACTIVE")
+                )
+            )
+            directory = session.get(ErpUserDirectoryEntry, "ERP-INACTIVE")
+            assert directory is not None
+            self.assertFalse(directory.local_active)
+
+    def test_second_user_id_for_same_employee_is_explicit_conflict(self) -> None:
+        source = StubUserSource(
+            (
+                erp_user("ERP-A", "EMP-SHARED"),
+                erp_user("ERP-B", "EMP-SHARED"),
+            )
+        )
+        app = self._app(source=source)
+        with TestClient(app) as client:
+            client.post("/api/v1/integrations/acumatica/users/sync")
+            first = client.patch(
+                "/api/v1/admin/erp-users/ERP-A",
+                json={"active": True, "roles": [ROLE_TECHNICIAN]},
+            )
+            second = client.patch(
+                "/api/v1/admin/erp-users/ERP-B",
+                json={"active": True, "roles": [ROLE_TECHNICIAN]},
+            )
+
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(second.status_code, 409, second.text)
+        self.assertEqual(
+            second.json()["error"]["code"],
+            "erp_user_employee_identity_conflict",
+        )
+
+    def test_self_protection_applies_through_erp_surface(self) -> None:
+        app = self._app(seed_actor=False)
+        factory = app.state.session_factory
+        with factory.begin() as session:
+            session.add(
+                ErpUserDirectoryEntry(
+                    user_id="ERP-SELF",
+                    employee_external_id="EMP-SELF",
+                    display_name="Administrateur test",
+                    erp_user_active=True,
+                    employee_status="Actif",
+                    local_active=True,
+                    roles_json=json.dumps([ROLE_ADMIN]),
+                )
+            )
+            session.add(
+                AppUser(
+                    id="admin-test",
+                    issuer="urn:test",
+                    subject="subject-admin-test",
+                    display_name="Administrateur test",
+                    employee_external_id="EMP-SELF",
+                    erp_user_id="ERP-SELF",
+                    roles_json=json.dumps([ROLE_ADMIN]),
+                    active=True,
+                )
+            )
+
+        with TestClient(app) as client:
+            deactivation = client.patch(
+                "/api/v1/admin/erp-users/ERP-SELF",
+                json={"active": False, "roles": [ROLE_ADMIN]},
+            )
+            role_removal = client.patch(
+                "/api/v1/admin/erp-users/ERP-SELF",
+                json={"active": True, "roles": [ROLE_TECHNICIAN]},
+            )
+
+        self.assertEqual(deactivation.status_code, 409)
+        self.assertEqual(
+            deactivation.json()["error"]["code"],
+            "user_admin_self_deactivation",
+        )
+        self.assertEqual(role_removal.status_code, 409)
+        self.assertEqual(
+            role_removal.json()["error"]["code"],
+            "user_admin_self_admin_removal",
+        )
 
     def test_non_admin_cannot_read_or_mutate_erp_user_directory(self) -> None:
-        app = create_api_app(
-            self.database_url,
-            auth_resolver=static_auth_resolver(principal(ROLE_PROJECT_MANAGER)),
-            user_source=StubUserSource(),
-        )
-        Base.metadata.create_all(app.state.session_factory.kw["bind"])
+        app = self._app(role=ROLE_PROJECT_MANAGER, seed_actor=False)
         with TestClient(app) as client:
             listing = client.get("/api/v1/admin/erp-users")
             update = client.patch(

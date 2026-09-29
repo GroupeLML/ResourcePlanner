@@ -48,6 +48,8 @@ from ..infrastructure.sql import (
     SqlDemandApprovalEnvelopePolicyRepository,
     SqlDemandPeriodRepository,
     SqlEmergencyDemandRepository,
+    SqlErpUserDirectoryRepository,
+    SqlIdentityAdminAuditRepository,
     SqlOverallocationAllocationCommandAdapter,
     SqlPeriodAwareApprovedDemandSyncAdapter,
     SqlOperationalContactRepository,
@@ -219,7 +221,11 @@ def build_sql_query_port(session: Session) -> PlannerQueryPort:
 def build_user_admin_service(session: Session) -> UserAdminService:
     """Compose local identity administration inside the request transaction."""
 
-    return UserAdminService(SqlUserIdentityRepository(session))
+    return UserAdminService(
+        SqlUserIdentityRepository(session),
+        erp_directory=SqlErpUserDirectoryRepository(session),
+        audit=SqlIdentityAdminAuditRepository(session),
+    )
 
 
 def build_approval_scope_service(session: Session) -> ApprovalScopeService:
