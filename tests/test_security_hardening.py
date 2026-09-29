@@ -12,6 +12,7 @@ from app.application.security import ROLE_ADMIN
 from app.infrastructure.acumatica.oidc import OidcIdentity
 from app.infrastructure.sql import (
     Base,
+    ErpUserDirectoryEntry,
     Resource,
     SqlUserIdentityRepository,
     create_session_factory,
@@ -61,12 +62,31 @@ class SecurityHardeningTests(unittest.TestCase):
         Base.metadata.create_all(engine)
         factory = create_session_factory(engine)
         with factory.begin() as session:
-            SqlUserIdentityRepository(session).upsert(
-                issuer=ISSUER,
-                subject="admin-security",
+            session.add(
+                ErpUserDirectoryEntry(
+                    user_id="ADMIN-SECURITY",
+                    employee_external_id="EMP-SECURITY",
+                    display_name="Administrateur sécurité",
+                    erp_user_active=True,
+                    employee_status="Actif",
+                    local_active=True,
+                    roles_json='["ADMIN"]',
+                )
+            )
+            session.flush()
+            identities = SqlUserIdentityRepository(session)
+            account = identities.create_account(
                 display_name="Administrateur sécurité",
                 email=None,
                 roles=(ROLE_ADMIN,),
+                active=True,
+                employee_external_id="EMP-SECURITY",
+                erp_user_id="ADMIN-SECURITY",
+            )
+            identities.bind_external_identity(
+                account.user_id,
+                ISSUER,
+                "admin-security",
             )
             session.add(
                 Resource(
