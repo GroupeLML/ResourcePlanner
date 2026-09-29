@@ -62,6 +62,24 @@ services:
       - resourceplanner-data:/data
     restart: "no"
 
+  bootstrap-admin:
+    profiles: ["ops"]
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    image: ${RESOURCEPLANNER_BACKEND_IMAGE:-resourceplanner-backend}:${RESOURCEPLANNER_IMAGE_TAG:-local}
+    command: ["python", "tools/bootstrap_production_admin.py"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      RESOURCEPLANNER_DATABASE_URL: "${RESOURCEPLANNER_DATABASE_URL:-sqlite+pysqlite:////data/resourceplanner.db}"
+      RESOURCEPLANNER_BREAK_GLASS_LOGIN: "${RESOURCEPLANNER_BREAK_GLASS_LOGIN:-}"
+      RESOURCEPLANNER_BREAK_GLASS_SECRET: "${RESOURCEPLANNER_BREAK_GLASS_SECRET:-}"
+    volumes:
+      - resourceplanner-data:/data
+    restart: "no"
+
   backend:
     build:
       context: .
@@ -78,6 +96,7 @@ services:
       RESOURCEPLANNER_AUTH_MODE: "${RESOURCEPLANNER_AUTH_MODE:-local}"
       RESOURCEPLANNER_ALLOW_LOCAL_AUTH_NETWORK: "${RESOURCEPLANNER_ALLOW_LOCAL_AUTH_NETWORK:-true}"
       RESOURCEPLANNER_DEV_USER_SWITCHER: "${RESOURCEPLANNER_DEV_USER_SWITCHER:-false}"
+      RESOURCEPLANNER_BREAK_GLASS_ENABLED: "${RESOURCEPLANNER_BREAK_GLASS_ENABLED:-false}"
       RESOURCEPLANNER_LOCAL_AUTH_NAME: "${RESOURCEPLANNER_LOCAL_AUTH_NAME:-Administrateur local}"
       RESOURCEPLANNER_LOCAL_AUTH_ROLES: "${RESOURCEPLANNER_LOCAL_AUTH_ROLES:-ADMIN}"
       RESOURCEPLANNER_OIDC_DISCOVERY_URL: "${RESOURCEPLANNER_OIDC_DISCOVERY_URL:-}"
