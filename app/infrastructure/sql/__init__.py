@@ -83,7 +83,7 @@ from .employee_sync_repository import SqlEmployeeSyncRepository
 from .erp_user_models import ErpUserDirectoryEntry
 from .erp_user_directory_repository import SqlErpUserDirectoryRepository
 from .idempotency import CommandIdempotencyReceipt, SqlCommandIdempotencyAdapter
-from .identity_models import AppUser, AuthLoginTransaction, AuthSession
+from .identity_models import AppUser, AuthLoginTransaction, AuthSession, IdentityAdminAudit\nfrom .identity_admin_audit_repository import SqlIdentityAdminAuditRepository
 from .identity_repository import SqlUserIdentityRepository
 from .identity_resource_link_repository import SqlIdentityResourceLinkRepository
 from .load_profile_audit import LoadProfileAuditedSegmentRepository
@@ -158,7 +158,7 @@ __all__ = [
     "ApprovalScope",
     "ApprovalScopeApprover",
     "AuthLoginTransaction",
-    "AuthSession",
+    "AuthSession",\n    "IdentityAdminAudit",
     "Asset",
     "AssetAllocation",
     "AssetRequirement",
@@ -233,7 +233,7 @@ __all__ = [
     "SqlEmployeeSyncRepository",
     "SqlErpUserDirectoryRepository",
     "ErpUserDirectoryEntry",
-    "SqlIdentityResourceLinkRepository",
+    "SqlIdentityAdminAuditRepository",\n    "SqlIdentityResourceLinkRepository",
     "SqlOperationalContactRepository",
     "SqlRequestOperationalChoiceRepository",
     "SqlProjectCommunicationRepository",
