@@ -42,6 +42,7 @@ _PUBLIC_PATHS = {
     "/favicon.ico",
     "/api/v1/auth/login",
     "/api/v1/auth/callback",
+    "/api/v1/auth/break-glass",
 }
 
 
@@ -192,7 +193,7 @@ def install_authorization_middleware(
                 )
             if (
                 csrf_guard is not None
-                and principal.auth_mode == "oidc"
+                and principal.auth_mode in {"oidc", "break_glass"}
                 and request.method.upper() in _UNSAFE_METHODS
             ):
                 if not await _csrf_allowed(csrf_guard, request):
