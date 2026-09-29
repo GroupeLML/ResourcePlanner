@@ -1,7 +1,7 @@
 # Vision long terme — Delivery, Kanban, commissioning et documentation
 
 > **Statut : vision produit / architecture future, avec frontière Delivery stabilisée par ADR-008.**  
-> Ce document décrit la direction stratégique Delivery → Verification → intégrations. Le roadmap maître #55 conserve l'ordre d'activation. Pour #362, les décisions structurantes Planning/Delivery sont désormais acceptées dans ADR-008.
+> Ce document décrit la direction stratégique Delivery → Verification → intégrations. Le roadmap maître #55 conserve l'ordre d'activation. Pour #362, les décisions structurantes Planning/Delivery sont désormais acceptées dans ADR-008. Le passage de #362 à #363 comporte explicitement une gate **ASTRA-363** avant tout développement Verification.
 
 ## 1. Problème à résoudre
 
@@ -532,6 +532,8 @@ actifs / véhicules (#291/#292)
         ↓
 Delivery interne (#362)
         ↓
+ASTRA-363 — analyse d'architecture Verification
+        ↓
 Verification / commissioning (#363)
         ↓
 documents structurés
@@ -561,7 +563,7 @@ L'analyse #362 a tranché avant implémentation :
 
 Le découpage retenu est **362A → 362B → 362C → 362D → 362E → 362F**. Le roadmap #55 détermine quand #362 devient active.
 
-Avant Verification :
+Avant Verification, **ASTRA-363 est obligatoire** pour stabiliser l'architecture et le découpage avant développement :
 
 - taxonomie FAT/SAT/commissioning;
 - versionnement des exigences de test;
