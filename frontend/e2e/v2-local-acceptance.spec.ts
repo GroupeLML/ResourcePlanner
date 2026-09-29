@@ -1446,15 +1446,14 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
 
   await navigateMain(coordinator.page, "Planning opérationnel");
   await coordinator.page.getByRole("button", { name: /Suivante/ }).click();
+  const assetPanel = coordinator.page.locator(".asset-planning-panel");
+  await expect(assetPanel.getByRole("heading", { name: "Actifs et réservations" })).toBeVisible();
   const orderedPlanningPanels = await coordinator.page
     .locator(".planning-layout, .asset-planning-panel")
     .evaluateAll((nodes) => nodes.map((node) => (
       node.classList.contains("planning-layout") ? "human" : "assets"
     )));
   expect(orderedPlanningPanels.slice(0, 2)).toEqual(["human", "assets"]);
-
-  const assetPanel = coordinator.page.locator(".asset-planning-panel");
-  await expect(assetPanel.getByRole("heading", { name: "Actifs et réservations" })).toBeVisible();
   let demandRequirements = assetPanel.locator(".asset-requirement-card").filter({ hasText: demandNumber });
   await expect(demandRequirements).toHaveCount(2);
   await expect(demandRequirements.nth(0)).toContainText("À réserver");
