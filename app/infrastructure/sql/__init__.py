@@ -46,6 +46,7 @@ from .active_days_query_repository import (
     SqlSegmentRepositoryWithActiveDayMetrics,
 )
 from .auth_session_repository import LoginTransactionRecord, SqlAuthSessionRepository
+from .break_glass_repository import SqlBreakGlassRepository
 from .base import Base, NAMING_CONVENTION, new_id
 from .business_contact_models import BusinessContact
 from .business_contact_admin_repository import SqlBusinessContactAdminRepository
@@ -83,7 +84,14 @@ from .employee_sync_repository import SqlEmployeeSyncRepository
 from .erp_user_models import ErpUserDirectoryEntry
 from .erp_user_directory_repository import SqlErpUserDirectoryRepository
 from .idempotency import CommandIdempotencyReceipt, SqlCommandIdempotencyAdapter
-from .identity_models import AppUser, AuthLoginTransaction, AuthSession, IdentityAdminAudit
+from .identity_models import (
+    AppUser,
+    AuthLoginTransaction,
+    AuthSecurityAudit,
+    AuthSession,
+    BreakGlassCredential,
+    IdentityAdminAudit,
+)
 from .identity_admin_audit_repository import SqlIdentityAdminAuditRepository
 from .identity_repository import SqlUserIdentityRepository
 from .identity_resource_link_repository import SqlIdentityResourceLinkRepository
@@ -159,7 +167,9 @@ __all__ = [
     "ApprovalScope",
     "ApprovalScopeApprover",
     "AuthLoginTransaction",
+    "AuthSecurityAudit",
     "AuthSession",
+    "BreakGlassCredential",
     "IdentityAdminAudit",
     "Asset",
     "AssetAllocation",
@@ -220,6 +230,7 @@ __all__ = [
     "SqlResourceClassRepository",
     "SqlApprovedDemandSyncAdapter",
     "SqlAuthSessionRepository",
+    "SqlBreakGlassRepository",
     "SqlBusinessContactAdminRepository",
     "SqlCommandIdempotencyAdapter",
     "SqlCommunicationRepository",
