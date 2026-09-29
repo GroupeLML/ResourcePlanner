@@ -284,7 +284,7 @@ class BreakGlassBootstrapService:
         *,
         login_name: str,
         secret: str,
-        display_name: str = "Administrateur break-glass",
+        display_name: str | None = None,
         email: str | None = None,
         rotate_secret: bool = False,
         now: datetime,
@@ -336,16 +336,19 @@ class BreakGlassBootstrapService:
         self._assert_reserved_identity(user)
 
         reconciled_roles = tuple(dict.fromkeys((*user.roles, ROLE_ADMIN)))
+        requested_display_name = str(display_name or "").strip() or None
+        effective_display_name = requested_display_name or user.display_name
+        effective_email = str(email).strip() if email is not None else user.email
         if (
             not user.active
             or ROLE_ADMIN not in user.roles
-            or user.display_name != (str(display_name or "").strip() or user.display_name)
-            or user.email != (str(email).strip() if email else None)
+            or user.display_name != effective_display_name
+            or user.email != effective_email
         ):
             user = self._identities.update_account(
                 user.user_id,
-                display_name=str(display_name or "").strip() or user.display_name,
-                email=str(email).strip() if email else None,
+                display_name=effective_display_name,
+                email=effective_email,
                 roles=reconciled_roles,
                 active=True,
                 employee_external_id=None,
