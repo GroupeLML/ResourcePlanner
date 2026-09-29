@@ -11,6 +11,7 @@ from app.application.security import (
     PERMISSION_MANAGE_PLANNING,
     PERMISSION_READ,
     ROLE_COORDINATOR,
+    ROLE_DELIVERY_CONTRIBUTOR,
     ROLE_MANAGER,
     ROLE_PROJECT_MANAGER,
     ROLE_TECHNICIAN,
@@ -20,14 +21,14 @@ from app.domain.delivery import DeliveryItem, DeliveryItemType, DeliveryPlan
 from app.server.security import required_permission
 
 
-def principal(user_id: str | None, role: str) -> AuthPrincipal:
+def principal(user_id: str | None, *roles: str) -> AuthPrincipal:
     return AuthPrincipal.from_roles(
         local_user_id=user_id,
         issuer="test",
         subject=user_id or "anonymous",
         display_name=user_id or "Anonymous",
         email=None,
-        roles=(role,),
+        roles=roles,
         auth_mode="test",
     )
 
@@ -48,6 +49,7 @@ class DeliverySecurityTests(unittest.TestCase):
     def test_delivery_permissions_are_independent_from_planning(self) -> None:
         project_manager = set(permissions_for_roles((ROLE_PROJECT_MANAGER,)))
         technician = set(permissions_for_roles((ROLE_TECHNICIAN,)))
+        contributor = set(permissions_for_roles((ROLE_DELIVERY_CONTRIBUTOR,)))
         coordinator = set(permissions_for_roles((ROLE_COORDINATOR,)))
         manager = set(permissions_for_roles((ROLE_MANAGER,)))
 
@@ -55,10 +57,12 @@ class DeliverySecurityTests(unittest.TestCase):
         self.assertIn(PERMISSION_CONTRIBUTE_DELIVERY, project_manager)
         self.assertNotIn(PERMISSION_MANAGE_PLANNING, project_manager)
 
+        self.assertEqual(technician, {PERMISSION_READ})
+        self.assertIn(PERMISSION_CONTRIBUTE_DELIVERY, contributor)
         for permissions in (technician, coordinator, manager):
-            self.assertIn(PERMISSION_CONTRIBUTE_DELIVERY, permissions)
             self.assertNotIn(PERMISSION_MANAGE_DELIVERY, permissions)
-
+        self.assertNotIn(PERMISSION_CONTRIBUTE_DELIVERY, coordinator)
+        self.assertNotIn(PERMISSION_CONTRIBUTE_DELIVERY, manager)
         self.assertNotIn(PERMISSION_MANAGE_PLANNING, technician)
 
     def test_project_manager_gets_plan_actions_without_board_lead_actions(self) -> None:
@@ -70,14 +74,18 @@ class DeliverySecurityTests(unittest.TestCase):
         self.assertNotIn(DeliveryAction.MANAGE_STRUCTURE, actions)
 
     def test_team_lead_gets_contextual_board_actions_without_planning_permission(self) -> None:
-        actor = principal("USER-LEAD", ROLE_TECHNICIAN)
+        actor = principal(
+            "USER-LEAD", ROLE_TECHNICIAN, ROLE_DELIVERY_CONTRIBUTOR
+        )
         actions = authorized_delivery_actions_for(actor, self.plan)
         self.assertIn(DeliveryAction.MANAGE_STRUCTURE, actions)
         self.assertIn(DeliveryAction.ESTIMATE_STORIES, actions)
         self.assertFalse(actor.has_permission(PERMISSION_MANAGE_PLANNING))
 
     def test_technician_actions_are_limited_to_owned_story(self) -> None:
-        actor = principal("USER-TECH", ROLE_TECHNICIAN)
+        actor = principal(
+            "USER-TECH", ROLE_TECHNICIAN, ROLE_DELIVERY_CONTRIBUTOR
+        )
         own = authorized_delivery_actions_for(actor, self.plan, self.story)
         self.assertEqual(
             own,
