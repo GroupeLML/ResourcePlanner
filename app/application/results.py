@@ -55,6 +55,7 @@ class PlanningResult(ApplicationResult):
 class WorkPackageMutationResult(ApplicationResult):
     reference: str
     action: str
+    version: int
 
 
 @dataclass(frozen=True, slots=True)
