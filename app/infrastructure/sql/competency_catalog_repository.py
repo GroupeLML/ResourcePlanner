@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, true
 from sqlalchemy.orm import Session
 
 from ...application.competency_catalog import (
@@ -58,7 +58,7 @@ class SqlCompetencyCatalogRepository(CompetencyCatalogRepositoryPort):
     ) -> tuple[CompetencyReadModel, ...]:
         statement = select(Competency)
         if active_only:
-            statement = statement.where(Competency.active.is_(True))
+            statement = statement.where(Competency.active == true())
         rows = self._session.scalars(
             statement.order_by(Competency.sort_order, Competency.name, Competency.id)
         ).all()
