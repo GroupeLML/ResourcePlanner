@@ -53,7 +53,8 @@ def _alter_app_users_for_preprovisioning() -> None:
             batch_op.create_check_constraint(
                 OIDC_COMPLETE_CHECK,
                 "(issuer IS NULL AND subject IS NULL) OR "
-                "(issuer IS NOT NULL AND subject IS NOT NULL)",
+                "(issuer IS NOT NULL AND subject IS NOT NULL "
+                "AND issuer <> '' AND subject <> '')",
             )
             batch_op.create_foreign_key(
                 ERP_USER_FK,
@@ -84,7 +85,8 @@ def _alter_app_users_for_preprovisioning() -> None:
         OIDC_COMPLETE_CHECK,
         "app_users",
         "(issuer IS NULL AND subject IS NULL) OR "
-        "(issuer IS NOT NULL AND subject IS NOT NULL)",
+        "(issuer IS NOT NULL AND subject IS NOT NULL "
+        "AND issuer <> '' AND subject <> '')",
     )
     op.create_foreign_key(
         ERP_USER_FK,
