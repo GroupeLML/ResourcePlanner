@@ -17,7 +17,7 @@ Deux modes d'identité sont disponibles :
 - `local` pour le développement/test explicite;
 - `oidc` pour l'Authorization Code Flow vers Acumatica avec PKCE S256 et session serveur.
 
-La validation finale SQL Server reste à faire dans #162. L'implémentation OIDC est couverte par un fournisseur simulé en tests; la validation contre l'instance Acumatica réelle reste dépendante de ses paramètres issuer/client/redirect.
+SQL Server est la base de référence pour les environnements intégrés/staging/production (ADR-011). SQLite reste un dialecte local/test. L'accès au serveur SQL réel est disponible depuis le 2026-09-29; la validation finale reste à exécuter dans #162. L'implémentation OIDC est couverte par un fournisseur simulé en tests; la validation contre l'instance Acumatica réelle reste dépendante de ses paramètres issuer/client/redirect.
 
 ## 1. Dépendances serveur
 
@@ -199,9 +199,9 @@ La CI utilise un fournisseur OIDC simulé et couvre :
 
 Ce smoke simulé ne remplace pas la validation finale contre l'instance Acumatica réelle.
 
-## 9. SQL Server — validation restante
+## 9. SQL Server — validation réelle
 
-Lorsque l'environnement cible sera disponible :
+L'accès au serveur SQL cible est disponible depuis le 2026-09-29. #162 est maintenant exécutable comme validation environnementale réelle :
 
 1. identifier le driver ODBC SQL Server et sa version;
 2. installer/valider `pyodbc`;
@@ -212,19 +212,24 @@ Lorsque l'environnement cible sera disponible :
 7. valider `/`, `/health`, les lectures et au moins une mutation métier;
 8. épingler le driver retenu après validation.
 
-## 10. Relation avec le cutover Excel → SQL
+## 10. Relation avec le cutover SQL Server
 
-Le basculement des données reste décrit dans [`SQL_CUTOVER_RUNBOOK.md`](SQL_CUTOVER_RUNBOOK.md). Le runtime Web autonome ne déclare pas à lui seul SQL Server autoritaire.
+Le premier go-live est décrit dans [`SQL_CUTOVER_RUNBOOK.md`](SQL_CUTOVER_RUNBOOK.md). Le runtime Web autonome ne déclare pas à lui seul SQL Server autoritaire.
 
-Ordre de haut niveau le jour du cutover :
+La décision actuelle est de **ne pas importer l'historique Excel/V1**. Le premier go-live utilise une base SQL Server neuve et la baseline V2 propre de #457.
 
-1. geler la V1/Excel;
-2. migrer le schéma explicitement;
-3. importer et réconcilier les données;
-4. exécuter les préflights;
-5. démarrer React + FastAPI sur SQL Server;
-6. exécuter les smokes lecture + mutation;
-7. seulement ensuite déclarer SQL autoritaire.
+Ordre de haut niveau :
+
+1. terminer la baseline et les garde-fous pré-go-live de #457;
+2. créer une base SQL Server neuve et vide;
+3. appliquer explicitement `alembic upgrade head`;
+4. exécuter le bootstrap administrateur distinct des seeds;
+5. alimenter les référentiels réels nécessaires;
+6. exécuter les préflights et smokes lecture/mutation/rollback/concurrence;
+7. démarrer React + FastAPI sur SQL Server;
+8. seulement ensuite déclarer SQL Server autoritaire pour les nouvelles opérations selon #208.
+
+SQLite reste un outil local/test et ne constitue pas un fallback de production après le cutover.
 
 ## 11. Cible de déploiement production
 
