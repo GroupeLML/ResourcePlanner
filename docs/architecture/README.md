@@ -56,6 +56,7 @@ Voir :
 - `ADR-009-persistent-cancellation-intent.md`
 - `ADR-010-line-approval-scopes-and-quorum.md`
 - `ADR-011-sql-server-authoritative-database.md`
+- `ADR-012-preprovision-app-users-before-oidc-link.md`
 
 Chaîne métier actuelle :
 
@@ -94,6 +95,10 @@ Voir :
 
 - `../AUTH_RBAC.md`
 - `../OIDC_ACUMATICA_VALIDATION.md`
+- `../IDENTITY_PREPROVISIONING.md`
+- `ADR-012-preprovision-app-users-before-oidc-link.md`
+
+ADR-012 fixe la cible de pré-provisionnement : `AppUser` existe avant le premier login OIDC, la paire `(issuer, subject)` est optionnelle jusqu'à la première liaison, `erp_user_id` persiste le `RP_Users.UserID` choisi par l'ADMIN, et le login OIDC devient une opération de liaison uniquement.
 
 ### Base de données et migration
 
@@ -175,8 +180,9 @@ Exemples qui ne nécessitent normalement pas d'ADR :
 | ADR-009 | persister l’intention d’annulation sur WorkforceRequest, décider selon la matérialisation réelle et séparer CAS de demande de CAS planning |
 | ADR-010 | routage par `ApprovalScope` et quorum ET entre lignes / OU entre approbateurs admissibles, sans matérialisation partielle |
 | ADR-011 | SQL Server comme base de référence intégration/staging/production; SQLite réservé au local/test lorsque sa sémantique suffit |
+| ADR-012 | pré-provisionner `AppUser` avant OIDC; paire OIDC optionnelle 0..1, `erp_user_id` explicite et premier login limité à la liaison |
 
-Ces onze ADR sont en statut `Accepted`. ADR-006 reste le socle de concurrence globale. ADR-011 établit SQL Server comme base de référence d'exploitation et réserve SQLite aux usages local/test adaptés. ADR-010 guide #276 pour la multi-approbation par ligne et ses référentiels. ADR-007 guide #291 pour les actifs réservables. ADR-008 guide #362 : `DeliveryPlan`/Epics/Stories restent distincts des `Shift`, les heures WorkPackage actuelles sont une référence de planification et non un budget approuvé, et Delivery consomme une projection read-only du plan actif/approuvé.
+Ces douze ADR sont en statut `Accepted`. ADR-006 reste le socle de concurrence globale. ADR-012 guide les prochaines tranches identité : `AppUser` est l'autorité locale une fois créé et aucune identité OIDC ne crée elle-même un compte. ADR-011 établit SQL Server comme base de référence d'exploitation et réserve SQLite aux usages local/test adaptés. ADR-010 guide #276 pour la multi-approbation par ligne et ses référentiels. ADR-007 guide #291 pour les actifs réservables. ADR-008 guide #362 : `DeliveryPlan`/Epics/Stories restent distincts des `Shift`, les heures WorkPackage actuelles sont une référence de planification et non un budget approuvé, et Delivery consomme une projection read-only du plan actif/approuvé.
 
 ---
 
