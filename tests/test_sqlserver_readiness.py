@@ -83,9 +83,14 @@ class SqlServerReadinessTests(unittest.TestCase):
         with self.assertRaises(DriverReadinessError):
             check_database_preflight("resourceplanner_missing_dialect://localhost/db")
 
-    def test_server_requirements_do_not_pin_pyodbc(self) -> None:
+    def test_server_requirements_pin_validated_pyodbc(self) -> None:
         requirements = (ROOT / "requirements-server.txt").read_text(encoding="utf-8").casefold()
-        self.assertNotIn("pyodbc", requirements)
+        self.assertIn("pyodbc==5.3.0", requirements)
+
+    def test_backend_image_installs_microsoft_odbc_driver_18(self) -> None:
+        dockerfile = (ROOT / "Dockerfile.backend").read_text(encoding="utf-8").casefold()
+        self.assertIn("msodbcsql18", dockerfile)
+        self.assertIn("accept_eula=y", dockerfile)
 
 
 if __name__ == "__main__":
