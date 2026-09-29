@@ -7,14 +7,14 @@ import json
 import re
 from typing import Any
 
-from sqlalchemy import delete, func, or_, select, true
+from sqlalchemy import delete, func, or_, select, true, update
 from sqlalchemy.orm import Session, aliased
 
 from ...application.demand_completion import (
     DemandCompletionFacts,
     project_effective_demand_state,
 )
-from ...application.errors import ApplicationConflictError
+from ...application.errors import ApplicationConflictError, ApplicationValidationError
 from ...application.query_models import DemandCancellationMaterializationReadModel
 from ...application.read_models import DemandLineReadModel, DemandReadModel
 from ...application.repository_ports import DemandRepositoryPort
@@ -746,6 +746,69 @@ class SqlDemandRepository(DemandRepositoryPort):
             )
         return work_package
 
+    def _guard_work_packages(
+        self,
+        work_packages: Sequence[WorkPackage | None],
+    ) -> None:
+        unique = {
+            work_package.id: work_package
+            for work_package in work_packages
+            if work_package is not None
+        }
+        for identifier in sorted(unique):
+            work_package = unique[identifier]
+            result = self._session.execute(
+                update(WorkPackage)
+                .where(WorkPackage.id == identifier)
+                .values(version=WorkPackage.version)
+            )
+            if int(result.rowcount or 0) != 1:
+                raise KeyError(f"WorkPackage {identifier} introuvable")
+            self._session.flush()
+            self._session.refresh(work_package)
+
+    def _effective_task(
+        self,
+        work_package: WorkPackage | None,
+        explicit_task: TaskCatalogEntry | None,
+        *,
+        project_number: str,
+    ) -> TaskCatalogEntry | None:
+        if work_package is None or not work_package.task_catalog_item_id:
+            return explicit_task
+        package_task = self._session.get(
+            TaskCatalogEntry,
+            work_package.task_catalog_item_id,
+        )
+        if package_task is None:
+            raise ApplicationConflictError(
+                "La tâche ERP classée du WorkPackage est introuvable.",
+                code="work_package_task_reference_broken",
+                context={"work_package_id": work_package.id},
+            )
+        if package_task.project_number != _text(project_number):
+            raise ApplicationConflictError(
+                "Le WorkPackage et sa tâche ERP ne correspondent plus au projet de la demande.",
+                code="work_package_task_project_mismatch",
+                context={
+                    "work_package_id": work_package.id,
+                    "task_catalog_item_id": package_task.id,
+                    "task_project_number": package_task.project_number,
+                    "request_project_number": _text(project_number),
+                },
+            )
+        if explicit_task is not None and explicit_task.id != package_task.id:
+            raise ApplicationValidationError(
+                "La tâche ERP de la ligne contredit la tâche classée du WorkPackage.",
+                code="request_line_work_package_task_conflict",
+                context={
+                    "work_package_id": work_package.id,
+                    "work_package_task_catalog_item_id": package_task.id,
+                    "request_task_catalog_item_id": explicit_task.id,
+                },
+            )
+        return package_task
+
     def _task(self, code: object, *, project_number: str) -> TaskCatalogEntry | None:
         task_code = _text(code)
         if not task_code:
@@ -818,6 +881,14 @@ class SqlDemandRepository(DemandRepositoryPort):
         }
         seen: set[str] = set()
         active_lines: list[RequestLine] = []
+        resolved_work_packages = [
+            self._work_package(
+                raw.get("work_package_ref"),
+                project_id=project.id,
+            )
+            for raw in values
+        ]
+        self._guard_work_packages(resolved_work_packages)
 
         for index, raw in enumerate(values):
             supplied_id = _optional_text(raw.get("id"))
@@ -848,11 +919,16 @@ class SqlDemandRepository(DemandRepositoryPort):
             kind = _text(raw.get("kind")) or "WORKFORCE"
             if kind not in {"WORKFORCE", "ASSET"}:
                 raise ValueError("Type de ligne non supporté.")
-            work_package = self._work_package(
-                raw.get("work_package_ref"),
-                project_id=project.id,
+            work_package = resolved_work_packages[index]
+            explicit_task = self._task(
+                raw.get("task_code"),
+                project_number=project.number,
             )
-            task = self._task(raw.get("task_code"), project_number=project.number)
+            task = self._effective_task(
+                work_package,
+                explicit_task,
+                project_number=project.number,
+            )
             proposed = self._resource_by_id(raw.get("proposed_resource_id"))
             asset_type_id = _optional_text(raw.get("asset_type_id"))
             proposed_asset_id = _optional_text(raw.get("proposed_asset_id"))
@@ -1006,14 +1082,26 @@ class SqlDemandRepository(DemandRepositoryPort):
             self._session.add(line)
 
         project = self._session.get(Project, request.project_id)
-        task_id = None
-        if project is not None and request.erp_task_code:
-            task_id = self._session.scalar(
-                select(TaskCatalogEntry.id).where(
-                    TaskCatalogEntry.project_number == project.number,
-                    TaskCatalogEntry.task_code == request.erp_task_code,
-                )
+        work_package = (
+            self._session.get(WorkPackage, request.work_package_id)
+            if request.work_package_id
+            else None
+        )
+        self._guard_work_packages((work_package,))
+        explicit_task = (
+            self._task(request.erp_task_code, project_number=project.number)
+            if project is not None and request.erp_task_code
+            else None
+        )
+        task = (
+            self._effective_task(
+                work_package,
+                explicit_task,
+                project_number=project.number,
             )
+            if project is not None
+            else explicit_task
+        )
 
         line.slot_count = max(int(request.resource_count or 1), 1)
         line.required_competencies_snapshot = request.required_competencies
@@ -1032,9 +1120,9 @@ class SqlDemandRepository(DemandRepositoryPort):
             line.estimated_hours_source = "LEGACY"
         line.confirmation = request.confirmation
         line.work_package_id = request.work_package_id
-        line.task_catalog_item_id = task_id
-        line.erp_task_code = request.erp_task_code
-        line.erp_task_label = request.erp_task_label
+        line.task_catalog_item_id = task.id if task is not None else None
+        line.erp_task_code = task.task_code if task is not None else request.erp_task_code
+        line.erp_task_label = task.label if task is not None else request.erp_task_label
         line.proposed_resource_id = request.proposed_resource_id
         line.description = request.description
         line.active = True
@@ -1061,8 +1149,14 @@ class SqlDemandRepository(DemandRepositoryPort):
             values.get("SourceEffortID"),
             project_id=project.id,
         )
-        task = self._task(
+        self._guard_work_packages((work_package,))
+        explicit_task = self._task(
             values.get("TaskCode"),
+            project_number=project.number,
+        )
+        task = self._effective_task(
+            work_package,
+            explicit_task,
             project_number=project.number,
         )
         proposed_resource = self._resource(values.get("TechnicienPropose"))
@@ -1499,35 +1593,47 @@ class SqlDemandRepository(DemandRepositoryPort):
         if project_changed:
             request.project_id = self._project(updates.get("NumeroProjet")).id
 
+        project = self._session.get(Project, request.project_id)
+        if project is None:
+            raise KeyError("Projet de la demande introuvable")
+
+        work_package = None
         if "SourceEffortID" in updates:
             work_package = self._work_package(
                 updates.get("SourceEffortID"),
                 project_id=request.project_id,
             )
-            request.work_package_id = work_package.id if work_package is not None else None
-        elif project_changed and request.work_package_id:
-            current_work_package = self._session.get(WorkPackage, request.work_package_id)
-            if (
-                current_work_package is None
-                or current_work_package.project_id != request.project_id
-            ):
-                # A WorkPackage is project-owned. Changing project without explicitly
-                # choosing a compatible WorkPackage must not leave a cross-project link.
+            request.work_package_id = (
+                work_package.id if work_package is not None else None
+            )
+        elif request.work_package_id:
+            candidate = self._session.get(WorkPackage, request.work_package_id)
+            if candidate is not None and candidate.project_id == request.project_id:
+                work_package = candidate
+            elif project_changed:
                 request.work_package_id = None
 
+        self._guard_work_packages((work_package,))
+        explicit_task = None
         if "TaskCode" in updates:
-            project = self._session.get(Project, request.project_id)
-            if project is None:
-                raise KeyError("Projet de la demande introuvable")
-            task = self._task(
+            explicit_task = self._task(
                 updates.get("TaskCode"),
                 project_number=project.number,
             )
-            request.erp_task_code = task.task_code if task is not None else None
-            request.erp_task_label = task.label if task is not None else None
-        elif project_changed:
-            # A task code is project-scoped in the ERP export. Never keep a task
-            # silently attached when the demand moves to another project.
+        elif not project_changed and request.erp_task_code:
+            explicit_task = self._task(
+                request.erp_task_code,
+                project_number=project.number,
+            )
+        task = self._effective_task(
+            work_package,
+            explicit_task,
+            project_number=project.number,
+        )
+        if task is not None:
+            request.erp_task_code = task.task_code
+            request.erp_task_label = task.label
+        elif "TaskCode" in updates or project_changed:
             request.erp_task_code = None
             request.erp_task_label = None
 
