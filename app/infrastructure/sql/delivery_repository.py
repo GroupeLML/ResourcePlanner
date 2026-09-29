@@ -120,9 +120,8 @@ class SqlDeliveryRepository:
                 updated_at=WorkPackage.updated_at,
             )
         )
-        if int(result.rowcount or 0) != 1:
-            raise KeyError(f"WorkPackage not found: {identifier}")
-        self._session.flush()
+        if int(result.rowcount or 0) == 1:
+            self._session.flush()
 
     def add_plan(self, plan: DeliveryPlan) -> None:
         self._guard_work_package_dependency(plan.work_package_id)
