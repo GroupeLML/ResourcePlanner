@@ -58,6 +58,7 @@ Voir :
 - `ADR-011-sql-server-authoritative-database.md`
 - `ADR-012-preprovision-app-users-before-oidc-link.md`
 - `ADR-013-work-package-weekly-load-and-medium-term-boundaries.md`
+- `ADR-014-production-break-glass-administrator.md`
 
 Chaîne métier actuelle :
 
@@ -191,8 +192,9 @@ Exemples qui ne nécessitent normalement pas d'ADR :
 | ADR-011 | SQL Server comme base de référence intégration/staging/production; SQLite réservé au local/test lorsque sa sémantique suffit |
 | ADR-012 | pré-provisionner `AppUser` avant OIDC; paire OIDC optionnelle 0..1, `erp_user_id` explicite et premier login limité à la liaison |
 | ADR-013 | rattacher les WorkPackages à `TaskCatalogEntry`, persister leur charge hebdomadaire et séparer budget ERP, Moyen terme, Planning et Delivery |
+| ADR-014 | conserver un `AppUser ADMIN` d'urgence distinct d'OIDC/dev, avec credential hashé, session serveur/CSRF communs, audit et protection du dernier accès |
 
-Ces treize ADR sont en statut `Accepted`. ADR-006 reste le socle de concurrence globale. ADR-012 guide les prochaines tranches identité : `AppUser` est l'autorité locale une fois créé et aucune identité OIDC ne crée elle-même un compte. ADR-011 établit SQL Server comme base de référence d'exploitation et réserve SQLite aux usages local/test adaptés. ADR-010 guide #276 pour la multi-approbation par ligne et ses référentiels. ADR-007 guide #291 pour les actifs réservables. ADR-008 guide #362 : `DeliveryPlan`/Epics/Stories restent distincts des `Shift`, les heures WorkPackage actuelles sont une référence de planification et non un budget approuvé, et Delivery consomme une projection read-only du plan actif/approuvé.
+Ces quatorze ADR sont en statut `Accepted`. ADR-006 reste le socle de concurrence globale. ADR-012 guide les prochaines tranches identité : `AppUser` est l'autorité locale une fois créé et aucune identité OIDC ne crée elle-même un compte. ADR-011 établit SQL Server comme base de référence d'exploitation et réserve SQLite aux usages local/test adaptés. ADR-010 guide #276 pour la multi-approbation par ligne et ses référentiels. ADR-007 guide #291 pour les actifs réservables. ADR-008 guide #362 : `DeliveryPlan`/Epics/Stories restent distincts des `Shift`, les heures WorkPackage actuelles sont une référence de planification et non un budget approuvé, et Delivery consomme une projection read-only du plan actif/approuvé.
 
 ---
 
