@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, true
 from sqlalchemy.orm import Session
 
 from ...application.command_ports import CompositeAllocationCommandPort, PlanningCommandPort
@@ -114,7 +114,7 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
         value = self._session.scalar(
             select(func.coalesce(func.sum(Shift.hours), 0)).where(
                 Shift.resource_requirement_id == requirement_id,
-                Shift.locked.is_(True),
+                Shift.locked == true(),
             )
         )
         return _hours(value or 0)
