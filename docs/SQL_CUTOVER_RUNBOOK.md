@@ -2,9 +2,11 @@
 
 Ce document décrit le premier basculement de RessourcePlanner vers SQL Server autoritaire.
 
-La décision produit est de **ne pas importer l'historique Excel/V1**. La production démarre sur une base SQL Server neuve, alimentée uniquement par le schéma canonique, la configuration initiale requise, le bootstrap administrateur et les référentiels synchronisés depuis les sources réelles.
+La décision produit est de **ne pas importer l'historique Excel/V1**. La production démarre sur une base SQL Server neuve créée par la baseline canonique; les données métier SQLite V2 explicitement retenues sont ensuite transférées par #492, avant le bootstrap final et les référentiels resynchronisés depuis les sources réelles.
 
 Voir #457 pour la baseline de schéma, le retrait des seeds de développement et l'accès administrateur break-glass.
+
+Le transfert contrôlé des données métier déjà présentes dans SQLite V2 est documenté dans `docs/SQLITE_V2_SQLSERVER_CUTOVER.md` (#492). Il intervient après création de la baseline propre et avant le bootstrap/synchronisations finales; il ne réintroduit aucun import Excel/V1.
 
 ## Principes
 
