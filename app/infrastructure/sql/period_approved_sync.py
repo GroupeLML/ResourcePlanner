@@ -126,6 +126,28 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
         request: WorkforceRequest,
         line: RequestLine | None,
     ) -> str | None:
+        work_package_id = (
+            line.work_package_id
+            if line is not None and line.work_package_id
+            else request.work_package_id
+        )
+        if work_package_id:
+            work_package = self._session.get(WorkPackage, work_package_id)
+            if work_package is not None and work_package.task_catalog_item_id:
+                if (
+                    line is not None
+                    and line.task_catalog_item_id
+                    and line.task_catalog_item_id != work_package.task_catalog_item_id
+                ):
+                    raise ApplicationConflictError(
+                        "La ligne approuvée contredit la tâche ERP classée du WorkPackage.",
+                        code="request_line_work_package_task_conflict",
+                        context={
+                            "request_line_id": line.id,
+                            "work_package_id": work_package.id,
+                        },
+                    )
+                return work_package.task_catalog_item_id
         if line is not None and line.task_catalog_item_id:
             return line.task_catalog_item_id
         code = _text(line.erp_task_code if line is not None else request.erp_task_code)
