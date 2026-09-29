@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, text, true
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, String, Text, text, true
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, TimestampMixin, new_id
@@ -11,13 +11,34 @@ from .base import Base, TimestampMixin, new_id
 class AppUser(TimestampMixin, Base):
     __tablename__ = "app_users"
     __table_args__ = (
-        UniqueConstraint("issuer", "subject", name="uq_app_users_issuer_subject"),
+        CheckConstraint(
+            "(issuer IS NULL AND subject IS NULL) OR "
+            "(issuer IS NOT NULL AND subject IS NOT NULL)",
+            name="oidc_identity_complete",
+        ),
+        Index(
+            "ux_app_users_oidc_identity_not_null",
+            "issuer",
+            "subject",
+            unique=True,
+            sqlite_where=text("issuer IS NOT NULL AND subject IS NOT NULL"),
+            postgresql_where=text("issuer IS NOT NULL AND subject IS NOT NULL"),
+            mssql_where=text("issuer IS NOT NULL AND subject IS NOT NULL"),
+        ),
         Index(
             "ux_app_users_employee_external_id_not_null",
             "employee_external_id",
             unique=True,
             sqlite_where=text("employee_external_id IS NOT NULL"),
             mssql_where=text("employee_external_id IS NOT NULL"),
+        ),
+        Index(
+            "ux_app_users_erp_user_id_not_null",
+            "erp_user_id",
+            unique=True,
+            sqlite_where=text("erp_user_id IS NOT NULL"),
+            postgresql_where=text("erp_user_id IS NOT NULL"),
+            mssql_where=text("erp_user_id IS NOT NULL"),
         ),
         Index(
             "ux_app_users_business_contact_id_not_null",
@@ -30,11 +51,16 @@ class AppUser(TimestampMixin, Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    issuer: Mapped[str] = mapped_column(String(512), nullable=False, index=True)
-    subject: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    issuer: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
+    subject: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
     email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     employee_external_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    erp_user_id: Mapped[str | None] = mapped_column(
+        String(128),
+        ForeignKey("erp_user_directory.user_id"),
+        nullable=True,
+    )
     business_contact_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("business_contacts.id"),
