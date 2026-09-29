@@ -258,6 +258,42 @@ def check_mssql_cascade_paths() -> ReadinessCheck:
     )
 
 
+def check_mssql_boolean_predicates() -> ReadinessCheck:
+    """Reject boolean IS predicates that compile to invalid MSSQL IS 1 / IS 0."""
+
+    forbidden = (
+        ".is_(True)",
+        ".is_(False)",
+        ".is_(true())",
+        ".is_(false())",
+        ".is_(sa.true())",
+        ".is_(sa.false())",
+        ".is_(1)",
+        ".is_(0)",
+    )
+    offenders: list[str] = []
+    sql_root = ROOT / "app" / "infrastructure" / "sql"
+    for path in sorted(sql_root.glob("*.py")):
+        for line_number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(),
+            start=1,
+        ):
+            if any(token in line for token in forbidden):
+                offenders.append(f"{path.relative_to(ROOT)}:{line_number}")
+
+    if offenders:
+        raise SqlServerReadinessError(
+            "Prédicats booléens .is_(true/false) incompatibles MSSQL: "
+            + ", ".join(offenders)
+        )
+
+    return ReadinessCheck(
+        "mssql_boolean_predicates",
+        "ok",
+        "aucun prédicat booléen susceptible de compiler en IS 1 / IS 0",
+    )
+
+
 def check_mssql_schema_compilation() -> ReadinessCheck:
     """Compile all tables/indexes and enforce conservative SQL Server invariants."""
 
@@ -407,6 +443,12 @@ def check_mssql_query_compilation() -> ReadinessCheck:
             ) from exc
         if not sql.strip():
             raise SqlServerReadinessError(f"La requête critique {name} compile en SQL vide.")
+        normalized_sql = " ".join(sql.upper().split())
+        if " IS 1" in normalized_sql or " IS 0" in normalized_sql:
+            raise SqlServerReadinessError(
+                f"La requête critique {name} compile un prédicat booléen invalide pour MSSQL: "
+                f"{normalized_sql}"
+            )
         names.append(name)
     return ReadinessCheck(
         "mssql_critical_query_compilation",
@@ -420,6 +462,7 @@ def run_checks() -> list[ReadinessCheck]:
         check_sqlite_migrations(),
         check_mssql_offline_migrations(),
         check_mssql_cascade_paths(),
+        check_mssql_boolean_predicates(),
         check_mssql_schema_compilation(),
         check_mssql_query_compilation(),
     ]
