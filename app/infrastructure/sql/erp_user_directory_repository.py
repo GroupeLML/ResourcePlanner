@@ -38,9 +38,7 @@ class SqlErpUserDirectoryRepository:
         raw_roles = json.loads(row.roles_json or "[]")
         roles = normalize_roles(tuple(str(role) for role in raw_roles))
         linked_user = self._session.scalar(
-            select(AppUser).where(
-                AppUser.employee_external_id == row.employee_external_id
-            )
+            select(AppUser).where(AppUser.erp_user_id == row.user_id)
         )
         candidate_user_ids = self._session.scalars(
             select(ErpUserDirectoryEntry.user_id).where(
@@ -49,11 +47,34 @@ class SqlErpUserDirectoryRepository:
             )
         ).all()
         if linked_user is None:
-            oidc_state = "pending"
-        elif len(candidate_user_ids) == 1:
-            oidc_state = "linked"
-        else:
-            oidc_state = "conflict"
+            # Compatibility for accounts created before IDENTITY-B: until
+            # IDENTITY-D switches the runtime, a historically linked AppUser may
+            # still have no explicit erp_user_id. Reuse it only when EmployeID maps
+            # to a single RP_Users account; never guess among several UserID values.
+            employee_linked_user = self._session.scalar(
+                select(AppUser).where(
+                    AppUser.employee_external_id == row.employee_external_id,
+                    AppUser.erp_user_id.is_(None),
+                )
+            )
+            if employee_linked_user is not None and len(candidate_user_ids) == 1:
+                linked_user = employee_linked_user
+            elif employee_linked_user is not None:
+                oidc_state = "conflict"
+            else:
+                oidc_state = "pending"
+
+        if linked_user is not None:
+            issuer = _optional(linked_user.issuer)
+            subject = _optional(linked_user.subject)
+            if issuer is None and subject is None:
+                oidc_state = "pending"
+            elif issuer is not None and subject is not None:
+                oidc_state = "linked"
+            else:
+                # The database CHECK prevents this state after IDENTITY-B, but
+                # keep the read projection fail-closed for unexpected legacy data.
+                oidc_state = "conflict"
         return ErpUserDirectoryRecord(
             user_id=row.user_id,
             employee_external_id=row.employee_external_id,
