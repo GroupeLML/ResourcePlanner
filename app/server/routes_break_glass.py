@@ -50,8 +50,10 @@ def build_break_glass_router(runtime: BreakGlassRuntime | None) -> APIRouter:
         request: Request,
     ) -> Response:
         factory = request.app.state.session_factory
-        try:
-            with factory.begin() as session:
+        outcome = "authenticated"
+        user_id: str | None = None
+        with factory.begin() as session:
+            try:
                 user_id = BreakGlassAuthenticationService(
                     SqlBreakGlassRepository(session),
                     ScryptSecretHasher(),
@@ -61,7 +63,12 @@ def build_break_glass_router(runtime: BreakGlassRuntime | None) -> APIRouter:
                     secret=body.secret,
                     now=utc_now(),
                 )
-        except BreakGlassRateLimited:
+            except BreakGlassRateLimited:
+                outcome = "rate_limited"
+            except BreakGlassAuthenticationDenied:
+                outcome = "denied"
+
+        if outcome == "rate_limited":
             response = _error(
                 429,
                 "break_glass_rate_limited",
@@ -71,7 +78,7 @@ def build_break_glass_router(runtime: BreakGlassRuntime | None) -> APIRouter:
                 int(runtime.policy.lock_duration.total_seconds())
             )
             return response
-        except BreakGlassAuthenticationDenied:
+        if outcome == "denied" or user_id is None:
             return _error(
                 401,
                 "break_glass_authentication_failed",
