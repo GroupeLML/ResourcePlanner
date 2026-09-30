@@ -18,6 +18,7 @@ MIGRATIONS = ROOT / "migrations"
 VERSIONS = MIGRATIONS / "versions"
 BASELINE_FILE = VERSIONS / "0001_v2_production_baseline.py"
 BASELINE_REVISION = "v2_production_baseline"
+HEAD_REVISION = "0002_work_package_weekly_loads"
 
 
 def alembic_config(database_path: Path) -> Config:
@@ -60,9 +61,15 @@ def _database_foreign_keys(inspector, table_name: str) -> set[tuple[tuple[str, .
 
 
 class SqlMigrationTests(unittest.TestCase):
-    def test_single_production_baseline_is_self_contained(self) -> None:
+    def test_production_baseline_is_self_contained_and_additive_head_is_linear(self) -> None:
         versions = sorted(path.name for path in VERSIONS.glob("*.py"))
-        self.assertEqual(versions, [BASELINE_FILE.name])
+        self.assertEqual(
+            versions,
+            [
+                BASELINE_FILE.name,
+                "0002_work_package_weekly_loads.py",
+            ],
+        )
 
         source = BASELINE_FILE.read_text(encoding="utf-8")
         self.assertIn(f"revision: str = '{BASELINE_REVISION}'", source)
@@ -74,10 +81,10 @@ class SqlMigrationTests(unittest.TestCase):
         config = Config(str(ROOT / "alembic.ini"))
         config.set_main_option("script_location", str(MIGRATIONS))
         script = ScriptDirectory.from_config(config)
-        self.assertEqual(script.get_heads(), [BASELINE_REVISION])
+        self.assertEqual(script.get_heads(), [HEAD_REVISION])
         self.assertEqual(
             [revision.revision for revision in script.walk_revisions()],
-            [BASELINE_REVISION],
+            [HEAD_REVISION, BASELINE_REVISION],
         )
 
     def test_fresh_sqlite_upgrade_reaches_baseline_with_only_technical_seed(self) -> None:
@@ -98,7 +105,7 @@ class SqlMigrationTests(unittest.TestCase):
                         connection.execute(
                             text("SELECT version_num FROM alembic_version")
                         ).scalar_one(),
-                        BASELINE_REVISION,
+                        HEAD_REVISION,
                     )
                     self.assertEqual(
                         connection.execute(
@@ -123,7 +130,7 @@ class SqlMigrationTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
-    def test_baseline_matches_metadata_columns_constraints_and_indexes(self) -> None:
+    def test_head_matches_metadata_columns_constraints_and_indexes(self) -> None:
         with TemporaryDirectory() as directory:
             database_path = Path(directory) / "baseline-parity.db"
             config = alembic_config(database_path)
@@ -208,7 +215,7 @@ class SqlMigrationTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
-    def test_baseline_downgrade_removes_application_schema(self) -> None:
+    def test_head_downgrade_removes_application_schema(self) -> None:
         with TemporaryDirectory() as directory:
             database_path = Path(directory) / "baseline-downgrade.db"
             config = alembic_config(database_path)
@@ -222,7 +229,7 @@ class SqlMigrationTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
-    def test_baseline_compiles_offline_for_mssql(self) -> None:
+    def test_head_compiles_offline_for_mssql(self) -> None:
         output = StringIO()
         command.upgrade(
             offline_config("mssql+pyodbc://", output),
@@ -234,6 +241,7 @@ class SqlMigrationTests(unittest.TestCase):
             "CREATE TABLE PROJECTS",
             "CREATE TABLE WORK_PACKAGES",
             "CREATE TABLE WORK_PACKAGE_AUDIT",
+            "CREATE TABLE WORK_PACKAGE_WEEKLY_LOADS",
             "CREATE TABLE AUTH_SESSIONS",
             "CREATE TABLE BREAK_GLASS_CREDENTIALS",
             "CREATE TABLE AUTH_SECURITY_AUDIT",
@@ -241,6 +249,7 @@ class SqlMigrationTests(unittest.TestCase):
         ):
             self.assertIn(token, ddl)
         self.assertIn(BASELINE_REVISION.upper(), ddl)
+        self.assertIn(HEAD_REVISION.upper(), ddl)
 
 
 if __name__ == "__main__":
