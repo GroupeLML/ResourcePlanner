@@ -11,6 +11,7 @@ from app.server.runtime import (
     ALLOW_LOCAL_AUTH_NETWORK_ENV,
     API_DOCS_ENABLED_ENV,
     AUTH_MODE_ENV,
+    BREAK_GLASS_ENABLED_ENV,
     CONFIG_ENCRYPTION_KEY_ENV,
     DATABASE_URL_ENV,
     DEV_USER_SWITCHER_ENV,
@@ -105,6 +106,34 @@ class ServerRuntimeTests(unittest.TestCase):
                 }
             )
         self.assertIn(DEV_USER_SWITCHER_ENV, str(caught.exception))
+
+    def test_break_glass_is_disabled_by_default_and_restricted_to_oidc(self) -> None:
+        local = ServerSettings.from_environment(
+            {DATABASE_URL_ENV: "sqlite+pysqlite:///:memory:"}
+        )
+        self.assertFalse(local.break_glass_enabled)
+
+        with self.assertRaises(ServerConfigurationError) as caught:
+            ServerSettings.from_environment(
+                {
+                    DATABASE_URL_ENV: "sqlite+pysqlite:///:memory:",
+                    BREAK_GLASS_ENABLED_ENV: "true",
+                }
+            )
+        self.assertIn(BREAK_GLASS_ENABLED_ENV, str(caught.exception))
+
+    def test_break_glass_can_be_enabled_with_oidc_without_provider_contact(self) -> None:
+        settings = ServerSettings.from_environment(
+            {
+                DATABASE_URL_ENV: "sqlite+pysqlite:///:memory:",
+                AUTH_MODE_ENV: "oidc",
+                BREAK_GLASS_ENABLED_ENV: "true",
+                OIDC_DISCOVERY_URL_ENV: "https://identity.example.invalid/.well-known/openid-configuration",
+                OIDC_CLIENT_ID_ENV: "resourceplanner",
+                OIDC_REDIRECT_URI_ENV: "https://planner.example.invalid/api/v1/auth/callback",
+            }
+        )
+        self.assertTrue(settings.break_glass_enabled)
 
     def test_oidc_mode_requires_complete_configuration(self) -> None:
         with self.assertRaises(ServerConfigurationError) as caught:

@@ -2,7 +2,19 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, String, Text, func, text, true
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    func,
+    text,
+    true,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, TimestampMixin, new_id, utc_now
@@ -100,6 +112,100 @@ class IdentityAdminAudit(Base):
     )
 
 
+class BreakGlassCredential(TimestampMixin, Base):
+    __tablename__ = "break_glass_credentials"
+    __table_args__ = (
+        CheckConstraint(
+            "credential_version >= 1",
+            name="credential_version_positive",
+        ),
+        Index(
+            "ux_break_glass_credentials_user_id",
+            "user_id",
+            unique=True,
+        ),
+        Index(
+            "ux_break_glass_credentials_login_name",
+            "login_name",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("app_users.id"),
+        nullable=False,
+    )
+    login_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    secret_hash: Mapped[str] = mapped_column(String(512), nullable=False)
+    credential_version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default="1",
+    )
+    active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=true(),
+        index=True,
+    )
+    failed_attempt_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    first_failed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    locked_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
+    last_success_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    rotated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+
+class AuthSecurityAudit(Base):
+    __tablename__ = "auth_security_audit"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    success: Mapped[bool] = mapped_column(Boolean, nullable=False, index=True)
+    credential_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("break_glass_credentials.id"),
+        nullable=True,
+        index=True,
+    )
+    target_user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("app_users.id"),
+        nullable=True,
+        index=True,
+    )
+    login_name_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    reason_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        server_default=func.now(),
+        nullable=False,
+        index=True,
+    )
+
+
 class AuthLoginTransaction(TimestampMixin, Base):
     __tablename__ = "auth_login_transactions"
 
@@ -114,6 +220,12 @@ class AuthLoginTransaction(TimestampMixin, Base):
 
 class AuthSession(TimestampMixin, Base):
     __tablename__ = "auth_sessions"
+    __table_args__ = (
+        CheckConstraint(
+            "auth_mode IN ('oidc', 'break_glass', 'local')",
+            name="auth_mode_valid",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
@@ -122,6 +234,13 @@ class AuthSession(TimestampMixin, Base):
         String(36),
         ForeignKey("app_users.id", ondelete="CASCADE"),
         nullable=False,
+        index=True,
+    )
+    auth_mode: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="oidc",
+        server_default="oidc",
         index=True,
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)

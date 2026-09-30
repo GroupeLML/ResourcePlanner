@@ -81,6 +81,12 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
     "identity_admin_audit": _keep("Audit durable des mutations d'identité."),
     "business_contacts": _keep("Contacts métier locaux et identités stables référencées."),
     "auth_login_transactions": _drop("Nonce/PKCE/login temporaire; jamais transféré."),
+    "break_glass_credentials": _drop(
+        "Credential d'authentification local de secours; les credentials/secrets ne sont jamais transférés et le bootstrap production recrée explicitement l'accès."
+    ),
+    "auth_security_audit": _drop(
+        "Audit de sécurité pré-go-live lié aux credentials locaux exclus; l'audit production repart après bootstrap sur la cible."
+    ),
     "auth_sessions": _drop("Sessions, hashes de token et CSRF temporaires."),
     "command_idempotency_receipts": _drop(
         "Reçus techniques de replay pré-go-live; ne sont pas des faits métier."

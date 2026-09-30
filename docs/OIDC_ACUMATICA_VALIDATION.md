@@ -2,7 +2,7 @@
 
 L'implémentation OIDC de RessourcePlanner est testée avec un fournisseur simulé et le contrat d'identité a maintenant été observé sur un compte Acumatica réel. Le login interactif complet post-implémentation a également été validé sur ce compte, avec résolution d'un vrai `AppUser` et `/api/v1/auth/me`. Restent à valider un deuxième compte ainsi que le comportement HTTPS/cookies Secure sur l'environnement cible.
 
-> **ADR-012 / IDENTITY-D.** Le runtime cible est maintenant implémenté : l'ADMIN pré-provisionne d'abord un véritable `AppUser`; le premier login OIDC lie seulement `(issuer, subject)` au compte existant après vérification de `preferred_username → RP_Users.UserID → AppUser.erp_user_id` et de l'EmployeID. Le callback ne crée, n'active, ne réactive ni ne rerôle un compte.
+> **ADR-012 / IDENTITY-E.** Le runtime cible est maintenant implémenté : l'ADMIN pré-provisionne d'abord un véritable `AppUser`; le premier login OIDC lie seulement `(issuer, subject)` au compte existant après vérification de `preferred_username → RP_Users.UserID → AppUser.erp_user_id` et de l'EmployeID. Le callback ne crée, n'active, ne réactive ni ne rerôle un compte. Les surfaces ADMIN affichent séparément l'état du compte et l'état OIDC dérivé.
 
 ## Paramètres requis
 
@@ -27,14 +27,16 @@ Ne jamais inscrire de secret ou token réel dans ce document ou dans Git.
 
 1. ouvrir RessourcePlanner sans session : l'interface doit proposer la connexion;
 2. démarrer `/api/v1/auth/login` et vérifier la redirection vers Acumatica;
-3. terminer le login et revenir sur `/api/v1/auth/callback` puis `/`;
-4. vérifier `/api/v1/auth/me` : issuer, subject, utilisateur local, rôles et permissions attendus;
-5. vérifier qu'un utilisateur Acumatica non provisionné est refusé;
-6. vérifier les permissions avec au moins deux rôles locaux différents;
-7. se déconnecter et confirmer que l'ancienne session ne permet plus `/api/v1/auth/me`;
-8. redémarrer l'application et confirmer que les sessions SQL non expirées restent résolubles;
-9. confirmer les attributs de cookie en HTTPS (`HttpOnly`, `Secure`, `SameSite=Lax`);
-10. documenter uniquement les métadonnées non sensibles retenues : issuer, discovery URL, redirect URI, scopes et procédure de provisionnement.
+3. avant le premier login, vérifier dans Utilisateurs que le même `AppUser` est **Compte = Actif** et **OIDC = En attente de première connexion**;
+4. terminer le login et revenir sur `/api/v1/auth/callback` puis `/`;
+5. vérifier dans Utilisateurs que le même `app_user_id` / `erp_user_id` est désormais **OIDC = Lié**, sans changement de rôles ni d'activation;
+6. vérifier `/api/v1/auth/me` : issuer, subject, utilisateur local, rôles et permissions attendus;
+7. vérifier qu'un utilisateur Acumatica non provisionné est refusé;
+8. vérifier les permissions avec au moins deux rôles locaux différents;
+9. se déconnecter et confirmer que l'ancienne session ne permet plus `/api/v1/auth/me`;
+10. redémarrer l'application et confirmer que les sessions SQL non expirées restent résolubles;
+11. confirmer les attributs de cookie en HTTPS (`HttpOnly`, `Secure`, `SameSite=Lax`);
+12. documenter uniquement les métadonnées non sensibles retenues : issuer, discovery URL, redirect URI, scopes et procédure de provisionnement.
 
 ## Diagnostic temporaire des claims validés
 

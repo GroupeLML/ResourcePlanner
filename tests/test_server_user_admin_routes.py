@@ -12,7 +12,12 @@ from app.application.security import (
     ROLE_PROJECT_MANAGER,
     AuthPrincipal,
 )
-from app.infrastructure.sql import AppUser, Base, ErpUserDirectoryEntry
+from app.infrastructure.sql import (
+    AppUser,
+    Base,
+    ErpUserDirectoryEntry,
+    SqlUserIdentityRepository,
+)
 from app.server import create_api_app
 from app.server.security import static_auth_resolver
 
@@ -94,6 +99,8 @@ class ServerUserAdminRouteTests(unittest.TestCase):
         self.assertIn("admin_settings", admin_role["permissions"])
         self.assertEqual(created.status_code, 201)
         self.assertEqual(created.json()["issuer"], "https://issuer.example.invalid")
+        self.assertEqual(created.json()["oidc_state"], "linked")
+        self.assertEqual(created.json()["app_user_id"], created.json()["user_id"])
         self.assertIsNotNone(created.json()["business_contact_id"])
         self.assertEqual(created.json()["phone"], "514" + "-" + "555" + "-" + "0042")
         self.assertEqual(updated.status_code, 200)
@@ -102,7 +109,7 @@ class ServerUserAdminRouteTests(unittest.TestCase):
         self.assertEqual(updated.json()["phone"], "450" + "-" + "555" + "-" + "0042")
         self.assertTrue(any(item["user_id"] == user_id for item in listing.json()))
 
-    def test_pending_oidc_account_can_be_updated_by_app_user_id(self) -> None:
+    def test_pending_and_linked_account_states_keep_stable_identity_and_contact(self) -> None:
         app = self._app()
         factory = app.state.session_factory
         with factory.begin() as session:
@@ -131,26 +138,77 @@ class ServerUserAdminRouteTests(unittest.TestCase):
             )
 
         with TestClient(app) as client:
-            response = client.patch(
+            active_pending = client.get("/api/v1/admin/users")
+            disabled_pending = client.patch(
                 "/api/v1/admin/users/pending-1",
                 json={
-                    "display_name": "Utilisateur pending modifié",
+                    "display_name": "Utilisateur pending",
+                    "email": None,
+                    "roles": [ROLE_PROJECT_MANAGER],
+                    "active": False,
+                },
+            )
+            reenabled_pending = client.patch(
+                "/api/v1/admin/users/pending-1",
+                json={
+                    "display_name": "Utilisateur pending",
                     "email": None,
                     "roles": [ROLE_PROJECT_MANAGER],
                     "active": True,
                 },
             )
-            listing = client.get("/api/v1/admin/users")
 
-        self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.json()["user_id"], "pending-1")
-        self.assertIsNone(response.json()["issuer"])
-        self.assertIsNone(response.json()["subject"])
-        self.assertEqual(response.json()["erp_user_id"], "ERP-PENDING")
-        row = next(item for item in listing.json() if item["user_id"] == "pending-1")
-        self.assertIsNone(row["issuer"])
-        self.assertIsNone(row["subject"])
-        self.assertEqual(row["erp_user_id"], "ERP-PENDING")
+        initial = next(item for item in active_pending.json() if item["user_id"] == "pending-1")
+        self.assertTrue(initial["active"])
+        self.assertEqual(initial["oidc_state"], "pending")
+        self.assertEqual(initial["roles"], [ROLE_PROJECT_MANAGER])
+        self.assertEqual(initial["app_user_id"], "pending-1")
+        self.assertEqual(initial["erp_user_id"], "ERP-PENDING")
+        self.assertIsNone(initial["issuer"])
+        self.assertIsNone(initial["subject"])
+        self.assertFalse(disabled_pending.json()["active"])
+        self.assertEqual(disabled_pending.json()["oidc_state"], "pending")
+        self.assertTrue(reenabled_pending.json()["active"])
+        self.assertEqual(reenabled_pending.json()["oidc_state"], "pending")
+
+        contact_id = reenabled_pending.json()["business_contact_id"]
+        with factory.begin() as session:
+            linked = SqlUserIdentityRepository(session).bind_external_identity(
+                "pending-1",
+                "urn:test:linked",
+                "subject-linked",
+            )
+            self.assertEqual(linked.user_id, "pending-1")
+            self.assertEqual(linked.erp_user_id, "ERP-PENDING")
+            self.assertEqual(linked.business_contact_id, contact_id)
+            self.assertEqual(linked.oidc_state, "linked")
+
+        with TestClient(app) as client:
+            linked_listing = client.get("/api/v1/admin/users")
+            disabled_linked = client.patch(
+                "/api/v1/admin/users/pending-1",
+                json={
+                    "display_name": "Utilisateur pending modifié",
+                    "email": None,
+                    "roles": [ROLE_PROJECT_MANAGER],
+                    "active": False,
+                },
+            )
+
+        linked_row = next(
+            item for item in linked_listing.json() if item["user_id"] == "pending-1"
+        )
+        self.assertTrue(linked_row["active"])
+        self.assertEqual(linked_row["oidc_state"], "linked")
+        self.assertEqual(linked_row["app_user_id"], "pending-1")
+        self.assertEqual(linked_row["erp_user_id"], "ERP-PENDING")
+        self.assertEqual(linked_row["business_contact_id"], contact_id)
+        self.assertEqual(linked_row["roles"], [ROLE_PROJECT_MANAGER])
+        self.assertFalse(disabled_linked.json()["active"])
+        self.assertEqual(disabled_linked.json()["oidc_state"], "linked")
+        self.assertEqual(disabled_linked.json()["app_user_id"], "pending-1")
+        self.assertEqual(disabled_linked.json()["erp_user_id"], "ERP-PENDING")
+        self.assertEqual(disabled_linked.json()["business_contact_id"], contact_id)
 
     def test_non_admin_cannot_even_read_user_admin_surface(self) -> None:
         app = self._app(ROLE_PROJECT_MANAGER, seed_self=False)

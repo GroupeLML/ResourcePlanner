@@ -37,6 +37,7 @@ class UserUpdateRequest(StrictRequest):
 def _user_payload(record: UserIdentityRecord) -> dict[str, object]:
     return {
         "user_id": record.user_id,
+        "app_user_id": record.user_id,
         "issuer": record.issuer,
         "subject": record.subject,
         "display_name": record.display_name,
@@ -47,6 +48,7 @@ def _user_payload(record: UserIdentityRecord) -> dict[str, object]:
         "phone": record.phone,
         "roles": list(record.roles),
         "active": record.active,
+        "oidc_state": record.oidc_state,
     }
 
 

@@ -47,6 +47,7 @@ from app.infrastructure.sql import (
     AssetType,
     Base,
     Competency,
+    ErpUserDirectoryEntry,
     Project,
     Resource,
     ResourceAvailabilityRule,
@@ -330,6 +331,26 @@ def _seed(database_url: str) -> None:
                 )
 
             users = SqlUserIdentityRepository(session)
+            session.add(
+                ErpUserDirectoryEntry(
+                    user_id="ERP-OIDC-PENDING",
+                    employee_external_id="EMP-OIDC-PENDING",
+                    display_name="Utilisateur OIDC E2E",
+                    erp_user_active=True,
+                    employee_status="Actif",
+                    local_active=False,
+                    roles_json="[]",
+                )
+            )
+            session.flush()
+            users.create_account(
+                display_name="Utilisateur OIDC E2E",
+                email=None,
+                roles=(ROLE_TECHNICIAN,),
+                active=True,
+                employee_external_id="EMP-OIDC-PENDING",
+                erp_user_id="ERP-OIDC-PENDING",
+            )
             project_manager_contact_id = None
             approval_user_ids: list[str] = []
             manager_user_id = None
@@ -438,6 +459,23 @@ def build_app(database_path: Path, frontend_dist: Path):
         smtp_cipher=smtp_cipher,
         smtp_client=smtp_client,
     )
+    @app.get("/__e2e__/identity/link-pending", include_in_schema=False)
+    def link_pending_oidc_identity():
+        with app.state.session_factory.begin() as session:
+            identities = SqlUserIdentityRepository(session)
+            pending = identities.get_by_erp_user_id("ERP-OIDC-PENDING")
+            assert pending is not None
+            linked = identities.bind_external_identity(
+                pending.user_id,
+                "urn:resourceplanner:e2e-oidc",
+                "subject-oidc-e2e",
+            )
+            return {
+                "app_user_id": linked.user_id,
+                "erp_user_id": linked.erp_user_id,
+                "oidc_state": linked.oidc_state,
+            }
+
     attach_frontend(app, frontend_dist, required=True)
     app.state.e2e_transport = transport
     app.state.e2e_smtp_client = smtp_client
