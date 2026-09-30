@@ -16,8 +16,8 @@ branch_labels: str | None = None
 depends_on: str | None = None
 
 
-ORIGIN_CHECK = "work_package_weekly_load_origin"
-HOURS_CHECK = "weekly_load_hours_non_negative"
+ORIGIN_CHECK = "ck_work_packages_work_package_weekly_load_origin"
+HOURS_CHECK = "ck_work_package_weekly_loads_weekly_load_hours_non_negative"
 
 
 def _add_origin() -> None:
