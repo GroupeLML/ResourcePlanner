@@ -134,6 +134,7 @@ class MediumTermBudgetReadModel:
     tasks: tuple[MediumTermBudgetTaskReadModel, ...]
     unclassified_work_packages: tuple[MediumTermBudgetWorkPackageReadModel, ...] = ()
     diagnostics: tuple[str, ...] = ()
+    weekly_diagnostics: tuple[str, ...] = ()
     window_start: date | None = None
     window_end: date | None = None
     weeks: tuple[MediumTermWeekReadModel, ...] = ()
