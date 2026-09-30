@@ -1,6 +1,9 @@
 import { Browser, BrowserContext, Locator, Page, expect, test } from "@playwright/test";
 
+import { createClientId, type ClientCrypto } from "../src/clientId";
+
 const BASE_URL = process.env.RESOURCEPLANNER_E2E_BASE_URL || "http://127.0.0.1:8765";
+const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type Role = "ADMIN" | "PROJECT_MANAGER" | "COORDINATOR" | "TECHNICIAN";
 
@@ -50,12 +53,24 @@ function acceptanceDates() {
   };
 }
 
-async function openAs(browser: Browser, role?: Role) {
+async function openAs(
+  browser: Browser,
+  role?: Role,
+  options: { disableRandomUUID?: boolean } = {},
+) {
   const context = await browser.newContext({
     baseURL: BASE_URL,
     locale: "fr-CA",
     extraHTTPHeaders: role ? { "X-E2E-Role": role } : { "X-E2E-Anonymous": "1" },
   });
+  if (options.disableRandomUUID) {
+    await context.addInitScript(() => {
+      Object.defineProperty(globalThis.crypto, "randomUUID", {
+        configurable: true,
+        value: undefined,
+      });
+    });
+  }
   const page = await context.newPage();
   await page.goto("/");
   if (role) await expect(page.locator(".sidebar-footer")).toContainText(DISPLAY_NAMES[role]);
@@ -173,6 +188,33 @@ async function periodsSelect(page: Page, demandNumber: string) {
   await expect(section.locator(".period-demand-summary")).toBeVisible();
 }
 
+test("client IDs use crypto.randomUUID when it is callable", () => {
+  const nativeId = "11111111-1111-4111-8111-111111111111";
+  const cryptoApi: ClientCrypto = {
+    randomUUID: () => nativeId,
+    getRandomValues: () => {
+      throw new Error("getRandomValues should not be used when randomUUID is callable");
+    },
+  };
+
+  expect(createClientId(cryptoApi)).toBe(nativeId);
+});
+
+test("client IDs fall back to crypto.getRandomValues when randomUUID is unavailable", () => {
+  let calls = 0;
+  const cryptoApi: ClientCrypto = {
+    randomUUID: undefined,
+    getRandomValues: (array) => {
+      calls += 1;
+      array.set(Array.from({ length: 16 }, (_, index) => index));
+      return array;
+    },
+  };
+
+  expect(createClientId(cryptoApi)).toBe("00010203-0405-4607-8809-0a0b0c0d0e0f");
+  expect(calls).toBe(1);
+});
+
 test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite", async ({ browser }) => {
   test.setTimeout(240_000);
   const { today, d1, d2, d3, d4, d5 } = acceptanceDates();
@@ -261,7 +303,27 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
   });
 
   await test.step("project manager creates WorkPackage, demand, periods and selected alternative", async () => {
-    const { context, page } = await openAs(browser, "PROJECT_MANAGER");
+    const { context, page } = await openAs(browser, "PROJECT_MANAGER", { disableRandomUUID: true });
+
+    const createIdempotencyKeys: string[] = [];
+    let failCreateOnce = true;
+    const createRoute = "**/api/v1/work-packages**";
+    await page.route(createRoute, async (route) => {
+      const request = route.request();
+      if (request.method() === "POST" && new URL(request.url()).pathname === "/api/v1/work-packages") {
+        createIdempotencyKeys.push(request.headers()["idempotency-key"] || "");
+        if (failCreateOnce) {
+          failCreateOnce = false;
+          await route.fulfill({
+            status: 503,
+            contentType: "application/json",
+            body: JSON.stringify({ detail: "E2E transient create failure" }),
+          });
+          return;
+        }
+      }
+      await route.continue();
+    });
 
     await navigateMain(page, "Moyen terme");
     await page.getByRole("button", { name: /WorkPackage/ }).click();
@@ -278,8 +340,16 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await labelled(workPackageDialog, "Fin", "input").fill(d5);
     await labelled(workPackageDialog, "Heures prévues", "input").fill("40");
     await labelled(workPackageDialog, "Description", "textarea").fill("Parcours React V2 avec Chromium");
-    await workPackageDialog.getByRole("button", { name: "Créer le WorkPackage" }).click();
+    const createButton = workPackageDialog.getByRole("button", { name: "Créer le WorkPackage" });
+    await createButton.click();
+    await expect.poll(() => createIdempotencyKeys.length).toBe(1);
+    await expect(createButton).toBeEnabled();
+    await createButton.click();
     await expect(workPackageDialog).toBeHidden();
+    expect(createIdempotencyKeys).toHaveLength(2);
+    expect(createIdempotencyKeys[0]).toBe(createIdempotencyKeys[1]);
+    expect(createIdempotencyKeys[0]).toMatch(UUID_V4);
+    await page.unroute(createRoute);
     await expect(page.getByText("WP-E2E", { exact: true }).first()).toBeVisible();
 
     const mediumTermCapacity = page.locator(".mt-capacity-panel");
@@ -294,8 +364,40 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await weeklyEditor.getByRole("button", { name: "Générer une proposition automatique" }).click();
     await expect(weeklyEditor).toContainText("Proposition AUTO prévisualisée — elle n’est pas encore enregistrée.");
     await expect(weeklyEditor).toContainText("Somme affichée");
-    await weeklyEditor.getByRole("button", { name: "Accepter la proposition AUTO" }).click();
+
+    const weeklyIdempotencyKeys: string[] = [];
+    let failWeeklySaveOnce = true;
+    const weeklyRoute = /\/api\/v1\/work-packages\/[^/?]+\/weekly-loads$/;
+    await page.route(weeklyRoute, async (route) => {
+      const request = route.request();
+      if (request.method() === "PUT") {
+        weeklyIdempotencyKeys.push(request.headers()["idempotency-key"] || "");
+        if (failWeeklySaveOnce) {
+          failWeeklySaveOnce = false;
+          await route.fulfill({
+            status: 503,
+            contentType: "application/json",
+            body: JSON.stringify({ detail: "E2E transient weekly load failure" }),
+          });
+          return;
+        }
+      }
+      await route.continue();
+    });
+
+    const weeklySaveButton = weeklyEditor.getByRole("button", { name: "Accepter la proposition AUTO" });
+    await weeklySaveButton.click();
+    await expect.poll(() => weeklyIdempotencyKeys.length).toBe(1);
+    await expect(weeklySaveButton).toBeEnabled();
+    await weeklySaveButton.click();
     await expect(weeklyEditor).toBeHidden();
+    expect(weeklyIdempotencyKeys).toHaveLength(2);
+    expect(weeklyIdempotencyKeys[0]).toBe(weeklyIdempotencyKeys[1]);
+    expect(weeklyIdempotencyKeys[0]).toMatch(UUID_V4);
+    await page.unroute(weeklyRoute);
+    await page.evaluate(() => {
+      delete (globalThis.crypto as unknown as { randomUUID?: () => string }).randomUUID;
+    });
 
     const refreshedWorkPackageRow = page.locator(".mt-timeline-row").filter({ hasText: "WP-E2E" });
     await expect(refreshedWorkPackageRow).toContainText("Répartition AUTO");
