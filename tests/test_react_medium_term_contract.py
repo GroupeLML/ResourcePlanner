@@ -29,7 +29,7 @@ class ReactMediumTermContractTests(unittest.TestCase):
         self.assertIn("start,", api)
         self.assertIn("end,", api)
         self.assertIn("scope,", api)
-        self.assertIn("getWorkPackages("", false, controller.signal, scope)", page)
+        self.assertIn('getWorkPackages("", false, controller.signal, scope)', page)
         self.assertIn("medium_term_window_pair_required", (ROOT / "app" / "server" / "routes_reads.py").read_text(encoding="utf-8"))
 
     def test_gantt_renders_project_task_work_package_budget_hierarchy_from_backend(self) -> None:
@@ -63,7 +63,7 @@ class ReactMediumTermContractTests(unittest.TestCase):
             "OVERALLOCATED",
         ):
             self.assertIn(f'"{code}"', page)
-        self.assertIn('"PARTIALLY_COVERED": "Budget partiellement structuré"', page)
+        self.assertIn('PARTIALLY_COVERED: "Budget partiellement structuré"', page)
         self.assertIn('className="mt-yellow-flag"', page)
         self.assertNotIn('"PARTIALLY_COVERED",\n]);', page)
 
