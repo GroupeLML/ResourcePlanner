@@ -627,7 +627,7 @@ export default function WorkPackageEditor({
             <div className="wp-weekly-total">
               <span>Somme affichée</span>
               <strong>{new Intl.NumberFormat("fr-CA", { maximumFractionDigits: 2 }).format(distributedHours)} h</strong>
-              <span>sur {workPackage.planned_hours == null ? "charge totale inconnue" : `${workPackage.planned_hours} h prévues`}</span>
+              <span>sur {mediumTermWorkPackage.planned_hours == null ? "charge totale inconnue" : `${mediumTermWorkPackage.planned_hours} h prévues`}</span>
               <small>Cette somme est une aide visuelle; FastAPI reste autoritaire pour la validation exacte.</small>
             </div>
 
