@@ -395,6 +395,9 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     expect(weeklyIdempotencyKeys[0]).toBe(weeklyIdempotencyKeys[1]);
     expect(weeklyIdempotencyKeys[0]).toMatch(UUID_V4);
     await page.unroute(weeklyRoute);
+    await page.evaluate(() => {
+      delete (globalThis.crypto as unknown as { randomUUID?: () => string }).randomUUID;
+    });
 
     const refreshedWorkPackageRow = page.locator(".mt-timeline-row").filter({ hasText: "WP-E2E" });
     await expect(refreshedWorkPackageRow).toContainText("Répartition AUTO");
