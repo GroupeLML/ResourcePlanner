@@ -202,6 +202,54 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await expect(admin.page.locator(".configuration-notice")).toContainText("Configuration SMTP enregistrée");
     await smtpForm.getByRole("button", { name: "Tester la connexion enregistrée" }).click();
     await expect(admin.page.locator(".configuration-notice")).toContainText("Connexion SMTP réussie");
+
+    await navigateMain(admin.page, "Utilisateurs");
+    await expect(admin.page.getByRole("heading", { name: "Utilisateurs et rôles", level: 2 })).toBeVisible();
+    const pendingErpRow = admin.page
+      .locator(".erp-user-directory-table tbody tr")
+      .filter({ hasText: "ERP-OIDC-PENDING" });
+    await expect(pendingErpRow).toContainText("Actif");
+    await expect(pendingErpRow).toContainText("TECHNICIAN");
+    await expect(pendingErpRow).toContainText("En attente de première connexion");
+    const appUserId = (await pendingErpRow.locator("td").nth(5).innerText()).trim();
+    expect(appUserId).not.toBe("Non provisionné");
+
+    const pendingAppUser = admin.page
+      .locator(".user-admin-user-list > button")
+      .filter({ hasText: "Utilisateur OIDC E2E" });
+    await expect(pendingAppUser).toContainText("Compte · Actif");
+    await expect(pendingAppUser).toContainText("OIDC · En attente de première connexion");
+    await pendingAppUser.click();
+    const pendingStatus = admin.page.getByTestId("app-user-identity-status");
+    await expect(pendingStatus).toContainText("Compte");
+    await expect(pendingStatus).toContainText("Actif");
+    await expect(pendingStatus).toContainText("En attente de première connexion");
+    await expect(pendingStatus).toContainText(appUserId);
+    await expect(pendingStatus).toContainText("ERP-OIDC-PENDING");
+
+    const linkResponse = await admin.context.request.get("/__e2e__/identity/link-pending");
+    expect(linkResponse.ok()).toBeTruthy();
+    const linkedIdentity = (await linkResponse.json()) as {
+      app_user_id: string;
+      erp_user_id: string;
+      oidc_state: string;
+    };
+    expect(linkedIdentity.app_user_id).toBe(appUserId);
+    expect(linkedIdentity.erp_user_id).toBe("ERP-OIDC-PENDING");
+    expect(linkedIdentity.oidc_state).toBe("linked");
+
+    await admin.page.reload();
+    await navigateMain(admin.page, "Utilisateurs");
+    const linkedErpRow = admin.page
+      .locator(".erp-user-directory-table tbody tr")
+      .filter({ hasText: "ERP-OIDC-PENDING" });
+    await expect(linkedErpRow).toContainText(appUserId);
+    await expect(linkedErpRow).toContainText("Lié");
+    const linkedAppUser = admin.page
+      .locator(".user-admin-user-list > button")
+      .filter({ hasText: "Utilisateur OIDC E2E" });
+    await expect(linkedAppUser).toContainText("Compte · Actif");
+    await expect(linkedAppUser).toContainText("OIDC · Lié");
     await closeContext(admin.context);
 
     const projectManager = await openAs(browser, "PROJECT_MANAGER");
