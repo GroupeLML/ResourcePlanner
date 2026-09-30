@@ -47,6 +47,7 @@ jobs:
           generated="$(find migrations/versions -maxdepth 1 -type f -name '0001_v2_production_baseline_*.py' -print -quit)"
           test -n "$generated"
           mv "$generated" migrations/versions/0001_v2_production_baseline.py
+          sed -i 's/[[:space:]]\\+$//' migrations/versions/0001_v2_production_baseline.py
           test "$(find migrations/versions -maxdepth 1 -type f -name '*.py' | wc -l)" -eq 1
 
       - name: Validate fresh SQLite and offline SQL Server
