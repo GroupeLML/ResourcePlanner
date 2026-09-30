@@ -30,6 +30,7 @@ from app.infrastructure.sql.models import (  # noqa: E402
     Resource,
     ResourceRequirement,
     Shift,
+    TaskCatalogEntry,
     WorkforceRequest,
     WorkforceRequestHistory,
     WorkPackage,
@@ -427,6 +428,16 @@ def _critical_statements():
         update(Resource)
         .where(Resource.id == bindparam("resource_id"))
         .values(active=bindparam("active"))
+    )
+    yield "medium_term_budget_tasks", (
+        select(TaskCatalogEntry)
+        .where(TaskCatalogEntry.project_number == bindparam("medium_term_project_number"))
+        .order_by(TaskCatalogEntry.task_code, TaskCatalogEntry.id)
+    )
+    yield "medium_term_budget_work_packages", (
+        select(WorkPackage)
+        .where(WorkPackage.project_id == bindparam("medium_term_project_id"))
+        .order_by(WorkPackage.start_date, WorkPackage.name, WorkPackage.id)
     )
     yield "work_package_dependency_guard", (
         update(WorkPackage)
