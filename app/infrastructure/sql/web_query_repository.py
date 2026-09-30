@@ -239,11 +239,12 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                 work_package,
                 tuple(loads_by_package.get(work_package.id, ())),
             )
-            projected_by_id[work_package.id] = projected
             task_id = work_package.task_catalog_item_id
             if task_id is None:
+                projected_by_id[work_package.id] = projected
                 unclassified.append(projected)
             elif task_id in by_task:
+                projected_by_id[work_package.id] = projected
                 by_task[task_id].append(projected)
 
         task_models: list[MediumTermBudgetTaskReadModel] = []
@@ -294,6 +295,7 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
             )
 
         diagnostics: list[str] = []
+        weekly_diagnostics: list[str] = []
         if unclassified:
             diagnostics.append(MEDIUM_TERM_DIAGNOSTIC_UNCLASSIFIED_WORK_PACKAGES)
 
@@ -303,7 +305,7 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
             if projected.current_load_included
         )
         if any(row.weekly_load_diagnostic is not None for row in current_packages):
-            diagnostics.append(MEDIUM_TERM_DIAGNOSTIC_WEEKLY_LOAD_INCOMPLETE)
+            weekly_diagnostics.append(MEDIUM_TERM_DIAGNOSTIC_WEEKLY_LOAD_INCOMPLETE)
 
         effective_start = start
         effective_end = end
@@ -369,7 +371,7 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                 )
                 cursor += timedelta(days=7)
             if any_capacity_zero:
-                diagnostics.append(MEDIUM_TERM_DIAGNOSTIC_CAPACITY_ZERO)
+                weekly_diagnostics.append(MEDIUM_TERM_DIAGNOSTIC_CAPACITY_ZERO)
 
         return MediumTermBudgetReadModel(
             project_id=project.id,
@@ -378,6 +380,7 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
             tasks=tuple(task_models),
             unclassified_work_packages=tuple(unclassified),
             diagnostics=tuple(diagnostics),
+            weekly_diagnostics=tuple(weekly_diagnostics),
             window_start=effective_start,
             window_end=effective_end,
             weeks=tuple(weeks),
