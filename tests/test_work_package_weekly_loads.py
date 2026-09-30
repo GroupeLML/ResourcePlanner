@@ -5,6 +5,7 @@ from decimal import Decimal
 from functools import partial
 from tempfile import TemporaryDirectory
 import unittest
+import json
 
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
@@ -225,6 +226,24 @@ class WorkPackageWeeklyLoadTests(unittest.TestCase):
                     self.assertEqual(
                         [row.action for row in audits],
                         ["REPLACE_WEEKLY_LOADS", "REPLACE_WEEKLY_LOADS"],
+                    )
+                    first_audit = json.loads(audits[0].new_values_json)
+                    second_audit = json.loads(audits[1].new_values_json)
+                    self.assertEqual(
+                        first_audit["weekly_loads"],
+                        [
+                            {"week_start": "2026-09-14", "hours": "3.34"},
+                            {"week_start": "2026-09-21", "hours": "3.34"},
+                            {"week_start": "2026-09-28", "hours": "3.33"},
+                        ],
+                    )
+                    self.assertEqual(
+                        second_audit["weekly_loads"],
+                        [
+                            {"week_start": "2026-09-14", "hours": "4.00"},
+                            {"week_start": "2026-09-21", "hours": "3.00"},
+                            {"week_start": "2026-09-28", "hours": "3.01"},
+                        ],
                     )
             finally:
                 engine.dispose()
