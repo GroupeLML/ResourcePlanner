@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PAGE = ROOT / "frontend" / "src" / "ErpUserDirectoryPanel.tsx"
 API = ROOT / "frontend" / "src" / "erpUserAdminApi.ts"
 USER_PAGE = ROOT / "frontend" / "src" / "UserAdminPage.tsx"
+IDENTITY = ROOT / "frontend" / "src" / "identityAdmin.ts"
 
 
 class ReactErpUserAdminContractTests(unittest.TestCase):
@@ -21,10 +22,15 @@ class ReactErpUserAdminContractTests(unittest.TestCase):
         self.assertIn("ERP User", page)
         self.assertIn("ERP Employé", page)
         self.assertIn("Activation RessourcePlanner", page)
-        self.assertIn('state === "linked"', page)
-        self.assertIn('return "Résolu"', page)
-        self.assertIn('return "Conflit"', page)
-        self.assertIn('return "En attente"', page)
+        identity = IDENTITY.read_text(encoding="utf-8")
+        self.assertIn("<th>AppUser</th>", page)
+        self.assertIn("<th>Compte</th>", page)
+        self.assertIn("<th>Rôles</th>", page)
+        self.assertIn("<th>OIDC</th>", page)
+        self.assertIn('state === "linked"', identity)
+        self.assertIn('return "Lié"', identity)
+        self.assertIn('return "Conflit"', identity)
+        self.assertIn('return "En attente de première connexion"', identity)
         self.assertIn("<ErpUserDirectoryPanel roleCatalog={roleCatalog}", user_page)
 
     def test_api_exposes_preprovisioned_app_user_without_oidc_coordinates(self) -> None:
@@ -37,9 +43,17 @@ class ReactErpUserAdminContractTests(unittest.TestCase):
         self.assertIn("...csrfHeaders()", api)
         self.assertIn('credentials: "include"', api)
         self.assertIn("app_user_id", api)
+        self.assertIn("erp_user_id", api)
+        self.assertIn("issuer: string | null", api)
+        self.assertIn("subject: string | null", api)
+        self.assertIn("active: boolean", api)
+        self.assertIn("oidc_state: OidcState", api)
         self.assertIn("preferred_username → UserID", page)
-        self.assertNotIn("issuer:", page)
-        self.assertNotIn("subject:", page)
+        self.assertNotIn("issuer === null", page)
+        self.assertNotIn("subject === null", page)
+        self.assertIn("accountStateLabel", page)
+        self.assertIn("oidcStateLabel", page)
+        self.assertIn("Non provisionné", page)
 
 
 if __name__ == "__main__":

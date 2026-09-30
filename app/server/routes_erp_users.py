@@ -25,6 +25,7 @@ class ErpUserAccessUpdate(StrictRequest):
 def _payload(record: ErpUserDirectoryRecord) -> dict[str, object]:
     return {
         "user_id": record.user_id,
+        "erp_user_id": record.user_id,
         "employee_external_id": record.employee_external_id,
         "display_name": record.display_name,
         "first_name": record.first_name,
@@ -34,11 +35,14 @@ def _payload(record: ErpUserDirectoryRecord) -> dict[str, object]:
         "employee_status": record.employee_status,
         "source_admissible": record.source_admissible,
         "local_active": record.local_active,
+        "active": record.local_active,
         "roles": list(record.roles),
         "resource_id": record.resource_id,
         "resource_name": record.resource_name,
         "resource_erp_active": record.resource_erp_active,
         "app_user_id": record.app_user_id,
+        "issuer": record.issuer,
+        "subject": record.subject,
         "oidc_state": record.oidc_state,
         "access_ready": record.access_ready,
     }

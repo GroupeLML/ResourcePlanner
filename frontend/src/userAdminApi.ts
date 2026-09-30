@@ -1,8 +1,10 @@
 import { ApiError } from "./api";
 import { csrfHeaders } from "./csrf";
+import type { OidcState } from "./identityAdmin";
 
 export type UserAdminReadModel = {
   user_id: string;
+  app_user_id: string;
   issuer: string | null;
   subject: string | null;
   display_name: string;
@@ -13,6 +15,7 @@ export type UserAdminReadModel = {
   phone: string | null;
   roles: string[];
   active: boolean;
+  oidc_state: OidcState;
 };
 
 export type UserRoleDefinition = {

@@ -172,7 +172,24 @@ class ErpUserDirectoryTests(unittest.TestCase):
             )
             assert pending is not None
             self.assertEqual(pending.oidc_state, "pending")
+            self.assertEqual(pending.app_user_id, created.user_id)
+            self.assertIsNone(pending.issuer)
+            self.assertIsNone(pending.subject)
             self.assertTrue(pending.access_ready)
+
+            # Compatibility mirrors must never override AppUser authority after
+            # pre-provisioning.
+            mirror = session.get(ErpUserDirectoryEntry, "ERP-PRE")
+            assert mirror is not None
+            mirror.local_active = False
+            mirror.roles_json = "[]"
+            session.flush()
+            authoritative = SqlErpUserDirectoryRepository(session).get_by_user_id(
+                "ERP-PRE"
+            )
+            assert authoritative is not None
+            self.assertTrue(authoritative.local_active)
+            self.assertEqual(authoritative.roles, (ROLE_COORDINATOR,))
 
             identities.bind_external_identity(
                 created.user_id,
@@ -184,7 +201,36 @@ class ErpUserDirectoryTests(unittest.TestCase):
             )
             assert linked is not None
             self.assertEqual(linked.oidc_state, "linked")
+            self.assertEqual(linked.app_user_id, created.user_id)
+            self.assertEqual(linked.issuer, "issuer-pre")
+            self.assertEqual(linked.subject, "subject-pre")
             self.assertTrue(linked.access_ready)
+
+    def test_legacy_ambiguous_employee_mapping_projects_conflict_fail_closed(self) -> None:
+        self._sync(
+            StubUserSource(
+                [
+                    user("ERP-CONFLICT-A", "EMP-CONFLICT"),
+                    user("ERP-CONFLICT-B", "EMP-CONFLICT"),
+                ]
+            )
+        )
+        with transactional_session(self.factory) as session:
+            SqlUserIdentityRepository(session).upsert(
+                issuer="issuer-conflict",
+                subject="subject-conflict",
+                display_name="Identité historique ambiguë",
+                email=None,
+                roles=(ROLE_COORDINATOR,),
+                employee_external_id="EMP-CONFLICT",
+            )
+            projected = SqlErpUserDirectoryRepository(session).get_by_user_id(
+                "ERP-CONFLICT-A"
+            )
+            assert projected is not None
+            self.assertEqual(projected.oidc_state, "conflict")
+            self.assertIsNone(projected.app_user_id)
+            self.assertFalse(projected.access_ready)
 
     def test_partial_snapshot_does_not_disable_or_delete_missing_user(self) -> None:
         source = StubUserSource([user("ERP-A", "EMP-A"), user("ERP-B", "EMP-B")])

@@ -1,8 +1,10 @@
 import { ApiError } from "./api";
 import { csrfHeaders } from "./csrf";
+import type { OidcState } from "./identityAdmin";
 
 export type ErpUserDirectoryReadModel = {
   user_id: string;
+  erp_user_id: string;
   employee_external_id: string;
   display_name: string;
   first_name: string | null;
@@ -12,12 +14,15 @@ export type ErpUserDirectoryReadModel = {
   employee_status: string | null;
   source_admissible: boolean;
   local_active: boolean;
+  active: boolean;
   roles: string[];
   resource_id: string | null;
   resource_name: string | null;
   resource_erp_active: boolean | null;
   app_user_id: string | null;
-  oidc_state: string;
+  issuer: string | null;
+  subject: string | null;
+  oidc_state: OidcState;
   access_ready: boolean;
 };
 

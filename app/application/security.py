@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 
 ROLE_ADMIN = "ADMIN"
@@ -10,6 +10,11 @@ ROLE_PROJECT_MANAGER = "PROJECT_MANAGER"
 ROLE_MANAGER = "MANAGER"
 ROLE_TECHNICIAN = "TECHNICIAN"
 ROLE_DELIVERY_CONTRIBUTOR = "DELIVERY_CONTRIBUTOR"
+
+OIDC_STATE_PENDING = "pending"
+OIDC_STATE_LINKED = "linked"
+OIDC_STATE_CONFLICT = "conflict"
+OidcIdentityState = Literal["pending", "linked", "conflict"]
 
 ROLES = (
     ROLE_ADMIN,
@@ -94,6 +99,21 @@ def permissions_for_roles(roles: tuple[str, ...] | list[str] | set[str]) -> tupl
     return tuple(permission for permission in PERMISSIONS if permission in permissions)
 
 
+def oidc_identity_state(
+    issuer: str | None,
+    subject: str | None,
+) -> OidcIdentityState:
+    """Project the persisted OIDC coordinates into the canonical admin state."""
+
+    issuer_value = str(issuer or "").strip() or None
+    subject_value = str(subject or "").strip() or None
+    if issuer_value is None and subject_value is None:
+        return OIDC_STATE_PENDING
+    if issuer_value is not None and subject_value is not None:
+        return OIDC_STATE_LINKED
+    return OIDC_STATE_CONFLICT
+
+
 @dataclass(frozen=True, slots=True)
 class AuthPrincipal:
     local_user_id: str | None
@@ -164,6 +184,10 @@ class UserIdentityRecord:
     erp_user_id: str | None = None
     business_contact_id: str | None = None
     phone: str | None = None
+
+    @property
+    def oidc_state(self) -> OidcIdentityState:
+        return oidc_identity_state(self.issuer, self.subject)
 
 
 class UserIdentityRepositoryPort(Protocol):

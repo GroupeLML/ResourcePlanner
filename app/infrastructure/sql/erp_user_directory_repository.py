@@ -9,7 +9,11 @@ from ...application.erp_user_directory import (
     ErpUserDirectoryRecord,
     ExternalErpUserRecord,
 )
-from ...application.security import normalize_roles
+from ...application.security import (
+    OIDC_STATE_CONFLICT,
+    normalize_roles,
+    oidc_identity_state,
+)
 from .erp_user_models import ErpUserDirectoryEntry
 from .identity_models import AppUser
 from .models import Resource
@@ -49,7 +53,7 @@ class SqlErpUserDirectoryRepository:
             )
         ).all()
 
-        oidc_state = "pending"
+        oidc_state = oidc_identity_state(None, None)
         if linked_user is None:
             # Compatibility only for identities already linked before erp_user_id
             # existed. Never adopt a pending account by EmployeID, and never guess
@@ -65,17 +69,14 @@ class SqlErpUserDirectoryRepository:
             if legacy_user is not None and len(candidate_user_ids) == 1:
                 linked_user = legacy_user
             elif legacy_user is not None:
-                oidc_state = "conflict"
+                oidc_state = OIDC_STATE_CONFLICT
 
+        issuer = None
+        subject = None
         if linked_user is not None:
             issuer = _optional(linked_user.issuer)
             subject = _optional(linked_user.subject)
-            if issuer is None and subject is None:
-                oidc_state = "pending"
-            elif issuer is not None and subject is not None:
-                oidc_state = "linked"
-            else:
-                oidc_state = "conflict"
+            oidc_state = oidc_identity_state(issuer, subject)
             raw_roles = json.loads(linked_user.roles_json or "[]")
             roles = normalize_roles(tuple(str(role) for role in raw_roles))
             local_active = bool(linked_user.active)
@@ -102,6 +103,8 @@ class SqlErpUserDirectoryRepository:
                 bool(linked_user.active) if linked_user is not None else None
             ),
             app_user_id=linked_user.id if linked_user is not None else None,
+            issuer=issuer,
+            subject=subject,
         )
 
     def upsert_external_user(self, user: ExternalErpUserRecord) -> str:
