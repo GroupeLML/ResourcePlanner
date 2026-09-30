@@ -229,6 +229,28 @@ class WorkPackageWeeklyLoadTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_auto_origin_rejects_a_modified_distribution(self) -> None:
+        with TemporaryDirectory() as directory:
+            app = create_api_app(self._database(directory))
+            with TestClient(app, raise_server_exceptions=False) as client:
+                response = client.put(
+                    "/api/v1/work-packages/EFF-VALID/weekly-loads",
+                    json={
+                        "expected_version": 1,
+                        "origin": "AUTO",
+                        "loads": [
+                            {"week_start": "2026-09-14", "hours": "4.00"},
+                            {"week_start": "2026-09-21", "hours": "3.00"},
+                            {"week_start": "2026-09-28", "hours": "3.01"},
+                        ],
+                    },
+                )
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(
+            response.json()["error"]["code"],
+            "work_package_weekly_load_auto_proposal_mismatch",
+        )
+
     def test_validation_rejects_duplicate_non_monday_outside_window_and_sum_mismatch(self) -> None:
         invalid_cases = (
             (
