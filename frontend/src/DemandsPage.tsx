@@ -829,7 +829,6 @@ export default function DemandsPage({ initialDemandNumber = null }: DemandsPageP
                     value={form.project_number}
                     onChange={(event) => {
                       const projectNumber = event.target.value;
-                      setTaskSearch("");
                       setEditorDirty(true);
                       setForm((current) => ({
                         ...current,
