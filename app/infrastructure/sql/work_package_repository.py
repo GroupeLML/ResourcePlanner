@@ -621,6 +621,13 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
             "weekly_load_hours": str(
                 sum((item.hours for item in old_loads), Decimal("0.00"))
             ),
+            "weekly_loads": [
+                {
+                    "week_start": item.week_start.isoformat(),
+                    "hours": str(item.hours),
+                }
+                for item in old_loads
+            ],
         }
 
         self._session.execute(
@@ -672,6 +679,13 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
             "weekly_load_hours": str(
                 sum((item.hours for item in normalized), Decimal("0.00"))
             ),
+            "weekly_loads": [
+                {
+                    "week_start": item.week_start.isoformat(),
+                    "hours": str(item.hours),
+                }
+                for item in normalized
+            ],
         }
         self._audit(
             work_package,
