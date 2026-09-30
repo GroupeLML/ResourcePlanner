@@ -14,6 +14,7 @@ import {
   replaceWorkPackageWeeklyLoads,
   updateWorkPackage,
 } from "./api";
+import { createClientId } from "./clientId";
 
 const STATUS_OPTIONS = [
   ["planned", "Planifié"],
@@ -297,7 +298,7 @@ export default function WorkPackageEditor({
         const previous = createRetry.current;
         const key = previous?.fingerprint === fingerprint
           ? previous.key
-          : crypto.randomUUID();
+          : createClientId();
         createRetry.current = { fingerprint, key };
         await createWorkPackage(payload, key);
       }
@@ -370,7 +371,7 @@ export default function WorkPackageEditor({
       const previous = weeklyRetry.current;
       const key = previous?.fingerprint === requestFingerprint
         ? previous.key
-        : crypto.randomUUID();
+        : createClientId();
       weeklyRetry.current = { fingerprint: requestFingerprint, key };
       await replaceWorkPackageWeeklyLoads(
         workPackage.reference,
