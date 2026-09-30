@@ -13,7 +13,7 @@ from typing import Iterable
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import bindparam, insert, select, true, update
+from sqlalchemy import bindparam, delete, insert, select, true, update
 from sqlalchemy.dialects import mssql
 from sqlalchemy import ForeignKeyConstraint, UniqueConstraint
 from sqlalchemy.schema import CreateIndex, CreateTable
@@ -34,6 +34,7 @@ from app.infrastructure.sql.models import (  # noqa: E402
     WorkforceRequest,
     WorkforceRequestHistory,
     WorkPackage,
+    WorkPackageWeeklyLoad,
 )
 
 
@@ -438,6 +439,29 @@ def _critical_statements():
         select(WorkPackage)
         .where(WorkPackage.project_id == bindparam("medium_term_project_id"))
         .order_by(WorkPackage.start_date, WorkPackage.name, WorkPackage.id)
+    )
+    yield "medium_term_weekly_loads", (
+        select(WorkPackageWeeklyLoad)
+        .where(
+            WorkPackageWeeklyLoad.work_package_id == bindparam("weekly_work_package_id")
+        )
+        .order_by(WorkPackageWeeklyLoad.week_start)
+    )
+    yield "medium_term_weekly_load_delete", (
+        delete(WorkPackageWeeklyLoad).where(
+            WorkPackageWeeklyLoad.work_package_id == bindparam("weekly_delete_work_package_id")
+        )
+    )
+    yield "work_package_weekly_load_cas", (
+        update(WorkPackage)
+        .where(
+            WorkPackage.id == bindparam("weekly_cas_work_package_id"),
+            WorkPackage.version == bindparam("weekly_expected_version"),
+        )
+        .values(
+            weekly_load_origin=bindparam("weekly_load_origin"),
+            version=WorkPackage.version + 1,
+        )
     )
     yield "work_package_dependency_guard", (
         update(WorkPackage)
