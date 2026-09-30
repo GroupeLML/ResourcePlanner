@@ -17,6 +17,8 @@ Deux modes d'identité sont disponibles :
 - `local` pour le développement/test explicite;
 - `oidc` pour l'Authorization Code Flow vers Acumatica avec PKCE S256 et session serveur.
 
+En production OIDC, #457 ajoute un **login break-glass opt-in** qui authentifie un `AppUser ADMIN` réservé sans contacter le fournisseur OIDC. Ce n'est pas un troisième `RESOURCEPLANNER_AUTH_MODE`. Voir [BREAK_GLASS_ADMIN.md](BREAK_GLASS_ADMIN.md).
+
 SQL Server est la base de référence pour les environnements intégrés/staging/production (ADR-011). SQLite reste un dialecte local/test. La validation réelle ENV-162 sur SQL Server 2017 a confirmé les migrations, le préflight FastAPI, le runtime Uvicorn, commit/rollback et le CAS global. Le packaging Docker embarque désormais le même chemin driver validé : `pyodbc==5.3.0` et Microsoft ODBC Driver 18. L'implémentation OIDC est couverte par un fournisseur simulé en tests; la validation contre l'instance Acumatica réelle reste dépendante de ses paramètres issuer/client/redirect.
 
 ## 1. Dépendances serveur
@@ -102,6 +104,21 @@ Les rôles/permissions restent autoritaires dans RessourcePlanner. Un utilisateu
 ### Séparation avec la synchro ERP
 
 Les credentials OIDC utilisateur sont indépendants de `RESOURCEPLANNER_ACUMATICA_ACCESS_TOKEN`, utilisé par la synchronisation serveur-à-serveur des projets. Ne pas réutiliser un token utilisateur comme credential de synchronisation ERP.
+
+## 4.1. Administrateur break-glass
+
+Le bootstrap et la rotation sont des commandes d'exploitation séparées des migrations et des seeds :
+
+```bash
+python tools/bootstrap_production_admin.py
+python tools/bootstrap_production_admin.py --rotate-secret
+```
+
+Le runtime n'expose ce login que lorsque `RESOURCEPLANNER_BREAK_GLASS_ENABLED=true` en mode `oidc`. Le secret est fourni hors Git, hashé avec scrypt puis oublié; le backend normal ne reçoit pas sa valeur en clair.
+
+Les sessions break-glass utilisent `auth_sessions`, le cookie opaque serveur et le CSRF existants. La politique initiale bloque le credential après 5 échecs dans 15 minutes pendant 15 minutes. Les succès/échecs/rotations sont audités sans secret.
+
+La procédure complète de création, test, rotation/réinitialisation, panne OIDC et rollback est dans [BREAK_GLASS_ADMIN.md](BREAK_GLASS_ADMIN.md).
 
 ## 5. Migrations
 

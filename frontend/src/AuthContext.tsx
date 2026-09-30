@@ -5,6 +5,7 @@ import {
   AuthPrincipal,
   getCurrentPrincipal,
   getLoginUrl,
+  loginBreakGlass as requestBreakGlassLogin,
   logoutCurrentSession,
 } from "./auth-api";
 
@@ -15,6 +16,7 @@ type AuthState = {
   authenticationRequired: boolean;
   can: (permission: string) => boolean;
   login: () => void;
+  breakGlassLogin: (loginName: string, secret: string) => Promise<void>;
   logout: () => Promise<void>;
 };
 
@@ -60,6 +62,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     window.location.assign(getLoginUrl());
   }, []);
 
+  const breakGlassLogin = useCallback(async (loginName: string, secret: string) => {
+    setError(null);
+    try {
+      const identity = await requestBreakGlassLogin(loginName, secret);
+      setPrincipal(identity);
+      setAuthenticationRequired(false);
+    } catch (reason: unknown) {
+      setPrincipal(null);
+      setAuthenticationRequired(true);
+      if (reason instanceof ApiError) {
+        setError(`${reason.message}${reason.code ? ` (${reason.code})` : ""}`);
+      } else {
+        setError(reason instanceof Error ? reason.message : "Connexion administrateur de secours impossible.");
+      }
+      throw reason;
+    }
+  }, []);
+
   const logout = useCallback(async () => {
     setError(null);
     try {
@@ -83,8 +103,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     authenticationRequired,
     can: (permission: string) => Boolean(principal?.permissions.includes(permission)),
     login,
+    breakGlassLogin,
     logout,
-  }), [principal, loading, error, authenticationRequired, login, logout]);
+  }), [principal, loading, error, authenticationRequired, login, breakGlassLogin, logout]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
