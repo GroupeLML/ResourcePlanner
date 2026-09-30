@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Protocol, Sequence
 
 from .errors import ApplicationNotFoundError, ApplicationValidationError
-from .security import normalize_roles
+from .security import OidcIdentityState, normalize_roles
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,9 +38,11 @@ class ErpUserDirectoryRecord:
     resource_id: str | None
     resource_name: str | None
     resource_erp_active: bool | None
-    oidc_state: str = "pending"
+    oidc_state: OidcIdentityState = "pending"
     oidc_user_active: bool | None = None
     app_user_id: str | None = None
+    issuer: str | None = None
+    subject: str | None = None
 
     @property
     def source_admissible(self) -> bool:

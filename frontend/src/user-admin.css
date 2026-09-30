@@ -79,7 +79,7 @@
   background: #f3f6fb;
 }
 
-.user-admin-user-list button span:first-child {
+.user-admin-user-list button > span:first-child {
   display: grid;
   gap: 0.2rem;
 }
@@ -103,6 +103,47 @@
 
 .user-status.inactive {
   background: #f2f3f5;
+}
+
+.user-status-stack {
+  display: grid;
+  justify-items: end;
+  gap: 0.3rem;
+}
+
+.user-status.oidc-pending {
+  background: #fff7e6;
+}
+
+.user-status.oidc-linked {
+  background: #eef8f1;
+}
+
+.user-status.oidc-conflict {
+  background: #fff0f0;
+}
+
+.identity-status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.65rem;
+}
+
+.identity-status-card {
+  display: grid;
+  gap: 0.2rem;
+  border: 1px solid var(--border, #d9dde5);
+  border-radius: 10px;
+  padding: 0.75rem;
+}
+
+.identity-status-card > span {
+  color: var(--muted, #667085);
+  font-size: 0.78rem;
+}
+
+.identity-status-card.identity-reference code {
+  overflow-wrap: anywhere;
 }
 
 .user-admin-editor {
