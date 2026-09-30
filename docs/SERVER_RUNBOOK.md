@@ -128,7 +128,11 @@ Le serveur Python normal n'exécute jamais Alembic automatiquement :
 python -m alembic upgrade head
 ```
 
-La migration `0011_oidc_sessions` ajoute les transactions de login OIDC à usage unique et les sessions serveur.
+Pour le premier go-live, l'historique Alembic pré-production est remplacé par la baseline statique unique `v2_production_baseline` (#457C).
+Elle représente le schéma canonique complet et ne crée aucune identité, donnée `DEMO-*` ni credential break-glass; seul le singleton technique `planning_mutation_state/GLOBAL` est initialisé.
+Après le premier go-live, cette baseline devient immuable et toute évolution de schéma reprend sous forme de migration additive normale.
+
+Le contrat détaillé est documenté dans [`SQL_CUTOVER_RUNBOOK.md`](SQL_CUTOVER_RUNBOOK.md).
 
 `Lancer_Web.bat` et `Lancer_Serveur.bat` conservent une exception de commodité **uniquement pour leur fallback SQLite local**, lorsque `RESOURCEPLANNER_DATABASE_URL` n'était pas définie avant le lancement.
 
@@ -240,11 +244,12 @@ Ordre de haut niveau :
 1. terminer la baseline et les garde-fous pré-go-live de #457;
 2. créer une base SQL Server neuve et vide;
 3. appliquer explicitement `alembic upgrade head`;
-4. exécuter le bootstrap administrateur distinct des seeds;
-5. alimenter les référentiels réels nécessaires;
-6. exécuter les préflights et smokes lecture/mutation/rollback/concurrence;
-7. démarrer React + FastAPI sur SQL Server;
-8. seulement ensuite déclarer SQL Server autoritaire pour les nouvelles opérations selon #208.
+4. exécuter #492 pour transférer uniquement les données SQLite V2 retenues, avec IDs stables et exclusions dev/sessions/secrets;
+5. exécuter le bootstrap administrateur distinct des seeds;
+6. alimenter/réconcilier les référentiels réels nécessaires;
+7. exécuter les préflights et smokes lecture/mutation/rollback/concurrence;
+8. démarrer React + FastAPI sur SQL Server;
+9. seulement ensuite déclarer SQL Server autoritaire pour les nouvelles opérations selon #208.
 
 SQLite reste un outil local/test et ne constitue pas un fallback de production après le cutover.
 
