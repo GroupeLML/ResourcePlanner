@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Sequence
+from datetime import date, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select, true
@@ -12,14 +14,27 @@ from ...application import (
     WorkPackageReadModel,
 )
 from ...application.medium_term_budget import (
+    INACTIVE_WORK_PACKAGE_STATUSES,
+    MEDIUM_TERM_DIAGNOSTIC_CAPACITY_ZERO,
     MEDIUM_TERM_DIAGNOSTIC_UNCLASSIFIED_WORK_PACKAGES,
+    MEDIUM_TERM_DIAGNOSTIC_WEEKLY_LOAD_INCOMPLETE,
+    WEEK_DIAGNOSTIC_CAPACITY_ZERO,
+    WEEK_DIAGNOSTIC_LOAD_INCOMPLETE,
     MediumTermBudgetReadModel,
     MediumTermBudgetTaskReadModel,
     MediumTermBudgetWorkPackageReadModel,
+    MediumTermWeekReadModel,
+    MediumTermWeeklyLoadReadModel,
     task_budget_diagnostic,
     work_package_is_budget_included,
+    work_package_is_current_load_included,
 )
 from ...application.query_models import PlanningHistoryReadModel
+from ...application.work_package_weekly_load import (
+    WorkPackageWeeklyLoadState,
+    WeeklyLoadValue,
+    weekly_load_diagnostic,
+)
 from .models import (
     Project,
     Resource,
@@ -28,21 +43,11 @@ from .models import (
     WorkforceRequestHistory,
     TaskCatalogEntry,
     WorkPackage,
+    WorkPackageWeeklyLoad,
 )
 from .planning_audit import PlanningChangeHistory
 from .capacity_query_repository import SqlPlannerQueryRepository
-
-
-INACTIVE_WORK_PACKAGE_STATUSES = {
-    "annulé",
-    "annule",
-    "fermé",
-    "ferme",
-    "terminé",
-    "termine",
-    "closed",
-    "cancelled",
-}
+from .medium_term_capacity_query import build_workforce_weekly_capacity
 
 
 def _text(value: object) -> str:
@@ -121,23 +126,43 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
     @staticmethod
     def _medium_term_budget_work_package(
         work_package: WorkPackage,
+        loads: tuple[WeeklyLoadValue, ...],
     ) -> MediumTermBudgetWorkPackageReadModel:
         status = _text(work_package.status) or "planned"
-        return MediumTermBudgetWorkPackageReadModel(
-            id=work_package.id,
+        state = WorkPackageWeeklyLoadState(
             reference=_optional_text(work_package.legacy_effort_id) or work_package.id,
-            code=_optional_text(work_package.code),
-            name=work_package.name,
+            version=int(work_package.version or 1),
+            start_date=work_package.start_date,
+            end_date=work_package.end_date,
             planned_hours=(
                 Decimal(work_package.planned_hours)
                 if work_package.planned_hours is not None
                 else None
             ),
+            origin=_optional_text(work_package.weekly_load_origin),
+            loads=loads,
+        )
+        return MediumTermBudgetWorkPackageReadModel(
+            id=work_package.id,
+            reference=state.reference,
+            code=_optional_text(work_package.code),
+            name=work_package.name,
+            planned_hours=state.planned_hours,
             status=status,
             budget_included=work_package_is_budget_included(status),
             start_date=work_package.start_date,
             end_date=work_package.end_date,
-            version=int(work_package.version or 1),
+            version=state.version,
+            current_load_included=work_package_is_current_load_included(status),
+            weekly_load_origin=state.origin,
+            weekly_loads=tuple(
+                MediumTermWeeklyLoadReadModel(
+                    week_start=item.week_start,
+                    hours=item.hours,
+                )
+                for item in loads
+            ),
+            weekly_load_diagnostic=weekly_load_diagnostic(state),
         )
 
     def medium_term_budget_projection(
@@ -145,6 +170,8 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
         *,
         project_number: str,
         project_ids: Sequence[str] | None = None,
+        start: date | None = None,
+        end: date | None = None,
     ) -> MediumTermBudgetReadModel | None:
         wanted_project = _text(project_number)
         if not wanted_project:
@@ -171,18 +198,48 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
             if _text(task.account_group).upper() == "DEPMO"
         )
 
-        work_packages = self._web_session.scalars(
-            select(WorkPackage)
-            .where(WorkPackage.project_id == project.id)
-            .order_by(WorkPackage.start_date, WorkPackage.name, WorkPackage.id)
-        ).all()
+        work_packages = tuple(
+            self._web_session.scalars(
+                select(WorkPackage)
+                .where(WorkPackage.project_id == project.id)
+                .order_by(WorkPackage.start_date, WorkPackage.name, WorkPackage.id)
+            ).all()
+        )
+        work_package_ids = tuple(row.id for row in work_packages)
+        load_rows = (
+            tuple(
+                self._web_session.scalars(
+                    select(WorkPackageWeeklyLoad)
+                    .where(WorkPackageWeeklyLoad.work_package_id.in_(work_package_ids))
+                    .order_by(
+                        WorkPackageWeeklyLoad.work_package_id,
+                        WorkPackageWeeklyLoad.week_start,
+                    )
+                ).all()
+            )
+            if work_package_ids
+            else ()
+        )
+        loads_by_package: defaultdict[str, list[WeeklyLoadValue]] = defaultdict(list)
+        for row in load_rows:
+            loads_by_package[row.work_package_id].append(
+                WeeklyLoadValue(
+                    week_start=row.week_start,
+                    hours=Decimal(row.hours),
+                )
+            )
 
         by_task: dict[str, list[MediumTermBudgetWorkPackageReadModel]] = {
             task.id: [] for task in tasks
         }
         unclassified: list[MediumTermBudgetWorkPackageReadModel] = []
+        projected_by_id: dict[str, MediumTermBudgetWorkPackageReadModel] = {}
         for work_package in work_packages:
-            projected = self._medium_term_budget_work_package(work_package)
+            projected = self._medium_term_budget_work_package(
+                work_package,
+                tuple(loads_by_package.get(work_package.id, ())),
+            )
+            projected_by_id[work_package.id] = projected
             task_id = work_package.task_catalog_item_id
             if task_id is None:
                 unclassified.append(projected)
@@ -236,18 +293,94 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                 )
             )
 
-        diagnostics = (
-            (MEDIUM_TERM_DIAGNOSTIC_UNCLASSIFIED_WORK_PACKAGES,)
-            if unclassified
-            else ()
+        diagnostics: list[str] = []
+        if unclassified:
+            diagnostics.append(MEDIUM_TERM_DIAGNOSTIC_UNCLASSIFIED_WORK_PACKAGES)
+
+        current_packages = tuple(
+            projected
+            for projected in projected_by_id.values()
+            if projected.current_load_included
         )
+        if any(row.weekly_load_diagnostic is not None for row in current_packages):
+            diagnostics.append(MEDIUM_TERM_DIAGNOSTIC_WEEKLY_LOAD_INCOMPLETE)
+
+        effective_start = start
+        effective_end = end
+        if effective_start is None and effective_end is None:
+            dated = tuple(
+                row
+                for row in current_packages
+                if row.start_date is not None and row.end_date is not None
+            )
+            if dated:
+                effective_start = min(row.start_date for row in dated if row.start_date is not None)
+                effective_end = max(row.end_date for row in dated if row.end_date is not None)
+
+        weeks: list[MediumTermWeekReadModel] = []
+        if effective_start is not None and effective_end is not None:
+            first_week = effective_start - timedelta(days=effective_start.weekday())
+            last_week = effective_end - timedelta(days=effective_end.weekday())
+            capacity_by_week = build_workforce_weekly_capacity(
+                self,
+                self._web_session,
+                start=effective_start,
+                end=effective_end,
+            )
+            cursor = first_week
+            any_capacity_zero = False
+            while cursor <= last_week:
+                week_end = cursor + timedelta(days=6)
+                incomplete = False
+                total = Decimal("0.00")
+                for package in current_packages:
+                    diagnostic = package.weekly_load_diagnostic
+                    if diagnostic is not None:
+                        if package.start_date is None or package.end_date is None:
+                            incomplete = True
+                        elif package.start_date <= week_end and package.end_date >= cursor:
+                            incomplete = True
+                        continue
+                    for load in package.weekly_loads:
+                        if load.week_start == cursor:
+                            total += load.hours
+                capacity = capacity_by_week.get(cursor, Decimal("0.00"))
+                week_diagnostics: list[str] = []
+                work_package_hours: Decimal | None = total
+                if incomplete:
+                    work_package_hours = None
+                    week_diagnostics.append(WEEK_DIAGNOSTIC_LOAD_INCOMPLETE)
+                if capacity <= 0:
+                    any_capacity_zero = True
+                    week_diagnostics.append(WEEK_DIAGNOSTIC_CAPACITY_ZERO)
+                utilization = (
+                    (work_package_hours / capacity * Decimal("100")).quantize(Decimal("0.01"))
+                    if work_package_hours is not None and capacity > 0
+                    else None
+                )
+                weeks.append(
+                    MediumTermWeekReadModel(
+                        week_start=cursor,
+                        work_package_hours=work_package_hours,
+                        capacity_hours=capacity,
+                        utilization=utilization,
+                        diagnostics=tuple(week_diagnostics),
+                    )
+                )
+                cursor += timedelta(days=7)
+            if any_capacity_zero:
+                diagnostics.append(MEDIUM_TERM_DIAGNOSTIC_CAPACITY_ZERO)
+
         return MediumTermBudgetReadModel(
             project_id=project.id,
             project_number=project.number,
             project_name=project.name,
             tasks=tuple(task_models),
             unclassified_work_packages=tuple(unclassified),
-            diagnostics=diagnostics,
+            diagnostics=tuple(diagnostics),
+            window_start=effective_start,
+            window_end=effective_end,
+            weeks=tuple(weeks),
         )
 
     def list_availability_rules(
