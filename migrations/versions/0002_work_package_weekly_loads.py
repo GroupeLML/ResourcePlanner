@@ -16,8 +16,11 @@ branch_labels: str | None = None
 depends_on: str | None = None
 
 
-ORIGIN_CHECK = "ck_work_packages_work_package_weekly_load_origin"
-HOURS_CHECK = "ck_work_package_weekly_loads_weekly_load_hours_non_negative"
+# Logical constraint names only: the SQLAlchemy naming convention adds ck_<table> once.
+# Supplying an already-prefixed name here produces doubled names during SQLite
+# batch table recreation and breaks metadata/migration parity.
+ORIGIN_CHECK = "work_package_weekly_load_origin"
+HOURS_CHECK = "weekly_load_hours_non_negative"
 
 
 def _add_origin() -> None:
