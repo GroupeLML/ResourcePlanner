@@ -176,6 +176,56 @@ Après #502C, la tête Alembic courante est
 du code exécuté comme `--expected-target-revision`; ne pas supposer que
 `v2_production_baseline` est encore la tête.
 
+## Bridge temporaire de la SQLite live 0048
+
+Le snapshot gelé utilisé par ENV-492 doit rester à `0048_identity_admin_audit`. Il ne doit jamais être migré, stampé ou utilisé comme runtime.
+
+Si le cutover SQL Server est temporairement bloqué et qu'il faut continuer à exécuter le `main` courant sur SQLite, utiliser uniquement `tools/bridge_sqlite_0048_runtime.py` sur la **SQLite live**. Ce bridge est distinct du transfert #492 :
+
+- il refuse toute révision autre que `0048_identity_admin_audit`;
+- il vérifie le profil exact de schéma 0048 approuvé;
+- il refuse un WAL actif;
+- en mode apply, il exige un backup bit-à-bit distinct;
+- il travaille sur une copie temporaire dans le même répertoire;
+- il rejoue uniquement les deltas archivés 0049/0050 nécessaires à la baseline;
+- il marque ensuite la copie à `v2_production_baseline` et exécute Alembic jusqu'au head courant;
+- il valide la révision et les tables/colonnes courantes;
+- il ne remplace la SQLite live qu'après succès complet et après avoir revérifié que la source n'a pas changé;
+- le remplacement final utilise `os.replace` sur le même filesystem;
+- en cas d'échec avant ce remplacement, la SQLite live reste inchangée.
+
+Le flag `--confirm-live-runtime` est obligatoire avec `--apply` afin d'éviter d'utiliser accidentellement le snapshot ENV-492.
+
+Exécution opérateur, application arrêtée :
+
+~~~bash
+docker compose down
+
+docker compose run --rm --no-deps migrate \
+  python tools/bridge_sqlite_0048_runtime.py \
+  --database /data/resourceplanner.db
+~~~
+
+Le dry-run doit annoncer la révision source 0048 et le head courant. Ensuite seulement :
+
+~~~bash
+docker compose run --rm --no-deps migrate \
+  python tools/bridge_sqlite_0048_runtime.py \
+  --database /data/resourceplanner.db \
+  --backup /data/resourceplanner-before-runtime-bridge-0048.db \
+  --apply \
+  --confirm-live-runtime
+~~~
+
+Puis vérifier :
+
+~~~bash
+docker compose run --rm --no-deps migrate python -m alembic current
+docker compose up -d
+~~~
+
+La révision doit être le head courant du code. Les fichiers gelés sous `backups/sql-cutover/` restent à 0048 et continuent d'être les seules sources autorisées pour ENV-492.
+
 ## Source SQLite et backup
 
 La source est ouverte via SQLite URI mode=ro avec PRAGMA query_only=ON.
