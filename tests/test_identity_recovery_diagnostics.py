@@ -4,6 +4,8 @@ from datetime import datetime, timedelta, timezone
 import json
 import unittest
 
+from sqlalchemy import select
+
 from app.application.security import ROLE_ADMIN, ROLE_TECHNICIAN
 from app.infrastructure.sql import (
     AppUser,
