@@ -79,7 +79,7 @@
   background: #f3f6fb;
 }
 
-.user-admin-user-list button span:first-child {
+.user-admin-user-list button > span:first-child {
   display: grid;
   gap: 0.2rem;
 }
