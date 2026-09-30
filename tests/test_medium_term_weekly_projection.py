@@ -339,8 +339,8 @@ class MediumTermWeeklyProjectionTests(unittest.TestCase):
             {"WORK_PACKAGE_LOAD_INCOMPLETE", "WORKFORCE_CAPACITY_ZERO"},
         )
 
-        self.assertIn("WEEKLY_LOAD_INCOMPLETE", payload["diagnostics"])
-        self.assertIn("WORKFORCE_CAPACITY_ZERO", payload["diagnostics"])
+        self.assertIn("WEEKLY_LOAD_INCOMPLETE", payload["weekly_diagnostics"])
+        self.assertIn("WORKFORCE_CAPACITY_ZERO", payload["weekly_diagnostics"])
 
         # P2 carries 100h in the first week, but project filtering affects load only.
         self.assertEqual(Decimal(str(first["work_package_hours"])), Decimal("30.00"))
