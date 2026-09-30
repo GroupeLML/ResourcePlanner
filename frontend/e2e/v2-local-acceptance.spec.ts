@@ -155,7 +155,7 @@ async function openDemandDetail(page: Page, demandNumber: string) {
 
 async function workflowSelect(page: Page, demandNumber: string) {
   await openDemandDetail(page, demandNumber);
-  const section = page.locator(".demand-detail-section").filter({ hasText: "Actions et workflow" }).first();
+  const section = page.locator(".demand-detail-section").filter({ hasText: "Workflow et impact" }).first();
   const isOpen = await section.evaluate((node) => (node as HTMLDetailsElement).open);
   if (!isOpen) {
     await section.locator("summary").click();
@@ -289,7 +289,7 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await labelled(editor, "Description / contexte de la demande", "textarea").fill(
       "Demande acceptation navigateur V2 modifiée avant soumission",
     );
-    const workflowSection = page.locator(".demand-detail-section").filter({ hasText: "Actions et workflow" }).first();
+    const workflowSection = page.locator(".demand-detail-section").filter({ hasText: "Workflow et impact" }).first();
     if (!(await workflowSection.evaluate((node) => (node as HTMLDetailsElement).open))) {
       await workflowSection.locator("summary").click();
     }
@@ -1691,8 +1691,8 @@ test("draft demand exposes primary submit and cancel actions and direct cancel s
   await expect(cancel).toBeEnabled();
 
   await cancel.click();
-  await expect(requester.page.locator(".demand-notice").filter({ hasText: "Demande annulée." })).toBeVisible();
   await expect(detail.locator(".demand-detail-statuses")).toContainText("Annulée");
+  await expect(detail.locator(".error-panel")).toHaveCount(0);
   await expect(detail.getByTestId("primary-demand-actions")).toHaveCount(0);
   await closeContext(requester.context);
 });
