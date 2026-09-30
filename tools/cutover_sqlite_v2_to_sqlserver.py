@@ -116,6 +116,9 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
         post_action="RESYNC_ACUMATICA_RP_EMPLOYEES",
     ),
     "work_packages": _keep("WorkPackages planifiés localement."),
+    "work_package_weekly_loads": _keep(
+        "Intentions hebdomadaires WorkPackage validées; elles doivent survivre au cutover."
+    ),
     "work_package_audit": _keep("Audit durable des mutations WorkPackage et de leur version CAS."),
     "workforce_requests": _keep("Demandes métier V2."),
     "workforce_request_competencies": _keep("Compétences historiques des demandes."),
@@ -147,6 +150,7 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
 RELATIONSHIP_CONTROLS: dict[str, tuple[str, ...]] = {
     "projects": ("id",),
     "work_packages": ("id", "project_id"),
+    "work_package_weekly_loads": ("work_package_id", "week_start"),
     "workforce_requests": ("id", "project_id", "work_package_id"),
     "request_lines": ("id", "workforce_request_id", "work_package_id"),
     "resource_requirements": (
