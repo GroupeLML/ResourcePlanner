@@ -1,0 +1,68 @@
+name: Generate 457C V2 baseline
+
+on:
+  push:
+    branches:
+      - feat/457c-v2-baseline
+    paths:
+      - .github/workflows/generate-457c-baseline.yml
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout baseline branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/457c-v2-baseline
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: requirements-server.txt
+      - name: Install canonical Web SQL dependencies
+        run: python -m pip install -r requirements-server.txt
+      - name: Generate static Alembic V2 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f migrations/versions/*.py
+          export RESOURCEPLANNER_DATABASE_URL="sqlite:///$RUNNER_TEMP/457c-autogenerate.db"
+          rm -f "$RUNNER_TEMP/457c-autogenerate.db"
+          python -m alembic revision \
+            --autogenerate \
+            --rev-id v2_production_baseline \
+            -m "V2 production baseline"
+          generated="$(find migrations/versions -maxdepth 1 -type f -name 'v2_production_baseline_*.py' -print -quit)"
+          test -n "$generated"
+          mv "$generated" migrations/versions/0001_v2_production_baseline.py
+          test "$(find migrations/versions -maxdepth 1 -type f -name '*.py' | wc -l)" -eq 1
+      - name: Validate generated baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q migrations
+          rm -f "$RUNNER_TEMP/457c-verify.db"
+          export RESOURCEPLANNER_DATABASE_URL="sqlite:///$RUNNER_TEMP/457c-verify.db"
+          python -m alembic upgrade head
+          python tools/check_sqlserver_readiness.py
+      - name: Commit generated baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A migrations/versions
+          git diff --cached --exit-code && {
+            echo "No baseline changes generated."
+            exit 1
+          } || true
+          git commit -m "feat(457C): squash Alembic history into V2 baseline"
+          git push origin HEAD:feat/457c-v2-baseline
