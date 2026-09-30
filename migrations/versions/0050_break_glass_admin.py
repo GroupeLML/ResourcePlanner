@@ -1,7 +1,7 @@
 """Add production break-glass administrator support.
 
-Revision ID: 0049_break_glass_admin
-Revises: 0048_identity_admin_audit
+Revision ID: 0050_break_glass_admin
+Revises: 0049_work_package_task_identity
 """
 
 from __future__ import annotations
@@ -10,8 +10,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "0049_break_glass_admin"
-down_revision: str | None = "0048_identity_admin_audit"
+revision: str = "0050_break_glass_admin"
+down_revision: str | None = "0049_work_package_task_identity"
 branch_labels: str | None = None
 depends_on: str | None = None
 
