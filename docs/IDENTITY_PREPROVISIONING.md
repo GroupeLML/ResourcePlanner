@@ -1,6 +1,6 @@
 # Identité — pré-provisionnement AppUser et première liaison OIDC
 
-Status: Target contract implemented through IDENTITY-E
+Status: Target contract implemented through IDENTITY-F
 Date: 2026-09-29
 ADR: `docs/architecture/ADR-012-preprovision-app-users-before-oidc-link.md`
 
@@ -466,4 +466,77 @@ IDENTITY-E conserve le modèle et les mutations de IDENTITY-B à D et ajoute uni
 - aucune migration n'est nécessaire : `oidc_state` reste une projection dérivée des colonnes existantes;
 - la liaison OIDC, le callback, `preferred_username → RP_Users.UserID` et `bind_external_identity()` restent inchangés.
 
-IDENTITY-F demeure responsable de la reprise/migration historique et de l'acceptation transversale.
+IDENTITY-F complète ce contrat par la reprise historique déterministe, les diagnostics fail-closed et l'acceptation transversale.
+
+
+## 24. État après IDENTITY-F
+
+### 24.1 Baseline Alembic et reprise historique
+
+IDENTITY-F a été resynchronisée après **#457C / PR #516**, qui a remplacé l'historique Alembic pré-production `0001 → 0050` par l'unique baseline fraîche `v2_production_baseline`.
+
+Avant ce squash, `0047_preprovision_app_users` avait été inspectée : son backfill historique renseignait `AppUser.erp_user_id` uniquement lorsque `employee_external_id → RP_Users.UserID` donnait exactement une correspondance. Les cas zéro/N restaient à `NULL`.
+
+Cette logique ne doit pas être recréée sous forme d'une migration Alembic post-baseline :
+
+- la baseline #457C cible une base neuve et ne contient aucune donnée utilisateur;
+- les données SQLite V2 pré-go-live sont conservées séparément par le transfert contrôlé #492;
+- `app_users` et `erp_user_directory` sont classés `KEEP` dans ce transfert, avec conservation des identifiants applicatifs;
+- une migration Alembic exécutée avant le transfert ne pourrait donc pas reprendre les lignes historiques transférées ensuite.
+
+IDENTITY-F fournit plutôt une reprise de données explicite, indépendante du transport :
+
+```bash
+# diagnostic strictement read-only
+python tools/diagnose_identity_recovery.py
+
+# reprise des seuls cas déterministes
+python tools/diagnose_identity_recovery.py --apply-deterministic
+```
+
+La commande utilise `RESOURCEPLANNER_DATABASE_URL`. Le mode par défaut ne mutile rien. Le mode `--apply-deterministic` ne renseigne que `AppUser.erp_user_id`, et seulement lorsque :
+
+1. l'`AppUser` est déjà lié OIDC;
+2. son `employee_external_id` est présent;
+3. exactement un `RP_Users.UserID` possède cet `EmployeID`;
+4. ce `UserID` n'appartient à aucun autre `AppUser`.
+
+La transaction est unique : une contrainte ou une concurrence inattendue fait échouer la reprise au lieu de produire une résolution partielle. Le replay est idempotent.
+
+Les cas suivants restent sans mutation et sont signalés explicitement :
+
+- `employee_external_id_missing`;
+- `erp_user_not_found`;
+- `erp_user_ambiguous`;
+- `erp_user_already_owned`;
+- `linked_erp_user_missing`;
+- `employee_external_id_mismatch`.
+
+`deterministic_backfill_pending` indique le seul cas que `--apply-deterministic` peut résoudre automatiquement.
+
+La reprise conserve `AppUser.id`, `employee_external_id`, `BusinessContact`, `issuer/subject`, `roles_json`, `active` et les FK de session existantes. Elle ne crée ni n'active aucune `Resource`, ne déplace aucune paire OIDC et ne crée jamais un nouvel `AppUser`.
+
+> Le cutover #492 possède sa propre politique de sessions temporaires : les `AuthSession` pré-go-live ne sont pas transférées vers SQL Server. Cela est distinct de la reprise IDENTITY-F, qui ne modifie aucune session sur la base où elle s'exécute.
+
+### 24.2 Acceptation automatisée transversale
+
+Le scénario IDENTITY-F traverse les frontières applicatives réelles avec SQLite, FastAPI et un fournisseur OIDC simulé :
+
+```text
+RP_Users sync
+  → activation ADMIN + rôles
+  → AppUser stable / OIDC pending
+  → callback OIDC + liaison + AuthSession
+  → replay de la même identité
+  → administration post-liaison
+  → compte inactif mais OIDC linked
+  → nouvelle synchronisation RP_Users
+```
+
+Il vérifie le même `AppUser.id`, `erp_user_id`, `employee_external_id`, `BusinessContact`, les coordonnées OIDC et les autorités locales pendant tout le cycle. La resynchronisation ERP peut rafraîchir les attributs source et l'admissibilité, mais ne réactive pas le compte et ne remplace pas ses rôles. Aucun `Resource` n'est créé.
+
+Les tests fail-closed existants restent autoritaires pour les identités non pré-provisionnées, `preferred_username` inconnu, EmployeID incohérent, compte inactif, ERP inadmissible, seconde paire OIDC, collision de paire et replay. IDENTITY-F ajoute explicitement la preuve du refus d'un compte actif sans rôle local et la reprise/diagnostic des historiques non résolus.
+
+### 24.3 Validation environnementale
+
+L'acceptation automatisée ne remplace pas les smokes Acumatica/OIDC/SQL Server réels. Les validations environnementales ouvertes restent suivies dans `#223` et `docs/OIDC_ACUMATICA_VALIDATION.md`.
