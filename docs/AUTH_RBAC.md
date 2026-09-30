@@ -115,6 +115,8 @@ Le contrat détaillé, les invariants de sécurité, la concurrence du premier l
 
 Depuis IDENTITY-E, les projections ADMIN distinguent explicitement `active` de `oidc_state`. `pending` signifie seulement que la première liaison OIDC n'a pas encore eu lieu; `linked` signifie que la paire est persistée; `conflict` signale une ambiguïté/incohérence réellement observable. Un compte actif peut donc être `pending`, et un compte inactif peut rester `linked`, sans réactivation implicite.
 
+IDENTITY-F ferme le cycle automatisé sans nouvelle décision d'architecture ni migration Alembic post-baseline : après le squash #457C, la reprise historique est une opération de données explicite. `tools/diagnose_identity_recovery.py` est read-only par défaut; `--apply-deterministic` ne renseigne que `AppUser.erp_user_id` pour une correspondance EmployeID → UserID unique et non possédée. Les ambiguïtés restent fail-closed. L'acceptation transversale vérifie le même `AppUser` de l'activation ADMIN à la liaison OIDC, au replay, à la désactivation et à la resynchronisation ERP.
+
 ## Audit
 
 Lorsque le contexte utilisateur existe, la façade applicative et l'idempotence reçoivent son nom d'affichage comme acteur. Les services métier n'ont pas besoin de connaître FastAPI ou OIDC.
