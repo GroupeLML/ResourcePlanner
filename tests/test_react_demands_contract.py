@@ -113,6 +113,37 @@ class ReactDemandsContractTests(unittest.TestCase):
         self.assertIn("confirmDiscardChanges", source)
         self.assertNotIn('name="project_manager"', source)
 
+    def test_simple_demand_keeps_task_selector_without_catalog_search_field(self) -> None:
+        source = (ROOT / "frontend" / "src" / "DemandsPage.tsx").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn("Recherche catalogue ERP", source)
+        self.assertNotIn("taskSearch", source)
+        self.assertIn("<span>Tâche ERP</span>", source)
+        self.assertIn("getTaskCatalog(projectNumber", source)
+        self.assertIn("visibleTasks.map", source)
+
+    def test_multi_line_editor_groups_dates_and_keeps_compact_business_fields(self) -> None:
+        editor = (ROOT / "frontend" / "src" / "DemandLinesEditor.tsx").read_text(
+            encoding="utf-8"
+        )
+        css = (ROOT / "frontend" / "src" / "demands.css").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('className="request-line-date-group"', editor)
+        self.assertIn('data-testid={`request-line-dates-${index}`}', editor)
+        self.assertIn("<span>Début</span>", editor)
+        self.assertIn("<span>Fin</span>", editor)
+        self.assertIn('className="request-line-compact-field"', editor)
+        self.assertIn("<span>Confirmation</span>", editor)
+        self.assertIn("<span>Classe de ressource</span>", editor)
+        self.assertIn(".request-line-date-group {", css)
+        self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr));", css)
+        self.assertIn(".request-line-compact-field", css)
+        self.assertIn("grid-template-columns: 1fr;", css)
+
 
 if __name__ == "__main__":
     unittest.main()
