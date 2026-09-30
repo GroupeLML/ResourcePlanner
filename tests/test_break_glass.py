@@ -61,7 +61,7 @@ class BreakGlassTests(unittest.TestCase):
                 ScryptSecretHasher(),
             ).bootstrap(
                 login_name=login,
-                credential_value=secret,
+                credential_value=credential_value,
                 rotate_secret=rotate,
                 now=now or datetime(2026, 9, 29, 20, 0, tzinfo=timezone.utc),
             )
