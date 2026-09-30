@@ -113,10 +113,10 @@ export default function DemandDetail({
 
       {error && <div className="error-panel"><span>{error}</span></div>}
 
-      <details className="demand-detail-section">
+      <details className="demand-detail-section" open data-testid="demand-workflow-section">
         <summary>
           <span>Workflow et impact</span>
-          <small>Actions autoritaires, autorisation active et aperçu plan actuel → plan proposé.</small>
+          <small>Actions autoritaires visibles, autorisation active et aperçu plan actuel → plan proposé.</small>
         </summary>
         <DemandWorkflowPage
           demandNumber={demandNumber}

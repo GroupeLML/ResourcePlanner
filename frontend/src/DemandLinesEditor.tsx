@@ -382,28 +382,30 @@ export default function DemandLinesEditor({
                 </select>
               </label>
 
-              <label>
-                <span>Début</span>
-                <input
-                  type="date"
-                  value={line.desired_start}
-                  onChange={(event) => updateLine(index, { desired_start: event.target.value })}
-                  disabled={disabled}
-                />
-              </label>
+              <div className="request-line-date-group" data-testid={`request-line-dates-${index}`}>
+                <label>
+                  <span>Début</span>
+                  <input
+                    type="date"
+                    value={line.desired_start}
+                    onChange={(event) => updateLine(index, { desired_start: event.target.value })}
+                    disabled={disabled}
+                  />
+                </label>
 
-              <label>
-                <span>Fin</span>
-                <input
-                  type="date"
-                  min={line.desired_start || undefined}
-                  value={line.desired_end}
-                  onChange={(event) => updateLine(index, { desired_end: event.target.value })}
-                  disabled={disabled}
-                />
-              </label>
+                <label>
+                  <span>Fin</span>
+                  <input
+                    type="date"
+                    min={line.desired_start || undefined}
+                    value={line.desired_end}
+                    onChange={(event) => updateLine(index, { desired_end: event.target.value })}
+                    disabled={disabled}
+                  />
+                </label>
+              </div>
 
-              <label>
+              <label className="request-line-compact-field">
                 <span>Confirmation</span>
                 <select
                   value={line.confirmation}
@@ -483,7 +485,7 @@ export default function DemandLinesEditor({
                 </>
               ) : (
                 <>
-                <label>
+                <label className="request-line-compact-field">
                   <span>Classe de ressource</span>
                   <select
                     value={line.required_resource_class}
