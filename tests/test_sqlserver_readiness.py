@@ -38,6 +38,8 @@ class SqlServerReadinessTests(unittest.TestCase):
         self.assertEqual(schema.status, "ok")
         self.assertEqual(queries.status, "ok")
         self.assertIn("requêtes compilées", queries.details)
+        self.assertIn("medium_term_budget_tasks", queries.details)
+        self.assertIn("medium_term_budget_work_packages", queries.details)
 
     def test_database_preflight_requires_alembic_version_table(self) -> None:
         with TemporaryDirectory() as directory:

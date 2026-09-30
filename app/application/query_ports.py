@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from datetime import date
 from typing import Protocol
 
+from .medium_term_budget import MediumTermBudgetReadModel
 from .plan_delta import DemandApprovalStateReadModel, DemandPlanDeltaReadModel
 from .query_models import (
     AssetPlanningWindowReadModel,
@@ -44,6 +45,13 @@ class PlannerQueryPort(Protocol):
         active_only: bool = True,
         project_ids: Sequence[str] | None = None,
     ) -> Sequence[WorkPackageReadModel]: ...
+
+    def medium_term_budget_projection(
+        self,
+        *,
+        project_number: str,
+        project_ids: Sequence[str] | None = None,
+    ) -> MediumTermBudgetReadModel | None: ...
 
     def list_resources(self, *, active_only: bool = True) -> Sequence[ResourceReadModel]: ...
 
