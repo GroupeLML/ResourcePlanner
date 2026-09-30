@@ -3,12 +3,16 @@ import { CSSProperties, useEffect, useMemo, useState } from "react";
 import {
   ApiError,
   DemandReadModel,
+  MediumTermBudgetReadModel,
+  MediumTermBudgetTaskReadModel,
+  MediumTermBudgetWorkPackageReadModel,
   MediumTermUnlinkedSegmentReadModel,
   PendingDemandLoadReadModel,
   PlanningSnapshotReadModel,
   ProjectReadModel,
   ResourceReadModel,
   WorkPackageReadModel,
+  getMediumTermBudget,
   getMediumTermUnlinkedSegments,
   getPlanningSnapshot,
   getProjects,
@@ -31,16 +35,29 @@ import ViewScopeSelector from "./ViewScopeSelector";
 import WorkPackageEditor from "./WorkPackageEditor";
 
 const HORIZONS = [4, 8, 12] as const;
-
 type HorizonWeeks = (typeof HORIZONS)[number];
 
-type ProjectRow = {
-  project: ProjectReadModel;
-  workPackages: Array<{
-    workPackage: WorkPackageReadModel;
-    demands: DemandReadModel[];
-    pendingLoads: PendingDemandLoadReadModel[];
-  }>;
+const BUDGET_DIAGNOSTIC_LABELS: Record<string, string> = {
+  BUDGET_UNAVAILABLE: "Budget ERP non disponible",
+  WORK_PACKAGE_LOAD_UNAVAILABLE: "Charge WorkPackage non disponible",
+  NO_WORK_PACKAGES: "Budget positif sans WorkPackage",
+  PARTIALLY_COVERED: "Budget partiellement structuré",
+  FULLY_COVERED: "Budget entièrement structuré",
+  OVERALLOCATED: "Dépassement du budget",
+};
+
+const BUDGET_ATTENTION = new Set([
+  "BUDGET_UNAVAILABLE",
+  "WORK_PACKAGE_LOAD_UNAVAILABLE",
+  "NO_WORK_PACKAGES",
+  "OVERALLOCATED",
+]);
+
+const WEEKLY_LOAD_DIAGNOSTIC_LABELS: Record<string, string> = {
+  WEEKLY_LOAD_MISSING: "Répartition hebdomadaire manquante",
+  WEEKLY_LOAD_DATES_MISSING: "Dates requises pour la répartition",
+  WEEKLY_LOAD_TOTAL_UNKNOWN: "Charge totale inconnue",
+  WEEKLY_LOAD_INCONSISTENT: "Répartition hebdomadaire incohérente",
 };
 
 function normalize(value: string | null | undefined) {
@@ -49,7 +66,7 @@ function normalize(value: string | null | undefined) {
 
 function hours(value: number | null | undefined) {
   if (value == null) return "—";
-  return `${new Intl.NumberFormat("fr-CA", { maximumFractionDigits: 1 }).format(value)} h`;
+  return `${new Intl.NumberFormat("fr-CA", { maximumFractionDigits: 2 }).format(value)} h`;
 }
 
 function isoWeekNumber(value: Date) {
@@ -60,33 +77,11 @@ function isoWeekNumber(value: Date) {
   return Math.ceil(((date.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
 }
 
-function overlapsWindow(workPackage: WorkPackageReadModel, start: Date, end: Date) {
-  if (!workPackage.start_date && !workPackage.end_date) return true;
-  const packageStart = workPackage.start_date ? parseIsoDate(workPackage.start_date) : start;
-  const packageEnd = workPackage.end_date ? parseIsoDate(workPackage.end_date) : packageStart;
-  return packageEnd >= start && packageStart <= end;
-}
-
-function packageSearchText(
-  project: ProjectReadModel,
-  workPackage: WorkPackageReadModel,
-  demands: DemandReadModel[],
+function placement(
+  workPackage: MediumTermBudgetWorkPackageReadModel,
+  horizonStart: Date,
+  horizonWeeks: number,
 ) {
-  return normalize([
-    project.number,
-    project.name,
-    project.client,
-    project.project_manager,
-    workPackage.reference,
-    workPackage.code,
-    workPackage.name,
-    workPackage.description,
-    workPackage.status,
-    ...demands.flatMap((demand) => [demand.number, demand.description, demand.requester]),
-  ].filter(Boolean).join(" "));
-}
-
-function placement(workPackage: WorkPackageReadModel, horizonStart: Date, horizonWeeks: number) {
   if (!workPackage.start_date && !workPackage.end_date) return null;
   const horizonEnd = addDays(horizonStart, horizonWeeks * 7 - 1);
   const rawStart = workPackage.start_date ? parseIsoDate(workPackage.start_date) : horizonStart;
@@ -133,35 +128,39 @@ function demandDetails(demand: DemandReadModel, label: string) {
   ].join(" · ");
 }
 
+function diagnosticLabel(code: string) {
+  return BUDGET_DIAGNOSTIC_LABELS[code] || code;
+}
+
 function WorkPackageRow({
   project,
   workPackage,
+  baseWorkPackage,
   demands,
   pendingLoads,
-  snapshot,
+  plannedDemandNumbers,
   horizonStart,
   horizonWeeks,
   onOpenDemands,
   onEdit,
 }: {
   project: ProjectReadModel;
-  workPackage: WorkPackageReadModel;
+  workPackage: MediumTermBudgetWorkPackageReadModel;
+  baseWorkPackage: WorkPackageReadModel | null;
   demands: DemandReadModel[];
   pendingLoads: PendingDemandLoadReadModel[];
-  snapshot: PlanningSnapshotReadModel;
+  plannedDemandNumbers: Set<string>;
   horizonStart: Date;
   horizonWeeks: number;
   onOpenDemands: () => void;
   onEdit: (workPackage: WorkPackageReadModel) => void;
 }) {
   const grid = placement(workPackage, horizonStart, horizonWeeks);
-  const template = `250px repeat(${horizonWeeks}, minmax(96px, 1fr))`;
+  const template = `300px repeat(${horizonWeeks}, minmax(96px, 1fr))`;
   const pendingByDemand = new Map(pendingLoads.map((load) => [load.demand_number, load]));
-  const plannedNumbers = new Set(
-    snapshot.segments
-      .map((segment) => segment.demand_number)
-      .filter((number): number is string => Boolean(number)),
-  );
+  const loadDiagnostic = workPackage.weekly_load_diagnostic
+    ? WEEKLY_LOAD_DIAGNOSTIC_LABELS[workPackage.weekly_load_diagnostic] || workPackage.weekly_load_diagnostic
+    : null;
 
   return (
     <div className="mt-timeline-row" style={{ gridTemplateColumns: template }}>
@@ -176,9 +175,22 @@ function WorkPackageRow({
           {workPackage.end_date ? ` → ${workPackage.end_date}` : ""}
           {workPackage.planned_hours != null ? ` · ${hours(workPackage.planned_hours)}` : ""}
         </small>
-        <button className="mt-edit-package" type="button" onClick={() => onEdit(workPackage)}>
-          Modifier
-        </button>
+        <div className="mt-package-load-state">
+          {workPackage.weekly_load_origin && (
+            <span>Répartition {workPackage.weekly_load_origin}</span>
+          )}
+          {loadDiagnostic && <span className="is-attention">⚑ {loadDiagnostic}</span>}
+          {!workPackage.current_load_included && (
+            <span>Hors charge courante{workPackage.budget_included ? " · conservé au budget" : ""}</span>
+          )}
+        </div>
+        {baseWorkPackage ? (
+          <button className="mt-edit-package" type="button" onClick={() => onEdit(baseWorkPackage)}>
+            Modifier / répartir
+          </button>
+        ) : (
+          <small>Édition indisponible jusqu’au rechargement du catalogue WorkPackage.</small>
+        )}
       </div>
 
       {Array.from({ length: horizonWeeks }, (_, index) => (
@@ -186,7 +198,7 @@ function WorkPackageRow({
       ))}
 
       <article
-        className={`mt-package-bar ${grid ? "" : "is-unscheduled"}`}
+        className={`mt-package-bar ${grid ? "" : "is-unscheduled"} ${workPackage.current_load_included ? "" : "is-current-load-excluded"}`}
         style={grid
           ? { gridColumn: `${grid.column} / span ${grid.span}` }
           : { gridColumn: `2 / span ${horizonWeeks}` }}
@@ -196,13 +208,13 @@ function WorkPackageRow({
           <strong>{workPackage.name}</strong>
           <span>{hours(workPackage.planned_hours)}</span>
         </div>
-        {workPackage.description && <small>{workPackage.description}</small>}
+        {baseWorkPackage?.description && <small>{baseWorkPackage.description}</small>}
         <div className="mt-demand-chips">
           {demands.length === 0 ? (
             <span className="mt-demand-empty">Aucune demande dans l’horizon</span>
           ) : demands.map((demand) => {
             const pendingLoad = pendingByDemand.get(demand.number);
-            const planned = plannedNumbers.has(demand.number);
+            const planned = plannedDemandNumbers.has(demand.number);
             const replacement = normalize(pendingLoad?.mode) === "replacement";
             const tentative = isTentative(demand);
             const tone = demandTone(demand, Boolean(pendingLoad), planned);
@@ -234,6 +246,28 @@ function WorkPackageRow({
   );
 }
 
+function TaskHeader({ task }: { task: MediumTermBudgetTaskReadModel }) {
+  const attention = BUDGET_ATTENTION.has(task.diagnostic_state);
+  return (
+    <header className={`mt-task-strip ${attention ? "has-attention" : ""}`}>
+      <div className="mt-task-title">
+        <strong>{task.task_code}</strong>
+        <span>{task.task_label}</span>
+        {attention && <span className="mt-yellow-flag" title={task.diagnostic_state}>⚑</span>}
+      </div>
+      <div className="mt-task-budget" aria-label={`Budget de la tâche ${task.task_code}`}>
+        <span>Budget <strong>{hours(task.budget_hours)}</strong></span>
+        <span>WorkPackages <strong>{hours(task.planned_wp_hours)}</strong></span>
+        <span>Solde <strong>{hours(task.remaining_budget_hours)}</strong></span>
+      </div>
+      <small>
+        {diagnosticLabel(task.diagnostic_state)}
+        {task.budget_source_diagnostic ? ` · ${task.budget_source_diagnostic}` : ""}
+      </small>
+    </header>
+  );
+}
+
 export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () => void }) {
   const { scope, loading: scopeLoading, error: scopeError } = useViewScope();
   const [horizonStart, setHorizonStart] = useState(() => startOfWeek(new Date()));
@@ -244,11 +278,13 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
   const [resources, setResources] = useState<ResourceReadModel[]>([]);
   const [unlinkedSegments, setUnlinkedSegments] = useState<MediumTermUnlinkedSegmentReadModel[]>([]);
   const [snapshot, setSnapshot] = useState<PlanningSnapshotReadModel | null>(null);
+  const [projection, setProjection] = useState<MediumTermBudgetReadModel | null>(null);
   const [loading, setLoading] = useState(true);
+  const [projectionLoading, setProjectionLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [projectionError, setProjectionError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [projectFilter, setProjectFilter] = useState("all");
-  const [managerFilter, setManagerFilter] = useState("all");
+  const [projectFilter, setProjectFilter] = useState("");
   const [editor, setEditor] = useState<WorkPackageReadModel | null | undefined>(undefined);
   const [segmentEditorId, setSegmentEditorId] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -274,14 +310,10 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
     const controller = new AbortController();
     setLoading(true);
     setError(null);
-    setProjects([]);
-    setWorkPackages([]);
-    setSnapshot(null);
-    setUnlinkedSegments([]);
     Promise.all([
       getProjects(true, controller.signal, scope),
       getProjects(true, controller.signal, "global"),
-      getWorkPackages("", true, controller.signal, scope),
+      getWorkPackages("", false, controller.signal, scope),
       getResources(true, controller.signal),
       getPlanningSnapshot(start, end, controller.signal, scope),
       getMediumTermUnlinkedSegments(start, end, controller.signal, scope),
@@ -293,6 +325,11 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
         setResources(resourceRows);
         setSnapshot(planning);
         setUnlinkedSegments(unlinkedRows);
+        setProjectFilter((current) => (
+          current && projectRows.some((project) => project.number === current)
+            ? current
+            : [...projectRows].sort((left, right) => left.number.localeCompare(right.number, "fr-CA"))[0]?.number || ""
+        ));
       })
       .catch((reason: unknown) => {
         if (reason instanceof DOMException && reason.name === "AbortError") return;
@@ -308,107 +345,158 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
     return () => controller.abort();
   }, [start, end, refreshKey, scope, scopeLoading, scopeError]);
 
+  useEffect(() => {
+    if (scopeLoading || scopeError || !projectFilter) {
+      setProjection(null);
+      setProjectionError(null);
+      return;
+    }
+    const controller = new AbortController();
+    setProjectionLoading(true);
+    setProjectionError(null);
+    getMediumTermBudget(projectFilter, start, end, controller.signal, scope)
+      .then(setProjection)
+      .catch((reason: unknown) => {
+        if (reason instanceof DOMException && reason.name === "AbortError") return;
+        setProjection(null);
+        if (reason instanceof ApiError) {
+          if (reason.status === 404) {
+            setProjectionError("Le projet sélectionné n’existe plus dans ce périmètre. Recharge la vue ou choisis un autre projet.");
+          } else if (reason.status === 422) {
+            setProjectionError(`La fenêtre Moyen terme est invalide : ${reason.message}`);
+          } else {
+            setProjectionError(`${reason.message}${reason.code ? ` (${reason.code})` : ""}`);
+          }
+          return;
+        }
+        setProjectionError(reason instanceof Error ? reason.message : "Impossible de charger la projection Moyen terme.");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setProjectionLoading(false);
+      });
+    return () => controller.abort();
+  }, [projectFilter, start, end, refreshKey, scope, scopeLoading, scopeError]);
+
   const weeks = useMemo(
     () => Array.from({ length: horizonWeeks }, (_, index) => addDays(horizonStart, index * 7)),
     [horizonStart, horizonWeeks],
   );
-
-  const managerOptions = useMemo(() => {
-    const values = new Set(projects.map((project) => project.project_manager || "Non assigné"));
-    return [...values].sort((left, right) => left.localeCompare(right, "fr-CA"));
-  }, [projects]);
 
   const projectOptions = useMemo(
     () => [...projects].sort((left, right) => left.number.localeCompare(right.number, "fr-CA")),
     [projects],
   );
 
-  const groupedRows = useMemo(() => {
-    if (!snapshot) return [] as Array<[string, ProjectRow[]]>;
-    const query = normalize(search);
-    const demandByPackage = new Map<string, DemandReadModel[]>();
-    snapshot.demands.forEach((demand) => {
+  const selectedProject = useMemo(
+    () => projects.find((project) => project.number === projectFilter) ?? null,
+    [projects, projectFilter],
+  );
+
+  const workPackagesByReference = useMemo(
+    () => new Map(workPackages.map((workPackage) => [workPackage.reference, workPackage])),
+    [workPackages],
+  );
+
+  const demandByPackage = useMemo(() => {
+    const result = new Map<string, DemandReadModel[]>();
+    (snapshot?.demands ?? []).forEach((demand) => {
       if (!demand.work_package_ref) return;
-      const rows = demandByPackage.get(demand.work_package_ref) ?? [];
+      const rows = result.get(demand.work_package_ref) ?? [];
       rows.push(demand);
-      demandByPackage.set(demand.work_package_ref, rows);
+      result.set(demand.work_package_ref, rows);
     });
-    const pendingByPackage = new Map<string, PendingDemandLoadReadModel[]>();
-    snapshot.pending_loads.forEach((load) => {
+    return result;
+  }, [snapshot]);
+
+  const pendingByPackage = useMemo(() => {
+    const result = new Map<string, PendingDemandLoadReadModel[]>();
+    (snapshot?.pending_loads ?? []).forEach((load) => {
       if (!load.work_package_ref) return;
-      const rows = pendingByPackage.get(load.work_package_ref) ?? [];
+      const rows = result.get(load.work_package_ref) ?? [];
       rows.push(load);
-      pendingByPackage.set(load.work_package_ref, rows);
+      result.set(load.work_package_ref, rows);
     });
+    return result;
+  }, [snapshot]);
 
-    const groups = new Map<string, ProjectRow[]>();
-    projects.forEach((project) => {
-      const manager = project.project_manager || "Non assigné";
-      if (managerFilter !== "all" && manager !== managerFilter) return;
-      if (projectFilter !== "all" && project.number !== projectFilter) return;
+  const plannedDemandNumbers = useMemo(
+    () => new Set(
+      (snapshot?.segments ?? [])
+        .map((segment) => segment.demand_number)
+        .filter((number): number is string => Boolean(number)),
+    ),
+    [snapshot],
+  );
 
-      const projectMatches = !query || normalize([
-        project.number,
-        project.name,
-        project.client,
-        project.project_manager,
+  const query = normalize(search);
+  const visibleTasks = useMemo(
+    () => (projection?.tasks ?? []).filter((task) => {
+      if (!query) return true;
+      return normalize([
+        task.task_code,
+        task.task_label,
+        ...task.work_packages.flatMap((workPackage) => [
+          workPackage.reference,
+          workPackage.code,
+          workPackage.name,
+        ]),
       ].filter(Boolean).join(" ")).includes(query);
-
-      const packages = workPackages
-        .filter((workPackage) => workPackage.project_number === project.number)
-        .filter((workPackage) => overlapsWindow(workPackage, horizonStart, horizonEnd))
-        .map((workPackage) => {
-          const demands = demandByPackage.get(workPackage.reference) ?? [];
-          const pendingLoads = pendingByPackage.get(workPackage.reference) ?? [];
-          return { workPackage, demands, pendingLoads };
-        })
-        .filter(({ workPackage, demands }) => (
-          projectMatches || !query || packageSearchText(project, workPackage, demands).includes(query)
-        ));
-
-      if (query && !projectMatches && packages.length === 0) return;
-
-      const rows = groups.get(manager) ?? [];
-      rows.push({ project, workPackages: packages });
-      groups.set(manager, rows);
-    });
-
-    return [...groups.entries()]
-      .sort((left, right) => left[0].localeCompare(right[0], "fr-CA"))
-      .map(([manager, rows]) => [
-        manager,
-        rows.sort((left, right) => left.project.number.localeCompare(right.project.number, "fr-CA")),
-      ] as [string, ProjectRow[]]);
-  }, [
-    snapshot,
-    projects,
-    workPackages,
-    managerFilter,
-    projectFilter,
-    search,
-    horizonStart,
-    horizonEnd,
-  ]);
-
-  const visibleProjects = groupedRows.reduce((sum, [, rows]) => sum + rows.length, 0);
-  const visiblePackages = groupedRows.reduce(
-    (sum, [, rows]) => sum + rows.reduce((subtotal, row) => subtotal + row.workPackages.length, 0),
-    0,
+    }),
+    [projection, query],
   );
-  const visibleDemandNumbers = new Set(
-    groupedRows.flatMap(([, rows]) => rows.flatMap((row) => row.workPackages.flatMap(
-      (entry) => entry.demands.map((demand) => demand.number),
-    ))),
+
+  const visibleUnclassified = useMemo(
+    () => (projection?.unclassified_work_packages ?? []).filter((workPackage) => (
+      !query || normalize([
+        workPackage.reference,
+        workPackage.code,
+        workPackage.name,
+      ].filter(Boolean).join(" ")).includes(query)
+    )),
+    [projection, query],
   );
-  const visiblePending = snapshot?.pending_loads.filter((load) => visibleDemandNumbers.has(load.demand_number)).length ?? 0;
+
+  const projectedPackageCount = useMemo(
+    () => (projection?.tasks ?? []).reduce(
+      (count, task) => count + task.work_packages.length,
+      projection?.unclassified_work_packages.length ?? 0,
+    ),
+    [projection],
+  );
+
+  const editorMediumTerm = useMemo(() => {
+    if (!editor || !projection) return null;
+    for (const task of projection.tasks) {
+      const row = task.work_packages.find((candidate) => candidate.reference === editor.reference);
+      if (row) return row;
+    }
+    return projection.unclassified_work_packages.find(
+      (candidate) => candidate.reference === editor.reference,
+    ) ?? null;
+  }, [editor, projection]);
 
   const headerStyle: CSSProperties = {
-    gridTemplateColumns: `250px repeat(${horizonWeeks}, minmax(96px, 1fr))`,
+    gridTemplateColumns: `300px repeat(${horizonWeeks}, minmax(96px, 1fr))`,
   };
 
-  const defaultProject = projectFilter !== "all"
-    ? projectFilter
-    : projectOptions[0]?.number || "";
+  function renderWorkPackage(workPackage: MediumTermBudgetWorkPackageReadModel) {
+    if (!selectedProject) return null;
+    return (
+      <WorkPackageRow
+        key={workPackage.id}
+        project={selectedProject}
+        workPackage={workPackage}
+        baseWorkPackage={workPackagesByReference.get(workPackage.reference) ?? null}
+        demands={demandByPackage.get(workPackage.reference) ?? []}
+        pendingLoads={pendingByPackage.get(workPackage.reference) ?? []}
+        plannedDemandNumbers={plannedDemandNumbers}
+        horizonStart={horizonStart}
+        horizonWeeks={horizonWeeks}
+        onOpenDemands={onOpenDemands}
+        onEdit={setEditor}
+      />
+    );
+  }
 
   return (
     <section className="medium-term-page">
@@ -417,7 +505,8 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
           <span className="eyebrow">Planification moyen terme</span>
           <h1>{start} → {end}</h1>
           <p>
-            WorkPackages, demandes et échéancier moyen terme. Les calculs de charge restent autoritaires côté FastAPI.
+            Gantt de pilotage des WorkPackages. Budget, charge hebdomadaire, capacité et diagnostics
+            proviennent du read model FastAPI.
           </p>
         </div>
         <div className="page-actions">
@@ -437,44 +526,42 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
       </div>
 
       <div className="metric-grid mt-metrics">
-        <article><span>Projets affichés</span><strong>{loading ? "—" : visibleProjects}</strong><small>Après filtres</small></article>
-        <article><span>WorkPackages</span><strong>{loading ? "—" : visiblePackages}</strong><small>Dans l’horizon</small></article>
-        <article><span>Demandes liées</span><strong>{loading ? "—" : visibleDemandNumbers.size}</strong><small>Fenêtre moyen terme</small></article>
-        <article><span>Charges potentielles</span><strong>{loading ? "—" : visiblePending}</strong><small>Calculées par le backend</small></article>
+        <article>
+          <span>Projet sélectionné</span>
+          <strong>{loading ? "—" : projection?.project_number || projectFilter || "Aucun"}</strong>
+          <small>{projection?.project_name || "Choisis un projet"}</small>
+        </article>
+        <article>
+          <span>Tâches ERP DEPMO</span>
+          <strong>{projectionLoading ? "—" : projection?.tasks.length ?? 0}</strong>
+          <small>Read model backend</small>
+        </article>
+        <article>
+          <span>WorkPackages</span>
+          <strong>{projectionLoading ? "—" : projectedPackageCount}</strong>
+          <small>Classés + historiques non classés</small>
+        </article>
+        <article>
+          <span>Semaines projetées</span>
+          <strong>{projectionLoading ? "—" : projection?.weeks.length ?? 0}</strong>
+          <small>Fenêtre demandée au backend</small>
+        </article>
       </div>
-
-      <MediumTermUnlinkedSegmentsPanel
-        rows={unlinkedSegments}
-        workPackages={workPackages}
-        loading={loading}
-        onOpenDemands={onOpenDemands}
-        onOpenSegment={setSegmentEditorId}
-        onLinked={() => setRefreshKey((value) => value + 1)}
-      />
-
-      <MediumTermCapacityPanel
-        buckets={snapshot?.capacity_buckets ?? []}
-        loading={loading}
-        contextual={scope === "mine"}
-      />
 
       <div className="filter-bar mt-filters">
         <label className="search-field">
           <span>Recherche</span>
-          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Projet, lot, demande…" />
-        </label>
-        <label>
-          <span>Chargé de projet</span>
-          <select value={managerFilter} onChange={(event) => setManagerFilter(event.target.value)}>
-            <option value="all">Tous</option>
-            {managerOptions.map((manager) => <option value={manager} key={manager}>{manager}</option>)}
-          </select>
+          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Tâche ERP, WorkPackage…" />
         </label>
         <label>
           <span>Projet</span>
           <select value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)}>
-            <option value="all">Tous les projets</option>
-            {projectOptions.map((project) => <option value={project.number} key={project.id}>{project.number} — {project.name}</option>)}
+            {projectOptions.length === 0 && <option value="">Aucun projet disponible</option>}
+            {projectOptions.map((project) => (
+              <option value={project.number} key={project.id}>
+                {project.number} — {project.name}
+              </option>
+            ))}
           </select>
         </label>
         <label>
@@ -489,14 +576,36 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
         <div className="error-panel">
           <strong>Le moyen terme n’a pas pu être chargé.</strong>
           <span>{error}</span>
-          <small>Vérifie que FastAPI fonctionne et que la base locale est migrée.</small>
+          <small>Vérifie que FastAPI fonctionne et que la base est migrée.</small>
         </div>
       )}
 
-      <div className={`mt-board ${loading ? "is-loading" : ""}`}>
+      {projectionError && (
+        <div className="error-panel">
+          <strong>La projection Moyen terme n’a pas pu être chargée.</strong>
+          <span>{projectionError}</span>
+        </div>
+      )}
+
+      <MediumTermCapacityPanel
+        weeks={projection?.weeks ?? []}
+        diagnostics={projection?.weekly_diagnostics ?? []}
+        loading={projectionLoading}
+      />
+
+      <MediumTermUnlinkedSegmentsPanel
+        rows={unlinkedSegments.filter((row) => !projectFilter || row.project_number === projectFilter)}
+        workPackages={workPackages}
+        loading={loading}
+        onOpenDemands={onOpenDemands}
+        onOpenSegment={setSegmentEditorId}
+        onLinked={() => setRefreshKey((value) => value + 1)}
+      />
+
+      <div className={`mt-board ${loading || projectionLoading ? "is-loading" : ""}`}>
         <div className="mt-board-scroll">
           <div className="mt-header" style={headerStyle}>
-            <div className="mt-project-header">Projet / WorkPackage</div>
+            <div className="mt-project-header">Projet → tâche ERP → WorkPackage</div>
             {weeks.map((week, index) => (
               <div className="mt-week-header" key={toIsoDate(week)} style={{ gridColumn: index + 2 }}>
                 <strong>S{String(isoWeekNumber(week)).padStart(2, "0")}</strong>
@@ -505,49 +614,78 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
             ))}
           </div>
 
-          {!loading && groupedRows.length === 0 && !error && (
-            <div className="mt-empty">Aucun projet ou WorkPackage ne correspond aux filtres dans cet horizon.</div>
+          {!loading && !projectionLoading && !projection && !error && !projectionError && (
+            <div className="mt-empty">Sélectionne un projet pour afficher le Gantt Moyen terme.</div>
           )}
 
-          {groupedRows.map(([manager, rows]) => (
-            <section className="mt-manager-group" key={manager}>
-              <header><strong>{manager}</strong><span>{rows.length} projet(s)</span></header>
-              {rows.map(({ project, workPackages: projectPackages }) => (
-                <div className="mt-project-block" key={project.id}>
-                  <div className="mt-project-strip">
-                    <strong>{project.number}</strong>
-                    <span>{project.name}</span>
-                    <small>{project.client || "Client non précisé"}</small>
-                  </div>
-                  {projectPackages.length === 0 ? (
-                    <div className="mt-no-package">Aucun WorkPackage actif dans l’horizon.</div>
-                  ) : projectPackages.map(({ workPackage, demands, pendingLoads }) => (
-                    <WorkPackageRow
-                      key={workPackage.id}
-                      project={project}
-                      workPackage={workPackage}
-                      demands={demands}
-                      pendingLoads={pendingLoads}
-                      snapshot={snapshot!}
-                      horizonStart={horizonStart}
-                      horizonWeeks={horizonWeeks}
-                      onOpenDemands={onOpenDemands}
-                      onEdit={setEditor}
-                    />
-                  ))}
+          {projection && selectedProject && (
+            <div className="mt-project-block">
+              <div className="mt-project-strip">
+                <strong>{projection.project_number}</strong>
+                <span>{projection.project_name}</span>
+                <small>{selectedProject.client || "Client non précisé"}</small>
+              </div>
+
+              {projection.diagnostics.length > 0 && (
+                <div className="mt-projection-diagnostics">
+                  {projection.diagnostics.map((code) => <span key={code}>⚑ {code}</span>)}
                 </div>
+              )}
+
+              {projection.tasks.length === 0 && (
+                <div className="mt-no-package">
+                  Ce projet ne contient aucune tâche ERP DEPMO dans la projection.
+                </div>
+              )}
+
+              {visibleTasks.map((task) => (
+                <section className="mt-task-group" key={task.task_catalog_item_id}>
+                  <TaskHeader task={task} />
+                  {task.work_packages.length === 0 ? (
+                    <div className="mt-no-package">
+                      Aucun WorkPackage lié à cette tâche ERP.
+                    </div>
+                  ) : task.work_packages.map(renderWorkPackage)}
+                </section>
               ))}
-            </section>
-          ))}
+
+              {projection.unclassified_work_packages.length > 0 && (
+                <section className="mt-task-group is-unclassified">
+                  <header className="mt-task-strip has-attention">
+                    <div className="mt-task-title">
+                      <strong>WorkPackages non classés</strong>
+                      <span className="mt-yellow-flag">⚑</span>
+                    </div>
+                    <small>
+                      Historique compatible sans tâche ERP. Aucun rattachement n’est déduit du nom ou du code.
+                    </small>
+                  </header>
+                  {visibleUnclassified.map(renderWorkPackage)}
+                </section>
+              )}
+
+              {projection.tasks.length > 0
+                && projectedPackageCount === 0
+                && projection.unclassified_work_packages.length === 0 && (
+                <div className="mt-no-package">Le projet ne contient encore aucun WorkPackage.</div>
+              )}
+
+              {query && visibleTasks.length === 0 && visibleUnclassified.length === 0 && (
+                <div className="mt-empty">Aucune tâche ou WorkPackage ne correspond à la recherche.</div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
       <div className="mt-legend">
-        <span><i className="planned" /> Plan approuvé confirmé</span>
-        <span><i className="tentative" /> Plan approuvé tentative</span>
-        <span><i className="pending" /> Soumise / modification en attente</span>
-        <span><i className="draft" /> Brouillon / autre état</span>
-        <small>Capacité, exposition et résiduel proviennent du snapshot FastAPI; React ne recalcule ni la projection ni le non-double-comptage.</small>
+        <span><i className="planned" /> Charge courante incluse</span>
+        <span><i className="pending" /> ⚑ Diagnostic backend nécessitant une attention</span>
+        <span><i className="draft" /> Hors charge courante / historique</span>
+        <small>
+          Budget, total WorkPackage, solde, capacité, charge et utilisation sont lus directement depuis FastAPI.
+          React ne reconstruit ni les règles de statut, ni la capacité, ni la proposition AUTO.
+        </small>
       </div>
 
       {segmentEditorId && (
@@ -568,9 +706,15 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
         <WorkPackageEditor
           projects={catalogProjects}
           workPackage={editor}
-          defaultProjectNumber={editor?.project_number || defaultProject}
+          mediumTermWorkPackage={editorMediumTerm}
+          defaultProjectNumber={editor?.project_number || projectFilter || projectOptions[0]?.number || ""}
           onClose={() => setEditor(undefined)}
-          onSaved={() => {
+          onReload={() => {
+            setEditor(undefined);
+            setRefreshKey((value) => value + 1);
+          }}
+          onSaved={(projectNumber) => {
+            if (projectNumber) setProjectFilter(projectNumber);
             setEditor(undefined);
             setRefreshKey((value) => value + 1);
           }}

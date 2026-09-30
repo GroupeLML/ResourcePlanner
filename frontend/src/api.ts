@@ -187,6 +187,81 @@ export type WorkPackageMutationResult = {
   version: number;
 };
 
+export type MediumTermWeeklyLoadReadModel = {
+  week_start: string;
+  hours: number;
+};
+
+export type MediumTermBudgetWorkPackageReadModel = {
+  id: string;
+  reference: string;
+  code: string | null;
+  name: string;
+  planned_hours: number | null;
+  status: string;
+  budget_included: boolean;
+  start_date: string | null;
+  end_date: string | null;
+  version: number;
+  current_load_included: boolean;
+  weekly_load_origin: "AUTO" | "MANUAL" | null;
+  weekly_loads: MediumTermWeeklyLoadReadModel[];
+  weekly_load_diagnostic: string | null;
+};
+
+export type MediumTermBudgetTaskReadModel = {
+  task_catalog_item_id: string;
+  task_code: string;
+  task_label: string;
+  erp_task_id: string | null;
+  account_group: string;
+  budget_hours: number | null;
+  planned_wp_hours: number | null;
+  remaining_budget_hours: number | null;
+  associated_work_package_count: number;
+  budget_included_work_package_count: number;
+  diagnostic_state: string;
+  budget_source_diagnostic: string | null;
+  work_packages: MediumTermBudgetWorkPackageReadModel[];
+  active: boolean;
+  workforce_eligible: boolean | null;
+};
+
+export type MediumTermWeekReadModel = {
+  week_start: string;
+  work_package_hours: number | null;
+  capacity_hours: number;
+  utilization: number | null;
+  diagnostics: string[];
+};
+
+export type MediumTermBudgetReadModel = {
+  project_id: string;
+  project_number: string;
+  project_name: string;
+  tasks: MediumTermBudgetTaskReadModel[];
+  unclassified_work_packages: MediumTermBudgetWorkPackageReadModel[];
+  diagnostics: string[];
+  weekly_diagnostics: string[];
+  window_start: string | null;
+  window_end: string | null;
+  weeks: MediumTermWeekReadModel[];
+};
+
+export type WorkPackageWeeklyLoadProposalReadModel = {
+  reference: string;
+  version: number;
+  planned_hours: number;
+  origin: "AUTO";
+  loads: MediumTermWeeklyLoadReadModel[];
+};
+
+export type WorkPackageWeeklyLoadWrite = {
+  week_start: string;
+  hours: number;
+};
+
+
 export type ResourceReadModel = {
   id: string;
   name: string;
@@ -1108,6 +1183,25 @@ async function sendJson<T>(
   return response.json() as Promise<T>;
 }
 
+export function getMediumTermBudget(
+  projectNumber: string,
+  start: string,
+  end: string,
+  signal?: AbortSignal,
+  scope: ViewScope = "global",
+) {
+  const params = new URLSearchParams({
+    project_number: projectNumber,
+    start,
+    end,
+    scope,
+  });
+  return getJson<MediumTermBudgetReadModel>(
+    `/api/v1/medium-term/budget?${params.toString()}`,
+    signal,
+  );
+}
+
 export function getMediumTermUnlinkedSegments(
   start: string,
   end: string,
@@ -1397,6 +1491,31 @@ export function updateWorkPackage(
     `/api/v1/work-packages/${encodeURIComponent(reference)}`,
     "PATCH",
     { ...payload, expected_version: expectedVersion },
+  );
+}
+
+export function proposeWorkPackageWeeklyLoads(reference: string) {
+  return postJson<WorkPackageWeeklyLoadProposalReadModel>(
+    `/api/v1/work-packages/${encodeURIComponent(reference)}/weekly-loads/proposal`,
+  );
+}
+
+export function replaceWorkPackageWeeklyLoads(
+  reference: string,
+  expectedVersion: number,
+  origin: "AUTO" | "MANUAL",
+  loads: WorkPackageWeeklyLoadWrite[],
+  idempotencyKey: string,
+) {
+  return sendJson<WorkPackageMutationResult>(
+    `/api/v1/work-packages/${encodeURIComponent(reference)}/weekly-loads`,
+    "PUT",
+    {
+      expected_version: expectedVersion,
+      origin,
+      loads,
+    },
+    { "Idempotency-Key": idempotencyKey },
   );
 }
 
