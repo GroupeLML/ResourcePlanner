@@ -115,7 +115,7 @@ export default function DemandDetail({
 
       <details className="demand-detail-section" open data-testid="demand-workflow-section">
         <summary>
-          <span>Actions et workflow</span>
+          <span>Workflow et impact</span>
           <small>Actions autoritaires visibles, autorisation active et aperçu plan actuel → plan proposé.</small>
         </summary>
         <DemandWorkflowPage
