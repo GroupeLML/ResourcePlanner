@@ -25,6 +25,7 @@ from ..infrastructure.m365 import (
     MicrosoftGraphCommunicationSettings,
     MicrosoftGraphCommunicationTransport,
 )
+from .break_glass import BreakGlassRuntime
 from .dev_user_switcher import DevUserSwitcherRuntime, dev_user_switcher_auth_resolver
 from .embedding import EmbeddingSettings, install_embedding_headers
 from .frontend import FrontendBuildError, attach_frontend
@@ -45,6 +46,7 @@ LOCAL_AUTH_EMAIL_ENV = "RESOURCEPLANNER_LOCAL_AUTH_EMAIL"
 LOCAL_AUTH_ROLES_ENV = "RESOURCEPLANNER_LOCAL_AUTH_ROLES"
 ALLOW_LOCAL_AUTH_NETWORK_ENV = "RESOURCEPLANNER_ALLOW_LOCAL_AUTH_NETWORK"
 DEV_USER_SWITCHER_ENV = "RESOURCEPLANNER_DEV_USER_SWITCHER"
+BREAK_GLASS_ENABLED_ENV = "RESOURCEPLANNER_BREAK_GLASS_ENABLED"
 OIDC_DISCOVERY_URL_ENV = "RESOURCEPLANNER_OIDC_DISCOVERY_URL"
 OIDC_CLIENT_ID_ENV = "RESOURCEPLANNER_OIDC_CLIENT_ID"
 OIDC_CLIENT_SECRET_ENV = "RESOURCEPLANNER_OIDC_CLIENT_SECRET"
@@ -300,6 +302,7 @@ class ServerSettings:
     auth_mode: str = "local"
     auth_principal: AuthPrincipal | None = field(default_factory=_default_local_principal, repr=False)
     dev_user_switcher: bool = False
+    break_glass_enabled: bool = False
     oidc: OidcClientSettings | None = field(default=None, repr=False)
     oidc_cookie_name: str = "resourceplanner_session"
     oidc_session_hours: int = 8
@@ -348,6 +351,11 @@ class ServerSettings:
         oidc_auto_provision = False
         oidc_claim_diagnostics = False
         dev_user_switcher = _bool(values.get(DEV_USER_SWITCHER_ENV), default=False)
+        break_glass_enabled = _bool(values.get(BREAK_GLASS_ENABLED_ENV), default=False)
+        if break_glass_enabled and auth_mode != "oidc":
+            raise ServerConfigurationError(
+                f"{BREAK_GLASS_ENABLED_ENV}=true est réservé à {AUTH_MODE_ENV}=oidc."
+            )
         if dev_user_switcher and auth_mode != "local":
             raise ServerConfigurationError(
                 f"{DEV_USER_SWITCHER_ENV}=true est réservé à {AUTH_MODE_ENV}=local."
@@ -399,6 +407,7 @@ class ServerSettings:
             auth_mode=auth_mode,
             auth_principal=auth_principal,
             dev_user_switcher=dev_user_switcher,
+            break_glass_enabled=break_glass_enabled,
             oidc=oidc,
             oidc_cookie_name=oidc_cookie_name,
             oidc_session_hours=oidc_session_hours,
@@ -470,6 +479,7 @@ def create_configured_app(settings: ServerSettings | None = None) -> FastAPI:
             ) from exc
     smtp_client = SmtpClient()
     oidc_runtime = None
+    break_glass_runtime = None
     dev_user_switcher_runtime = None
     if resolved.dev_user_switcher and resolved.auth_mode != "local":
         raise ServerConfigurationError(
@@ -492,6 +502,13 @@ def create_configured_app(settings: ServerSettings | None = None) -> FastAPI:
             claim_diagnostics_enabled=resolved.oidc_claim_diagnostics,
         )
         auth_resolver = oidc_session_auth_resolver(resolved.oidc_cookie_name)
+        if resolved.break_glass_enabled:
+            break_glass_runtime = BreakGlassRuntime(
+                cookie_name=resolved.oidc_cookie_name,
+                session_hours=resolved.oidc_session_hours,
+                secure_cookie=resolved.oidc_secure_cookie,
+                cookie_samesite=resolved.embedding.oidc_cookie_samesite,
+            )
     else:
         if resolved.dev_user_switcher:
             if resolved.auth_principal is None:
@@ -516,6 +533,7 @@ def create_configured_app(settings: ServerSettings | None = None) -> FastAPI:
         auth_resolver=auth_resolver,
         api_docs_enabled=resolved.api_docs_enabled,
         oidc_runtime=oidc_runtime,
+        break_glass_runtime=break_glass_runtime,
         dev_user_switcher_runtime=dev_user_switcher_runtime,
         communication_transport=communication_transport,
         smtp_cipher=smtp_cipher,
@@ -525,6 +543,11 @@ def create_configured_app(settings: ServerSettings | None = None) -> FastAPI:
                 "required": resolved.auth_mode == "oidc",
                 "configured": resolved.oidc is not None,
                 "check": "configuration_only",
+            },
+            "break_glass": {
+                "required": False,
+                "configured": resolved.break_glass_enabled,
+                "check": "database_credential",
             },
             "acumatica": {
                 "required": False,

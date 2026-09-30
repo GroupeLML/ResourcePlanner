@@ -57,6 +57,7 @@ def create_dev_user_session(
             raw_token=raw_token,
             user_id=user_id,
             expires_at=utc_now() + runtime.session_ttl,
+            auth_mode="local",
         )
     return raw_token
 
