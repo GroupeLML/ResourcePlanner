@@ -115,11 +115,23 @@
   opacity: 0.8;
 }
 
-.workflow-actions {
+.workflow-actions,
+.workflow-primary-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.65rem;
   align-items: center;
+}
+
+.workflow-primary-actions {
+  padding: 0.8rem 0.9rem;
+  border: 1px solid var(--border-color, #d8dee8);
+  border-radius: 12px;
+  background: rgba(91, 110, 230, 0.07);
+}
+
+.workflow-primary-actions .workflow-cancel {
+  margin-left: 0;
 }
 
 .workflow-cancel {
