@@ -598,6 +598,21 @@ export default function DemandWorkflowPage({
         <div className="workflow-detail-panel">
           {currentDemand ? (
             <>
+              {(actions.includes("submit") || actions.includes("cancel")) && (
+                <div className="workflow-primary-actions" data-testid="primary-demand-actions">
+                  {actions.includes("submit") && (
+                    <button type="button" className="primary-button" disabled={busy || hasUnsavedChanges} onClick={() => runAction("submit")}>
+                      {pendingAction === "submit" ? "Soumission…" : actionLabel("submit")}
+                    </button>
+                  )}
+                  {actions.includes("cancel") && (
+                    <button type="button" className="secondary-button workflow-cancel" disabled={busy || hasUnsavedChanges} onClick={() => runAction("cancel")}>
+                      {pendingAction === "cancel" ? "Annulation…" : actionLabel("cancel")}
+                    </button>
+                  )}
+                </div>
+              )}
+
               <div className="workflow-state-grid">
                 <div className="workflow-state-card">
                   <span>Approbation / statut</span>
@@ -977,11 +992,6 @@ export default function DemandWorkflowPage({
 
               <div className="workflow-actions">
                 {actions.length === 0 && <span className="workflow-terminal-state">Aucune transition usuelle disponible pour ce statut.</span>}
-                {actions.includes("submit") && (
-                  <button type="button" className="primary-button" disabled={busy || hasUnsavedChanges} onClick={() => runAction("submit")}>
-                    {pendingAction === "submit" ? "Soumission…" : actionLabel("submit")}
-                  </button>
-                )}
                 {actions.includes("approve") && (!currentApprovalCycle || actorApprovalLines.length > 0) && (
                   <button
                     type="button"
@@ -1001,11 +1011,6 @@ export default function DemandWorkflowPage({
                 {actions.includes("correction") && (
                   <button type="button" className="secondary-button" disabled={busy || hasUnsavedChanges || !correctionComment.trim()} onClick={() => runAction("correction")}>
                     {pendingAction === "correction" ? "Envoi…" : actionLabel("correction")}
-                  </button>
-                )}
-                {actions.includes("cancel") && (
-                  <button type="button" className="secondary-button workflow-cancel" disabled={busy || hasUnsavedChanges} onClick={() => runAction("cancel")}>
-                    {pendingAction === "cancel" ? "Annulation…" : actionLabel("cancel")}
                   </button>
                 )}
               </div>
