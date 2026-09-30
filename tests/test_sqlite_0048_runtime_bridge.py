@@ -4,6 +4,8 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 from tempfile import TemporaryDirectory
 import unittest
 
@@ -151,6 +153,17 @@ def _revision(path: Path) -> str:
 
 
 class Sqlite0048RuntimeBridgeTests(unittest.TestCase):
+    def test_tool_is_directly_executable_from_repository_root(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "tools/bridge_sqlite_0048_runtime.py", "--help"],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--confirm-live-runtime", result.stdout)
+
     def test_dry_run_is_read_only_and_recognizes_exact_0048_shape(self) -> None:
         with TemporaryDirectory() as directory:
             source = Path(directory) / "resourceplanner.db"
