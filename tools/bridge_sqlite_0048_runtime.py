@@ -17,7 +17,12 @@ from alembic.operations import Operations
 from alembic.script import ScriptDirectory
 from sqlalchemy import inspect, text
 
-from app.infrastructure.sql import Base, create_sql_engine
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from app.infrastructure.sql import Base, create_sql_engine  # noqa: E402
 
 
 SOURCE_REVISION = "0048_identity_admin_audit"
@@ -38,8 +43,6 @@ SOURCE_MISSING_COLUMNS = {
         "weekly_load_origin",
     },
 }
-
-ROOT = Path(__file__).resolve().parents[1]
 
 
 class BridgeBlocked(RuntimeError):
