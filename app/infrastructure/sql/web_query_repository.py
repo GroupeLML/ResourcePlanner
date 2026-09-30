@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from decimal import Decimal
 
 from sqlalchemy import select, true
 from sqlalchemy.orm import Session
@@ -9,6 +10,14 @@ from ...application import (
     DemandHistoryReadModel,
     ResourceAvailabilityRuleReadModel,
     WorkPackageReadModel,
+)
+from ...application.medium_term_budget import (
+    MEDIUM_TERM_DIAGNOSTIC_UNCLASSIFIED_WORK_PACKAGES,
+    MediumTermBudgetReadModel,
+    MediumTermBudgetTaskReadModel,
+    MediumTermBudgetWorkPackageReadModel,
+    task_budget_diagnostic,
+    work_package_is_budget_included,
 )
 from ...application.query_models import PlanningHistoryReadModel
 from .models import (
@@ -108,6 +117,138 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                 )
             )
         return tuple(result)
+
+    @staticmethod
+    def _medium_term_budget_work_package(
+        work_package: WorkPackage,
+    ) -> MediumTermBudgetWorkPackageReadModel:
+        status = _text(work_package.status) or "planned"
+        return MediumTermBudgetWorkPackageReadModel(
+            id=work_package.id,
+            reference=_optional_text(work_package.legacy_effort_id) or work_package.id,
+            code=_optional_text(work_package.code),
+            name=work_package.name,
+            planned_hours=(
+                Decimal(work_package.planned_hours)
+                if work_package.planned_hours is not None
+                else None
+            ),
+            status=status,
+            budget_included=work_package_is_budget_included(status),
+            start_date=work_package.start_date,
+            end_date=work_package.end_date,
+            version=int(work_package.version or 1),
+        )
+
+    def medium_term_budget_projection(
+        self,
+        *,
+        project_number: str,
+        project_ids: Sequence[str] | None = None,
+    ) -> MediumTermBudgetReadModel | None:
+        wanted_project = _text(project_number)
+        if not wanted_project:
+            return None
+
+        project_statement = select(Project).where(Project.number == wanted_project)
+        if project_ids is not None:
+            identifiers = tuple(str(value) for value in project_ids if str(value))
+            if not identifiers:
+                return None
+            project_statement = project_statement.where(Project.id.in_(identifiers))
+        project = self._web_session.scalar(project_statement)
+        if project is None:
+            return None
+
+        task_rows = self._web_session.scalars(
+            select(TaskCatalogEntry)
+            .where(TaskCatalogEntry.project_number == project.number)
+            .order_by(TaskCatalogEntry.task_code, TaskCatalogEntry.id)
+        ).all()
+        tasks = tuple(
+            task
+            for task in task_rows
+            if _text(task.account_group).upper() == "DEPMO"
+        )
+
+        work_packages = self._web_session.scalars(
+            select(WorkPackage)
+            .where(WorkPackage.project_id == project.id)
+            .order_by(WorkPackage.start_date, WorkPackage.name, WorkPackage.id)
+        ).all()
+
+        by_task: dict[str, list[MediumTermBudgetWorkPackageReadModel]] = {
+            task.id: [] for task in tasks
+        }
+        unclassified: list[MediumTermBudgetWorkPackageReadModel] = []
+        for work_package in work_packages:
+            projected = self._medium_term_budget_work_package(work_package)
+            task_id = work_package.task_catalog_item_id
+            if task_id is None:
+                unclassified.append(projected)
+            elif task_id in by_task:
+                by_task[task_id].append(projected)
+
+        task_models: list[MediumTermBudgetTaskReadModel] = []
+        for task in tasks:
+            associated = tuple(by_task[task.id])
+            included = tuple(row for row in associated if row.budget_included)
+            load_complete = all(row.planned_hours is not None for row in included)
+            planned_wp_hours = (
+                sum(
+                    (row.planned_hours for row in included if row.planned_hours is not None),
+                    Decimal("0"),
+                )
+                if load_complete
+                else None
+            )
+            budget_hours = (
+                Decimal(task.budget_hours)
+                if task.budget_hours is not None
+                else None
+            )
+            remaining_budget_hours = (
+                budget_hours - planned_wp_hours
+                if budget_hours is not None and planned_wp_hours is not None
+                else None
+            )
+            task_models.append(
+                MediumTermBudgetTaskReadModel(
+                    task_catalog_item_id=task.id,
+                    task_code=task.task_code,
+                    task_label=task.label,
+                    erp_task_id=_optional_text(task.erp_task_id),
+                    account_group=_text(task.account_group),
+                    budget_hours=budget_hours,
+                    planned_wp_hours=planned_wp_hours,
+                    remaining_budget_hours=remaining_budget_hours,
+                    associated_work_package_count=len(associated),
+                    budget_included_work_package_count=len(included),
+                    diagnostic_state=task_budget_diagnostic(
+                        budget_hours=budget_hours,
+                        planned_wp_hours=planned_wp_hours,
+                        included_work_package_count=len(included),
+                    ),
+                    budget_source_diagnostic=_optional_text(task.budget_diagnostic),
+                    work_packages=associated,
+                    active=bool(task.active),
+                    workforce_eligible=task.workforce_eligible,
+                )
+            )
+
+        diagnostics = (
+            (MEDIUM_TERM_DIAGNOSTIC_UNCLASSIFIED_WORK_PACKAGES,)
+            if unclassified
+            else ()
+        )
+        return MediumTermBudgetReadModel(
+            project_id=project.id,
+            project_number=project.number,
+            project_name=project.name,
+            tasks=tuple(task_models),
+            unclassified_work_packages=tuple(unclassified),
+            diagnostics=diagnostics,
+        )
 
     def list_availability_rules(
         self,
