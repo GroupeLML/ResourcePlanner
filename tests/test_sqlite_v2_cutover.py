@@ -34,6 +34,7 @@ from app.infrastructure.sql import (
     TaskCatalogProjectSyncState,
     WorkforceRequest,
     WorkPackage,
+    WorkPackageWeeklyLoad,
     create_sql_engine,
 )
 from app.server.runtime import ServerSettings, create_configured_app
@@ -146,6 +147,14 @@ def _seed_source(path: Path) -> None:
                     "code": "WP-01",
                     "name": "Lot réel",
                     "planned_hours": Decimal("24"),
+                },
+            )
+            connection.execute(
+                WorkPackageWeeklyLoad.__table__.insert(),
+                {
+                    "work_package_id": "WP-REAL",
+                    "week_start": date(2026, 9, 28),
+                    "hours": Decimal("24.00"),
                 },
             )
             connection.execute(
@@ -552,6 +561,18 @@ class SqliteV2CutoverTests(unittest.TestCase):
                         )
                     }
                     self.assertEqual(users, {"USER-REAL": None})
+                    weekly = connection.execute(
+                        select(
+                            WorkPackageWeeklyLoad.work_package_id,
+                            WorkPackageWeeklyLoad.week_start,
+                            WorkPackageWeeklyLoad.hours,
+                        ).where(
+                            WorkPackageWeeklyLoad.work_package_id == "WP-REAL"
+                        )
+                    ).one()
+                    self.assertEqual(weekly.work_package_id, "WP-REAL")
+                    self.assertEqual(weekly.week_start, date(2026, 9, 28))
+                    self.assertEqual(Decimal(weekly.hours), Decimal("24.00"))
                     request = connection.execute(
                         select(
                             WorkforceRequest.id,
