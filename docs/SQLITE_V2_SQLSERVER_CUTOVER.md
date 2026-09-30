@@ -148,6 +148,34 @@ Si une FK nullable pointe vers une identité exclue, la FK est mise à NULL dans
 
 Si une dépendance KEEP obligatoire est réellement absente de la source, le transfert bloque : elle n'est ni inventée ni contournée. Les FK ne sont jamais désactivées.
 
+## Compatibilité de la source pré-baseline 0048
+
+Le cutover réel ENV-492 a identifié la SQLite V2 gelée à la révision
+`0048_identity_admin_audit`. Cette source précède volontairement le squash
+`v2_production_baseline` et certaines évolutions postérieures.
+
+L'outil accepte cette révision historique par un profil de compatibilité
+**explicite et fail-closed**. Il ne modifie jamais le fichier source :
+
+- `auth_security_audit` et `break_glass_credentials` peuvent être absentes;
+  elles sont classées DROP et sont recréées/repartent proprement sur la cible;
+- `work_package_audit` et `work_package_weekly_loads` peuvent être absentes
+  et sont interprétées comme des ensembles vides, puisqu'elles n'existaient pas
+  encore à cette révision;
+- `auth_sessions.auth_mode` peut être absent; les sessions sont DROP;
+- les WorkPackages 0048 sont normalisés **en mémoire seulement** avec
+  `task_catalog_item_id = NULL`, `version = 1` et
+  `weekly_load_origin = NULL`.
+
+Tout autre écart de table ou de colonne reste bloquant. Le même schéma
+historique portant une autre révision Alembic non approuvée reste également
+bloqué.
+
+Après #502C, la tête Alembic courante est
+`0002_work_package_weekly_loads`. Le jour du cutover, utiliser la tête réelle
+du code exécuté comme `--expected-target-revision`; ne pas supposer que
+`v2_production_baseline` est encore la tête.
+
 ## Source SQLite et backup
 
 La source est ouverte via SQLite URI mode=ro avec PRAGMA query_only=ON.

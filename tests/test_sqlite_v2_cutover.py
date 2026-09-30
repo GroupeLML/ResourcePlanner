@@ -323,6 +323,58 @@ def _seed_target(path: Path) -> None:
     _create_schema(path, baseline_state=True)
 
 
+def _reshape_source_as_0048(path: Path) -> None:
+    raw = sqlite3.connect(path)
+    try:
+        raw.execute("PRAGMA foreign_keys=OFF")
+        raw.executescript(
+            """
+            DROP TABLE IF EXISTS auth_security_audit;
+            DROP TABLE IF EXISTS break_glass_credentials;
+            DROP TABLE IF EXISTS work_package_audit;
+            DROP TABLE IF EXISTS work_package_weekly_loads;
+
+            CREATE TABLE auth_sessions_0048 AS
+            SELECT
+                id,
+                token_hash,
+                csrf_token_hash,
+                user_id,
+                expires_at,
+                revoked_at,
+                created_at,
+                updated_at
+            FROM auth_sessions;
+            DROP TABLE auth_sessions;
+            ALTER TABLE auth_sessions_0048 RENAME TO auth_sessions;
+
+            CREATE TABLE work_packages_0048 AS
+            SELECT
+                id,
+                project_id,
+                code,
+                name,
+                description,
+                start_date,
+                end_date,
+                planned_hours,
+                status,
+                legacy_effort_id,
+                created_at,
+                updated_at
+            FROM work_packages;
+            DROP TABLE work_packages;
+            ALTER TABLE work_packages_0048 RENAME TO work_packages;
+
+            UPDATE alembic_version
+            SET version_num = '0048_identity_admin_audit';
+            """
+        )
+        raw.commit()
+    finally:
+        raw.close()
+
+
 def _run(
     root: Path,
     *,
@@ -409,6 +461,143 @@ class SqliteV2CutoverTests(unittest.TestCase):
             self.assertIn("projects", report["transfer_order"])
             self.assertNotIn("auth_sessions", report["transfer_order"])
             self.assertNotIn("planning_mutation_state", report["transfer_order"])
+
+    def test_real_0048_shape_is_normalized_read_only_and_ready(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.db"
+            target = root / "target.db"
+            _seed_source(source)
+            _reshape_source_as_0048(source)
+            _seed_target(target)
+            source_before = _hash(source)
+
+            code, report = _run(root)
+
+            self.assertEqual(code, 0, report)
+            self.assertEqual(report["status"], "ready")
+            self.assertEqual(
+                report["source"]["alembic_revision"],
+                "0048_identity_admin_audit",
+            )
+            self.assertEqual(
+                report["source"]["compatibility_profile"],
+                "0048_identity_admin_audit",
+            )
+            self.assertEqual(_hash(source), source_before)
+
+            adaptations = {
+                (item["kind"], item["table"])
+                for item in report["source"]["compatibility_adaptations"]
+            }
+            self.assertIn(
+                ("missing_table_as_empty", "work_package_audit"),
+                adaptations,
+            )
+            self.assertIn(
+                ("missing_table_as_empty", "work_package_weekly_loads"),
+                adaptations,
+            )
+            self.assertIn(
+                ("missing_columns_with_defaults", "work_packages"),
+                adaptations,
+            )
+
+            by_table = {row["table"]: row for row in report["tables"]}
+            self.assertEqual(by_table["work_packages"]["source_rows"], 1)
+            self.assertEqual(by_table["work_packages"]["eligible_rows"], 1)
+            self.assertEqual(by_table["work_package_audit"]["source_rows"], 0)
+            self.assertEqual(by_table["work_package_weekly_loads"]["source_rows"], 0)
+            self.assertEqual(by_table["auth_sessions"]["source_rows"], 1)
+            self.assertEqual(by_table["auth_sessions"]["eligible_rows"], 0)
+
+    def test_0048_apply_preserves_work_package_with_explicit_defaults(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.db"
+            target = root / "target.db"
+            backup = root / "source.backup.db"
+            _seed_source(source)
+            _reshape_source_as_0048(source)
+            _seed_target(target)
+            shutil.copy2(source, backup)
+            source_before = _hash(source)
+
+            code, report = _run(root, apply=True, backup=backup)
+
+            self.assertEqual(code, 0, report)
+            self.assertEqual(report["status"], "applied")
+            self.assertEqual(report["transaction"]["status"], "committed")
+            self.assertEqual(_hash(source), source_before)
+
+            engine = create_sql_engine(_url(target))
+            try:
+                with engine.connect() as connection:
+                    work_package = connection.execute(
+                        select(
+                            WorkPackage.id,
+                            WorkPackage.task_catalog_item_id,
+                            WorkPackage.version,
+                            WorkPackage.weekly_load_origin,
+                        ).where(WorkPackage.id == "WP-REAL")
+                    ).one()
+                    self.assertEqual(work_package.id, "WP-REAL")
+                    self.assertIsNone(work_package.task_catalog_item_id)
+                    self.assertEqual(work_package.version, 1)
+                    self.assertIsNone(work_package.weekly_load_origin)
+                    self.assertEqual(
+                        int(
+                            connection.scalar(
+                                select(func.count()).select_from(
+                                    WorkPackageWeeklyLoad
+                                )
+                            )
+                            or 0
+                        ),
+                        0,
+                    )
+                    self.assertEqual(
+                        int(
+                            connection.scalar(
+                                select(func.count()).select_from(AuthSession)
+                            )
+                            or 0
+                        ),
+                        0,
+                    )
+            finally:
+                engine.dispose()
+
+    def test_legacy_shape_with_unapproved_revision_stays_blocked(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.db"
+            target = root / "target.db"
+            _seed_source(source)
+            _reshape_source_as_0048(source)
+            _seed_target(target)
+
+            raw = sqlite3.connect(source)
+            try:
+                raw.execute(
+                    "UPDATE alembic_version SET version_num = ?",
+                    ("0047_unapproved",),
+                )
+                raw.commit()
+            finally:
+                raw.close()
+
+            code, report = _run(root)
+
+            self.assertEqual(code, 2)
+            self.assertEqual(report["status"], "blocked")
+            self.assertIsNone(report["source"]["compatibility_profile"])
+            self.assertTrue(
+                any(
+                    item.get("code") in {"source_missing_table", "source_missing_columns"}
+                    for item in report["anomalies"]
+                )
+            )
 
     def test_missing_source_is_blocked_without_target_mutation(self) -> None:
         with TemporaryDirectory() as directory:

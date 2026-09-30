@@ -29,12 +29,36 @@ from app.infrastructure.sql import Base, create_sql_engine  # noqa: E402
 
 DATABASE_ENV = "RESOURCEPLANNER_DATABASE_URL"
 DEFAULT_REPORT = ROOT / "sqlite_v2_cutover_report.json"
-POLICY_VERSION = "492-v1"
+POLICY_VERSION = "492-v2"
 DEV_IDENTITY_ISSUER = "urn:resourceplanner:dev"
 
 KEEP = "KEEP"
 REBUILD = "REBUILD"
 DROP = "DROP"
+
+# The real pre-go-live SQLite captured for ENV-492 is still on the last
+# pre-baseline identity revision. Compatibility is deliberately explicit and
+# revision-scoped so any other schema drift continues to fail closed.
+SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
+    "0048_identity_admin_audit": {
+        "missing_tables": {
+            "auth_security_audit",
+            "break_glass_credentials",
+            "work_package_audit",
+            "work_package_weekly_loads",
+        },
+        "missing_columns": {
+            "auth_sessions": {
+                "auth_mode": None,
+            },
+            "work_packages": {
+                "task_catalog_item_id": None,
+                "version": 1,
+                "weekly_load_origin": None,
+            },
+        },
+    },
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -398,9 +422,103 @@ def _schema_compatibility(engine: Engine, *, label: str) -> list[dict[str, Any]]
     return anomalies
 
 
-def _load_rows(engine: Engine, table: Table) -> list[dict[str, Any]]:
-    with engine.connect() as connection:
-        return [dict(row) for row in connection.execute(select(table)).mappings()]
+def _source_schema_compatibility(
+    engine: Engine,
+    *,
+    source_revision: str | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    inspector = inspect(engine)
+    detected = set(inspector.get_table_names())
+    profile = SOURCE_COMPATIBILITY_PROFILES.get(source_revision or "", {})
+    allowed_missing_tables = set(profile.get("missing_tables", set()))
+    allowed_missing_columns = profile.get("missing_columns", {})
+
+    anomalies: list[dict[str, Any]] = []
+    adaptations: list[dict[str, Any]] = []
+    expected_database_tables = set(Base.metadata.tables) | {"alembic_version"}
+
+    for table_name in sorted(
+        name
+        for name in detected - expected_database_tables
+        if not name.startswith("sqlite_")
+    ):
+        anomalies.append(
+            {
+                "code": "source_unmapped_table",
+                "severity": "BLOCKING",
+                "table": table_name,
+                "message": (
+                    "source: table non classifiée par #492; mapping/baseline à revalider."
+                ),
+            }
+        )
+
+    for table_name, model_table in Base.metadata.tables.items():
+        if table_name not in detected:
+            if table_name in allowed_missing_tables:
+                adaptations.append(
+                    {
+                        "kind": "missing_table_as_empty",
+                        "table": table_name,
+                        "source_revision": source_revision,
+                    }
+                )
+            else:
+                anomalies.append(
+                    {
+                        "code": "source_missing_table",
+                        "severity": "BLOCKING",
+                        "table": table_name,
+                        "message": "source: table absente du schéma.",
+                    }
+                )
+            continue
+
+        actual_columns = {column["name"] for column in inspector.get_columns(table_name)}
+        expected_columns = {column.name for column in model_table.columns}
+        missing_columns = expected_columns - actual_columns
+        defaults = allowed_missing_columns.get(table_name, {})
+        accepted_missing = sorted(missing_columns & set(defaults))
+        blocking_missing = sorted(missing_columns - set(defaults))
+        extra_columns = sorted(actual_columns - expected_columns)
+
+        if accepted_missing:
+            adaptations.append(
+                {
+                    "kind": "missing_columns_with_defaults",
+                    "table": table_name,
+                    "columns": accepted_missing,
+                    "defaults": {
+                        column: defaults[column]
+                        for column in accepted_missing
+                    },
+                    "source_revision": source_revision,
+                }
+            )
+        if blocking_missing:
+            anomalies.append(
+                {
+                    "code": "source_missing_columns",
+                    "severity": "BLOCKING",
+                    "table": table_name,
+                    "columns": blocking_missing,
+                    "message": "source: colonnes attendues absentes.",
+                }
+            )
+        if extra_columns:
+            anomalies.append(
+                {
+                    "code": "source_extra_columns",
+                    "severity": "BLOCKING",
+                    "table": table_name,
+                    "columns": extra_columns,
+                    "message": (
+                        "source: colonnes non connues du modèle courant; mapping #492 à revalider."
+                    ),
+                }
+            )
+
+    return anomalies, adaptations
 
 
 def _primary_key_tuple(table: Table, row: dict[str, Any]) -> tuple[Any, ...]:
@@ -867,14 +985,53 @@ def _validate_transferred_data(
 
 def _copy_source_inventory(
     source_engine: Engine,
+    *,
+    source_revision: str | None,
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int]]:
+    inspector = inspect(source_engine)
+    detected = set(inspector.get_table_names())
+    profile = SOURCE_COMPATIBILITY_PROFILES.get(source_revision or "", {})
+    column_defaults = profile.get("missing_columns", {})
+
     source_rows: dict[str, list[dict[str, Any]]] = {}
     source_counts: dict[str, int] = {}
-    for table_name, table in Base.metadata.tables.items():
-        rows = _load_rows(source_engine, table)
-        source_counts[table_name] = len(rows)
-        if TABLE_POLICIES[table_name].classification == KEEP:
+
+    with source_engine.connect() as connection:
+        for table_name, table in Base.metadata.tables.items():
+            if table_name not in detected:
+                source_counts[table_name] = 0
+                if TABLE_POLICIES[table_name].classification == KEEP:
+                    source_rows[table_name] = []
+                continue
+
+            source_counts[table_name] = int(
+                connection.exec_driver_sql(
+                    f'SELECT COUNT(*) FROM "{table_name}"'
+                ).scalar_one()
+            )
+            if TABLE_POLICIES[table_name].classification != KEEP:
+                continue
+
+            actual_columns = {
+                column["name"] for column in inspector.get_columns(table_name)
+            }
+            selected_columns = [
+                column
+                for column in table.columns
+                if column.name in actual_columns
+            ]
+            rows = [
+                dict(row)
+                for row in connection.execute(
+                    select(*selected_columns)
+                ).mappings()
+            ]
+            defaults = column_defaults.get(table_name, {})
+            for row in rows:
+                for column_name, default_value in defaults.items():
+                    row.setdefault(column_name, default_value)
             source_rows[table_name] = rows
+
     return source_rows, source_counts
 
 
@@ -952,15 +1109,27 @@ def run_cutover(
             )
 
         source_engine = create_readonly_sqlite_engine(source)
-        payload["source"]["alembic_revision"] = _database_revision(source_engine)
+        source_revision = _database_revision(source_engine)
+        payload["source"]["alembic_revision"] = source_revision
         payload["source"]["detected_tables"] = _detected_tables(source_engine)
-        payload["anomalies"].extend(
-            _schema_compatibility(source_engine, label="source")
+        source_anomalies, compatibility_adaptations = _source_schema_compatibility(
+            source_engine,
+            source_revision=source_revision,
         )
+        payload["anomalies"].extend(source_anomalies)
+        payload["source"]["compatibility_profile"] = (
+            source_revision
+            if source_revision in SOURCE_COMPATIBILITY_PROFILES
+            else None
+        )
+        payload["source"]["compatibility_adaptations"] = compatibility_adaptations
         if _blocking(payload["anomalies"]):
             raise CutoverBlocked("Le schéma/source SQLite n'est pas compatible avec le mapping #492.")
 
-        source_rows, source_counts = _copy_source_inventory(source_engine)
+        source_rows, source_counts = _copy_source_inventory(
+            source_engine,
+            source_revision=source_revision,
+        )
         (
             eligible,
             exclusions,
