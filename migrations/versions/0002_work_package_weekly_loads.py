@@ -26,7 +26,7 @@ def _add_origin() -> None:
         with op.batch_alter_table("work_packages", recreate="always") as batch_op:
             batch_op.add_column(sa.Column("weekly_load_origin", sa.String(length=16), nullable=True))
             batch_op.create_check_constraint(
-                ORIGIN_CHECK,
+                op.f(ORIGIN_CHECK),
                 "weekly_load_origin IS NULL OR weekly_load_origin IN ('AUTO','MANUAL')",
             )
         return
@@ -36,7 +36,7 @@ def _add_origin() -> None:
         sa.Column("weekly_load_origin", sa.String(length=16), nullable=True),
     )
     op.create_check_constraint(
-        ORIGIN_CHECK,
+        op.f(ORIGIN_CHECK),
         "work_packages",
         "weekly_load_origin IS NULL OR weekly_load_origin IN ('AUTO','MANUAL')",
     )
@@ -49,7 +49,7 @@ def upgrade() -> None:
         sa.Column("work_package_id", sa.String(length=36), nullable=False),
         sa.Column("week_start", sa.Date(), nullable=False),
         sa.Column("hours", sa.Numeric(precision=12, scale=2), nullable=False),
-        sa.CheckConstraint("hours >= 0", name=HOURS_CHECK),
+        sa.CheckConstraint("hours >= 0", name=op.f(HOURS_CHECK)),
         sa.ForeignKeyConstraint(
             ["work_package_id"],
             ["work_packages.id"],
@@ -68,8 +68,8 @@ def downgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name == "sqlite":
         with op.batch_alter_table("work_packages", recreate="always") as batch_op:
-            batch_op.drop_constraint(ORIGIN_CHECK, type_="check")
+            batch_op.drop_constraint(op.f(ORIGIN_CHECK), type_="check")
             batch_op.drop_column("weekly_load_origin")
         return
-    op.drop_constraint(ORIGIN_CHECK, "work_packages", type_="check")
+    op.drop_constraint(op.f(ORIGIN_CHECK), "work_packages", type_="check")
     op.drop_column("work_packages", "weekly_load_origin")
