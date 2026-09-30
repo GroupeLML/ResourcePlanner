@@ -282,6 +282,25 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await expect(workPackageDialog).toBeHidden();
     await expect(page.getByText("WP-E2E", { exact: true }).first()).toBeVisible();
 
+    const mediumTermCapacity = page.locator(".mt-capacity-panel");
+    await expect(mediumTermCapacity).toContainText("Charge WP");
+    await expect(mediumTermCapacity).toContainText("Charge non disponible");
+
+    const workPackageRow = page.locator(".mt-timeline-row").filter({ hasText: "WP-E2E" });
+    await workPackageRow.getByRole("button", { name: "Modifier / répartir" }).click();
+    const weeklyEditor = page.getByRole("dialog", { name: "Modifier le lot" });
+    await expect(weeklyEditor).toContainText("Répartition hebdomadaire");
+    await expect(weeklyEditor).toContainText("Aucune répartition hebdomadaire validée.");
+    await weeklyEditor.getByRole("button", { name: "Générer une proposition automatique" }).click();
+    await expect(weeklyEditor).toContainText("Proposition AUTO prévisualisée — elle n’est pas encore enregistrée.");
+    await expect(weeklyEditor).toContainText("Somme affichée");
+    await weeklyEditor.getByRole("button", { name: "Accepter la proposition AUTO" }).click();
+    await expect(weeklyEditor).toBeHidden();
+
+    const refreshedWorkPackageRow = page.locator(".mt-timeline-row").filter({ hasText: "WP-E2E" });
+    await expect(refreshedWorkPackageRow).toContainText("Répartition AUTO");
+    await expect(page.locator(".mt-task-strip").filter({ hasText: "210" })).toContainText("Budget");
+
     const editor = await createDemand(page, {
       start: d1,
       end: d5,
