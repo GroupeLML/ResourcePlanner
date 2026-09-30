@@ -29,7 +29,7 @@ RUN python -m pip install --no-cache-dir -r requirements-server.txt -c constrain
 COPY --chown=resourceplanner:resourceplanner app ./app
 COPY --chown=resourceplanner:resourceplanner migrations ./migrations
 COPY --chown=resourceplanner:resourceplanner alembic.ini ./
-COPY --chown=resourceplanner:resourceplanner tools/seed_demo_data.py ./tools/seed_demo_data.py
+COPY --chown=resourceplanner:resourceplanner tools/seed_demo_data.py ./tools/seed_demo_data.py\nCOPY --chown=resourceplanner:resourceplanner tools/bridge_sqlite_0048_runtime.py ./tools/bridge_sqlite_0048_runtime.py
 
 RUN mkdir -p /data /home/resourceplanner/.resourceplanner/logs \
     && chown -R resourceplanner:resourceplanner /data /home/resourceplanner/.resourceplanner
