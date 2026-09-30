@@ -589,8 +589,16 @@
 }
 
 .request-line-fields > label,
-.request-line-fields > .competency-picker {
+.request-line-fields > .competency-picker,
+.request-line-date-group {
   min-width: 0;
+}
+
+.request-line-date-group {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .55rem;
+  grid-column: span 2;
 }
 
 .request-line-fields label {
@@ -603,6 +611,15 @@
   color: var(--muted);
   font-size: .61rem;
   font-weight: 700;
+}
+
+.request-line-compact-field {
+  align-self: start;
+}
+
+.request-line-compact-field select {
+  min-height: 32px;
+  padding-block: .32rem;
 }
 
 .request-line-fields input,
@@ -749,8 +766,13 @@
     grid-template-columns: 1fr;
   }
 
-  .request-line-fields .span-2 {
+  .request-line-fields .span-2,
+  .request-line-date-group {
     grid-column: auto;
+  }
+
+  .request-line-date-group {
+    grid-template-columns: 1fr;
   }
 
   .request-line-title {

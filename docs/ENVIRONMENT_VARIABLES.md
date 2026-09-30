@@ -30,6 +30,18 @@ Avec `RESOURCEPLANNER_DEV_USER_SWITCHER=false`, le principal local est résolu d
 
 Le sélecteur de développement crée une session locale HttpOnly vers un `AppUser` existant et réutilise les rôles/permissions backend. Il n'émule pas OIDC et le serveur refuse de démarrer si le switcher est demandé en mode `oidc`. Le Compose Synology le force explicitement à `false`.
 
+## Break-glass production
+
+Le mécanisme break-glass est distinct du mode local et du Dev User Switcher. Voir [BREAK_GLASS_ADMIN.md](BREAK_GLASS_ADMIN.md).
+
+| Variable | Usage | Secret |
+| --- | --- | --- |
+| `RESOURCEPLANNER_BREAK_GLASS_ENABLED` | Expose le login de secours; accepté uniquement avec `RESOURCEPLANNER_AUTH_MODE=oidc`; défaut `false` | Non |
+| `RESOURCEPLANNER_BREAK_GLASS_LOGIN` | Login utilisé par le CLI/profile `ops` de bootstrap | Non |
+| `RESOURCEPLANNER_BREAK_GLASS_SECRET` | Secret lu uniquement par le bootstrap; ne jamais committer ni journaliser | **Oui** |
+
+Le secret n'est pas requis par le backend normal : seul son hash scrypt est persisté. Le runtime ne crée jamais silencieusement de credential au démarrage.
+
 ## OIDC
 
 Ces variables sont requises ou pertinentes lorsque `RESOURCEPLANNER_AUTH_MODE=oidc`.

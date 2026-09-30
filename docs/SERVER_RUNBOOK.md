@@ -17,6 +17,8 @@ Deux modes d'identité sont disponibles :
 - `local` pour le développement/test explicite;
 - `oidc` pour l'Authorization Code Flow vers Acumatica avec PKCE S256 et session serveur.
 
+En production OIDC, #457 ajoute un **login break-glass opt-in** qui authentifie un `AppUser ADMIN` réservé sans contacter le fournisseur OIDC. Ce n'est pas un troisième `RESOURCEPLANNER_AUTH_MODE`. Voir [BREAK_GLASS_ADMIN.md](BREAK_GLASS_ADMIN.md).
+
 SQL Server est la base de référence pour les environnements intégrés/staging/production (ADR-011). SQLite reste un dialecte local/test. La validation réelle ENV-162 sur SQL Server 2017 a confirmé les migrations, le préflight FastAPI, le runtime Uvicorn, commit/rollback et le CAS global. Le packaging Docker embarque désormais le même chemin driver validé : `pyodbc==5.3.0` et Microsoft ODBC Driver 18. L'implémentation OIDC est couverte par un fournisseur simulé en tests; la validation contre l'instance Acumatica réelle reste dépendante de ses paramètres issuer/client/redirect.
 
 ## 1. Dépendances serveur
@@ -103,6 +105,21 @@ Les rôles/permissions restent autoritaires dans RessourcePlanner. Un utilisateu
 
 Les credentials OIDC utilisateur sont indépendants de `RESOURCEPLANNER_ACUMATICA_ACCESS_TOKEN`, utilisé par la synchronisation serveur-à-serveur des projets. Ne pas réutiliser un token utilisateur comme credential de synchronisation ERP.
 
+## 4.1. Administrateur break-glass
+
+Le bootstrap et la rotation sont des commandes d'exploitation séparées des migrations et des seeds :
+
+```bash
+python tools/bootstrap_production_admin.py
+python tools/bootstrap_production_admin.py --rotate-secret
+```
+
+Le runtime n'expose ce login que lorsque `RESOURCEPLANNER_BREAK_GLASS_ENABLED=true` en mode `oidc`. Le secret est fourni hors Git, hashé avec scrypt puis oublié; le backend normal ne reçoit pas sa valeur en clair.
+
+Les sessions break-glass utilisent `auth_sessions`, le cookie opaque serveur et le CSRF existants. La politique initiale bloque le credential après 5 échecs dans 15 minutes pendant 15 minutes. Les succès/échecs/rotations sont audités sans secret.
+
+La procédure complète de création, test, rotation/réinitialisation, panne OIDC et rollback est dans [BREAK_GLASS_ADMIN.md](BREAK_GLASS_ADMIN.md).
+
 ## 5. Migrations
 
 Le serveur Python normal n'exécute jamais Alembic automatiquement :
@@ -111,7 +128,11 @@ Le serveur Python normal n'exécute jamais Alembic automatiquement :
 python -m alembic upgrade head
 ```
 
-La migration `0011_oidc_sessions` ajoute les transactions de login OIDC à usage unique et les sessions serveur.
+Pour le premier go-live, l'historique Alembic pré-production est remplacé par la baseline statique unique `v2_production_baseline` (#457C).
+Elle représente le schéma canonique complet et ne crée aucune identité, donnée `DEMO-*` ni credential break-glass; seul le singleton technique `planning_mutation_state/GLOBAL` est initialisé.
+Après le premier go-live, cette baseline devient immuable et toute évolution de schéma reprend sous forme de migration additive normale.
+
+Le contrat détaillé est documenté dans [`SQL_CUTOVER_RUNBOOK.md`](SQL_CUTOVER_RUNBOOK.md).
 
 `Lancer_Web.bat` et `Lancer_Serveur.bat` conservent une exception de commodité **uniquement pour leur fallback SQLite local**, lorsque `RESOURCEPLANNER_DATABASE_URL` n'était pas définie avant le lancement.
 
@@ -223,11 +244,12 @@ Ordre de haut niveau :
 1. terminer la baseline et les garde-fous pré-go-live de #457;
 2. créer une base SQL Server neuve et vide;
 3. appliquer explicitement `alembic upgrade head`;
-4. exécuter le bootstrap administrateur distinct des seeds;
-5. alimenter les référentiels réels nécessaires;
-6. exécuter les préflights et smokes lecture/mutation/rollback/concurrence;
-7. démarrer React + FastAPI sur SQL Server;
-8. seulement ensuite déclarer SQL Server autoritaire pour les nouvelles opérations selon #208.
+4. exécuter #492 pour transférer uniquement les données SQLite V2 retenues, avec IDs stables et exclusions dev/sessions/secrets;
+5. exécuter le bootstrap administrateur distinct des seeds;
+6. alimenter/réconcilier les référentiels réels nécessaires;
+7. exécuter les préflights et smokes lecture/mutation/rollback/concurrence;
+8. démarrer React + FastAPI sur SQL Server;
+9. seulement ensuite déclarer SQL Server autoritaire pour les nouvelles opérations selon #208.
 
 SQLite reste un outil local/test et ne constitue pas un fallback de production après le cutover.
 

@@ -37,7 +37,9 @@ EXPECTED_TABLES = {
     "identity_admin_audit",
     "business_contacts",
     "auth_login_transactions",
+    "auth_security_audit",
     "auth_sessions",
+    "break_glass_credentials",
     "command_idempotency_receipts",
     "communication_batches",
     "communication_contacts",
@@ -104,7 +106,9 @@ class SqlSchemaTests(unittest.TestCase):
         erp_users = Base.metadata.tables["erp_user_directory"].c
         identity_audit = Base.metadata.tables["identity_admin_audit"].c
         login_transactions = Base.metadata.tables["auth_login_transactions"].c
+        auth_security_audit = Base.metadata.tables["auth_security_audit"].c
         auth_sessions = Base.metadata.tables["auth_sessions"].c
+        break_glass = Base.metadata.tables["break_glass_credentials"].c
         communication_contacts = Base.metadata.tables["communication_contacts"].c
         communication_batches = Base.metadata.tables["communication_batches"].c
         communication_messages = Base.metadata.tables["communication_messages"].c
@@ -267,6 +271,20 @@ class SqlSchemaTests(unittest.TestCase):
         self.assertFalse(login_transactions.state_hash.nullable)
         self.assertFalse(login_transactions.nonce.nullable)
         self.assertFalse(login_transactions.code_verifier.nullable)
+        self.assertFalse(auth_sessions.auth_mode.nullable)
+        self.assertFalse(break_glass.user_id.nullable)
+        self.assertFalse(break_glass.login_name.nullable)
+        self.assertFalse(break_glass.secret_hash.nullable)
+        self.assertFalse(break_glass.credential_version.nullable)
+        self.assertFalse(break_glass.active.nullable)
+        self.assertFalse(break_glass.failed_attempt_count.nullable)
+        self.assertTrue(break_glass.locked_until.nullable)
+        self.assertFalse(auth_security_audit.event_type.nullable)
+        self.assertFalse(auth_security_audit.success.nullable)
+        self.assertTrue(auth_security_audit.credential_id.nullable)
+        self.assertTrue(auth_security_audit.target_user_id.nullable)
+        self.assertFalse(auth_security_audit.login_name_hash.nullable)
+        self.assertFalse(auth_security_audit.reason_code.nullable)
         self.assertFalse(login_transactions.expires_at.nullable)
         self.assertTrue(login_transactions.consumed_at.nullable)
         self.assertFalse(auth_sessions.token_hash.nullable)

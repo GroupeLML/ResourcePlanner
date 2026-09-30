@@ -138,7 +138,9 @@ async function workflowPost(
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
+        ...csrfHeaders(),
       },
+      credentials: "include",
       body: body === undefined ? undefined : JSON.stringify(body),
     },
   );
@@ -241,7 +243,9 @@ export async function requestDemandCancellation(
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
+        ...csrfHeaders(),
       },
+      credentials: "include",
       body: JSON.stringify({ reason, expected_version: expectedVersion }),
     },
   );
@@ -262,7 +266,9 @@ export async function rejectDemandCancellation(
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
+        ...csrfHeaders(),
       },
+      credentials: "include",
       body: JSON.stringify({
         cancellation_request_id: cancellationRequestId,
         comment,
@@ -291,7 +297,9 @@ export async function acceptDemandCancellation(
         Accept: "application/json",
         "Content-Type": "application/json",
         "Idempotency-Key": idempotencyKey,
+        ...csrfHeaders(),
       },
+      credentials: "include",
       body: JSON.stringify({
         cancellation_request_id: cancellationRequestId,
         comment,

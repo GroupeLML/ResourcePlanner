@@ -262,7 +262,6 @@ export default function DemandsPage({ initialDemandNumber = null }: DemandsPageP
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [taskSearch, setTaskSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [projectFilter, setProjectFilter] = useState("all");
   const [includeTerminated, setIncludeTerminated] = useState(false);
@@ -431,15 +430,10 @@ export default function DemandsPage({ initialDemandNumber = null }: DemandsPageP
     [workPackages, form.work_package_ref],
   );
 
-  const visibleTasks = useMemo(() => {
-    const query = normalize(taskSearch);
-    return tasks.filter((task) => {
-      if (!task.active && task.code !== form.task_code) return false;
-      if (task.code === form.task_code) return true;
-      if (!query) return true;
-      return normalize(`${task.code} ${task.label}`).includes(query);
-    });
-  }, [tasks, taskSearch, form.task_code]);
+  const visibleTasks = useMemo(
+    () => tasks.filter((task) => task.active || task.code === form.task_code),
+    [tasks, form.task_code],
+  );
 
   const selectedTask = useMemo(
     () => tasks.find((row) => row.code === form.task_code) ?? null,
@@ -835,7 +829,6 @@ export default function DemandsPage({ initialDemandNumber = null }: DemandsPageP
                     value={form.project_number}
                     onChange={(event) => {
                       const projectNumber = event.target.value;
-                      setTaskSearch("");
                       setEditorDirty(true);
                       setForm((current) => ({
                         ...current,
@@ -948,16 +941,6 @@ export default function DemandsPage({ initialDemandNumber = null }: DemandsPageP
                 />
               ) : (
                 <div className="demand-form-grid demand-flat-need-grid">
-                  <label>
-                    <span>Recherche catalogue ERP</span>
-                    <input
-                      value={taskSearch}
-                      onChange={(event) => setTaskSearch(event.target.value)}
-                      disabled={saving || !form.project_number}
-                      placeholder="Code ou description…"
-                    />
-                  </label>
-
                   <label>
                     <span>Tâche ERP</span>
                     <select

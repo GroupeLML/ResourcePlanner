@@ -132,9 +132,10 @@ def consume_login_transaction(
 
 def create_server_session(
     factory: SqlSessionFactory,
-    runtime: OidcRuntime,
+    runtime: Any,
     *,
     user_id: str,
+    auth_mode: str = "oidc",
 ) -> tuple[str, str]:
     raw_token = runtime.new_secret(64)
     csrf_token = runtime.new_secret(48)
@@ -144,6 +145,7 @@ def create_server_session(
             csrf_token=csrf_token,
             user_id=user_id,
             expires_at=utc_now() + runtime.session_ttl,
+            auth_mode=auth_mode,
         )
     return raw_token, csrf_token
 

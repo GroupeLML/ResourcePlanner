@@ -118,7 +118,7 @@ async function createDemand(
   await expect(editor.getByRole("heading", { name: "Nouvelle demande" })).toBeVisible();
 
   await labelled(editor, "Projet", "select").selectOption("P-251");
-  await labelled(editor, "Recherche catalogue ERP", "input").fill("automatisation");
+  await expect(editor.getByText("Recherche catalogue ERP", { exact: true })).toHaveCount(0);
   const taskSelect = labelled(editor, "Tâche ERP", "select");
   await expect(taskSelect.locator("option", { hasText: "210 — AUTOMATISATION E2E" })).toBeAttached();
   await taskSelect.selectOption("210");
@@ -202,6 +202,54 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await expect(admin.page.locator(".configuration-notice")).toContainText("Configuration SMTP enregistrée");
     await smtpForm.getByRole("button", { name: "Tester la connexion enregistrée" }).click();
     await expect(admin.page.locator(".configuration-notice")).toContainText("Connexion SMTP réussie");
+
+    await navigateMain(admin.page, "Utilisateurs");
+    await expect(admin.page.getByRole("heading", { name: "Utilisateurs et rôles", level: 2 })).toBeVisible();
+    const pendingErpRow = admin.page
+      .locator(".erp-user-directory-table tbody tr")
+      .filter({ hasText: "ERP-OIDC-PENDING" });
+    await expect(pendingErpRow).toContainText("Actif");
+    await expect(pendingErpRow).toContainText("TECHNICIAN");
+    await expect(pendingErpRow).toContainText("En attente de première connexion");
+    const appUserId = (await pendingErpRow.locator("td").nth(5).innerText()).trim();
+    expect(appUserId).not.toBe("Non provisionné");
+
+    const pendingAppUser = admin.page
+      .locator(".user-admin-user-list > button")
+      .filter({ hasText: "Utilisateur OIDC E2E" });
+    await expect(pendingAppUser).toContainText("Compte · Actif");
+    await expect(pendingAppUser).toContainText("OIDC · En attente de première connexion");
+    await pendingAppUser.click();
+    const pendingStatus = admin.page.getByTestId("app-user-identity-status");
+    await expect(pendingStatus).toContainText("Compte");
+    await expect(pendingStatus).toContainText("Actif");
+    await expect(pendingStatus).toContainText("En attente de première connexion");
+    await expect(pendingStatus).toContainText(appUserId);
+    await expect(pendingStatus).toContainText("ERP-OIDC-PENDING");
+
+    const linkResponse = await admin.context.request.get("/__e2e__/identity/link-pending");
+    expect(linkResponse.ok()).toBeTruthy();
+    const linkedIdentity = (await linkResponse.json()) as {
+      app_user_id: string;
+      erp_user_id: string;
+      oidc_state: string;
+    };
+    expect(linkedIdentity.app_user_id).toBe(appUserId);
+    expect(linkedIdentity.erp_user_id).toBe("ERP-OIDC-PENDING");
+    expect(linkedIdentity.oidc_state).toBe("linked");
+
+    await admin.page.reload();
+    await navigateMain(admin.page, "Utilisateurs");
+    const linkedErpRow = admin.page
+      .locator(".erp-user-directory-table tbody tr")
+      .filter({ hasText: "ERP-OIDC-PENDING" });
+    await expect(linkedErpRow).toContainText(appUserId);
+    await expect(linkedErpRow).toContainText("Lié");
+    const linkedAppUser = admin.page
+      .locator(".user-admin-user-list > button")
+      .filter({ hasText: "Utilisateur OIDC E2E" });
+    await expect(linkedAppUser).toContainText("Compte · Actif");
+    await expect(linkedAppUser).toContainText("OIDC · Lié");
     await closeContext(admin.context);
 
     const projectManager = await openAs(browser, "PROJECT_MANAGER");
@@ -1089,7 +1137,7 @@ test("multi-line demand editor generates independent RequestLines and materializ
   await expect(editor.getByRole("heading", { name: "Nouvelle demande" })).toBeVisible();
 
   await labelled(editor, "Projet", "select").selectOption("P-251");
-  await labelled(editor, "Recherche catalogue ERP", "input").fill("automatisation");
+  await expect(editor.getByText("Recherche catalogue ERP", { exact: true })).toHaveCount(0);
   const multiTaskSelect = labelled(editor, "Tâche ERP", "select");
   await expect(multiTaskSelect.locator("option", { hasText: "210 — AUTOMATISATION E2E" })).toBeAttached();
   await multiTaskSelect.selectOption("210");
@@ -1104,6 +1152,15 @@ test("multi-line demand editor generates independent RequestLines and materializ
   await editor.getByRole("button", { name: "Passer aux lignes multiples" }).click();
   const cards = editor.locator(".request-line-card");
   await expect(cards).toHaveCount(2);
+  const firstDateGroup = cards.nth(0).getByTestId("request-line-dates-0");
+  await expect(firstDateGroup).toBeVisible();
+  const startBox = await labelled(firstDateGroup, "Début", "input").boundingBox();
+  const endBox = await labelled(firstDateGroup, "Fin", "input").boundingBox();
+  expect(startBox).not.toBeNull();
+  expect(endBox).not.toBeNull();
+  expect(Math.abs(startBox!.y - endBox!.y)).toBeLessThan(4);
+  await expect(labelled(cards.nth(0), "Confirmation", "select")).toBeVisible();
+  await expect(labelled(cards.nth(0), "Classe de ressource", "select")).toBeVisible();
   await expect(editor.locator(".request-lines-summary")).toContainText("16");
   await expect(editor.locator(".request-lines-summary")).toContainText("heure(s) humaines projetées");
 
@@ -1341,7 +1398,7 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   await projectManager.page.getByRole("button", { name: /Nouvelle demande/ }).click();
   let editor = projectManager.page.locator(".demand-editor-form");
   await labelled(editor, "Projet", "select").selectOption("P-251");
-  await labelled(editor, "Recherche catalogue ERP", "input").fill("automatisation");
+  await expect(editor.getByText("Recherche catalogue ERP", { exact: true })).toHaveCount(0);
   const mixedTaskSelect = labelled(editor, "Tâche ERP", "select");
   await expect(mixedTaskSelect.locator("option", { hasText: "210 — AUTOMATISATION E2E" })).toBeAttached();
   await mixedTaskSelect.selectOption("210");
@@ -1654,6 +1711,39 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   await expect(preserved63).toContainText("NAC-63 · verrouillée");
   await expect(preserved64).toContainText("NAC-64 · verrouillée");
   await closeContext(reapprover.context);
+});
+
+test("draft demand exposes primary submit and cancel actions and direct cancel succeeds", async ({ browser }) => {
+  const { d1 } = acceptanceDates();
+  const requester = await openAs(browser, "PROJECT_MANAGER");
+  const editor = await createDemand(requester.page, {
+    start: d1,
+    end: d1,
+    hours: "8",
+    activeDays: "1",
+    description: "Demande brouillon annulation directe #506",
+  });
+  await editor.getByRole("button", { name: "Créer le brouillon" }).click();
+  const createdNotice = requester.page.locator(".demand-notice");
+  await expect(createdNotice).toContainText("créée en brouillon");
+  const number = demandNumberFrom(await createdNotice.textContent());
+
+  const detail = requester.page.locator(`.demand-detail-context[data-demand-number="${number}"]`);
+  const primaryActions = detail.getByTestId("primary-demand-actions");
+  await expect(primaryActions).toBeVisible();
+  const submit = primaryActions.getByRole("button", { name: "Soumettre", exact: true });
+  const cancel = primaryActions.getByRole("button", { name: "Annuler la demande", exact: true });
+  await expect(submit).toBeVisible();
+  await expect(submit).toBeEnabled();
+  await expect(cancel).toBeVisible();
+  await expect(cancel).toBeEnabled();
+
+  requester.page.once("dialog", (dialog) => dialog.accept());
+  await cancel.click();
+  await expect(detail.locator(".demand-detail-statuses")).toContainText("Annulée");
+  await expect(detail.locator(".error-panel")).toHaveCount(0);
+  await expect(detail.getByTestId("primary-demand-actions")).toHaveCount(0);
+  await closeContext(requester.context);
 });
 
 test("materialized demand cancellation is requested, reviewed, rejected or accepted through React", async ({ browser }) => {

@@ -65,6 +65,10 @@ class IdentityAdminAuditPort(Protocol):
     ) -> None: ...
 
 
+class BreakGlassAdminProtectionPort(Protocol):
+    def is_last_active_admin_access(self, user_id: str) -> bool: ...
+
+
 class UserAdminRepositoryPort(Protocol):
     def list_users(self) -> tuple[UserIdentityRecord, ...]: ...
 
@@ -179,10 +183,12 @@ class UserAdminService:
         *,
         erp_directory: ErpUserDirectoryRepositoryPort | None = None,
         audit: IdentityAdminAuditPort | None = None,
+        break_glass_protection: BreakGlassAdminProtectionPort | None = None,
     ) -> None:
         self._repository = repository
         self._erp_directory = erp_directory
         self._audit = audit
+        self._break_glass_protection = break_glass_protection
 
     def role_catalog(self) -> tuple[UserRoleDefinition, ...]:
         return tuple(
@@ -245,6 +251,17 @@ class UserAdminService:
         roles: tuple[str, ...],
         actor_user_id: str | None,
     ) -> None:
+        if (
+            self._break_glass_protection is not None
+            and (not active or ROLE_ADMIN not in roles)
+            and self._break_glass_protection.is_last_active_admin_access(existing.user_id)
+        ):
+            raise ApplicationConflictError(
+                "Le dernier accès administrateur break-glass ne peut pas être désactivé ni perdre le rôle ADMIN.",
+                code="user_admin_last_break_glass_protected",
+                context={"user_id": existing.user_id},
+            )
+
         if not actor_user_id or actor_user_id != existing.user_id:
             return
         if not active:

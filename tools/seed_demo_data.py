@@ -836,11 +836,22 @@ def _parse_args() -> argparse.Namespace:
         default=os.environ.get("RESOURCEPLANNER_DATABASE_URL", DEFAULT_DATABASE_URL),
         help="URL SQLAlchemy SQLite. Par défaut: base locale RessourcePlanner.",
     )
+    parser.add_argument(
+        "--confirm-dev-only",
+        action="store_true",
+        help="Confirmation explicite requise pour utiliser ce seed de développement.",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = _parse_args()
+    if not args.confirm_dev_only:
+        print(
+            "ERREUR: ce seed est strictement réservé au développement. "
+            "Relancer avec --confirm-dev-only sur une base SQLite locale dédiée."
+        )
+        return 2
     try:
         summary = seed_demo_database(args.database_url)
     except (ValueError, RuntimeError) as exc:

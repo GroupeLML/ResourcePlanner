@@ -42,6 +42,27 @@ class ReactDemandWorkflowContractTests(unittest.TestCase):
         self.assertNotIn("getDemandWorkflowState", page)
         self.assertIn("currentWorkflowState?.version ?? currentDemand.version", page)
         self.assertNotIn("function expectedActions", page)
+        post_count = source.count('method: "POST"')
+        self.assertGreater(post_count, 0)
+        self.assertEqual(post_count, source.count("...csrfHeaders()"))
+        self.assertEqual(post_count, source.count('credentials: "include"'))
+
+    def test_submit_and_cancel_are_visible_primary_backend_actions(self) -> None:
+        detail = (ROOT / "frontend" / "src" / "DemandDetail.tsx").read_text(
+            encoding="utf-8"
+        )
+        page = (ROOT / "frontend" / "src" / "DemandWorkflowPage.tsx").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('data-testid="demand-workflow-section"', detail)
+        self.assertIn('<details className="demand-detail-section" open', detail)
+        self.assertIn('data-testid="primary-demand-actions"', page)
+        self.assertIn('actions.includes("submit")', page)
+        self.assertIn('actions.includes("cancel")', page)
+        self.assertIn('onClick={() => runAction("submit")}', page)
+        self.assertIn('onClick={() => runAction("cancel")}', page)
+        self.assertIn("await refreshAfterMutation(result.demand_number)", page)
 
     def test_workflow_separates_approval_from_confirmation(self) -> None:
         source = (ROOT / "frontend" / "src" / "DemandWorkflowPage.tsx").read_text(

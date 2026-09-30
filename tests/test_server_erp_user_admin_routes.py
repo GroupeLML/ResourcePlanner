@@ -20,6 +20,7 @@ from app.infrastructure.sql import (
     Base,
     ErpUserDirectoryEntry,
     IdentityAdminAudit,
+    SqlUserIdentityRepository,
 )
 from app.server import create_api_app
 from app.server.security import static_auth_resolver
@@ -173,6 +174,36 @@ class ServerErpUserAdminTests(unittest.TestCase):
             self.assertIn("APP_USER_PREPROVISIONED", actions)
             self.assertIn("APP_USER_ACTIVATED", actions)
             self.assertIn("APP_USER_ROLES_CHANGED", actions)
+
+        app_user_id = first.json()["app_user_id"]
+        with factory.begin() as session:
+            bound = SqlUserIdentityRepository(session).bind_external_identity(
+                app_user_id,
+                "urn:test:oidc",
+                "subject-erp-candidate",
+            )
+            self.assertEqual(bound.user_id, app_user_id)
+            self.assertEqual(bound.erp_user_id, "ERP-ADMIN-CANDIDATE")
+
+        with TestClient(app) as client:
+            erp_projection = client.get("/api/v1/admin/erp-users")
+            app_projection = client.get("/api/v1/admin/users")
+
+        erp_row = next(
+            item
+            for item in erp_projection.json()
+            if item["user_id"] == "ERP-ADMIN-CANDIDATE"
+        )
+        app_row = next(
+            item for item in app_projection.json() if item["user_id"] == app_user_id
+        )
+        self.assertEqual(erp_row["oidc_state"], "linked")
+        self.assertEqual(app_row["oidc_state"], "linked")
+        self.assertEqual(erp_row["app_user_id"], app_row["app_user_id"])
+        self.assertEqual(erp_row["erp_user_id"], app_row["erp_user_id"])
+        self.assertEqual(erp_row["employee_external_id"], app_row["employee_external_id"])
+        self.assertEqual(erp_row["active"], app_row["active"])
+        self.assertEqual(erp_row["roles"], app_row["roles"])
 
     def test_roles_deactivation_and_reactivation_use_same_app_user(self) -> None:
         app = self._app()

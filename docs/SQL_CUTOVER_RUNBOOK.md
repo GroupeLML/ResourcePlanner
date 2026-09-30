@@ -50,6 +50,8 @@ L'objectif n'est pas de supprimer Alembic, mais de remplacer la chaîne historiq
 
 Après ce point, les migrations futures repartent normalement à partir de cette baseline.
 
+La baseline de production retenue porte la révision Alembic `v2_production_baseline` et vit dans l'unique fichier `migrations/versions/0001_v2_production_baseline.py`. Elle est autonome : elle n'importe pas les modèles applicatifs et ne dépend d'aucune révision `0001` → `0050` de développement. La validation automatisée couvre un upgrade SQLite depuis zéro et la génération/compilation MSSQL offline; la validation SQL Server réelle reste l'étape ENV-457 avant fermeture de #457.
+
 ## 3. Retirer les seeds de développement du chemin production
 
 Le workflow production ne doit pas appeler ni dépendre de :
@@ -151,7 +153,8 @@ Tant que SQL n'est pas déclaré autoritaire, le rollback recommandé reste simp
 2. supprimer/recréer la base si nécessaire;
 3. corriger le code/configuration;
 4. réappliquer la baseline;
-5. relancer bootstrap + synchronisations + smokes.
+5. rejouer #492 depuis la sauvegarde SQLite vérifiée lorsque des données V2 doivent être conservées;
+6. relancer bootstrap + synchronisations + smokes.
 
 Ne pas corriger manuellement la base pour contourner une baseline ou un bootstrap défectueux.
 

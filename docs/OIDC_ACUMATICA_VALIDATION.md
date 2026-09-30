@@ -2,7 +2,7 @@
 
 L'implémentation OIDC de RessourcePlanner est testée avec un fournisseur simulé et le contrat d'identité a maintenant été observé sur un compte Acumatica réel. Le login interactif complet post-implémentation a également été validé sur ce compte, avec résolution d'un vrai `AppUser` et `/api/v1/auth/me`. Restent à valider un deuxième compte ainsi que le comportement HTTPS/cookies Secure sur l'environnement cible.
 
-> **ADR-012 / IDENTITY-D.** Le runtime cible est maintenant implémenté : l'ADMIN pré-provisionne d'abord un véritable `AppUser`; le premier login OIDC lie seulement `(issuer, subject)` au compte existant après vérification de `preferred_username → RP_Users.UserID → AppUser.erp_user_id` et de l'EmployeID. Le callback ne crée, n'active, ne réactive ni ne rerôle un compte.
+> **ADR-012 / IDENTITY-F.** Le runtime cible et son acceptation automatisée transversale sont couverts : l'ADMIN pré-provisionne d'abord un véritable `AppUser`; le premier login OIDC lie seulement `(issuer, subject)` au compte existant après vérification de `preferred_username → RP_Users.UserID → AppUser.erp_user_id` et de l'EmployeID. Le callback ne crée, n'active, ne réactive ni ne rerôle un compte. Les surfaces ADMIN affichent séparément l'état du compte et l'état OIDC dérivé. Après le squash Alembic #457C, la reprise historique est une opération de données explicite, déterministe et fail-closed.
 
 ## Paramètres requis
 
@@ -27,14 +27,16 @@ Ne jamais inscrire de secret ou token réel dans ce document ou dans Git.
 
 1. ouvrir RessourcePlanner sans session : l'interface doit proposer la connexion;
 2. démarrer `/api/v1/auth/login` et vérifier la redirection vers Acumatica;
-3. terminer le login et revenir sur `/api/v1/auth/callback` puis `/`;
-4. vérifier `/api/v1/auth/me` : issuer, subject, utilisateur local, rôles et permissions attendus;
-5. vérifier qu'un utilisateur Acumatica non provisionné est refusé;
-6. vérifier les permissions avec au moins deux rôles locaux différents;
-7. se déconnecter et confirmer que l'ancienne session ne permet plus `/api/v1/auth/me`;
-8. redémarrer l'application et confirmer que les sessions SQL non expirées restent résolubles;
-9. confirmer les attributs de cookie en HTTPS (`HttpOnly`, `Secure`, `SameSite=Lax`);
-10. documenter uniquement les métadonnées non sensibles retenues : issuer, discovery URL, redirect URI, scopes et procédure de provisionnement.
+3. avant le premier login, vérifier dans Utilisateurs que le même `AppUser` est **Compte = Actif** et **OIDC = En attente de première connexion**;
+4. terminer le login et revenir sur `/api/v1/auth/callback` puis `/`;
+5. vérifier dans Utilisateurs que le même `app_user_id` / `erp_user_id` est désormais **OIDC = Lié**, sans changement de rôles ni d'activation;
+6. vérifier `/api/v1/auth/me` : issuer, subject, utilisateur local, rôles et permissions attendus;
+7. vérifier qu'un utilisateur Acumatica non provisionné est refusé;
+8. vérifier les permissions avec au moins deux rôles locaux différents;
+9. se déconnecter et confirmer que l'ancienne session ne permet plus `/api/v1/auth/me`;
+10. redémarrer l'application et confirmer que les sessions SQL non expirées restent résolubles;
+11. confirmer les attributs de cookie en HTTPS (`HttpOnly`, `Secure`, `SameSite=Lax`);
+12. documenter uniquement les métadonnées non sensibles retenues : issuer, discovery URL, redirect URI, scopes et procédure de provisionnement.
 
 ## Diagnostic temporaire des claims validés
 
@@ -73,3 +75,30 @@ Le smoke réel a confirmé sur un compte et le PO a accepté le contrat suivant 
 Le client OIDC extrait `preferred_username` pour le fonctionnement normal même lorsque les diagnostics de claims sont désactivés. Depuis IDENTITY-D, `RESOURCEPLANNER_OIDC_AUTO_PROVISION` est un réglage legacy sans pouvoir de création dans le callback : aucune identité OIDC ne peut créer implicitement un `AppUser`.
 
 Validation réelle historique acquise sur un compte avec le runtime antérieur : login, callback, provisionnement contrôlé, session et `/api/v1/auth/me`. Le nouveau flux IDENTITY-D doit être re-smoké avec un compte pré-provisionné avant de considérer la validation environnementale équivalente. Validation réelle encore requise : deuxième compte OIDC, logout/révocation complet, cookies HTTPS/Secure sur l'environnement cible, production et SQL Server. Le correctif CSRF du proxy avec port non standard a été fusionné séparément via PR #476; son smoke de mutation ADMIN post-correctif reste à exécuter.
+
+
+## Acceptation automatisée IDENTITY-F
+
+La CI couvre un parcours transversal avec fournisseur OIDC simulé et frontières FastAPI/SQL réelles :
+
+1. synchronisation d'un `RP_Users` admissible;
+2. activation et attribution de rôle par la surface ADMIN, avec `AppUser` immédiatement `pending`;
+3. premier callback OIDC vers le même `AppUser.id`, conservation de `erp_user_id`, `employee_external_id`, `BusinessContact`, rôles et activation, puis création de `AuthSession`;
+4. replay de la même paire sans duplication d'`AppUser` ni nouvel audit de première liaison;
+5. désactivation/changement de rôle après liaison avec état OIDC toujours `linked`;
+6. resynchronisation `RP_Users` sans réactivation, rerôlage ou déplacement de l'identité OIDC.
+
+La reprise historique est testée séparément : le diagnostic est read-only, les cas ambigus restent intacts et `--apply-deterministic` ne renseigne que le `erp_user_id` exact sur le même AppUser, sans toucher au BusinessContact, à l'OIDC, aux rôles, à l'activation, aux sessions ou aux Resources.
+
+Cette preuve est locale/CI. Elle ne constitue pas une validation contre l'instance Acumatica réelle ni contre SQL Server réel.
+
+## Validations environnementales encore ouvertes après IDENTITY-F
+
+Restent à exécuter ou confirmer sur les environnements réels :
+
+- un deuxième compte OIDC Acumatica réel afin de confirmer le contrat sur plus d'une identité;
+- le smoke réel `Compte = Actif / OIDC = En attente` → première connexion → `OIDC = Lié`;
+- une mutation ADMIN sous vraie session OIDC/proxy après le correctif CSRF;
+- HTTPS réel et attributs de cookies `HttpOnly` / `Secure` / `SameSite`;
+- le smoke production;
+- la validation SQL Server environnementale lorsque la CI de compilation/readiness ne couvre pas le comportement réel de l'instance.

@@ -64,6 +64,7 @@ from .composition import (
     build_user_admin_service,
     build_user_view_context_repository,
 )
+from .break_glass import BreakGlassRuntime
 from .dev_user_switcher import DevUserSwitcherRuntime
 from .oidc import OidcRuntime, oidc_csrf_guard
 from .performance import (
@@ -76,6 +77,7 @@ from .routes_admin_settings import build_admin_settings_router
 from .routes_approval_scopes import build_approval_scope_router
 from .routes_assets import build_asset_router
 from .routes_auth import build_auth_router
+from .routes_break_glass import build_break_glass_router
 from .routes_business_contacts import build_business_contact_router
 from .routes_commands import build_command_router
 from .routes_competencies import build_competency_router
@@ -466,6 +468,7 @@ def create_api_app(
     auth_resolver: AuthResolver | None = None,
     api_docs_enabled: bool = True,
     oidc_runtime: OidcRuntime | None = None,
+    break_glass_runtime: BreakGlassRuntime | None = None,
     dev_user_switcher_runtime: DevUserSwitcherRuntime | None = None,
     communication_transport: CommunicationTransportPort | None = None,
     smtp_cipher: SecretCipherPort | None = None,
@@ -593,7 +596,11 @@ def create_api_app(
     install_authorization_middleware(
         app,
         auth_resolver,
-        csrf_guard=(oidc_csrf_guard(oidc_runtime) if oidc_runtime is not None else None),
+        csrf_guard=(
+            oidc_csrf_guard(oidc_runtime or break_glass_runtime)
+            if (oidc_runtime is not None or break_glass_runtime is not None)
+            else None
+        ),
     )
     # Registered after authorization so Starlette wraps it outside auth and the
     # request performance context is already active while credentials are resolved.
@@ -664,6 +671,7 @@ def create_api_app(
         }
 
     app.include_router(build_auth_router(oidc_runtime))
+    app.include_router(build_break_glass_router(break_glass_runtime))
     if dev_user_switcher_runtime is not None:
         app.include_router(build_dev_user_switcher_router(dev_user_switcher_runtime))
     app.include_router(build_user_admin_router(user_admin_dependency))
