@@ -35,6 +35,7 @@ from ..application import (
     ShiftReadModel,
     WorkPackageReadModel,
 )
+from ..application.medium_term_budget import MediumTermBudgetReadModel
 from ..application.approval_progress import ApprovalProgressService
 from ..application.coordinator_dashboard import (
     CoordinatorDashboardReadModel,
@@ -185,6 +186,27 @@ def build_read_router(
                 project_ids=project_ids,
             )
         )
+
+    @router.get("/medium-term/budget")
+    def medium_term_budget(
+        request: Request,
+        project_number: str = Query(min_length=1),
+        scope: ViewScope = Query(default=SCOPE_GLOBAL),
+        queries: PlannerQueryPort = Depends(query_dependency),
+        context_repository: Any = Depends(context_dependency),
+    ) -> MediumTermBudgetReadModel:
+        project_ids = _project_ids_for_scope(request, scope, context_repository)
+        projection = queries.medium_term_budget_projection(
+            project_number=project_number,
+            project_ids=project_ids,
+        )
+        if projection is None:
+            raise ApplicationNotFoundError(
+                f"Projet {project_number} introuvable dans le périmètre demandé.",
+                code="medium_term_project_not_found",
+                context={"project_number": project_number},
+            )
+        return projection
 
     @router.get("/resources")
     def list_resources(
