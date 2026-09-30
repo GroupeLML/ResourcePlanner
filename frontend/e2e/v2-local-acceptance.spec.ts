@@ -1738,6 +1738,7 @@ test("draft demand exposes primary submit and cancel actions and direct cancel s
   await expect(cancel).toBeVisible();
   await expect(cancel).toBeEnabled();
 
+  requester.page.once("dialog", (dialog) => dialog.accept());
   await cancel.click();
   await expect(detail.locator(".demand-detail-statuses")).toContainText("Annulée");
   await expect(detail.locator(".error-panel")).toHaveCount(0);
