@@ -67,6 +67,20 @@ export function getLoginUrl(): string {
   return `${API_BASE}/api/v1/auth/login`;
 }
 
+export async function loginBreakGlass(
+  loginName: string,
+  secret: string,
+): Promise<AuthPrincipal> {
+  const response = await fetch(`${API_BASE}/api/v1/auth/break-glass`, {
+    method: "POST",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ login_name: loginName, secret }),
+  });
+  if (!response.ok) throw await apiError(response);
+  return getCurrentPrincipal();
+}
+
 export async function getCurrentPrincipal(signal?: AbortSignal): Promise<AuthPrincipal> {
   const response = await fetch(`${API_BASE}/api/v1/auth/me`, {
     headers: { Accept: "application/json", ...csrfHeaders() },

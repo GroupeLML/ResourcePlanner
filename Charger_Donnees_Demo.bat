@@ -26,7 +26,7 @@ if errorlevel 1 (
 
 echo.
 echo Chargement des donnees de demonstration...
-".venv-web\Scripts\python.exe" tools\seed_demo_data.py
+".venv-web\Scripts\python.exe" tools\seed_demo_data.py --confirm-dev-only
 set EXIT_CODE=%errorlevel%
 
 if not "%EXIT_CODE%"=="0" (

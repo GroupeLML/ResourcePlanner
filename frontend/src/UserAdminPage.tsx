@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import { ApiError } from "./api";
+import { accountStateLabel, oidcStateLabel } from "./identityAdmin";
 import ErpUserDirectoryPanel from "./ErpUserDirectoryPanel";
 import { useAuth } from "./AuthContext";
 import {
@@ -116,8 +117,8 @@ export default function UserAdminPage() {
       return [
         user.display_name,
         user.email ?? "",
-        user.issuer ?? "",
-        user.subject ?? "",
+        user.erp_user_id ?? "",
+        user.employee_external_id ?? "",
         user.roles.join(" "),
       ].some((value) => value.toLocaleLowerCase("fr").includes(query));
     });
@@ -258,10 +259,15 @@ export default function UserAdminPage() {
                 >
                   <span>
                     <strong>{user.display_name}</strong>
-                    <small>{user.email || user.subject}</small>
+                    <small>{user.email || user.erp_user_id || "Compte RessourcePlanner"}</small>
                   </span>
-                  <span className={user.active ? "user-status active" : "user-status inactive"}>
-                    {user.active ? "Actif" : "Inactif"}
+                  <span className="user-status-stack">
+                    <span className={user.active ? "user-status active" : "user-status inactive"}>
+                      Compte · {accountStateLabel(user.active)}
+                    </span>
+                    <span className={`user-status oidc-${user.oidc_state}`}>
+                      OIDC · {oidcStateLabel(user.oidc_state)}
+                    </span>
                   </span>
                 </button>
               ))}
@@ -280,23 +286,46 @@ export default function UserAdminPage() {
 
           {(creating || selected) ? (
             <>
+              {selected && (
+                <div className="identity-status-grid" data-testid="app-user-identity-status">
+                  <div className="identity-status-card">
+                    <span>Compte</span>
+                    <strong>{accountStateLabel(selected.active)}</strong>
+                  </div>
+                  <div className={`identity-status-card oidc-${selected.oidc_state}`}>
+                    <span>OIDC</span>
+                    <strong>{oidcStateLabel(selected.oidc_state)}</strong>
+                  </div>
+                  <div className="identity-status-card identity-reference">
+                    <span>AppUser</span>
+                    <strong><code>{selected.app_user_id}</code></strong>
+                  </div>
+                  {selected.erp_user_id && (
+                    <div className="identity-status-card identity-reference">
+                      <span>UserID ERP</span>
+                      <strong><code>{selected.erp_user_id}</code></strong>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="form-grid two-columns">
                 <label>
-                  Issuer OIDC
+                  Issuer OIDC (technique)
                   <input
                     value={draft.issuer}
                     readOnly={!creating}
                     onChange={(event) => setDraft((current) => ({ ...current, issuer: event.target.value }))}
-                    placeholder="https://…"
+                    placeholder={creating ? "https://…" : "Non lié"}
                   />
                 </label>
                 <label>
-                  Subject OIDC
+                  Subject OIDC (technique)
                   <input
                     value={draft.subject}
                     readOnly={!creating}
                     onChange={(event) => setDraft((current) => ({ ...current, subject: event.target.value }))}
-                    placeholder="Identifiant subject exact"
+                    placeholder={creating ? "Identifiant subject exact" : "Non lié"}
                   />
                 </label>
               </div>

@@ -41,6 +41,7 @@ from ..infrastructure.sql import (
     OverallocationAuditedSegmentRepository,
     SqlApprovalCycleRepository,
     SqlApprovalScopeRepository,
+    SqlBreakGlassRepository,
     SqlBusinessContactAdminRepository,
     SqlCommandIdempotencyAdapter,
     SqlCompositeAllocationCommandAdapter,
@@ -225,6 +226,7 @@ def build_user_admin_service(session: Session) -> UserAdminService:
         SqlUserIdentityRepository(session),
         erp_directory=SqlErpUserDirectoryRepository(session),
         audit=SqlIdentityAdminAuditRepository(session),
+        break_glass_protection=SqlBreakGlassRepository(session),
     )
 
 
