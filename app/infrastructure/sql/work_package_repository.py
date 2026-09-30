@@ -16,8 +16,10 @@ from ...application.query_models import WorkPackageReadModel
 from ...application.repository_ports import WorkPackageRepositoryPort
 from ...application.work_package_weekly_load import (
     WEEKLY_LOAD_ORIGINS,
+    WEEKLY_LOAD_ORIGIN_AUTO,
     WorkPackageWeeklyLoadState,
     WeeklyLoadValue,
+    propose_weekly_loads,
     validate_weekly_loads,
 )
 from .delivery_models import DeliveryPlanRow
@@ -584,6 +586,26 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
             ),
             loads=tuple(loads),
         )
+        if origin == WEEKLY_LOAD_ORIGIN_AUTO:
+            state = WorkPackageWeeklyLoadState(
+                reference=_optional_text(work_package.legacy_effort_id) or work_package.id,
+                version=current_version,
+                start_date=work_package.start_date,
+                end_date=work_package.end_date,
+                planned_hours=(
+                    Decimal(work_package.planned_hours)
+                    if work_package.planned_hours is not None
+                    else None
+                ),
+                origin=_optional_text(work_package.weekly_load_origin),
+                loads=self._weekly_loads(work_package.id),
+            )
+            if normalized != propose_weekly_loads(state):
+                raise ApplicationValidationError(
+                    "Une répartition AUTO doit correspondre exactement à la proposition backend courante.",
+                    code="work_package_weekly_load_auto_proposal_mismatch",
+                    context={"reference": state.reference},
+                )
         project = self._session.get(Project, work_package.project_id)
         if project is None:
             raise KeyError("Projet du WorkPackage introuvable")
