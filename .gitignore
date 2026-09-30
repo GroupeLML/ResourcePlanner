@@ -1,3 +1,7 @@
+# Python bytecode/cache artifacts
+__pycache__/
+*.py[cod]
+
 .ruff_cache/
 .pypirc
 

@@ -201,6 +201,12 @@ def upgrade() -> None:
     sa.CheckConstraint('version >= 1', name=op.f('ck_planning_mutation_state_planning_mutation_state_version_positive')),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_planning_mutation_state'))
     )
+    planning_state = sa.table(
+        'planning_mutation_state',
+        sa.column('id', sa.String(length=32)),
+        sa.column('version', sa.Integer()),
+    )
+    op.bulk_insert(planning_state, [{'id': 'GLOBAL', 'version': 1}])
     op.create_table('resource_class_configs',
     sa.Column('code', sa.String(length=64), nullable=False),
     sa.Column('label', sa.String(length=255), nullable=False),
