@@ -206,6 +206,10 @@ class WorkPackage(TimestampMixin, Base):
             name="work_package_hours_non_negative",
         ),
         CheckConstraint("version >= 1", name="work_package_version_positive"),
+        CheckConstraint(
+            "weekly_load_origin IS NULL OR weekly_load_origin IN ('AUTO','MANUAL')",
+            name="work_package_weekly_load_origin",
+        ),
         Index("ix_work_packages_project_status", "project_id", "status"),
         Index("ix_work_packages_task_catalog_item", "task_catalog_item_id"),
     )
@@ -229,7 +233,23 @@ class WorkPackage(TimestampMixin, Base):
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     planned_hours: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, server_default=text("'planned'"), index=True)
+    weekly_load_origin: Mapped[str | None] = mapped_column(String(16), nullable=True)
     legacy_effort_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+
+
+class WorkPackageWeeklyLoad(Base):
+    __tablename__ = "work_package_weekly_loads"
+    __table_args__ = (
+        CheckConstraint("hours >= 0", name="weekly_load_hours_non_negative"),
+    )
+
+    work_package_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("work_packages.id"),
+        primary_key=True,
+    )
+    week_start: Mapped[date] = mapped_column(Date, primary_key=True)
+    hours: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
 
 
 class WorkPackageAudit(TimestampMixin, Base):
