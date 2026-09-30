@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { ApiError } from "./api";
+import { accountStateLabel, oidcStateLabel } from "./identityAdmin";
 import {
   ErpUserDirectoryReadModel,
   getErpUsers,
@@ -9,12 +10,6 @@ import {
 } from "./erpUserAdminApi";
 import { UserRoleDefinition } from "./userAdminApi";
 
-
-function oidcLabel(state: string) {
-  if (state === "linked") return "Résolu";
-  if (state === "conflict") return "Conflit";
-  return "En attente";
-}
 
 function message(reason: unknown, fallback: string) {
   if (reason instanceof ApiError) {
@@ -149,8 +144,10 @@ export default function ErpUserDirectoryPanel({
                   <th>EmployeID / ressource</th>
                   <th>ERP User</th>
                   <th>ERP Employé</th>
+                  <th>AppUser</th>
+                  <th>Compte</th>
+                  <th>Rôles</th>
                   <th>OIDC</th>
-                  <th>RP</th>
                 </tr>
               </thead>
               <tbody>
@@ -168,8 +165,10 @@ export default function ErpUserDirectoryPanel({
                     </td>
                     <td>{user.erp_user_active ? "Actif" : "Inactif"}</td>
                     <td>{user.employee_status ?? "—"}</td>
-                    <td>{oidcLabel(user.oidc_state)}</td>
-                    <td>{user.local_active ? "Activé" : "Désactivé"}</td>
+                    <td><code>{user.app_user_id ?? "Non provisionné"}</code></td>
+                    <td>{user.app_user_id ? accountStateLabel(user.active) : "—"}</td>
+                    <td>{user.roles.join(", ") || "—"}</td>
+                    <td>{user.app_user_id ? oidcStateLabel(user.oidc_state) : "—"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -184,7 +183,9 @@ export default function ErpUserDirectoryPanel({
               <div><dt>UserID</dt><dd>{selected.user_id}</dd></div>
               <div><dt>EmployeID</dt><dd>{selected.employee_external_id}</dd></div>
               <div><dt>Ressource</dt><dd>{selected.resource_name ?? "Non résolue"}</dd></div>
-              <div><dt>OIDC</dt><dd>{oidcLabel(selected.oidc_state)}</dd></div>
+              <div><dt>AppUser</dt><dd><code>{selected.app_user_id ?? "Non provisionné"}</code></dd></div>
+              <div><dt>Compte</dt><dd>{selected.app_user_id ? accountStateLabel(selected.active) : "—"}</dd></div>
+              <div><dt>OIDC</dt><dd>{selected.app_user_id ? oidcStateLabel(selected.oidc_state) : "—"}</dd></div>
             </dl>
 
             <fieldset className="user-role-fieldset">
@@ -217,8 +218,8 @@ export default function ErpUserDirectoryPanel({
               <span>
                 <strong>Activation RessourcePlanner</strong>
                 <small>
-                  Cette activation autorise le provisionnement contrôlé au premier login;
-                  aucun rôle n’est dérivé des claims OIDC ou de l’ERP.
+                  Pour un UserID admissible, l’activation matérialise immédiatement son AppUser.
+                  La liaison OIDC reste distincte et attend la première connexion.
                 </small>
               </span>
             </label>
