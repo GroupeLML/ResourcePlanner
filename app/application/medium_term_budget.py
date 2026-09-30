@@ -13,6 +13,10 @@ BUDGET_DIAGNOSTIC_FULLY_COVERED = "FULLY_COVERED"
 BUDGET_DIAGNOSTIC_OVERALLOCATED = "OVERALLOCATED"
 
 MEDIUM_TERM_DIAGNOSTIC_UNCLASSIFIED_WORK_PACKAGES = "UNCLASSIFIED_WORK_PACKAGES"
+MEDIUM_TERM_DIAGNOSTIC_WEEKLY_LOAD_INCOMPLETE = "WEEKLY_LOAD_INCOMPLETE"
+MEDIUM_TERM_DIAGNOSTIC_CAPACITY_ZERO = "WORKFORCE_CAPACITY_ZERO"
+WEEK_DIAGNOSTIC_LOAD_INCOMPLETE = "WORK_PACKAGE_LOAD_INCOMPLETE"
+WEEK_DIAGNOSTIC_CAPACITY_ZERO = "WORKFORCE_CAPACITY_ZERO"
 
 CANCELLED_WORK_PACKAGE_STATUSES = frozenset(
     {
@@ -24,6 +28,17 @@ CANCELLED_WORK_PACKAGE_STATUSES = frozenset(
         "canceled",
     }
 )
+CLOSED_WORK_PACKAGE_STATUSES = frozenset(
+    {
+        "fermé",
+        "ferme",
+        "terminé",
+        "termine",
+        "closed",
+        "completed",
+    }
+)
+INACTIVE_WORK_PACKAGE_STATUSES = CANCELLED_WORK_PACKAGE_STATUSES | CLOSED_WORK_PACKAGE_STATUSES
 
 
 def normalize_work_package_status(value: object) -> str:
@@ -31,14 +46,13 @@ def normalize_work_package_status(value: object) -> str:
 
 
 def work_package_is_budget_included(status: object) -> bool:
-    """Return whether a WorkPackage contributes to the ERP budget comparison.
-
-    ADR-013 keeps closed/completed packages in the budget comparison. Only
-    cancellation aliases are excluded here; weekly/current-load rules belong
-    to 502C and deliberately do not leak into this projection.
-    """
-
+    """Closed history remains budget-relevant; cancelled packages do not."""
     return normalize_work_package_status(status) not in CANCELLED_WORK_PACKAGE_STATUSES
+
+
+def work_package_is_current_load_included(status: object) -> bool:
+    """Current medium-term load excludes closed/completed and cancelled packages."""
+    return normalize_work_package_status(status) not in INACTIVE_WORK_PACKAGE_STATUSES
 
 
 def task_budget_diagnostic(
@@ -47,8 +61,6 @@ def task_budget_diagnostic(
     planned_wp_hours: Decimal | None,
     included_work_package_count: int,
 ) -> str:
-    """Resolve the stable backend diagnostic state for one ERP task."""
-
     if budget_hours is None:
         return BUDGET_DIAGNOSTIC_UNAVAILABLE
     if planned_wp_hours is None:
@@ -63,6 +75,12 @@ def task_budget_diagnostic(
 
 
 @dataclass(frozen=True, slots=True)
+class MediumTermWeeklyLoadReadModel:
+    week_start: date
+    hours: Decimal
+
+
+@dataclass(frozen=True, slots=True)
 class MediumTermBudgetWorkPackageReadModel:
     id: str
     reference: str
@@ -74,6 +92,10 @@ class MediumTermBudgetWorkPackageReadModel:
     start_date: date | None = None
     end_date: date | None = None
     version: int = 1
+    current_load_included: bool = True
+    weekly_load_origin: str | None = None
+    weekly_loads: tuple[MediumTermWeeklyLoadReadModel, ...] = ()
+    weekly_load_diagnostic: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +118,15 @@ class MediumTermBudgetTaskReadModel:
 
 
 @dataclass(frozen=True, slots=True)
+class MediumTermWeekReadModel:
+    week_start: date
+    work_package_hours: Decimal | None
+    capacity_hours: Decimal
+    utilization: Decimal | None
+    diagnostics: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class MediumTermBudgetReadModel:
     project_id: str
     project_number: str
@@ -103,3 +134,6 @@ class MediumTermBudgetReadModel:
     tasks: tuple[MediumTermBudgetTaskReadModel, ...]
     unclassified_work_packages: tuple[MediumTermBudgetWorkPackageReadModel, ...] = ()
     diagnostics: tuple[str, ...] = ()
+    window_start: date | None = None
+    window_end: date | None = None
+    weeks: tuple[MediumTermWeekReadModel, ...] = ()
