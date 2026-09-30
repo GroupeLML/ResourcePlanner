@@ -47,6 +47,10 @@ from ..application import (
     WorkPackageCreateCommand,
     WorkPackageUpdateCommand,
 )
+from ..application.work_package_weekly_load import (
+    WeeklyLoadValue,
+    WorkPackageWeeklyLoadReplaceCommand,
+)
 from .schemas import (
     AllocationDropEvaluateRequest,
     AllocationDuplicateRequest,
@@ -81,6 +85,7 @@ from .schemas import (
     SegmentUpdateRequest,
     WorkPackageCreateRequest,
     WorkPackageUpdateRequest,
+    WorkPackageWeeklyLoadReplaceRequest,
 )
 
 
@@ -272,6 +277,39 @@ def build_command_router(
                     **body.model_dump(exclude_unset=True),
                 )
             )
+        )
+
+    @router.post("/work-packages/{reference}/weekly-loads/proposal")
+    def propose_work_package_weekly_loads(
+        reference: str,
+        facade: ApplicationFacade = Depends(facade_dependency),
+    ) -> dict[str, Any]:
+        return _payload(facade.propose_work_package_weekly_loads(reference))
+
+    @router.put("/work-packages/{reference}/weekly-loads")
+    def replace_work_package_weekly_loads(
+        reference: str,
+        body: WorkPackageWeeklyLoadReplaceRequest,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        facade: ApplicationFacade = Depends(facade_dependency),
+        idempotency: IdempotentCommandExecutor = Depends(stable_idempotency),
+    ) -> dict[str, Any]:
+        command = WorkPackageWeeklyLoadReplaceCommand(
+            reference=reference,
+            expected_version=body.expected_version,
+            origin=body.origin,
+            loads=tuple(
+                WeeklyLoadValue(week_start=row.week_start, hours=row.hours)
+                for row in body.loads
+            ),
+        )
+        return idempotency.execute(
+            scope="work_package.weekly_load.replace",
+            key=idempotency_key,
+            request_payload=_json_body(body),
+            action=lambda: _payload(
+                facade.replace_work_package_weekly_loads(command)
+            ),
         )
 
     @router.post("/demands", status_code=status.HTTP_201_CREATED)

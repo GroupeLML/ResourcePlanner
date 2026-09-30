@@ -64,6 +64,7 @@ EXPECTED_TABLES = {
     "project_task_class_overrides",
     "resources",
     "work_packages",
+    "work_package_weekly_loads",
     "work_package_audit",
     "workforce_requests",
     "workforce_request_competencies",

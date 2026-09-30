@@ -66,6 +66,10 @@ from .results import (
 )
 from .segment_service import SegmentService
 from .work_package_service import WorkPackageService
+from .work_package_weekly_load import (
+    WorkPackageWeeklyLoadProposalResult,
+    WorkPackageWeeklyLoadReplaceCommand,
+)
 
 
 def _identifier(value: object) -> str:
@@ -138,6 +142,18 @@ class ApplicationFacade:
         command: WorkPackageUpdateCommand,
     ) -> WorkPackageMutationResult:
         return self._work_package_service().update_command(command)
+
+    def propose_work_package_weekly_loads(
+        self,
+        reference: str,
+    ) -> WorkPackageWeeklyLoadProposalResult:
+        return self._work_package_service().propose_weekly_loads(reference)
+
+    def replace_work_package_weekly_loads(
+        self,
+        command: WorkPackageWeeklyLoadReplaceCommand,
+    ) -> WorkPackageMutationResult:
+        return self._work_package_service().replace_weekly_loads(command)
 
     def create_resource(self, command: ResourceCreateCommand) -> ResourceMutationResult:
         self._acquire_planning_version()

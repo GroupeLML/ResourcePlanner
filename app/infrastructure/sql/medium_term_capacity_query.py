@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date, timedelta
+from decimal import Decimal
 from typing import Any
 from collections.abc import Sequence
 
@@ -29,6 +30,65 @@ def _availability_record(rule: ResourceAvailabilityRule) -> dict[str, Any]:
         "HeureDebut": rule.start_time,
         "HeureFin": rule.end_time,
     }
+
+
+def _capacity_slice(
+    queries: Any,
+    availability_records: tuple[dict[str, Any], ...],
+    *,
+    start: date,
+    end: date,
+) -> tuple[tuple[Any, ...], float, defaultdict[str, float], defaultdict[str, set[str]]]:
+    schedulable = tuple(queries.list_schedulable_resources(start=start, end=end))
+    capacity_by_class: defaultdict[str, float] = defaultdict(float)
+    resources_by_class: defaultdict[str, set[str]] = defaultdict(set)
+    total_capacity = 0.0
+    day = start
+    while day <= end:
+        for resource in schedulable:
+            hours = availability_hours_for_day(
+                availability_records,
+                resource.id,
+                day,
+            )
+            total_capacity += hours
+            resource_class = resource.resource_class or UNCLASSIFIED
+            capacity_by_class[resource_class] += hours
+            resources_by_class[resource_class].add(resource.id)
+        day += timedelta(days=1)
+    return schedulable, total_capacity, capacity_by_class, resources_by_class
+
+
+def build_workforce_weekly_capacity(
+    queries: Any,
+    session: Session,
+    *,
+    start: date,
+    end: date,
+) -> dict[date, Decimal]:
+    """Return global workforce availability by Monday week, before Shift deductions."""
+
+    if end < start:
+        start, end = end, start
+    first = start - timedelta(days=start.weekday())
+    last = end - timedelta(days=end.weekday())
+    rules = session.scalars(
+        select(ResourceAvailabilityRule).where(ResourceAvailabilityRule.active == true())
+    ).all()
+    availability_records = tuple(_availability_record(rule) for rule in rules)
+
+    result: dict[date, Decimal] = {}
+    cursor = first
+    while cursor <= last:
+        _resources, capacity, _by_class, _resources_by_class = _capacity_slice(
+            queries,
+            availability_records,
+            start=cursor,
+            end=cursor + timedelta(days=6),
+        )
+        result[cursor] = Decimal(str(round(capacity, 2))).quantize(Decimal("0.01"))
+        cursor += timedelta(days=7)
+    return result
 
 
 def _state(capacity: float, exposure: float) -> str:
@@ -117,25 +177,18 @@ def build_medium_term_capacity_buckets(
     cursor = start
     while cursor <= end:
         week_end = min(cursor + timedelta(days=6), end)
-        schedulable = queries.list_schedulable_resources(start=cursor, end=week_end)
+        (
+            schedulable,
+            total_capacity,
+            capacity_by_class,
+            resources_by_class,
+        ) = _capacity_slice(
+            queries,
+            availability_records,
+            start=cursor,
+            end=week_end,
+        )
         schedulable_ids = {resource.id for resource in schedulable}
-
-        capacity_by_class: defaultdict[str, float] = defaultdict(float)
-        resources_by_class: defaultdict[str, set[str]] = defaultdict(set)
-        total_capacity = 0.0
-        day = cursor
-        while day <= week_end:
-            for resource in schedulable:
-                hours = availability_hours_for_day(
-                    availability_records,
-                    resource.id,
-                    day,
-                )
-                total_capacity += hours
-                resource_class = resource.resource_class or UNCLASSIFIED
-                capacity_by_class[resource_class] += hours
-                resources_by_class[resource_class].add(resource.id)
-            day += timedelta(days=1)
 
         firm_by_class: defaultdict[str, float] = defaultdict(float)
         potential_by_class: defaultdict[str, float] = defaultdict(float)

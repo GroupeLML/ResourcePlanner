@@ -191,14 +191,24 @@ def build_read_router(
     def medium_term_budget(
         request: Request,
         project_number: str = Query(min_length=1),
+        start: date | None = Query(default=None),
+        end: date | None = Query(default=None),
         scope: ViewScope = Query(default=SCOPE_GLOBAL),
         queries: PlannerQueryPort = Depends(query_dependency),
         context_repository: Any = Depends(context_dependency),
     ) -> MediumTermBudgetReadModel:
+        if (start is None) != (end is None):
+            raise ApplicationValidationError(
+                "start et end doivent être fournis ensemble pour la vue Moyen terme.",
+                code="medium_term_window_pair_required",
+            )
+        _window(start, end)
         project_ids = _project_ids_for_scope(request, scope, context_repository)
         projection = queries.medium_term_budget_projection(
             project_number=project_number,
             project_ids=project_ids,
+            start=start,
+            end=end,
         )
         if projection is None:
             raise ApplicationNotFoundError(

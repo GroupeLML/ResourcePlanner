@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, time
+from decimal import Decimal
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -121,6 +122,17 @@ class WorkPackageUpdateRequest(StrictRequest):
     end_date: date | None = None
     planned_hours: float | None = Field(default=None, ge=0)
     status: str | None = None
+
+
+class WorkPackageWeeklyLoadRequest(StrictRequest):
+    week_start: date
+    hours: Decimal = Field(ge=0)
+
+
+class WorkPackageWeeklyLoadReplaceRequest(StrictRequest):
+    expected_version: int = Field(ge=1)
+    origin: Literal["AUTO", "MANUAL"]
+    loads: list[WorkPackageWeeklyLoadRequest] = Field(min_length=1)
 
 
 class DemandLineRequest(StrictRequest):

@@ -40,6 +40,9 @@ class SqlServerReadinessTests(unittest.TestCase):
         self.assertIn("requêtes compilées", queries.details)
         self.assertIn("medium_term_budget_tasks", queries.details)
         self.assertIn("medium_term_budget_work_packages", queries.details)
+        self.assertIn("medium_term_weekly_loads", queries.details)
+        self.assertIn("medium_term_weekly_load_delete", queries.details)
+        self.assertIn("work_package_weekly_load_cas", queries.details)
 
     def test_database_preflight_requires_alembic_version_table(self) -> None:
         with TemporaryDirectory() as directory:

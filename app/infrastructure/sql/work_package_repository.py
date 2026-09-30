@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from decimal import Decimal
 import json
 from typing import Any
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from ...application.errors import (
@@ -14,6 +14,14 @@ from ...application.errors import (
 )
 from ...application.query_models import WorkPackageReadModel
 from ...application.repository_ports import WorkPackageRepositoryPort
+from ...application.work_package_weekly_load import (
+    WEEKLY_LOAD_ORIGINS,
+    WEEKLY_LOAD_ORIGIN_AUTO,
+    WorkPackageWeeklyLoadState,
+    WeeklyLoadValue,
+    propose_weekly_loads,
+    validate_weekly_loads,
+)
 from .delivery_models import DeliveryPlanRow
 from .models import (
     Project,
@@ -23,6 +31,7 @@ from .models import (
     WorkforceRequest,
     WorkPackage,
     WorkPackageAudit,
+    WorkPackageWeeklyLoad,
 )
 
 
@@ -274,8 +283,45 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
                 else None
             ),
             "status": _text(work_package.status) or "planned",
+            "weekly_load_origin": _optional_text(work_package.weekly_load_origin),
             "version": int(work_package.version or 1),
         }
+
+    def _weekly_loads(self, work_package_id: str) -> tuple[WeeklyLoadValue, ...]:
+        rows = self._session.scalars(
+            select(WorkPackageWeeklyLoad)
+            .where(WorkPackageWeeklyLoad.work_package_id == work_package_id)
+            .order_by(WorkPackageWeeklyLoad.week_start)
+        ).all()
+        return tuple(
+            WeeklyLoadValue(
+                week_start=row.week_start,
+                hours=Decimal(row.hours),
+            )
+            for row in rows
+        )
+
+    def get_weekly_load_state(
+        self,
+        reference: str,
+    ) -> WorkPackageWeeklyLoadState | None:
+        row = self._row(reference)
+        if row is None:
+            return None
+        work_package, _project, _task = row
+        return WorkPackageWeeklyLoadState(
+            reference=_optional_text(work_package.legacy_effort_id) or work_package.id,
+            version=int(work_package.version or 1),
+            start_date=work_package.start_date,
+            end_date=work_package.end_date,
+            planned_hours=(
+                Decimal(work_package.planned_hours)
+                if work_package.planned_hours is not None
+                else None
+            ),
+            origin=_optional_text(work_package.weekly_load_origin),
+            loads=self._weekly_loads(work_package.id),
+        )
 
     def _audit(
         self,
@@ -439,6 +485,26 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
         if "status" in updates:
             values["status"] = _text(updates.get("status"))
 
+        existing_weekly_loads = self._weekly_loads(work_package.id)
+        if work_package.weekly_load_origin is not None or existing_weekly_loads:
+            try:
+                validate_weekly_loads(
+                    start_date=values.get("start_date", work_package.start_date),  # type: ignore[arg-type]
+                    end_date=values.get("end_date", work_package.end_date),  # type: ignore[arg-type]
+                    planned_hours=values.get("planned_hours", work_package.planned_hours),  # type: ignore[arg-type]
+                    loads=existing_weekly_loads,
+                )
+            except ApplicationValidationError as exc:
+                raise ApplicationConflictError(
+                    "La modification rendrait la répartition hebdomadaire incohérente; une nouvelle répartition explicite est requise.",
+                    code="work_package_weekly_load_replan_required",
+                    context={
+                        "reference": _optional_text(work_package.legacy_effort_id)
+                        or work_package.id,
+                        "diagnostic": exc.code,
+                    },
+                ) from exc
+
         result = self._session.execute(
             update(WorkPackage)
             .where(
@@ -477,3 +543,154 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
             new_values=new_values,
         )
         return self._read_model(work_package, target_project, target_task)
+
+
+    def replace_weekly_loads(
+        self,
+        reference: str,
+        loads: Sequence[WeeklyLoadValue],
+        *,
+        origin: str,
+        expected_version: int,
+    ) -> WorkPackageReadModel:
+        work_package = self._entity(reference)
+        self._guard(work_package)
+
+        expected = int(expected_version)
+        current_version = int(work_package.version or 1)
+        if current_version != expected:
+            raise ApplicationConflictError(
+                "Le WorkPackage a été modifié depuis sa lecture.",
+                code="work_package_version_conflict",
+                context={
+                    "reference": _optional_text(work_package.legacy_effort_id)
+                    or work_package.id,
+                    "expected_version": expected,
+                    "current_version": current_version,
+                },
+            )
+        if origin not in WEEKLY_LOAD_ORIGINS:
+            raise ApplicationValidationError(
+                "L'origine de répartition doit être AUTO ou MANUAL.",
+                code="work_package_weekly_load_origin_invalid",
+                context={"origin": origin},
+            )
+
+        normalized = validate_weekly_loads(
+            start_date=work_package.start_date,
+            end_date=work_package.end_date,
+            planned_hours=(
+                Decimal(work_package.planned_hours)
+                if work_package.planned_hours is not None
+                else None
+            ),
+            loads=tuple(loads),
+        )
+        if origin == WEEKLY_LOAD_ORIGIN_AUTO:
+            state = WorkPackageWeeklyLoadState(
+                reference=_optional_text(work_package.legacy_effort_id) or work_package.id,
+                version=current_version,
+                start_date=work_package.start_date,
+                end_date=work_package.end_date,
+                planned_hours=(
+                    Decimal(work_package.planned_hours)
+                    if work_package.planned_hours is not None
+                    else None
+                ),
+                origin=_optional_text(work_package.weekly_load_origin),
+                loads=self._weekly_loads(work_package.id),
+            )
+            if normalized != propose_weekly_loads(state):
+                raise ApplicationValidationError(
+                    "Une répartition AUTO doit correspondre exactement à la proposition backend courante.",
+                    code="work_package_weekly_load_auto_proposal_mismatch",
+                    context={"reference": state.reference},
+                )
+        project = self._session.get(Project, work_package.project_id)
+        if project is None:
+            raise KeyError("Projet du WorkPackage introuvable")
+        task = (
+            self._session.get(TaskCatalogEntry, work_package.task_catalog_item_id)
+            if work_package.task_catalog_item_id is not None
+            else None
+        )
+        old_loads = self._weekly_loads(work_package.id)
+        old_values = {
+            **self._snapshot(work_package, project),
+            "weekly_load_count": len(old_loads),
+            "weekly_load_hours": str(
+                sum((item.hours for item in old_loads), Decimal("0.00"))
+            ),
+            "weekly_loads": [
+                {
+                    "week_start": item.week_start.isoformat(),
+                    "hours": str(item.hours),
+                }
+                for item in old_loads
+            ],
+        }
+
+        self._session.execute(
+            delete(WorkPackageWeeklyLoad).where(
+                WorkPackageWeeklyLoad.work_package_id == work_package.id
+            )
+        )
+        self._session.add_all(
+            [
+                WorkPackageWeeklyLoad(
+                    work_package_id=work_package.id,
+                    week_start=item.week_start,
+                    hours=item.hours,
+                )
+                for item in normalized
+            ]
+        )
+        result = self._session.execute(
+            update(WorkPackage)
+            .where(
+                WorkPackage.id == work_package.id,
+                WorkPackage.version == expected,
+            )
+            .values(
+                weekly_load_origin=origin,
+                version=WorkPackage.version + 1,
+            )
+        )
+        if int(result.rowcount or 0) != 1:
+            actual = self._session.scalar(
+                select(WorkPackage.version).where(WorkPackage.id == work_package.id)
+            )
+            raise ApplicationConflictError(
+                "Le WorkPackage a été modifié par une autre opération.",
+                code="work_package_version_conflict",
+                context={
+                    "reference": _optional_text(work_package.legacy_effort_id)
+                    or work_package.id,
+                    "expected_version": expected,
+                    "current_version": int(actual or current_version),
+                },
+            )
+
+        self._session.flush()
+        self._session.refresh(work_package)
+        new_values = {
+            **self._snapshot(work_package, project),
+            "weekly_load_count": len(normalized),
+            "weekly_load_hours": str(
+                sum((item.hours for item in normalized), Decimal("0.00"))
+            ),
+            "weekly_loads": [
+                {
+                    "week_start": item.week_start.isoformat(),
+                    "hours": str(item.hours),
+                }
+                for item in normalized
+            ],
+        }
+        self._audit(
+            work_package,
+            action="REPLACE_WEEKLY_LOADS",
+            old_values=old_values,
+            new_values=new_values,
+        )
+        return self._read_model(work_package, project, task)

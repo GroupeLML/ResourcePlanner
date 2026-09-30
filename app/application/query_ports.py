@@ -51,6 +51,8 @@ class PlannerQueryPort(Protocol):
         *,
         project_number: str,
         project_ids: Sequence[str] | None = None,
+        start: date | None = None,
+        end: date | None = None,
     ) -> MediumTermBudgetReadModel | None: ...
 
     def list_resources(self, *, active_only: bool = True) -> Sequence[ResourceReadModel]: ...
