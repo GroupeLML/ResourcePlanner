@@ -85,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
             f"Un login est requis via --login ou {LOGIN_ENV}."
         )
 
-    secret = _secret()
+    credential_value = _secret()
     engine = create_sql_engine(database_url)
     factory = create_session_factory(engine)
     try:
@@ -96,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
                 ScryptSecretHasher(),
             ).bootstrap(
                 login_name=login,
-                secret=secret,
+                credential_value=credential_value,
                 display_name=args.display_name,
                 email=args.email,
                 rotate_secret=bool(args.rotate_secret),

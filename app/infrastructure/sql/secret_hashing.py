@@ -20,9 +20,9 @@ class ScryptSecretHasher:
     salt_bytes = 16
     maxmem = 64 * 1024 * 1024
 
-    def _derive(self, secret: str, salt: bytes) -> bytes:
+    def _derive(self, credential_value: str, salt: bytes) -> bytes:
         return hashlib.scrypt(
-            str(secret).encode("utf-8"),
+            str(credential_value).encode("utf-8"),
             salt=salt,
             n=self.n,
             r=self.r,
@@ -31,9 +31,9 @@ class ScryptSecretHasher:
             maxmem=self.maxmem,
         )
 
-    def hash_secret(self, secret: str) -> str:
+    def hash_secret(self, credential_value: str) -> str:
         salt = secrets.token_bytes(self.salt_bytes)
-        derived = self._derive(str(secret), salt)
+        derived = self._derive(str(credential_value), salt)
         return "$".join(
             (
                 self.algorithm,
@@ -45,7 +45,7 @@ class ScryptSecretHasher:
             )
         )
 
-    def verify_secret(self, secret: str, encoded_hash: str) -> bool:
+    def verify_secret(self, credential_value: str, encoded_hash: str) -> bool:
         try:
             algorithm, n_text, r_text, p_text, salt_text, digest_text = str(
                 encoded_hash
@@ -62,7 +62,7 @@ class ScryptSecretHasher:
             expected = base64.urlsafe_b64decode(digest_text.encode("ascii"))
             if len(salt) != self.salt_bytes or len(expected) != self.dklen:
                 return False
-            actual = self._derive(str(secret), salt)
+            actual = self._derive(str(credential_value), salt)
         except (ValueError, TypeError, UnicodeError):
             return False
         return secrets.compare_digest(actual, expected)

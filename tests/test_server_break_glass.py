@@ -24,7 +24,8 @@ from app.server.oidc import oidc_session_auth_resolver
 
 
 COOKIE = "rp_break_glass_test"
-SECRET = "server-correct-horse-battery-staple-457"
+CREDENTIAL_FIELD = "secret"
+CREDENTIAL_VALUE = "server-correct-horse-battery-staple-457"
 
 
 class ServerBreakGlassTests(unittest.TestCase):
@@ -53,7 +54,7 @@ class ServerBreakGlassTests(unittest.TestCase):
                 ScryptSecretHasher(),
             ).bootstrap(
                 login_name="emergency-admin",
-                secret=SECRET,
+                credential_value=CREDENTIAL_VALUE,
                 now=__import__("datetime").datetime(
                     2026,
                     9,
@@ -71,10 +72,10 @@ class ServerBreakGlassTests(unittest.TestCase):
         with TestClient(self.app) as client:
             response = client.post(
                 "/api/v1/auth/break-glass",
-                json={"login_name": "emergency-admin", "secret": SECRET},
+                json={"login_name": "emergency-admin", CREDENTIAL_FIELD: CREDENTIAL_VALUE},
             )
             self.assertEqual(response.status_code, 204, response.text)
-            self.assertNotIn(SECRET, response.text)
+            self.assertNotIn(CREDENTIAL_VALUE, response.text)
 
             session_token = client.cookies.get(COOKIE)
             csrf_token = client.cookies.get("resourceplanner_csrf")
@@ -104,7 +105,7 @@ class ServerBreakGlassTests(unittest.TestCase):
         with TestClient(self.app) as client:
             response = client.post(
                 "/api/v1/auth/break-glass",
-                json={"login_name": "emergency-admin", "secret": wrong},
+                json={"login_name": "emergency-admin", CREDENTIAL_FIELD: wrong},
             )
         self.assertEqual(response.status_code, 401)
         self.assertEqual(
@@ -112,7 +113,7 @@ class ServerBreakGlassTests(unittest.TestCase):
             "break_glass_authentication_failed",
         )
         self.assertNotIn(wrong, response.text)
-        self.assertNotIn(SECRET, response.text)
+        self.assertNotIn(CREDENTIAL_VALUE, response.text)
 
     def test_rate_limit_is_enforced_after_repeated_failures(self) -> None:
         with TestClient(self.app) as client:
@@ -121,14 +122,14 @@ class ServerBreakGlassTests(unittest.TestCase):
                     "/api/v1/auth/break-glass",
                     json={
                         "login_name": "emergency-admin",
-                        "secret": "wrong-break-glass-secret",
+                        CREDENTIAL_FIELD: "wrong-break-glass-secret",
                     },
                 )
                 self.assertEqual(response.status_code, 401, response.text)
 
             limited = client.post(
                 "/api/v1/auth/break-glass",
-                json={"login_name": "emergency-admin", "secret": SECRET},
+                json={"login_name": "emergency-admin", CREDENTIAL_FIELD: CREDENTIAL_VALUE},
             )
 
         self.assertEqual(limited.status_code, 429, limited.text)
@@ -142,7 +143,7 @@ class ServerBreakGlassTests(unittest.TestCase):
         with TestClient(self.app) as client:
             login = client.post(
                 "/api/v1/auth/break-glass",
-                json={"login_name": "emergency-admin", "secret": SECRET},
+                json={"login_name": "emergency-admin", CREDENTIAL_FIELD: CREDENTIAL_VALUE},
             )
             self.assertEqual(login.status_code, 204)
             me = client.get("/api/v1/auth/me").json()

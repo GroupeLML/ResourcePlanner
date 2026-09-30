@@ -29,8 +29,8 @@ from app.infrastructure.sql import (
 )
 
 
-SECRET = "correct-horse-battery-staple-457"
-ROTATED_SECRET = "rotated-correct-horse-battery-457"
+CREDENTIAL_VALUE = "correct-horse-battery-staple-457"
+ROTATED_CREDENTIAL_VALUE = "rotated-correct-horse-battery-457"
 
 
 class BreakGlassTests(unittest.TestCase):
@@ -49,7 +49,7 @@ class BreakGlassTests(unittest.TestCase):
     def _bootstrap(
         self,
         login: str = "emergency-admin",
-        secret: str = SECRET,
+        credential_value: str = CREDENTIAL_VALUE,
         *,
         rotate: bool = False,
         now: datetime | None = None,
@@ -61,7 +61,7 @@ class BreakGlassTests(unittest.TestCase):
                 ScryptSecretHasher(),
             ).bootstrap(
                 login_name=login,
-                secret=secret,
+                credential_value=secret,
                 rotate_secret=rotate,
                 now=now or datetime(2026, 9, 29, 20, 0, tzinfo=timezone.utc),
             )
@@ -89,26 +89,26 @@ class BreakGlassTests(unittest.TestCase):
             self.assertIsNone(user.erp_user_id)
             self.assertIsNone(user.employee_external_id)
             self.assertIn(ROLE_ADMIN, user.roles_json)
-            self.assertNotEqual(credential.secret_hash, SECRET)
-            self.assertNotIn(SECRET, credential.secret_hash)
+            self.assertNotEqual(credential.secret_hash, CREDENTIAL_VALUE)
+            self.assertNotIn(CREDENTIAL_VALUE, credential.secret_hash)
             self.assertTrue(
-                ScryptSecretHasher().verify_secret(SECRET, credential.secret_hash)
+                ScryptSecretHasher().verify_secret(CREDENTIAL_VALUE, credential.secret_hash)
             )
             events = session.scalars(
                 select(AuthSecurityAudit).order_by(AuthSecurityAudit.created_at)
             ).all()
             self.assertEqual(len(events), 2)
             for event in events:
-                self.assertNotIn(SECRET, event.login_name_hash)
-                self.assertNotIn(SECRET, event.reason_code)
+                self.assertNotIn(CREDENTIAL_VALUE, event.login_name_hash)
+                self.assertNotIn(CREDENTIAL_VALUE, event.reason_code)
 
     def test_existing_secret_requires_explicit_rotation_and_old_secret_stops_working(self) -> None:
         created = self._bootstrap()
         with self.assertRaises(ApplicationConflictError) as caught:
-            self._bootstrap(secret=ROTATED_SECRET)
+            self._bootstrap(credential_value=ROTATED_CREDENTIAL_VALUE)
         self.assertEqual(caught.exception.code, "break_glass_rotation_required")
 
-        rotated = self._bootstrap(secret=ROTATED_SECRET, rotate=True)
+        rotated = self._bootstrap(credential_value=ROTATED_CREDENTIAL_VALUE, rotate=True)
         self.assertEqual(rotated.user_id, created.user_id)
         self.assertEqual(rotated.credential_id, created.credential_id)
         self.assertEqual(rotated.credential_version, 2)
@@ -122,7 +122,7 @@ class BreakGlassTests(unittest.TestCase):
             with self.assertRaises(BreakGlassAuthenticationDenied):
                 service.authenticate(
                     login_name="emergency-admin",
-                    secret=SECRET,
+                    credential_value=CREDENTIAL_VALUE,
                     now=datetime(2026, 9, 29, 20, 1, tzinfo=timezone.utc),
                 )
 
@@ -132,7 +132,7 @@ class BreakGlassTests(unittest.TestCase):
                 ScryptSecretHasher(),
             ).authenticate(
                 login_name="emergency-admin",
-                secret=ROTATED_SECRET,
+                credential_value=ROTATED_CREDENTIAL_VALUE,
                 now=datetime(2026, 9, 29, 20, 2, tzinfo=timezone.utc),
             )
         self.assertEqual(user_id, created.user_id)
@@ -150,7 +150,7 @@ class BreakGlassTests(unittest.TestCase):
                 with self.assertRaises(BreakGlassAuthenticationDenied):
                     service.authenticate(
                         login_name="emergency-admin",
-                        secret="wrong-secret",
+                        credential_value="wrong-secret",
                         now=start + timedelta(seconds=offset),
                     )
 
@@ -162,7 +162,7 @@ class BreakGlassTests(unittest.TestCase):
             with self.assertRaises(BreakGlassRateLimited):
                 service.authenticate(
                     login_name="emergency-admin",
-                    secret=SECRET,
+                    credential_value=CREDENTIAL_VALUE,
                     now=start + timedelta(seconds=6),
                 )
 
@@ -205,7 +205,7 @@ class BreakGlassTests(unittest.TestCase):
 
         self._bootstrap(
             login="emergency-admin-2",
-            secret="second-correct-horse-battery-457",
+            credential_value="second-correct-horse-battery-457",
         )
         with self.factory.begin() as session:
             service = UserAdminService(

@@ -51,9 +51,9 @@ class BreakGlassBootstrapResult:
 
 
 class BreakGlassSecretHasherPort(Protocol):
-    def hash_secret(self, secret: str) -> str: ...
+    def hash_secret(self, credential_value: str) -> str: ...
 
-    def verify_secret(self, secret: str, encoded_hash: str) -> bool: ...
+    def verify_secret(self, credential_value: str, encoded_hash: str) -> bool: ...
 
 
 class BreakGlassRepositoryPort(Protocol):
@@ -141,8 +141,8 @@ def normalize_break_glass_login(value: object) -> str:
     return normalized
 
 
-def validate_break_glass_secret(secret: object, policy: BreakGlassPolicy) -> str:
-    value = str(secret or "")
+def validate_break_glass_secret(credential_value: object, policy: BreakGlassPolicy) -> str:
+    value = str(credential_value or "")
     if len(value) < policy.minimum_secret_length:
         raise ApplicationValidationError(
             f"Le secret break-glass doit contenir au moins {policy.minimum_secret_length} caractères.",
@@ -177,7 +177,7 @@ class BreakGlassAuthenticationService:
         self,
         *,
         login_name: str,
-        secret: str,
+        credential_value: str,
         now: datetime,
     ) -> str:
         login = normalize_break_glass_login(login_name)
@@ -187,7 +187,7 @@ class BreakGlassAuthenticationService:
         if credential is None:
             # Spend the same class of CPU work as a real credential verification
             # without revealing whether a login exists.
-            self._hasher.hash_secret(str(secret or ""))
+            self._hasher.hash_secret(str(credential_value or ""))
             self._repository.record_event(
                 event_type=AUDIT_LOGIN_FAILED,
                 success=False,
@@ -209,7 +209,7 @@ class BreakGlassAuthenticationService:
             )
             raise BreakGlassRateLimited()
 
-        valid_secret = self._hasher.verify_secret(str(secret or ""), credential.secret_hash)
+        valid_secret = self._hasher.verify_secret(str(credential_value or ""), credential.secret_hash)
         valid_admin = (
             credential.active
             and credential.user_active
@@ -283,14 +283,14 @@ class BreakGlassBootstrapService:
         self,
         *,
         login_name: str,
-        secret: str,
+        credential_value: str,
         display_name: str | None = None,
         email: str | None = None,
         rotate_secret: bool = False,
         now: datetime,
     ) -> BreakGlassBootstrapResult:
         login = normalize_break_glass_login(login_name)
-        secret_value = validate_break_glass_secret(secret, self._policy)
+        secret_value = validate_break_glass_secret(credential_value, self._policy)
         current = _aware(now)
         credential = self._repository.get_for_login(login, for_update=True)
 

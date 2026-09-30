@@ -23,7 +23,7 @@ class StrictRequest(BaseModel):
 
 class BreakGlassLoginRequest(StrictRequest):
     login_name: str = Field(min_length=1, max_length=128)
-    secret: str = Field(min_length=1, max_length=4096)
+    credential_value: str = Field(alias="secret", min_length=1, max_length=4096)
 
 
 def _error(status_code: int, code: str, message: str) -> JSONResponse:
@@ -60,7 +60,7 @@ def build_break_glass_router(runtime: BreakGlassRuntime | None) -> APIRouter:
                     policy=runtime.policy,
                 ).authenticate(
                     login_name=body.login_name,
-                    secret=body.secret,
+                    credential_value=body.credential_value,
                     now=utc_now(),
                 )
             except BreakGlassRateLimited:
