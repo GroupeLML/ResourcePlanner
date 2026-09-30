@@ -24,7 +24,7 @@ class ReactMediumTermContractTests(unittest.TestCase):
         api = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
 
         self.assertIn("getMediumTermBudget(projectFilter, start, end, controller.signal, scope)", page)
-        self.assertIn('"/api/v1/medium-term/budget?', api)
+        self.assertIn("/api/v1/medium-term/budget?", api)
         self.assertIn("project_number: projectNumber", api)
         self.assertIn("start,", api)
         self.assertIn("end,", api)
