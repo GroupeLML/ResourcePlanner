@@ -22,6 +22,7 @@ from ...domain.planning_engine import MISSING_ALLOCATION_TYPE
 from .asset_models import AssetAllocation, AssetRequirement
 from .base import new_id, utc_now
 from .request_version import acquire_request_aggregate_version
+from .resource_class_models import ResourceClassConfig
 from .models import (
     Competency,
     Project,
@@ -39,6 +40,7 @@ from .models import (
 
 
 _DEMAND_NUMBER_RE = re.compile(r"^DMO-(\d{4})-(\d+)$", re.IGNORECASE)
+_UNSET = object()
 
 
 def _text(value: object) -> str:
@@ -1081,6 +1083,7 @@ class SqlDemandRepository(DemandRepositoryPort):
         request: WorkforceRequest,
         *,
         hours_source: str | None = None,
+        required_resource_class: object = _UNSET,
     ) -> RequestLine:
         """Mirror the current flat request into its transitional single line.
 
@@ -1125,6 +1128,25 @@ class SqlDemandRepository(DemandRepositoryPort):
         )
 
         line.slot_count = max(int(request.resource_count or 1), 1)
+        if required_resource_class is not _UNSET:
+            class_code = _optional_text(required_resource_class)
+            if class_code is None:
+                line.required_resource_class = None
+            else:
+                resource_class = self._session.get(ResourceClassConfig, class_code)
+                if resource_class is None:
+                    raise ApplicationValidationError(
+                        "La classe de ressource sélectionnée n'existe pas.",
+                        code="demand_resource_class_not_found",
+                        context={"required_resource_class": class_code},
+                    )
+                if not resource_class.active:
+                    raise ApplicationValidationError(
+                        "La classe de ressource sélectionnée est inactive.",
+                        code="demand_resource_class_inactive",
+                        context={"required_resource_class": class_code},
+                    )
+                line.required_resource_class = resource_class.code
         line.required_competencies_snapshot = request.required_competencies
         line.desired_start = request.desired_start
         line.desired_end = request.desired_end
@@ -1227,6 +1249,7 @@ class SqlDemandRepository(DemandRepositoryPort):
             self._sync_legacy_request_line(
                 request,
                 hours_source=_optional_text(values.get("RequestLineHoursSource")),
+                required_resource_class=values.get("RequiredResourceClass"),
             )
         self._session.flush()
         self._append_history(
@@ -1596,6 +1619,7 @@ class SqlDemandRepository(DemandRepositoryPort):
             "DateFinSouhaitee",
             "NombreRessources",
             "CompetencesRequises",
+            "RequiredResourceClass",
             "TempsEstimeHeures",
             "TempsEstimeJours",
             "TechnicienPropose",
@@ -1721,6 +1745,11 @@ class SqlDemandRepository(DemandRepositoryPort):
             self._sync_legacy_request_line(
                 request,
                 hours_source=_optional_text(updates.get("RequestLineHoursSource")),
+                required_resource_class=(
+                    updates["RequiredResourceClass"]
+                    if "RequiredResourceClass" in updates
+                    else _UNSET
+                ),
             )
         if not guarded_version:
             request.aggregate_version = int(request.aggregate_version or 1) + 1
