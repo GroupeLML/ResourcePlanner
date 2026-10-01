@@ -350,7 +350,10 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         payload = response.json()
         self.assertNotIn("500", {task["task_code"] for task in payload["tasks"]})
-        self.assertEqual(payload["diagnostics"], ["UNCLASSIFIED_WORK_PACKAGES"])
+        self.assertEqual(
+            payload["diagnostics"],
+            ["UNCLASSIFIED_WORK_PACKAGES", "UNCLASSIFIED_WORK_PACKAGE_LOAD"],
+        )
         self.assertEqual(len(payload["unclassified_work_packages"]), 1)
         historical = payload["unclassified_work_packages"][0]
         self.assertEqual(historical["id"], "WP-HISTORICAL")
@@ -376,7 +379,7 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
         self.assertEqual(Decimal(str(task["remaining_budget_hours"])), Decimal("60"))
         self.assertEqual(task["diagnostic_state"], "PARTIALLY_COVERED")
         self.assertEqual(payload["unclassified_work_packages"], [])
-        self.assertEqual(payload["diagnostics"], [])
+        self.assertEqual(payload["diagnostics"], ["UNCLASSIFIED_WORK_PACKAGE_LOAD"])
 
     def test_unknown_project_uses_application_error_contract(self) -> None:
         with TemporaryDirectory() as directory:

@@ -453,6 +453,28 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await expect(refreshedWorkPackageRow).toContainText("Répartition AUTO");
     await expect(page.locator(".mt-task-strip").filter({ hasText: "210" })).toContainText("Budget");
 
+    const mediumTermFilters = page.locator(".mt-filters");
+    const portfolioProjectFilter = labelled(mediumTermFilters, "Projet", "select");
+    await portfolioProjectFilter.selectOption("");
+    await expect(portfolioProjectFilter).toHaveValue("");
+    await expect(page.locator(".mt-project-strip")).toContainText("Tous les projets");
+
+    const mediumTermTaskFilter = labelled(mediumTermFilters, "Tâche ERP", "select");
+    await expect(
+      mediumTermTaskFilter.locator("option", { hasText: "P-251 · 210 — AUTOMATISATION E2E" }),
+    ).toBeAttached();
+    await mediumTermTaskFilter.selectOption({ label: "P-251 · 210 — AUTOMATISATION E2E" });
+    await expect(refreshedWorkPackageRow).toBeVisible();
+
+    const mediumTermClassFilter = labelled(mediumTermFilters, "Classe de ressource", "select");
+    await mediumTermClassFilter.selectOption("PROGRAMMEUR");
+    await expect(mediumTermCapacity).toContainText("Programmeur");
+    await expect(mediumTermCapacity).toContainText(/Disponible|Attention|Surchargé|Indisponible/);
+    await expect(refreshedWorkPackageRow).toBeVisible();
+
+    await portfolioProjectFilter.selectOption("P-251");
+    await expect(portfolioProjectFilter).toHaveValue("P-251");
+
     const editor = await createDemand(page, {
       start: d1,
       end: d5,

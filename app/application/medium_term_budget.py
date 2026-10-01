@@ -13,6 +13,7 @@ BUDGET_DIAGNOSTIC_FULLY_COVERED = "FULLY_COVERED"
 BUDGET_DIAGNOSTIC_OVERALLOCATED = "OVERALLOCATED"
 
 MEDIUM_TERM_DIAGNOSTIC_UNCLASSIFIED_WORK_PACKAGES = "UNCLASSIFIED_WORK_PACKAGES"
+MEDIUM_TERM_DIAGNOSTIC_UNCLASSIFIED_WORK_PACKAGE_LOAD = "UNCLASSIFIED_WORK_PACKAGE_LOAD"
 MEDIUM_TERM_DIAGNOSTIC_WEEKLY_LOAD_INCOMPLETE = "WEEKLY_LOAD_INCOMPLETE"
 MEDIUM_TERM_DIAGNOSTIC_CAPACITY_ZERO = "WORKFORCE_CAPACITY_ZERO"
 WEEK_DIAGNOSTIC_LOAD_INCOMPLETE = "WORK_PACKAGE_LOAD_INCOMPLETE"
@@ -89,6 +90,9 @@ class MediumTermBudgetWorkPackageReadModel:
     planned_hours: Decimal | None
     status: str
     budget_included: bool
+    project_id: str = ""
+    project_number: str = ""
+    project_name: str = ""
     start_date: date | None = None
     end_date: date | None = None
     version: int = 1
@@ -120,6 +124,37 @@ class MediumTermBudgetTaskReadModel:
     work_packages: tuple[MediumTermBudgetWorkPackageReadModel, ...]
     active: bool = True
     workforce_eligible: bool | None = None
+    project_id: str = ""
+    project_number: str = ""
+    project_name: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class MediumTermTaskOptionReadModel:
+    task_catalog_item_id: str
+    project_id: str
+    project_number: str
+    project_name: str
+    task_code: str
+    task_label: str
+
+
+@dataclass(frozen=True, slots=True)
+class MediumTermResourceClassOptionReadModel:
+    code: str
+    label: str
+    active: bool
+
+
+@dataclass(frozen=True, slots=True)
+class MediumTermClassWeekReadModel:
+    resource_class_code: str | None
+    resource_class_label: str
+    capacity_hours: Decimal
+    work_package_hours: Decimal | None
+    utilization: Decimal | None
+    state: str
+    diagnostics: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,14 +163,16 @@ class MediumTermWeekReadModel:
     work_package_hours: Decimal | None
     capacity_hours: Decimal
     utilization: Decimal | None
+    state: str = "unavailable"
     diagnostics: tuple[str, ...] = ()
+    classes: tuple[MediumTermClassWeekReadModel, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class MediumTermBudgetReadModel:
-    project_id: str
-    project_number: str
-    project_name: str
+    project_id: str | None
+    project_number: str | None
+    project_name: str | None
     tasks: tuple[MediumTermBudgetTaskReadModel, ...]
     unclassified_work_packages: tuple[MediumTermBudgetWorkPackageReadModel, ...] = ()
     diagnostics: tuple[str, ...] = ()
@@ -143,3 +180,6 @@ class MediumTermBudgetReadModel:
     window_start: date | None = None
     window_end: date | None = None
     weeks: tuple[MediumTermWeekReadModel, ...] = ()
+    project_count: int = 0
+    task_options: tuple[MediumTermTaskOptionReadModel, ...] = ()
+    resource_classes: tuple[MediumTermResourceClassOptionReadModel, ...] = ()

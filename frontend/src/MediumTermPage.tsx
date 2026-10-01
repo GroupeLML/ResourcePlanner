@@ -62,6 +62,11 @@ const WEEKLY_LOAD_DIAGNOSTIC_LABELS: Record<string, string> = {
 
 const RESOURCE_CLASS_DIVERGENCE = "WORK_PACKAGE_TASK_RESOURCE_CLASS_DIVERGENCE";
 
+const PROJECTION_DIAGNOSTIC_LABELS: Record<string, string> = {
+  UNCLASSIFIED_WORK_PACKAGES: "Des WorkPackages historiques ne sont liés à aucune tâche ERP.",
+  UNCLASSIFIED_WORK_PACKAGE_LOAD: "Une charge WorkPackage sans classe canonique est conservée dans « Non classé ».",
+};
+
 function workPackageResourceClassLabel(workPackage: MediumTermBudgetWorkPackageReadModel) {
   if (!workPackage.resource_class_code) return "Non définie";
   return workPackage.resource_class_label
@@ -278,7 +283,7 @@ function TaskHeader({ task }: { task: MediumTermBudgetTaskReadModel }) {
   return (
     <header className={`mt-task-strip ${attention ? "has-attention" : ""}`}>
       <div className="mt-task-title">
-        <strong>{task.task_code}</strong>
+        <strong>{task.project_number} · {task.task_code}</strong>
         <span>{task.task_label}</span>
         {attention && <span className="mt-yellow-flag" title={task.diagnostic_state}>⚑</span>}
       </div>
@@ -312,6 +317,8 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
   const [projectionError, setProjectionError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [projectFilter, setProjectFilter] = useState("");
+  const [taskFilter, setTaskFilter] = useState("");
+  const [resourceClassFilter, setResourceClassFilter] = useState("");
   const [includeInactiveProjects, setIncludeInactiveProjects] = useState(false);
   const [editor, setEditor] = useState<WorkPackageReadModel | null | undefined>(undefined);
   const [segmentEditorId, setSegmentEditorId] = useState<string | null>(null);
@@ -356,7 +363,7 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
         setProjectFilter((current) => (
           current && projectRows.some((project) => project.number === current)
             ? current
-            : [...projectRows].sort((left, right) => left.number.localeCompare(right.number, "fr-CA"))[0]?.number || ""
+            : ""
         ));
       })
       .catch((reason: unknown) => {
@@ -374,7 +381,7 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
   }, [start, end, refreshKey, scope, scopeLoading, scopeError, includeInactiveProjects]);
 
   useEffect(() => {
-    if (scopeLoading || scopeError || !projectFilter) {
+    if (scopeLoading || scopeError) {
       setProjection(null);
       setProjectionError(null);
       return;
@@ -382,7 +389,18 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
     const controller = new AbortController();
     setProjectionLoading(true);
     setProjectionError(null);
-    getMediumTermBudget(projectFilter, start, end, controller.signal, scope)
+    getMediumTermBudget(
+      projectFilter,
+      start,
+      end,
+      controller.signal,
+      scope,
+      {
+        taskCatalogItemId: taskFilter || undefined,
+        resourceClassCode: resourceClassFilter || undefined,
+        includeInactiveProjects,
+      },
+    )
       .then(setProjection)
       .catch((reason: unknown) => {
         if (reason instanceof DOMException && reason.name === "AbortError") return;
@@ -403,7 +421,32 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
         if (!controller.signal.aborted) setProjectionLoading(false);
       });
     return () => controller.abort();
-  }, [projectFilter, start, end, refreshKey, scope, scopeLoading, scopeError]);
+  }, [
+    projectFilter,
+    taskFilter,
+    resourceClassFilter,
+    includeInactiveProjects,
+    start,
+    end,
+    refreshKey,
+    scope,
+    scopeLoading,
+    scopeError,
+  ]);
+
+  useEffect(() => {
+    if (!projection || !taskFilter) return;
+    if (!projection.task_options.some((task) => task.task_catalog_item_id === taskFilter)) {
+      setTaskFilter("");
+    }
+  }, [projection, taskFilter]);
+
+  useEffect(() => {
+    if (!projection || !resourceClassFilter) return;
+    if (!projection.resource_classes.some((resourceClass) => resourceClass.code === resourceClassFilter)) {
+      setResourceClassFilter("");
+    }
+  }, [projection, resourceClassFilter]);
 
   const weeks = useMemo(
     () => Array.from({ length: horizonWeeks }, (_, index) => addDays(horizonStart, index * 7)),
@@ -418,6 +461,22 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
   const selectedProject = useMemo(
     () => projects.find((project) => project.number === projectFilter) ?? null,
     [projects, projectFilter],
+  );
+
+  const taskOptions = useMemo(
+    () => [...(projection?.task_options ?? [])].sort((left, right) => (
+      left.project_number.localeCompare(right.project_number, "fr-CA")
+      || left.task_code.localeCompare(right.task_code, "fr-CA")
+      || left.task_label.localeCompare(right.task_label, "fr-CA")
+    )),
+    [projection],
+  );
+
+  const resourceClassOptions = useMemo(
+    () => [...(projection?.resource_classes ?? [])].sort((left, right) => (
+      left.label.localeCompare(right.label, "fr-CA") || left.code.localeCompare(right.code, "fr-CA")
+    )),
+    [projection],
   );
 
   const workPackagesByReference = useMemo(
@@ -512,11 +571,12 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
   };
 
   function renderWorkPackage(workPackage: MediumTermBudgetWorkPackageReadModel) {
-    if (!selectedProject) return null;
+    const project = projects.find((candidate) => candidate.number === workPackage.project_number);
+    if (!project) return null;
     return (
       <WorkPackageRow
         key={workPackage.id}
-        project={selectedProject}
+        project={project}
         workPackage={workPackage}
         baseWorkPackage={workPackagesByReference.get(workPackage.reference) ?? null}
         demands={demandByPackage.get(workPackage.reference) ?? []}
@@ -559,9 +619,11 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
 
       <div className="metric-grid mt-metrics">
         <article>
-          <span>Projet sélectionné</span>
-          <strong>{loading ? "—" : projection?.project_number || projectFilter || "Aucun"}</strong>
-          <small>{projection?.project_name || "Choisis un projet"}</small>
+          <span>Portefeuille analysé</span>
+          <strong>{loading || projectionLoading ? "—" : projection?.project_number || "Tous les projets"}</strong>
+          <small>
+            {projection?.project_name || `${projection?.project_count ?? 0} projet(s) dans le périmètre`}
+          </small>
         </article>
         <article>
           <span>Tâches ERP DEPMO</span>
@@ -587,11 +649,42 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
         </label>
         <label>
           <span>Projet</span>
-          <select value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)}>
-            {projectOptions.length === 0 && <option value="">Aucun projet disponible</option>}
+          <select
+            value={projectFilter}
+            onChange={(event) => {
+              setProjectFilter(event.target.value);
+              setTaskFilter("");
+            }}
+          >
+            <option value="">Tous les projets</option>
             {projectOptions.map((project) => (
               <option value={project.number} key={project.id}>
                 {project.number} — {project.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>Tâche ERP</span>
+          <select value={taskFilter} onChange={(event) => setTaskFilter(event.target.value)}>
+            <option value="">Toutes les tâches</option>
+            {taskOptions.map((task) => (
+              <option value={task.task_catalog_item_id} key={task.task_catalog_item_id}>
+                {task.project_number} · {task.task_code} — {task.task_label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>Classe de ressource</span>
+          <select
+            value={resourceClassFilter}
+            onChange={(event) => setResourceClassFilter(event.target.value)}
+          >
+            <option value="">Toutes les classes</option>
+            {resourceClassOptions.map((resourceClass) => (
+              <option value={resourceClass.code} key={resourceClass.code}>
+                {resourceClass.label} ({resourceClass.code}){resourceClass.active ? "" : " — inactive"}
               </option>
             ))}
           </select>
@@ -657,26 +750,30 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
           </div>
 
           {!loading && !projectionLoading && !projection && !error && !projectionError && (
-            <div className="mt-empty">Sélectionne un projet pour afficher le Gantt Moyen terme.</div>
+            <div className="mt-empty">Aucune projection Moyen terme n’est disponible.</div>
           )}
 
-          {projection && selectedProject && (
+          {projection && (
             <div className="mt-project-block">
               <div className="mt-project-strip">
-                <strong>{projection.project_number}</strong>
-                <span>{projection.project_name}</span>
-                <small>{selectedProject.client || "Client non précisé"}</small>
+                <strong>{projection.project_number || "Tous les projets"}</strong>
+                <span>{projection.project_name || "Portefeuille Moyen terme"}</span>
+                <small>
+                  {selectedProject?.client || `${projection.project_count} projet(s) autorisé(s)`}
+                </small>
               </div>
 
               {projection.diagnostics.length > 0 && (
                 <div className="mt-projection-diagnostics">
-                  {projection.diagnostics.map((code) => <span key={code}>⚑ {code}</span>)}
+                  {projection.diagnostics.map((code) => (
+                    <span key={code}>⚑ {PROJECTION_DIAGNOSTIC_LABELS[code] || code}</span>
+                  ))}
                 </div>
               )}
 
               {projection.tasks.length === 0 && (
                 <div className="mt-no-package">
-                  Ce projet ne contient aucune tâche ERP DEPMO dans la projection.
+                  Aucune tâche ERP DEPMO ne correspond aux filtres autoritaires.
                 </div>
               )}
 
@@ -695,7 +792,7 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
                 <section className="mt-task-group is-unclassified">
                   <header className="mt-task-strip has-attention">
                     <div className="mt-task-title">
-                      <strong>WorkPackages non classés</strong>
+                      <strong>WorkPackages sans tâche ERP</strong>
                       <span className="mt-yellow-flag">⚑</span>
                     </div>
                     <small>
@@ -709,7 +806,7 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
               {projection.tasks.length > 0
                 && projectedPackageCount === 0
                 && projection.unclassified_work_packages.length === 0 && (
-                <div className="mt-no-package">Le projet ne contient encore aucun WorkPackage.</div>
+                <div className="mt-no-package">Aucun WorkPackage ne correspond aux filtres.</div>
               )}
 
               {query && visibleTasks.length === 0 && visibleUnclassified.length === 0 && (

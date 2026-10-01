@@ -5,7 +5,7 @@
 .mt-demands-button:hover { background: #274f90; }
 .mt-create-package { border: 1px solid var(--border); background: white; color: var(--accent); }
 .mt-create-package:hover { border-color: #aebbd0; background: #f8fafc; }
-.mt-filters { grid-template-columns: minmax(240px, 1fr) repeat(3, minmax(150px, .55fr)); }
+.mt-filters { grid-template-columns: minmax(220px, 1.2fr) repeat(5, minmax(145px, .7fr)); }
 .mt-metrics strong { font-size: 1.18rem; }
 
 .mt-capacity-panel { margin: .85rem 0; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); overflow: hidden; transition: opacity .15s; }
@@ -14,6 +14,10 @@
 .mt-capacity-heading h2 { margin-top: .08rem; font-size: .92rem; }
 .mt-capacity-heading p { max-width: 700px; margin: 0; color: var(--muted); font-size: .6rem; line-height: 1.45; text-align: right; }
 .mt-capacity-scroll { overflow-x: auto; }
+.mt-capacity-class + .mt-capacity-class { border-top: 1px solid var(--border); }
+.mt-capacity-class-heading { display: flex; align-items: baseline; gap: .55rem; padding: .45rem .6rem; background: #f4f7fb; }
+.mt-capacity-class-heading strong { color: #2d405d; font-size: .68rem; }
+.mt-capacity-class-heading span { color: var(--muted); font-size: .52rem; }
 .mt-capacity-grid { min-width: 820px; display: grid; align-items: stretch; }
 .mt-capacity-row { display: contents; }
 .mt-capacity-corner, .mt-capacity-week, .mt-capacity-label, .mt-capacity-cell { border-right: 1px solid #e6eaf0; border-bottom: 1px solid #e6eaf0; }
