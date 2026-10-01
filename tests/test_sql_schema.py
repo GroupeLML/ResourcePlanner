@@ -19,6 +19,8 @@ DOMAIN_ENGINE = ROOT / "app" / "domain" / "planning_engine.py"
 DAY = date(2026, 8, 26)
 
 EXPECTED_TABLES = {
+    "acumatica_project_task_sync_runs",
+    "acumatica_project_task_sync_project_results",
     "approval_decisions",
     "approval_requirement_approvers",
     "approval_requirements",
@@ -121,6 +123,16 @@ class SqlSchemaTests(unittest.TestCase):
         work_packages = Base.metadata.tables["work_packages"].c
         work_package_audit = Base.metadata.tables["work_package_audit"].c
         task_sync_state = Base.metadata.tables["task_catalog_project_sync_state"].c
+        global_task_sync_runs = Base.metadata.tables["acumatica_project_task_sync_runs"].c
+        global_task_sync_results = Base.metadata.tables["acumatica_project_task_sync_project_results"].c
+        self.assertFalse(global_task_sync_runs["status"].nullable)
+        self.assertTrue(global_task_sync_runs["active_key"].nullable)
+        self.assertFalse(global_task_sync_runs["projects_processed"].nullable)
+        self.assertTrue(global_task_sync_runs["source_requests"].nullable)
+        self.assertFalse(global_task_sync_results["run_id"].nullable)
+        self.assertFalse(global_task_sync_results["project_id"].nullable)
+        self.assertFalse(global_task_sync_results["status"].nullable)
+
         competencies = Base.metadata.tables["competencies"].c
         resource_competencies = Base.metadata.tables["resource_competencies"].c
         request_competencies = Base.metadata.tables["workforce_request_competencies"].c

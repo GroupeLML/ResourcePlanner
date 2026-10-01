@@ -48,6 +48,7 @@ from ..infrastructure.sql import (
     create_sql_engine,
     transactional_session,
 )
+from .acumatica_project_task_sync import AcumaticaProjectTaskSyncRunner
 from .composition import (
     build_approval_progress_service,
     build_approval_scope_service,
@@ -487,6 +488,7 @@ def create_api_app(
     engine = create_sql_engine(database_url)
     install_sql_performance_instrumentation(engine)
     factory = create_session_factory(engine)
+    project_task_sync_runner = AcumaticaProjectTaskSyncRunner(factory, project_task_source)
     session_dependency = make_session_dependency(factory)
     facade_dependency = make_facade_dependency(
         factory,
@@ -560,9 +562,11 @@ def create_api_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        project_task_sync_runner.reconcile_interrupted_runs()
         try:
             yield
         finally:
+            project_task_sync_runner.shutdown()
             engine.dispose()
 
     app = FastAPI(
@@ -591,6 +595,7 @@ def create_api_app(
     app.state.approval_scope_dependency = approval_scope_dependency
     app.state.approval_progress_dependency = approval_progress_dependency
     app.state.runtime_dependencies = dict(runtime_dependencies or {})
+    app.state.project_task_sync_runner = project_task_sync_runner
     app.state.dev_user_switcher_enabled = dev_user_switcher_runtime is not None
 
     install_authorization_middleware(
@@ -727,6 +732,7 @@ def create_api_app(
             employee_source=employee_source,
             user_source=user_source,
             project_task_source=project_task_source,
+            project_task_sync_runner=project_task_sync_runner,
             acumatica_info=acumatica_info,
         )
     )

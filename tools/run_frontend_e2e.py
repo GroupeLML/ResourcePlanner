@@ -114,7 +114,7 @@ class FakePlaywrightProjectTaskSource:
         *,
         project_targets,
     ) -> TaskCatalogPortfolioSnapshot:
-        sleep(0.25)
+        sleep(2.0)
         snapshots = []
         for project_external_id, project_number in project_targets:
             if project_external_id != "251" or project_number != "P-251":

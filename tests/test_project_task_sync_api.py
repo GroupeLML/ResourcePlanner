@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 from tempfile import TemporaryDirectory
-from threading import Event, Thread
+from threading import Event
+from time import perf_counter, sleep
 import unittest
 
 from fastapi.testclient import TestClient
@@ -15,6 +16,7 @@ from app.application import (
 )
 from app.application.security import PERMISSION_SYNC_PROJECTS
 from app.infrastructure.sql import (
+    AcumaticaProjectTaskSyncRun,
     Base,
     Project,
     ResourceClassConfig,
@@ -108,6 +110,15 @@ class BlockingBatchProjectTaskSource(BatchProjectTaskSource):
         return super().fetch_project_snapshots(project_targets=project_targets)
 
 
+class FailingBatchProjectTaskSource(BatchProjectTaskSource):
+    def fetch_project_snapshots(
+        self,
+        *,
+        project_targets: tuple[tuple[str, str], ...],
+    ) -> TaskCatalogPortfolioSnapshot:
+        raise RuntimeError("controlled source failure")
+
+
 class ProjectTaskSyncApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.directory = TemporaryDirectory()
@@ -166,6 +177,30 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.directory.cleanup()
 
+    def _wait_for_run(
+        self,
+        client: TestClient,
+        run_id: str,
+        *,
+        timeout_seconds: float = 5.0,
+    ) -> dict[str, object]:
+        deadline = perf_counter() + timeout_seconds
+        while perf_counter() < deadline:
+            response = client.get(
+                f"/api/v1/integrations/acumatica/projects/tasks/sync/{run_id}"
+            )
+            self.assertEqual(response.status_code, 200)
+            body = response.json()
+            if body["status"] in {
+                "COMPLETED",
+                "COMPLETED_WITH_ERRORS",
+                "FAILED",
+                "INTERRUPTED",
+            }:
+                return body
+            sleep(0.01)
+        self.fail(f"sync run {run_id} did not reach a terminal state")
+
     @staticmethod
     def _snapshot() -> TaskCatalogProjectSnapshot:
         return TaskCatalogProjectSnapshot(
@@ -196,12 +231,18 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
         )
         path = "/api/v1/integrations/acumatica/projects/tasks/sync"
         self.assertEqual(required_permission("POST", path), PERMISSION_SYNC_PROJECTS)
+        self.assertEqual(required_permission("GET", f"{path}/current"), PERMISSION_SYNC_PROJECTS)
+        self.assertEqual(required_permission("GET", f"{path}/some-run"), PERMISSION_SYNC_PROJECTS)
 
         with TestClient(app) as client:
             response = client.post(path)
+            current = client.get(f"{path}/current")
+
 
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.json()["error"]["code"], "permission_denied")
+        self.assertEqual(current.status_code, 403)
+        self.assertEqual(current.json()["error"]["code"], "permission_denied")
         self.assertEqual(source.calls, [])
 
     @staticmethod
@@ -254,7 +295,7 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
         }
 
     def test_global_sync_orchestrates_active_erp_projects_and_replays_idempotently(self) -> None:
-        source = MultiProjectTaskSource(self._global_snapshots())
+        source = BatchProjectTaskSource(self._global_snapshots())
         app = create_api_app(
             self.database_url,
             auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
@@ -263,15 +304,21 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
         path = "/api/v1/integrations/acumatica/projects/tasks/sync"
 
         with TestClient(app) as client:
-            first = client.post(path)
-            second = client.post(path)
+            first_launch = client.post(path)
+            self.assertEqual(first_launch.status_code, 202)
+            first_body = self._wait_for_run(client, first_launch.json()["run_id"])
 
-        self.assertEqual(first.status_code, 200)
-        self.assertEqual(second.status_code, 200)
-        first_body = first.json()
-        second_body = second.json()
+            second_launch = client.post(path)
+            self.assertEqual(second_launch.status_code, 202)
+            self.assertNotEqual(
+                second_launch.json()["run_id"],
+                first_launch.json()["run_id"],
+            )
+            second_body = self._wait_for_run(client, second_launch.json()["run_id"])
 
+        self.assertEqual(first_body["status"], "COMPLETED_WITH_ERRORS")
         self.assertEqual(first_body["projects_inspected"], 4)
+        self.assertEqual(first_body["projects_processed"], 4)
         self.assertEqual(first_body["projects_synchronized"], 2)
         self.assertEqual(first_body["projects_ignored"], 1)
         self.assertEqual(first_body["projects_rejected"], 1)
@@ -287,15 +334,8 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
         self.assertEqual(second_body["tasks_updated"], 0)
         self.assertEqual(second_body["tasks_unchanged"], 2)
         self.assertEqual(second_body["tasks_rejected"], 1)
-        self.assertEqual(
-            source.calls,
-            [
-                ("5469", "5118"),
-                ("5470", "5119"),
-                ("5469", "5118"),
-                ("5470", "5119"),
-            ],
-        )
+        self.assertEqual(len(source.batch_calls), 2)
+        self.assertEqual(source.calls, [])
 
         outcomes = {
             row["project_number"]: row
@@ -335,12 +375,12 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
         )
 
         with TestClient(app) as client:
-            response = client.post(
+            launch = client.post(
                 "/api/v1/integrations/acumatica/projects/tasks/sync"
             )
+            self.assertEqual(launch.status_code, 202)
+            body = self._wait_for_run(client, launch.json()["run_id"])
 
-        self.assertEqual(response.status_code, 200)
-        body = response.json()
         self.assertEqual(
             source.batch_calls,
             [(("5469", "5118"), ("5470", "5119"))],
@@ -351,6 +391,7 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
         self.assertIsInstance(body["source_read_duration_ms"], int)
         self.assertIsInstance(body["duration_ms"], int)
         self.assertEqual(body["projects_inspected"], 4)
+        self.assertEqual(body["projects_processed"], 4)
         self.assertEqual(body["projects_synchronized"], 2)
         self.assertEqual(body["projects_ignored"], 1)
         self.assertEqual(body["projects_rejected"], 1)
@@ -365,30 +406,36 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
             project_task_source=source,
         )
         path = "/api/v1/integrations/acumatica/projects/tasks/sync"
-        first_result: dict[str, object] = {}
 
-        def run_first() -> None:
-            with TestClient(app) as client:
-                first_result["response"] = client.post(path)
+        with TestClient(app) as client:
+            started = perf_counter()
+            first = client.post(path)
+            launch_seconds = perf_counter() - started
+            self.assertEqual(first.status_code, 202)
+            self.assertLess(launch_seconds, 0.5)
+            run_id = first.json()["run_id"]
+            self.assertEqual(first.json()["status"], "PENDING")
+            self.assertTrue(source.started.wait(timeout=2))
 
-        first_thread = Thread(target=run_first)
-        first_thread.start()
-        self.assertTrue(source.started.wait(timeout=2))
-        try:
-            with TestClient(app) as client:
-                second = client.post(path)
-        finally:
+            running = client.get(f"{path}/{run_id}")
+            self.assertEqual(running.status_code, 200)
+            self.assertEqual(running.json()["status"], "RUNNING")
+            self.assertEqual(running.json()["projects_total"], 4)
+            self.assertEqual(running.json()["projects_processed"], 0)
+
+            second = client.post(path)
+            self.assertEqual(second.status_code, 202)
+            self.assertEqual(second.json()["run_id"], run_id)
+            self.assertIn(second.json()["status"], {"PENDING", "RUNNING"})
+
+            current = client.get(f"{path}/current")
+            self.assertEqual(current.status_code, 200)
+            self.assertEqual(current.json()["run_id"], run_id)
+
             source.release.set()
-            first_thread.join(timeout=5)
+            final = self._wait_for_run(client, run_id)
 
-        self.assertFalse(first_thread.is_alive())
-        first = first_result["response"]
-        self.assertEqual(first.status_code, 200)
-        self.assertEqual(second.status_code, 409)
-        self.assertEqual(
-            second.json()["error"]["code"],
-            "acumatica_project_task_sync_in_progress",
-        )
+        self.assertEqual(final["projects_processed"], final["projects_total"])
         self.assertEqual(len(source.batch_calls), 1)
 
     def test_global_sync_rolls_back_only_the_failed_project_transaction(self) -> None:
@@ -420,7 +467,7 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
                 ),
             ),
         )
-        source = MultiProjectTaskSource(snapshots)
+        source = BatchProjectTaskSource(snapshots)
         app = create_api_app(
             self.database_url,
             auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
@@ -428,12 +475,13 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
         )
 
         with TestClient(app) as client:
-            response = client.post(
+            launch = client.post(
                 "/api/v1/integrations/acumatica/projects/tasks/sync"
             )
+            self.assertEqual(launch.status_code, 202)
+            body = self._wait_for_run(client, launch.json()["run_id"])
 
-        self.assertEqual(response.status_code, 200)
-        body = response.json()
+        self.assertEqual(body["status"], "COMPLETED_WITH_ERRORS")
         self.assertEqual(body["projects_synchronized"], 1)
         self.assertEqual(body["projects_rejected"], 2)
         outcomes = {
@@ -464,6 +512,86 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
             self.assertEqual(len(successful_rows), 1)
             self.assertEqual(successful_rows[0].erp_task_id, "9002")
         engine.dispose()
+
+    def test_global_sync_source_failure_is_persisted_as_failed(self) -> None:
+        source = FailingBatchProjectTaskSource(self._global_snapshots())
+        app = create_api_app(
+            self.database_url,
+            auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            project_task_source=source,
+        )
+
+        with TestClient(app) as client:
+            launch = client.post(
+                "/api/v1/integrations/acumatica/projects/tasks/sync"
+            )
+            self.assertEqual(launch.status_code, 202)
+            body = self._wait_for_run(client, launch.json()["run_id"])
+
+        self.assertEqual(body["status"], "FAILED")
+        self.assertEqual(
+            body["error_code"],
+            "acumatica_project_task_read_failed",
+        )
+        self.assertEqual(body["projects_processed"], 0)
+
+    def test_startup_reconciles_interrupted_run_and_allows_new_launch(self) -> None:
+        engine = create_sql_engine(self.database_url)
+        factory = create_session_factory(engine)
+        with factory.begin() as session:
+            session.add(
+                AcumaticaProjectTaskSyncRun(
+                    id="INTERRUPTED-RUN",
+                    active_key="GLOBAL",
+                    status="RUNNING",
+                )
+            )
+        engine.dispose()
+
+        source = BatchProjectTaskSource(self._global_snapshots())
+        app = create_api_app(
+            self.database_url,
+            auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            project_task_source=source,
+        )
+        path = "/api/v1/integrations/acumatica/projects/tasks/sync"
+
+        with TestClient(app) as client:
+            interrupted = client.get(f"{path}/INTERRUPTED-RUN")
+            self.assertEqual(interrupted.status_code, 200)
+            self.assertEqual(interrupted.json()["status"], "INTERRUPTED")
+            self.assertEqual(interrupted.json()["error_code"], "backend_restarted")
+
+            launch = client.post(path)
+            self.assertEqual(launch.status_code, 202)
+            self.assertNotEqual(launch.json()["run_id"], "INTERRUPTED-RUN")
+            self._wait_for_run(client, launch.json()["run_id"])
+
+    def test_global_sync_can_complete_without_project_errors(self) -> None:
+        engine = create_sql_engine(self.database_url)
+        factory = create_session_factory(engine)
+        with factory.begin() as session:
+            local = session.get(Project, "PROJECT-LOCAL")
+            self.assertIsNotNone(local)
+            local.status = "Terminé"
+        engine.dispose()
+
+        source = BatchProjectTaskSource(self._global_snapshots())
+        app = create_api_app(
+            self.database_url,
+            auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            project_task_source=source,
+        )
+
+        with TestClient(app) as client:
+            launch = client.post(
+                "/api/v1/integrations/acumatica/projects/tasks/sync"
+            )
+            body = self._wait_for_run(client, launch.json()["run_id"])
+
+        self.assertEqual(body["status"], "COMPLETED")
+        self.assertEqual(body["projects_rejected"], 0)
+        self.assertEqual(body["projects_processed"], body["projects_total"])
 
     def test_dynamic_sync_path_requires_sync_projects_permission(self) -> None:
         path = "/api/v1/integrations/acumatica/projects/PROJECT-ERP/tasks/sync"
