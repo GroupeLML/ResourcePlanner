@@ -190,7 +190,10 @@ def build_read_router(
     @router.get("/medium-term/budget")
     def medium_term_budget(
         request: Request,
-        project_number: str = Query(min_length=1),
+        project_number: str | None = Query(default=None, min_length=1),
+        task_catalog_item_id: str | None = Query(default=None, min_length=1),
+        resource_class_code: str | None = Query(default=None, min_length=1),
+        include_inactive_projects: bool = Query(default=False),
         start: date | None = Query(default=None),
         end: date | None = Query(default=None),
         scope: ViewScope = Query(default=SCOPE_GLOBAL),
@@ -206,6 +209,9 @@ def build_read_router(
         project_ids = _project_ids_for_scope(request, scope, context_repository)
         projection = queries.medium_term_budget_projection(
             project_number=project_number,
+            task_catalog_item_id=task_catalog_item_id,
+            resource_class_code=resource_class_code,
+            include_inactive_projects=include_inactive_projects,
             project_ids=project_ids,
             start=start,
             end=end,
