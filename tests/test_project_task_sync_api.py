@@ -41,6 +41,21 @@ class StubProjectTaskSource:
         return self.snapshot
 
 
+class MultiProjectTaskSource:
+    def __init__(self, snapshots: dict[str, TaskCatalogProjectSnapshot]) -> None:
+        self.snapshots = snapshots
+        self.calls: list[tuple[str, str]] = []
+
+    def fetch_project_snapshot(
+        self,
+        *,
+        project_external_id: str,
+        project_number: str,
+    ) -> TaskCatalogProjectSnapshot:
+        self.calls.append((project_external_id, project_number))
+        return self.snapshots[project_number]
+
+
 class ProjectTaskSyncApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.directory = TemporaryDirectory()
@@ -60,10 +75,24 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
                         status="Actif",
                     ),
                     Project(
+                        id="PROJECT-ERP-2",
+                        erp_external_id="5470",
+                        number="5119",
+                        name="Projet ERP 2",
+                        status="Actif",
+                    ),
+                    Project(
                         id="PROJECT-LOCAL",
                         number="LOCAL-1",
                         name="Projet local",
                         status="Actif",
+                    ),
+                    Project(
+                        id="PROJECT-INACTIVE",
+                        erp_external_id="9999",
+                        number="OLD-1",
+                        name="Projet terminé",
+                        status="Terminé",
                     ),
                     ResourceClassConfig(
                         code="PROGRAMMEUR",
@@ -105,6 +134,219 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
                 ),
             ),
         )
+
+    def test_global_sync_requires_admin_sync_permission(self) -> None:
+        source = MultiProjectTaskSource({"5118": self._snapshot()})
+        app = create_api_app(
+            self.database_url,
+            auth_resolver=TEST_PROJECT_MANAGER_AUTH_RESOLVER,
+            project_task_source=source,
+        )
+        path = "/api/v1/integrations/acumatica/projects/tasks/sync"
+        self.assertEqual(required_permission("POST", path), PERMISSION_SYNC_PROJECTS)
+
+        with TestClient(app) as client:
+            response = client.post(path)
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["error"]["code"], "permission_denied")
+        self.assertEqual(source.calls, [])
+
+    @staticmethod
+    def _global_snapshots() -> dict[str, TaskCatalogProjectSnapshot]:
+        return {
+            "5118": TaskCatalogProjectSnapshot(
+                project_number="5118",
+                source_rows=2,
+                rejected_rows=0,
+                items=(
+                    TaskCatalogItem(
+                        project_number="5118",
+                        code="216",
+                        label="Programmation projet 1",
+                        status="Actif",
+                        active=True,
+                        erp_task_id="9001",
+                        account_group="DEPMO",
+                        budget_amount_cad=Decimal("1000.00"),
+                    ),
+                    TaskCatalogItem(
+                        project_number="5118",
+                        code="999",
+                        label="DEPMO sans standard TaskCD",
+                        status="Actif",
+                        active=True,
+                        erp_task_id="9099",
+                        account_group="DEPMO",
+                        budget_amount_cad=Decimal("500.00"),
+                    ),
+                ),
+            ),
+            "5119": TaskCatalogProjectSnapshot(
+                project_number="5119",
+                source_rows=1,
+                rejected_rows=0,
+                items=(
+                    TaskCatalogItem(
+                        project_number="5119",
+                        code="216",
+                        label="Programmation projet 2",
+                        status="Actif",
+                        active=True,
+                        erp_task_id="9002",
+                        account_group="DEPMO",
+                        budget_amount_cad=Decimal("625.00"),
+                    ),
+                ),
+            ),
+        }
+
+    def test_global_sync_orchestrates_active_erp_projects_and_replays_idempotently(self) -> None:
+        source = MultiProjectTaskSource(self._global_snapshots())
+        app = create_api_app(
+            self.database_url,
+            auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            project_task_source=source,
+        )
+        path = "/api/v1/integrations/acumatica/projects/tasks/sync"
+
+        with TestClient(app) as client:
+            first = client.post(path)
+            second = client.post(path)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        first_body = first.json()
+        second_body = second.json()
+
+        self.assertEqual(first_body["projects_inspected"], 4)
+        self.assertEqual(first_body["projects_synchronized"], 2)
+        self.assertEqual(first_body["projects_ignored"], 1)
+        self.assertEqual(first_body["projects_rejected"], 1)
+        self.assertEqual(first_body["source_rows_received"], 3)
+        self.assertEqual(first_body["source_rows_rejected"], 0)
+        self.assertEqual(first_body["tasks_received"], 3)
+        self.assertEqual(first_body["tasks_created"], 2)
+        self.assertEqual(first_body["tasks_updated"], 0)
+        self.assertEqual(first_body["tasks_unchanged"], 0)
+        self.assertEqual(first_body["tasks_rejected"], 1)
+
+        self.assertEqual(second_body["tasks_created"], 0)
+        self.assertEqual(second_body["tasks_updated"], 0)
+        self.assertEqual(second_body["tasks_unchanged"], 2)
+        self.assertEqual(second_body["tasks_rejected"], 1)
+        self.assertEqual(
+            source.calls,
+            [
+                ("5469", "5118"),
+                ("5470", "5119"),
+                ("5469", "5118"),
+                ("5470", "5119"),
+            ],
+        )
+
+        outcomes = {
+            row["project_number"]: row
+            for row in first_body["project_results"]
+        }
+        self.assertEqual(outcomes["OLD-1"]["status"], "ignored")
+        self.assertEqual(outcomes["OLD-1"]["reason_code"], "project_inactive")
+        self.assertEqual(outcomes["LOCAL-1"]["status"], "rejected")
+        self.assertEqual(
+            outcomes["LOCAL-1"]["error_code"],
+            "task_catalog_project_external_id_required",
+        )
+
+        engine = create_sql_engine(self.database_url)
+        factory = create_session_factory(engine)
+        with factory() as session:
+            rows = session.scalars(
+                select(TaskCatalogEntry).order_by(TaskCatalogEntry.project_number)
+            ).all()
+            self.assertEqual(
+                [(row.project_number, row.task_code, row.erp_task_id) for row in rows],
+                [
+                    ("5118", "216", "9001"),
+                    ("5119", "216", "9002"),
+                ],
+            )
+            self.assertTrue(all(row.account_group == "DEPMO" for row in rows))
+            self.assertTrue(all(row.workforce_eligible for row in rows))
+        engine.dispose()
+
+    def test_global_sync_rolls_back_only_the_failed_project_transaction(self) -> None:
+        snapshots = self._global_snapshots()
+        snapshots["5118"] = TaskCatalogProjectSnapshot(
+            project_number="5118",
+            source_rows=2,
+            rejected_rows=0,
+            items=(
+                TaskCatalogItem(
+                    project_number="5118",
+                    code="216",
+                    label="Première ligne avant échec",
+                    status="Actif",
+                    active=True,
+                    erp_task_id="FAIL-DUPLICATE",
+                    account_group="DEPMO",
+                    budget_amount_cad=Decimal("100.00"),
+                ),
+                TaskCatalogItem(
+                    project_number="5118",
+                    code="216",
+                    label="Même identité ERP en double",
+                    status="Actif",
+                    active=True,
+                    erp_task_id="FAIL-DUPLICATE",
+                    account_group="DEPMO",
+                    budget_amount_cad=Decimal("200.00"),
+                ),
+            ),
+        )
+        source = MultiProjectTaskSource(snapshots)
+        app = create_api_app(
+            self.database_url,
+            auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            project_task_source=source,
+        )
+
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/integrations/acumatica/projects/tasks/sync"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["projects_synchronized"], 1)
+        self.assertEqual(body["projects_rejected"], 2)
+        outcomes = {
+            row["project_number"]: row
+            for row in body["project_results"]
+        }
+        self.assertEqual(outcomes["5118"]["status"], "rejected")
+        self.assertEqual(
+            outcomes["5118"]["error_code"],
+            "task_catalog_duplicate_key",
+        )
+        self.assertEqual(outcomes["5119"]["status"], "synchronized")
+
+        engine = create_sql_engine(self.database_url)
+        factory = create_session_factory(engine)
+        with factory() as session:
+            failed_rows = session.scalars(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == "5118"
+                )
+            ).all()
+            successful_rows = session.scalars(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == "5119"
+                )
+            ).all()
+            self.assertEqual(failed_rows, [])
+            self.assertEqual(len(successful_rows), 1)
+            self.assertEqual(successful_rows[0].erp_task_id, "9002")
+        engine.dispose()
 
     def test_dynamic_sync_path_requires_sync_projects_permission(self) -> None:
         path = "/api/v1/integrations/acumatica/projects/PROJECT-ERP/tasks/sync"

@@ -90,6 +90,14 @@ class ReactProjectsContractTests(unittest.TestCase):
         )
         self.assertIn("/tasks/sync", api)
         self.assertIn("/tasks/sync-metadata", api)
+        self.assertIn("syncAcumaticaActiveProjectTasks()", page)
+        self.assertIn("Synchroniser les tâches des projets actifs", page)
+        self.assertIn(
+            '"/api/v1/integrations/acumatica/projects/tasks/sync"',
+            api,
+        )
+        self.assertIn("projects_synchronized", page)
+        self.assertIn("tasks_rejected", page)
         self.assertNotIn("/oDATA/RP_ProjectTasks", page)
         self.assertNotIn("RESOURCEPLANNER_ACUMATICA_PASSWORD", page)
 
