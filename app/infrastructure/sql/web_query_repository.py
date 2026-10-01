@@ -16,6 +16,7 @@ from ...application import (
 from ...application.medium_term_budget import (
     INACTIVE_WORK_PACKAGE_STATUSES,
     MEDIUM_TERM_DIAGNOSTIC_CAPACITY_ZERO,
+    MEDIUM_TERM_DIAGNOSTIC_UNCLASSIFIED_WORK_PACKAGE_LOAD,
     MEDIUM_TERM_DIAGNOSTIC_UNCLASSIFIED_WORK_PACKAGES,
     MEDIUM_TERM_DIAGNOSTIC_WEEKLY_LOAD_INCOMPLETE,
     WEEK_DIAGNOSTIC_CAPACITY_ZERO,
@@ -23,6 +24,9 @@ from ...application.medium_term_budget import (
     MediumTermBudgetReadModel,
     MediumTermBudgetTaskReadModel,
     MediumTermBudgetWorkPackageReadModel,
+    MediumTermClassWeekReadModel,
+    MediumTermResourceClassOptionReadModel,
+    MediumTermTaskOptionReadModel,
     MediumTermWeekReadModel,
     MediumTermWeeklyLoadReadModel,
     task_budget_diagnostic,
@@ -51,7 +55,11 @@ from .models import (
 from .resource_class_models import ResourceClassConfig
 from .planning_audit import PlanningChangeHistory
 from .capacity_query_repository import SqlPlannerQueryRepository
-from .medium_term_capacity_query import build_workforce_weekly_capacity
+from .medium_term_capacity_query import (
+    UNCLASSIFIED,
+    build_workforce_weekly_capacity_by_class,
+    medium_term_capacity_state,
+)
 
 
 def _text(value: object) -> str:
@@ -160,6 +168,9 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
         work_package: WorkPackage,
         loads: tuple[WeeklyLoadValue, ...],
         *,
+        project_id: str = "",
+        project_number: str = "",
+        project_name: str = "",
         resource_class: ResourceClassConfig | None = None,
         task_resource_class_code: str | None = None,
     ) -> MediumTermBudgetWorkPackageReadModel:
@@ -185,6 +196,9 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
             planned_hours=state.planned_hours,
             status=status,
             budget_included=work_package_is_budget_included(status),
+            project_id=project_id,
+            project_number=project_number,
+            project_name=project_name,
             start_date=work_package.start_date,
             end_date=work_package.end_date,
             version=state.version,
@@ -219,66 +233,117 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
     def medium_term_budget_projection(
         self,
         *,
-        project_number: str,
+        project_number: str | None = None,
+        task_catalog_item_id: str | None = None,
+        resource_class_code: str | None = None,
+        include_inactive_projects: bool = False,
         project_ids: Sequence[str] | None = None,
         start: date | None = None,
         end: date | None = None,
     ) -> MediumTermBudgetReadModel | None:
-        wanted_project = _text(project_number)
-        if not wanted_project:
-            return None
+        wanted_project = _optional_text(project_number)
+        wanted_task = _optional_text(task_catalog_item_id)
+        wanted_class = _optional_text(resource_class_code)
 
-        project_statement = select(Project).where(Project.number == wanted_project)
-        if project_ids is not None:
-            identifiers = tuple(str(value) for value in project_ids if str(value))
-            if not identifiers:
+        visible_projects = tuple(
+            self.list_projects(
+                active_only=not include_inactive_projects,
+                project_ids=project_ids,
+            )
+        )
+        if wanted_project is not None:
+            selected_projects = tuple(
+                project
+                for project in visible_projects
+                if project.number == wanted_project
+            )
+            if not selected_projects:
                 return None
-            project_statement = project_statement.where(Project.id.in_(identifiers))
-        project = self._web_session.scalar(project_statement)
-        if project is None:
-            return None
+        else:
+            selected_projects = visible_projects
 
-        task_rows = self._web_session.scalars(
-            select(TaskCatalogEntry)
-            .where(TaskCatalogEntry.project_number == project.number)
-            .order_by(TaskCatalogEntry.task_code, TaskCatalogEntry.id)
-        ).all()
-        tasks = tuple(
+        project_by_id = {project.id: project for project in selected_projects}
+        project_by_number = {project.number: project for project in selected_projects}
+        selected_project_ids = tuple(project_by_id)
+        selected_project_numbers = tuple(project_by_number)
+
+        configured_classes = tuple(
+            self._web_session.scalars(
+                select(ResourceClassConfig).order_by(
+                    ResourceClassConfig.label,
+                    ResourceClassConfig.code,
+                )
+            ).all()
+        )
+        resource_classes_by_code = {
+            resource_class.code: resource_class
+            for resource_class in configured_classes
+        }
+        resource_class_options = tuple(
+            MediumTermResourceClassOptionReadModel(
+                code=resource_class.code,
+                label=resource_class.label,
+                active=bool(resource_class.active),
+            )
+            for resource_class in configured_classes
+        )
+
+        task_rows = (
+            tuple(
+                self._web_session.scalars(
+                    select(TaskCatalogEntry)
+                    .where(TaskCatalogEntry.project_number.in_(selected_project_numbers))
+                    .order_by(
+                        TaskCatalogEntry.project_number,
+                        TaskCatalogEntry.task_code,
+                        TaskCatalogEntry.id,
+                    )
+                ).all()
+            )
+            if selected_project_numbers
+            else ()
+        )
+        depmo_tasks = tuple(
             task
             for task in task_rows
             if _text(task.account_group).upper() == "DEPMO"
         )
-
-        work_packages = tuple(
-            self._web_session.scalars(
-                select(WorkPackage)
-                .where(WorkPackage.project_id == project.id)
-                .order_by(WorkPackage.start_date, WorkPackage.name, WorkPackage.id)
-            ).all()
-        )
-        work_package_ids = tuple(row.id for row in work_packages)
-        resource_class_codes = tuple(
-            sorted(
-                {
-                    code
-                    for row in work_packages
-                    if (code := _optional_text(row.resource_class_code)) is not None
-                }
+        task_options = tuple(
+            MediumTermTaskOptionReadModel(
+                task_catalog_item_id=task.id,
+                project_id=project_by_number[task.project_number].id,
+                project_number=task.project_number,
+                project_name=project_by_number[task.project_number].name,
+                task_code=task.task_code,
+                task_label=task.label,
             )
+            for task in depmo_tasks
+            if task.project_number in project_by_number
         )
-        resource_classes = (
-            {
-                row.code: row
-                for row in self._web_session.scalars(
-                    select(ResourceClassConfig).where(
-                        ResourceClassConfig.code.in_(resource_class_codes)
+        tasks = tuple(
+            task
+            for task in depmo_tasks
+            if wanted_task is None or task.id == wanted_task
+        )
+        tasks_by_id = {task.id: task for task in depmo_tasks}
+
+        work_packages = (
+            tuple(
+                self._web_session.scalars(
+                    select(WorkPackage)
+                    .where(WorkPackage.project_id.in_(selected_project_ids))
+                    .order_by(
+                        WorkPackage.project_id,
+                        WorkPackage.start_date,
+                        WorkPackage.name,
+                        WorkPackage.id,
                     )
                 ).all()
-            }
-            if resource_class_codes
-            else {}
+            )
+            if selected_project_ids
+            else ()
         )
-        tasks_by_id = {task.id: task for task in task_rows}
+        work_package_ids = tuple(row.id for row in work_packages)
         load_rows = (
             tuple(
                 self._web_session.scalars(
@@ -302,19 +367,25 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                 )
             )
 
-        by_task: dict[str, list[MediumTermBudgetWorkPackageReadModel]] = {
-            task.id: [] for task in tasks
-        }
-        unclassified: list[MediumTermBudgetWorkPackageReadModel] = []
-        projected_by_id: dict[str, MediumTermBudgetWorkPackageReadModel] = {}
+        all_by_task: defaultdict[str, list[MediumTermBudgetWorkPackageReadModel]] = defaultdict(list)
+        display_by_task: defaultdict[str, list[MediumTermBudgetWorkPackageReadModel]] = defaultdict(list)
+        displayed_unclassified: list[MediumTermBudgetWorkPackageReadModel] = []
+        displayed_by_id: dict[str, MediumTermBudgetWorkPackageReadModel] = {}
+
         for work_package in work_packages:
+            project = project_by_id.get(work_package.project_id)
+            if project is None:
+                continue
             task = tasks_by_id.get(work_package.task_catalog_item_id)
             class_code = _optional_text(work_package.resource_class_code)
             projected = self._medium_term_budget_work_package(
                 work_package,
                 tuple(loads_by_package.get(work_package.id, ())),
+                project_id=project.id,
+                project_number=project.number,
+                project_name=project.name,
                 resource_class=(
-                    resource_classes.get(class_code)
+                    resource_classes_by_code.get(class_code)
                     if class_code is not None
                     else None
                 ),
@@ -325,16 +396,29 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                 ),
             )
             task_id = work_package.task_catalog_item_id
+            if task_id in tasks_by_id:
+                all_by_task[task_id].append(projected)
+
+            if wanted_task is not None and task_id != wanted_task:
+                continue
+            if wanted_class is not None and class_code != wanted_class:
+                continue
+
+            displayed_by_id[work_package.id] = projected
             if task_id is None:
-                projected_by_id[work_package.id] = projected
-                unclassified.append(projected)
-            elif task_id in by_task:
-                projected_by_id[work_package.id] = projected
-                by_task[task_id].append(projected)
+                displayed_unclassified.append(projected)
+            elif task_id in tasks_by_id:
+                display_by_task[task_id].append(projected)
 
         task_models: list[MediumTermBudgetTaskReadModel] = []
         for task in tasks:
-            associated = tuple(by_task[task.id])
+            project = project_by_number.get(task.project_number)
+            if project is None:
+                continue
+            associated = tuple(all_by_task.get(task.id, ()))
+            displayed = tuple(display_by_task.get(task.id, ()))
+            if wanted_class is not None and not displayed:
+                continue
             included = tuple(row for row in associated if row.budget_included)
             load_complete = all(row.planned_hours is not None for row in included)
             planned_wp_hours = (
@@ -373,22 +457,29 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                         included_work_package_count=len(included),
                     ),
                     budget_source_diagnostic=_optional_text(task.budget_diagnostic),
-                    work_packages=associated,
+                    work_packages=displayed,
                     active=bool(task.active),
                     workforce_eligible=task.workforce_eligible,
+                    project_id=project.id,
+                    project_number=project.number,
+                    project_name=project.name,
                 )
             )
 
         diagnostics: list[str] = []
         weekly_diagnostics: list[str] = []
-        if unclassified:
+        if displayed_unclassified:
             diagnostics.append(MEDIUM_TERM_DIAGNOSTIC_UNCLASSIFIED_WORK_PACKAGES)
 
         current_packages = tuple(
             projected
-            for projected in projected_by_id.values()
+            for projected in displayed_by_id.values()
             if projected.current_load_included
         )
+        if any(row.resource_class_code is None for row in current_packages):
+            diagnostics.append(
+                MEDIUM_TERM_DIAGNOSTIC_UNCLASSIFIED_WORK_PACKAGE_LOAD
+            )
         if any(row.weekly_load_diagnostic is not None for row in current_packages):
             weekly_diagnostics.append(MEDIUM_TERM_DIAGNOSTIC_WEEKLY_LOAD_INCOMPLETE)
 
@@ -401,14 +492,18 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                 if row.start_date is not None and row.end_date is not None
             )
             if dated:
-                effective_start = min(row.start_date for row in dated if row.start_date is not None)
-                effective_end = max(row.end_date for row in dated if row.end_date is not None)
+                effective_start = min(
+                    row.start_date for row in dated if row.start_date is not None
+                )
+                effective_end = max(
+                    row.end_date for row in dated if row.end_date is not None
+                )
 
         weeks: list[MediumTermWeekReadModel] = []
         if effective_start is not None and effective_end is not None:
             first_week = effective_start - timedelta(days=effective_start.weekday())
             last_week = effective_end - timedelta(days=effective_end.weekday())
-            capacity_by_week = build_workforce_weekly_capacity(
+            capacity_by_week = build_workforce_weekly_capacity_by_class(
                 self,
                 self._web_session,
                 start=effective_start,
@@ -418,57 +513,188 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
             any_capacity_zero = False
             while cursor <= last_week:
                 week_end = cursor + timedelta(days=6)
-                incomplete = False
-                total = Decimal("0.00")
+                load_by_class: defaultdict[str, Decimal] = defaultdict(
+                    lambda: Decimal("0.00")
+                )
+                incomplete_classes: set[str] = set()
+                global_incomplete = False
+
                 for package in current_packages:
+                    class_key = package.resource_class_code or UNCLASSIFIED
                     diagnostic = package.weekly_load_diagnostic
                     if diagnostic is not None:
-                        if package.start_date is None or package.end_date is None:
-                            incomplete = True
-                        elif package.start_date <= week_end and package.end_date >= cursor:
-                            incomplete = True
+                        overlaps = (
+                            package.start_date is None
+                            or package.end_date is None
+                            or (
+                                package.start_date <= week_end
+                                and package.end_date >= cursor
+                            )
+                        )
+                        if overlaps:
+                            incomplete_classes.add(class_key)
+                            global_incomplete = True
                         continue
                     for load in package.weekly_loads:
                         if load.week_start == cursor:
-                            total += load.hours
-                capacity = capacity_by_week.get(cursor, Decimal("0.00"))
+                            load_by_class[class_key] += load.hours
+
+                total_capacity, class_capacity = capacity_by_week.get(
+                    cursor,
+                    (Decimal("0.00"), {}),
+                )
+                if wanted_class is not None:
+                    legacy_capacity = class_capacity.get(
+                        wanted_class,
+                        Decimal("0.00"),
+                    )
+                    class_keys = {wanted_class}
+                else:
+                    legacy_capacity = total_capacity
+                    class_keys = set(class_capacity) | set(load_by_class) | incomplete_classes
+
+                legacy_total = sum(load_by_class.values(), Decimal("0.00"))
+                legacy_load: Decimal | None = (
+                    None if global_incomplete else legacy_total
+                )
                 week_diagnostics: list[str] = []
-                work_package_hours: Decimal | None = total
-                if incomplete:
-                    work_package_hours = None
+                if legacy_load is None:
                     week_diagnostics.append(WEEK_DIAGNOSTIC_LOAD_INCOMPLETE)
-                if capacity <= 0:
+                if legacy_capacity <= 0:
                     any_capacity_zero = True
                     week_diagnostics.append(WEEK_DIAGNOSTIC_CAPACITY_ZERO)
-                utilization = (
-                    (work_package_hours / capacity * Decimal("100")).quantize(Decimal("0.01"))
-                    if work_package_hours is not None and capacity > 0
+                legacy_utilization = (
+                    (
+                        legacy_load
+                        / legacy_capacity
+                        * Decimal("100")
+                    ).quantize(Decimal("0.01"))
+                    if legacy_load is not None and legacy_capacity > 0
                     else None
                 )
+                legacy_state = (
+                    "unavailable"
+                    if legacy_load is None
+                    else medium_term_capacity_state(
+                        legacy_capacity,
+                        legacy_load,
+                    )
+                )
+
+                class_rows: list[MediumTermClassWeekReadModel] = []
+                for class_key in sorted(
+                    class_keys,
+                    key=lambda value: (
+                        value == UNCLASSIFIED,
+                        (
+                            resource_classes_by_code[value].label
+                            if value in resource_classes_by_code
+                            else value
+                        ).casefold(),
+                    ),
+                ):
+                    class_load = (
+                        None
+                        if class_key in incomplete_classes
+                        else load_by_class.get(class_key, Decimal("0.00"))
+                    )
+                    capacity = class_capacity.get(
+                        class_key,
+                        Decimal("0.00"),
+                    )
+                    class_diagnostics: list[str] = []
+                    if class_load is None:
+                        class_diagnostics.append(
+                            WEEK_DIAGNOSTIC_LOAD_INCOMPLETE
+                        )
+                    if capacity <= 0:
+                        class_diagnostics.append(
+                            WEEK_DIAGNOSTIC_CAPACITY_ZERO
+                        )
+                    utilization = (
+                        (
+                            class_load
+                            / capacity
+                            * Decimal("100")
+                        ).quantize(Decimal("0.01"))
+                        if class_load is not None and capacity > 0
+                        else None
+                    )
+                    state = (
+                        "unavailable"
+                        if class_load is None
+                        else medium_term_capacity_state(
+                            capacity,
+                            class_load,
+                        )
+                    )
+                    configured = resource_classes_by_code.get(class_key)
+                    class_rows.append(
+                        MediumTermClassWeekReadModel(
+                            resource_class_code=(
+                                None
+                                if class_key == UNCLASSIFIED
+                                else class_key
+                            ),
+                            resource_class_label=(
+                                UNCLASSIFIED
+                                if class_key == UNCLASSIFIED
+                                else (
+                                    configured.label
+                                    if configured is not None
+                                    else class_key
+                                )
+                            ),
+                            capacity_hours=capacity,
+                            work_package_hours=class_load,
+                            utilization=utilization,
+                            state=state,
+                            diagnostics=tuple(class_diagnostics),
+                        )
+                    )
+
                 weeks.append(
                     MediumTermWeekReadModel(
                         week_start=cursor,
-                        work_package_hours=work_package_hours,
-                        capacity_hours=capacity,
-                        utilization=utilization,
+                        work_package_hours=legacy_load,
+                        capacity_hours=legacy_capacity,
+                        utilization=legacy_utilization,
+                        state=legacy_state,
                         diagnostics=tuple(week_diagnostics),
+                        classes=tuple(class_rows),
                     )
                 )
                 cursor += timedelta(days=7)
             if any_capacity_zero:
                 weekly_diagnostics.append(MEDIUM_TERM_DIAGNOSTIC_CAPACITY_ZERO)
 
+        selected_project = (
+            selected_projects[0]
+            if wanted_project is not None and selected_projects
+            else None
+        )
         return MediumTermBudgetReadModel(
-            project_id=project.id,
-            project_number=project.number,
-            project_name=project.name,
+            project_id=selected_project.id if selected_project is not None else None,
+            project_number=(
+                selected_project.number
+                if selected_project is not None
+                else None
+            ),
+            project_name=(
+                selected_project.name
+                if selected_project is not None
+                else None
+            ),
             tasks=tuple(task_models),
-            unclassified_work_packages=tuple(unclassified),
-            diagnostics=tuple(diagnostics),
-            weekly_diagnostics=tuple(weekly_diagnostics),
+            unclassified_work_packages=tuple(displayed_unclassified),
+            diagnostics=tuple(dict.fromkeys(diagnostics)),
+            weekly_diagnostics=tuple(dict.fromkeys(weekly_diagnostics)),
             window_start=effective_start,
             window_end=effective_end,
             weeks=tuple(weeks),
+            project_count=len(selected_projects),
+            task_options=task_options,
+            resource_classes=resource_class_options,
         )
 
     def list_availability_rules(
