@@ -16,6 +16,7 @@ from app.application.delivery_contracts import (
     WorkPackageDeliveryReferenceReadModel,
     WorkPackagePlanningCapacityReadModel,
 )
+from app.application.query_models import work_package_resource_class_diagnostic
 from app.domain.approval_envelope import approval_envelope_from_snapshot_payload
 
 from .approval_revision_models import (
@@ -24,7 +25,14 @@ from .approval_revision_models import (
     RequestApprovalRevision,
 )
 from .asset_models import AssetAllocation, AssetRequirement
-from .models import ResourceRequirement, Shift, WorkforceRequest, WorkPackage
+from .models import (
+    ResourceRequirement,
+    Shift,
+    TaskCatalogEntry,
+    WorkforceRequest,
+    WorkPackage,
+)
+from .resource_class_models import ResourceClassConfig
 from .planning_version import SqlPlanningMutationVersionRepository
 
 
@@ -59,12 +67,46 @@ class SqlDeliveryPlanningReadRepository:
             or str(work_package.legacy_effort_id or "").strip()
             or work_package.id
         )
+        resource_class = (
+            self._session.get(ResourceClassConfig, work_package.resource_class_code)
+            if work_package.resource_class_code is not None
+            else None
+        )
+        task = (
+            self._session.get(TaskCatalogEntry, work_package.task_catalog_item_id)
+            if work_package.task_catalog_item_id is not None
+            else None
+        )
+        task_resource_class_code = (
+            str(task.resource_class_code or "").strip() or None
+            if task is not None
+            else None
+        )
+        resource_class_code = (
+            str(work_package.resource_class_code or "").strip() or None
+        )
         return WorkPackageDeliveryReferenceReadModel(
             work_package_id=work_package.id,
             reference=reference,
             name=work_package.name,
             status=work_package.status,
             reference_hours=_float(work_package.planned_hours),
+            resource_class_code=resource_class_code,
+            resource_class_label=(
+                str(resource_class.label or "").strip() or None
+                if resource_class is not None
+                else None
+            ),
+            resource_class_active=(
+                bool(resource_class.active)
+                if resource_class is not None
+                else None
+            ),
+            task_resource_class_code=task_resource_class_code,
+            resource_class_diagnostic=work_package_resource_class_diagnostic(
+                resource_class_code,
+                task_resource_class_code,
+            ),
         )
 
     def _active_revision_contexts(
