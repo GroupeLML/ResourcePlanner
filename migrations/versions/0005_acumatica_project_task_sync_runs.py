@@ -1,6 +1,6 @@
 """Persist Acumatica project-task global synchronization runs.
 
-Revision ID: 0005_acumatica_project_task_sync_runs
+Revision ID: 0005_task_sync_runs
 Revises: 0004_asset_approval_authority
 """
 
@@ -10,7 +10,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "0005_acumatica_project_task_sync_runs"
+revision: str = "0005_task_sync_runs"
 down_revision: str | None = "0004_asset_approval_authority"
 branch_labels: str | None = None
 depends_on: str | None = None
