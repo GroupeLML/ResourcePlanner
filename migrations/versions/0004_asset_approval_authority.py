@@ -38,7 +38,7 @@ def upgrade() -> None:
         ),
     )
     op.create_index(
-        "ix_asset_type_approval_scope_mappings_scope",
+        "ix_asset_type_approval_scope_mappings_approval_scope_id",
         "asset_type_approval_scope_mappings",
         ["approval_scope_id"],
         unique=False,
@@ -65,7 +65,7 @@ def upgrade() -> None:
         ),
     )
     op.create_index(
-        "ix_asset_approvers_user",
+        "ix_asset_approvers_app_user_id",
         "asset_approvers",
         ["app_user_id"],
         unique=False,
@@ -163,12 +163,12 @@ def downgrade() -> None:
         op.drop_column("approval_requirements", "proposed_asset_id")
         op.drop_column("approval_requirements", "asset_type_id")
     op.drop_index(
-        "ix_asset_approvers_user",
+        "ix_asset_approvers_app_user_id",
         table_name="asset_approvers",
     )
     op.drop_table("asset_approvers")
     op.drop_index(
-        "ix_asset_type_approval_scope_mappings_scope",
+        "ix_asset_type_approval_scope_mappings_approval_scope_id",
         table_name="asset_type_approval_scope_mappings",
     )
     op.drop_table("asset_type_approval_scope_mappings")
