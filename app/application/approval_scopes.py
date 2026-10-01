@@ -10,6 +10,7 @@ from ..domain.approval_routing import (
     DIAGNOSTIC_RESOURCE_CLASS_INACTIVE,
     DIAGNOSTIC_RESOURCE_CLASS_MISSING,
     DIAGNOSTIC_RESOURCE_CLASS_NOT_FOUND,
+    resolve_asset_line_approvers,
     resolve_line_approvers,
     suggested_approval_scope_code,
 )
@@ -31,6 +32,7 @@ class ApprovalScopeRecord:
     version: int
     approver_user_ids: tuple[str, ...] = ()
     resource_class_codes: tuple[str, ...] = ()
+    asset_type_ids: tuple[str, ...] = ()
     task_catalog_item_ids: tuple[str, ...] = ()
 
 
@@ -50,10 +52,30 @@ class ApprovalResourceClassRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class ApprovalAssetTypeRecord:
+    id: str
+    code: str
+    label: str
+    active: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalAssetRecord:
+    id: str
+    code: str
+    label: str
+    asset_type_id: str
+    active: bool
+
+
+@dataclass(frozen=True, slots=True)
 class ApprovalRequestLineRecord:
     id: str
     active: bool
     task_catalog_item_id: str | None
+    kind: str = "WORKFORCE"
+    asset_type_id: str | None = None
+    proposed_asset_id: str | None = None
     position: int = 0
     erp_task_code: str | None = None
     erp_task_label: str | None = None
@@ -77,6 +99,13 @@ class RequestLineApprovalResolution:
     task_label: str | None = None
     effective_resource_class: str | None = None
     approval_scope_candidates: tuple[ApprovalScopeRecord, ...] = ()
+    line_kind: str = "WORKFORCE"
+    asset_type_id: str | None = None
+    asset_type_code: str | None = None
+    asset_type_label: str | None = None
+    proposed_asset_id: str | None = None
+    proposed_asset_code: str | None = None
+    proposed_asset_label: str | None = None
 
 
 class ApprovalScopeRepositoryPort(Protocol):
@@ -115,18 +144,33 @@ class ApprovalScopeRepositoryPort(Protocol):
         assigned: bool,
         expected_version: int,
     ) -> ApprovalScopeRecord: ...
+    def set_asset_type_scope(
+        self,
+        scope_id: str,
+        asset_type_id: str,
+        *,
+        assigned: bool,
+        expected_version: int,
+    ) -> ApprovalScopeRecord: ...
     def get_request_line(self, line_id: str) -> ApprovalRequestLineRecord | None: ...
     def get_task(self, task_id: str) -> ApprovalTaskRecord | None: ...
     def get_resource_class(
         self,
         class_code: str,
     ) -> ApprovalResourceClassRecord | None: ...
+    def get_asset_type(self, asset_type_id: str) -> ApprovalAssetTypeRecord | None: ...
+    def get_asset(self, asset_id: str) -> ApprovalAssetRecord | None: ...
     def list_task_scopes(self, task_id: str) -> tuple[ApprovalScopeRecord, ...]: ...
     def list_resource_class_scopes(
         self,
         class_code: str,
     ) -> tuple[ApprovalScopeRecord, ...]: ...
+    def list_asset_type_scopes(
+        self,
+        asset_type_id: str,
+    ) -> tuple[ApprovalScopeRecord, ...]: ...
     def list_scope_approver_ids(self, scope_id: str) -> tuple[str, ...]: ...
+    def list_asset_approver_ids(self, asset_id: str) -> tuple[str, ...]: ...
     def get_users(self, user_ids: Sequence[str]) -> tuple[ApprovalUserRecord, ...]: ...
     def get_user(self, user_id: str) -> ApprovalUserRecord | None: ...
 
@@ -337,6 +381,42 @@ class ApprovalScopeService:
             },
         )
 
+
+    def set_asset_type(
+        self,
+        scope_id: str,
+        asset_type_id: str,
+        *,
+        assigned: bool,
+        expected_version: int,
+    ) -> ApprovalScopeRecord:
+        identifier = _required(scope_id, "approval_scope_id")
+        type_id = _required(asset_type_id, "asset_type_id")
+        asset_type = call_application_port(
+            lambda: self._repository.get_asset_type(type_id),
+            code_prefix="approval_scope_asset_type_read",
+            context={"asset_type_id": type_id},
+        )
+        if asset_type is None:
+            raise ApplicationNotFoundError(
+                "Type d'actif introuvable.",
+                code="approval_scope_asset_type_not_found",
+                context={"asset_type_id": type_id},
+            )
+        return call_application_port(
+            lambda: self._repository.set_asset_type_scope(
+                identifier,
+                type_id,
+                assigned=bool(assigned),
+                expected_version=int(expected_version),
+            ),
+            code_prefix="approval_scope_asset_type_update",
+            context={
+                "approval_scope_id": identifier,
+                "asset_type_id": type_id,
+            },
+        )
+
     @staticmethod
     def _blocked_resolution(
         *,
@@ -367,6 +447,120 @@ class ApprovalScopeService:
             approval_scope_candidates=tuple(approval_scope_candidates),
         )
 
+
+    def _resolve_asset_request_line(
+        self,
+        line: ApprovalRequestLineRecord,
+    ) -> RequestLineApprovalResolution:
+        asset_type_id = str(line.asset_type_id or "").strip() or None
+        asset_type = (
+            call_application_port(
+                lambda: self._repository.get_asset_type(asset_type_id),
+                code_prefix="approval_routing_asset_type_read",
+                context={"asset_type_id": asset_type_id},
+            )
+            if asset_type_id is not None
+            else None
+        )
+        scopes = (
+            call_application_port(
+                lambda: self._repository.list_asset_type_scopes(asset_type_id),
+                code_prefix="approval_routing_scope_read",
+                context={"asset_type_id": asset_type_id},
+            )
+            if asset_type_id is not None and asset_type is not None
+            else ()
+        )
+        proposed_asset_id = str(line.proposed_asset_id or "").strip() or None
+        proposed_asset = (
+            call_application_port(
+                lambda: self._repository.get_asset(proposed_asset_id),
+                code_prefix="approval_routing_asset_read",
+                context={"proposed_asset_id": proposed_asset_id},
+            )
+            if proposed_asset_id is not None
+            else None
+        )
+
+        scope_approver_ids: tuple[str, ...] = ()
+        if len(scopes) == 1:
+            scope_approver_ids = call_application_port(
+                lambda: self._repository.list_scope_approver_ids(scopes[0].id),
+                code_prefix="approval_routing_approver_read",
+                context={"approval_scope_id": scopes[0].id},
+            )
+        asset_approver_ids: tuple[str, ...] = ()
+        if proposed_asset is not None:
+            asset_approver_ids = call_application_port(
+                lambda: self._repository.list_asset_approver_ids(proposed_asset.id),
+                code_prefix="approval_routing_asset_approver_read",
+                context={"proposed_asset_id": proposed_asset.id},
+            )
+
+        all_user_ids = tuple(
+            dict.fromkeys(tuple(scope_approver_ids) + tuple(asset_approver_ids))
+        )
+        user_rows = (
+            call_application_port(
+                lambda: self._repository.get_users(all_user_ids),
+                code_prefix="approval_routing_user_read",
+            )
+            if all_user_ids
+            else ()
+        )
+        users = {
+            row.user_id: ApprovalRoutingUser(
+                user_id=row.user_id,
+                active=row.active,
+                permissions=row.permissions,
+            )
+            for row in user_rows
+        }
+        resolution = resolve_asset_line_approvers(
+            line_active=line.active,
+            asset_type_id=asset_type_id,
+            asset_type_exists=asset_type is not None,
+            asset_type_active=bool(asset_type.active) if asset_type is not None else False,
+            scope_candidates=tuple(
+                ApprovalScopeCandidate(scope_id=scope.id, active=scope.active)
+                for scope in scopes
+            ),
+            scope_approver_user_ids=scope_approver_ids,
+            users=users,
+            proposed_asset_id=proposed_asset_id,
+            proposed_asset_exists=proposed_asset is not None,
+            proposed_asset_active=(
+                bool(proposed_asset.active) if proposed_asset is not None else False
+            ),
+            proposed_asset_type_matches=(
+                proposed_asset is None
+                or asset_type_id is None
+                or proposed_asset.asset_type_id == asset_type_id
+            ),
+            asset_approver_user_ids=asset_approver_ids,
+        )
+        return RequestLineApprovalResolution(
+            request_line_id=line.id,
+            task_catalog_item_id=line.task_catalog_item_id,
+            suggested_scope_code=None,
+            resolution=resolution,
+            line_position=line.position,
+            task_code=line.erp_task_code,
+            task_label=line.erp_task_label,
+            approval_scope_candidates=tuple(scopes),
+            line_kind=line.kind,
+            asset_type_id=asset_type_id,
+            asset_type_code=asset_type.code if asset_type is not None else None,
+            asset_type_label=asset_type.label if asset_type is not None else None,
+            proposed_asset_id=proposed_asset_id,
+            proposed_asset_code=(
+                proposed_asset.code if proposed_asset is not None else None
+            ),
+            proposed_asset_label=(
+                proposed_asset.label if proposed_asset is not None else None
+            ),
+        )
+
     def resolve_request_line(
         self,
         line_id: str,
@@ -385,6 +579,8 @@ class ApprovalScopeService:
                 code="approval_routing_line_not_found",
                 context={"request_line_id": identifier},
             )
+        if str(line.kind or "").strip().upper() == "ASSET":
+            return self._resolve_asset_request_line(line)
 
         task_id = str(line.task_catalog_item_id or "").strip() or None
         task = (
