@@ -15,10 +15,12 @@ from app.infrastructure.sql import (
     CommandIdempotencyReceipt,
     Project,
     RequestLine,
+    ResourceClassConfig,
     TaskCatalogEntry,
     WorkforceRequest,
     WorkPackage,
     WorkPackageAudit,
+    WorkPackageWeeklyLoad,
     create_session_factory,
     create_sql_engine,
     transactional_session,
@@ -40,6 +42,24 @@ class ServerWorkPackageCommandTests(unittest.TestCase):
             [
                 Project(id="P1", number="P-1", name="Projet 1", status="Actif"),
                 Project(id="P2", number="P-2", name="Projet 2", status="Actif"),
+                ResourceClassConfig(
+                    code="PROGRAMMEUR",
+                    label="Programmeur",
+                    average_hourly_cost_cad=100,
+                    active=True,
+                ),
+                ResourceClassConfig(
+                    code="INSTALLATEUR_AUTOMATISATION",
+                    label="Installateur automatisation",
+                    average_hourly_cost_cad=90,
+                    active=True,
+                ),
+                ResourceClassConfig(
+                    code="HISTORIQUE",
+                    label="Historique",
+                    average_hourly_cost_cad=80,
+                    active=False,
+                ),
                 AppUser(
                     id=TEST_ADMIN_USER_ID,
                     issuer="urn:resourceplanner:test",
@@ -57,12 +77,23 @@ class ServerWorkPackageCommandTests(unittest.TestCase):
                     status="Actif",
                     active=True,
                     workforce_eligible=True,
+                    resource_class_code="PROGRAMMEUR",
                 ),
                 TaskCatalogEntry(
                     id="TASK-P1-211",
                     project_number="P-1",
                     task_code="211",
                     label="MISE EN SERVICE",
+                    status="Actif",
+                    active=True,
+                    workforce_eligible=True,
+                    resource_class_code="INSTALLATEUR_AUTOMATISATION",
+                ),
+                TaskCatalogEntry(
+                    id="TASK-P1-212",
+                    project_number="P-1",
+                    task_code="212",
+                    label="NON CLASSÉE",
                     status="Actif",
                     active=True,
                     workforce_eligible=True,
@@ -75,6 +106,7 @@ class ServerWorkPackageCommandTests(unittest.TestCase):
                     status="Actif",
                     active=True,
                     workforce_eligible=True,
+                    resource_class_code="PROGRAMMEUR",
                 ),
                 TaskCatalogEntry(
                     id="TASK-P2-999",
@@ -106,6 +138,7 @@ class ServerWorkPackageCommandTests(unittest.TestCase):
                     code="PREP",
                     name="Préparation",
                     status="planned",
+                    resource_class_code="HISTORIQUE",
                     legacy_effort_id="EFF-FREE",
                 ),
                 WorkPackage(
@@ -464,6 +497,265 @@ class ServerWorkPackageCommandTests(unittest.TestCase):
             moved = [row for row in rows.json() if row["reference"] == "EFF-FREE"]
             self.assertEqual(len(moved), 1, rows.text)
             self.assertEqual(moved[0]["project_number"], "P-2")
+
+
+    def test_resource_class_create_update_task_change_and_audit_contracts(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url)
+            with TestClient(app, raise_server_exceptions=False) as client:
+                explicit = client.post(
+                    "/api/v1/work-packages",
+                    headers={"Idempotency-Key": "wp-class-explicit"},
+                    json={
+                        "project_number": "P-1",
+                        "task_catalog_item_id": "TASK-P1-210",
+                        "name": "Classe explicite",
+                        "resource_class_code": "INSTALLATEUR_AUTOMATISATION",
+                    },
+                )
+                derived = client.post(
+                    "/api/v1/work-packages",
+                    headers={"Idempotency-Key": "wp-class-derived"},
+                    json={
+                        "project_number": "P-1",
+                        "task_catalog_item_id": "TASK-P1-210",
+                        "name": "Classe initialisée",
+                    },
+                )
+                explicit_null = client.post(
+                    "/api/v1/work-packages",
+                    headers={"Idempotency-Key": "wp-class-null"},
+                    json={
+                        "project_number": "P-1",
+                        "task_catalog_item_id": "TASK-P1-210",
+                        "name": "Sans classe explicite",
+                        "resource_class_code": None,
+                    },
+                )
+                unclassified = client.post(
+                    "/api/v1/work-packages",
+                    headers={"Idempotency-Key": "wp-class-none"},
+                    json={
+                        "project_number": "P-1",
+                        "task_catalog_item_id": "TASK-P1-212",
+                        "name": "Tâche non classée",
+                    },
+                )
+                unknown = client.post(
+                    "/api/v1/work-packages",
+                    headers={"Idempotency-Key": "wp-class-unknown"},
+                    json={
+                        "project_number": "P-1",
+                        "task_catalog_item_id": "TASK-P1-210",
+                        "name": "Classe inconnue",
+                        "resource_class_code": "INCONNUE",
+                    },
+                )
+                inactive = client.post(
+                    "/api/v1/work-packages",
+                    headers={"Idempotency-Key": "wp-class-inactive"},
+                    json={
+                        "project_number": "P-1",
+                        "task_catalog_item_id": "TASK-P1-210",
+                        "name": "Classe inactive",
+                        "resource_class_code": "HISTORIQUE",
+                    },
+                )
+                rows = client.get(
+                    "/api/v1/work-packages?project_number=P-1&active_only=false"
+                )
+
+                derived_ref = derived.json()["reference"]
+                task_changed = client.patch(
+                    f"/api/v1/work-packages/{derived_ref}",
+                    json={
+                        "expected_version": 1,
+                        "task_catalog_item_id": "TASK-P1-211",
+                    },
+                )
+                rows_after_task = client.get(
+                    "/api/v1/work-packages?project_number=P-1&active_only=false"
+                )
+                replaced = client.patch(
+                    f"/api/v1/work-packages/{derived_ref}",
+                    json={
+                        "expected_version": 2,
+                        "task_catalog_item_id": "TASK-P1-211",
+                        "resource_class_code": "INSTALLATEUR_AUTOMATISATION",
+                    },
+                )
+                cleared = client.patch(
+                    f"/api/v1/work-packages/{derived_ref}",
+                    json={"expected_version": 3, "resource_class_code": None},
+                )
+                inactive_assignment = client.patch(
+                    f"/api/v1/work-packages/{derived_ref}",
+                    json={
+                        "expected_version": 4,
+                        "resource_class_code": "HISTORIQUE",
+                    },
+                )
+                unrelated = client.patch(
+                    "/api/v1/work-packages/EFF-FREE",
+                    json={"expected_version": 1, "description": "Mutation sans classe"},
+                )
+
+            self.assertEqual(explicit.status_code, 201, explicit.text)
+            self.assertEqual(derived.status_code, 201, derived.text)
+            self.assertEqual(explicit_null.status_code, 201, explicit_null.text)
+            self.assertEqual(unclassified.status_code, 201, unclassified.text)
+            self.assertEqual(unknown.status_code, 422, unknown.text)
+            self.assertEqual(
+                unknown.json()["error"]["code"],
+                "work_package_resource_class_not_found",
+            )
+            self.assertEqual(inactive.status_code, 422, inactive.text)
+            self.assertEqual(
+                inactive.json()["error"]["code"],
+                "work_package_resource_class_inactive",
+            )
+            by_ref = {row["reference"]: row for row in rows.json()}
+            self.assertEqual(
+                by_ref[explicit.json()["reference"]]["resource_class_code"],
+                "INSTALLATEUR_AUTOMATISATION",
+            )
+            self.assertEqual(
+                by_ref[explicit.json()["reference"]]["resource_class_label"],
+                "Installateur automatisation",
+            )
+            self.assertTrue(
+                by_ref[explicit.json()["reference"]]["resource_class_active"]
+            )
+            self.assertEqual(
+                by_ref[derived_ref]["resource_class_code"],
+                "PROGRAMMEUR",
+            )
+            self.assertEqual(
+                by_ref[derived_ref]["task_resource_class_code"],
+                "PROGRAMMEUR",
+            )
+            self.assertIsNone(by_ref[derived_ref]["resource_class_diagnostic"])
+            self.assertIsNone(
+                by_ref[explicit_null.json()["reference"]]["resource_class_code"]
+            )
+            self.assertEqual(
+                by_ref[explicit_null.json()["reference"]][
+                    "resource_class_diagnostic"
+                ],
+                "WORK_PACKAGE_TASK_RESOURCE_CLASS_DIVERGENCE",
+            )
+            self.assertIsNone(
+                by_ref[unclassified.json()["reference"]]["resource_class_code"]
+            )
+
+            self.assertEqual(task_changed.status_code, 200, task_changed.text)
+            changed_row = next(
+                row for row in rows_after_task.json()
+                if row["reference"] == derived_ref
+            )
+            self.assertEqual(changed_row["resource_class_code"], "PROGRAMMEUR")
+            self.assertEqual(
+                changed_row["task_resource_class_code"],
+                "INSTALLATEUR_AUTOMATISATION",
+            )
+            self.assertEqual(
+                changed_row["resource_class_diagnostic"],
+                "WORK_PACKAGE_TASK_RESOURCE_CLASS_DIVERGENCE",
+            )
+            self.assertEqual(replaced.status_code, 200, replaced.text)
+            self.assertEqual(cleared.status_code, 200, cleared.text)
+            self.assertEqual(inactive_assignment.status_code, 422, inactive_assignment.text)
+            self.assertEqual(unrelated.status_code, 200, unrelated.text)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory() as session:
+                    audits = session.scalars(
+                        select(WorkPackageAudit)
+                        .where(WorkPackageAudit.work_package_id == derived_ref)
+                        .order_by(WorkPackageAudit.resulting_version)
+                    ).all()
+                    self.assertEqual(len(audits), 4)
+                    self.assertIn(
+                        '"resource_class_code":"PROGRAMMEUR"',
+                        audits[0].new_values_json,
+                    )
+                    self.assertIn(
+                        '"resource_class_code":"INSTALLATEUR_AUTOMATISATION"',
+                        audits[2].new_values_json,
+                    )
+                    self.assertIn(
+                        '"resource_class_code":null',
+                        audits[3].new_values_json,
+                    )
+                    historical = session.get(WorkPackage, "WP-FREE")
+                    assert historical is not None
+                    self.assertEqual(historical.resource_class_code, "HISTORIQUE")
+                    line = session.get(RequestLine, "LINE-ONLY")
+                    assert line is not None
+                    self.assertIsNone(line.required_resource_class)
+            finally:
+                engine.dispose()
+
+    def test_task_change_preserves_class_and_weekly_loads(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url)
+            with TestClient(app, raise_server_exceptions=False) as client:
+                created = client.post(
+                    "/api/v1/work-packages",
+                    headers={"Idempotency-Key": "wp-class-loads"},
+                    json={
+                        "project_number": "P-1",
+                        "task_catalog_item_id": "TASK-P1-210",
+                        "name": "Lot avec charge",
+                        "start_date": "2026-09-14",
+                        "end_date": "2026-09-20",
+                        "planned_hours": 8,
+                    },
+                )
+                reference = created.json()["reference"]
+                loads = client.put(
+                    f"/api/v1/work-packages/{reference}/weekly-loads",
+                    headers={"Idempotency-Key": "wp-class-loads-put"},
+                    json={
+                        "expected_version": 1,
+                        "origin": "MANUAL",
+                        "loads": [{"week_start": "2026-09-14", "hours": 8}],
+                    },
+                )
+                changed = client.patch(
+                    f"/api/v1/work-packages/{reference}",
+                    json={
+                        "expected_version": 2,
+                        "task_catalog_item_id": "TASK-P1-211",
+                    },
+                )
+
+            self.assertEqual(created.status_code, 201, created.text)
+            self.assertEqual(loads.status_code, 200, loads.text)
+            self.assertEqual(changed.status_code, 200, changed.text)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory() as session:
+                    work_package = session.get(WorkPackage, reference)
+                    assert work_package is not None
+                    self.assertEqual(work_package.resource_class_code, "PROGRAMMEUR")
+                    weekly = session.execute(
+                        select(
+                            WorkPackageWeeklyLoad.week_start,
+                            WorkPackageWeeklyLoad.hours,
+                        ).where(
+                            WorkPackageWeeklyLoad.work_package_id == reference
+                        )
+                    ).one()
+                    self.assertEqual(weekly.week_start, date(2026, 9, 14))
+                    self.assertEqual(float(weekly.hours), 8.0)
+            finally:
+                engine.dispose()
 
 
 if __name__ == "__main__":
