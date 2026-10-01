@@ -41,6 +41,7 @@ SOURCE_MISSING_COLUMNS = {
         "task_catalog_item_id",
         "version",
         "weekly_load_origin",
+        "resource_class_code",
     },
 }
 

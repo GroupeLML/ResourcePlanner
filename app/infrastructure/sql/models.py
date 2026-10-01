@@ -223,6 +223,12 @@ class WorkPackage(TimestampMixin, Base):
         ForeignKey("task_catalog_items.id"),
         nullable=True,
     )
+    resource_class_code: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("resource_class_configs.code"),
+        nullable=True,
+        index=True,
+    )
     version: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=text("1")
     )

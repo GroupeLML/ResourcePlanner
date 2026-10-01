@@ -134,6 +134,11 @@ class DeliveryProjectionService:
                 "name": work_package.name,
                 "status": work_package.status,
                 "reference_hours": work_package.reference_hours,
+                "resource_class_code": work_package.resource_class_code,
+                "resource_class_label": work_package.resource_class_label,
+                "resource_class_active": work_package.resource_class_active,
+                "task_resource_class_code": work_package.task_resource_class_code,
+                "resource_class_diagnostic": work_package.resource_class_diagnostic,
             },
             "delivery_plan": (
                 {

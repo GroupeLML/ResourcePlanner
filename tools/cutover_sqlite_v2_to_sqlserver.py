@@ -55,6 +55,7 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
                 "task_catalog_item_id": None,
                 "version": 1,
                 "weekly_load_origin": None,
+                "resource_class_code": None,
             },
         },
     },

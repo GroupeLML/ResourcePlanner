@@ -233,6 +233,7 @@ class Sqlite0048RuntimeBridgeTests(unittest.TestCase):
                     self.assertEqual(wp["version"], 1)
                     self.assertIsNone(wp["task_catalog_item_id"])
                     self.assertIsNone(wp["weekly_load_origin"])
+                    self.assertIsNone(wp["resource_class_code"])
 
                     auth_mode = connection.scalar(
                         text(

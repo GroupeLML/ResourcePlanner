@@ -29,7 +29,10 @@ from ...application.medium_term_budget import (
     work_package_is_budget_included,
     work_package_is_current_load_included,
 )
-from ...application.query_models import PlanningHistoryReadModel
+from ...application.query_models import (
+    PlanningHistoryReadModel,
+    work_package_resource_class_diagnostic,
+)
 from ...application.work_package_weekly_load import (
     WorkPackageWeeklyLoadState,
     WeeklyLoadValue,
@@ -45,6 +48,7 @@ from .models import (
     WorkPackage,
     WorkPackageWeeklyLoad,
 )
+from .resource_class_models import ResourceClassConfig
 from .planning_audit import PlanningChangeHistory
 from .capacity_query_repository import SqlPlannerQueryRepository
 from .medium_term_capacity_query import build_workforce_weekly_capacity
@@ -74,11 +78,15 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
         project_ids: Sequence[str] | None = None,
     ) -> tuple[WorkPackageReadModel, ...]:
         statement = (
-            select(WorkPackage, Project, TaskCatalogEntry)
+            select(WorkPackage, Project, TaskCatalogEntry, ResourceClassConfig)
             .join(Project, WorkPackage.project_id == Project.id)
             .outerjoin(
                 TaskCatalogEntry,
                 WorkPackage.task_catalog_item_id == TaskCatalogEntry.id,
+            )
+            .outerjoin(
+                ResourceClassConfig,
+                WorkPackage.resource_class_code == ResourceClassConfig.code,
             )
             .order_by(Project.number, WorkPackage.start_date, WorkPackage.name, WorkPackage.id)
         )
@@ -94,7 +102,7 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
 
         rows = self._web_session.execute(statement).all()
         result: list[WorkPackageReadModel] = []
-        for work_package, project, task in rows:
+        for work_package, project, task, resource_class in rows:
             status = _text(work_package.status) or "planned"
             if active_only and status.casefold() in INACTIVE_WORK_PACKAGE_STATUSES:
                 continue
@@ -118,6 +126,30 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                     task_catalog_item_id=work_package.task_catalog_item_id,
                     task_code=_optional_text(task.task_code) if task is not None else None,
                     task_label=_optional_text(task.label) if task is not None else None,
+                    resource_class_code=_optional_text(work_package.resource_class_code),
+                    resource_class_label=(
+                        _optional_text(resource_class.label)
+                        if resource_class is not None
+                        else None
+                    ),
+                    resource_class_active=(
+                        bool(resource_class.active)
+                        if resource_class is not None
+                        else None
+                    ),
+                    task_resource_class_code=(
+                        _optional_text(task.resource_class_code)
+                        if task is not None
+                        else None
+                    ),
+                    resource_class_diagnostic=work_package_resource_class_diagnostic(
+                        _optional_text(work_package.resource_class_code),
+                        (
+                            _optional_text(task.resource_class_code)
+                            if task is not None
+                            else None
+                        ),
+                    ),
                     version=int(work_package.version or 1),
                 )
             )
@@ -127,6 +159,9 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
     def _medium_term_budget_work_package(
         work_package: WorkPackage,
         loads: tuple[WeeklyLoadValue, ...],
+        *,
+        resource_class: ResourceClassConfig | None = None,
+        task_resource_class_code: str | None = None,
     ) -> MediumTermBudgetWorkPackageReadModel:
         status = _text(work_package.status) or "planned"
         state = WorkPackageWeeklyLoadState(
@@ -163,6 +198,22 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                 for item in loads
             ),
             weekly_load_diagnostic=weekly_load_diagnostic(state),
+            resource_class_code=_optional_text(work_package.resource_class_code),
+            resource_class_label=(
+                _optional_text(resource_class.label)
+                if resource_class is not None
+                else None
+            ),
+            resource_class_active=(
+                bool(resource_class.active)
+                if resource_class is not None
+                else None
+            ),
+            task_resource_class_code=_optional_text(task_resource_class_code),
+            resource_class_diagnostic=work_package_resource_class_diagnostic(
+                _optional_text(work_package.resource_class_code),
+                _optional_text(task_resource_class_code),
+            ),
         )
 
     def medium_term_budget_projection(
@@ -206,6 +257,28 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
             ).all()
         )
         work_package_ids = tuple(row.id for row in work_packages)
+        resource_class_codes = tuple(
+            sorted(
+                {
+                    code
+                    for row in work_packages
+                    if (code := _optional_text(row.resource_class_code)) is not None
+                }
+            )
+        )
+        resource_classes = (
+            {
+                row.code: row
+                for row in self._web_session.scalars(
+                    select(ResourceClassConfig).where(
+                        ResourceClassConfig.code.in_(resource_class_codes)
+                    )
+                ).all()
+            }
+            if resource_class_codes
+            else {}
+        )
+        tasks_by_id = {task.id: task for task in task_rows}
         load_rows = (
             tuple(
                 self._web_session.scalars(
@@ -235,9 +308,21 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
         unclassified: list[MediumTermBudgetWorkPackageReadModel] = []
         projected_by_id: dict[str, MediumTermBudgetWorkPackageReadModel] = {}
         for work_package in work_packages:
+            task = tasks_by_id.get(work_package.task_catalog_item_id)
+            class_code = _optional_text(work_package.resource_class_code)
             projected = self._medium_term_budget_work_package(
                 work_package,
                 tuple(loads_by_package.get(work_package.id, ())),
+                resource_class=(
+                    resource_classes.get(class_code)
+                    if class_code is not None
+                    else None
+                ),
+                task_resource_class_code=(
+                    _optional_text(task.resource_class_code)
+                    if task is not None
+                    else None
+                ),
             )
             task_id = work_package.task_catalog_item_id
             if task_id is None:

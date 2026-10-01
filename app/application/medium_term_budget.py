@@ -96,6 +96,11 @@ class MediumTermBudgetWorkPackageReadModel:
     weekly_load_origin: str | None = None
     weekly_loads: tuple[MediumTermWeeklyLoadReadModel, ...] = ()
     weekly_load_diagnostic: str | None = None
+    resource_class_code: str | None = None
+    resource_class_label: str | None = None
+    resource_class_active: bool | None = None
+    task_resource_class_code: str | None = None
+    resource_class_diagnostic: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

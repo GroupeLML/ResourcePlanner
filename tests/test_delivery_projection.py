@@ -29,9 +29,11 @@ from app.infrastructure.sql import (
     RequestApprovalRevision,
     RequestLine,
     Resource,
+    ResourceClassConfig,
     ResourceRequirement,
     Shift,
     SqlDeliveryPlanningReadRepository,
+    TaskCatalogEntry,
     WorkPackage,
     WorkforceRequest,
 )
@@ -131,6 +133,31 @@ class DeliveryProjectionTests(unittest.TestCase):
             # avoid ORM relationships. SQLite foreign-key checks therefore need each
             # parent layer persisted before its dependent layer is flushed.
             session.add(Project(id="P-1", number="P-1", name="Projet"))
+            session.add_all(
+                [
+                    ResourceClassConfig(
+                        code="PROGRAMMEUR",
+                        label="Programmeur",
+                        average_hourly_cost_cad=Decimal("100"),
+                        active=True,
+                    ),
+                    ResourceClassConfig(
+                        code="INSTALLATEUR_AUTOMATISATION",
+                        label="Installateur automatisation",
+                        average_hourly_cost_cad=Decimal("90"),
+                        active=True,
+                    ),
+                    TaskCatalogEntry(
+                        id="TASK-210",
+                        project_number="P-1",
+                        task_code="210",
+                        label="Programmation",
+                        active=True,
+                        workforce_eligible=True,
+                        resource_class_code="PROGRAMMEUR",
+                    ),
+                ]
+            )
             session.flush()
 
             session.add_all(
@@ -138,6 +165,8 @@ class DeliveryProjectionTests(unittest.TestCase):
                     WorkPackage(
                         id="WP-1",
                         project_id="P-1",
+                        task_catalog_item_id="TASK-210",
+                        resource_class_code="INSTALLATEUR_AUTOMATISATION",
                         code="WP-100",
                         name="WorkPackage 100",
                         planned_hours=Decimal("40"),
@@ -383,6 +412,23 @@ class DeliveryProjectionTests(unittest.TestCase):
 
         self.assertEqual(payload["work_package"]["reference"], "WP-100")
         self.assertEqual(payload["work_package"]["reference_hours"], 40)
+        self.assertEqual(
+            payload["work_package"]["resource_class_code"],
+            "INSTALLATEUR_AUTOMATISATION",
+        )
+        self.assertEqual(
+            payload["work_package"]["resource_class_label"],
+            "Installateur automatisation",
+        )
+        self.assertTrue(payload["work_package"]["resource_class_active"])
+        self.assertEqual(
+            payload["work_package"]["task_resource_class_code"],
+            "PROGRAMMEUR",
+        )
+        self.assertEqual(
+            payload["work_package"]["resource_class_diagnostic"],
+            "WORK_PACKAGE_TASK_RESOURCE_CLASS_DIVERGENCE",
+        )
         self.assertEqual(payload["delivery_plan"]["id"], "DP-1")
 
         self.assertEqual(payload["progress"]["state"], "PARTIAL_COVERAGE")

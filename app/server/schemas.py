@@ -109,12 +109,14 @@ class WorkPackageCreateRequest(StrictRequest):
     end_date: date | None = None
     planned_hours: float | None = Field(default=None, ge=0)
     status: str = Field(default="planned", min_length=1)
+    resource_class_code: str | None = None
 
 
 class WorkPackageUpdateRequest(StrictRequest):
     expected_version: int = Field(ge=1)
     project_number: str | None = None
     task_catalog_item_id: str | None = None
+    resource_class_code: str | None = None
     code: str | None = None
     name: str | None = None
     description: str | None = None

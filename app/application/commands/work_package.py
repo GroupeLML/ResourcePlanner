@@ -18,6 +18,7 @@ class WorkPackageCreateCommand:
     end_date: date | None = None
     planned_hours: float | None = None
     status: str = "planned"
+    resource_class_code: str | None | UnsetType = UNSET
 
     def __post_init__(self) -> None:
         required_text(
@@ -41,6 +42,15 @@ class WorkPackageCreateCommand:
             message="Le statut du WorkPackage est requis.",
         )
         validate_date_window(self.start_date, self.end_date, prefix="work_package")
+        if (
+            self.resource_class_code is not UNSET
+            and self.resource_class_code is not None
+        ):
+            required_text(
+                self.resource_class_code,
+                field="work_package_resource_class",
+                message="La classe de ressource du WorkPackage est requise.",
+            )
         if self.planned_hours is not None and self.planned_hours < 0:
             raise ApplicationValidationError(
                 "Les heures prévues ne peuvent pas être négatives.",
@@ -55,6 +65,7 @@ class WorkPackageUpdateCommand:
     expected_version: int
     project_number: str | UnsetType = UNSET
     task_catalog_item_id: str | None | UnsetType = UNSET
+    resource_class_code: str | None | UnsetType = UNSET
     code: str | None | UnsetType = UNSET
     name: str | UnsetType = UNSET
     description: str | None | UnsetType = UNSET
@@ -81,6 +92,15 @@ class WorkPackageUpdateCommand:
                 field="work_package_project",
                 message="Le projet est requis.",
             )
+        if (
+            self.resource_class_code is not UNSET
+            and self.resource_class_code is not None
+        ):
+            required_text(
+                self.resource_class_code,
+                field="work_package_resource_class",
+                message="La classe de ressource du WorkPackage est requise.",
+            )
         if self.name is not UNSET:
             required_text(
                 self.name,
@@ -105,6 +125,7 @@ class WorkPackageUpdateCommand:
         for field in (
             "project_number",
             "task_catalog_item_id",
+            "resource_class_code",
             "code",
             "name",
             "description",

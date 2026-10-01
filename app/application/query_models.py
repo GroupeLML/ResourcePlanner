@@ -6,6 +6,22 @@ from datetime import date, datetime, time
 from .read_models import DemandPeriodReadModel, DemandReadModel, SegmentReadModel
 
 
+WORK_PACKAGE_TASK_RESOURCE_CLASS_DIVERGENCE = (
+    "WORK_PACKAGE_TASK_RESOURCE_CLASS_DIVERGENCE"
+)
+
+
+def work_package_resource_class_diagnostic(
+    work_package_resource_class_code: str | None,
+    task_resource_class_code: str | None,
+) -> str | None:
+    work_package_class = str(work_package_resource_class_code or "").strip() or None
+    task_class = str(task_resource_class_code or "").strip() or None
+    if work_package_class == task_class:
+        return None
+    return WORK_PACKAGE_TASK_RESOURCE_CLASS_DIVERGENCE
+
+
 @dataclass(frozen=True, slots=True)
 class ProjectReadModel:
     id: str
@@ -33,6 +49,11 @@ class WorkPackageReadModel:
     task_catalog_item_id: str | None = None
     task_code: str | None = None
     task_label: str | None = None
+    resource_class_code: str | None = None
+    resource_class_label: str | None = None
+    resource_class_active: bool | None = None
+    task_resource_class_code: str | None = None
+    resource_class_diagnostic: str | None = None
     version: int = 1
 
 
