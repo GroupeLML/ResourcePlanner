@@ -300,12 +300,16 @@ export default function ProjectsPage() {
     setGlobalTaskSyncError(null);
     try {
       const result = await syncAcumaticaActiveProjectTasks();
+      const performanceSummary = result.source_requests == null
+        ? ""
+        : ` · ${result.source_requests} requête(s) ERP · ${(result.duration_ms / 1000).toFixed(1)} s`;
       setGlobalTaskSyncMessage(
         `${result.projects_inspected} projets inspectés · ${result.projects_synchronized} synchronisés · `
         + `${result.projects_ignored} ignorés · ${result.projects_rejected} rejetés · `
         + `${result.tasks_received} tâches reçues · ${result.tasks_created} créées · `
         + `${result.tasks_updated} mises à jour · ${result.tasks_unchanged} inchangées · `
-        + `${result.tasks_rejected} non admissibles`,
+        + `${result.tasks_rejected} non admissibles`
+        + performanceSummary,
       );
       setRefreshKey((value) => value + 1);
     } catch (reason: unknown) {

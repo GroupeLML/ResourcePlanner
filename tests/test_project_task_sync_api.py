@@ -2,12 +2,17 @@ from __future__ import annotations
 
 from decimal import Decimal
 from tempfile import TemporaryDirectory
+from threading import Event, Thread
 import unittest
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from app.application import TaskCatalogItem, TaskCatalogProjectSnapshot
+from app.application import (
+    TaskCatalogItem,
+    TaskCatalogPortfolioSnapshot,
+    TaskCatalogProjectSnapshot,
+)
 from app.application.security import PERMISSION_SYNC_PROJECTS
 from app.infrastructure.sql import (
     Base,
@@ -54,6 +59,53 @@ class MultiProjectTaskSource:
     ) -> TaskCatalogProjectSnapshot:
         self.calls.append((project_external_id, project_number))
         return self.snapshots[project_number]
+
+
+class BatchProjectTaskSource(MultiProjectTaskSource):
+    def __init__(
+        self,
+        snapshots: dict[str, TaskCatalogProjectSnapshot],
+        *,
+        source_pages: int = 3,
+        source_rows: int = 5,
+    ) -> None:
+        super().__init__(snapshots)
+        self.source_pages = source_pages
+        self.source_rows = source_rows
+        self.batch_calls: list[tuple[tuple[str, str], ...]] = []
+
+    def fetch_project_snapshots(
+        self,
+        *,
+        project_targets: tuple[tuple[str, str], ...],
+    ) -> TaskCatalogPortfolioSnapshot:
+        targets = tuple(project_targets)
+        self.batch_calls.append(targets)
+        return TaskCatalogPortfolioSnapshot(
+            source_rows=self.source_rows,
+            source_pages=self.source_pages,
+            snapshots=tuple(
+                self.snapshots[project_number]
+                for _project_external_id, project_number in targets
+            ),
+        )
+
+
+class BlockingBatchProjectTaskSource(BatchProjectTaskSource):
+    def __init__(self, snapshots: dict[str, TaskCatalogProjectSnapshot]) -> None:
+        super().__init__(snapshots)
+        self.started = Event()
+        self.release = Event()
+
+    def fetch_project_snapshots(
+        self,
+        *,
+        project_targets: tuple[tuple[str, str], ...],
+    ) -> TaskCatalogPortfolioSnapshot:
+        self.started.set()
+        if not self.release.wait(timeout=5):
+            raise RuntimeError("test release timeout")
+        return super().fetch_project_snapshots(project_targets=project_targets)
 
 
 class ProjectTaskSyncApiTests(unittest.TestCase):
@@ -273,6 +325,71 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
             self.assertTrue(all(row.account_group == "DEPMO" for row in rows))
             self.assertTrue(all(row.workforce_eligible for row in rows))
         engine.dispose()
+
+    def test_global_sync_uses_one_batched_source_read_for_active_erp_projects(self) -> None:
+        source = BatchProjectTaskSource(self._global_snapshots())
+        app = create_api_app(
+            self.database_url,
+            auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            project_task_source=source,
+        )
+
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/integrations/acumatica/projects/tasks/sync"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(
+            source.batch_calls,
+            [(("5469", "5118"), ("5470", "5119"))],
+        )
+        self.assertEqual(source.calls, [])
+        self.assertEqual(body["source_requests"], 3)
+        self.assertEqual(body["source_rows_scanned"], 5)
+        self.assertIsInstance(body["source_read_duration_ms"], int)
+        self.assertIsInstance(body["duration_ms"], int)
+        self.assertEqual(body["projects_inspected"], 4)
+        self.assertEqual(body["projects_synchronized"], 2)
+        self.assertEqual(body["projects_ignored"], 1)
+        self.assertEqual(body["projects_rejected"], 1)
+        self.assertEqual(body["tasks_created"], 2)
+        self.assertEqual(body["tasks_rejected"], 1)
+
+    def test_global_sync_rejects_a_concurrent_second_launch(self) -> None:
+        source = BlockingBatchProjectTaskSource(self._global_snapshots())
+        app = create_api_app(
+            self.database_url,
+            auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            project_task_source=source,
+        )
+        path = "/api/v1/integrations/acumatica/projects/tasks/sync"
+        first_result: dict[str, object] = {}
+
+        def run_first() -> None:
+            with TestClient(app) as client:
+                first_result["response"] = client.post(path)
+
+        first_thread = Thread(target=run_first)
+        first_thread.start()
+        self.assertTrue(source.started.wait(timeout=2))
+        try:
+            with TestClient(app) as client:
+                second = client.post(path)
+        finally:
+            source.release.set()
+            first_thread.join(timeout=5)
+
+        self.assertFalse(first_thread.is_alive())
+        first = first_result["response"]
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 409)
+        self.assertEqual(
+            second.json()["error"]["code"],
+            "acumatica_project_task_sync_in_progress",
+        )
+        self.assertEqual(len(source.batch_calls), 1)
 
     def test_global_sync_rolls_back_only_the_failed_project_transaction(self) -> None:
         snapshots = self._global_snapshots()

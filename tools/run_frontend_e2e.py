@@ -8,6 +8,8 @@ without an external OIDC provider. No production authentication path is changed.
 from __future__ import annotations
 
 import argparse
+from decimal import Decimal
+from time import sleep
 from datetime import time
 from pathlib import Path
 import sys
@@ -21,6 +23,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from app.application import (
+    TaskCatalogItem,
+    TaskCatalogPortfolioSnapshot,
+    TaskCatalogProjectSnapshot,
+)
 from app.application.communications import (
     CommunicationTransportMessage,
     CommunicationTransportResult,
@@ -97,6 +104,57 @@ ROLE_ASSIGNED_ROLES = {
     E2E_TEAM_LEAD: (ROLE_DELIVERY_CONTRIBUTOR,),
     E2E_DELIVERY_TECHNICIAN: (ROLE_TECHNICIAN, ROLE_DELIVERY_CONTRIBUTOR),
 }
+
+
+class FakePlaywrightProjectTaskSource:
+    """Deterministic in-process RP_ProjectTasks batch source for browser acceptance."""
+
+    def fetch_project_snapshots(
+        self,
+        *,
+        project_targets,
+    ) -> TaskCatalogPortfolioSnapshot:
+        sleep(0.25)
+        snapshots = []
+        for project_external_id, project_number in project_targets:
+            if project_external_id != "251" or project_number != "P-251":
+                raise AssertionError("unexpected E2E project task target")
+            snapshots.append(
+                TaskCatalogProjectSnapshot(
+                    project_number=project_number,
+                    source_rows=1,
+                    rejected_rows=0,
+                    items=(
+                        TaskCatalogItem(
+                            project_number=project_number,
+                            code="216",
+                            label="Programmation synchronisée E2E",
+                            status="Actif",
+                            active=True,
+                            erp_task_id="90216",
+                            account_group="DEPMO",
+                            budget_amount_cad=Decimal("1000.00"),
+                            budget_actual_cad=Decimal("250.00"),
+                        ),
+                    ),
+                )
+            )
+        return TaskCatalogPortfolioSnapshot(
+            source_rows=len(snapshots),
+            source_pages=1 if snapshots else 0,
+            snapshots=tuple(snapshots),
+        )
+
+    def fetch_project_snapshot(
+        self,
+        *,
+        project_external_id: str,
+        project_number: str,
+    ) -> TaskCatalogProjectSnapshot:
+        portfolio = self.fetch_project_snapshots(
+            project_targets=((project_external_id, project_number),)
+        )
+        return portfolio.snapshots[0]
 
 
 class FakePlaywrightSmtpClient:
@@ -191,6 +249,7 @@ def _seed(database_url: str) -> None:
             session.add(
                 Project(
                     id="P-251-ID",
+                    erp_external_id="251",
                     number="P-251",
                     name="Projet Playwright V2",
                     client="Client E2E",
@@ -462,6 +521,7 @@ def build_app(database_path: Path, frontend_dist: Path):
         communication_transport=transport,
         smtp_cipher=smtp_cipher,
         smtp_client=smtp_client,
+        project_task_source=FakePlaywrightProjectTaskSource(),
     )
     @app.get("/__e2e__/identity/link-pending", include_in_schema=False)
     def link_pending_oidc_identity():

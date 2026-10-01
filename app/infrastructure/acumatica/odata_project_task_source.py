@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 import logging
+from time import perf_counter
 from typing import Final
 from urllib.parse import urljoin
 
@@ -12,6 +13,7 @@ import httpx
 from ...application import (
     ApplicationOperationError,
     TaskCatalogItem,
+    TaskCatalogPortfolioSnapshot,
     TaskCatalogProjectSnapshot,
 )
 from .odata_atom import (
@@ -380,6 +382,72 @@ class ODataProjectTaskSource:
             reason or "-",
         )
 
+    def _build_snapshot(
+        self,
+        *,
+        project_erp_id: int,
+        project_number: str,
+        raw_rows: Sequence[ODataProjectTaskRecord],
+    ) -> TaskCatalogProjectSnapshot:
+        aggregated: dict[int, _AggregatedTask] = {}
+        rejected_rows = 0
+        for entry_index, row in enumerate(raw_rows):
+            if (
+                row.project_erp_id != project_erp_id
+                or row.account_group.strip() != _WORKFORCE_ACCOUNT_GROUP
+            ):
+                rejected_rows += 1
+                continue
+            if row.project_code != project_number:
+                rejected_rows += 1
+                continue
+
+            existing = aggregated.get(row.task_id)
+            if existing is None:
+                aggregated[row.task_id] = _AggregatedTask(
+                    project_code=row.project_code,
+                    task_id=row.task_id,
+                    task_code=row.task_code,
+                    label=row.task_description,
+                    status=row.status,
+                    active=row.status.casefold() == "actif",
+                    budget_amount_cad=row.budget_amount_cad,
+                    budget_actual_cad=row.budget_actual_cad,
+                    cost_code=row.cost_code,
+                    inventory_id=row.inventory_id,
+                )
+                continue
+            try:
+                existing.add(row, entry_index=entry_index)
+            except ODataProjectTaskFeedError as exc:
+                self._log_failure(
+                    failure_kind="invalid_payload",
+                    retryable=False,
+                    reason=exc.reason,
+                )
+                raise ApplicationOperationError(
+                    "La réponse OData Acumatica des tâches projet est incohérente.",
+                    code="acumatica_project_task_response_invalid",
+                    context=self._safe_context(
+                        failure_kind="invalid_payload",
+                        retryable=False,
+                        reason=exc.reason,
+                        field=exc.field,
+                        entry_index=exc.entry_index,
+                    ),
+                ) from exc
+
+        items = tuple(
+            row.to_item()
+            for _task_id, row in sorted(aggregated.items(), key=lambda pair: pair[0])
+        )
+        return TaskCatalogProjectSnapshot(
+            project_number=project_number,
+            source_rows=len(raw_rows),
+            rejected_rows=rejected_rows,
+            items=items,
+        )
+
     def fetch_project_snapshot(
         self,
         *,
@@ -498,61 +566,180 @@ class ODataProjectTaskSource:
                 ),
             ) from exc
 
-        aggregated: dict[int, _AggregatedTask] = {}
-        rejected_rows = 0
-        for entry_index, row in enumerate(raw_rows):
-            if (
-                row.project_erp_id != project_erp_id
-                or row.account_group.strip() != _WORKFORCE_ACCOUNT_GROUP
-            ):
-                rejected_rows += 1
-                continue
-            if row.project_code != project:
-                rejected_rows += 1
-                continue
-
-            existing = aggregated.get(row.task_id)
-            if existing is None:
-                aggregated[row.task_id] = _AggregatedTask(
-                    project_code=row.project_code,
-                    task_id=row.task_id,
-                    task_code=row.task_code,
-                    label=row.task_description,
-                    status=row.status,
-                    active=row.status.casefold() == "actif",
-                    budget_amount_cad=row.budget_amount_cad,
-                    budget_actual_cad=row.budget_actual_cad,
-                    cost_code=row.cost_code,
-                    inventory_id=row.inventory_id,
-                )
-                continue
-            try:
-                existing.add(row, entry_index=entry_index)
-            except ODataProjectTaskFeedError as exc:
-                self._log_failure(
-                    failure_kind="invalid_payload",
-                    retryable=False,
-                    reason=exc.reason,
-                )
-                raise ApplicationOperationError(
-                    "La réponse OData Acumatica des tâches projet est incohérente.",
-                    code="acumatica_project_task_response_invalid",
-                    context=self._safe_context(
-                        failure_kind="invalid_payload",
-                        retryable=False,
-                        reason=exc.reason,
-                        field=exc.field,
-                        entry_index=exc.entry_index,
-                    ),
-                ) from exc
-
-        items = tuple(
-            row.to_item()
-            for _task_id, row in sorted(aggregated.items(), key=lambda pair: pair[0])
-        )
-        return TaskCatalogProjectSnapshot(
+        return self._build_snapshot(
+            project_erp_id=project_erp_id,
             project_number=project,
-            source_rows=len(raw_rows),
-            rejected_rows=rejected_rows,
-            items=items,
+            raw_rows=raw_rows,
         )
+
+    def fetch_project_snapshots(
+        self,
+        *,
+        project_targets: Sequence[tuple[str, str]],
+    ) -> TaskCatalogPortfolioSnapshot:
+        """Read DEPMO once, then partition the bounded feed by canonical ERP project."""
+
+        targets: list[tuple[int, str]] = []
+        projects_by_erp_id: dict[int, str] = {}
+        erp_ids_by_project: dict[str, int] = {}
+        for raw_external_id, raw_project_number in project_targets:
+            external_id = str(raw_external_id or "").strip()
+            project = str(raw_project_number or "").strip()
+            if not external_id:
+                raise ValueError("project_external_id is required")
+            if not project:
+                raise ValueError("project_number is required")
+            try:
+                project_erp_id = int(external_id, 10)
+            except ValueError as exc:
+                raise ValueError("project_external_id must be an Edm.Int32 value") from exc
+            if not _INT32_MIN <= project_erp_id <= _INT32_MAX:
+                raise ValueError("project_external_id must be an Edm.Int32 value")
+
+            existing_project = projects_by_erp_id.get(project_erp_id)
+            if existing_project is not None and existing_project != project:
+                raise ValueError("project_external_id must identify one project")
+            existing_erp_id = erp_ids_by_project.get(project)
+            if existing_erp_id is not None and existing_erp_id != project_erp_id:
+                raise ValueError("project_number must identify one ERP project")
+            if existing_project is None and existing_erp_id is None:
+                projects_by_erp_id[project_erp_id] = project
+                erp_ids_by_project[project] = project_erp_id
+                targets.append((project_erp_id, project))
+
+        if not targets:
+            return TaskCatalogPortfolioSnapshot(
+                source_rows=0,
+                source_pages=0,
+                snapshots=(),
+            )
+
+        headers = {
+            "Accept": "application/atom+xml, application/xml;q=0.9",
+            **self._request_headers,
+        }
+        auth = (
+            httpx.BasicAuth(self._settings.username, self._settings.credential)
+            if self._settings.username and self._settings.credential
+            else None
+        )
+        raw_rows: list[ODataProjectTaskRecord] = []
+        skip = 0
+        page_count = 0
+        started_at = perf_counter()
+        try:
+            with httpx.Client(
+                transport=self._transport,
+                timeout=self._settings.timeout_seconds,
+                follow_redirects=True,
+                auth=auth,
+            ) as client:
+                while True:
+                    response = client.get(
+                        self._url(),
+                        headers=headers,
+                        params={
+                            "$filter": "AccountGroup eq 'DEPMO'",
+                            "$orderby": "TaskID asc",
+                            "$top": str(self._settings.page_size),
+                            "$skip": str(skip),
+                        },
+                    )
+                    response.raise_for_status()
+                    try:
+                        page = parse_rp_project_tasks_feed(response.content)
+                    except ODataProjectTaskFeedError as exc:
+                        self._log_failure(
+                            failure_kind="invalid_payload",
+                            retryable=False,
+                            http_status=response.status_code,
+                            reason=exc.reason,
+                        )
+                        raise ApplicationOperationError(
+                            "La réponse OData Acumatica des tâches projet est invalide.",
+                            code="acumatica_project_task_response_invalid",
+                            context=self._safe_context(
+                                failure_kind="invalid_payload",
+                                retryable=False,
+                                http_status=response.status_code,
+                                reason=exc.reason,
+                                field=exc.field,
+                                entry_index=exc.entry_index,
+                            ),
+                        ) from exc
+
+                    page_count += 1
+                    raw_rows.extend(page)
+                    if len(page) < self._settings.page_size:
+                        break
+                    skip += len(page)
+        except ApplicationOperationError:
+            raise
+        except httpx.HTTPStatusError as exc:
+            status_code = int(exc.response.status_code)
+            failure_kind, retryable = _http_failure_kind(status_code)
+            self._log_failure(
+                failure_kind=failure_kind,
+                retryable=retryable,
+                http_status=status_code,
+            )
+            raise ApplicationOperationError(
+                "Impossible de lire les tâches projet depuis Acumatica.",
+                code="acumatica_project_task_read_failed",
+                context=self._safe_context(
+                    failure_kind=failure_kind,
+                    retryable=retryable,
+                    http_status=status_code,
+                ),
+            ) from exc
+        except httpx.TimeoutException as exc:
+            self._log_failure(failure_kind="timeout", retryable=True)
+            raise ApplicationOperationError(
+                "Impossible de lire les tâches projet depuis Acumatica.",
+                code="acumatica_project_task_read_failed",
+                context=self._safe_context(
+                    failure_kind="timeout",
+                    retryable=True,
+                ),
+            ) from exc
+        except httpx.RequestError as exc:
+            self._log_failure(failure_kind="network", retryable=True)
+            raise ApplicationOperationError(
+                "Impossible de lire les tâches projet depuis Acumatica.",
+                code="acumatica_project_task_read_failed",
+                context=self._safe_context(
+                    failure_kind="network",
+                    retryable=True,
+                ),
+            ) from exc
+
+        rows_by_erp_id: dict[int, list[ODataProjectTaskRecord]] = {
+            project_erp_id: [] for project_erp_id, _project in targets
+        }
+        for row in raw_rows:
+            project_rows = rows_by_erp_id.get(row.project_erp_id)
+            if project_rows is not None:
+                project_rows.append(row)
+
+        snapshots = tuple(
+            self._build_snapshot(
+                project_erp_id=project_erp_id,
+                project_number=project,
+                raw_rows=rows_by_erp_id[project_erp_id],
+            )
+            for project_erp_id, project in targets
+        )
+        duration_ms = max(0, int((perf_counter() - started_at) * 1000))
+        logger.info(
+            "Acumatica OData project-task portfolio read completed targets=%s pages=%s rows=%s duration_ms=%s",
+            len(targets),
+            page_count,
+            len(raw_rows),
+            duration_ms,
+        )
+        return TaskCatalogPortfolioSnapshot(
+            source_rows=len(raw_rows),
+            source_pages=page_count,
+            snapshots=snapshots,
+        )
+

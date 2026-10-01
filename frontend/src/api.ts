@@ -55,6 +55,10 @@ export type GlobalProjectTaskSyncResult = {
   tasks_unchanged: number;
   tasks_deactivated: number;
   tasks_rejected: number;
+  source_requests: number | null;
+  source_rows_scanned: number | null;
+  source_read_duration_ms: number | null;
+  duration_ms: number;
   project_results: Array<{
     project_id: string;
     project_number: string;

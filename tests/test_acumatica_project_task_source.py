@@ -172,6 +172,75 @@ class ODataProjectTaskSourceTests(unittest.TestCase):
         self.assertEqual(first["$skip"], "0")
         self.assertEqual(second["$skip"], "2")
 
+    def test_portfolio_source_reads_depmo_once_and_partitions_active_targets(self) -> None:
+        requests: list[httpx.Request] = []
+        pages = {
+            "0": _feed(
+                _entry(
+                    project_erp_id=5469,
+                    project_number="5118      ",
+                    task_id=101,
+                    task_code="216",
+                    label="Programmation projet 1",
+                ),
+                _entry(
+                    project_erp_id=5470,
+                    project_number="5119",
+                    task_id=201,
+                    task_code="216",
+                    label="Programmation projet 2",
+                ),
+            ),
+            "2": _feed(
+                _entry(
+                    project_erp_id=9999,
+                    project_number="OLD-1",
+                    task_id=301,
+                    task_code="216",
+                    label="Projet hors cible",
+                ),
+            ),
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(200, content=pages[request.url.params["$skip"]])
+
+        source = ODataProjectTaskSource(
+            ODataProjectTaskSourceSettings(
+                base_url="https://example.invalid",
+                page_size=2,
+            ),
+            transport=httpx.MockTransport(handler),
+        )
+
+        portfolio = source.fetch_project_snapshots(
+            project_targets=(("5469", "5118"), ("5470", "5119")),
+        )
+
+        self.assertEqual(portfolio.source_pages, 2)
+        self.assertEqual(portfolio.source_rows, 3)
+        self.assertEqual(
+            [snapshot.project_number for snapshot in portfolio.snapshots],
+            ["5118", "5119"],
+        )
+        self.assertEqual(
+            [snapshot.source_rows for snapshot in portfolio.snapshots],
+            [1, 1],
+        )
+        self.assertEqual(
+            [snapshot.items[0].erp_task_id for snapshot in portfolio.snapshots],
+            ["101", "201"],
+        )
+        self.assertEqual(len(requests), 2)
+        first = requests[0].url.params
+        second = requests[1].url.params
+        self.assertEqual(first["$filter"], "AccountGroup eq 'DEPMO'")
+        self.assertEqual(first["$orderby"], "TaskID asc")
+        self.assertEqual(first["$top"], "2")
+        self.assertEqual(first["$skip"], "0")
+        self.assertEqual(second["$skip"], "2")
+
     def test_adapter_rejects_other_projetid_non_depmo_and_code_mismatch(self) -> None:
         payload = _feed(
             _entry(
