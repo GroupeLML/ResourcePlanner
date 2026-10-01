@@ -37,6 +37,28 @@ class ReactDeliveryContractTests(unittest.TestCase):
         self.assertNotIn("actual_hours", page)
         self.assertNotIn("planned_hours -", page)
 
+    def test_delivery_presents_work_package_resource_class_as_context_only(self) -> None:
+        page = (FRONTEND / "DeliveryPage.tsx").read_text(encoding="utf-8")
+        api = (FRONTEND / "deliveryApi.ts").read_text(encoding="utf-8")
+
+        self.assertIn("Classe de ressource", page)
+        self.assertIn("workPackageResourceClassLabel", page)
+        self.assertIn("summary?.work_package.id", page)
+        self.assertIn("resource_class_active", page)
+        self.assertIn("WORK_PACKAGE_TASK_RESOURCE_CLASS_DIVERGENCE", page)
+        self.assertIn("aucune correction automatique n’est effectuée", page)
+        self.assertIn("Code WorkPackage :", page)
+        for field in (
+            "resource_class_code",
+            "resource_class_label",
+            "resource_class_active",
+            "task_resource_class_code",
+            "resource_class_diagnostic",
+        ):
+            self.assertIn(field, api)
+        self.assertNotIn("required_resource_class", page)
+        self.assertNotIn("expected_planning_version", page)
+
     def test_kanban_uses_backend_actions_instead_of_role_checks(self) -> None:
         page = (FRONTEND / "DeliveryPage.tsx").read_text(encoding="utf-8")
 
