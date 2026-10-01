@@ -125,7 +125,6 @@ export default function SearchableCombobox({
     if (option.disabled) return;
     onChange(option.value);
     closePopup();
-    requestAnimationFrame(() => inputRef.current?.focus());
   }
 
   function handleQuery(valueToSearch: string) {
