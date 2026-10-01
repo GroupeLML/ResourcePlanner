@@ -89,6 +89,26 @@ function labelled(scope: Locator, label: string, control: "select" | "input" | "
   return scope.locator("label").filter({ hasText: label }).first().locator(control);
 }
 
+function combobox(scope: Locator, label: string) {
+  return scope.getByRole("combobox", { name: label, exact: true }).first();
+}
+
+async function chooseCombobox(
+  scope: Locator,
+  label: string,
+  query: string,
+  optionName: string,
+) {
+  const input = combobox(scope, label);
+  await input.click();
+  await input.fill(query);
+  const listbox = scope.getByRole("listbox", { name: `${label} options`, exact: true }).first();
+  const option = listbox.getByRole("option", { name: optionName, exact: false }).first();
+  await expect(option).toBeVisible();
+  await option.click();
+  return input;
+}
+
 async function dragWithDataTransfer(page: Page, source: Locator, target: Locator) {
   const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
   await source.dispatchEvent("dragstart", { dataTransfer });
@@ -132,13 +152,16 @@ async function createDemand(
   const editor = page.locator(".demand-editor-form");
   await expect(editor.getByRole("heading", { name: "Nouvelle demande" })).toBeVisible();
 
-  await labelled(editor, "Projet", "select").selectOption("P-251");
+  await chooseCombobox(editor, "Projet", "251", "P-251");
   await expect(editor.getByText("Recherche catalogue ERP", { exact: true })).toHaveCount(0);
-  const taskSelect = labelled(editor, "Tâche ERP", "select");
-  await expect(taskSelect.locator("option", { hasText: "210 — AUTOMATISATION E2E" })).toBeAttached();
-  await taskSelect.selectOption("210");
+  await chooseCombobox(editor, "Tâche ERP", "AUT", "210 — AUTOMATISATION E2E");
   if (input.workPackage) {
-    await selectOptionContaining(labelled(editor, "Plage moyen terme", "select"), input.workPackage);
+    await chooseCombobox(
+      editor,
+      "Plage moyen terme / WorkPackage",
+      input.workPackage,
+      input.workPackage,
+    );
   }
   await labelled(editor, "Priorité", "select").selectOption(input.priority || "Normale");
   await labelled(editor, "Confirmation", "select").selectOption("Confirmée");
@@ -148,7 +171,12 @@ async function createDemand(
   await labelled(editor, "Jours actifs souhaités", "input").fill(input.activeDays);
   await labelled(editor, "Description", "textarea").fill(input.description);
   if (input.proposedResource) {
-    await labelled(editor, "Ressource proposée", "select").selectOption(input.proposedResource);
+    await chooseCombobox(
+      editor,
+      "Ressource proposée",
+      input.proposedResource.toLocaleUpperCase("fr-CA"),
+      input.proposedResource,
+    );
   }
   return editor;
 }
@@ -844,8 +872,8 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
 
     await page.getByRole("button", { name: /Quick Shift/ }).click();
     const quickShift = page.getByRole("dialog", { name: "Créer un Quick Shift" });
-    await labelled(quickShift, "Projet", "select").selectOption("P-251");
-    await labelled(quickShift, "Technicien", "select").selectOption("Alice");
+    await chooseCombobox(quickShift, "Projet", "251", "P-251");
+    await chooseCombobox(quickShift, "Technicien", "lic", "Alice");
     await labelled(quickShift, "Date", "input").fill(d2);
     await labelled(quickShift, "Heures", "input").fill("1.25");
     await labelled(quickShift, "Confirmation", "select").selectOption("Confirmée");
@@ -1218,8 +1246,8 @@ test("coordinator splits and duplicates a shift atomically from React", async ({
 
   await page.getByRole("button", { name: /Quick Shift/ }).click();
   const quickShift = page.getByRole("dialog", { name: "Créer un Quick Shift" });
-  await labelled(quickShift, "Projet", "select").selectOption("P-251");
-  await labelled(quickShift, "Technicien", "select").selectOption("Alice");
+  await chooseCombobox(quickShift, "Projet", "251", "P-251");
+  await chooseCombobox(quickShift, "Technicien", "ALI", "Alice");
   await labelled(quickShift, "Date", "input").fill(d2);
   await labelled(quickShift, "Heures", "input").fill("4");
   await labelled(quickShift, "Confirmation", "select").selectOption("Confirmée");
@@ -1364,11 +1392,9 @@ test("multi-line demand editor generates independent RequestLines and materializ
   const editor = projectManager.page.locator(".demand-editor-form");
   await expect(editor.getByRole("heading", { name: "Nouvelle demande" })).toBeVisible();
 
-  await labelled(editor, "Projet", "select").selectOption("P-251");
+  await chooseCombobox(editor, "Projet", "251", "P-251");
   await expect(editor.getByText("Recherche catalogue ERP", { exact: true })).toHaveCount(0);
-  const multiTaskSelect = labelled(editor, "Tâche ERP", "select");
-  await expect(multiTaskSelect.locator("option", { hasText: "210 — AUTOMATISATION E2E" })).toBeAttached();
-  await multiTaskSelect.selectOption("210");
+  await chooseCombobox(editor, "Tâche ERP", "automatisation", "210 — AUTOMATISATION E2E");
   await labelled(editor, "Début souhaité", "input").fill(d1);
   await labelled(editor, "Fin souhaitée", "input").fill(d2);
   await labelled(editor, "Nombre de ressources simultanées", "input").fill("2");
@@ -1388,7 +1414,7 @@ test("multi-line demand editor generates independent RequestLines and materializ
   expect(endBox).not.toBeNull();
   expect(Math.abs(startBox!.y - endBox!.y)).toBeLessThan(4);
   await expect(labelled(cards.nth(0), "Confirmation", "select")).toBeVisible();
-  await expect(labelled(cards.nth(0), "Classe de ressource", "select")).toBeVisible();
+  await expect(combobox(cards.nth(0), "Classe de ressource")).toBeVisible();
   await expect(editor.locator(".request-lines-summary")).toContainText("16");
   await expect(editor.locator(".request-lines-summary")).toContainText("heure(s) humaines projetées");
 
@@ -1406,16 +1432,16 @@ test("multi-line demand editor generates independent RequestLines and materializ
 
   const line1 = cards.nth(0);
   const line2 = cards.nth(1);
-  await labelled(line1, "Classe de ressource", "select").selectOption("PROGRAMMEUR");
+  await chooseCombobox(line1, "Classe de ressource", "prog", "PROGRAMMEUR");
   await line1.locator('select[aria-label="Compétences requises — ligne 1"]').selectOption(["C-SCADA"]);
-  await labelled(line1, "Ressource proposée", "select").selectOption("R-ALICE");
+  await chooseCombobox(line1, "Ressource proposée", "lic", "Alice");
   await labelled(line1, "Description spécifique", "textarea").fill("SCADA en début de fenêtre");
 
-  await labelled(line2, "Classe de ressource", "select").selectOption("PROGRAMMEUR");
+  await chooseCombobox(line2, "Classe de ressource", "PROG", "PROGRAMMEUR");
   await line2.locator('select[aria-label="Compétences requises — ligne 2"]').selectOption(["C-PLC"]);
   await labelled(line2, "Début", "input").fill(d2);
   await labelled(line2, "Fin", "input").fill(d2);
-  await labelled(line2, "Ressource proposée", "select").selectOption("R-BOB");
+  await chooseCombobox(line2, "Ressource proposée", "ob", "Bob");
   await labelled(line2, "Confirmation", "select").selectOption("Tentative");
   await labelled(line2, "Description spécifique", "textarea").fill("PLC en deuxième journée");
 
@@ -1652,11 +1678,9 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   await navigateMain(projectManager.page, "Demandes");
   await projectManager.page.getByRole("button", { name: /Nouvelle demande/ }).click();
   let editor = projectManager.page.locator(".demand-editor-form");
-  await labelled(editor, "Projet", "select").selectOption("P-251");
+  await chooseCombobox(editor, "Projet", "251", "P-251");
   await expect(editor.getByText("Recherche catalogue ERP", { exact: true })).toHaveCount(0);
-  const mixedTaskSelect = labelled(editor, "Tâche ERP", "select");
-  await expect(mixedTaskSelect.locator("option", { hasText: "210 — AUTOMATISATION E2E" })).toBeAttached();
-  await mixedTaskSelect.selectOption("210");
+  await chooseCombobox(editor, "Tâche ERP", "AUT", "210 — AUTOMATISATION E2E");
   await labelled(editor, "Description / contexte de la demande", "textarea").fill(
     "Demande mixte main-d’œuvre + nacelles #496",
   );
@@ -1691,8 +1715,8 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   const aliceLine = cards.nth(2);
   await labelled(aliceLine, "Début", "input").fill(d1);
   await labelled(aliceLine, "Fin", "input").fill(d2);
-  await labelled(aliceLine, "Classe de ressource", "select").selectOption("PROGRAMMEUR");
-  await labelled(aliceLine, "Ressource proposée", "select").selectOption("R-ALICE");
+  await chooseCombobox(aliceLine, "Classe de ressource", "programmeur", "PROGRAMMEUR");
+  await chooseCombobox(aliceLine, "Ressource proposée", "ali", "Alice");
   await labelled(aliceLine, "Heures", "input").fill("8");
   await labelled(aliceLine, "Description spécifique", "textarea").fill("Support Alice pour les nacelles");
 
@@ -1702,8 +1726,8 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   const bobLine = cards.nth(3);
   await labelled(bobLine, "Début", "input").fill(d1);
   await labelled(bobLine, "Fin", "input").fill(d2);
-  await labelled(bobLine, "Classe de ressource", "select").selectOption("PROGRAMMEUR");
-  await labelled(bobLine, "Ressource proposée", "select").selectOption("R-BOB");
+  await chooseCombobox(bobLine, "Classe de ressource", "PROGRAM", "PROGRAMMEUR");
+  await chooseCombobox(bobLine, "Ressource proposée", "bob", "Bob");
   await labelled(bobLine, "Heures", "input").fill("8");
   await labelled(bobLine, "Description spécifique", "textarea").fill("Support Bob sans actif associé");
 
