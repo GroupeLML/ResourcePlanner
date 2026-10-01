@@ -142,6 +142,18 @@ class ApprovalRequirement(TimestampMixin, Base):
         nullable=True,
         index=True,
     )
+    asset_type_id: Mapped[str | None] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("asset_types.id"),
+        nullable=True,
+        index=True,
+    )
+    proposed_asset_id: Mapped[str | None] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("assets.id"),
+        nullable=True,
+        index=True,
+    )
     routing_sources_text: Mapped[str] = mapped_column(
         Text,
         nullable=False,
