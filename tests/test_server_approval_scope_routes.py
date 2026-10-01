@@ -537,6 +537,25 @@ class ServerApprovalScopeRouteTests(unittest.TestCase):
             )
             self.assertEqual(assigned.status_code, 200, assigned.text)
 
+            inactive_assignment = client.put(
+                "/api/v1/assets/asset-1/approvers/manager-2",
+                json={},
+            )
+            permissionless_assignment = client.put(
+                "/api/v1/assets/asset-1/approvers/pm-1",
+                json={},
+            )
+            self.assertEqual(inactive_assignment.status_code, 422)
+            self.assertEqual(
+                inactive_assignment.json()["error"]["code"],
+                "asset_approver_not_admissible",
+            )
+            self.assertEqual(permissionless_assignment.status_code, 422)
+            self.assertEqual(
+                permissionless_assignment.json()["error"]["code"],
+                "asset_approver_not_admissible",
+            )
+
             resolution = client.get(
                 "/api/v1/admin/approval-scopes/"
                 "request-lines/asset-line-1/resolution"
