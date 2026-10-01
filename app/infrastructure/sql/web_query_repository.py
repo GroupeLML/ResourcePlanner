@@ -404,10 +404,11 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
             if wanted_class is not None and class_code != wanted_class:
                 continue
 
-            displayed_by_id[work_package.id] = projected
             if task_id is None:
+                displayed_by_id[work_package.id] = projected
                 displayed_unclassified.append(projected)
             elif task_id in tasks_by_id:
+                displayed_by_id[work_package.id] = projected
                 display_by_task[task_id].append(projected)
 
         task_models: list[MediumTermBudgetTaskReadModel] = []
