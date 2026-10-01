@@ -55,8 +55,11 @@ type CancellationAcceptRetry = {
 type ApprovalRoutingDiagnosticView = {
   line: string;
   requestLineId: string | null;
+  lineKind: string;
   task: string;
   resourceClass: string;
+  assetType: string | null;
+  proposedAsset: string | null;
   scope: string;
   reasons: { code: string; label: string }[];
 };
@@ -76,6 +79,13 @@ const ROUTING_DIAGNOSTIC_LABELS: Record<string, string> = {
   approver_inactive: "Un approbateur configuré est inactif.",
   approver_permission_missing: "Un approbateur configuré n’a pas la permission approve_demands.",
   no_eligible_approver: "Aucun approbateur actif et autorisé n’est admissible pour ce périmètre.",
+  asset_type_unknown: "Le type d’actif référencé est introuvable.",
+  asset_type_inactive: "Le type d’actif référencé est inactif.",
+  asset_type_approval_scope_unmapped: "Aucun périmètre d’approbation actif n’est associé à ce type d’actif.",
+  asset_type_approval_scope_ambiguous: "Plusieurs périmètres d’approbation actifs couvrent ce type d’actif.",
+  proposed_asset_unknown: "L’actif proposé est introuvable.",
+  proposed_asset_inactive: "L’actif proposé est inactif.",
+  proposed_asset_type_mismatch: "L’actif proposé n’appartient pas au type d’actif de la ligne.",
 };
 
 function diagnosticRecord(value: unknown): Record<string, unknown> | null {
@@ -130,6 +140,19 @@ function approvalRoutingDiagnostic(reason: unknown): ApprovalRoutingDiagnosticVi
   const taskCode = diagnosticText(context.task_code);
   const taskLabel = diagnosticText(context.task_label);
   const resourceClass = diagnosticText(context.effective_resource_class);
+  const lineKind = diagnosticText(context.line_kind) || "WORKFORCE";
+  const assetTypeCode = diagnosticText(context.asset_type_code);
+  const assetTypeLabel = diagnosticText(context.asset_type_label);
+  const assetTypeId = diagnosticText(context.asset_type_id);
+  const proposedAssetCode = diagnosticText(context.proposed_asset_code);
+  const proposedAssetLabel = diagnosticText(context.proposed_asset_label);
+  const proposedAssetId = diagnosticText(context.proposed_asset_id);
+  const assetType = assetTypeCode && assetTypeLabel
+    ? `${assetTypeCode} — ${assetTypeLabel}`
+    : assetTypeCode || assetTypeLabel || assetTypeId;
+  const proposedAsset = proposedAssetCode && proposedAssetLabel
+    ? `${proposedAssetCode} — ${proposedAssetLabel}`
+    : proposedAssetCode || proposedAssetLabel || proposedAssetId;
 
   const resolvedScope = scopeDiagnosticText(context.approval_scope);
   const candidateScopes = Array.isArray(context.approval_scope_candidates)
@@ -154,10 +177,14 @@ function approvalRoutingDiagnostic(reason: unknown): ApprovalRoutingDiagnosticVi
   return {
     line: position !== null ? `Ligne ${position + 1}` : "Ligne concernée",
     requestLineId,
+    lineKind,
     task: taskCode
       ? `${taskCode}${taskLabel ? ` — ${taskLabel}` : ""}`
-      : "Aucune tâche ERP résolue",
-    resourceClass: resourceClass || "Aucune classe effective résolue",
+      : lineKind === "ASSET" ? "Non utilisée pour le routage ASSET" : "Aucune tâche ERP résolue",
+    resourceClass: resourceClass
+      || (lineKind === "ASSET" ? "Non utilisée pour le routage ASSET" : "Aucune classe effective résolue"),
+    assetType,
+    proposedAsset,
     scope,
     reasons: diagnostics.length > 0
       ? diagnostics.map(routingReason)
@@ -694,8 +721,15 @@ export default function DemandWorkflowPage({
                 {routingDiagnostic.requestLineId ? <small>{routingDiagnostic.requestLineId}</small> : null}
               </dd>
             </div>
+            <div><dt>Nature</dt><dd>{routingDiagnostic.lineKind}</dd></div>
             <div><dt>Tâche ERP</dt><dd>{routingDiagnostic.task}</dd></div>
             <div><dt>Classe effective</dt><dd>{routingDiagnostic.resourceClass}</dd></div>
+            {routingDiagnostic.lineKind === "ASSET" && (
+              <>
+                <div><dt>Type d’actif</dt><dd>{routingDiagnostic.assetType || "Non résolu"}</dd></div>
+                <div><dt>Actif proposé</dt><dd>{routingDiagnostic.proposedAsset || "Aucun"}</dd></div>
+              </>
+            )}
             <div><dt>Scope d’approbation</dt><dd>{routingDiagnostic.scope}</dd></div>
           </dl>
           <div className="approval-routing-reasons">
