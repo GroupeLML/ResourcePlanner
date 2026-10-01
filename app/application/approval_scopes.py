@@ -462,7 +462,7 @@ class ApprovalScopeService:
             if asset_type_id is not None
             else None
         )
-        scopes = (
+        mapped_scopes = (
             call_application_port(
                 lambda: self._repository.list_asset_type_scopes(asset_type_id),
                 code_prefix="approval_routing_scope_read",
@@ -471,6 +471,8 @@ class ApprovalScopeService:
             if asset_type_id is not None and asset_type is not None
             else ()
         )
+        active_scopes = tuple(scope for scope in mapped_scopes if scope.active)
+        scopes = active_scopes if active_scopes else mapped_scopes
         proposed_asset_id = str(line.proposed_asset_id or "").strip() or None
         proposed_asset = (
             call_application_port(
