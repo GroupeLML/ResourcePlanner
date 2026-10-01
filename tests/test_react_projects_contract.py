@@ -136,6 +136,10 @@ class ReactProjectsContractTests(unittest.TestCase):
         )
         self.assertIn("projects_synchronized", page)
         self.assertIn("tasks_rejected", page)
+        self.assertIn("source_requests", page)
+        self.assertIn("requête(s) ERP", page)
+        self.assertIn("duration_ms", page)
+        self.assertIn("source_requests: number | null", api)
         self.assertNotIn("/oDATA/RP_ProjectTasks", page)
         self.assertNotIn("RESOURCEPLANNER_ACUMATICA_PASSWORD", page)
 
