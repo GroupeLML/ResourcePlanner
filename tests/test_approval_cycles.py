@@ -23,6 +23,9 @@ from app.domain.approval_cycles import (
 from app.domain.approval_routing import (
     APPROVER_SOURCE_RESOURCE,
     APPROVER_SOURCE_SCOPE,
+    DIAGNOSTIC_NO_ELIGIBLE_APPROVER,
+    DIAGNOSTIC_SCOPE_AMBIGUOUS,
+    DIAGNOSTIC_TASK_REFERENCE_MISSING,
 )
 from app.infrastructure.sql import (
     AppUser,
@@ -567,6 +570,88 @@ class ApprovalCycleTests(unittest.TestCase):
             self.assertEqual(
                 unmapped.exception.code,
                 "approval_cycle_routing_blocked",
+            )
+
+    def test_blocked_routing_error_exposes_structured_line_task_and_scope_context(self) -> None:
+        with self.factory() as session:
+            session.add(
+                TaskApprovalScopeMapping(
+                    task_catalog_item_id="T1",
+                    approval_scope_id="S2",
+                )
+            )
+            session.commit()
+
+            with self.assertRaises(ApplicationValidationError) as error:
+                self._service(session).initialize_cycle(
+                    "D1",
+                    expected_version=1,
+                )
+
+            context = error.exception.context
+            self.assertEqual(error.exception.code, "approval_cycle_routing_blocked")
+            self.assertEqual(context["request_line_id"], "L1")
+            self.assertEqual(context["request_line_position"], 0)
+            self.assertEqual(context["task_catalog_item_id"], "T1")
+            self.assertEqual(context["task_code"], "210")
+            self.assertEqual(context["task_label"], "Automatisation")
+            self.assertIsNone(context["approval_scope"])
+            self.assertEqual(
+                [scope["code"] for scope in context["approval_scope_candidates"]],
+                ["AUTOMATION", "ELECTRICAL_INSTALLATION"],
+            )
+            self.assertIn(
+                DIAGNOSTIC_SCOPE_AMBIGUOUS,
+                context["diagnostics"],
+            )
+
+    def test_missing_task_reference_reports_erp_snapshot_and_precise_reason(self) -> None:
+        with self.factory() as session:
+            line = session.get(RequestLine, "L1")
+            line.task_catalog_item_id = None
+            session.commit()
+
+            with self.assertRaises(ApplicationValidationError) as error:
+                self._service(session).initialize_cycle(
+                    "D1",
+                    expected_version=1,
+                )
+
+            context = error.exception.context
+            self.assertEqual(context["request_line_id"], "L1")
+            self.assertIsNone(context["task_catalog_item_id"])
+            self.assertEqual(context["task_code"], "210")
+            self.assertEqual(context["task_label"], "Automatisation")
+            self.assertIn(
+                DIAGNOSTIC_TASK_REFERENCE_MISSING,
+                context["diagnostics"],
+            )
+
+    def test_no_eligible_approver_reports_resolved_scope(self) -> None:
+        with self.factory() as session:
+            session.execute(
+                delete(ApprovalScopeApprover).where(
+                    ApprovalScopeApprover.approval_scope_id == "S1"
+                )
+            )
+            session.commit()
+
+            with self.assertRaises(ApplicationValidationError) as error:
+                self._service(session).initialize_cycle(
+                    "D1",
+                    expected_version=1,
+                )
+
+            context = error.exception.context
+            self.assertEqual(context["approval_scope"]["id"], "S1")
+            self.assertEqual(context["approval_scope"]["code"], "AUTOMATION")
+            self.assertEqual(
+                [scope["code"] for scope in context["approval_scope_candidates"]],
+                ["AUTOMATION"],
+            )
+            self.assertIn(
+                DIAGNOSTIC_NO_ELIGIBLE_APPROVER,
+                context["diagnostics"],
             )
 
     def test_business_contact_never_confers_approval_authority(self) -> None:
