@@ -7,7 +7,7 @@ from threading import Lock
 from time import perf_counter
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 from sqlalchemy.exc import IntegrityError
 
 from ..application import (
@@ -94,6 +94,14 @@ class AcumaticaProjectTaskSyncRunner:
         self._executor.shutdown(wait=False, cancel_futures=True)
 
     def reconcile_interrupted_runs(self) -> int:
+        # Server-isolation/health smoke can intentionally boot FastAPI against an
+        # unmigrated empty database. Production starts only after the migrate
+        # container, so absence here means there is no persisted run to reconcile.
+        with self._session_factory() as schema_session:
+            bind = schema_session.get_bind()
+            if not inspect(bind).has_table("acumatica_project_task_sync_runs"):
+                return 0
+
         now = utc_now()
         reconciled = 0
         with transactional_session(self._session_factory) as session:
