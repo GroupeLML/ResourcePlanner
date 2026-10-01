@@ -36,6 +36,8 @@ SOURCE_MISSING_TABLES = {
     "work_package_weekly_loads",
     "asset_type_approval_scope_mappings",
     "asset_approvers",
+    "acumatica_project_task_sync_project_results",
+    "acumatica_project_task_sync_runs",
 }
 SOURCE_MISSING_COLUMNS = {
     "auth_sessions": {"auth_mode"},
