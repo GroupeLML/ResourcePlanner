@@ -129,7 +129,11 @@ class ReactProjectsContractTests(unittest.TestCase):
         self.assertIn("/tasks/sync", api)
         self.assertIn("/tasks/sync-metadata", api)
         self.assertIn("syncAcumaticaActiveProjectTasks()", page)
+        self.assertIn("getCurrentAcumaticaProjectTaskSyncRun", page)
+        self.assertIn("getAcumaticaProjectTaskSyncRun", page)
         self.assertIn("Synchroniser les tâches des projets actifs", page)
+        self.assertIn("Synchronisation en cours…", page)
+        self.assertIn("projets traités", page)
         self.assertIn(
             '"/api/v1/integrations/acumatica/projects/tasks/sync"',
             api,
@@ -140,6 +144,9 @@ class ReactProjectsContractTests(unittest.TestCase):
         self.assertIn("requête(s) ERP", page)
         self.assertIn("duration_ms", page)
         self.assertIn("source_requests: number | null", api)
+        self.assertIn("projects_processed: number", api)
+        self.assertIn("COMPLETED_WITH_ERRORS", api)
+        self.assertIn("/api/v1/integrations/acumatica/projects/tasks/sync/current", api)
         self.assertNotIn("/oDATA/RP_ProjectTasks", page)
         self.assertNotIn("RESOURCEPLANNER_ACUMATICA_PASSWORD", page)
 
