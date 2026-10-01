@@ -16,7 +16,10 @@ from ...application.repository_ports import (
     PlanningMutationVersionPort,
     SegmentRepositoryPort,
 )
-from ...domain.availability_rules import availability_hours_for_day
+from ...domain.availability_rules import (
+    OutsideStandardHoursDecision,
+    outside_standard_hours_decision_for_day,
+)
 from ...domain.planning_engine import MISSING_ALLOCATION_TYPE
 from ...domain.manual_overallocation import (
     INCREASE_PLANNED,
@@ -302,15 +305,23 @@ def evaluate_projected_manual_state(
         projected_locked_hours=float(projected_locked_hours),
     )
     snapshot = SqlPlanningReadRepository(session).capture()
-    available_hours = float(
-        availability_hours_for_day(snapshot.availability, resource.name, day)
+    availability = outside_standard_hours_decision_for_day(
+        snapshot.availability,
+        resource.name,
+        day,
+        outside_standard_hours=outside_standard_hours,
     )
-    if available_hours <= 0 and not outside_standard_hours:
+    if not availability.allowed:
+        if availability.override_required:
+            raise ValueError(
+                "La ressource n'est pas disponible selon son horaire standard cette journée. "
+                "Autorise explicitement le quart hors horaire pour continuer."
+            )
         raise ValueError(
-            "La ressource n'est pas disponible selon son horaire standard cette journée. "
-            "Autorise explicitement le quart hors horaire pour continuer."
+            "La ressource n'est pas disponible cette journée"
+            f" ({availability.state.reason or 'indisponibilité non contournable'})."
         )
-    return day, impact, available_hours
+    return day, impact, float(availability.state.hours)
 
 
 def validate_projected_manual_state(
@@ -391,13 +402,21 @@ def validate_projected_manual_state(
         )
 
     snapshot = SqlPlanningReadRepository(session).capture()
-    if (
-        availability_hours_for_day(snapshot.availability, resource.name, day) <= 0
-        and not outside_standard_hours
-    ):
+    availability = outside_standard_hours_decision_for_day(
+        snapshot.availability,
+        resource.name,
+        day,
+        outside_standard_hours=outside_standard_hours,
+    )
+    if not availability.allowed:
+        if availability.override_required:
+            raise ValueError(
+                "La ressource n'est pas disponible selon son horaire standard cette journée. "
+                "Autorise explicitement le quart hors horaire pour continuer."
+            )
         raise ValueError(
-            "La ressource n'est pas disponible selon son horaire standard cette journée. "
-            "Autorise explicitement le quart hors horaire pour continuer."
+            "La ressource n'est pas disponible cette journée"
+            f" ({availability.state.reason or 'indisponibilité non contournable'})."
         )
     return day, impact
 
@@ -438,7 +457,7 @@ class SqlOverallocationAllocationCommandAdapter(SqlAllocationCommandAdapter):
         outside_standard_hours: bool,
         *,
         exclude_shift_id: str | None = None,
-    ) -> tuple[date, Decimal]:
+    ) -> tuple[date, Decimal, OutsideStandardHoursDecision]:
         hours = _decimal(hours_value)
         if hours <= 0:
             raise ValueError("Les heures doivent être supérieures à zéro.")
@@ -475,7 +494,14 @@ class SqlOverallocationAllocationCommandAdapter(SqlAllocationCommandAdapter):
             overallocation_policy=self._active_policy,
             authorization=self._authorization,
         )
-        return day, hours
+        snapshot = SqlPlanningReadRepository(self._overallocation_session).capture()
+        availability = outside_standard_hours_decision_for_day(
+            snapshot.availability,
+            resource.name,
+            day,
+            outside_standard_hours=outside_standard_hours,
+        )
+        return day, hours, availability
 
     def create_manual(
         self,
@@ -699,6 +725,35 @@ class OverallocationAuditedAllocationCommandAdapter(AuditedAllocationCommandAdap
             before_snapshot,
             before_metrics,
             policy=normalize_overallocation_policy(overallocation_policy),
+        )
+
+    def move_manual(
+        self,
+        allocation_id: str,
+        technician: str,
+        day_value: Any,
+        outside_standard_hours: bool = False,
+    ) -> None:
+        previous = self._journal.shift_snapshot(allocation_id)
+        self._delegate.move_manual(
+            allocation_id,
+            technician,
+            day_value,
+            outside_standard_hours,
+        )
+        current = self._journal.shift_snapshot(allocation_id)
+        if previous is None or current is None:
+            return
+        entity_id, entity_reference, parent, before = previous
+        _, _, _, after = current
+        self._journal.append(
+            entity_type=ENTITY_SHIFT,
+            entity_id=entity_id,
+            entity_reference=entity_reference,
+            parent_reference=parent,
+            action="Déplacement quart",
+            before=before,
+            after=after,
         )
 
     def release_manual(self, allocation_id: str) -> None:

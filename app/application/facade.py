@@ -411,7 +411,7 @@ class ApplicationFacade:
         self,
         command: ManualAllocationMoveCommand,
     ) -> AllocationMutationResult:
-        self._acquire_planning_version()
+        self._acquire_planning_version(command.expected_planning_version)
         self._allocations.move_manual_command(command)
         return AllocationMutationResult(_identifier(command.allocation_id), action="moved")
 

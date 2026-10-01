@@ -13,7 +13,10 @@ from ...application.command_ports import (
     PlanningCommandPort,
 )
 from ...application.repository_ports import PlanningMutationVersionPort
-from ...domain.availability_rules import availability_hours_for_day
+from ...domain.availability_rules import (
+    OutsideStandardHoursDecision,
+    outside_standard_hours_decision_for_day,
+)
 from ...domain.confirmation import CONFIRMATION_CONFIRMED, normalize_confirmation
 from ...domain.planning_engine import build_allocation_plan
 from ...domain.planning_projection import project_planning_snapshot
@@ -250,7 +253,7 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
         outside_standard_hours: bool,
         *,
         exclude_shift_id: str | None = None,
-    ) -> tuple[date, Decimal]:
+    ) -> tuple[date, Decimal, OutsideStandardHoursDecision]:
         day = date_from_value(day_value)
         if day is None:
             raise ValueError("La date du quart est requise.")
@@ -273,15 +276,23 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             )
 
         snapshot = SqlPlanningReadRepository(self._session).capture()
-        if (
-            availability_hours_for_day(snapshot.availability, resource.name, day) <= 0
-            and not outside_standard_hours
-        ):
+        availability = outside_standard_hours_decision_for_day(
+            snapshot.availability,
+            resource.name,
+            day,
+            outside_standard_hours=outside_standard_hours,
+        )
+        if not availability.allowed:
+            if availability.override_required:
+                raise ValueError(
+                    "La ressource n'est pas disponible selon son horaire standard cette journée. "
+                    "Autorise explicitement le quart hors horaire pour continuer."
+                )
             raise ValueError(
-                "La ressource n'est pas disponible selon son horaire standard cette journée. "
-                "Autorise explicitement le quart hors horaire pour continuer."
+                "La ressource n'est pas disponible cette journée"
+                f" ({availability.state.reason or 'indisponibilité non contournable'})."
             )
-        return day, hours
+        return day, hours, availability
 
     def create_manual(
         self,
@@ -296,7 +307,7 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
         self._versioning.acquire()
         requirement = self._requirement(segment_id)
         resource = self._resource(technician)
-        day, hours = self._validate_manual(
+        day, hours, _availability = self._validate_manual(
             requirement,
             resource,
             day_value,
@@ -342,7 +353,7 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             raise KeyError(f"Allocation {allocation_id} introuvable")
         requirement = self._requirement(shift.resource_requirement_id)
         resource = self._resource(technician)
-        day, hours = self._validate_manual(
+        day, hours, _availability = self._validate_manual(
             requirement,
             resource,
             day_value,
@@ -372,6 +383,7 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
         allocation_id: str,
         technician: str,
         day_value: Any,
+        outside_standard_hours: bool = False,
     ) -> None:
         self._versioning.acquire()
         shift = self._shift(allocation_id)
@@ -384,12 +396,12 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             raise ValueError("La date du quart est requise.")
         if requested_day < requirement.start_date or requested_day > requirement.end_date:
             raise ValueError("Le quart déplacé doit demeurer dans la fenêtre du segment.")
-        day, _ = self._validate_manual(
+        day, _, availability = self._validate_manual(
             requirement,
             resource,
             requested_day,
             shift.hours,
-            bool(shift.outside_standard_hours),
+            bool(outside_standard_hours),
             exclude_shift_id=shift.id,
         )
 
@@ -398,6 +410,7 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
         shift.allocation_type = requirement.planning_type
         shift.source = "MANUAL"
         shift.locked = True
+        shift.outside_standard_hours = availability.override_applied
         self._session.flush()
         self._planning.rebuild()
 

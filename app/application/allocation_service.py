@@ -173,7 +173,7 @@ class AllocationService:
         )
         day = self._day(command.day)
         call_application_port(
-            lambda: self._commands.move_manual(identifier, tech, day),
+            lambda: self._commands.move_manual(identifier, tech, day, command.outside_standard_hours),
             code_prefix="allocation_move",
             context={"allocation_id": identifier, "technician": tech, "day": day.isoformat()},
         )

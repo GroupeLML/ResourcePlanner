@@ -5,9 +5,11 @@ from datetime import date
 
 from app.domain.availability_rules import (
     availability_hours_for_day,
+    availability_state_for_day,
     has_standard_schedule,
     has_standard_schedule_in_window,
     outside_schedule_eligible_for_day,
+    outside_standard_hours_decision_for_day,
 )
 
 
@@ -134,6 +136,116 @@ class AvailabilityRulesTests(unittest.TestCase):
         self.assertEqual(availability_hours_for_day(rows, "R2", MONDAY), 8)
         self.assertFalse(outside_schedule_eligible_for_day(rows, "R1", MONDAY))
         self.assertTrue(outside_schedule_eligible_for_day(rows, "R2", MONDAY))
+
+    def test_standard_schedule_is_allowed_without_override(self) -> None:
+        decision = outside_standard_hours_decision_for_day(
+            [standard()],
+            "R1",
+            MONDAY,
+            outside_standard_hours=False,
+        )
+        self.assertTrue(decision.allowed)
+        self.assertFalse(decision.override_eligible)
+        self.assertFalse(decision.override_applied)
+        self.assertEqual(decision.state.hours, 8)
+
+    def test_outside_standard_schedule_requires_explicit_override(self) -> None:
+        blocked = outside_standard_hours_decision_for_day(
+            [standard()],
+            "R1",
+            SATURDAY,
+            outside_standard_hours=False,
+        )
+        allowed = outside_standard_hours_decision_for_day(
+            [standard()],
+            "R1",
+            SATURDAY,
+            outside_standard_hours=True,
+        )
+        self.assertEqual(blocked.state.reason, "Hors horaire standard")
+        self.assertTrue(blocked.override_required)
+        self.assertFalse(blocked.allowed)
+        self.assertTrue(allowed.allowed)
+        self.assertTrue(allowed.override_applied)
+
+    def test_holiday_requires_explicit_override(self) -> None:
+        rows = [
+            standard(),
+            {
+                "Type": "Jour férié",
+                "DateDebut": TUESDAY,
+                "DateFin": TUESDAY,
+                "Actif": "Oui",
+            },
+        ]
+        blocked = outside_standard_hours_decision_for_day(
+            rows,
+            "R1",
+            TUESDAY,
+            outside_standard_hours=False,
+        )
+        allowed = outside_standard_hours_decision_for_day(
+            rows,
+            "R1",
+            TUESDAY,
+            outside_standard_hours=True,
+        )
+        self.assertEqual(blocked.state.reason, "Jour férié")
+        self.assertTrue(blocked.override_required)
+        self.assertFalse(blocked.allowed)
+        self.assertTrue(allowed.allowed)
+        self.assertTrue(allowed.override_applied)
+
+    def test_vacation_is_never_overridable(self) -> None:
+        rows = [
+            standard(),
+            {
+                "Technicien": "R1",
+                "Type": "Vacances",
+                "DateDebut": MONDAY,
+                "DateFin": MONDAY,
+                "Actif": "Oui",
+            },
+        ]
+        for explicit_override in (False, True):
+            decision = outside_standard_hours_decision_for_day(
+                rows,
+                "R1",
+                MONDAY,
+                outside_standard_hours=explicit_override,
+            )
+            self.assertEqual(decision.state.reason, "Vacances")
+            self.assertFalse(decision.override_eligible)
+            self.assertFalse(decision.allowed)
+
+    def test_missing_standard_schedule_is_never_overridable(self) -> None:
+        for explicit_override in (False, True):
+            decision = outside_standard_hours_decision_for_day(
+                [],
+                "R1",
+                MONDAY,
+                outside_standard_hours=explicit_override,
+            )
+            self.assertEqual(decision.state.reason, "Aucun horaire standard")
+            self.assertFalse(decision.override_eligible)
+            self.assertFalse(decision.allowed)
+
+    def test_invalid_standard_schedule_is_never_overridable(self) -> None:
+        rows = [standard(start=None, end=None)]
+        self.assertEqual(
+            availability_state_for_day(rows, "R1", MONDAY).reason,
+            "Horaire standard invalide",
+        )
+        for explicit_override in (False, True):
+            decision = outside_standard_hours_decision_for_day(
+                rows,
+                "R1",
+                MONDAY,
+                outside_standard_hours=explicit_override,
+            )
+            self.assertEqual(decision.state.reason, "Horaire standard invalide")
+            self.assertFalse(decision.override_eligible)
+            self.assertFalse(decision.allowed)
 
     def test_inactive_exception_is_ignored(self) -> None:
         rows = [
