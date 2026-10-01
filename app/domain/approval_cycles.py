@@ -28,10 +28,11 @@ class ApprovalSubjectRoutingEntry:
     approval_scope_ids: tuple[str, ...]
     source_kinds: tuple[str, ...]
     proposed_resource_id: str | None = None
+    proposed_asset_id: str | None = None
 
     def canonical_payload(self) -> dict[str, object]:
         sources = tuple(sorted({str(value) for value in self.source_kinds if str(value)}))
-        return {
+        payload: dict[str, object] = {
             "request_line_id": str(self.request_line_id),
             "task_catalog_item_id": (
                 str(self.task_catalog_item_id)
@@ -49,6 +50,15 @@ class ApprovalSubjectRoutingEntry:
                 else None
             ),
         }
+        # ASSET_TYPE is emitted only by new #534 cycles. Omitting this key for older
+        # cycles preserves their historical fingerprint instead of forcing a backfill.
+        if "ASSET_TYPE" in sources:
+            payload["proposed_asset_id"] = (
+                str(self.proposed_asset_id)
+                if self.proposed_asset_id is not None
+                else None
+            )
+        return payload
 
 
 def _canonical_authorization_entry(raw: Mapping[str, object]) -> dict[str, object]:
