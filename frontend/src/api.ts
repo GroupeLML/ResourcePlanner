@@ -130,6 +130,7 @@ export type TaskCatalogItemReadModel = {
   expenses_enabled: boolean | null;
   operational_responsible_contact_id: string | null;
   coordinator_contact_id: string | null;
+  resource_class_code: string | null;
 };
 
 export type CompetencyReadModel = {
@@ -166,19 +167,25 @@ export type WorkPackageReadModel = {
   task_catalog_item_id: string | null;
   task_code: string | null;
   task_label: string | null;
+  resource_class_code: string | null;
+  resource_class_label: string | null;
+  resource_class_active: boolean | null;
+  task_resource_class_code: string | null;
+  resource_class_diagnostic: string | null;
   version: number;
 };
 
 export type WorkPackageWrite = {
   project_number: string;
   task_catalog_item_id: string | null;
-  code: string | null;
+  code?: string | null;
   name: string;
   description: string | null;
   start_date: string | null;
   end_date: string | null;
   planned_hours: number | null;
   status: string;
+  resource_class_code?: string | null;
 };
 
 export type WorkPackageMutationResult = {
@@ -207,6 +214,11 @@ export type MediumTermBudgetWorkPackageReadModel = {
   weekly_load_origin: "AUTO" | "MANUAL" | null;
   weekly_loads: MediumTermWeeklyLoadReadModel[];
   weekly_load_diagnostic: string | null;
+  resource_class_code: string | null;
+  resource_class_label: string | null;
+  resource_class_active: boolean | null;
+  task_resource_class_code: string | null;
+  resource_class_diagnostic: string | null;
 };
 
 export type MediumTermBudgetTaskReadModel = {
