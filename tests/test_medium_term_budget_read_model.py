@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from decimal import Decimal
 from functools import partial
 from tempfile import TemporaryDirectory
@@ -11,6 +12,7 @@ from app.infrastructure.sql import (
     Project,
     ResourceClassConfig,
     TaskCatalogEntry,
+    TaskCatalogProjectSyncState,
     WorkPackage,
 )
 from app.server import create_api_app
@@ -43,6 +45,16 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
             ]
         )
         session.flush()
+        session.add(
+            TaskCatalogProjectSyncState(
+                project_number="P-1",
+                last_attempt_at=datetime(2026, 10, 1, 13, 42, tzinfo=timezone.utc),
+                last_success_at=datetime(2026, 10, 1, 13, 42, tzinfo=timezone.utc),
+                source_rows=6,
+                task_count=6,
+                rejected_rows=0,
+            )
+        )
         session.add_all(
             [
                 TaskCatalogEntry(
@@ -54,6 +66,8 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
                     erp_task_id="ERP-216",
                     account_group=" DEPMO ",
                     workforce_eligible=True,
+                    budget_amount_cad=Decimal("50000.00"),
+                    budget_actual_cad=Decimal("31000.00"),
                     budget_hours=Decimal("240"),
                     resource_class_code="PROGRAMMEUR",
                 ),
@@ -66,6 +80,8 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
                     erp_task_id="ERP-217",
                     account_group="DEPMO",
                     workforce_eligible=True,
+                    budget_amount_cad=Decimal("50000.00"),
+                    budget_actual_cad=Decimal("52000.00"),
                     budget_hours=Decimal("80"),
                     resource_class_code="PROGRAMMEUR",
                 ),
@@ -78,6 +94,8 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
                     erp_task_id="ERP-218",
                     account_group="DEPMO",
                     workforce_eligible=True,
+                    budget_amount_cad=None,
+                    budget_actual_cad=Decimal("10000.00"),
                     budget_hours=None,
                     budget_diagnostic="AVERAGE_HOURLY_COST_UNAVAILABLE",
                 ),
@@ -253,17 +271,44 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
         self.assertEqual(payload["project_id"], "P1")
         self.assertEqual(payload["project_number"], "P-1")
         self.assertEqual(payload["project_name"], "Projet 1")
+        self.assertIsNone(payload["last_approved_time_date"])
+        self.assertEqual(payload["cutoff_status"], "UNAVAILABLE")
+        self.assertIsNone(payload["cutoff_source"])
+        self.assertEqual(
+            payload["cutoff_diagnostic"],
+            "APPROVED_TIME_CUTOFF_UNAVAILABLE",
+        )
+        self.assertTrue(
+            payload["erp_budget_last_success_at"].startswith("2026-10-01T13:42:00")
+        )
         self.assertEqual(
             {task["task_code"] for task in payload["tasks"]},
             {"216", "217", "218", "219", "220", "221"},
         )
 
         programming = self._task(payload, "216")
+        self.assertEqual(
+            Decimal(str(programming["budget_amount_cad"])),
+            Decimal("50000"),
+        )
+        self.assertEqual(
+            Decimal(str(programming["budget_actual_cad"])),
+            Decimal("31000"),
+        )
+        self.assertEqual(
+            Decimal(str(programming["remaining_budget_cad"])),
+            Decimal("19000"),
+        )
+        self.assertIsNone(programming["financial_diagnostic"])
         self.assertEqual(Decimal(str(programming["budget_hours"])), Decimal("240"))
         self.assertEqual(Decimal(str(programming["planned_wp_hours"])), Decimal("200"))
         self.assertEqual(
             Decimal(str(programming["remaining_budget_hours"])),
             Decimal("40"),
+        )
+        self.assertNotEqual(
+            Decimal(str(programming["remaining_budget_cad"])),
+            Decimal(str(programming["remaining_budget_hours"])),
         )
         self.assertEqual(programming["diagnostic_state"], "PARTIALLY_COVERED")
         self.assertEqual(programming["associated_work_package_count"], 2)
@@ -287,6 +332,10 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
         )
 
         over = self._task(payload, "217")
+        self.assertEqual(
+            Decimal(str(over["remaining_budget_cad"])),
+            Decimal("-2000"),
+        )
         self.assertEqual(Decimal(str(over["planned_wp_hours"])), Decimal("100"))
         self.assertEqual(Decimal(str(over["remaining_budget_hours"])), Decimal("-20"))
         self.assertEqual(over["diagnostic_state"], "OVERALLOCATED")
@@ -310,6 +359,11 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
         )
 
         unavailable = self._task(payload, "218")
+        self.assertIsNone(unavailable["remaining_budget_cad"])
+        self.assertEqual(
+            unavailable["financial_diagnostic"],
+            "ERP_FINANCIAL_BUDGET_INCOMPLETE",
+        )
         self.assertIsNone(unavailable["budget_hours"])
         self.assertIsNone(unavailable["remaining_budget_hours"])
         self.assertEqual(unavailable["diagnostic_state"], "BUDGET_UNAVAILABLE")
@@ -374,6 +428,8 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
         self.assertEqual(payload["project_id"], "P2")
         self.assertEqual(len(payload["tasks"]), 1)
         task = payload["tasks"][0]
+        self.assertIsNone(payload["erp_budget_last_success_at"])
+        self.assertIsNone(payload["last_approved_time_date"])
         self.assertEqual(task["task_catalog_item_id"], "TASK-P2-216")
         self.assertEqual(Decimal(str(task["planned_wp_hours"])), Decimal("40"))
         self.assertEqual(Decimal(str(task["remaining_budget_hours"])), Decimal("60"))
