@@ -42,7 +42,12 @@ test("besoin simple conserve la classe canonique et expose Soumettre immédiatem
     await chooseCombobox(editor, "Projet", "251", "P-251");
     await chooseCombobox(editor, "Tâche ERP", "autom", "210 — AUTOMATISATION E2E");
 
-    const resourceClass = combobox(editor, "Classe de ressource");
+    const resourceClass = await chooseCombobox(
+      editor,
+      "Classe de ressource",
+      "prog",
+      "PROGRAMMEUR",
+    );
     await expect(resourceClass).toHaveAttribute("data-combobox-value", "PROGRAMMEUR");
     await expect(resourceClass).toHaveValue(/PROGRAMMEUR/);
 
@@ -74,8 +79,12 @@ test("besoin simple conserve la classe canonique et expose Soumettre immédiatem
     );
 
     const card = page.locator(".demand-card").filter({ hasText: demandNumber }).first();
-    await expect(card.locator(".demand-card-quick-actions").getByRole("button", { name: "Soumettre" })).toBeVisible();
-    await card.locator(".demand-card-quick-actions").getByRole("button", { name: "Soumettre" }).click();
+    const cardSubmit = card.locator(".demand-card-quick-actions").getByRole(
+      "button",
+      { name: `Soumettre — ${demandNumber}`, exact: true },
+    );
+    await expect(cardSubmit).toBeVisible();
+    await cardSubmit.click();
 
     const primary = page.getByTestId("primary-demand-actions");
     await expect(primary.getByRole("button", { name: "Soumettre" })).toBeVisible();
