@@ -72,6 +72,11 @@ class FakeRepository:
         wanted = set(user_ids)
         return tuple(row for row in self.users if row.app_user_id in wanted)
 
+    def list_actor_approvable_demand_numbers(self, demand_numbers, *, current_user_id):
+        if current_user_id != "U1":
+            return ()
+        return tuple(number for number in demand_numbers if number == "DMO-276")
+
 
 def make_cycle(state: str = APPROVAL_CYCLE_STATE_OPEN) -> ApprovalCycleRecord:
     return ApprovalCycleRecord(
@@ -110,6 +115,26 @@ def make_cycle(state: str = APPROVAL_CYCLE_STATE_OPEN) -> ApprovalCycleRecord:
 
 
 class ApprovalProgressTests(unittest.TestCase):
+    def test_batch_actor_projection_requires_permission_and_preserves_repository_result(self) -> None:
+        service = ApprovalProgressService(FakeCycles(make_cycle()), FakeRepository())
+
+        self.assertEqual(
+            service.actor_approvable_demand_numbers(
+                ("DMO-276", "DMO-OTHER"),
+                current_user_id="U1",
+                permissions=(PERMISSION_APPROVE_DEMANDS,),
+            ),
+            ("DMO-276",),
+        )
+        self.assertEqual(
+            service.actor_approvable_demand_numbers(
+                ("DMO-276",),
+                current_user_id="U1",
+                permissions=(),
+            ),
+            (),
+        )
+
     def test_projection_exposes_quorum_decisions_and_my_remaining_lines(self) -> None:
         row = ApprovalProgressService(
             FakeCycles(make_cycle()),

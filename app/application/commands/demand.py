@@ -95,6 +95,7 @@ class DemandCreateCommand:
     location: str = ""
     resource_count: int = 1
     required_competencies: str | None = None
+    required_resource_class: str | None = None
     estimated_hours: float | None = None
     estimated_days: float | None = None
     proposed_technician: str | None = None
@@ -135,6 +136,8 @@ class DemandCreateCommand:
                 mixed.append("resource_count")
             if self.required_competencies is not None:
                 mixed.append("required_competencies")
+            if self.required_resource_class is not None:
+                mixed.append("required_resource_class")
             if self.estimated_hours is not None:
                 mixed.append("estimated_hours")
             if self.estimated_days is not None:
@@ -227,6 +230,7 @@ class DemandCreateCommand:
             )
             or 1,
             required_competencies=optional_text(values.get("CompetencesRequises")),
+            required_resource_class=optional_text(values.get("RequiredResourceClass")),
             estimated_hours=float_value(
                 values.get("TempsEstimeHeures"),
                 field="demand_estimated_hours",
@@ -274,6 +278,7 @@ class DemandCreateCommand:
             "Lieu": text(self.location),
             "NombreRessources": int(self.resource_count),
             "CompetencesRequises": self.required_competencies,
+            "RequiredResourceClass": optional_text(self.required_resource_class),
             "TempsEstimeHeures": resolved_hours,
             "TempsEstimeJours": self.estimated_days,
             "TechnicienPropose": self.proposed_technician,
@@ -309,6 +314,7 @@ class DemandUpdateCommand:
     location: str | None | UnsetType = UNSET
     resource_count: int | None | UnsetType = UNSET
     required_competencies: str | None | UnsetType = UNSET
+    required_resource_class: str | None | UnsetType = UNSET
     estimated_hours: float | None | UnsetType = UNSET
     estimated_days: float | None | UnsetType = UNSET
     proposed_technician: str | None | UnsetType = UNSET
@@ -343,6 +349,7 @@ class DemandUpdateCommand:
                 "desired_end": self.desired_end,
                 "resource_count": self.resource_count,
                 "required_competencies": self.required_competencies,
+                "required_resource_class": self.required_resource_class,
                 "estimated_hours": self.estimated_hours,
                 "estimated_days": self.estimated_days,
                 "proposed_technician": self.proposed_technician,
@@ -393,6 +400,7 @@ class DemandUpdateCommand:
             "Lieu",
             "NombreRessources",
             "CompetencesRequises",
+            "RequiredResourceClass",
             "TempsEstimeHeures",
             "TempsEstimeJours",
             "TechnicienPropose",
@@ -448,6 +456,7 @@ class DemandUpdateCommand:
                 else UNSET
             ),
             required_competencies=present("CompetencesRequises", optional_text),
+            required_resource_class=present("RequiredResourceClass", optional_text),
             estimated_hours=(
                 float_value(
                     updates["TempsEstimeHeures"],
@@ -489,6 +498,7 @@ class DemandUpdateCommand:
             "Lieu": self.location,
             "NombreRessources": self.resource_count,
             "CompetencesRequises": self.required_competencies,
+            "RequiredResourceClass": self.required_resource_class,
             "TempsEstimeHeures": self.estimated_hours,
             "TempsEstimeJours": self.estimated_days,
             "TechnicienPropose": self.proposed_technician,

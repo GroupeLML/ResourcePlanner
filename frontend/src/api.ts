@@ -510,6 +510,7 @@ export type DemandReadModel = {
   cancellation_resolved_at?: string | null;
   cancellation_resolution_comment?: string | null;
   cancellation_policy?: DemandCancellationPolicyReadModel | null;
+  available_quick_actions?: Array<"submit" | "approve" | "cancel" | "request-cancellation">;
   project_number: string | null;
   project_name: string | null;
   client: string | null;
@@ -1176,6 +1177,7 @@ export type DemandWrite = {
   resource_count?: number;
   required_competencies?: string | null;
   required_competency_ids?: string[];
+  required_resource_class?: string | null;
   estimated_hours?: number | null;
   estimated_days?: number | null;
   proposed_technician?: string | null;

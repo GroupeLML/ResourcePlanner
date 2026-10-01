@@ -74,6 +74,13 @@ class ApprovalProgressRepositoryPort(Protocol):
         user_ids: Sequence[str],
     ) -> tuple[ApprovalUserSummaryRecord, ...]: ...
 
+    def list_actor_approvable_demand_numbers(
+        self,
+        demand_numbers: Sequence[str],
+        *,
+        current_user_id: str,
+    ) -> tuple[str, ...]: ...
+
 
 class ApprovalProgressService:
     """Read-only #276D projection over the immutable approval-cycle snapshot."""
@@ -85,6 +92,21 @@ class ApprovalProgressService:
     ) -> None:
         self._cycles = cycles
         self._repository = repository
+
+    def actor_approvable_demand_numbers(
+        self,
+        demand_numbers: Sequence[str],
+        *,
+        current_user_id: str | None,
+        permissions: Sequence[str],
+    ) -> tuple[str, ...]:
+        actor_id = str(current_user_id or "").strip()
+        if not actor_id or PERMISSION_APPROVE_DEMANDS not in permissions:
+            return ()
+        return self._repository.list_actor_approvable_demand_numbers(
+            demand_numbers,
+            current_user_id=actor_id,
+        )
 
     def get(
         self,

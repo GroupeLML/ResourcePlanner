@@ -695,6 +695,8 @@ export default function DemandWorkflowPage({
   }
 
   const busy = pendingAction !== null;
+  const canQuickApprove = actions.includes("approve")
+    && (!currentApprovalCycle || actorApprovalLines.length > 0);
 
   return (
     <section className="demand-workflow-page">
@@ -786,17 +788,70 @@ export default function DemandWorkflowPage({
         <div className="workflow-detail-panel">
           {currentDemand ? (
             <>
-              {(actions.includes("submit") || actions.includes("cancel")) && (
+              {(actions.includes("submit")
+                || actions.includes("cancel")
+                || actions.includes("request-cancellation")
+                || canQuickApprove) && (
                 <div className="workflow-primary-actions" data-testid="primary-demand-actions">
                   {actions.includes("submit") && (
                     <button type="button" className="primary-button" disabled={busy || hasUnsavedChanges} onClick={() => runAction("submit")}>
                       {pendingAction === "submit" ? "Soumission…" : actionLabel("submit")}
                     </button>
                   )}
+                  {canQuickApprove && (
+                    <div className="workflow-primary-action-group">
+                      <label className="workflow-comment-field">
+                        <span>Commentaire d’approbation (optionnel)</span>
+                        <textarea
+                          rows={2}
+                          value={approvalComment}
+                          onChange={(event) => setApprovalComment(event.target.value)}
+                          disabled={busy}
+                          placeholder="Contexte ou décision d’approbation…"
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        className="primary-button"
+                        aria-label="Approuver"
+                        data-testid="approval-action"
+                        disabled={busy || hasUnsavedChanges}
+                        onClick={() => runAction("approve")}
+                      >
+                        {pendingAction === "approve"
+                          ? "Approbation…"
+                          : currentApprovalCycle
+                            ? `Approuver mes lignes (${actorApprovalLines.length})`
+                            : actionLabel("approve")}
+                      </button>
+                    </div>
+                  )}
                   {actions.includes("cancel") && (
                     <button type="button" className="secondary-button workflow-cancel" disabled={busy || hasUnsavedChanges} onClick={() => runAction("cancel")}>
                       {pendingAction === "cancel" ? "Annulation…" : actionLabel("cancel")}
                     </button>
+                  )}
+                  {actions.includes("request-cancellation") && (
+                    <div className="workflow-primary-action-group" data-testid="cancellation-request-panel">
+                      <label className="workflow-comment-field">
+                        <span>Raison de la demande d’annulation (requise)</span>
+                        <textarea
+                          rows={2}
+                          value={cancellationReason}
+                          onChange={(event) => setCancellationReason(event.target.value)}
+                          disabled={busy}
+                          placeholder="Pourquoi ce plan doit-il être annulé?"
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        className="secondary-button workflow-cancel"
+                        disabled={busy || hasUnsavedChanges || !cancellationReason.trim()}
+                        onClick={() => void runCancellationRequest()}
+                      >
+                        {pendingAction === "request-cancellation" ? "Envoi…" : actionLabel("request-cancellation")}
+                      </button>
+                    </div>
                   )}
                 </div>
               )}
@@ -995,19 +1050,6 @@ export default function DemandWorkflowPage({
                 </div>
               )}
 
-              {actions.includes("approve") && (!currentApprovalCycle || actorApprovalLines.length > 0) && (
-                <label className="workflow-comment-field">
-                  <span>Commentaire d’approbation (optionnel)</span>
-                  <textarea
-                    rows={3}
-                    value={approvalComment}
-                    onChange={(event) => setApprovalComment(event.target.value)}
-                    disabled={busy}
-                    placeholder="Contexte ou décision d’approbation…"
-                  />
-                </label>
-              )}
-
               {actions.includes("correction") && (
                 <label className="workflow-comment-field">
                   <span>Commentaire de correction (requis)</span>
@@ -1019,29 +1061,6 @@ export default function DemandWorkflowPage({
                     placeholder="Indiquer précisément ce qui doit être corrigé…"
                   />
                 </label>
-              )}
-
-              {actions.includes("request-cancellation") && (
-                <div className="workflow-cancellation-request" data-testid="cancellation-request-panel">
-                  <label className="workflow-comment-field">
-                    <span>Raison de la demande d’annulation (requise)</span>
-                    <textarea
-                      rows={3}
-                      value={cancellationReason}
-                      onChange={(event) => setCancellationReason(event.target.value)}
-                      disabled={busy}
-                      placeholder="Pourquoi ce plan doit-il être annulé?"
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    className="secondary-button workflow-cancel"
-                    disabled={busy || hasUnsavedChanges || !cancellationReason.trim()}
-                    onClick={() => void runCancellationRequest()}
-                  >
-                    {pendingAction === "request-cancellation" ? "Envoi…" : actionLabel("request-cancellation")}
-                  </button>
-                </div>
               )}
 
               {(actions.includes("accept-cancellation") || actions.includes("reject-cancellation")) && !cancellationReviewOpen && (
@@ -1178,30 +1197,16 @@ export default function DemandWorkflowPage({
                 </span>
               )}
 
-              <div className="workflow-actions">
-                {actions.length === 0 && <span className="workflow-terminal-state">Aucune transition usuelle disponible pour ce statut.</span>}
-                {actions.includes("approve") && (!currentApprovalCycle || actorApprovalLines.length > 0) && (
-                  <button
-                    type="button"
-                    className="primary-button"
-                    aria-label="Approuver"
-                    data-testid="approval-action"
-                    disabled={busy || hasUnsavedChanges}
-                    onClick={() => runAction("approve")}
-                  >
-                    {pendingAction === "approve"
-                      ? "Approbation…"
-                      : currentApprovalCycle
-                        ? `Approuver mes lignes (${actorApprovalLines.length})`
-                        : actionLabel("approve")}
-                  </button>
-                )}
-                {actions.includes("correction") && (
-                  <button type="button" className="secondary-button" disabled={busy || hasUnsavedChanges || !correctionComment.trim()} onClick={() => runAction("correction")}>
-                    {pendingAction === "correction" ? "Envoi…" : actionLabel("correction")}
-                  </button>
-                )}
-              </div>
+              {(actions.length === 0 || actions.includes("correction")) && (
+                <div className="workflow-actions">
+                  {actions.length === 0 && <span className="workflow-terminal-state">Aucune transition usuelle disponible pour ce statut.</span>}
+                  {actions.includes("correction") && (
+                    <button type="button" className="secondary-button" disabled={busy || hasUnsavedChanges || !correctionComment.trim()} onClick={() => runAction("correction")}>
+                      {pendingAction === "correction" ? "Envoi…" : actionLabel("correction")}
+                    </button>
+                  )}
+                </div>
+              )}
 
               <small className="workflow-authority-note">
                 Les actions affichées proviennent de la projection backend canonique; FastAPI demeure l’autorité pour accepter ou refuser chaque commande.

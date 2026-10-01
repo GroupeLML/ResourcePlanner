@@ -134,6 +134,21 @@
   margin-left: 0;
 }
 
+.workflow-primary-action-group {
+  display: grid;
+  gap: .5rem;
+  min-width: min(100%, 260px);
+  flex: 1 1 260px;
+}
+
+.workflow-primary-action-group .workflow-comment-field {
+  margin: 0;
+}
+
+.workflow-primary-action-group textarea {
+  min-height: 3.5rem;
+}
+
 .workflow-cancel {
   margin-left: auto;
 }

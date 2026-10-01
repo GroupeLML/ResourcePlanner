@@ -42,6 +42,13 @@ from ..application.coordinator_dashboard import (
     CoordinatorDashboardService,
 )
 from ..application.demand_cancellation import demand_cancellation_policy
+from ..application.demand_workflow_policy import (
+    ACTION_APPROVE,
+    ACTION_CANCEL,
+    ACTION_REQUEST_CANCELLATION,
+    ACTION_SUBMIT,
+    demand_workflow_state,
+)
 from ..application.query_models import PlanningHistoryReadModel
 from ..application.security import AuthPrincipal
 from ..application.user_view_context import (
@@ -260,6 +267,7 @@ def build_read_router(
         scope: ViewScope = Query(default=SCOPE_GLOBAL),
         queries: PlannerQueryPort = Depends(query_dependency),
         context_repository: Any = Depends(context_dependency),
+        approvals: ApprovalProgressService | None = Depends(approval_dependency),
     ) -> list[DemandReadModel]:
         project_ids, demand_ids = _demand_scope_context(
             request,
@@ -293,14 +301,45 @@ def build_read_router(
             )
             pairs = tuple((row, None) for row in rows)
         principal: AuthPrincipal = request.state.auth_principal
-        return [
-            _with_cancellation_policy(
+        approvable_numbers = set(
+            approvals.actor_approvable_demand_numbers(
+                tuple(row.number for row, _ in pairs),
+                current_user_id=principal.local_user_id,
+                permissions=principal.permissions,
+            )
+            if approvals is not None
+            else ()
+        )
+        quick_action_order = (
+            ACTION_SUBMIT,
+            ACTION_APPROVE,
+            ACTION_CANCEL,
+            ACTION_REQUEST_CANCELLATION,
+        )
+        projected: list[DemandReadModel] = []
+        for row, materialization in pairs:
+            workflow = demand_workflow_state(
                 row,
                 permissions=principal.permissions,
                 materialization=materialization,
             )
-            for row, materialization in pairs
-        ]
+            available = set(workflow.available_actions)
+            if row.number not in approvable_numbers:
+                available.discard(ACTION_APPROVE)
+            projected.append(
+                replace(
+                    row,
+                    cancellation_policy=(
+                        workflow.cancellation.to_dict()
+                        if workflow.cancellation is not None
+                        else None
+                    ),
+                    available_quick_actions=tuple(
+                        action for action in quick_action_order if action in available
+                    ),
+                )
+            )
+        return projected
 
     @router.get("/coordinator-dashboard")
     def coordinator_dashboard(

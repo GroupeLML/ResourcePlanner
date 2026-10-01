@@ -71,6 +71,26 @@ class _Sync:
 
 
 class DemandServiceTests(unittest.TestCase):
+    def test_simple_resource_class_update_preserves_unset_clear_and_replace_contract(self) -> None:
+        omitted = DemandUpdateCommand(number="DMO-535").to_repository_values()
+        cleared = DemandUpdateCommand(
+            number="DMO-535",
+            required_resource_class=None,
+        ).to_repository_values()
+        replaced = DemandUpdateCommand(
+            number="DMO-535",
+            required_resource_class="INSTALLATEUR_AUTOMATISATION",
+        ).to_repository_values()
+
+        self.assertNotIn("RequiredResourceClass", omitted)
+        self.assertIn("RequiredResourceClass", cleared)
+        self.assertIsNone(cleared["RequiredResourceClass"])
+        self.assertEqual(
+            replaced["RequiredResourceClass"],
+            "INSTALLATEUR_AUTOMATISATION",
+        )
+
+
     @staticmethod
     def _service(
         *,

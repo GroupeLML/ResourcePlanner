@@ -130,7 +130,9 @@ class ReactDemandsContractTests(unittest.TestCase):
             "const task = tasks.find((row) => taskIdentity(row) === value);",
             source,
         )
-        self.assertIn('setField("task_code", task?.code ?? "");', source)
+        self.assertIn("setForm((current) => ({", source)
+        self.assertIn('task_code: task?.code ?? ""', source)
+        self.assertIn("required_resource_class:", source)
 
     def test_multi_line_editor_groups_dates_and_keeps_compact_business_fields(self) -> None:
         editor = (ROOT / "frontend" / "src" / "DemandLinesEditor.tsx").read_text(

@@ -96,6 +96,7 @@ class DemandReadModel:
     cancellation_resolved_at: datetime | None = None
     cancellation_resolution_comment: str | None = None
     cancellation_policy: Mapping[str, Any] | None = None
+    available_quick_actions: tuple[str, ...] = ()
     project_number: str | None = None
     project_name: str | None = None
     client: str | None = None

@@ -533,6 +533,59 @@ class SqlApprovalCycleRepository:
             for row in rows
         )
 
+    def list_actor_approvable_demand_numbers(
+        self,
+        demand_numbers: Sequence[str],
+        *,
+        current_user_id: str,
+    ) -> tuple[str, ...]:
+        identifiers = tuple(
+            dict.fromkeys(_text(value) for value in demand_numbers if _text(value))
+        )
+        actor_id = _text(current_user_id)
+        if not identifiers or not actor_id:
+            return ()
+        actor = self._session.get(AppUser, actor_id)
+        if actor is None or not actor.active:
+            return ()
+
+        satisfied_requirement_ids = select(ApprovalDecision.requirement_id).where(
+            ApprovalDecision.decision == APPROVAL_DECISION_APPROVE
+        )
+        rows = self._session.execute(
+            select(
+                WorkforceRequest.legacy_demand_number,
+                WorkforceRequest.id,
+            )
+            .join(
+                RequestApprovalCycle,
+                RequestApprovalCycle.workforce_request_id == WorkforceRequest.id,
+            )
+            .join(
+                ApprovalRequirement,
+                ApprovalRequirement.approval_cycle_id == RequestApprovalCycle.id,
+            )
+            .join(
+                ApprovalRequirementApprover,
+                ApprovalRequirementApprover.requirement_id == ApprovalRequirement.id,
+            )
+            .where(
+                (
+                    WorkforceRequest.legacy_demand_number.in_(identifiers)
+                    | WorkforceRequest.id.in_(identifiers)
+                ),
+                WorkforceRequest.status == "Soumise",
+                RequestApprovalCycle.state == APPROVAL_CYCLE_STATE_OPEN,
+                ApprovalRequirementApprover.app_user_id == actor_id,
+                ~ApprovalRequirement.id.in_(satisfied_requirement_ids),
+            )
+            .distinct()
+        ).all()
+        return tuple(
+            _optional_text(number) or request_id
+            for number, request_id in rows
+        )
+
     def list_approval_users(
         self,
         user_ids: Sequence[str],
