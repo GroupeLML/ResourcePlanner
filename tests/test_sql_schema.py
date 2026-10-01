@@ -141,6 +141,11 @@ class SqlSchemaTests(unittest.TestCase):
 
         self.assertFalse(operational_states.budget_overrides_text.nullable)
         self.assertTrue(work_packages.task_catalog_item_id.nullable)
+        self.assertTrue(work_packages.resource_class_code.nullable)
+        self.assertEqual(
+            work_packages.resource_class_code.foreign_keys.pop().target_fullname,
+            "resource_class_configs.code",
+        )
         self.assertFalse(work_packages.version.nullable)
         self.assertFalse(work_package_audit.work_package_id.nullable)
         self.assertFalse(work_package_audit.actor_user_id.nullable)
