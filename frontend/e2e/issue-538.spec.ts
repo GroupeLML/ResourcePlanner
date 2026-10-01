@@ -1,4 +1,4 @@
-import { Browser, BrowserContext, Page, expect, test } from "@playwright/test";
+import { Browser, BrowserContext, Locator, Page, expect, test } from "@playwright/test";
 
 const BASE_URL = process.env.RESOURCEPLANNER_E2E_BASE_URL || "http://127.0.0.1:8765";
 
@@ -38,6 +38,15 @@ async function navigateMain(page: Page, label: string) {
   await page.locator(".main-nav").getByRole("button", { name: new RegExp(label, "i") }).click();
 }
 
+async function chooseCombobox(scope: Locator, label: string, query: string, optionName: string) {
+  const input = scope.getByRole("combobox", { name: label, exact: true });
+  await input.click();
+  await input.fill(query);
+  const listbox = scope.getByRole("listbox", { name: `${label} options`, exact: true });
+  await expect(listbox).toBeVisible();
+  await listbox.getByRole("option", { name: optionName, exact: false }).click();
+}
+
 test("Quick Shift depuis une cellule préremplit la ressource et accepte une date hors semaine", async ({ browser }) => {
   test.setTimeout(120_000);
   const targetWeekStart = addDays(startOfWeek(new Date()), 14);
@@ -65,8 +74,9 @@ test("Quick Shift depuis une cellule préremplit la ressource et accepte une dat
     let dialog = page.getByRole("dialog", { name: "Créer un Quick Shift" });
     await expect(dialog).toBeVisible();
     await expect(dialog.getByLabel("Technicien")).toHaveValue("Alice");
+    await expect(dialog.getByLabel("Technicien")).toHaveAttribute("data-combobox-value", "R-ALICE");
     await expect(dialog.getByLabel("Date")).toHaveValue(targetDay);
-    await dialog.getByLabel("Projet").selectOption("P-251");
+    await chooseCombobox(dialog, "Projet", "251", "P-251");
     await dialog.getByLabel("Heures").fill("1");
     await dialog.getByRole("button", { name: "Créer le Quick Shift" }).click();
 
@@ -79,8 +89,8 @@ test("Quick Shift depuis une cellule préremplit la ressource et accepte une dat
     await page.getByRole("button", { name: "+ Quick Shift", exact: true }).click();
     dialog = page.getByRole("dialog", { name: "Créer un Quick Shift" });
     await expect(dialog).toBeVisible();
-    await dialog.getByLabel("Projet").selectOption("P-251");
-    await dialog.getByLabel("Technicien").selectOption("Alice");
+    await chooseCombobox(dialog, "Projet", "251", "P-251");
+    await chooseCombobox(dialog, "Technicien", "lic", "Alice");
     await dialog.getByLabel("Date").fill(outsideDisplayedWeek);
     await dialog.getByLabel("Heures").fill("1");
     await dialog.getByRole("button", { name: "Créer le Quick Shift" }).click();
