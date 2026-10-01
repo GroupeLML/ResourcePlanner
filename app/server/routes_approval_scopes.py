@@ -43,6 +43,7 @@ def _scope_payload(row: ApprovalScopeRecord) -> dict[str, object]:
         "version": row.version,
         "approver_user_ids": list(row.approver_user_ids),
         "resource_class_codes": list(row.resource_class_codes),
+        "asset_type_ids": list(row.asset_type_ids),
         "task_catalog_item_ids": list(row.task_catalog_item_ids),
     }
 
@@ -153,6 +154,38 @@ def build_approval_scope_router(
             )
         )
 
+    @router.put("/{scope_id}/asset-types/{asset_type_id}")
+    def assign_asset_type(
+        scope_id: str,
+        asset_type_id: str,
+        body: ApprovalScopeAssociationRequest,
+        service: ApprovalScopeService = Depends(dependency),
+    ) -> dict[str, object]:
+        return _scope_payload(
+            service.set_asset_type(
+                scope_id,
+                asset_type_id,
+                assigned=True,
+                expected_version=body.expected_version,
+            )
+        )
+
+    @router.delete("/{scope_id}/asset-types/{asset_type_id}")
+    def remove_asset_type(
+        scope_id: str,
+        asset_type_id: str,
+        body: ApprovalScopeAssociationRequest,
+        service: ApprovalScopeService = Depends(dependency),
+    ) -> dict[str, object]:
+        return _scope_payload(
+            service.set_asset_type(
+                scope_id,
+                asset_type_id,
+                assigned=False,
+                expected_version=body.expected_version,
+            )
+        )
+
     @router.put("/{scope_id}/tasks/{task_id}")
     def assign_task(
         scope_id: str,
@@ -195,6 +228,13 @@ def build_approval_scope_router(
             "request_line_id": row.request_line_id,
             "task_catalog_item_id": row.task_catalog_item_id,
             "suggested_scope_code": row.suggested_scope_code,
+            "line_kind": row.line_kind,
+            "asset_type_id": row.asset_type_id,
+            "asset_type_code": row.asset_type_code,
+            "asset_type_label": row.asset_type_label,
+            "proposed_asset_id": row.proposed_asset_id,
+            "proposed_asset_code": row.proposed_asset_code,
+            "proposed_asset_label": row.proposed_asset_label,
             "approval_scope_id": row.resolution.approval_scope_id,
             "eligible_approvers": [
                 {

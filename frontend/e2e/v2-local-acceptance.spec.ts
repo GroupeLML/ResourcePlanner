@@ -1542,6 +1542,33 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   ).toHaveCount(0);
   await closeContext(catalogManager.context);
 
+  const approvalAdmin = await openAs(browser, "ADMIN");
+  const scopesResponse = await approvalAdmin.page.request.get("/api/v1/admin/approval-scopes");
+  expect(scopesResponse.ok()).toBeTruthy();
+  const scopes = await scopesResponse.json() as Array<{
+    id: string;
+    code: string;
+    active: boolean;
+    asset_type_ids: string[];
+  }>;
+  const assetApprovalScope = scopes.find(
+    (scope) => scope.active && scope.code === "AUTOMATION",
+  );
+  expect(assetApprovalScope).toBeTruthy();
+  await navigateMain(approvalAdmin.page, "Configuration");
+  const scopeCard = approvalAdmin.page.getByTestId(
+    `approval-scope-${assetApprovalScope?.code}`,
+  );
+  await expect(scopeCard.getByText("Types d’actifs couverts", { exact: true })).toBeVisible();
+  const assetTypeMapping = scopeCard.locator("label").filter({ hasText: "LIFT496" }).getByRole("checkbox");
+  await expect(assetTypeMapping).not.toBeChecked();
+  await assetTypeMapping.click();
+  await expect(assetTypeMapping).toBeChecked();
+  await expect(approvalAdmin.page.locator(".configuration-notice")).toContainText(
+    "Types d’actifs couverts",
+  );
+  await closeContext(approvalAdmin.context);
+
   const projectManager = await openAs(browser, "PROJECT_MANAGER");
   await navigateMain(projectManager.page, "Demandes");
   await projectManager.page.getByRole("button", { name: /Nouvelle demande/ }).click();

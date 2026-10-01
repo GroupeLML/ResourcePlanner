@@ -7,6 +7,8 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from ...application.approval_scopes import (
+    ApprovalAssetRecord,
+    ApprovalAssetTypeRecord,
     ApprovalRequestLineRecord,
     ApprovalResourceClassRecord,
     ApprovalScopeRecord,
@@ -19,9 +21,11 @@ from ...application.security import normalize_roles, permissions_for_roles
 from .approval_scope_models import (
     ApprovalScope,
     ApprovalScopeApprover,
+    AssetTypeApprovalScopeMapping,
     ResourceClassApprovalScopeMapping,
     TaskApprovalScopeMapping,
 )
+from .asset_models import Asset, AssetApprover, AssetType
 from .base import new_id
 from .identity_models import AppUser
 from .models import RequestLine, TaskCatalogEntry
@@ -56,6 +60,15 @@ class SqlApprovalScopeRepository(ApprovalScopeRepositoryPort):
                 )
             ).all()
         )
+        asset_types = tuple(
+            self._session.scalars(
+                select(AssetTypeApprovalScopeMapping.asset_type_id)
+                .where(
+                    AssetTypeApprovalScopeMapping.approval_scope_id == row.id
+                )
+                .order_by(AssetTypeApprovalScopeMapping.asset_type_id)
+            ).all()
+        )
         tasks = tuple(
             self._session.scalars(
                 select(TaskApprovalScopeMapping.task_catalog_item_id)
@@ -71,6 +84,7 @@ class SqlApprovalScopeRepository(ApprovalScopeRepositoryPort):
             version=int(row.version or 1),
             approver_user_ids=approvers,
             resource_class_codes=resource_classes,
+            asset_type_ids=asset_types,
             task_catalog_item_ids=tasks,
         )
 
@@ -267,6 +281,34 @@ class SqlApprovalScopeRepository(ApprovalScopeRepositoryPort):
         self._session.flush()
         return self._record(row)
 
+    def set_asset_type_scope(
+        self,
+        scope_id: str,
+        asset_type_id: str,
+        *,
+        assigned: bool,
+        expected_version: int,
+    ) -> ApprovalScopeRecord:
+        row = self._acquire_scope_version(scope_id, expected_version)
+        type_id = _text(asset_type_id)
+        if self._session.get(AssetType, type_id) is None:
+            raise KeyError(f"Type d'actif {type_id} introuvable")
+        existing = self._session.get(
+            AssetTypeApprovalScopeMapping,
+            (type_id, row.id),
+        )
+        if assigned and existing is None:
+            self._session.add(
+                AssetTypeApprovalScopeMapping(
+                    asset_type_id=type_id,
+                    approval_scope_id=row.id,
+                )
+            )
+        elif not assigned and existing is not None:
+            self._session.delete(existing)
+        self._session.flush()
+        return self._record(row)
+
     def get_request_line(
         self,
         line_id: str,
@@ -278,6 +320,9 @@ class SqlApprovalScopeRepository(ApprovalScopeRepositoryPort):
             id=row.id,
             active=bool(row.active),
             task_catalog_item_id=row.task_catalog_item_id,
+            kind=_text(row.kind) or "WORKFORCE",
+            asset_type_id=_text(row.asset_type_id) or None,
+            proposed_asset_id=_text(row.proposed_asset_id) or None,
             position=int(row.position or 0),
             erp_task_code=_text(row.erp_task_code) or None,
             erp_task_label=_text(row.erp_task_label) or None,
@@ -304,6 +349,32 @@ class SqlApprovalScopeRepository(ApprovalScopeRepositoryPort):
             return None
         return ApprovalResourceClassRecord(
             code=row.code,
+            active=bool(row.active),
+        )
+
+    def get_asset_type(
+        self,
+        asset_type_id: str,
+    ) -> ApprovalAssetTypeRecord | None:
+        row = self._session.get(AssetType, _text(asset_type_id))
+        if row is None:
+            return None
+        return ApprovalAssetTypeRecord(
+            id=row.id,
+            code=row.code,
+            label=row.label,
+            active=bool(row.active),
+        )
+
+    def get_asset(self, asset_id: str) -> ApprovalAssetRecord | None:
+        row = self._session.get(Asset, _text(asset_id))
+        if row is None:
+            return None
+        return ApprovalAssetRecord(
+            id=row.id,
+            code=row.code,
+            label=row.label,
+            asset_type_id=row.asset_type_id,
             active=bool(row.active),
         )
 
@@ -345,6 +416,25 @@ class SqlApprovalScopeRepository(ApprovalScopeRepositoryPort):
         ).all()
         return tuple(self._record(row) for row in rows)
 
+    def list_asset_type_scopes(
+        self,
+        asset_type_id: str,
+    ) -> tuple[ApprovalScopeRecord, ...]:
+        rows = self._session.scalars(
+            select(ApprovalScope)
+            .join(
+                AssetTypeApprovalScopeMapping,
+                AssetTypeApprovalScopeMapping.approval_scope_id
+                == ApprovalScope.id,
+            )
+            .where(
+                AssetTypeApprovalScopeMapping.asset_type_id
+                == _text(asset_type_id)
+            )
+            .order_by(ApprovalScope.code, ApprovalScope.id)
+        ).all()
+        return tuple(self._record(row) for row in rows)
+
     def list_scope_approver_ids(self, scope_id: str) -> tuple[str, ...]:
         return tuple(
             self._session.scalars(
@@ -354,6 +444,15 @@ class SqlApprovalScopeRepository(ApprovalScopeRepositoryPort):
                     == _text(scope_id)
                 )
                 .order_by(ApprovalScopeApprover.app_user_id)
+            ).all()
+        )
+
+    def list_asset_approver_ids(self, asset_id: str) -> tuple[str, ...]:
+        return tuple(
+            self._session.scalars(
+                select(AssetApprover.app_user_id)
+                .where(AssetApprover.asset_id == _text(asset_id))
+                .order_by(AssetApprover.app_user_id)
             ).all()
         )
 

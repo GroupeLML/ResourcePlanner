@@ -10,11 +10,13 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from ...application.errors import ApplicationConflictError, ApplicationNotFoundError, ApplicationValidationError
+from ...application.security import PERMISSION_APPROVE_DEMANDS, normalize_roles, permissions_for_roles
 from ...domain.reservable_assets import AssetOccupation, overlapping_asset_occupations
 from ...domain.approval_envelope import approval_envelope_from_snapshot_payload
 from .asset_models import (
     Asset,
     AssetAllocation,
+    AssetApprover,
     AssetRequirement,
     AssetType,
     AssetTypeCompetency,
@@ -28,6 +30,7 @@ from .asset_qualification import (
     eligible_operator_resources,
     evaluate_asset_qualification,
 )
+from .identity_models import AppUser
 from .models import Competency
 from .approval_revision_models import RequestApprovalReference, RequestApprovalRevision
 from .base import new_id
@@ -70,6 +73,70 @@ class SqlAssetService:
         self.session.add(row)
         self.session.flush()
         return row
+
+    def set_approver(
+        self,
+        *,
+        asset_id: str,
+        user_id: str,
+        assigned: bool,
+    ) -> dict:
+        asset = self.session.get(Asset, asset_id)
+        if asset is None:
+            raise ApplicationNotFoundError(
+                "Unité d'actif introuvable.",
+                code="asset_not_found",
+            )
+        existing = self.session.get(AssetApprover, (asset.id, user_id))
+        if assigned:
+            user = self.session.get(AppUser, user_id)
+            if user is None:
+                raise ApplicationNotFoundError(
+                    "Utilisateur RessourcePlanner introuvable.",
+                    code="asset_approver_user_not_found",
+                )
+            try:
+                roles = normalize_roles(
+                    tuple(str(value) for value in json.loads(user.roles_json or "[]"))
+                )
+            except (TypeError, ValueError, json.JSONDecodeError):
+                roles = ()
+            if (
+                not user.active
+                or PERMISSION_APPROVE_DEMANDS not in permissions_for_roles(roles)
+            ):
+                raise ApplicationValidationError(
+                    "Un approbateur d'actif doit être actif et posséder approve_demands.",
+                    code="asset_approver_not_admissible",
+                    context={"app_user_id": user_id},
+                )
+            if existing is None:
+                self.session.add(
+                    AssetApprover(asset_id=asset.id, app_user_id=user_id)
+                )
+        elif existing is not None:
+            self.session.delete(existing)
+
+        self.audit.append(
+            entity_type="ASSET",
+            entity_id=asset.id,
+            entity_reference=asset.code,
+            action="Approbateur spécifique",
+            before={"app_user_id": user_id, "assigned": existing is not None},
+            after={"app_user_id": user_id, "assigned": bool(assigned)},
+        )
+        self.session.flush()
+        approver_ids = tuple(
+            self.session.scalars(
+                select(AssetApprover.app_user_id)
+                .where(AssetApprover.asset_id == asset.id)
+                .order_by(AssetApprover.app_user_id)
+            ).all()
+        )
+        return {
+            "id": asset.id,
+            "approver_user_ids": list(approver_ids),
+        }
 
     def set_active(self, model: type[Asset] | type[AssetType], identifier: str, active: bool, expected_version: int) -> dict:
         self.version.acquire(expected_version)

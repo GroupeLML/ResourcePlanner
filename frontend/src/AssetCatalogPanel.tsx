@@ -13,6 +13,7 @@ import {
   getAssetPlanningState,
   removeAssetUnavailability,
   setAssetActive,
+  setAssetApprover,
   setAssetTypeActive,
   setAssetTypeQualification,
   updateAsset,
@@ -78,6 +79,7 @@ export default function AssetCatalogPanel({
 }) {
   const { can } = useAuth();
   const canManagePlanning = can("manage_planning");
+  const canManageResources = can("manage_resources");
   const [catalog, setCatalog] = useState<AssetCatalog | null>(null);
   const [planningState, setPlanningState] = useState<AssetPlanningState | null>(null);
   const [selectedTypeId, setSelectedTypeId] = useState<string | null>(null);
@@ -135,6 +137,12 @@ export default function AssetCatalogPanel({
     () => typeAssets.find((row) => row.id === selectedAssetId) ?? null,
     [typeAssets, selectedAssetId],
   );
+  const staleApproverIds = useMemo(() => {
+    if (!catalog || !selectedAsset) return [];
+    const candidates = new Set(catalog.approver_candidates.map((row) => row.id));
+    return selectedAsset.approver_user_ids.filter((id) => !candidates.has(id));
+  }, [catalog, selectedAsset]);
+
   const selectedUnavailability = useMemo(
     () => (planningState?.unavailability ?? [])
       .filter((row) => row.asset_id === selectedAssetId)
@@ -345,6 +353,24 @@ export default function AssetCatalogPanel({
       refresh();
     } catch (reason: unknown) {
       handleMutationFailure(reason, "Impossible de modifier l’état de l’unité.");
+    } finally {
+      setPending(null);
+    }
+  }
+
+  async function toggleAssetApprover(userId: string, assigned: boolean) {
+    if (!selectedAsset || pending || !canManageResources) return;
+    setPending("asset-approver");
+    setNotice(null);
+    try {
+      await setAssetApprover(selectedAsset.id, userId, assigned);
+      setNotice({
+        tone: "success",
+        text: assigned ? "Approbateur spécifique ajouté." : "Approbateur spécifique retiré.",
+      });
+      refresh();
+    } catch (reason: unknown) {
+      handleMutationFailure(reason, "Impossible de modifier les approbateurs de l’unité.");
     } finally {
       setPending(null);
     }
@@ -603,6 +629,50 @@ export default function AssetCatalogPanel({
                     </form>
                   )}
                 </div>
+
+                {!creatingAsset && selectedAsset && (
+                  <div className="asset-unavailability-section" data-testid="asset-approvers-editor">
+                    <div className="editor-heading">
+                      <div>
+                        <span className="eyebrow">Approbation</span>
+                        <h3>Approbateurs spécifiques de {selectedAsset.label}</h3>
+                        <small>Ces utilisateurs sont additifs au périmètre résolu depuis le type d’actif.</small>
+                      </div>
+                    </div>
+                    {!canManageResources && (
+                      <div className="subtle-status">La permission manage_resources est requise pour modifier les approbateurs.</div>
+                    )}
+                    <div className="approval-scope-approvers">
+                      {(catalog?.approver_candidates ?? []).map((user) => (
+                        <label key={user.id}>
+                          <input
+                            type="checkbox"
+                            checked={selectedAsset.approver_user_ids.includes(user.id)}
+                            disabled={Boolean(pending) || !canManageResources}
+                            onChange={(event) => void toggleAssetApprover(user.id, event.target.checked)}
+                          />
+                          {user.display_name}
+                          <small>{user.id}</small>
+                        </label>
+                      ))}
+                      {staleApproverIds.map((userId) => (
+                        <label key={userId}>
+                          <input
+                            type="checkbox"
+                            checked
+                            disabled={Boolean(pending) || !canManageResources}
+                            onChange={(event) => void toggleAssetApprover(userId, event.target.checked)}
+                          />
+                          {userId}
+                          <small>Association non admissible — retirer pour nettoyer le référentiel.</small>
+                        </label>
+                      ))}
+                      {(catalog?.approver_candidates.length ?? 0) === 0 && staleApproverIds.length === 0 && (
+                        <div className="empty-admin-state">Aucun AppUser actif avec approve_demands.</div>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 {!creatingAsset && selectedAsset && (
                   <div className="asset-unavailability-section">

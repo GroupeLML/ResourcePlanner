@@ -9,6 +9,7 @@ export type ApprovalScopeReadModel = {
   version: number;
   approver_user_ids: string[];
   resource_class_codes: string[];
+  asset_type_ids: string[];
   task_catalog_item_ids: string[];
 };
 
@@ -91,6 +92,21 @@ export function setApprovalScopeResourceClass(
 ) {
   return request<ApprovalScopeReadModel>(
     `/api/v1/admin/approval-scopes/${encodeURIComponent(scopeId)}/resource-classes/${encodeURIComponent(classCode)}`,
+    {
+      method: assigned ? "PUT" : "DELETE",
+      body: JSON.stringify({ expected_version: expectedVersion }),
+    },
+  );
+}
+
+export function setApprovalScopeAssetType(
+  scopeId: string,
+  assetTypeId: string,
+  assigned: boolean,
+  expectedVersion: number,
+) {
+  return request<ApprovalScopeReadModel>(
+    `/api/v1/admin/approval-scopes/${encodeURIComponent(scopeId)}/asset-types/${encodeURIComponent(assetTypeId)}`,
     {
       method: assigned ? "PUT" : "DELETE",
       body: JSON.stringify({ expected_version: expectedVersion }),

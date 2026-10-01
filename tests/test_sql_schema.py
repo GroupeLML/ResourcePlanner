@@ -24,6 +24,7 @@ EXPECTED_TABLES = {
     "approval_requirements",
     "approval_scopes",
     "approval_scope_approvers",
+    "asset_type_approval_scope_mappings",
     "resource_class_approval_scope_mappings",
     "task_approval_scope_mappings",
     "asset_types",
@@ -32,6 +33,7 @@ EXPECTED_TABLES = {
     "asset_unavailability",
     "asset_requirements",
     "asset_allocations",
+    "asset_approvers",
     "app_users",
     "erp_user_directory",
     "identity_admin_audit",
@@ -180,6 +182,8 @@ class SqlSchemaTests(unittest.TestCase):
         self.assertTrue(approval_cycles.approved_revision_id.nullable)
         self.assertFalse(approval_requirements.approval_cycle_id.nullable)
         self.assertFalse(approval_requirements.request_line_id.nullable)
+        self.assertTrue(approval_requirements.asset_type_id.nullable)
+        self.assertTrue(approval_requirements.proposed_asset_id.nullable)
         self.assertFalse(approval_requirement_approvers.requirement_id.nullable)
         self.assertFalse(approval_requirement_approvers.app_user_id.nullable)
         self.assertFalse(approval_decisions.requirement_id.nullable)

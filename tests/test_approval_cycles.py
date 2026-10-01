@@ -35,6 +35,10 @@ from app.infrastructure.sql import (
     ApprovalScope,
     ApprovalScopeApprover,
     AssetAllocation,
+    Asset,
+    AssetApprover,
+    AssetType,
+    AssetTypeApprovalScopeMapping,
     Base,
     BusinessContact,
     Project,
@@ -268,6 +272,118 @@ class ApprovalCycleTests(unittest.TestCase):
             )
             request = session.get(WorkforceRequest, "D1")
             self.assertEqual(request.aggregate_version, 2)
+
+    def test_asset_cycle_snapshots_authority_and_tracks_proposed_asset_subject(self) -> None:
+        with self.factory() as session, session.begin():
+            session.add(
+                AssetType(
+                    id="AT1",
+                    code="LAPTOP",
+                    label="Portable",
+                    category="EQUIPMENT",
+                    active=True,
+                )
+            )
+            session.flush()
+            session.add_all(
+                [
+                    Asset(
+                        id="A1",
+                        code="LAPTOP-1",
+                        label="Portable 1",
+                        asset_type_id="AT1",
+                        active=True,
+                    ),
+                    Asset(
+                        id="A2",
+                        code="LAPTOP-2",
+                        label="Portable 2",
+                        asset_type_id="AT1",
+                        active=True,
+                    ),
+                    ApprovalScope(
+                        id="S-ASSET",
+                        code="ASSET_AUTOMATION",
+                        label="Actifs automation",
+                        active=True,
+                    ),
+                    WorkforceRequest(
+                        id="D-ASSET",
+                        legacy_demand_number="DMO-ASSET",
+                        project_id="P1",
+                        status="Soumise",
+                        priority="Normale",
+                        aggregate_version=1,
+                        line_mode=True,
+                    ),
+                ]
+            )
+            session.flush()
+            session.add_all(
+                [
+                    RequestLine(
+                        id="L-ASSET",
+                        workforce_request_id="D-ASSET",
+                        position=0,
+                        kind="ASSET",
+                        asset_type_id="AT1",
+                        proposed_asset_id="A1",
+                        desired_start=DAY,
+                        desired_end=DAY,
+                        active=True,
+                    ),
+                    AssetTypeApprovalScopeMapping(
+                        asset_type_id="AT1",
+                        approval_scope_id="S-ASSET",
+                    ),
+                    ApprovalScopeApprover(
+                        approval_scope_id="S-ASSET",
+                        app_user_id="U1",
+                    ),
+                    AssetApprover(
+                        asset_id="A1",
+                        app_user_id="U2",
+                    ),
+                ]
+            )
+
+        with self.factory() as session:
+            service = self._service(session)
+            cycle = service.initialize_cycle("D-ASSET", expected_version=1)
+            session.commit()
+
+            requirement = cycle.requirements[0]
+            self.assertEqual(requirement.asset_type_id, "AT1")
+            self.assertEqual(requirement.proposed_asset_id, "A1")
+            self.assertIn("ASSET_TYPE", requirement.routing_sources)
+            self.assertEqual(
+                {row.app_user_id for row in requirement.approvers},
+                {"U1", "U2"},
+            )
+            u2 = next(
+                row for row in requirement.approvers
+                if row.app_user_id == "U2"
+            )
+            self.assertEqual(u2.sources, ("PROPOSED_ASSET",))
+
+            session.add(
+                AssetApprover(asset_id="A1", app_user_id="U3")
+            )
+            session.commit()
+            self.assertEqual(
+                service.validate_active_cycle("D-ASSET").id,
+                cycle.id,
+            )
+
+            line = session.get(RequestLine, "L-ASSET")
+            line.proposed_asset_id = "A2"
+            session.commit()
+            with self.assertRaises(ApplicationConflictError) as context:
+                service.validate_active_cycle("D-ASSET")
+            self.assertEqual(
+                context.exception.code,
+                "approval_cycle_subject_changed",
+            )
 
     def test_snapshot_does_not_change_when_scope_configuration_changes(self) -> None:
         with self.factory() as session:

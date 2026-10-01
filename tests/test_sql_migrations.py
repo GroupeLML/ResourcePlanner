@@ -18,7 +18,7 @@ MIGRATIONS = ROOT / "migrations"
 VERSIONS = MIGRATIONS / "versions"
 BASELINE_FILE = VERSIONS / "0001_v2_production_baseline.py"
 BASELINE_REVISION = "v2_production_baseline"
-HEAD_REVISION = "0003_work_package_resource_class"
+HEAD_REVISION = "0004_asset_approval_authority"
 
 
 def alembic_config(database_path: Path) -> Config:
@@ -69,6 +69,7 @@ class SqlMigrationTests(unittest.TestCase):
                 BASELINE_FILE.name,
                 "0002_work_package_weekly_loads.py",
                 "0003_work_package_resource_class.py",
+                "0004_asset_approval_authority.py",
             ],
         )
 
@@ -85,7 +86,12 @@ class SqlMigrationTests(unittest.TestCase):
         self.assertEqual(script.get_heads(), [HEAD_REVISION])
         self.assertEqual(
             [revision.revision for revision in script.walk_revisions()],
-            [HEAD_REVISION, "0002_work_package_weekly_loads", BASELINE_REVISION],
+            [
+                HEAD_REVISION,
+                "0003_work_package_resource_class",
+                "0002_work_package_weekly_loads",
+                BASELINE_REVISION,
+            ],
         )
 
     def test_fresh_sqlite_upgrade_reaches_baseline_with_only_technical_seed(self) -> None:
@@ -245,6 +251,10 @@ class SqlMigrationTests(unittest.TestCase):
             "CREATE TABLE WORK_PACKAGE_WEEKLY_LOADS",
             "RESOURCE_CLASS_CODE",
             "CREATE TABLE AUTH_SESSIONS",
+            "CREATE TABLE ASSET_TYPE_APPROVAL_SCOPE_MAPPINGS",
+            "CREATE TABLE ASSET_APPROVERS",
+            "ASSET_TYPE_ID",
+            "PROPOSED_ASSET_ID",
             "CREATE TABLE BREAK_GLASS_CREDENTIALS",
             "CREATE TABLE AUTH_SECURITY_AUDIT",
             "CREATE TABLE PLANNING_MUTATION_STATE",

@@ -34,6 +34,8 @@ SOURCE_MISSING_TABLES = {
     "break_glass_credentials",
     "work_package_audit",
     "work_package_weekly_loads",
+    "asset_type_approval_scope_mappings",
+    "asset_approvers",
 }
 SOURCE_MISSING_COLUMNS = {
     "auth_sessions": {"auth_mode"},
@@ -42,6 +44,10 @@ SOURCE_MISSING_COLUMNS = {
         "version",
         "weekly_load_origin",
         "resource_class_code",
+    },
+    "approval_requirements": {
+        "asset_type_id",
+        "proposed_asset_id",
     },
 }
 

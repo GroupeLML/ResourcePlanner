@@ -77,6 +77,22 @@ class ResourceClassApprovalScopeMapping(Base):
     )
 
 
+class AssetTypeApprovalScopeMapping(Base):
+    __tablename__ = "asset_type_approval_scope_mappings"
+
+    asset_type_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("asset_types.id"),
+        primary_key=True,
+    )
+    approval_scope_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("approval_scopes.id"),
+        primary_key=True,
+        index=True,
+    )
+
+
 class TaskApprovalScopeMapping(Base):
     __tablename__ = "task_approval_scope_mappings"
 

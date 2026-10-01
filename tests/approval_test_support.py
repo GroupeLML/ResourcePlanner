@@ -9,6 +9,7 @@ from app.application.security import ROLE_ADMIN, ROLE_COORDINATOR
 from app.infrastructure.sql.approval_scope_models import (
     ApprovalScope,
     ApprovalScopeApprover,
+    AssetTypeApprovalScopeMapping,
     TaskApprovalScopeMapping,
 )
 from app.infrastructure.sql.identity_models import AppUser
@@ -145,6 +146,26 @@ def seed_test_approval_routing(
                 )
             )
     session.flush()
+
+
+def map_asset_type_to_test_approval_scope(
+    session: Session,
+    asset_type_id: str,
+) -> None:
+    """Explicitly authorize one test AssetType through the canonical test scope."""
+
+    identifier = str(asset_type_id or "").strip()
+    if not identifier:
+        raise AssertionError("asset_type_id de test requis")
+    key = (identifier, TEST_APPROVAL_SCOPE_ID)
+    if session.get(AssetTypeApprovalScopeMapping, key) is None:
+        session.add(
+            AssetTypeApprovalScopeMapping(
+                asset_type_id=identifier,
+                approval_scope_id=TEST_APPROVAL_SCOPE_ID,
+            )
+        )
+        session.flush()
 
 
 def routed_demand_payload(payload: dict) -> dict:

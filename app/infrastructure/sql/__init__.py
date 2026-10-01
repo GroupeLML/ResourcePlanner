@@ -15,6 +15,7 @@ from .approval_cycle_repository import SqlApprovalCycleRepository
 from .approval_scope_models import (
     ApprovalScope,
     ApprovalScopeApprover,
+    AssetTypeApprovalScopeMapping,
     ResourceClassApprovalScopeMapping,
     TaskApprovalScopeMapping,
 )
@@ -28,6 +29,7 @@ from .resource_class_repository import SqlResourceClassRepository
 from .asset_models import (
     Asset,
     AssetAllocation,
+    AssetApprover,
     AssetRequirement,
     AssetType,
     AssetTypeCompetency,
@@ -168,6 +170,7 @@ __all__ = [
     "ApprovalRequirementApprover",
     "ApprovalScope",
     "ApprovalScopeApprover",
+    "AssetTypeApprovalScopeMapping",
     "AuthLoginTransaction",
     "AuthSecurityAudit",
     "AuthSession",
@@ -175,6 +178,7 @@ __all__ = [
     "IdentityAdminAudit",
     "Asset",
     "AssetAllocation",
+    "AssetApprover",
     "AssetRequirement",
     "AssetType",
     "AssetTypeCompetency",

@@ -19,12 +19,19 @@ export type AssetCatalogItem = {
   label: string;
   asset_type_id: string;
   active: boolean;
+  approver_user_ids: string[];
   metadata: Record<string, unknown>;
+};
+
+export type AssetApproverCandidate = {
+  id: string;
+  display_name: string;
 };
 
 export type AssetCatalog = {
   types: AssetTypeCatalogItem[];
   assets: AssetCatalogItem[];
+  approver_candidates: AssetApproverCandidate[];
   planning_version: number;
 };
 
@@ -203,6 +210,18 @@ export function setAssetActive(
       active,
       expected_planning_version: expectedPlanningVersion,
     },
+  );
+}
+
+export function setAssetApprover(
+  assetId: string,
+  userId: string,
+  assigned: boolean,
+) {
+  return sendJson<{ id: string; approver_user_ids: string[] }>(
+    `/api/v1/assets/${encodeURIComponent(assetId)}/approvers/${encodeURIComponent(userId)}`,
+    assigned ? "PUT" : "DELETE",
+    {},
   );
 }
 
