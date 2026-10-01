@@ -224,6 +224,9 @@ class SqlApprovalCycleRepository:
                 proposed_resource_id=_optional_text(
                     line.proposed_resource_id
                 ),
+                line_kind=_text(line.kind) or "WORKFORCE",
+                asset_type_id=_optional_text(line.asset_type_id),
+                proposed_asset_id=_optional_text(line.proposed_asset_id),
             )
             for line in lines
         )
@@ -281,6 +284,8 @@ class SqlApprovalCycleRepository:
                 approvers=tuple(
                     approvers_by_requirement.get(row.id, [])
                 ),
+                asset_type_id=row.asset_type_id,
+                proposed_asset_id=row.proposed_asset_id,
             )
             for row in requirements
         )
@@ -458,6 +463,8 @@ class SqlApprovalCycleRepository:
                 task_catalog_item_id=snapshot.task_catalog_item_id,
                 approval_scope_id=snapshot.approval_scope_id,
                 proposed_resource_id=snapshot.proposed_resource_id,
+                asset_type_id=snapshot.asset_type_id,
+                proposed_asset_id=snapshot.proposed_asset_id,
                 routing_sources_text=json.dumps(
                     sorted(set(snapshot.routing_sources)),
                     separators=(",", ":"),
