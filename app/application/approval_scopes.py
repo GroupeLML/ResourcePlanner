@@ -55,6 +55,8 @@ class ApprovalRequestLineRecord:
     active: bool
     task_catalog_item_id: str | None
     position: int = 0
+    erp_task_code: str | None = None
+    erp_task_label: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -357,8 +359,12 @@ class ApprovalScopeService:
                 blocked=True,
             ),
             line_position=line_position,
-            task_code=task.code if task is not None else None,
-            task_label=task.label if task is not None else None,
+            task_code=(
+                task.code if task is not None else line.erp_task_code
+            ),
+            task_label=(
+                task.label if task is not None else line.erp_task_label
+            ),
             effective_resource_class=(
                 task.resource_class_code if task is not None else None
             ),
