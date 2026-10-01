@@ -100,6 +100,11 @@ class WorkPackageDeliveryReferenceReadModel:
     name: str
     status: str
     reference_hours: float | None
+    resource_class_code: str | None = None
+    resource_class_label: str | None = None
+    resource_class_active: bool | None = None
+    task_resource_class_code: str | None = None
+    resource_class_diagnostic: str | None = None
 
     def __post_init__(self) -> None:
         if not str(self.work_package_id or '').strip():
