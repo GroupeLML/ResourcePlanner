@@ -627,8 +627,30 @@ class ApprovalCycleTests(unittest.TestCase):
                 context["diagnostics"],
             )
 
-    def test_no_eligible_approver_reports_resolved_scope(self) -> None:
+    def test_no_eligible_approver_reports_effective_class_and_resolved_scope(self) -> None:
         with self.factory() as session:
+            session.execute(
+                delete(TaskApprovalScopeMapping).where(
+                    TaskApprovalScopeMapping.task_catalog_item_id == "T1"
+                )
+            )
+            session.add(
+                ResourceClassConfig(
+                    code="PROGRAMMEUR",
+                    label="Programmeur",
+                    average_hourly_cost_cad=100,
+                    active=True,
+                    version=1,
+                )
+            )
+            session.add(
+                ResourceClassApprovalScopeMapping(
+                    resource_class_code="PROGRAMMEUR",
+                    approval_scope_id="S1",
+                )
+            )
+            session.get(TaskCatalogEntry, "T1").resource_class_code = "PROGRAMMEUR"
+            session.get(RequestLine, "L1").proposed_resource_id = None
             session.execute(
                 delete(ApprovalScopeApprover).where(
                     ApprovalScopeApprover.approval_scope_id == "S1"
@@ -643,6 +665,9 @@ class ApprovalCycleTests(unittest.TestCase):
                 )
 
             context = error.exception.context
+            self.assertEqual(context["task_code"], "210")
+            self.assertEqual(context["effective_resource_class"], "PROGRAMMEUR")
+            self.assertIsNone(context["proposed_resource_id"])
             self.assertEqual(context["approval_scope"]["id"], "S1")
             self.assertEqual(context["approval_scope"]["code"], "AUTOMATION")
             self.assertEqual(
