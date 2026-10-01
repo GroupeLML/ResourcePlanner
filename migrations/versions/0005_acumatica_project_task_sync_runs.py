@@ -65,7 +65,7 @@ def upgrade() -> None:
         updated_at,
         sa.CheckConstraint(
             "status IN ('PENDING','RUNNING','COMPLETED','COMPLETED_WITH_ERRORS','FAILED','INTERRUPTED')",
-            name="ck_acumatica_project_task_sync_runs_status_values",
+            name="status_values",
         ),
         sa.PrimaryKeyConstraint("id", name="pk_acumatica_project_task_sync_runs"),
     )
@@ -113,7 +113,7 @@ def upgrade() -> None:
         result_updated_at,
         sa.CheckConstraint(
             "status IN ('synchronized','ignored','rejected')",
-            name="ck_acumatica_project_task_sync_project_results_status_values",
+            name="status_values",
         ),
         sa.ForeignKeyConstraint(
             ["run_id"],
