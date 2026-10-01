@@ -1125,8 +1125,8 @@ export type AllocationMoveWrite = {
   resource_id: string;
   day: string;
   technician?: string | null;
-  outside_standard_hours?: boolean;
-  expected_planning_version?: number | null;
+  outside_standard_hours: boolean;
+  expected_planning_version: number;
 };
 
 export type ManualAllocationUpdate = {
