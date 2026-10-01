@@ -76,7 +76,15 @@ class ReactResourceClassesContractTests(unittest.TestCase):
         self.assertIn("resourceClasses: ResourceClassOptionReadModel[]", editor)
         self.assertIn("activeResourceClasses", editor)
         self.assertIn("Aucune classe imposée", editor)
-        self.assertIn("{row.code} · {row.label}", editor)
+        self.assertIn('import SearchableCombobox from "./SearchableCombobox"', editor)
+        self.assertIn("value={line.required_resource_class || null}", editor)
+        self.assertIn("options={activeResourceClasses.map((row) => ({", editor)
+        self.assertIn("value: row.code", editor)
+        self.assertIn("label: `${row.code} · ${row.label}`", editor)
+        self.assertIn(
+            'onChange={(value) => updateLine(index, { required_resource_class: value ?? "" })}',
+            editor,
+        )
         self.assertIn("historique/inactive", editor)
         self.assertNotIn(
             "resources.map((row) => row.resource_class?.trim())",
