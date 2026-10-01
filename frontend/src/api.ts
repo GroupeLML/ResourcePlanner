@@ -42,6 +42,37 @@ export type ProjectTaskSyncResult = {
   duration_ms: number | null;
 };
 
+export type GlobalProjectTaskSyncResult = {
+  projects_inspected: number;
+  projects_synchronized: number;
+  projects_ignored: number;
+  projects_rejected: number;
+  source_rows_received: number;
+  source_rows_rejected: number;
+  tasks_received: number;
+  tasks_created: number;
+  tasks_updated: number;
+  tasks_unchanged: number;
+  tasks_deactivated: number;
+  tasks_rejected: number;
+  project_results: Array<{
+    project_id: string;
+    project_number: string;
+    status: "synchronized" | "ignored" | "rejected";
+    error_code: string | null;
+    reason_code: string | null;
+    source_rows?: number;
+    source_rows_rejected?: number;
+    tasks_received?: number;
+    created?: number;
+    updated?: number;
+    unchanged?: number;
+    deactivated?: number;
+    rejected?: number;
+    duration_ms?: number | null;
+  }>;
+};
+
 export type ProjectTaskSyncMetadata = {
   project_number: string;
   last_success_at: string;
@@ -1316,6 +1347,12 @@ export function syncAcumaticaProjects() {
 export function syncAcumaticaProjectTasks(projectId: string) {
   return postJson<ProjectTaskSyncResult>(
     `/api/v1/integrations/acumatica/projects/${encodeURIComponent(projectId)}/tasks/sync`,
+  );
+}
+
+export function syncAcumaticaActiveProjectTasks() {
+  return postJson<GlobalProjectTaskSyncResult>(
+    "/api/v1/integrations/acumatica/projects/tasks/sync",
   );
 }
 
