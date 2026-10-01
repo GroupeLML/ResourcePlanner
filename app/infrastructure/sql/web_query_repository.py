@@ -29,6 +29,7 @@ from ...application.medium_term_budget import (
     MediumTermTaskOptionReadModel,
     MediumTermWeekReadModel,
     MediumTermWeeklyLoadReadModel,
+    erp_financial_budget_diagnostic,
     task_budget_diagnostic,
     work_package_is_budget_included,
     work_package_is_current_load_included,
@@ -466,6 +467,10 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                     budget_amount_cad=budget_amount_cad,
                     budget_actual_cad=budget_actual_cad,
                     remaining_budget_cad=remaining_budget_cad,
+                    financial_diagnostic=erp_financial_budget_diagnostic(
+                        budget_amount_cad=budget_amount_cad,
+                        budget_actual_cad=budget_actual_cad,
+                    ),
                     budget_hours=budget_hours,
                     planned_wp_hours=planned_wp_hours,
                     remaining_budget_hours=remaining_budget_hours,
