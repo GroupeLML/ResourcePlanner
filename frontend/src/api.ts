@@ -42,8 +42,23 @@ export type ProjectTaskSyncResult = {
   duration_ms: number | null;
 };
 
+export type GlobalProjectTaskSyncStatus =
+  | "PENDING"
+  | "RUNNING"
+  | "COMPLETED"
+  | "COMPLETED_WITH_ERRORS"
+  | "FAILED"
+  | "INTERRUPTED";
+
 export type GlobalProjectTaskSyncResult = {
+  run_id: string;
+  status: GlobalProjectTaskSyncStatus;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  projects_total: number;
   projects_inspected: number;
+  projects_processed: number;
   projects_synchronized: number;
   projects_ignored: number;
   projects_rejected: number;
@@ -58,22 +73,24 @@ export type GlobalProjectTaskSyncResult = {
   source_requests: number | null;
   source_rows_scanned: number | null;
   source_read_duration_ms: number | null;
-  duration_ms: number;
+  duration_ms: number | null;
+  error_code: string | null;
+  diagnostic: string | null;
   project_results: Array<{
     project_id: string;
     project_number: string;
     status: "synchronized" | "ignored" | "rejected";
     error_code: string | null;
     reason_code: string | null;
-    source_rows?: number;
-    source_rows_rejected?: number;
-    tasks_received?: number;
-    created?: number;
-    updated?: number;
-    unchanged?: number;
-    deactivated?: number;
-    rejected?: number;
-    duration_ms?: number | null;
+    source_rows: number;
+    source_rows_rejected: number;
+    tasks_received: number;
+    created: number;
+    updated: number;
+    unchanged: number;
+    deactivated: number;
+    rejected: number;
+    duration_ms: number | null;
   }>;
 };
 
@@ -1426,6 +1443,23 @@ export function syncAcumaticaProjectTasks(projectId: string) {
 export function syncAcumaticaActiveProjectTasks() {
   return postJson<GlobalProjectTaskSyncResult>(
     "/api/v1/integrations/acumatica/projects/tasks/sync",
+  );
+}
+
+export function getAcumaticaProjectTaskSyncRun(
+  runId: string,
+  signal?: AbortSignal,
+) {
+  return getJson<GlobalProjectTaskSyncResult>(
+    `/api/v1/integrations/acumatica/projects/tasks/sync/${encodeURIComponent(runId)}`,
+    signal,
+  );
+}
+
+export function getCurrentAcumaticaProjectTaskSyncRun(signal?: AbortSignal) {
+  return getJson<GlobalProjectTaskSyncResult | null>(
+    "/api/v1/integrations/acumatica/projects/tasks/sync/current",
+    signal,
   );
 }
 
