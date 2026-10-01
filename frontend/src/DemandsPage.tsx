@@ -62,6 +62,7 @@ type FormState = {
   description: string;
   resource_count: string;
   required_competency_ids: string[];
+  required_resource_class: string;
   estimated_hours: string;
   estimated_days: string;
   proposed_technician: string;
@@ -122,6 +123,7 @@ function emptyForm(projectNumber = "", requesterUserId = ""): FormState {
     description: "",
     resource_count: "1",
     required_competency_ids: [],
+    required_resource_class: "",
     estimated_hours: "",
     estimated_days: "",
     proposed_technician: "",
@@ -132,7 +134,7 @@ function lineDefaultsFromForm(form: FormState, resources: ResourceReadModel[]): 
   const proposed = resources.find((row) => row.name === form.proposed_technician) ?? null;
   return {
     kind: "WORKFORCE",
-    required_resource_class: proposed?.resource_class ?? "",
+    required_resource_class: form.required_resource_class || proposed?.resource_class || "",
     required_competency_ids: [...form.required_competency_ids],
     desired_start: form.desired_start,
     desired_end: form.desired_end,
@@ -161,6 +163,12 @@ function formFromDemand(demand: DemandReadModel): FormState {
     description: demand.description ?? "",
     resource_count: String(demand.resource_count || 1),
     required_competency_ids: demand.required_competency_ids ?? [],
+    required_resource_class: demand.line_mode
+      ? ""
+      : (
+        (demand.lines ?? []).find((line) => line.active && line.kind === "WORKFORCE")
+          ?.required_resource_class ?? ""
+      ),
     estimated_hours: demand.estimated_hours == null ? "" : String(demand.estimated_hours),
     estimated_days: demand.estimated_days == null ? "" : String(demand.estimated_days),
     proposed_technician: demand.proposed_resource ?? "",
@@ -206,10 +214,29 @@ function demandSearchText(demand: DemandReadModel) {
   ].filter(Boolean).join(" "));
 }
 
-function DemandCard({ demand, selected, onClick }: { demand: DemandReadModel; selected: boolean; onClick: () => void }) {
+function quickActionLabel(action: "submit" | "approve" | "cancel" | "request-cancellation") {
+  if (action === "submit") return "Soumettre";
+  if (action === "approve") return "Approuver";
+  if (action === "request-cancellation") return "Demander l’annulation";
+  return "Annuler";
+}
+
+function DemandCard({
+  demand,
+  selected,
+  onClick,
+  onQuickAction,
+}: {
+  demand: DemandReadModel;
+  selected: boolean;
+  onClick: () => void;
+  onQuickAction: (action: "submit" | "approve" | "cancel" | "request-cancellation") => void;
+}) {
   const tentative = demand.confirmation === "Tentative";
+  const quickActions = demand.available_quick_actions ?? [];
   return (
-    <button type="button" className={`demand-card ${selected ? "selected" : ""}`} onClick={onClick}>
+    <article className={`demand-card ${selected ? "selected" : ""}`}>
+      <button type="button" className="demand-card-select" onClick={onClick}>
       <div className="demand-card-topline">
         <strong>{demand.number}</strong>
         <span className={`demand-status status-${normalize(effectiveDemandStatus(demand)).replace(/[^a-z0-9]+/g, "-")}`}>{effectiveDemandStatus(demand) || "—"}</span>
@@ -228,7 +255,23 @@ function DemandCard({ demand, selected, onClick }: { demand: DemandReadModel; se
         <span>{demand.line_mode ? `${(demand.lines ?? []).filter((line) => line.active).length} ligne(s)` : `${demand.resource_count || 1} ressource(s)`}</span>
         <span className={tentative ? "confirmation-tentative-text" : "confirmation-confirmed-text"}>{tentative ? "Tentative" : "Confirmée"}</span>
       </div>
-    </button>
+      </button>
+      {quickActions.length > 0 && (
+        <div className="demand-card-quick-actions" aria-label={`Actions rapides ${demand.number}`}>
+          {quickActions.map((action) => (
+            <button
+              type="button"
+              className="text-button"
+              data-quick-action={action}
+              onClick={() => onQuickAction(action)}
+              key={action}
+            >
+              {quickActionLabel(action)}
+            </button>
+          ))}
+        </div>
+      )}
+    </article>
   );
 }
 
@@ -267,6 +310,7 @@ export default function DemandsPage({ initialDemandNumber = null }: DemandsPageP
   const [saving, setSaving] = useState(false);
   const [editorDirty, setEditorDirty] = useState(false);
   const [contextDirty, setContextDirty] = useState(false);
+  const [quickActionTarget, setQuickActionTarget] = useState<string | null>(null);
   const [overridePending, setOverridePending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -374,6 +418,13 @@ export default function DemandsPage({ initialDemandNumber = null }: DemandsPageP
       });
     return () => controller.abort();
   }, [selectedNumber, creating]);
+
+  useEffect(() => {
+    if (!quickActionTarget || selectedDetail?.demand.number !== quickActionTarget) return;
+    document.querySelector<HTMLElement>('[data-testid="primary-demand-actions"]')
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    setQuickActionTarget(null);
+  }, [quickActionTarget, selectedDetail]);
 
   useEffect(() => {
     const projectNumber = form.project_number;
@@ -503,9 +554,17 @@ export default function DemandsPage({ initialDemandNumber = null }: DemandsPageP
     createRetry.current = null;
   }
 
-  function selectDemand(number: string) {
-    if (saving || number === selectedNumber) return;
+  function selectDemand(number: string, focusQuickAction = false) {
+    if (saving) return;
+    if (number === selectedNumber && !creating) {
+      if (focusQuickAction) {
+        document.querySelector<HTMLElement>('[data-testid="primary-demand-actions"]')
+          ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+      return;
+    }
     if (!confirmDiscardChanges()) return;
+    if (focusQuickAction) setQuickActionTarget(number);
     setCreating(false);
     setSelectedNumber(number);
     setSelectedDetail(null);
@@ -646,6 +705,16 @@ export default function DemandsPage({ initialDemandNumber = null }: DemandsPageP
         resource_count: resourceCount,
         required_competencies: null,
         required_competency_ids: form.required_competency_ids,
+        ...(
+          creating
+          || form.required_resource_class !== (
+            (selectedDemand?.lines ?? []).find(
+              (line) => line.active && line.kind === "WORKFORCE",
+            )?.required_resource_class ?? ""
+          )
+            ? { required_resource_class: form.required_resource_class.trim() || null }
+            : {}
+        ),
         estimated_hours: estimatedHours,
         estimated_days: estimatedDays,
         proposed_technician: form.proposed_technician || null,
@@ -794,6 +863,7 @@ export default function DemandsPage({ initialDemandNumber = null }: DemandsPageP
                 demand={demand}
                 selected={!creating && selectedNumber === demand.number}
                 onClick={() => selectDemand(demand.number)}
+                onQuickAction={() => selectDemand(demand.number, true)}
                 key={demand.number}
               />
             ))}
@@ -1005,7 +1075,20 @@ export default function DemandsPage({ initialDemandNumber = null }: DemandsPageP
                       }
                       onChange={(value) => {
                         const task = tasks.find((row) => taskIdentity(row) === value);
-                        setField("task_code", task?.code ?? "");
+                        const suggestedClass = task?.resource_class_code
+                          && resourceClasses.some(
+                            (row) => row.active && row.code === task.resource_class_code,
+                          )
+                          ? task.resource_class_code
+                          : null;
+                        setForm((current) => ({
+                          ...current,
+                          task_code: task?.code ?? "",
+                          required_resource_class: current.required_resource_class.trim()
+                            ? current.required_resource_class
+                            : suggestedClass ?? "",
+                        }));
+                        setEditorDirty(true);
                       }}
                       label="Tâche ERP"
                       placeholder="Aucune tâche sélectionnée"
@@ -1019,6 +1102,35 @@ export default function DemandsPage({ initialDemandNumber = null }: DemandsPageP
                         {selectedTask.expenses_enabled == null ? "" : ` · Dépenses: ${selectedTask.expenses_enabled ? "oui" : "non"}`}
                       </small>
                     )}
+                  </label>
+
+                  <label>
+                    <span>Classe de ressource</span>
+                    <SearchableCombobox
+                      value={form.required_resource_class || null}
+                      options={resourceClasses.filter((row) => row.active).map((row) => ({
+                        value: row.code,
+                        label: `${row.code} · ${row.label}`,
+                        searchText: `${row.code} ${row.label}`,
+                      }))}
+                      selectedOption={
+                        form.required_resource_class
+                        && !resourceClasses.some(
+                          (row) => row.active && row.code === form.required_resource_class,
+                        )
+                          ? {
+                            value: form.required_resource_class,
+                            label: `${form.required_resource_class} — historique/inactive`,
+                            disabled: true,
+                          }
+                          : null
+                      }
+                      onChange={(value) => setField("required_resource_class", value ?? "")}
+                      label="Classe de ressource"
+                      placeholder="Aucune classe imposée"
+                      clearable
+                      disabled={saving}
+                    />
                   </label>
 
                   <label className="span-2">
