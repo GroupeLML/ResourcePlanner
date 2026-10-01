@@ -306,12 +306,14 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     const { context, page } = await openAs(browser, "PROJECT_MANAGER", { disableRandomUUID: true });
 
     const createIdempotencyKeys: string[] = [];
+    const createPayloads: Array<Record<string, unknown>> = [];
     let failCreateOnce = true;
     const createRoute = "**/api/v1/work-packages**";
     await page.route(createRoute, async (route) => {
       const request = route.request();
       if (request.method() === "POST" && new URL(request.url()).pathname === "/api/v1/work-packages") {
         createIdempotencyKeys.push(request.headers()["idempotency-key"] || "");
+        createPayloads.push(request.postDataJSON() as Record<string, unknown>);
         if (failCreateOnce) {
           failCreateOnce = false;
           await route.fulfill({
@@ -325,6 +327,20 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
       await route.continue();
     });
 
+    const taskCatalogRoute = "**/api/v1/task-catalog?**";
+    await page.route(taskCatalogRoute, async (route) => {
+      const response = await route.fetch();
+      const rows = await response.json() as Array<Record<string, unknown>>;
+      await route.fulfill({
+        response,
+        json: rows.map((row) => (
+          row.code === "210"
+            ? { ...row, resource_class_code: "PROGRAMMEUR" }
+            : row
+        )),
+      });
+    });
+
     await navigateMain(page, "Moyen terme");
     await page.getByRole("button", { name: /WorkPackage/ }).click();
     const workPackageDialog = page.getByRole("dialog", { name: "Créer un lot" });
@@ -334,7 +350,9 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
       workPackageTask.locator("option", { hasText: "210 — AUTOMATISATION E2E" }),
     ).toBeAttached();
     await workPackageTask.selectOption({ label: "210 — AUTOMATISATION E2E" });
-    await labelled(workPackageDialog, "Code", "input").fill("WP-E2E");
+    const workPackageClass = labelled(workPackageDialog, "Classe de ressource", "select");
+    await expect(workPackageClass).toHaveValue("PROGRAMMEUR");
+    await expect(workPackageDialog).toContainText("Classe de la tâche ERP : Programmeur (PROGRAMMEUR)");
     await labelled(workPackageDialog, "Nom", "input").fill("Lot acceptation Playwright");
     await labelled(workPackageDialog, "Début", "input").fill(d1);
     await labelled(workPackageDialog, "Fin", "input").fill(d5);
@@ -349,17 +367,27 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     expect(createIdempotencyKeys).toHaveLength(2);
     expect(createIdempotencyKeys[0]).toBe(createIdempotencyKeys[1]);
     expect(createIdempotencyKeys[0]).toMatch(UUID_V4);
+    expect(createPayloads[1].resource_class_code).toBe("PROGRAMMEUR");
+    expect(createPayloads[1]).not.toHaveProperty("code");
     await page.unroute(createRoute);
-    await expect(page.getByText("WP-E2E", { exact: true }).first()).toBeVisible();
+    await page.unroute(taskCatalogRoute);
+    await expect(page.getByText("Lot acceptation Playwright", { exact: true }).first()).toBeVisible();
 
     const mediumTermCapacity = page.locator(".mt-capacity-panel");
     await expect(mediumTermCapacity).toContainText("Charge WP");
     await expect(mediumTermCapacity).toContainText("Charge non disponible");
 
-    const workPackageRow = page.locator(".mt-timeline-row").filter({ hasText: "WP-E2E" });
+    const workPackageRow = page.locator(".mt-timeline-row").filter({ hasText: "Lot acceptation Playwright" });
+    await expect(workPackageRow).toContainText("Classe de ressource : Programmeur (PROGRAMMEUR)");
+    await expect(workPackageRow).toContainText("Classe WorkPackage différente de la tâche ERP");
     await workPackageRow.getByRole("button", { name: "Modifier / répartir" }).click();
     const weeklyEditor = page.getByRole("dialog", { name: "Modifier le lot" });
     await expect(weeklyEditor).toContainText("Répartition hebdomadaire");
+    await expect(labelled(weeklyEditor, "Classe de ressource", "select")).toHaveValue("PROGRAMMEUR");
+    const editTask = labelled(weeklyEditor, "Tâche ERP", "select");
+    await editTask.selectOption({ label: "110 — INSTALLATION ÉLECTRIQUE E2E" });
+    await expect(labelled(weeklyEditor, "Classe de ressource", "select")).toHaveValue("PROGRAMMEUR");
+    await editTask.selectOption({ label: "210 — AUTOMATISATION E2E" });
     await expect(weeklyEditor).toContainText("Aucune répartition hebdomadaire validée.");
     await weeklyEditor.getByRole("button", { name: "Générer une proposition automatique" }).click();
     await expect(weeklyEditor).toContainText("Proposition AUTO prévisualisée — elle n’est pas encore enregistrée.");
@@ -399,7 +427,7 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
       delete (globalThis.crypto as unknown as { randomUUID?: () => string }).randomUUID;
     });
 
-    const refreshedWorkPackageRow = page.locator(".mt-timeline-row").filter({ hasText: "WP-E2E" });
+    const refreshedWorkPackageRow = page.locator(".mt-timeline-row").filter({ hasText: "Lot acceptation Playwright" });
     await expect(refreshedWorkPackageRow).toContainText("Répartition AUTO");
     await expect(page.locator(".mt-task-strip").filter({ hasText: "210" })).toContainText("Budget");
 
@@ -410,7 +438,7 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
       activeDays: "6",
       description: "Demande acceptation navigateur V2",
       proposedResource: "Alice",
-      workPackage: "WP-E2E",
+      workPackage: "Lot acceptation Playwright",
     });
     await editor.getByRole("button", { name: "Créer le brouillon" }).click();
     await expect(page.locator(".error-panel")).toContainText("cible de 6 jours actifs dépasse les 5 dates");
