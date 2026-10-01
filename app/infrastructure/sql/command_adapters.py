@@ -326,7 +326,7 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             allocation_type=requirement.planning_type,
             source="MANUAL",
             locked=True,
-            outside_standard_hours=bool(hors_horaire),
+            outside_standard_hours=_availability.override_applied,
             confirmation=(
                 normalize_confirmation(confirmation) if _text(confirmation) else None
             ),
@@ -368,7 +368,7 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
         shift.allocation_type = requirement.planning_type
         shift.source = "MANUAL"
         shift.locked = True
-        shift.outside_standard_hours = bool(hors_horaire)
+        shift.outside_standard_hours = _availability.override_applied
         # Allocation update is exposed as PUT: null is the explicit persisted state
         # meaning "inherit the requirement confirmation", not "leave unchanged".
         shift.confirmation = (

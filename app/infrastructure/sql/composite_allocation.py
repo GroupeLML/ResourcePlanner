@@ -371,12 +371,12 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
             + source_hours
         )
 
-        _day, impact, available_hours = evaluate_projected_manual_state(
+        _day, impact, availability = evaluate_projected_manual_state(
             self._session,
             requirement,
             target_resource,
             target_day,
-            True,
+            command.outside_standard_hours,
             current_locked_hours=before_locked,
             projected_locked_hours=projected_locked,
             window_start=proposed_start,
@@ -473,7 +473,7 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
         )
 
         warnings: list[dict[str, object]] = []
-        if available_hours <= 0 and not command.outside_standard_hours:
+        if availability.override_required:
             warnings.append(
                 {
                     "code": "OUTSIDE_STANDARD_HOURS_REQUIRED",
@@ -529,7 +529,7 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
             "request_version": request_version,
             "operational_version": self._current_operational_version(requirement),
             "authorization_decision": authorization_reason,
-            "availability_hours": available_hours,
+            "availability_hours": availability.state.hours,
             "planned_hours": float(requirement.planned_hours),
             "current_locked_hours": float(before_locked),
             "projected_locked_hours": float(projected_locked),
@@ -601,7 +601,7 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
                     },
                 )
 
-        _day, impact, _available = evaluate_projected_manual_state(
+        _day, impact, availability = evaluate_projected_manual_state(
             self._session,
             requirement,
             target_resource,
@@ -612,6 +612,11 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
             window_start=proposed_start,
             window_end=proposed_end,
         )
+        if not availability.allowed:
+            raise ValueError(
+                "La ressource n'est pas disponible selon son horaire standard cette journée. "
+                "Autorise explicitement le quart hors horaire pour continuer."
+            )
         if impact.increases_exception and policy is None:
             raise ApplicationValidationError(
                 "Ce déplacement augmenterait la surallocation. Choisis explicitement "
@@ -656,7 +661,7 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
         source.work_date = target_day
         source.source = "MANUAL"
         source.locked = True
-        source.outside_standard_hours = bool(command.outside_standard_hours)
+        source.outside_standard_hours = availability.override_applied
         self._session.flush()
         self._planning.rebuild()
 
@@ -791,7 +796,7 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
             if command.outside_standard_hours is None
             else bool(command.outside_standard_hours)
         )
-        target_day, _impact = validate_projected_manual_state(
+        target_day, _impact, availability = validate_projected_manual_state(
             self._session,
             requirement,
             target_resource,
@@ -817,7 +822,7 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
             allocation_type=source.allocation_type or requirement.planning_type,
             source="MANUAL",
             locked=True,
-            outside_standard_hours=target_outside,
+            outside_standard_hours=availability.override_applied,
             confirmation=source.confirmation,
             note=source.note,
         )
@@ -910,7 +915,7 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
             if command.outside_standard_hours is None
             else bool(command.outside_standard_hours)
         )
-        target_day, _impact = validate_projected_manual_state(
+        target_day, _impact, availability = validate_projected_manual_state(
             self._session,
             requirement,
             target_resource,
@@ -935,7 +940,7 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
             allocation_type=source.allocation_type or requirement.planning_type,
             source="MANUAL",
             locked=True,
-            outside_standard_hours=target_outside,
+            outside_standard_hours=availability.override_applied,
             confirmation=source.confirmation,
             note=source.note,
         )

@@ -284,7 +284,7 @@ def evaluate_projected_manual_state(
     projected_locked_hours: Decimal,
     window_start: date | None = None,
     window_end: date | None = None,
-) -> tuple[date, ManualOverallocationImpact, float]:
+) -> tuple[date, ManualOverallocationImpact, OutsideStandardHoursDecision]:
     """Pure #333 projected validation used by DnD previews and atomic execution.
 
     It validates the supplied final window and availability but never changes the
@@ -311,17 +311,12 @@ def evaluate_projected_manual_state(
         day,
         outside_standard_hours=outside_standard_hours,
     )
-    if not availability.allowed:
-        if availability.override_required:
-            raise ValueError(
-                "La ressource n'est pas disponible selon son horaire standard cette journée. "
-                "Autorise explicitement le quart hors horaire pour continuer."
-            )
+    if not availability.allowed and not availability.override_required:
         raise ValueError(
             "La ressource n'est pas disponible cette journée"
             f" ({availability.state.reason or 'indisponibilité non contournable'})."
         )
-    return day, impact, float(availability.state.hours)
+    return day, impact, availability
 
 
 def validate_projected_manual_state(
@@ -336,7 +331,7 @@ def validate_projected_manual_state(
     overallocation_policy: str | None,
     authorization: PlanningAuthorizationPort | None,
     expected_operational_version: int | None = None,
-) -> tuple[date, ManualOverallocationImpact]:
+) -> tuple[date, ManualOverallocationImpact, OutsideStandardHoursDecision]:
     """Validate one final projected locked state and apply the shared #13/#38 policy."""
 
     day = date_from_value(day_value)
@@ -418,7 +413,7 @@ def validate_projected_manual_state(
             "La ressource n'est pas disponible cette journée"
             f" ({availability.state.reason or 'indisponibilité non contournable'})."
         )
-    return day, impact
+    return day, impact, availability
 
 
 class SqlOverallocationAllocationCommandAdapter(SqlAllocationCommandAdapter):
@@ -483,7 +478,7 @@ class SqlOverallocationAllocationCommandAdapter(SqlAllocationCommandAdapter):
             str(self._overallocation_session.scalar(other_statement) or 0)
         )
         projected_locked = other_locked + hours
-        day, _impact = validate_projected_manual_state(
+        day, _impact, availability = validate_projected_manual_state(
             self._overallocation_session,
             requirement,
             resource,
@@ -493,13 +488,6 @@ class SqlOverallocationAllocationCommandAdapter(SqlAllocationCommandAdapter):
             projected_locked_hours=projected_locked,
             overallocation_policy=self._active_policy,
             authorization=self._authorization,
-        )
-        snapshot = SqlPlanningReadRepository(self._overallocation_session).capture()
-        availability = outside_standard_hours_decision_for_day(
-            snapshot.availability,
-            resource.name,
-            day,
-            outside_standard_hours=outside_standard_hours,
         )
         return day, hours, availability
 

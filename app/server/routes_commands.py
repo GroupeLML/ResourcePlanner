@@ -1014,7 +1014,7 @@ def build_command_router(
     @router.post("/allocations/{allocation_id}/move")
     def move_allocation(
         allocation_id: str,
-        body: AllocationMoveRequest | AtomicAllocationBaseRequest,
+        body: AllocationMoveRequest,
         facade: ApplicationFacade = Depends(facade_dependency),
     ) -> dict[str, Any]:
         return _payload(
@@ -1024,7 +1024,7 @@ def build_command_router(
                     technician=body.technician or "",
                     day=body.day,
                     resource_id=body.resource_id,
-                    outside_standard_hours=bool(getattr(body, "outside_standard_hours", False)),
+                    outside_standard_hours=body.outside_standard_hours,
                     expected_planning_version=body.expected_planning_version,
                 )
             )
