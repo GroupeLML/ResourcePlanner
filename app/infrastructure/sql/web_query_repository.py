@@ -500,6 +500,11 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                     row.end_date for row in dated if row.end_date is not None
                 )
 
+        package_class_keys = {
+            package.resource_class_code or UNCLASSIFIED
+            for package in current_packages
+        }
+
         weeks: list[MediumTermWeekReadModel] = []
         if effective_start is not None and effective_end is not None:
             first_week = effective_start - timedelta(days=effective_start.weekday())
@@ -552,7 +557,12 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                     class_keys = {wanted_class}
                 else:
                     legacy_capacity = total_capacity
-                    class_keys = set(class_capacity) | set(load_by_class) | incomplete_classes
+                    class_keys = (
+                        set(class_capacity)
+                        | package_class_keys
+                        | set(load_by_class)
+                        | incomplete_classes
+                    )
 
                 legacy_total = sum(load_by_class.values(), Decimal("0.00"))
                 legacy_load: Decimal | None = (
