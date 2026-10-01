@@ -140,6 +140,7 @@ class ApprovalCycleTests(unittest.TestCase):
                     estimated_hours=16,
                     task_catalog_item_id="T1",
                     erp_task_code="210",
+                    erp_task_label="Automatisation",
                     proposed_resource_id="R1",
                     required_resource_class="AUT",
                     active=True,
