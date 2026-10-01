@@ -539,12 +539,14 @@ class SqliteV2CutoverTests(unittest.TestCase):
                             WorkPackage.task_catalog_item_id,
                             WorkPackage.version,
                             WorkPackage.weekly_load_origin,
+                            WorkPackage.resource_class_code,
                         ).where(WorkPackage.id == "WP-REAL")
                     ).one()
                     self.assertEqual(work_package.id, "WP-REAL")
                     self.assertIsNone(work_package.task_catalog_item_id)
                     self.assertEqual(work_package.version, 1)
                     self.assertIsNone(work_package.weekly_load_origin)
+                    self.assertIsNone(work_package.resource_class_code)
                     self.assertEqual(
                         int(
                             connection.scalar(
