@@ -8,6 +8,8 @@ APPROVAL_SCOPE_CODE_ELECTRICAL_INSTALLATION = "ELECTRICAL_INSTALLATION"
 APPROVAL_SCOPE_CODE_AUTOMATION = "AUTOMATION"
 APPROVER_SOURCE_SCOPE = "APPROVAL_SCOPE"
 APPROVER_SOURCE_RESOURCE = "PROPOSED_RESOURCE"
+APPROVER_SOURCE_ASSET = "PROPOSED_ASSET"
+ROUTING_SOURCE_ASSET_TYPE = "ASSET_TYPE"
 PERMISSION_APPROVE_DEMANDS = "approve_demands"
 
 DIAGNOSTIC_LINE_INACTIVE = "line_inactive"
@@ -24,6 +26,13 @@ DIAGNOSTIC_APPROVER_NOT_FOUND = "approver_not_found"
 DIAGNOSTIC_APPROVER_INACTIVE = "approver_inactive"
 DIAGNOSTIC_APPROVER_PERMISSION_MISSING = "approver_permission_missing"
 DIAGNOSTIC_NO_ELIGIBLE_APPROVER = "no_eligible_approver"
+DIAGNOSTIC_ASSET_TYPE_UNKNOWN = "asset_type_unknown"
+DIAGNOSTIC_ASSET_TYPE_INACTIVE = "asset_type_inactive"
+DIAGNOSTIC_ASSET_TYPE_SCOPE_UNMAPPED = "asset_type_approval_scope_unmapped"
+DIAGNOSTIC_ASSET_TYPE_SCOPE_AMBIGUOUS = "asset_type_approval_scope_ambiguous"
+DIAGNOSTIC_PROPOSED_ASSET_UNKNOWN = "proposed_asset_unknown"
+DIAGNOSTIC_PROPOSED_ASSET_INACTIVE = "proposed_asset_inactive"
+DIAGNOSTIC_PROPOSED_ASSET_TYPE_MISMATCH = "proposed_asset_type_mismatch"
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +131,101 @@ def resolve_line_approvers(
         normalized = str(user_id or "").strip()
         if normalized:
             sources_by_user.setdefault(normalized, set()).add(APPROVER_SOURCE_RESOURCE)
+
+    eligible: list[EligibleApprover] = []
+    for user_id in sorted(sources_by_user):
+        user = users.get(user_id)
+        if user is None:
+            diagnostics.append(f"{DIAGNOSTIC_APPROVER_NOT_FOUND}:{user_id}")
+            continue
+        if not user.active:
+            diagnostics.append(f"{DIAGNOSTIC_APPROVER_INACTIVE}:{user_id}")
+            continue
+        if PERMISSION_APPROVE_DEMANDS not in user.permissions:
+            diagnostics.append(f"{DIAGNOSTIC_APPROVER_PERMISSION_MISSING}:{user_id}")
+            continue
+        eligible.append(
+            EligibleApprover(
+                user_id=user_id,
+                sources=tuple(sorted(sources_by_user[user_id])),
+            )
+        )
+
+    if not eligible:
+        diagnostics.append(DIAGNOSTIC_NO_ELIGIBLE_APPROVER)
+    return ApprovalLineResolution(
+        approval_scope_id=scope.scope_id,
+        eligible_approvers=tuple(eligible),
+        diagnostics=tuple(diagnostics),
+        blocked=not bool(eligible),
+    )
+
+
+
+def resolve_asset_line_approvers(
+    *,
+    line_active: bool,
+    asset_type_id: str | None,
+    asset_type_exists: bool,
+    asset_type_active: bool,
+    scope_candidates: Sequence[ApprovalScopeCandidate],
+    scope_approver_user_ids: Sequence[str],
+    users: Mapping[str, ApprovalRoutingUser],
+    proposed_asset_id: str | None = None,
+    proposed_asset_exists: bool = True,
+    proposed_asset_active: bool = True,
+    proposed_asset_type_matches: bool = True,
+    asset_approver_user_ids: Sequence[str] = (),
+) -> ApprovalLineResolution:
+    """Resolve #534 ASSET authority without falling back to workforce routing."""
+
+    diagnostics: list[str] = []
+    if not line_active:
+        diagnostics.append(DIAGNOSTIC_LINE_INACTIVE)
+        return ApprovalLineResolution(None, (), tuple(diagnostics), True)
+
+    normalized_type = str(asset_type_id or "").strip()
+    if not normalized_type or not asset_type_exists:
+        diagnostics.append(DIAGNOSTIC_ASSET_TYPE_UNKNOWN)
+        return ApprovalLineResolution(None, (), tuple(diagnostics), True)
+    if not asset_type_active:
+        diagnostics.append(DIAGNOSTIC_ASSET_TYPE_INACTIVE)
+        return ApprovalLineResolution(None, (), tuple(diagnostics), True)
+
+    normalized_asset = str(proposed_asset_id or "").strip()
+    if normalized_asset:
+        if not proposed_asset_exists:
+            diagnostics.append(DIAGNOSTIC_PROPOSED_ASSET_UNKNOWN)
+            return ApprovalLineResolution(None, (), tuple(diagnostics), True)
+        if not proposed_asset_active:
+            diagnostics.append(DIAGNOSTIC_PROPOSED_ASSET_INACTIVE)
+            return ApprovalLineResolution(None, (), tuple(diagnostics), True)
+        if not proposed_asset_type_matches:
+            diagnostics.append(DIAGNOSTIC_PROPOSED_ASSET_TYPE_MISMATCH)
+            return ApprovalLineResolution(None, (), tuple(diagnostics), True)
+
+    candidates = tuple(sorted(scope_candidates, key=lambda row: row.scope_id))
+    if not candidates:
+        diagnostics.append(DIAGNOSTIC_ASSET_TYPE_SCOPE_UNMAPPED)
+        return ApprovalLineResolution(None, (), tuple(diagnostics), True)
+    if len(candidates) != 1:
+        diagnostics.append(DIAGNOSTIC_ASSET_TYPE_SCOPE_AMBIGUOUS)
+        return ApprovalLineResolution(None, (), tuple(diagnostics), True)
+
+    scope = candidates[0]
+    if not scope.active:
+        diagnostics.append(DIAGNOSTIC_SCOPE_INACTIVE)
+        return ApprovalLineResolution(scope.scope_id, (), tuple(diagnostics), True)
+
+    sources_by_user: dict[str, set[str]] = {}
+    for user_id in scope_approver_user_ids:
+        normalized = str(user_id or "").strip()
+        if normalized:
+            sources_by_user.setdefault(normalized, set()).add(APPROVER_SOURCE_SCOPE)
+    for user_id in asset_approver_user_ids:
+        normalized = str(user_id or "").strip()
+        if normalized:
+            sources_by_user.setdefault(normalized, set()).add(APPROVER_SOURCE_ASSET)
 
     eligible: list[EligibleApprover] = []
     for user_id in sorted(sources_by_user):
