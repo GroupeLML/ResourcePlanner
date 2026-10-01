@@ -106,7 +106,7 @@ class ReactMediumTermContractTests(unittest.TestCase):
         self.assertIn("bucket.work_package_hours", panel)
         self.assertIn("bucket.utilization", panel)
         self.assertIn("STATE_LABELS[bucket.state]", panel)
-        self.assertIn('className={\`mt-capacity-cell \${bucket ? \`is-\${bucket.state}\` : "is-unavailable"}\`}', panel)
+        self.assertIn('className={`mt-capacity-cell ${bucket ? `is-${bucket.state}` : "is-unavailable"}`}', panel)
         self.assertIn("Charge non disponible", panel)
         self.assertIn("Charge inconnue — pas 0 h", panel)
         self.assertIn("Non calculable", panel)
