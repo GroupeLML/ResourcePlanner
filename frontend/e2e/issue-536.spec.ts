@@ -56,6 +56,16 @@ test("DnD hors horaire conserve le consentement et le transmet au MOVE", async (
   const endDay = localIso(addDays(nextMonday, 6));
   const { context, page } = await openCoordinator(browser);
 
+  try {
+    const limitedSchedule = await page.request.patch(
+      "/api/v1/availability-rules/E2E-STD-BOB",
+      {
+        headers: { "X-E2E-Role": "ADMIN" },
+        data: { weekdays: "Lun,Mar,Mer,Jeu,Ven" },
+      },
+    );
+    expect(limitedSchedule.status(), await limitedSchedule.text()).toBe(200);
+
   const created = await page.request.post("/api/v1/demands", {
     data: {
       project_number: "P-251",
@@ -176,6 +186,15 @@ test("DnD hors horaire conserve le consentement et le transmet au MOVE", async (
   expect(after!.resource_id).toBe("R-BOB");
   expect(after!.work_date).toBe(targetDay);
   expect(after!.outside_standard_hours).toBe(true);
-
-  await closeContext(context);
+  } finally {
+    const restoredSchedule = await page.request.patch(
+      "/api/v1/availability-rules/E2E-STD-BOB",
+      {
+        headers: { "X-E2E-Role": "ADMIN" },
+        data: { weekdays: "Lun,Mar,Mer,Jeu,Ven,Sam,Dim" },
+      },
+    );
+    expect(restoredSchedule.status(), await restoredSchedule.text()).toBe(200);
+    await closeContext(context);
+  }
 });
