@@ -69,6 +69,11 @@ export type DeliverySummary = {
     name: string;
     status: string;
     reference_hours: number | null;
+    resource_class_code: string | null;
+    resource_class_label: string | null;
+    resource_class_active: boolean | null;
+    task_resource_class_code: string | null;
+    resource_class_diagnostic: string | null;
   };
   delivery_plan: {
     id: string;
