@@ -36,6 +36,17 @@ class ReactApproval276DContractTests(unittest.TestCase):
         self.assertIn("/resource-classes/", client)
         self.assertIn("expected_version", client)
 
+    def test_configuration_administers_asset_type_routing(self) -> None:
+        panel = (ROOT / "frontend" / "src" / "ApprovalScopesPanel.tsx").read_text(encoding="utf-8")
+        client = (ROOT / "frontend" / "src" / "approvalScopesApi.ts").read_text(encoding="utf-8")
+
+        self.assertIn("getAssetCatalog", panel)
+        self.assertIn("Types d’actifs couverts", panel)
+        self.assertIn("scope.asset_type_ids.includes", panel)
+        self.assertIn("setApprovalScopeAssetType", panel)
+        self.assertIn("asset_type_ids: string[]", client)
+        self.assertIn("/asset-types/", client)
+
     def test_configuration_administers_scopes_and_explicit_approvers(self) -> None:
         config = (ROOT / "frontend" / "src" / "ConfigurationPage.tsx").read_text(encoding="utf-8")
         panel = (ROOT / "frontend" / "src" / "ApprovalScopesPanel.tsx").read_text(encoding="utf-8")
