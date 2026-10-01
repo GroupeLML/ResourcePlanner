@@ -1,4 +1,4 @@
-import { Browser, BrowserContext, Page, expect, test } from "@playwright/test";
+import { Browser, BrowserContext, Locator, Page, expect, test } from "@playwright/test";
 
 const BASE_URL = process.env.RESOURCEPLANNER_E2E_BASE_URL || "http://127.0.0.1:8765";
 
@@ -38,6 +38,16 @@ async function navigateMain(page: Page, label: string) {
   await page.locator(".main-nav").getByRole("button", { name: new RegExp(label, "i") }).click();
 }
 
+async function chooseCombobox(scope: Locator, label: string, query: string, optionName: string) {
+  const input = scope.getByRole("combobox", { name: label, exact: true });
+  await input.click();
+  await input.fill(query);
+  await scope
+    .getByRole("listbox", { name: `${label} options`, exact: true })
+    .getByRole("option", { name: optionName, exact: false })
+    .click();
+}
+
 async function resourceNames(group: ReturnType<Page["locator"]>) {
   return group.locator(".resource-identity > strong").allTextContents();
 }
@@ -64,8 +74,8 @@ test("Planning mémorise semaine, tri et classes repliées tout en utilisant la 
 
     await page.getByRole("button", { name: "+ Quick Shift", exact: true }).click();
     const quickShift = page.getByRole("dialog", { name: "Créer un Quick Shift" });
-    await quickShift.getByLabel("Projet").selectOption("P-251");
-    await quickShift.getByLabel("Technicien").selectOption("Alice");
+    await chooseCombobox(quickShift, "Projet", "251", "P-251");
+    await chooseCombobox(quickShift, "Technicien", "ALI", "Alice");
     await quickShift.getByLabel("Date").fill(targetDay);
     await quickShift.getByLabel("Heures").fill("8");
     await quickShift.getByRole("button", { name: "Créer le Quick Shift" }).click();

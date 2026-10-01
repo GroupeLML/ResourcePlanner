@@ -29,6 +29,7 @@ import {
   updateDemand,
 } from "./api";
 import CompetencyPicker from "./CompetencyPicker";
+import SearchableCombobox from "./SearchableCombobox";
 import { ContactSelect, ResolutionSummary } from "./BusinessContactUi";
 import { useAuth } from "./AuthContext";
 import DemandDetail from "./DemandDetail";
@@ -93,6 +94,14 @@ function optionalNumber(value: string) {
   if (!normalized) return null;
   const parsed = Number(normalized.replace(",", "."));
   return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+function taskIdentity(task: TaskCatalogItemReadModel) {
+  return task.id ?? `task:${task.project_number}:${task.code}`;
+}
+
+function historicalIdentity(kind: string, value: string) {
+  return `historical:${kind}:${value}`;
 }
 
 function inclusiveCalendarDays(start: string, end: string): number {
@@ -739,10 +748,21 @@ export default function DemandsPage({ initialDemandNumber = null }: DemandsPageP
         </label>
         <label>
           <span>Projet</span>
-          <select value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)}>
-            <option value="all">Tous les projets</option>
-            {projects.map((project) => <option value={project.number} key={project.id}>{project.number} — {project.name}</option>)}
-          </select>
+          <SearchableCombobox
+            value={projects.find((project) => project.number === projectFilter)?.id ?? null}
+            options={projects.map((project) => ({
+              value: project.id,
+              label: `${project.number} — ${project.name}`,
+              searchText: [project.number, project.name, project.client].filter(Boolean).join(" "),
+            }))}
+            onChange={(value) => {
+              const selected = projects.find((project) => project.id === value);
+              setProjectFilter(selected?.number ?? "all");
+            }}
+            label="Filtre Projet"
+            placeholder="Tous les projets"
+            clearable
+          />
         </label>
         <label>
           <span>Tri</span>
@@ -825,10 +845,27 @@ export default function DemandsPage({ initialDemandNumber = null }: DemandsPageP
               <div className="demand-form-grid">
                 <label className="span-2">
                   <span>Projet</span>
-                  <select
-                    value={form.project_number}
-                    onChange={(event) => {
-                      const projectNumber = event.target.value;
+                  <SearchableCombobox
+                    value={
+                      selectedProject?.id
+                      ?? (form.project_number ? historicalIdentity("project", form.project_number) : null)
+                    }
+                    options={projects.map((project) => ({
+                      value: project.id,
+                      label: `${project.number} — ${project.name}`,
+                      searchText: [project.number, project.name, project.client].filter(Boolean).join(" "),
+                    }))}
+                    selectedOption={
+                      form.project_number && !selectedProject
+                        ? {
+                          value: historicalIdentity("project", form.project_number),
+                          label: `${form.project_number} — ${selectedDemand?.project_name || "historique/inactif"}`,
+                          disabled: true,
+                        }
+                        : null
+                    }
+                    onChange={(value) => {
+                      const projectNumber = projects.find((project) => project.id === value)?.number ?? "";
                       setEditorDirty(true);
                       setForm((current) => ({
                         ...current,
@@ -844,12 +881,11 @@ export default function DemandsPage({ initialDemandNumber = null }: DemandsPageP
                         })));
                       }
                     }}
+                    label="Projet"
+                    placeholder="Sélectionner un projet…"
                     disabled={saving}
                     required
-                  >
-                    <option value="">Sélectionner un projet…</option>
-                    {projects.map((project) => <option value={project.number} key={project.id}>{project.number} — {project.name}</option>)}
-                  </select>
+                  />
                 </label>
 
                 <label>
@@ -943,23 +979,39 @@ export default function DemandsPage({ initialDemandNumber = null }: DemandsPageP
                 <div className="demand-form-grid demand-flat-need-grid">
                   <label>
                     <span>Tâche ERP</span>
-                    <select
-                      value={form.task_code}
-                      onChange={(event) => setField("task_code", event.target.value)}
+                    <SearchableCombobox
+                      value={
+                        selectedTask
+                          ? taskIdentity(selectedTask)
+                          : form.task_code ? historicalIdentity("task", form.task_code) : null
+                      }
+                      options={visibleTasks.filter((task) => task.active).map((task) => ({
+                        value: taskIdentity(task),
+                        label: `${task.code} — ${task.label}`,
+                        searchText: [task.code, task.label, task.project_number].join(" "),
+                      }))}
+                      selectedOption={
+                        form.task_code && (!selectedTask || !selectedTask.active)
+                          ? {
+                            value: selectedTask
+                              ? taskIdentity(selectedTask)
+                              : historicalIdentity("task", form.task_code),
+                            label: selectedTask
+                              ? `${selectedTask.code} — ${selectedTask.label} · inactive`
+                              : `${form.task_code} — ${selectedDemand?.task_label || "tâche historique/non cataloguée"}`,
+                            disabled: true,
+                          }
+                          : null
+                      }
+                      onChange={(value) => {
+                        const task = tasks.find((row) => taskIdentity(row) === value);
+                        setField("task_code", task?.code ?? "");
+                      }}
+                      label="Tâche ERP"
+                      placeholder="Aucune tâche sélectionnée"
+                      clearable
                       disabled={saving || !form.project_number}
-                    >
-                      <option value="">Aucune tâche sélectionnée</option>
-                      {form.task_code && !selectedTask && (
-                        <option value={form.task_code}>
-                          {form.task_code} — {selectedDemand?.task_label || "tâche historique/non cataloguée"}
-                        </option>
-                      )}
-                      {visibleTasks.map((task) => (
-                        <option value={task.code} key={`${task.project_number}:${task.code}`}>
-                          {task.code} — {task.label}{task.active ? "" : " · inactive"}
-                        </option>
-                      ))}
-                    </select>
+                    />
                     {selectedTask && (
                       <small>
                         {selectedTask.status}
@@ -971,14 +1023,34 @@ export default function DemandsPage({ initialDemandNumber = null }: DemandsPageP
 
                   <label className="span-2">
                     <span>Plage moyen terme / WorkPackage</span>
-                    <select value={form.work_package_ref} onChange={(event) => setField("work_package_ref", event.target.value)} disabled={saving || !form.project_number}>
-                      <option value="">Aucune plage liée</option>
-                      {workPackages.map((item) => (
-                        <option value={item.reference} key={item.id}>
-                          {item.code ? `${item.code} — ` : ""}{item.name}{item.start_date ? ` · ${item.start_date}${item.end_date && item.end_date !== item.start_date ? ` → ${item.end_date}` : ""}` : ""}{item.status ? ` · ${item.status}` : ""}
-                        </option>
-                      ))}
-                    </select>
+                    <SearchableCombobox
+                      value={
+                        selectedWorkPackage?.id
+                        ?? (form.work_package_ref ? historicalIdentity("work-package", form.work_package_ref) : null)
+                      }
+                      options={workPackages.map((item) => ({
+                        value: item.id,
+                        label: `${item.code ? `${item.code} — ` : ""}${item.name}${item.start_date ? ` · ${item.start_date}${item.end_date && item.end_date !== item.start_date ? ` → ${item.end_date}` : ""}` : ""}${item.status ? ` · ${item.status}` : ""}`,
+                        searchText: [item.reference, item.code, item.name].filter(Boolean).join(" "),
+                      }))}
+                      selectedOption={
+                        form.work_package_ref && !selectedWorkPackage
+                          ? {
+                            value: historicalIdentity("work-package", form.work_package_ref),
+                            label: `${form.work_package_ref} — historique`,
+                            disabled: true,
+                          }
+                          : null
+                      }
+                      onChange={(value) => {
+                        const item = workPackages.find((row) => row.id === value);
+                        setField("work_package_ref", item?.reference ?? "");
+                      }}
+                      label="Plage moyen terme / WorkPackage"
+                      placeholder="Aucune plage liée"
+                      clearable
+                      disabled={saving || !form.project_number}
+                    />
                     {selectedWorkPackage && <small>{selectedWorkPackage.planned_hours == null ? "" : `${selectedWorkPackage.planned_hours} h prévues · `}{selectedWorkPackage.description || "Plage moyen terme sélectionnée"}</small>}
                   </label>
 
@@ -992,11 +1064,34 @@ export default function DemandsPage({ initialDemandNumber = null }: DemandsPageP
 
                   <label>
                     <span>Ressource proposée</span>
-                    <select value={form.proposed_technician} onChange={(event) => setField("proposed_technician", event.target.value)} disabled={saving}>
-                      <option value="">Aucune ressource proposée</option>
-                      {missingProposedResource && <option value={missingProposedResource}>{missingProposedResource} — inactive/non listée</option>}
-                      {resources.map((resource) => <option value={resource.name} key={resource.id}>{resource.name}{resource.resource_class ? ` — ${resource.resource_class}` : ""}</option>)}
-                    </select>
+                    <SearchableCombobox
+                      value={
+                        resources.find((resource) => resource.name === form.proposed_technician)?.id
+                        ?? (missingProposedResource ? historicalIdentity("resource-name", missingProposedResource) : null)
+                      }
+                      options={resources.map((resource) => ({
+                        value: resource.id,
+                        label: `${resource.name}${resource.resource_class ? ` — ${resource.resource_class}` : ""}`,
+                        searchText: [resource.name, resource.resource_class, resource.competencies].filter(Boolean).join(" "),
+                      }))}
+                      selectedOption={
+                        missingProposedResource
+                          ? {
+                            value: historicalIdentity("resource-name", missingProposedResource),
+                            label: `${missingProposedResource} — inactive/non listée`,
+                            disabled: true,
+                          }
+                          : null
+                      }
+                      onChange={(value) => {
+                        const resource = resources.find((row) => row.id === value);
+                        setField("proposed_technician", resource?.name ?? "");
+                      }}
+                      label="Ressource proposée"
+                      placeholder="Aucune ressource proposée"
+                      clearable
+                      disabled={saving}
+                    />
                   </label>
 
                   <label>

@@ -1,6 +1,7 @@
 import { FormEvent, MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { useAuth } from "./AuthContext";
+import SearchableCombobox from "./SearchableCombobox";
 import {
   ApiError,
   ProjectReadModel,
@@ -54,8 +55,8 @@ export default function QuickShiftEditor({
   const [projects, setProjects] = useState<ProjectReadModel[]>([]);
   const [resources, setResources] = useState<ResourceReadModel[]>([]);
   const [loadingChoices, setLoadingChoices] = useState(false);
-  const [projectNumber, setProjectNumber] = useState("");
-  const [technician, setTechnician] = useState("");
+  const [projectId, setProjectId] = useState("");
+  const [resourceId, setResourceId] = useState("");
   const [day, setDay] = useState(defaultDay);
   const [hours, setHours] = useState("8");
   const [confirmation, setConfirmation] = useState<"Tentative" | "Confirmée">("Confirmée");
@@ -71,8 +72,8 @@ export default function QuickShiftEditor({
     const controller = new AbortController();
     setLoadingChoices(true);
     setError(null);
-    setProjectNumber(initialProjectNumber ?? "");
-    setTechnician("");
+    setProjectId("");
+    setResourceId("");
     setDay(defaultDay);
     setHours("8");
     setConfirmation("Confirmée");
@@ -94,12 +95,14 @@ export default function QuickShiftEditor({
         );
         setProjects(sortedProjects);
         setResources(sortedResources);
-        setProjectNumber((current) =>
-          sortedProjects.some((row) => row.number === current) ? current : "",
+        setProjectId(
+          initialProjectNumber
+            ? sortedProjects.find((row) => row.number === initialProjectNumber)?.id ?? ""
+            : "",
         );
-        setTechnician(
+        setResourceId(
           initialResourceId
-            ? sortedResources.find((row) => row.id === initialResourceId)?.name ?? ""
+            ? sortedResources.find((row) => row.id === initialResourceId)?.id ?? ""
             : "",
         );
       })
@@ -124,13 +127,13 @@ export default function QuickShiftEditor({
   }, [open, canManagePlanning, saving, onClose]);
 
   const selectedProject = useMemo(
-    () => projects.find((row) => row.number === projectNumber) ?? null,
-    [projects, projectNumber],
+    () => projects.find((row) => row.id === projectId) ?? null,
+    [projects, projectId],
   );
 
   const selectedResource = useMemo(
-    () => resources.find((row) => row.name === technician) ?? null,
-    [resources, technician],
+    () => resources.find((row) => row.id === resourceId) ?? null,
+    [resources, resourceId],
   );
 
   if (!open || !canManagePlanning) return null;
@@ -221,8 +224,41 @@ export default function QuickShiftEditor({
           )}
 
           <div className="dialog-form-grid">
-            <label><span>Projet</span><select value={projectNumber} onChange={(event) => setProjectNumber(event.target.value)} disabled={saving || loadingChoices} required autoFocus><option value="">Sélectionner un projet…</option>{projects.map((row) => <option value={row.number} key={row.id}>{row.number} — {row.name}</option>)}</select></label>
-            <label><span>Technicien</span><select value={technician} onChange={(event) => setTechnician(event.target.value)} disabled={saving || loadingChoices} required><option value="">Sélectionner une ressource…</option>{resources.map((row) => <option value={row.name} key={row.id}>{row.name}{row.resource_class ? ` — ${row.resource_class}` : ""}</option>)}</select></label>
+            <label>
+              <span>Projet</span>
+              <SearchableCombobox
+                value={projectId || null}
+                options={projects.map((row) => ({
+                  value: row.id,
+                  label: `${row.number} — ${row.name}`,
+                  searchText: [row.number, row.name, row.client].filter(Boolean).join(" "),
+                }))}
+                onChange={(value) => setProjectId(value ?? "")}
+                label="Projet"
+                placeholder="Sélectionner un projet…"
+                disabled={saving || loadingChoices}
+                loading={loadingChoices}
+                required
+                autoFocus
+              />
+            </label>
+            <label>
+              <span>Technicien</span>
+              <SearchableCombobox
+                value={resourceId || null}
+                options={resources.map((row) => ({
+                  value: row.id,
+                  label: `${row.name}${row.resource_class ? ` — ${row.resource_class}` : ""}`,
+                  searchText: [row.name, row.resource_class, row.competencies].filter(Boolean).join(" "),
+                }))}
+                onChange={(value) => setResourceId(value ?? "")}
+                label="Technicien"
+                placeholder="Sélectionner une ressource…"
+                disabled={saving || loadingChoices}
+                loading={loadingChoices}
+                required
+              />
+            </label>
             <label><span>Date</span><input type="date" value={day} onChange={(event) => setDay(event.target.value)} disabled={saving} required /></label>
             <label><span>Heures</span><input type="number" min="0.25" step="0.25" value={hours} onChange={(event) => setHours(event.target.value)} disabled={saving} required /></label>
             <label><span>Confirmation</span><select value={confirmation} onChange={(event) => setConfirmation(event.target.value as "Tentative" | "Confirmée")} disabled={saving}><option value="Confirmée">Confirmée</option><option value="Tentative">Tentative</option></select></label>

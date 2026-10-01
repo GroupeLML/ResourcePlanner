@@ -10,6 +10,7 @@ import "./styles.css";
 import "./shift-editor.css";
 import "./quick-shift.css";
 import "./demands.css";
+import "./searchable-combobox.css";
 import "./demand-history.css";
 import "./demand-detail.css";
 import "./demand-periods.css";
