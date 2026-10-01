@@ -600,6 +600,21 @@ class ServerWorkPackageCommandTests(unittest.TestCase):
                     "/api/v1/work-packages/EFF-FREE",
                     json={"expected_version": 1, "description": "Mutation sans classe"},
                 )
+                line_class = client.patch(
+                    "/api/v1/work-packages/EFF-LINEONLY",
+                    json={
+                        "expected_version": 1,
+                        "resource_class_code": "PROGRAMMEUR",
+                    },
+                )
+                combined = client.patch(
+                    f"/api/v1/work-packages/{explicit.json()['reference']}",
+                    json={
+                        "expected_version": 1,
+                        "task_catalog_item_id": "TASK-P1-211",
+                        "resource_class_code": "PROGRAMMEUR",
+                    },
+                )
 
             self.assertEqual(explicit.status_code, 201, explicit.text)
             self.assertEqual(derived.status_code, 201, derived.text)
@@ -667,6 +682,8 @@ class ServerWorkPackageCommandTests(unittest.TestCase):
             self.assertEqual(cleared.status_code, 200, cleared.text)
             self.assertEqual(inactive_assignment.status_code, 422, inactive_assignment.text)
             self.assertEqual(unrelated.status_code, 200, unrelated.text)
+            self.assertEqual(line_class.status_code, 200, line_class.text)
+            self.assertEqual(combined.status_code, 200, combined.text)
 
             engine = create_sql_engine(database_url)
             factory = create_session_factory(engine)
@@ -696,6 +713,30 @@ class ServerWorkPackageCommandTests(unittest.TestCase):
                     line = session.get(RequestLine, "LINE-ONLY")
                     assert line is not None
                     self.assertIsNone(line.required_resource_class)
+                    combined_audit = session.scalars(
+                        select(WorkPackageAudit)
+                        .where(
+                            WorkPackageAudit.work_package_id
+                            == explicit.json()["reference"]
+                        )
+                        .order_by(WorkPackageAudit.resulting_version)
+                    ).all()[-1]
+                    self.assertIn(
+                        '"task_catalog_item_id":"TASK-P1-210"',
+                        combined_audit.old_values_json,
+                    )
+                    self.assertIn(
+                        '"resource_class_code":"INSTALLATEUR_AUTOMATISATION"',
+                        combined_audit.old_values_json,
+                    )
+                    self.assertIn(
+                        '"task_catalog_item_id":"TASK-P1-211"',
+                        combined_audit.new_values_json,
+                    )
+                    self.assertIn(
+                        '"resource_class_code":"PROGRAMMEUR"',
+                        combined_audit.new_values_json,
+                    )
             finally:
                 engine.dispose()
 
