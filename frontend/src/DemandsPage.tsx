@@ -263,6 +263,7 @@ function DemandCard({
               type="button"
               className="text-button"
               data-quick-action={action}
+              aria-label={`${quickActionLabel(action)} — ${demand.number}`}
               onClick={() => onQuickAction(action)}
               key={action}
             >
