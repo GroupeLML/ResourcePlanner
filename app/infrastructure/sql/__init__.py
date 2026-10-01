@@ -30,6 +30,7 @@ from .resource_class_repository import SqlResourceClassRepository
 from .asset_models import (
     Asset,
     AssetAllocation,
+    AssetApprover,
     AssetRequirement,
     AssetType,
     AssetTypeCompetency,
@@ -179,6 +180,7 @@ __all__ = [
     "IdentityAdminAudit",
     "Asset",
     "AssetAllocation",
+    "AssetApprover",
     "AssetRequirement",
     "AssetType",
     "AssetTypeCompetency",
