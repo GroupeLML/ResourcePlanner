@@ -138,6 +138,73 @@
   margin-left: auto;
 }
 
+.approval-routing-diagnostic {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.approval-routing-context {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 0.6rem;
+  margin: 0;
+}
+
+.approval-routing-context > div {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid currentColor;
+  border-radius: 10px;
+}
+
+.approval-routing-context dt {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  opacity: 0.72;
+}
+
+.approval-routing-context dd {
+  display: grid;
+  gap: 0.15rem;
+  margin: 0;
+  font-weight: 700;
+}
+
+.approval-routing-context dd small {
+  overflow-wrap: anywhere;
+  font-weight: 400;
+  opacity: 0.72;
+}
+
+.approval-routing-reasons {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.approval-routing-reasons ul {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0;
+  padding-left: 1.2rem;
+}
+
+.approval-routing-reasons li {
+  padding-left: 0.15rem;
+}
+
+.approval-routing-reasons li span,
+.approval-routing-reasons li code {
+  display: block;
+}
+
+.approval-routing-reasons li code {
+  margin-top: 0.15rem;
+  font-size: 0.72rem;
+  opacity: 0.72;
+}
+
 .workflow-terminal-state {
   opacity: 0.7;
 }
