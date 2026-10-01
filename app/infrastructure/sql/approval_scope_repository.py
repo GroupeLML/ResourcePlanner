@@ -7,6 +7,8 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from ...application.approval_scopes import (
+    ApprovalAssetRecord,
+    ApprovalAssetTypeRecord,
     ApprovalRequestLineRecord,
     ApprovalResourceClassRecord,
     ApprovalScopeRecord,
@@ -19,9 +21,11 @@ from ...application.security import normalize_roles, permissions_for_roles
 from .approval_scope_models import (
     ApprovalScope,
     ApprovalScopeApprover,
+    AssetTypeApprovalScopeMapping,
     ResourceClassApprovalScopeMapping,
     TaskApprovalScopeMapping,
 )
+from .asset_models import Asset, AssetApprover, AssetType
 from .base import new_id
 from .identity_models import AppUser
 from .models import RequestLine, TaskCatalogEntry
@@ -56,6 +60,15 @@ class SqlApprovalScopeRepository(ApprovalScopeRepositoryPort):
                 )
             ).all()
         )
+        asset_types = tuple(
+            self._session.scalars(
+                select(AssetTypeApprovalScopeMapping.asset_type_id)
+                .where(
+                    AssetTypeApprovalScopeMapping.approval_scope_id == row.id
+                )
+                .order_by(AssetTypeApprovalScopeMapping.asset_type_id)
+            ).all()
+        )
         tasks = tuple(
             self._session.scalars(
                 select(TaskApprovalScopeMapping.task_catalog_item_id)
@@ -71,6 +84,7 @@ class SqlApprovalScopeRepository(ApprovalScopeRepositoryPort):
             version=int(row.version or 1),
             approver_user_ids=approvers,
             resource_class_codes=resource_classes,
+            asset_type_ids=asset_types,
             task_catalog_item_ids=tasks,
         )
 
@@ -278,6 +292,9 @@ class SqlApprovalScopeRepository(ApprovalScopeRepositoryPort):
             id=row.id,
             active=bool(row.active),
             task_catalog_item_id=row.task_catalog_item_id,
+            kind=_text(row.kind) or "WORKFORCE",
+            asset_type_id=_text(row.asset_type_id) or None,
+            proposed_asset_id=_text(row.proposed_asset_id) or None,
             position=int(row.position or 0),
             erp_task_code=_text(row.erp_task_code) or None,
             erp_task_label=_text(row.erp_task_label) or None,
