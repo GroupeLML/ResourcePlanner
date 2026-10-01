@@ -130,7 +130,7 @@ export default function ProjectsPage() {
   }, [refreshKey, scope, scopeLoading]);
 
   useEffect(() => {
-    if (!selectedProject) {
+    if (!selectedProject || (!canManageContacts && !canSyncProjects)) {
       setProjectContactLink(null);
       setProjectTasks([]);
       setTaskSyncMetadata(null);
@@ -138,9 +138,15 @@ export default function ProjectsPage() {
     }
     const controller = new AbortController();
     Promise.all([
-      getProjectBusinessContacts(selectedProject.number, controller.signal),
-      getTaskCatalog(selectedProject.number, "", false, controller.signal),
-      getAcumaticaProjectTaskSyncMetadata(selectedProject.id, controller.signal),
+      canManageContacts
+        ? getProjectBusinessContacts(selectedProject.number, controller.signal)
+        : Promise.resolve(null),
+      canManageContacts
+        ? getTaskCatalog(selectedProject.number, "", false, controller.signal)
+        : Promise.resolve([]),
+      canSyncProjects
+        ? getAcumaticaProjectTaskSyncMetadata(selectedProject.id, controller.signal)
+        : Promise.resolve(null),
     ])
       .then(([link, taskRows, metadata]) => {
         setProjectContactLink(link);
@@ -152,7 +158,7 @@ export default function ProjectsPage() {
         setError(apiErrorMessage(reason, "Impossible de charger les données du projet."));
       });
     return () => controller.abort();
-  }, [selectedProject, refreshKey]);
+  }, [selectedProject, refreshKey, canManageContacts, canSyncProjects]);
 
   useEffect(() => {
     if (!selectedProject) {
