@@ -73,8 +73,9 @@ test("Quick Shift depuis une cellule préremplit la ressource et accepte une dat
 
     let dialog = page.getByRole("dialog", { name: "Créer un Quick Shift" });
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByLabel("Technicien")).toHaveValue("Alice");
-    await expect(dialog.getByLabel("Technicien")).toHaveAttribute("data-combobox-value", "R-ALICE");
+    const seededTechnician = dialog.getByRole("combobox", { name: "Technicien", exact: true });
+    await expect(seededTechnician).toHaveValue(/Alice/);
+    await expect(seededTechnician).toHaveAttribute("data-combobox-value", "R-ALICE");
     await expect(dialog.getByLabel("Date")).toHaveValue(targetDay);
     await chooseCombobox(dialog, "Projet", "251", "P-251");
     await dialog.getByLabel("Heures").fill("1");
