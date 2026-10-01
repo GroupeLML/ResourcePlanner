@@ -19,6 +19,7 @@ import {
   getTaskCatalog,
   setProjectManagerContact,
   setTaskBusinessContacts,
+  syncAcumaticaActiveProjectTasks,
   syncAcumaticaProjectTasks,
   syncAcumaticaProjects,
 } from "./api";
@@ -60,6 +61,9 @@ export default function ProjectsPage() {
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [globalTaskSyncing, setGlobalTaskSyncing] = useState(false);
+  const [globalTaskSyncMessage, setGlobalTaskSyncMessage] = useState<string | null>(null);
+  const [globalTaskSyncError, setGlobalTaskSyncError] = useState<string | null>(null);
   const [taskSyncing, setTaskSyncing] = useState(false);
   const [taskSyncMessage, setTaskSyncMessage] = useState<string | null>(null);
   const [taskSyncError, setTaskSyncError] = useState<string | null>(null);
@@ -224,6 +228,34 @@ export default function ProjectsPage() {
     }
   }
 
+  async function synchronizeAllProjectTasks() {
+    if (
+      !integration?.project_tasks_configured
+      || globalTaskSyncing
+      || !canSyncProjects
+    ) return;
+    setGlobalTaskSyncing(true);
+    setGlobalTaskSyncMessage(null);
+    setGlobalTaskSyncError(null);
+    try {
+      const result = await syncAcumaticaActiveProjectTasks();
+      setGlobalTaskSyncMessage(
+        `${result.projects_inspected} projets inspectés · ${result.projects_synchronized} synchronisés · `
+        + `${result.projects_ignored} ignorés · ${result.projects_rejected} rejetés · `
+        + `${result.tasks_received} tâches reçues · ${result.tasks_created} créées · `
+        + `${result.tasks_updated} mises à jour · ${result.tasks_unchanged} inchangées · `
+        + `${result.tasks_rejected} non admissibles`,
+      );
+      setRefreshKey((value) => value + 1);
+    } catch (reason: unknown) {
+      setGlobalTaskSyncError(
+        apiErrorMessage(reason, "La synchronisation globale des tâches ERP a échoué."),
+      );
+    } finally {
+      setGlobalTaskSyncing(false);
+    }
+  }
+
   async function synchronizeProjectTasks() {
     if (!selectedProject || taskSyncing || !canSyncProjects) return;
     setTaskSyncMessage(null);
@@ -273,7 +305,7 @@ export default function ProjectsPage() {
             className="projects-refresh"
             type="button"
             onClick={() => setRefreshKey((value) => value + 1)}
-            disabled={loading || syncing}
+            disabled={loading || syncing || globalTaskSyncing}
           >
             Actualiser
           </button>
@@ -301,9 +333,26 @@ export default function ProjectsPage() {
         </div>
         {integration?.configured && (
           canSyncProjects ? (
-            <button type="button" onClick={synchronize} disabled={syncing || loading}>
-              {syncing ? "Synchronisation…" : "Synchroniser les projets"}
-            </button>
+            <div className="page-heading-actions">
+              <button
+                type="button"
+                onClick={synchronize}
+                disabled={syncing || globalTaskSyncing || loading}
+              >
+                {syncing ? "Synchronisation…" : "Synchroniser les projets"}
+              </button>
+              {integration.project_tasks_configured && (
+                <button
+                  type="button"
+                  onClick={() => void synchronizeAllProjectTasks()}
+                  disabled={globalTaskSyncing || syncing || loading}
+                >
+                  {globalTaskSyncing
+                    ? "Synchronisation des tâches…"
+                    : "Synchroniser les tâches des projets actifs"}
+                </button>
+              )}
+            </div>
           ) : null
         )}
       </section>
@@ -314,6 +363,15 @@ export default function ProjectsPage() {
           <strong>La synchronisation n’a pas été complétée.</strong>
           <span>{syncError}</span>
           <small>Les projets déjà présents en SQL restent inchangés et disponibles.</small>
+        </div>
+      )}
+      {globalTaskSyncMessage && (
+        <div className="projects-sync-message" role="status">{globalTaskSyncMessage}</div>
+      )}
+      {globalTaskSyncError && (
+        <div className="error-panel">
+          <strong>La synchronisation globale des tâches n’a pas été complétée.</strong>
+          <span>{globalTaskSyncError}</span>
         </div>
       )}
 
