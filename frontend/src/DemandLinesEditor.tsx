@@ -9,6 +9,7 @@ import {
   WorkPackageReadModel,
 } from "./api";
 import CompetencyPicker from "./CompetencyPicker";
+import SearchableCombobox from "./SearchableCombobox";
 import { AssetCatalogItem, AssetTypeCatalogItem } from "./assetApi";
 import { ResourceClassOptionReadModel } from "./resourceClassesApi";
 
@@ -46,6 +47,14 @@ function optionalNumber(value: string) {
   if (!normalized) return null;
   const parsed = Number(normalized.replace(",", "."));
   return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+function taskIdentity(task: TaskCatalogItemReadModel) {
+  return task.id ?? `task:${task.project_number}:${task.code}`;
+}
+
+function historicalIdentity(kind: string, value: string) {
+  return `historical:${kind}:${value}`;
 }
 
 export function newDemandLine(defaults: DemandLineDefaults): DemandLineDraft {
@@ -346,40 +355,71 @@ export default function DemandLinesEditor({
 
               <label>
                 <span>WorkPackage</span>
-                <select
-                  value={line.work_package_ref}
-                  onChange={(event) => updateLine(index, { work_package_ref: event.target.value })}
+                <SearchableCombobox
+                  value={
+                    workPackages.find((row) => row.reference === line.work_package_ref)?.id
+                    ?? (line.work_package_ref ? historicalIdentity("work-package", line.work_package_ref) : null)
+                  }
+                  options={workPackages.map((item) => ({
+                    value: item.id,
+                    label: `${item.code ? `${item.code} — ` : ""}${item.name}`,
+                    searchText: [item.reference, item.code, item.name].filter(Boolean).join(" "),
+                  }))}
+                  selectedOption={
+                    line.work_package_ref && !workPackages.some((row) => row.reference === line.work_package_ref)
+                      ? {
+                        value: historicalIdentity("work-package", line.work_package_ref),
+                        label: `${line.work_package_ref} — historique`,
+                        disabled: true,
+                      }
+                      : null
+                  }
+                  onChange={(value) => {
+                    const selected = workPackages.find((row) => row.id === value);
+                    updateLine(index, { work_package_ref: selected?.reference ?? "" });
+                  }}
+                  label="WorkPackage"
+                  placeholder="Aucun WorkPackage"
+                  clearable
                   disabled={disabled}
-                >
-                  <option value="">Aucun WorkPackage</option>
-                  {line.work_package_ref && !workPackages.some((row) => row.reference === line.work_package_ref) && (
-                    <option value={line.work_package_ref}>{line.work_package_ref} — historique</option>
-                  )}
-                  {workPackages.map((item) => (
-                    <option value={item.reference} key={item.id}>
-                      {item.code ? `${item.code} — ` : ""}{item.name}
-                    </option>
-                  ))}
-                </select>
+                />
               </label>
 
               <label>
                 <span>Tâche ERP</span>
-                <select
-                  value={line.task_code}
-                  onChange={(event) => updateLine(index, { task_code: event.target.value })}
+                <SearchableCombobox
+                  value={(() => {
+                    const selected = tasks.find((row) => row.code === line.task_code);
+                    return selected
+                      ? taskIdentity(selected)
+                      : line.task_code ? historicalIdentity("task", line.task_code) : null;
+                  })()}
+                  options={tasks.filter((row) => row.active).map((task) => ({
+                    value: taskIdentity(task),
+                    label: `${task.code} — ${task.label}`,
+                    searchText: [task.code, task.label, task.project_number].join(" "),
+                  }))}
+                  selectedOption={(() => {
+                    if (!line.task_code) return null;
+                    const selected = tasks.find((row) => row.code === line.task_code);
+                    if (selected?.active) return null;
+                    return {
+                      value: selected ? taskIdentity(selected) : historicalIdentity("task", line.task_code),
+                      label: selected
+                        ? `${selected.code} — ${selected.label} · inactive`
+                        : `${line.task_code} — historique`,
+                      disabled: true,
+                    };
+                  })()}
+                  onChange={(value) => {
+                    const selected = tasks.find((row) => taskIdentity(row) === value);
+                    updateLine(index, { task_code: selected?.code ?? "" });
+                  }}
+                  label="Tâche ERP"
+                  placeholder="Aucune tâche"
+                  clearable
                   disabled={disabled}
-                >
-                  <option value="">Aucune tâche</option>
-                  {line.task_code && !tasks.some((row) => row.code === line.task_code) && (
-                    <option value={line.task_code}>{line.task_code} — historique</option>
-                  )}
-                  {tasks.filter((row) => row.active || row.code === line.task_code).map((task) => (
-                    <option value={task.code} key={`${task.project_number}:${task.code}`}>
-                      {task.code} — {task.label}
-                    </option>
-                  ))}
-                </select>
+                />
               </label>
 
               <div className="request-line-date-group" data-testid={`request-line-dates-${index}`}>
@@ -487,19 +527,29 @@ export default function DemandLinesEditor({
                 <>
                 <label className="request-line-compact-field">
                   <span>Classe de ressource</span>
-                  <select
-                    value={line.required_resource_class}
-                    onChange={(event) => updateLine(index, { required_resource_class: event.target.value })}
+                  <SearchableCombobox
+                    value={line.required_resource_class || null}
+                    options={activeResourceClasses.map((row) => ({
+                      value: row.code,
+                      label: `${row.code} · ${row.label}`,
+                      searchText: `${row.code} ${row.label}`,
+                    }))}
+                    selectedOption={
+                      line.required_resource_class
+                      && !activeResourceClasses.some((row) => row.code === line.required_resource_class)
+                        ? {
+                          value: line.required_resource_class,
+                          label: `${line.required_resource_class} — historique/inactive`,
+                          disabled: true,
+                        }
+                        : null
+                    }
+                    onChange={(value) => updateLine(index, { required_resource_class: value ?? "" })}
+                    label="Classe de ressource"
+                    placeholder="Aucune classe imposée"
+                    clearable
                     disabled={disabled}
-                  >
-                    <option value="">Aucune classe imposée</option>
-                    {line.required_resource_class && !activeResourceClasses.some((row) => row.code === line.required_resource_class) && (
-                      <option value={line.required_resource_class}>{line.required_resource_class} — historique/inactive</option>
-                    )}
-                    {activeResourceClasses.map((row) => (
-                      <option value={row.code} key={row.code}>{row.code} · {row.label}</option>
-                    ))}
-                  </select>
+                  />
                 </label>
   
                 <CompetencyPicker
@@ -513,21 +563,28 @@ export default function DemandLinesEditor({
   
                 <label>
                   <span>Ressource proposée</span>
-                  <select
-                    value={line.proposed_resource_id}
-                    onChange={(event) => updateLine(index, { proposed_resource_id: event.target.value })}
+                  <SearchableCombobox
+                    value={line.proposed_resource_id || null}
+                    options={resources.map((resource) => ({
+                      value: resource.id,
+                      label: `${resource.name}${resource.resource_class ? ` — ${resource.resource_class}` : ""}`,
+                      searchText: [resource.name, resource.resource_class, resource.competencies].filter(Boolean).join(" "),
+                    }))}
+                    selectedOption={
+                      line.proposed_resource_id && !resources.some((row) => row.id === line.proposed_resource_id)
+                        ? {
+                          value: line.proposed_resource_id,
+                          label: `${line.proposed_resource_id} — inactive/historique`,
+                          disabled: true,
+                        }
+                        : null
+                    }
+                    onChange={(value) => updateLine(index, { proposed_resource_id: value ?? "" })}
+                    label="Ressource proposée"
+                    placeholder="Aucune ressource proposée"
+                    clearable
                     disabled={disabled}
-                  >
-                    <option value="">Aucune ressource proposée</option>
-                    {line.proposed_resource_id && !resources.some((row) => row.id === line.proposed_resource_id) && (
-                      <option value={line.proposed_resource_id}>{line.proposed_resource_id} — inactive/historique</option>
-                    )}
-                    {resources.map((resource) => (
-                      <option value={resource.id} key={resource.id}>
-                        {resource.name}{resource.resource_class ? ` — ${resource.resource_class}` : ""}
-                      </option>
-                    ))}
-                  </select>
+                  />
                 </label>
   
                 <label>
