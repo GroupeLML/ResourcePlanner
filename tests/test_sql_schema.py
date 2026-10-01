@@ -143,7 +143,7 @@ class SqlSchemaTests(unittest.TestCase):
         self.assertTrue(work_packages.task_catalog_item_id.nullable)
         self.assertTrue(work_packages.resource_class_code.nullable)
         self.assertEqual(
-            work_packages.resource_class_code.foreign_keys.pop().target_fullname,
+            next(iter(work_packages.resource_class_code.foreign_keys)).target_fullname,
             "resource_class_configs.code",
         )
         self.assertFalse(work_packages.version.nullable)
