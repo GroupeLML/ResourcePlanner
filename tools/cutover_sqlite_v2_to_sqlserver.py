@@ -46,6 +46,8 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
             "break_glass_credentials",
             "work_package_audit",
             "work_package_weekly_loads",
+            "asset_type_approval_scope_mappings",
+            "asset_approvers",
         },
         "missing_columns": {
             "auth_sessions": {
@@ -56,6 +58,10 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
                 "version": 1,
                 "weekly_load_origin": None,
                 "resource_class_code": None,
+            },
+            "approval_requirements": {
+                "asset_type_id": None,
+                "proposed_asset_id": None,
             },
         },
     },
@@ -88,6 +94,7 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
     "approval_requirements": _keep("Exigences d'approbation par ligne."),
     "approval_scopes": _keep("Configuration locale des périmètres d'approbation."),
     "approval_scope_approvers": _keep("Configuration locale des approbateurs."),
+    "asset_type_approval_scope_mappings": _keep("Routage local type d'actif → périmètre."),
     "resource_class_approval_scope_mappings": _keep("Routage local classe → périmètre."),
     "task_approval_scope_mappings": _keep("Overrides locaux tâche → périmètre."),
     "asset_types": _keep("Catalogue local des types d'actifs."),
@@ -96,6 +103,7 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
     "asset_unavailability": _keep("Indisponibilités d'actifs saisies localement."),
     "asset_requirements": _keep("Besoins d'actifs matérialisés."),
     "asset_allocations": _keep("Réservations réelles d'actifs."),
+    "asset_approvers": _keep("Autorités locales spécifiques par unité d'actif."),
     "app_users": _keep(
         "Comptes, rôles et activation locaux; les identités dev sont filtrées."
     ),
@@ -201,6 +209,8 @@ RELATIONSHIP_CONTROLS: dict[str, tuple[str, ...]] = {
         "asset_type_id",
     ),
     "asset_allocations": ("id", "asset_requirement_id", "asset_id", "operator_resource_id"),
+    "asset_type_approval_scope_mappings": ("asset_type_id", "approval_scope_id"),
+    "asset_approvers": ("asset_id", "app_user_id"),
 }
 
 
