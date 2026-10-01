@@ -312,6 +312,7 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
   const [projectionError, setProjectionError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [projectFilter, setProjectFilter] = useState("");
+  const [includeInactiveProjects, setIncludeInactiveProjects] = useState(false);
   const [editor, setEditor] = useState<WorkPackageReadModel | null | undefined>(undefined);
   const [segmentEditorId, setSegmentEditorId] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -338,7 +339,7 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
     setLoading(true);
     setError(null);
     Promise.all([
-      getProjects(true, controller.signal, scope),
+      getProjects(!includeInactiveProjects, controller.signal, scope),
       getProjects(true, controller.signal, "global"),
       getWorkPackages("", false, controller.signal, scope),
       getResources(true, controller.signal),
@@ -370,7 +371,7 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [start, end, refreshKey, scope, scopeLoading, scopeError]);
+  }, [start, end, refreshKey, scope, scopeLoading, scopeError, includeInactiveProjects]);
 
   useEffect(() => {
     if (scopeLoading || scopeError || !projectFilter) {
@@ -593,6 +594,16 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
                 {project.number} — {project.name}
               </option>
             ))}
+          </select>
+        </label>
+        <label>
+          <span>Projets</span>
+          <select
+            value={includeInactiveProjects ? "all" : "active"}
+            onChange={(event) => setIncludeInactiveProjects(event.target.value === "all")}
+          >
+            <option value="active">Actifs seulement</option>
+            <option value="all">Actifs + historique</option>
           </select>
         </label>
         <label>
