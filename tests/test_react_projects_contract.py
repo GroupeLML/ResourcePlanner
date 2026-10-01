@@ -59,6 +59,44 @@ class ReactProjectsContractTests(unittest.TestCase):
         self.assertNotIn('includes("fermé")', page)
         self.assertNotIn('includes("annulé")', page)
 
+    def test_selected_project_reuses_medium_term_budget_projection_without_recalculation(self) -> None:
+        page = (ROOT / "frontend" / "src" / "ProjectsPage.tsx").read_text(
+            encoding="utf-8"
+        )
+        api = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
+
+        self.assertIn("getMediumTermBudgetSummary(selectedProject.number, controller.signal, scope)", page)
+        self.assertIn("getMediumTermBudgetSummary(selectedProject.number, undefined, scope)", page)
+        self.assertIn("task.task_code", page)
+        self.assertIn("task.task_label", page)
+        self.assertIn("task.budget_hours", page)
+        self.assertIn("task.planned_wp_hours", page)
+        self.assertIn("task.remaining_budget_hours", page)
+        self.assertIn("task.diagnostic_state", page)
+        self.assertIn("projectBudget.unclassified_work_packages", page)
+        self.assertIn("Aucun rattachement à une tâche ERP n’est déduit du nom ou du code.", page)
+        self.assertIn("Budget partiellement structuré", page)
+        self.assertIn("Dépassement du budget", page)
+        self.assertIn("Budget ERP non disponible", page)
+        self.assertNotIn("task.budget_hours - task.planned_wp_hours", page)
+        self.assertNotIn("reduce((sum, workPackage)", page)
+        self.assertNotIn("getWorkPackages(", page)
+        self.assertIn("export function getMediumTermBudgetSummary(", api)
+        self.assertIn("project_number: projectNumber", api)
+        self.assertIn("scope,", api)
+        self.assertIn("/api/v1/medium-term/budget?", api)
+
+    def test_project_budget_detail_is_readable_without_contact_management_permission(self) -> None:
+        page = (ROOT / "frontend" / "src" / "ProjectsPage.tsx").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("<th>Détail</th>", page)
+        self.assertIn(">\n                        Ouvrir\n", page)
+        self.assertIn("{selectedProjectNumber && (", page)
+        self.assertIn("{canManageContacts && (", page)
+        self.assertIn("Budgets tâches ERP", page)
+
     def test_projects_table_scrolls_vertically_with_sticky_header(self) -> None:
         css = (ROOT / "frontend" / "src" / "projects.css").read_text(
             encoding="utf-8"
