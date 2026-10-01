@@ -71,7 +71,7 @@ class ReactMediumTermContractTests(unittest.TestCase):
         self.assertIn("task.planned_wp_hours", page)
         self.assertIn("task.remaining_budget_hours", page)
         self.assertIn("task.diagnostic_state", page)
-        self.assertIn("WorkPackages non classés", page)
+        self.assertIn("WorkPackages sans tâche ERP", page)
         self.assertIn("Aucun rattachement n’est déduit du nom ou du code.", page)
         self.assertIn("BUDGET_ATTENTION.has(task.diagnostic_state)", page)
         self.assertIn("Budget partiellement structuré", page)
