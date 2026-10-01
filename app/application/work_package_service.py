@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .commands.common import UNSET
 from .commands.work_package import WorkPackageCreateCommand, WorkPackageUpdateCommand
 from .errors import ApplicationNotFoundError, call_application_port
 from .repository_ports import WorkPackageRepositoryPort
@@ -20,20 +21,21 @@ class WorkPackageService:
         self._repository = repository
 
     def create_command(self, command: WorkPackageCreateCommand) -> WorkPackageMutationResult:
+        values: dict[str, object] = {
+            "project_number": command.project_number,
+            "task_catalog_item_id": command.task_catalog_item_id,
+            "code": command.code,
+            "name": command.name,
+            "description": command.description,
+            "start_date": command.start_date,
+            "end_date": command.end_date,
+            "planned_hours": command.planned_hours,
+            "status": command.status,
+        }
+        if command.resource_class_code is not UNSET:
+            values["resource_class_code"] = command.resource_class_code
         row = call_application_port(
-            lambda: self._repository.create(
-                {
-                    "project_number": command.project_number,
-                    "task_catalog_item_id": command.task_catalog_item_id,
-                    "code": command.code,
-                    "name": command.name,
-                    "description": command.description,
-                    "start_date": command.start_date,
-                    "end_date": command.end_date,
-                    "planned_hours": command.planned_hours,
-                    "status": command.status,
-                }
-            ),
+            lambda: self._repository.create(values),
             code_prefix="work_package_create",
             context={"project_number": command.project_number},
         )
