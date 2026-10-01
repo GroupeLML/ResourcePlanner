@@ -97,3 +97,18 @@ export function setApprovalScopeResourceClass(
     },
   );
 }
+
+export function setApprovalScopeAssetType(
+  scopeId: string,
+  assetTypeId: string,
+  assigned: boolean,
+  expectedVersion: number,
+) {
+  return request<ApprovalScopeReadModel>(
+    `/api/v1/admin/approval-scopes/${encodeURIComponent(scopeId)}/asset-types/${encodeURIComponent(assetTypeId)}`,
+    {
+      method: assigned ? "PUT" : "DELETE",
+      body: JSON.stringify({ expected_version: expectedVersion }),
+    },
+  );
+}
