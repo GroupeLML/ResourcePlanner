@@ -35,6 +35,18 @@ class ReactAssetUxContractTests(unittest.TestCase):
         self.assertIn('"/api/v1/assets"', api)
         self.assertIn('"/api/v1/assets/requirements"', api)
 
+    def test_asset_catalog_administers_specific_approval_authority(self) -> None:
+        panel = (ROOT / "frontend" / "src" / "AssetCatalogPanel.tsx").read_text(encoding="utf-8")
+        api = (ROOT / "frontend" / "src" / "assetApi.ts").read_text(encoding="utf-8")
+
+        self.assertIn("Approbateurs spécifiques", panel)
+        self.assertIn("additifs au périmètre", panel)
+        self.assertIn('can("manage_resources")', panel)
+        self.assertIn("setAssetApprover", panel)
+        self.assertIn("approver_user_ids", api)
+        self.assertIn("approver_candidates", api)
+        self.assertIn("/approvers/", api)
+
     def test_planning_keeps_humans_first_and_links_only_actual_allocations(self) -> None:
         source = (ROOT / "frontend" / "src" / "PlanningPage.tsx").read_text(encoding="utf-8")
 
