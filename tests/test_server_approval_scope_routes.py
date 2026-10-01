@@ -15,6 +15,8 @@ from app.application.security import (
 )
 from app.infrastructure.sql import (
     AppUser,
+    Asset,
+    AssetType,
     Base,
     BusinessContact,
     Project,
@@ -475,6 +477,108 @@ class ServerApprovalScopeRouteTests(unittest.TestCase):
         self.assertIn(
             "no_eligible_approver",
             resolution["diagnostics"],
+        )
+
+    def test_asset_type_scope_and_specific_asset_approver_are_additive(
+        self,
+    ) -> None:
+        app = self._app()
+        factory = app.state.session_factory
+        with factory() as session, session.begin():
+            session.add(
+                AssetType(
+                    id="asset-type-1",
+                    code="PROGRAMMING_LAPTOP",
+                    label="Portable de programmation",
+                    category="EQUIPMENT",
+                    active=True,
+                )
+            )
+            session.flush()
+            session.add(
+                Asset(
+                    id="asset-1",
+                    code="LAPTOP-01",
+                    label="Portable 01",
+                    asset_type_id="asset-type-1",
+                    active=True,
+                )
+            )
+            session.add(
+                RequestLine(
+                    id="asset-line-1",
+                    workforce_request_id="request-1",
+                    position=1,
+                    kind="ASSET",
+                    asset_type_id="asset-type-1",
+                    proposed_asset_id="asset-1",
+                    active=True,
+                )
+            )
+
+        with TestClient(app) as client:
+            scope = self._create_scope(client, "ASSET_AUTOMATION", "Actifs automation")
+            scope = client.put(
+                f"/api/v1/admin/approval-scopes/{scope['id']}/approvers/manager-1",
+                json={"expected_version": scope["version"]},
+            ).json()
+            mapped = client.put(
+                f"/api/v1/admin/approval-scopes/{scope['id']}/asset-types/asset-type-1",
+                json={"expected_version": scope["version"]},
+            )
+            self.assertEqual(mapped.status_code, 200, mapped.text)
+            self.assertEqual(
+                mapped.json()["asset_type_ids"],
+                ["asset-type-1"],
+            )
+            assigned = client.put(
+                "/api/v1/assets/asset-1/approvers/admin-1",
+                json={},
+            )
+            self.assertEqual(assigned.status_code, 200, assigned.text)
+
+            resolution = client.get(
+                "/api/v1/admin/approval-scopes/"
+                "request-lines/asset-line-1/resolution"
+            )
+            self.assertEqual(resolution.status_code, 200, resolution.text)
+            payload = resolution.json()
+            self.assertFalse(payload["blocked"])
+            self.assertEqual(payload["line_kind"], "ASSET")
+            self.assertEqual(payload["asset_type_id"], "asset-type-1")
+            self.assertEqual(payload["proposed_asset_id"], "asset-1")
+            self.assertEqual(
+                {
+                    item["app_user_id"]
+                    for item in payload["eligible_approvers"]
+                },
+                {"admin-1", "manager-1"},
+            )
+            specific = next(
+                item
+                for item in payload["eligible_approvers"]
+                if item["app_user_id"] == "admin-1"
+            )
+            self.assertIn("PROPOSED_ASSET", specific["sources"])
+
+            with factory() as session, session.begin():
+                session.get(AppUser, "admin-1").active = False
+            revalidated = client.get(
+                "/api/v1/admin/approval-scopes/"
+                "request-lines/asset-line-1/resolution"
+            ).json()
+
+        self.assertFalse(revalidated["blocked"])
+        self.assertEqual(
+            [
+                item["app_user_id"]
+                for item in revalidated["eligible_approvers"]
+            ],
+            ["manager-1"],
+        )
+        self.assertIn(
+            "approver_inactive:admin-1",
+            revalidated["diagnostics"],
         )
 
     def test_admin_settings_permission_protects_surface(
