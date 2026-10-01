@@ -104,6 +104,8 @@ def _reshape_as_0048(path: Path) -> None:
             DROP TABLE IF EXISTS work_package_weekly_loads;
 
 
+            DROP TABLE IF EXISTS acumatica_project_task_sync_project_results;
+            DROP TABLE IF EXISTS acumatica_project_task_sync_runs;
             DROP TABLE IF EXISTS asset_approvers;
             DROP TABLE IF EXISTS asset_type_approval_scope_mappings;
 

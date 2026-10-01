@@ -43,6 +43,19 @@ from .approval_revision_models import (
     RequestApprovalRevision,
 )
 from .approval_revision_repository import SqlRequestApprovalRevisionRepository
+from .acumatica_project_task_sync_models import (
+    AcumaticaProjectTaskSyncProjectResult,
+    AcumaticaProjectTaskSyncRun,
+    GLOBAL_SYNC_RUN_KEY,
+    SYNC_RUN_ACTIVE_STATUSES,
+    SYNC_RUN_COMPLETED,
+    SYNC_RUN_COMPLETED_WITH_ERRORS,
+    SYNC_RUN_FAILED,
+    SYNC_RUN_INTERRUPTED,
+    SYNC_RUN_PENDING,
+    SYNC_RUN_RUNNING,
+    SYNC_RUN_TERMINAL_STATUSES,
+)
 from .active_days_query_repository import (
     SqlPlannerQueryRepositoryWithEstimatedDays,
     SqlSegmentRepositoryWithActiveDayMetrics,

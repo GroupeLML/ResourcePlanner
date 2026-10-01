@@ -48,6 +48,8 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
             "work_package_weekly_loads",
             "asset_type_approval_scope_mappings",
             "asset_approvers",
+            "acumatica_project_task_sync_runs",
+            "acumatica_project_task_sync_project_results",
         },
         "missing_columns": {
             "auth_sessions": {
@@ -181,6 +183,12 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
     ),
     "task_catalog_project_sync_state": _rebuild(
         "Télémétrie/curseur de synchronisation reconstructible."
+    ),
+    "acumatica_project_task_sync_runs": _rebuild(
+        "État technique de run global; ne pas transférer un traitement pré-cutover."
+    ),
+    "acumatica_project_task_sync_project_results": _rebuild(
+        "Résultats techniques rattachés aux runs globaux; reconstruits par les prochains runs."
     ),
     "task_class_standards": _keep("Configuration locale des standards tâche → classe."),
 }
@@ -818,15 +826,20 @@ def _target_precondition_anomalies(
                 }
             )
 
-    if target_counts.get("task_catalog_project_sync_state", 0):
-        anomalies.append(
-            {
-                "code": "rebuild_table_not_clean",
-                "severity": "BLOCKING",
-                "table": "task_catalog_project_sync_state",
-                "row_count": target_counts["task_catalog_project_sync_state"],
-            }
-        )
+    for rebuild_table in (
+        "task_catalog_project_sync_state",
+        "acumatica_project_task_sync_runs",
+        "acumatica_project_task_sync_project_results",
+    ):
+        if target_counts.get(rebuild_table, 0):
+            anomalies.append(
+                {
+                    "code": "rebuild_table_not_clean",
+                    "severity": "BLOCKING",
+                    "table": rebuild_table,
+                    "row_count": target_counts[rebuild_table],
+                }
+            )
 
     # Report concrete PK collisions even though clean-target mode already blocks.
     with engine.connect() as connection:
