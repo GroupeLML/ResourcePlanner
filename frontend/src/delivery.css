@@ -59,6 +59,15 @@
 .delivery-selected-reference span,
 .delivery-selected-reference small { color: var(--muted); font-size: .6rem; }
 .delivery-selected-reference strong { font-size: .78rem; }
+.delivery-selected-reference small.delivery-resource-class-inactive {
+  color: var(--warn);
+  font-weight: 800;
+}
+.delivery-selected-reference small.delivery-resource-class-diagnostic {
+  margin-top: .2rem;
+  color: #6f571c;
+  line-height: 1.4;
+}
 
 .delivery-summary {
   display: grid;

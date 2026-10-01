@@ -60,6 +60,15 @@ const WEEKLY_LOAD_DIAGNOSTIC_LABELS: Record<string, string> = {
   WEEKLY_LOAD_INCONSISTENT: "Répartition hebdomadaire incohérente",
 };
 
+const RESOURCE_CLASS_DIVERGENCE = "WORK_PACKAGE_TASK_RESOURCE_CLASS_DIVERGENCE";
+
+function workPackageResourceClassLabel(workPackage: MediumTermBudgetWorkPackageReadModel) {
+  if (!workPackage.resource_class_code) return "Non définie";
+  return workPackage.resource_class_label
+    ? `${workPackage.resource_class_label} (${workPackage.resource_class_code})`
+    : workPackage.resource_class_code;
+}
+
 function normalize(value: string | null | undefined) {
   return (value ?? "").trim().toLocaleLowerCase("fr-CA");
 }
@@ -161,15 +170,24 @@ function WorkPackageRow({
   const loadDiagnostic = workPackage.weekly_load_diagnostic
     ? WEEKLY_LOAD_DIAGNOSTIC_LABELS[workPackage.weekly_load_diagnostic] || workPackage.weekly_load_diagnostic
     : null;
+  const resourceClassLabel = workPackageResourceClassLabel(workPackage);
+  const classDivergesFromTask = workPackage.resource_class_diagnostic === RESOURCE_CLASS_DIVERGENCE;
 
   return (
     <div className="mt-timeline-row" style={{ gridTemplateColumns: template }}>
       <div className="mt-package-identity">
         <div className="mt-package-title">
-          <strong>{workPackage.code || workPackage.reference}</strong>
+          <strong>{workPackage.reference}</strong>
           <span className="mt-status-pill">{workPackage.status}</span>
         </div>
         <span>{workPackage.name}</span>
+        <small
+          className={`mt-package-resource-class ${workPackage.resource_class_active === false ? "is-inactive" : ""}`}
+        >
+          Classe de ressource : {resourceClassLabel}
+          {workPackage.resource_class_active === false ? " · inactive" : ""}
+        </small>
+        {workPackage.code && <small>Code WorkPackage : {workPackage.code}</small>}
         <small>
           {workPackage.start_date || "Date à préciser"}
           {workPackage.end_date ? ` → ${workPackage.end_date}` : ""}
@@ -180,6 +198,14 @@ function WorkPackageRow({
             <span>Répartition {workPackage.weekly_load_origin}</span>
           )}
           {loadDiagnostic && <span className="is-attention">⚑ {loadDiagnostic}</span>}
+          {classDivergesFromTask && (
+            <span
+              className="is-attention"
+              title="La classe du WorkPackage demeure autoritaire; aucune correction automatique vers la classe de la tâche ERP n’est effectuée."
+            >
+              ⚑ Classe WorkPackage différente de la tâche ERP
+            </span>
+          )}
           {!workPackage.current_load_included && (
             <span>Hors charge courante{workPackage.budget_included ? " · conservé au budget" : ""}</span>
           )}
@@ -208,6 +234,7 @@ function WorkPackageRow({
           <strong>{workPackage.name}</strong>
           <span>{hours(workPackage.planned_hours)}</span>
         </div>
+        <small>Classe de ressource : {resourceClassLabel}</small>
         {baseWorkPackage?.description && <small>{baseWorkPackage.description}</small>}
         <div className="mt-demand-chips">
           {demands.length === 0 ? (
@@ -439,6 +466,8 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
           workPackage.reference,
           workPackage.code,
           workPackage.name,
+          workPackage.resource_class_code,
+          workPackage.resource_class_label,
         ]),
       ].filter(Boolean).join(" ")).includes(query);
     }),
@@ -451,6 +480,8 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
         workPackage.reference,
         workPackage.code,
         workPackage.name,
+        workPackage.resource_class_code,
+        workPackage.resource_class_label,
       ].filter(Boolean).join(" ")).includes(query)
     )),
     [projection, query],

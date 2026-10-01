@@ -133,6 +133,51 @@ class ReactMediumTermContractTests(unittest.TestCase):
         self.assertIn("proposalFingerprint === currentFingerprint", editor)
         self.assertNotIn("proposeWorkPackageWeeklyLoads(workPackage.reference);\n      await replace", editor)
 
+    def test_work_package_resource_class_editor_contract_is_explicit_and_backend_driven(self) -> None:
+        editor = (ROOT / "frontend" / "src" / "WorkPackageEditor.tsx").read_text(
+            encoding="utf-8"
+        )
+        api = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
+        resource_api = (ROOT / "frontend" / "src" / "resourceClassesApi.ts").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("getResourceClassOptions", editor)
+        self.assertIn("Classe de ressource", editor)
+        self.assertIn("resourceClassTouched", editor)
+        self.assertIn("? { resource_class_code: selectedResourceClassCode }", editor)
+        self.assertIn("resource_class_code: selectedResourceClassCode", editor)
+        self.assertIn("WORK_PACKAGE_TASK_RESOURCE_CLASS_DIVERGENCE", editor)
+        self.assertIn("work_package_resource_class_not_found", editor)
+        self.assertIn("work_package_resource_class_inactive", editor)
+        self.assertIn("Classe historique inactive", editor)
+        self.assertIn("Code WorkPackage historique", editor)
+        self.assertNotIn("<span>Code</span>", editor)
+        self.assertIn("/api/v1/resource-classes", resource_api)
+        for field in (
+            "resource_class_code",
+            "resource_class_label",
+            "resource_class_active",
+            "task_resource_class_code",
+            "resource_class_diagnostic",
+        ):
+            self.assertIn(field, api)
+
+    def test_medium_term_presents_work_package_class_without_recomputing_rules(self) -> None:
+        page = (ROOT / "frontend" / "src" / "MediumTermPage.tsx").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("Classe de ressource :", page)
+        self.assertIn("workPackage.resource_class_label", page)
+        self.assertIn("workPackage.resource_class_active", page)
+        self.assertIn("workPackage.resource_class_diagnostic", page)
+        self.assertIn("WORK_PACKAGE_TASK_RESOURCE_CLASS_DIVERGENCE", page)
+        self.assertIn("Code WorkPackage :", page)
+        self.assertNotIn("required_resource_class", page)
+        self.assertNotIn("task_resource_class_code ??", page)
+        self.assertNotIn("resource_class_code ??", page)
+
     def test_medium_term_does_not_mutate_planning_or_delivery(self) -> None:
         page = (ROOT / "frontend" / "src" / "MediumTermPage.tsx").read_text(
             encoding="utf-8"

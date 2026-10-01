@@ -65,6 +65,8 @@
 .mt-package-identity > span, .mt-package-identity > small { display: block; }
 .mt-package-identity > span { margin-top: .1rem; font-size: .6rem; color: #4c5667; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mt-package-identity > small { margin-top: .15rem; color: var(--muted); font-size: .52rem; line-height: 1.3; }
+.mt-package-identity > small.mt-package-resource-class { color: #44536b; font-weight: 800; }
+.mt-package-identity > small.mt-package-resource-class.is-inactive { color: var(--warn); }
 .mt-edit-package { margin-top: .3rem; border: 0; background: transparent; color: var(--accent); padding: 0; font-size: .55rem; font-weight: 800; }
 .mt-edit-package:hover { text-decoration: underline; }
 .mt-week-cell { grid-row: 1; min-height: 94px; border-right: 1px solid #edf0f4; background: white; }
@@ -112,7 +114,27 @@
 .wp-form input, .wp-form select, .wp-form textarea { width: 100%; min-height: 40px; border: 1px solid var(--border); border-radius: 9px; background: white; color: var(--ink); padding: .5rem .62rem; font: inherit; }
 .wp-form textarea { resize: vertical; min-height: 88px; }
 .wp-form label > small { color: var(--muted); font-size: .58rem; line-height: 1.35; }
+.wp-form label > small.wp-class-inactive { color: var(--warn); font-weight: 800; }
 .wp-full { grid-column: 1 / -1; }
+.wp-class-diagnostic {
+  border: 1px solid #e6cf93;
+  border-radius: 9px;
+  background: #fff8e7;
+  color: #6f571c;
+  padding: .62rem .7rem;
+  font-size: .66rem;
+  line-height: 1.4;
+}
+.wp-legacy-code {
+  display: grid;
+  gap: .14rem;
+  padding: .55rem .65rem;
+  border-radius: 9px;
+  background: #f5f8fc;
+}
+.wp-legacy-code span { color: var(--muted); font-size: .58rem; font-weight: 800; }
+.wp-legacy-code strong { font-size: .72rem; }
+.wp-legacy-code small { color: var(--muted); font-size: .56rem; line-height: 1.35; }
 .wp-error { border: 1px solid #efbbbb; border-radius: 9px; background: #fff1f1; color: #8e2e2e; padding: .62rem .7rem; font-size: .7rem; }
 .wp-editor-actions { display: flex; justify-content: flex-end; gap: .5rem; padding-top: .2rem; }
 .wp-editor-actions button { min-height: 40px; border-radius: 9px; padding: .48rem .8rem; font-weight: 800; }
