@@ -71,6 +71,39 @@ Une association explicite `TaskCatalogEntry → ApprovalScope` a priorité comme
 
 Le résultat résolu — scope et AppUser admissibles — continue d'être figé dans le `RequestApprovalCycle` à la soumission. Modifier ensuite un standard #454, un override projet, un mapping classe→scope ou les approbateurs ne réécrit jamais un cycle déjà ouvert.
 
+### Extension #534 — autorité des actifs par type et unité
+
+Les lignes `ASSET` réutilisent le même moteur de quorum et le même `RequestApprovalCycle`.
+Elles ne passent pas par la classification workforce. Leur périmètre est résolu par une
+relation administrable et fondée exclusivement sur des identités stables :
+
+```text
+AssetType → ApprovalScope
+Eligible(asset_line) =
+    Approvers(ApprovalScope) ∪ Approvers(ProposedAsset)
+```
+
+L'association `AssetType → ApprovalScope` est fail-closed : l'absence de périmètre actif,
+plusieurs périmètres actifs, un type/périmètre inactif ou l'absence finale d'un AppUser
+admissible bloquent la constitution du cycle. Aucun nom, libellé, catégorie d'affichage,
+courriel, `BusinessContact` ou ordre SQL ne fournit de fallback.
+
+Une unité `Asset` peut référencer zéro, un ou plusieurs AppUser approbateurs spécifiques.
+Cette autorité est additive; elle ne remplace jamais les approbateurs du périmètre. Les
+AppUser sont revalidés avec les mêmes règles que pour le scope : compte actif et permission
+`approve_demands`. Un approbateur spécifique devenu invalide est ignoré; il ne rend la
+ligne bloquante que si aucun approbateur valide ne subsiste après l'union complète.
+
+À la soumission, le cycle fige le `AssetType`, le `ApprovalScope`, le
+`ProposedAsset` éventuel, les AppUser admissibles et leur provenance. Les changements
+ultérieurs de mappings ou d'approbateurs ne réécrivent pas ce snapshot. En revanche, une
+modification de l'unité proposée faisant partie du sujet soumis invalide le cycle selon le
+mécanisme normal de #276 et nécessite un nouveau cycle.
+
+`AssetAllocation.asset_id` reste une décision opérationnelle du Planning au sens d'ADR-007.
+Choisir ou remplacer l'unité réellement allouée après approbation ne reroute jamais
+rétroactivement l'autorité et ne modifie pas le snapshot du cycle.
+
 ### Snapshot à la soumission
 
 Lors du futur 276B, les approbateurs admissibles seront figés au moment de la soumission dans un RequestApprovalCycle enfant de WorkforceRequest, avec une exigence par ligne et les AppUser.id admissibles.
@@ -140,8 +173,11 @@ Rejetée. Une modification de configuration pourrait changer les règles d'un cy
 - GitHub Issue #327
 - GitHub Issue #328
 - GitHub Issue #454
+- GitHub Issue #291
+- GitHub Issue #534
 - ADR-002
 - ADR-003
 - ADR-004
 - ADR-005
 - ADR-006
+- ADR-007
