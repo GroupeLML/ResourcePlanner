@@ -64,6 +64,35 @@ class ReactDemandWorkflowContractTests(unittest.TestCase):
         self.assertIn('onClick={() => runAction("cancel")}', page)
         self.assertIn("await refreshAfterMutation(result.demand_number)", page)
 
+    def test_routing_failure_preserves_context_and_renders_business_diagnostic(self) -> None:
+        api = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
+        workflow_api = (
+            ROOT / "frontend" / "src" / "demandWorkflowApi.ts"
+        ).read_text(encoding="utf-8")
+        page = (ROOT / "frontend" / "src" / "DemandWorkflowPage.tsx").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("readonly context: unknown", api)
+        self.assertIn("payload?.error?.context ?? null", api)
+        self.assertIn("context?: unknown", workflow_api)
+        self.assertIn("payload?.error?.context ?? null", workflow_api)
+        self.assertIn('reason.code !== "approval_cycle_routing_blocked"', page)
+        self.assertIn('data-testid="approval-routing-diagnostic"', page)
+        self.assertIn("RequestLine", page)
+        self.assertIn("Tâche ERP", page)
+        self.assertIn("Classe effective", page)
+        self.assertIn("Scope d’approbation", page)
+        for diagnostic in (
+            "task_reference_missing",
+            "approval_scope_unmapped",
+            "approval_scope_ambiguous",
+            "no_eligible_approver",
+            "approver_inactive",
+            "approver_permission_missing",
+        ):
+            self.assertIn(diagnostic, page)
+
     def test_workflow_separates_approval_from_confirmation(self) -> None:
         source = (ROOT / "frontend" / "src" / "DemandWorkflowPage.tsx").read_text(
             encoding="utf-8"

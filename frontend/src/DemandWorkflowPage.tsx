@@ -52,6 +52,119 @@ type CancellationAcceptRetry = {
   key: string;
 };
 
+type ApprovalRoutingDiagnosticView = {
+  line: string;
+  requestLineId: string | null;
+  task: string;
+  resourceClass: string;
+  scope: string;
+  reasons: { code: string; label: string }[];
+};
+
+const ROUTING_DIAGNOSTIC_LABELS: Record<string, string> = {
+  line_inactive: "La ligne est inactive.",
+  task_reference_missing: "La référence vers la tâche ERP n’est pas persistée sur cette ligne.",
+  task_not_found: "La tâche ERP référencée est introuvable.",
+  task_inactive: "La tâche ERP référencée est inactive.",
+  resource_class_missing: "La tâche ERP n’a pas de classe de ressource effective.",
+  resource_class_not_found: "La classe de ressource effective est introuvable.",
+  resource_class_inactive: "La classe de ressource effective est inactive.",
+  approval_scope_unmapped: "Aucun périmètre d’approbation n’est mappé à cette tâche ou classe effective.",
+  approval_scope_ambiguous: "Plusieurs périmètres d’approbation sont candidats; aucun choix automatique n’est permis.",
+  approval_scope_inactive: "Le périmètre d’approbation résolu est inactif.",
+  approver_not_found: "Un approbateur configuré est introuvable.",
+  approver_inactive: "Un approbateur configuré est inactif.",
+  approver_permission_missing: "Un approbateur configuré n’a pas la permission approve_demands.",
+  no_eligible_approver: "Aucun approbateur actif et autorisé n’est admissible pour ce périmètre.",
+};
+
+function diagnosticRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function diagnosticText(value: unknown): string | null {
+  if (typeof value === "string") {
+    const normalized = value.trim();
+    return normalized || null;
+  }
+  return typeof value === "number" ? String(value) : null;
+}
+
+function scopeDiagnosticText(value: unknown): string | null {
+  const scope = diagnosticRecord(value);
+  if (!scope) return null;
+  const code = diagnosticText(scope.code);
+  const label = diagnosticText(scope.label);
+  const id = diagnosticText(scope.id);
+  const base = code && label
+    ? `${code} — ${label}`
+    : code || label || id;
+  if (!base) return null;
+  return scope.active === false ? `${base} (inactif)` : base;
+}
+
+function routingReason(code: string): { code: string; label: string } {
+  const separator = code.indexOf(":");
+  const baseCode = separator >= 0 ? code.slice(0, separator) : code;
+  const detail = separator >= 0 ? code.slice(separator + 1) : "";
+  const label = ROUTING_DIAGNOSTIC_LABELS[baseCode] || baseCode;
+  return {
+    code,
+    label: detail ? `${label} Référence : ${detail}.` : label,
+  };
+}
+
+function approvalRoutingDiagnostic(reason: unknown): ApprovalRoutingDiagnosticView | null {
+  if (!(reason instanceof ApiError) || reason.code !== "approval_cycle_routing_blocked") {
+    return null;
+  }
+  const context = diagnosticRecord(reason.context);
+  if (!context) return null;
+
+  const requestLineId = diagnosticText(context.request_line_id);
+  const position = typeof context.request_line_position === "number"
+    ? context.request_line_position
+    : null;
+  const taskCode = diagnosticText(context.task_code);
+  const taskLabel = diagnosticText(context.task_label);
+  const resourceClass = diagnosticText(context.effective_resource_class);
+
+  const resolvedScope = scopeDiagnosticText(context.approval_scope);
+  const candidateScopes = Array.isArray(context.approval_scope_candidates)
+    ? context.approval_scope_candidates
+        .map(scopeDiagnosticText)
+        .filter((value): value is string => Boolean(value))
+    : [];
+  const suggestedScope = diagnosticText(context.suggested_scope_code);
+  const scope = resolvedScope
+    || (candidateScopes.length > 0
+      ? candidateScopes.join(" · ")
+      : suggestedScope
+        ? `Aucun scope résolu (classification suggérée : ${suggestedScope})`
+        : "Aucun scope résolu");
+
+  const diagnostics = Array.isArray(context.diagnostics)
+    ? context.diagnostics
+        .map(diagnosticText)
+        .filter((value): value is string => Boolean(value))
+    : [];
+
+  return {
+    line: position !== null ? `Ligne ${position + 1}` : "Ligne concernée",
+    requestLineId,
+    task: taskCode
+      ? `${taskCode}${taskLabel ? ` — ${taskLabel}` : ""}`
+      : "Aucune tâche ERP résolue",
+    resourceClass: resourceClass || "Aucune classe effective résolue",
+    scope,
+    reasons: diagnostics.length > 0
+      ? diagnostics.map(routingReason)
+      : [routingReason("approval_cycle_routing_blocked")],
+  };
+}
+
 function errorMessage(reason: unknown): string {
   if (reason instanceof ApiError) {
     return `${reason.message}${reason.code ? ` (${reason.code})` : ""}`;
@@ -160,6 +273,7 @@ export default function DemandWorkflowPage({
   const [loading, setLoading] = useState(true);
   const [pendingAction, setPendingAction] = useState<WorkflowButtonAction | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [routingDiagnostic, setRoutingDiagnostic] = useState<ApprovalRoutingDiagnosticView | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [approvalState, setApprovalState] = useState<DemandApprovalState | null>(null);
   const [approvalStateError, setApprovalStateError] = useState<string | null>(null);
@@ -203,11 +317,13 @@ export default function DemandWorkflowPage({
       setWorkflowState(canonicalDetail.workflow as DemandWorkflowState);
       setLoading(false);
       setError(null);
+      setRoutingDiagnostic(null);
       return;
     }
     let active = true;
     setLoading(true);
     setWorkflowState(null);
+    setRoutingDiagnostic(null);
     const demandRequest = demandNumber
       ? getDemandDetail(demandNumber).then((detail) => [detail.demand])
       : getDemands();
@@ -241,6 +357,7 @@ export default function DemandWorkflowPage({
     if (canonicalDetail || !selectedNumber || loading) return;
     let active = true;
     setError(null);
+    setRoutingDiagnostic(null);
     getDemandDetail(selectedNumber)
       .then((detail) => {
         if (active) {
@@ -408,6 +525,7 @@ export default function DemandWorkflowPage({
 
     setPendingAction(action);
     setError(null);
+    setRoutingDiagnostic(null);
     setNotice(null);
     try {
       const expectedVersion = currentWorkflowState?.version ?? currentDemand.version;
@@ -536,7 +654,14 @@ export default function DemandWorkflowPage({
         setNotice("Demande annulée.");
       }
     } catch (reason: unknown) {
-      setError(errorMessage(reason));
+      const routing = approvalRoutingDiagnostic(reason);
+      if (routing) {
+        setRoutingDiagnostic(routing);
+        setError(null);
+      } else {
+        setRoutingDiagnostic(null);
+        setError(errorMessage(reason));
+      }
     } finally {
       setPendingAction(null);
     }
@@ -557,6 +682,35 @@ export default function DemandWorkflowPage({
       )}
 
       {error && <div className="error-panel"><strong>Action impossible.</strong><span>{error}</span></div>}
+      {routingDiagnostic && (
+        <div className="error-panel approval-routing-diagnostic" data-testid="approval-routing-diagnostic" role="alert">
+          <strong>Routage d’approbation à corriger</strong>
+          <span>La demande n’a pas été soumise. Corrige la configuration ou la référence indiquée, puis soumets-la de nouveau.</span>
+          <dl className="approval-routing-context">
+            <div>
+              <dt>RequestLine</dt>
+              <dd>
+                {routingDiagnostic.line}
+                {routingDiagnostic.requestLineId ? <small>{routingDiagnostic.requestLineId}</small> : null}
+              </dd>
+            </div>
+            <div><dt>Tâche ERP</dt><dd>{routingDiagnostic.task}</dd></div>
+            <div><dt>Classe effective</dt><dd>{routingDiagnostic.resourceClass}</dd></div>
+            <div><dt>Scope d’approbation</dt><dd>{routingDiagnostic.scope}</dd></div>
+          </dl>
+          <div className="approval-routing-reasons">
+            <strong>Pourquoi le routage bloque</strong>
+            <ul>
+              {routingDiagnostic.reasons.map((item) => (
+                <li key={item.code}>
+                  <span>{item.label}</span>
+                  <code>{item.code}</code>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
       {notice && <div className="demand-notice" role="status">{notice}</div>}
       {hasUnsavedChanges && (
         <div className="demand-notice workflow-dirty-warning" role="status">

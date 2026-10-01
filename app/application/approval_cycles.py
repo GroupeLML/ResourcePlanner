@@ -309,11 +309,47 @@ class ApprovalCycleService:
                 or not resolved.resolution.approval_scope_id
                 or not resolved.resolution.eligible_approvers
             ):
+                resolved_scope = next(
+                    (
+                        scope
+                        for scope in resolved.approval_scope_candidates
+                        if scope.id == resolved.resolution.approval_scope_id
+                    ),
+                    None,
+                )
                 raise ApplicationValidationError(
                     "Le routage d'approbation de la ligne est incomplet ou ambigu.",
                     code="approval_cycle_routing_blocked",
                     context={
                         "request_line_id": line_id,
+                        "request_line_position": resolved.line_position,
+                        "task_catalog_item_id": resolved.task_catalog_item_id,
+                        "task_code": resolved.task_code,
+                        "task_label": resolved.task_label,
+                        "effective_resource_class": (
+                            resolved.effective_resource_class
+                        ),
+                        "approval_scope": (
+                            {
+                                "id": resolved_scope.id,
+                                "code": resolved_scope.code,
+                                "label": resolved_scope.label,
+                                "active": resolved_scope.active,
+                            }
+                            if resolved_scope is not None
+                            else None
+                        ),
+                        "approval_scope_candidates": [
+                            {
+                                "id": scope.id,
+                                "code": scope.code,
+                                "label": scope.label,
+                                "active": scope.active,
+                            }
+                            for scope in resolved.approval_scope_candidates
+                        ],
+                        "suggested_scope_code": resolved.suggested_scope_code,
+                        "proposed_resource_id": routing.proposed_resource_id,
                         "diagnostics": list(resolved.resolution.diagnostics),
                     },
                 )

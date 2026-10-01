@@ -40,6 +40,7 @@ class ApprovalTaskRecord:
     code: str
     active: bool
     resource_class_code: str | None = None
+    label: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +54,9 @@ class ApprovalRequestLineRecord:
     id: str
     active: bool
     task_catalog_item_id: str | None
+    position: int = 0
+    erp_task_code: str | None = None
+    erp_task_label: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +72,11 @@ class RequestLineApprovalResolution:
     task_catalog_item_id: str | None
     suggested_scope_code: str | None
     resolution: ApprovalLineResolution
+    line_position: int | None = None
+    task_code: str | None = None
+    task_label: str | None = None
+    effective_resource_class: str | None = None
+    approval_scope_candidates: tuple[ApprovalScopeRecord, ...] = ()
 
 
 class ApprovalScopeRepositoryPort(Protocol):
@@ -335,6 +344,9 @@ class ApprovalScopeService:
         task_catalog_item_id: str | None,
         suggested_scope_code: str | None,
         diagnostic: str,
+        line_position: int | None = None,
+        task: ApprovalTaskRecord | None = None,
+        approval_scope_candidates: Sequence[ApprovalScopeRecord] = (),
     ) -> RequestLineApprovalResolution:
         return RequestLineApprovalResolution(
             request_line_id=request_line_id,
@@ -346,6 +358,13 @@ class ApprovalScopeService:
                 diagnostics=(diagnostic,),
                 blocked=True,
             ),
+            line_position=line_position,
+            task_code=task.code if task is not None else None,
+            task_label=task.label if task is not None else None,
+            effective_resource_class=(
+                task.resource_class_code if task is not None else None
+            ),
+            approval_scope_candidates=tuple(approval_scope_candidates),
         )
 
     def resolve_request_line(
@@ -407,6 +426,8 @@ class ApprovalScopeService:
                         task_catalog_item_id=task_id,
                         suggested_scope_code=suggested,
                         diagnostic=DIAGNOSTIC_RESOURCE_CLASS_MISSING,
+                        line_position=line.position,
+                        task=task,
                     )
                 resource_class = call_application_port(
                     lambda: self._repository.get_resource_class(class_code),
@@ -419,6 +440,8 @@ class ApprovalScopeService:
                         task_catalog_item_id=task_id,
                         suggested_scope_code=suggested,
                         diagnostic=DIAGNOSTIC_RESOURCE_CLASS_NOT_FOUND,
+                        line_position=line.position,
+                        task=task,
                     )
                 if not resource_class.active:
                     return self._blocked_resolution(
@@ -426,6 +449,8 @@ class ApprovalScopeService:
                         task_catalog_item_id=task_id,
                         suggested_scope_code=suggested,
                         diagnostic=DIAGNOSTIC_RESOURCE_CLASS_INACTIVE,
+                        line_position=line.position,
+                        task=task,
                     )
                 class_scopes = call_application_port(
                     lambda: self._repository.list_resource_class_scopes(
@@ -499,4 +524,15 @@ class ApprovalScopeService:
                 else None
             ),
             resolution=resolution,
+            line_position=line.position,
+            task_code=(
+                task.code if task is not None else line.erp_task_code
+            ),
+            task_label=(
+                task.label if task is not None else line.erp_task_label
+            ),
+            effective_resource_class=(
+                task.resource_class_code if task is not None else None
+            ),
+            approval_scope_candidates=tuple(scopes),
         )

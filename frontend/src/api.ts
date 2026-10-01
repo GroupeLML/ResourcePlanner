@@ -1120,12 +1120,19 @@ const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string | null;
+  readonly context: unknown;
 
-  constructor(message: string, status: number, code: string | null = null) {
+  constructor(
+    message: string,
+    status: number,
+    code: string | null = null,
+    context: unknown = null,
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
+    this.context = context;
   }
 }
 
@@ -1140,6 +1147,7 @@ async function responseError(response: Response): Promise<ApiError> {
     payload?.error?.message || `Erreur HTTP ${response.status}`,
     response.status,
     payload?.error?.code ?? null,
+    payload?.error?.context ?? null,
   );
 }
 

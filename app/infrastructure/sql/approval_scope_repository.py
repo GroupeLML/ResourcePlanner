@@ -278,6 +278,9 @@ class SqlApprovalScopeRepository(ApprovalScopeRepositoryPort):
             id=row.id,
             active=bool(row.active),
             task_catalog_item_id=row.task_catalog_item_id,
+            position=int(row.position or 0),
+            erp_task_code=_text(row.erp_task_code) or None,
+            erp_task_label=_text(row.erp_task_label) or None,
         )
 
     def get_task(self, task_id: str) -> ApprovalTaskRecord | None:
@@ -289,6 +292,7 @@ class SqlApprovalScopeRepository(ApprovalScopeRepositoryPort):
             code=row.task_code,
             active=bool(row.active),
             resource_class_code=_text(row.resource_class_code) or None,
+            label=_text(row.label) or None,
         )
 
     def get_resource_class(

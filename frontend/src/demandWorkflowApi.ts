@@ -94,6 +94,7 @@ type ApiErrorPayload = {
   error?: {
     code?: string;
     message?: string;
+    context?: unknown;
   };
 };
 
@@ -110,6 +111,7 @@ async function apiError(response: Response): Promise<ApiError> {
     payload?.error?.message || `Erreur HTTP ${response.status}`,
     response.status,
     payload?.error?.code ?? null,
+    payload?.error?.context ?? null,
   );
 }
 
