@@ -11,6 +11,8 @@ from sqlalchemy.orm import sessionmaker
 from app.application.approval_scopes import ApprovalScopeService
 from app.application.security import ROLE_MANAGER
 from app.domain.approval_routing import (
+    DIAGNOSTIC_APPROVER_INACTIVE,
+    DIAGNOSTIC_APPROVER_PERMISSION_MISSING,
     DIAGNOSTIC_NO_ELIGIBLE_APPROVER,
     DIAGNOSTIC_RESOURCE_CLASS_INACTIVE,
     DIAGNOSTIC_RESOURCE_CLASS_MISSING,
@@ -18,6 +20,7 @@ from app.domain.approval_routing import (
     DIAGNOSTIC_SCOPE_AMBIGUOUS,
     DIAGNOSTIC_SCOPE_INACTIVE,
     DIAGNOSTIC_SCOPE_UNMAPPED,
+    DIAGNOSTIC_TASK_REFERENCE_MISSING,
 )
 from app.infrastructure.sql import (
     AppUser,
@@ -225,6 +228,8 @@ class Approval276ERoutingTests(unittest.TestCase):
                     workforce_request_id="D1",
                     position=index,
                     task_catalog_item_id=task_id,
+                    erp_task_code=task_code,
+                    erp_task_label=task_code,
                     active=True,
                 )
                 for index, (task_id, _, _) in enumerate(task_specs)
@@ -255,6 +260,75 @@ class Approval276ERoutingTests(unittest.TestCase):
                     [row.user_id for row in resolved.resolution.eligible_approvers],
                     [approver_id],
                 )
+
+    def test_programmeur_routes_to_automation_without_proposed_resource(self) -> None:
+        with self.factory() as session:
+            line = session.get(RequestLine, "L-T216")
+            self.assertEqual(line.task_catalog_item_id, "T216")
+            self.assertIsNone(line.proposed_resource_id)
+
+        resolved = self._resolve("L-T216")
+
+        self.assertFalse(resolved.resolution.blocked)
+        self.assertEqual(resolved.task_code, "216")
+        self.assertEqual(resolved.effective_resource_class, "PROGRAMMEUR")
+        self.assertEqual(
+            [scope.code for scope in resolved.approval_scope_candidates],
+            ["AUTOMATION"],
+        )
+        self.assertEqual(resolved.resolution.approval_scope_id, "S-AUTO")
+        self.assertEqual(
+            [row.user_id for row in resolved.resolution.eligible_approvers],
+            ["U-AUTO"],
+        )
+
+    def test_missing_task_reference_keeps_erp_snapshot_in_diagnostic_context(self) -> None:
+        with self.factory() as session, session.begin():
+            line = session.get(RequestLine, "L-T216")
+            line.task_catalog_item_id = None
+
+        resolved = self._resolve("L-T216")
+
+        self.assertTrue(resolved.resolution.blocked)
+        self.assertEqual(resolved.task_code, "216")
+        self.assertEqual(resolved.task_label, "216")
+        self.assertIsNone(resolved.task_catalog_item_id)
+        self.assertIn(
+            DIAGNOSTIC_TASK_REFERENCE_MISSING,
+            resolved.resolution.diagnostics,
+        )
+
+    def test_inactive_scope_approver_is_reported_before_no_eligible_approver(self) -> None:
+        with self.factory() as session, session.begin():
+            session.get(AppUser, "U-AUTO").active = False
+
+        resolved = self._resolve("L-T216")
+
+        self.assertTrue(resolved.resolution.blocked)
+        self.assertIn(
+            f"{DIAGNOSTIC_APPROVER_INACTIVE}:U-AUTO",
+            resolved.resolution.diagnostics,
+        )
+        self.assertIn(
+            DIAGNOSTIC_NO_ELIGIBLE_APPROVER,
+            resolved.resolution.diagnostics,
+        )
+
+    def test_scope_approver_without_permission_is_reported(self) -> None:
+        with self.factory() as session, session.begin():
+            session.get(AppUser, "U-AUTO").roles_json = json.dumps([])
+
+        resolved = self._resolve("L-T216")
+
+        self.assertTrue(resolved.resolution.blocked)
+        self.assertIn(
+            f"{DIAGNOSTIC_APPROVER_PERMISSION_MISSING}:U-AUTO",
+            resolved.resolution.diagnostics,
+        )
+        self.assertIn(
+            DIAGNOSTIC_NO_ELIGIBLE_APPROVER,
+            resolved.resolution.diagnostics,
+        )
 
     def test_explicit_task_override_has_priority_and_preserves_historical_mapping(self) -> None:
         with self.factory() as session, session.begin():
