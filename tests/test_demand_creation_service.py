@@ -71,6 +71,41 @@ class DemandCreationServiceTests(unittest.TestCase):
         self.assertEqual(calls[0][0]["Description"], "Travaux chantier")
         self.assertEqual(calls[0][0]["DateDebutSouhaitee"], date(2026, 8, 24))
 
+    def test_simple_create_forwards_canonical_resource_class(self) -> None:
+        captured: dict[str, object] = {}
+
+        def create_record(values: object, submit: bool) -> str:
+            captured.update(values)
+            return "DMO-2026-0535"
+
+        self._service(create_record).create_command(
+            DemandCreateCommand(
+                project_number="P-535",
+                desired_start=date(2026, 10, 1),
+                required_resource_class="PROGRAMMEUR",
+            )
+        )
+
+        self.assertEqual(captured["RequiredResourceClass"], "PROGRAMMEUR")
+
+    def test_legacy_create_maps_canonical_resource_class(self) -> None:
+        captured: dict[str, object] = {}
+
+        def create_record(values: object, submit: bool) -> str:
+            captured.update(values)
+            return "DMO-2026-0536"
+
+        self._service(create_record).create(
+            {
+                "NumeroProjet": "P-535",
+                "DateDebutSouhaitee": "2026-10-01",
+                "RequiredResourceClass": "PROGRAMMEUR",
+            },
+            submit=False,
+        )
+
+        self.assertEqual(captured["RequiredResourceClass"], "PROGRAMMEUR")
+
     def test_legacy_create_strips_workflow_owned_fields_via_closed_dto(self) -> None:
         captured: dict[str, object] = {}
 
