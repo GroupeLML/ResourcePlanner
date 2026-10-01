@@ -330,9 +330,15 @@ class AuditedAllocationCommandAdapter(AllocationCommandPort):
         allocation_id: str,
         technician: str,
         day_value: Any,
+        outside_standard_hours: bool = False,
     ) -> None:
         previous = self._journal.shift_snapshot(allocation_id)
-        self._delegate.move_manual(allocation_id, technician, day_value)
+        self._delegate.move_manual(
+            allocation_id,
+            technician,
+            day_value,
+            outside_standard_hours,
+        )
         current = self._journal.shift_snapshot(allocation_id)
         if previous is None or current is None:
             return

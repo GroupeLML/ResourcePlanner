@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, time
 import unittest
 
 from sqlalchemy import select
@@ -16,6 +16,7 @@ from app.infrastructure.sql import (
     Base,
     Project,
     Resource,
+    ResourceAvailabilityRule,
     ResourceRequirement,
     SqlPlannerQueryRepository,
     SqlSegmentRepository,
@@ -59,6 +60,18 @@ class QuickShiftAuthorProjectionTests(unittest.TestCase):
             )
         )
         session.add(Resource(id="R1", name="Alice", active=True))
+        session.flush()
+        session.add(
+            ResourceAvailabilityRule(
+                id="STD-R1",
+                resource_id="R1",
+                availability_type="Horaire standard",
+                weekdays="Lun,Mar,Mer,Jeu,Ven",
+                start_time=time(8, 0),
+                end_time=time(16, 0),
+                active=True,
+            )
+        )
         session.flush()
 
     def test_sql_quick_shift_captures_server_actor_and_projects_it_to_reads(self) -> None:

@@ -826,10 +826,13 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
       };
 
       if (actionCode === "MOVE") {
-        await moveAllocation(current.payload.allocation_id, {
+        const movePayload = {
           resource_id: current.targetResource.id,
           day: current.targetDay,
-        });
+          outside_standard_hours: request.outsideStandardHours,
+          expected_planning_version: current.evaluation.planning_version,
+        };
+        await moveAllocation(current.payload.allocation_id, movePayload);
         setDragFeedback({
           tone: "success",
           message: `Quart déplacé vers ${current.targetResource.name} le ${current.targetDay} et verrouillé comme décision manuelle.`,

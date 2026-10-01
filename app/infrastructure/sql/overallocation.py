@@ -16,7 +16,10 @@ from ...application.repository_ports import (
     PlanningMutationVersionPort,
     SegmentRepositoryPort,
 )
-from ...domain.availability_rules import availability_hours_for_day
+from ...domain.availability_rules import (
+    OutsideStandardHoursDecision,
+    outside_standard_hours_decision_for_day,
+)
 from ...domain.planning_engine import MISSING_ALLOCATION_TYPE
 from ...domain.manual_overallocation import (
     INCREASE_PLANNED,
@@ -281,7 +284,7 @@ def evaluate_projected_manual_state(
     projected_locked_hours: Decimal,
     window_start: date | None = None,
     window_end: date | None = None,
-) -> tuple[date, ManualOverallocationImpact, float]:
+) -> tuple[date, ManualOverallocationImpact, OutsideStandardHoursDecision]:
     """Pure #333 projected validation used by DnD previews and atomic execution.
 
     It validates the supplied final window and availability but never changes the
@@ -302,15 +305,18 @@ def evaluate_projected_manual_state(
         projected_locked_hours=float(projected_locked_hours),
     )
     snapshot = SqlPlanningReadRepository(session).capture()
-    available_hours = float(
-        availability_hours_for_day(snapshot.availability, resource.name, day)
+    availability = outside_standard_hours_decision_for_day(
+        snapshot.availability,
+        resource.name,
+        day,
+        outside_standard_hours=outside_standard_hours,
     )
-    if available_hours <= 0 and not outside_standard_hours:
+    if not availability.allowed and not availability.override_required:
         raise ValueError(
-            "La ressource n'est pas disponible selon son horaire standard cette journée. "
-            "Autorise explicitement le quart hors horaire pour continuer."
+            "La ressource n'est pas disponible cette journée"
+            f" ({availability.state.reason or 'indisponibilité non contournable'})."
         )
-    return day, impact, available_hours
+    return day, impact, availability
 
 
 def validate_projected_manual_state(
@@ -325,7 +331,7 @@ def validate_projected_manual_state(
     overallocation_policy: str | None,
     authorization: PlanningAuthorizationPort | None,
     expected_operational_version: int | None = None,
-) -> tuple[date, ManualOverallocationImpact]:
+) -> tuple[date, ManualOverallocationImpact, OutsideStandardHoursDecision]:
     """Validate one final projected locked state and apply the shared #13/#38 policy."""
 
     day = date_from_value(day_value)
@@ -391,15 +397,23 @@ def validate_projected_manual_state(
         )
 
     snapshot = SqlPlanningReadRepository(session).capture()
-    if (
-        availability_hours_for_day(snapshot.availability, resource.name, day) <= 0
-        and not outside_standard_hours
-    ):
+    availability = outside_standard_hours_decision_for_day(
+        snapshot.availability,
+        resource.name,
+        day,
+        outside_standard_hours=outside_standard_hours,
+    )
+    if not availability.allowed:
+        if availability.override_required:
+            raise ValueError(
+                "La ressource n'est pas disponible selon son horaire standard cette journée. "
+                "Autorise explicitement le quart hors horaire pour continuer."
+            )
         raise ValueError(
-            "La ressource n'est pas disponible selon son horaire standard cette journée. "
-            "Autorise explicitement le quart hors horaire pour continuer."
+            "La ressource n'est pas disponible cette journée"
+            f" ({availability.state.reason or 'indisponibilité non contournable'})."
         )
-    return day, impact
+    return day, impact, availability
 
 
 class SqlOverallocationAllocationCommandAdapter(SqlAllocationCommandAdapter):
@@ -438,7 +452,7 @@ class SqlOverallocationAllocationCommandAdapter(SqlAllocationCommandAdapter):
         outside_standard_hours: bool,
         *,
         exclude_shift_id: str | None = None,
-    ) -> tuple[date, Decimal]:
+    ) -> tuple[date, Decimal, OutsideStandardHoursDecision]:
         hours = _decimal(hours_value)
         if hours <= 0:
             raise ValueError("Les heures doivent être supérieures à zéro.")
@@ -464,7 +478,7 @@ class SqlOverallocationAllocationCommandAdapter(SqlAllocationCommandAdapter):
             str(self._overallocation_session.scalar(other_statement) or 0)
         )
         projected_locked = other_locked + hours
-        day, _impact = validate_projected_manual_state(
+        day, _impact, availability = validate_projected_manual_state(
             self._overallocation_session,
             requirement,
             resource,
@@ -475,7 +489,7 @@ class SqlOverallocationAllocationCommandAdapter(SqlAllocationCommandAdapter):
             overallocation_policy=self._active_policy,
             authorization=self._authorization,
         )
-        return day, hours
+        return day, hours, availability
 
     def create_manual(
         self,
@@ -699,6 +713,35 @@ class OverallocationAuditedAllocationCommandAdapter(AuditedAllocationCommandAdap
             before_snapshot,
             before_metrics,
             policy=normalize_overallocation_policy(overallocation_policy),
+        )
+
+    def move_manual(
+        self,
+        allocation_id: str,
+        technician: str,
+        day_value: Any,
+        outside_standard_hours: bool = False,
+    ) -> None:
+        previous = self._journal.shift_snapshot(allocation_id)
+        self._delegate.move_manual(
+            allocation_id,
+            technician,
+            day_value,
+            outside_standard_hours,
+        )
+        current = self._journal.shift_snapshot(allocation_id)
+        if previous is None or current is None:
+            return
+        entity_id, entity_reference, parent, before = previous
+        _, _, _, after = current
+        self._journal.append(
+            entity_type=ENTITY_SHIFT,
+            entity_id=entity_id,
+            entity_reference=entity_reference,
+            parent_reference=parent,
+            action="Déplacement quart",
+            before=before,
+            after=after,
         )
 
     def release_manual(self, allocation_id: str) -> None:
