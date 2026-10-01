@@ -28,6 +28,23 @@ import {
   updateDeliveryItem,
 } from "./deliveryApi";
 
+const RESOURCE_CLASS_DIVERGENCE = "WORK_PACKAGE_TASK_RESOURCE_CLASS_DIVERGENCE";
+
+type WorkPackageClassContext = {
+  resource_class_code: string | null;
+  resource_class_label: string | null;
+  resource_class_active: boolean | null;
+  task_resource_class_code: string | null;
+  resource_class_diagnostic: string | null;
+};
+
+function workPackageResourceClassLabel(workPackage: WorkPackageClassContext | null | undefined) {
+  if (!workPackage?.resource_class_code) return "Non définie";
+  return workPackage.resource_class_label
+    ? `${workPackage.resource_class_label} (${workPackage.resource_class_code})`
+    : workPackage.resource_class_code;
+}
+
 const KANBAN_COLUMNS: Array<{ status: DeliveryItemStatus; label: string }> = [
   { status: "BACKLOG", label: "Backlog" },
   { status: "TODO", label: "À faire" },
@@ -513,6 +530,9 @@ export default function DeliveryPage() {
   }
 
   const selectedWorkPackage = workPackages.find((row) => row.id === workPackageId) ?? null;
+  const deliveryWorkPackage = summary?.work_package.id === workPackageId
+    ? summary.work_package
+    : selectedWorkPackage;
   const planActions = board?.actions ?? [];
   const planIsEditable = board?.plan.status !== "ARCHIVED";
 
@@ -563,7 +583,7 @@ export default function DeliveryPage() {
             {workPackages.length === 0 && <option value="">Aucun WorkPackage</option>}
             {workPackages.map((workPackage) => (
               <option key={workPackage.id} value={workPackage.id}>
-                {workPackage.reference} · {workPackage.name}
+                {workPackage.reference} · {workPackage.name} · {workPackageResourceClassLabel(workPackage)}
               </option>
             ))}
           </select>
@@ -572,7 +592,28 @@ export default function DeliveryPage() {
           <div className="delivery-selected-reference">
             <span>Référence WorkPackage</span>
             <strong>{selectedWorkPackage.reference}</strong>
-            <small>{hours(selectedWorkPackage.planned_hours)} de référence</small>
+            <small>
+              {hours(summary?.work_package.id === selectedWorkPackage.id
+                ? summary.work_package.reference_hours
+                : selectedWorkPackage.planned_hours)} de référence
+            </small>
+            <span>Classe de ressource</span>
+            <strong>{workPackageResourceClassLabel(deliveryWorkPackage)}</strong>
+            {deliveryWorkPackage?.resource_class_active === false && (
+              <small className="delivery-resource-class-inactive">
+                Classe historique inactive — le WorkPackage demeure utilisable.
+              </small>
+            )}
+            {selectedWorkPackage.code && (
+              <small>Code WorkPackage : {selectedWorkPackage.code}</small>
+            )}
+            {deliveryWorkPackage?.resource_class_diagnostic === RESOURCE_CLASS_DIVERGENCE && (
+              <small className="delivery-resource-class-diagnostic">
+                La classe actuelle du WorkPackage est différente de celle de la tâche ERP.
+                La classe du WorkPackage demeure utilisée pour classifier ce WorkPackage;
+                aucune correction automatique n’est effectuée.
+              </small>
+            )}
           </div>
         )}
       </div>
