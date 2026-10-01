@@ -352,6 +352,32 @@ class SqlApprovalScopeRepository(ApprovalScopeRepositoryPort):
             active=bool(row.active),
         )
 
+    def get_asset_type(
+        self,
+        asset_type_id: str,
+    ) -> ApprovalAssetTypeRecord | None:
+        row = self._session.get(AssetType, _text(asset_type_id))
+        if row is None:
+            return None
+        return ApprovalAssetTypeRecord(
+            id=row.id,
+            code=row.code,
+            label=row.label,
+            active=bool(row.active),
+        )
+
+    def get_asset(self, asset_id: str) -> ApprovalAssetRecord | None:
+        row = self._session.get(Asset, _text(asset_id))
+        if row is None:
+            return None
+        return ApprovalAssetRecord(
+            id=row.id,
+            code=row.code,
+            label=row.label,
+            asset_type_id=row.asset_type_id,
+            active=bool(row.active),
+        )
+
     def list_task_scopes(
         self,
         task_id: str,
@@ -390,6 +416,25 @@ class SqlApprovalScopeRepository(ApprovalScopeRepositoryPort):
         ).all()
         return tuple(self._record(row) for row in rows)
 
+    def list_asset_type_scopes(
+        self,
+        asset_type_id: str,
+    ) -> tuple[ApprovalScopeRecord, ...]:
+        rows = self._session.scalars(
+            select(ApprovalScope)
+            .join(
+                AssetTypeApprovalScopeMapping,
+                AssetTypeApprovalScopeMapping.approval_scope_id
+                == ApprovalScope.id,
+            )
+            .where(
+                AssetTypeApprovalScopeMapping.asset_type_id
+                == _text(asset_type_id)
+            )
+            .order_by(ApprovalScope.code, ApprovalScope.id)
+        ).all()
+        return tuple(self._record(row) for row in rows)
+
     def list_scope_approver_ids(self, scope_id: str) -> tuple[str, ...]:
         return tuple(
             self._session.scalars(
@@ -399,6 +444,15 @@ class SqlApprovalScopeRepository(ApprovalScopeRepositoryPort):
                     == _text(scope_id)
                 )
                 .order_by(ApprovalScopeApprover.app_user_id)
+            ).all()
+        )
+
+    def list_asset_approver_ids(self, asset_id: str) -> tuple[str, ...]:
+        return tuple(
+            self._session.scalars(
+                select(AssetApprover.app_user_id)
+                .where(AssetApprover.asset_id == _text(asset_id))
+                .order_by(AssetApprover.app_user_id)
             ).all()
         )
 
