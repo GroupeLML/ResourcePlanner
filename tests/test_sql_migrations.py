@@ -18,7 +18,7 @@ MIGRATIONS = ROOT / "migrations"
 VERSIONS = MIGRATIONS / "versions"
 BASELINE_FILE = VERSIONS / "0001_v2_production_baseline.py"
 BASELINE_REVISION = "v2_production_baseline"
-HEAD_REVISION = "0004_asset_approval_authority"
+HEAD_REVISION = "0005_task_sync_runs"
 
 
 def alembic_config(database_path: Path) -> Config:
@@ -70,6 +70,7 @@ class SqlMigrationTests(unittest.TestCase):
                 "0002_work_package_weekly_loads.py",
                 "0003_work_package_resource_class.py",
                 "0004_asset_approval_authority.py",
+                "0005_acumatica_project_task_sync_runs.py",
             ],
         )
 
@@ -88,6 +89,7 @@ class SqlMigrationTests(unittest.TestCase):
             [revision.revision for revision in script.walk_revisions()],
             [
                 HEAD_REVISION,
+                "0004_asset_approval_authority",
                 "0003_work_package_resource_class",
                 "0002_work_package_weekly_loads",
                 BASELINE_REVISION,
@@ -253,6 +255,8 @@ class SqlMigrationTests(unittest.TestCase):
             "CREATE TABLE AUTH_SESSIONS",
             "CREATE TABLE ASSET_TYPE_APPROVAL_SCOPE_MAPPINGS",
             "CREATE TABLE ASSET_APPROVERS",
+            "CREATE TABLE ACUMATICA_PROJECT_TASK_SYNC_RUNS",
+            "CREATE TABLE ACUMATICA_PROJECT_TASK_SYNC_PROJECT_RESULTS",
             "ASSET_TYPE_ID",
             "PROPOSED_ASSET_ID",
             "CREATE TABLE BREAK_GLASS_CREDENTIALS",
