@@ -1549,11 +1549,10 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
     id: string;
     code: string;
     active: boolean;
-    resource_class_codes: string[];
     asset_type_ids: string[];
   }>;
   const assetApprovalScope = scopes.find(
-    (scope) => scope.active && scope.resource_class_codes.includes("PROGRAMMEUR"),
+    (scope) => scope.active && scope.code === "AUTOMATION",
   );
   expect(assetApprovalScope).toBeTruthy();
   await navigateMain(approvalAdmin.page, "Configuration");
