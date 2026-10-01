@@ -5,6 +5,7 @@ import {
   createApprovalScope,
   getApprovalScopes,
   setApprovalScopeApprover,
+  setApprovalScopeAssetType,
   setApprovalScopeResourceClass,
   updateApprovalScope,
 } from "./approvalScopesApi";
@@ -12,6 +13,7 @@ import {
   getResourceClasses,
   type ResourceClassConfigReadModel,
 } from "./resourceClassesApi";
+import { getAssetCatalog, type AssetTypeCatalogItem } from "./assetApi";
 import {
   getAdminRoleCatalog,
   getAdminUsers,
@@ -29,6 +31,7 @@ export default function ApprovalScopesPanel() {
   const [users, setUsers] = useState<UserAdminReadModel[]>([]);
   const [roles, setRoles] = useState<UserRoleDefinition[]>([]);
   const [resourceClasses, setResourceClasses] = useState<ResourceClassConfigReadModel[]>([]);
+  const [assetTypes, setAssetTypes] = useState<AssetTypeCatalogItem[]>([]);
   const [code, setCode] = useState("");
   const [label, setLabel] = useState("");
   const [pending, setPending] = useState<string | null>(null);
@@ -42,12 +45,14 @@ export default function ApprovalScopesPanel() {
       getAdminUsers(controller.signal),
       getAdminRoleCatalog(controller.signal),
       getResourceClasses(controller.signal),
+      getAssetCatalog(controller.signal),
     ])
-      .then(([scopeRows, userRows, roleRows, classRows]) => {
+      .then(([scopeRows, userRows, roleRows, classRows, assetCatalog]) => {
         setScopes(scopeRows);
         setUsers(userRows);
         setRoles(roleRows);
         setResourceClasses(classRows);
+        setAssetTypes(assetCatalog.types);
       })
       .catch((reason: unknown) => {
         if (!(reason instanceof DOMException && reason.name === "AbortError")) {
@@ -127,6 +132,30 @@ export default function ApprovalScopesPanel() {
       );
       replaceScope(next);
       setNotice(`Classes couvertes de ${next.code} mises à jour.`);
+    } catch (reason) {
+      setError(message(reason));
+    } finally {
+      setPending(null);
+    }
+  }
+
+  async function toggleAssetType(
+    scope: ApprovalScopeReadModel,
+    assetType: AssetTypeCatalogItem,
+    assigned: boolean,
+  ) {
+    setPending(`asset-type:${scope.id}:${assetType.id}`);
+    setError(null);
+    setNotice(null);
+    try {
+      const next = await setApprovalScopeAssetType(
+        scope.id,
+        assetType.id,
+        assigned,
+        scope.version,
+      );
+      replaceScope(next);
+      setNotice(`Types d’actifs couverts par ${next.code} mis à jour.`);
     } catch (reason) {
       setError(message(reason));
     } finally {
@@ -229,6 +258,31 @@ export default function ApprovalScopesPanel() {
                     <small>
                       {resourceClass.code}{resourceClass.active ? "" : " · inactive"}
                     </small>
+                  </label>
+                );
+              })}
+            </div>
+
+            <div className="approval-scope-approvers approval-scope-classes">
+              <span>Types d’actifs couverts</span>
+              {assetTypes.length === 0 ? (
+                <small>Aucun type d’actif dans le catalogue.</small>
+              ) : assetTypes.map((assetType) => {
+                const assigned = scope.asset_type_ids.includes(assetType.id);
+                return (
+                  <label key={assetType.id}>
+                    <input
+                      type="checkbox"
+                      checked={assigned}
+                      disabled={pending !== null || (!assetType.active && !assigned)}
+                      onChange={(event) => void toggleAssetType(
+                        scope,
+                        assetType,
+                        event.target.checked,
+                      )}
+                    />
+                    {assetType.label}
+                    <small>{assetType.code}{assetType.active ? "" : " · inactif"}</small>
                   </label>
                 );
               })}
