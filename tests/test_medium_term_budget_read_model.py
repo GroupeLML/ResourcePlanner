@@ -7,7 +7,12 @@ import unittest
 
 from fastapi.testclient import TestClient
 
-from app.infrastructure.sql import Project, TaskCatalogEntry, WorkPackage
+from app.infrastructure.sql import (
+    Project,
+    ResourceClassConfig,
+    TaskCatalogEntry,
+    WorkPackage,
+)
 from app.server import create_api_app
 from tests.http_test_auth import TEST_ADMIN_AUTH_RESOLVER
 from tests.sqlite_test_template import SqliteDatabaseTemplate
@@ -23,6 +28,18 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
             [
                 Project(id="P1", number="P-1", name="Projet 1", status="Actif"),
                 Project(id="P2", number="P-2", name="Projet 2", status="Actif"),
+                ResourceClassConfig(
+                    code="PROGRAMMEUR",
+                    label="Programmeur",
+                    average_hourly_cost_cad=Decimal("100"),
+                    active=True,
+                ),
+                ResourceClassConfig(
+                    code="INSTALLATEUR_AUTOMATISATION",
+                    label="Installateur automatisation",
+                    average_hourly_cost_cad=Decimal("90"),
+                    active=True,
+                ),
             ]
         )
         session.flush()
@@ -38,6 +55,7 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
                     account_group=" DEPMO ",
                     workforce_eligible=True,
                     budget_hours=Decimal("240"),
+                    resource_class_code="PROGRAMMEUR",
                 ),
                 TaskCatalogEntry(
                     id="TASK-217",
@@ -49,6 +67,7 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
                     account_group="DEPMO",
                     workforce_eligible=True,
                     budget_hours=Decimal("80"),
+                    resource_class_code="PROGRAMMEUR",
                 ),
                 TaskCatalogEntry(
                     id="TASK-218",
@@ -127,6 +146,7 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
                     project_id="P1",
                     task_catalog_item_id="TASK-216",
                     name="Lot A",
+                    resource_class_code="PROGRAMMEUR",
                     planned_hours=Decimal("120"),
                     status="planned",
                 ),
@@ -143,6 +163,7 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
                     project_id="P1",
                     task_catalog_item_id="TASK-217",
                     name="Lot suralloué",
+                    resource_class_code="INSTALLATEUR_AUTOMATISATION",
                     planned_hours=Decimal("100"),
                     status="active",
                 ),
@@ -247,8 +268,23 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
         self.assertEqual(programming["diagnostic_state"], "PARTIALLY_COVERED")
         self.assertEqual(programming["associated_work_package_count"], 2)
         self.assertEqual(programming["budget_included_work_package_count"], 2)
+        classed = next(
+            row for row in programming["work_packages"] if row["id"] == "WP-216-A"
+        )
+        self.assertEqual(classed["resource_class_code"], "PROGRAMMEUR")
+        self.assertEqual(classed["resource_class_label"], "Programmeur")
+        self.assertTrue(classed["resource_class_active"])
+        self.assertEqual(classed["task_resource_class_code"], "PROGRAMMEUR")
+        self.assertIsNone(classed["resource_class_diagnostic"])
+
         closed = next(row for row in programming["work_packages"] if row["id"] == "WP-216-B")
         self.assertTrue(closed["budget_included"])
+        self.assertIsNone(closed["resource_class_code"])
+        self.assertEqual(closed["task_resource_class_code"], "PROGRAMMEUR")
+        self.assertEqual(
+            closed["resource_class_diagnostic"],
+            "WORK_PACKAGE_TASK_RESOURCE_CLASS_DIVERGENCE",
+        )
 
         over = self._task(payload, "217")
         self.assertEqual(Decimal(str(over["planned_wp_hours"])), Decimal("100"))
@@ -260,6 +296,18 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
             row for row in over["work_packages"] if row["id"] == "WP-217-CANCELLED"
         )
         self.assertFalse(cancelled["budget_included"])
+        divergent = next(
+            row for row in over["work_packages"] if row["id"] == "WP-217-A"
+        )
+        self.assertEqual(
+            divergent["resource_class_code"],
+            "INSTALLATEUR_AUTOMATISATION",
+        )
+        self.assertEqual(divergent["task_resource_class_code"], "PROGRAMMEUR")
+        self.assertEqual(
+            divergent["resource_class_diagnostic"],
+            "WORK_PACKAGE_TASK_RESOURCE_CLASS_DIVERGENCE",
+        )
 
         unavailable = self._task(payload, "218")
         self.assertIsNone(unavailable["budget_hours"])
