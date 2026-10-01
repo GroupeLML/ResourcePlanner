@@ -90,8 +90,18 @@ class ReactDemandWorkflowContractTests(unittest.TestCase):
             "no_eligible_approver",
             "approver_inactive",
             "approver_permission_missing",
+            "asset_type_unknown",
+            "asset_type_inactive",
+            "asset_type_approval_scope_unmapped",
+            "asset_type_approval_scope_ambiguous",
+            "proposed_asset_unknown",
+            "proposed_asset_inactive",
         ):
             self.assertIn(diagnostic, page)
+        self.assertIn("Type d’actif", page)
+        self.assertIn("Actif proposé", page)
+        self.assertIn("context.asset_type_code", page)
+        self.assertIn("context.proposed_asset_code", page)
 
     def test_workflow_separates_approval_from_confirmation(self) -> None:
         source = (ROOT / "frontend" / "src" / "DemandWorkflowPage.tsx").read_text(
