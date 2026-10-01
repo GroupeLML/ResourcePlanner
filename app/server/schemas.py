@@ -166,6 +166,7 @@ _LEGACY_DEMAND_NEED_FIELDS = frozenset(
         "resource_count",
         "required_competencies",
         "required_competency_ids",
+        "required_resource_class",
         "estimated_hours",
         "estimated_days",
         "proposed_technician",
@@ -192,6 +193,7 @@ class DemandCreateRequest(StrictRequest):
     resource_count: int = Field(default=1, ge=1)
     required_competencies: str | None = None
     required_competency_ids: list[str] | None = None
+    required_resource_class: str | None = None
     estimated_hours: float | None = Field(default=None, ge=0)
     estimated_days: int | None = Field(default=None, ge=1)
     proposed_technician: str | None = None
@@ -229,6 +231,7 @@ class DemandUpdateRequest(StrictRequest):
     resource_count: int | None = Field(default=None, ge=1)
     required_competencies: str | None = None
     required_competency_ids: list[str] | None = None
+    required_resource_class: str | None = None
     estimated_hours: float | None = Field(default=None, ge=0)
     estimated_days: int | None = Field(default=None, ge=1)
     proposed_technician: str | None = None
