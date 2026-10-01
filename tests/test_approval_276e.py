@@ -232,7 +232,7 @@ class Approval276ERoutingTests(unittest.TestCase):
                     erp_task_label=task_code,
                     active=True,
                 )
-                for index, (task_id, _, _) in enumerate(task_specs)
+                for index, (task_id, task_code, _) in enumerate(task_specs)
             ]
         )
 
