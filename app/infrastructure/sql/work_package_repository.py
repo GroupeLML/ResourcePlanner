@@ -12,7 +12,10 @@ from ...application.errors import (
     ApplicationConflictError,
     ApplicationValidationError,
 )
-from ...application.query_models import WorkPackageReadModel
+from ...application.query_models import (
+    WorkPackageReadModel,
+    work_package_resource_class_diagnostic,
+)
 from ...application.repository_ports import WorkPackageRepositoryPort
 from ...application.work_package_weekly_load import (
     WEEKLY_LOAD_ORIGINS,
@@ -33,6 +36,7 @@ from .models import (
     WorkPackageAudit,
     WorkPackageWeeklyLoad,
 )
+from .resource_class_models import ResourceClassConfig
 
 
 def _text(value: object) -> str:
@@ -68,7 +72,12 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
         work_package: WorkPackage,
         project: Project,
         task: TaskCatalogEntry | None = None,
+        resource_class: ResourceClassConfig | None = None,
     ) -> WorkPackageReadModel:
+        task_resource_class_code = (
+            _optional_text(task.resource_class_code) if task is not None else None
+        )
+        resource_class_code = _optional_text(work_package.resource_class_code)
         return WorkPackageReadModel(
             id=work_package.id,
             reference=_optional_text(work_package.legacy_effort_id) or work_package.id,
@@ -87,22 +96,47 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
             task_catalog_item_id=work_package.task_catalog_item_id,
             task_code=_optional_text(task.task_code) if task is not None else None,
             task_label=_optional_text(task.label) if task is not None else None,
+            resource_class_code=resource_class_code,
+            resource_class_label=(
+                _optional_text(resource_class.label)
+                if resource_class is not None
+                else None
+            ),
+            resource_class_active=(
+                bool(resource_class.active)
+                if resource_class is not None
+                else None
+            ),
+            task_resource_class_code=task_resource_class_code,
+            resource_class_diagnostic=work_package_resource_class_diagnostic(
+                resource_class_code,
+                task_resource_class_code,
+            ),
             version=int(work_package.version or 1),
         )
 
     def _row(
         self,
         reference: str,
-    ) -> tuple[WorkPackage, Project, TaskCatalogEntry | None] | None:
+    ) -> tuple[
+        WorkPackage,
+        Project,
+        TaskCatalogEntry | None,
+        ResourceClassConfig | None,
+    ] | None:
         wanted = _text(reference)
         if not wanted:
             return None
         return self._session.execute(
-            select(WorkPackage, Project, TaskCatalogEntry)
+            select(WorkPackage, Project, TaskCatalogEntry, ResourceClassConfig)
             .join(Project, WorkPackage.project_id == Project.id)
             .outerjoin(
                 TaskCatalogEntry,
                 WorkPackage.task_catalog_item_id == TaskCatalogEntry.id,
+            )
+            .outerjoin(
+                ResourceClassConfig,
+                WorkPackage.resource_class_code == ResourceClassConfig.code,
             )
             .where(
                 (WorkPackage.id == wanted)
@@ -114,8 +148,8 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
         row = self._row(reference)
         if row is None:
             return None
-        work_package, project, task = row
-        return self._read_model(work_package, project, task)
+        work_package, project, task, resource_class = row
+        return self._read_model(work_package, project, task, resource_class)
 
     def _entity(self, reference: str) -> WorkPackage:
         wanted = _text(reference)
@@ -169,6 +203,44 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
                 context={"task_catalog_item_id": task.id},
             )
         return task
+
+    def _resource_class_for_assignment(
+        self,
+        value: object,
+    ) -> ResourceClassConfig:
+        code = _text(value)
+        if not code:
+            raise ApplicationValidationError(
+                "La classe de ressource du WorkPackage est requise.",
+                code="work_package_resource_class_required",
+                context={"field": "resource_class_code"},
+            )
+        resource_class = self._session.get(ResourceClassConfig, code)
+        if resource_class is None:
+            raise ApplicationValidationError(
+                "La classe de ressource sélectionnée est introuvable.",
+                code="work_package_resource_class_not_found",
+                context={"resource_class_code": code},
+            )
+        if not bool(resource_class.active):
+            raise ApplicationValidationError(
+                "Une classe inactive ne peut pas être affectée à un WorkPackage.",
+                code="work_package_resource_class_inactive",
+                context={"resource_class_code": code},
+            )
+        return resource_class
+
+    def _initial_resource_class(
+        self,
+        task: TaskCatalogEntry,
+    ) -> ResourceClassConfig | None:
+        code = _optional_text(task.resource_class_code)
+        if code is None:
+            return None
+        resource_class = self._session.get(ResourceClassConfig, code)
+        if resource_class is None or not bool(resource_class.active):
+            return None
+        return resource_class
 
     def _guard(self, work_package: WorkPackage) -> None:
         result = self._session.execute(
@@ -264,6 +336,7 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
         return {
             "project_number": project.number,
             "task_catalog_item_id": work_package.task_catalog_item_id,
+            "resource_class_code": _optional_text(work_package.resource_class_code),
             "code": _optional_text(work_package.code),
             "name": work_package.name,
             "description": _optional_text(work_package.description),
@@ -308,7 +381,7 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
         row = self._row(reference)
         if row is None:
             return None
-        work_package, _project, _task = row
+        work_package, _project, _task, _resource_class = row
         return WorkPackageWeeklyLoadState(
             reference=_optional_text(work_package.legacy_effort_id) or work_package.id,
             version=int(work_package.version or 1),
@@ -361,9 +434,21 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
     def create(self, values: Mapping[str, Any]) -> WorkPackageReadModel:
         project = self._project(values.get("project_number"))
         task = self._task(values.get("task_catalog_item_id"), project=project)
+        if "resource_class_code" in values:
+            supplied_class = values.get("resource_class_code")
+            resource_class = (
+                None
+                if supplied_class is None
+                else self._resource_class_for_assignment(supplied_class)
+            )
+        else:
+            resource_class = self._initial_resource_class(task)
         work_package = WorkPackage(
             project_id=project.id,
             task_catalog_item_id=task.id,
+            resource_class_code=(
+                resource_class.code if resource_class is not None else None
+            ),
             version=1,
             code=_optional_text(values.get("code")),
             name=_text(values.get("name")),
@@ -382,7 +467,7 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
             old_values={},
             new_values=new_values,
         )
-        return self._read_model(work_package, project, task)
+        return self._read_model(work_package, project, task, resource_class)
 
     def update(
         self,
@@ -466,6 +551,21 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
 
         old_values = self._snapshot(work_package, current_project)
         values: dict[str, object] = {}
+        target_resource_class: ResourceClassConfig | None = (
+            self._session.get(ResourceClassConfig, work_package.resource_class_code)
+            if work_package.resource_class_code is not None
+            else None
+        )
+        if "resource_class_code" in updates:
+            supplied_class = updates.get("resource_class_code")
+            if supplied_class is None:
+                target_resource_class = None
+                values["resource_class_code"] = None
+            else:
+                target_resource_class = self._resource_class_for_assignment(
+                    supplied_class
+                )
+                values["resource_class_code"] = target_resource_class.code
         if project_changed:
             values["project_id"] = target_project.id
         if task_changed:
@@ -542,7 +642,12 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
             old_values=old_values,
             new_values=new_values,
         )
-        return self._read_model(work_package, target_project, target_task)
+        return self._read_model(
+            work_package,
+            target_project,
+            target_task,
+            target_resource_class,
+        )
 
 
     def replace_weekly_loads(
@@ -693,4 +798,9 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
             old_values=old_values,
             new_values=new_values,
         )
-        return self._read_model(work_package, project, task)
+        resource_class = (
+            self._session.get(ResourceClassConfig, work_package.resource_class_code)
+            if work_package.resource_class_code is not None
+            else None
+        )
+        return self._read_model(work_package, project, task, resource_class)
