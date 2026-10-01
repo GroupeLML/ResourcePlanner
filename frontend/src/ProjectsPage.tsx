@@ -54,6 +54,34 @@ const BUDGET_ATTENTION = new Set([
   "OVERALLOCATED",
 ]);
 
+const FINANCIAL_DIAGNOSTIC_LABELS: Record<string, string> = {
+  ERP_FINANCIAL_BUDGET_UNAVAILABLE: "Budget financier ERP non disponible",
+  ERP_FINANCIAL_BUDGET_INCOMPLETE: "Budget financier ERP incomplet",
+};
+
+function formatCurrency(value: number | null | undefined) {
+  if (value == null) return "—";
+  return new Intl.NumberFormat("fr-CA", {
+    style: "currency",
+    currency: "CAD",
+  }).format(value);
+}
+
+function formatProjectDate(value: string | null | undefined) {
+  if (!value) return "—";
+  return new Date(`${value}T00:00:00Z`).toLocaleDateString("fr-CA", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+function workPackageWindow(start: string | null, end: string | null) {
+  if (!start && !end) return "Date non définie";
+  return `${start ? formatProjectDate(start) : "…"} → ${end ? formatProjectDate(end) : "…"}`;
+}
+
 function formatHours(value: number | null | undefined) {
   if (value == null) return "—";
   return `${new Intl.NumberFormat("fr-CA", { maximumFractionDigits: 2 }).format(value)} h`;
@@ -61,6 +89,10 @@ function formatHours(value: number | null | undefined) {
 
 function budgetDiagnosticLabel(code: string) {
   return BUDGET_DIAGNOSTIC_LABELS[code] || code;
+}
+
+function financialDiagnosticLabel(code: string | null) {
+  return code ? FINANCIAL_DIAGNOSTIC_LABELS[code] || code : null;
 }
 
 function apiErrorMessage(reason: unknown, fallback: string) {
@@ -686,7 +718,7 @@ export default function ProjectsPage() {
             <div>
               <span className="eyebrow">Détail projet</span>
               <h2>{selectedProjectNumber}</h2>
-              <p>Budgets de tâches ERP et charge WorkPackage issus de la projection backend Moyen terme #502.</p>
+              <p>Finance ERP en CAD, budget dérivé en heures et WorkPackages restent des lectures distinctes de la projection backend.</p>
             </div>
             <button className="quiet-button" type="button" onClick={() => setSelectedProjectNumber(null)}>Fermer</button>
           </div>
@@ -730,8 +762,33 @@ export default function ProjectsPage() {
 
           <div className="project-task-contact-list">
             <div className="projects-table-header">
+              <strong>Temps approuvés</strong>
+              {projectBudget?.last_approved_time_date ? (
+                <span>
+                  Dernières heures approuvées : {formatProjectDate(projectBudget.last_approved_time_date)}
+                  {projectBudget.cutoff_source ? ` · source ${projectBudget.cutoff_source}` : ""}
+                </span>
+              ) : (
+                <span>Dernières heures approuvées : Indisponible — source ERP d’approbation des temps non configurée.</span>
+              )}
+            </div>
+            {projectBudget?.cutoff_status !== "AVAILABLE" && (
+              <div className="projects-sync-message" role="status">
+                Cutoff des temps approuvés indisponible — filtre temporel des WorkPackages non appliqué.
+                {projectBudget?.cutoff_diagnostic ? ` Diagnostic : ${projectBudget.cutoff_diagnostic}.` : ""}
+              </div>
+            )}
+          </div>
+
+          <div className="project-task-contact-list">
+            <div className="projects-table-header">
               <strong>Budgets tâches ERP</strong>
-              <span>Budget ERP, heures structurées et solde sont lus directement depuis la projection #502.</span>
+              <span>
+                Finance ERP en CAD et planification en heures — deux axes distincts.
+                {projectBudget?.erp_budget_last_success_at
+                  ? ` Budgets ERP synchronisés : ${new Date(projectBudget.erp_budget_last_success_at).toLocaleString("fr-CA")}.`
+                  : " Aucune synchronisation ERP réussie enregistrée pour ces budgets."}
+              </span>
             </div>
             {projectBudgetLoading ? (
               <p className="projects-empty">Chargement des budgets…</p>
@@ -747,8 +804,12 @@ export default function ProjectsPage() {
                     <tr>
                       <th>Tâche ERP</th>
                       <th>Budget ERP</th>
-                      <th>WorkPackages</th>
-                      <th>Solde</th>
+                      <th>Actual ERP</th>
+                      <th>Restant ERP</th>
+                      <th>Budget dérivé main-d’œuvre</th>
+                      <th>Charge WorkPackages</th>
+                      <th>Solde heures structuré</th>
+                      <th>WorkPackages liés</th>
                       <th>Diagnostic</th>
                     </tr>
                   </thead>
@@ -756,10 +817,32 @@ export default function ProjectsPage() {
                     {projectBudget.tasks.map((task) => (
                       <tr key={task.task_catalog_item_id}>
                         <td><strong>{task.task_code}</strong><span>{task.task_label}</span></td>
+                        <td>{formatCurrency(task.budget_amount_cad)}</td>
+                        <td>{formatCurrency(task.budget_actual_cad)}</td>
+                        <td>{formatCurrency(task.remaining_budget_cad)}</td>
                         <td>{formatHours(task.budget_hours)}</td>
                         <td>{formatHours(task.planned_wp_hours)}</td>
                         <td>{formatHours(task.remaining_budget_hours)}</td>
                         <td>
+                          {task.work_packages.length === 0 ? (
+                            <span className="projects-muted">Aucun WorkPackage associé</span>
+                          ) : (
+                            <ul>
+                              {task.work_packages.map((workPackage) => (
+                                <li key={workPackage.id}>
+                                  <strong>{workPackage.name}</strong>
+                                  <span> · {workPackageWindow(workPackage.start_date, workPackage.end_date)} · {workPackage.status}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </td>
+                        <td>
+                          {financialDiagnosticLabel(task.financial_diagnostic) && (
+                            <span className="project-status is-inactive">
+                              ⚑ {financialDiagnosticLabel(task.financial_diagnostic)}
+                            </span>
+                          )}
                           <span className={BUDGET_ATTENTION.has(task.diagnostic_state) ? "project-status is-inactive" : "projects-muted"}>
                             {BUDGET_ATTENTION.has(task.diagnostic_state) ? "⚑ " : ""}
                             {budgetDiagnosticLabel(task.diagnostic_state)}
