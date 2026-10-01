@@ -14,6 +14,7 @@ from ..domain.approval_cycles import (
     ApprovalSubjectRoutingEntry,
     approval_subject_fingerprint,
 )
+from ..domain.approval_routing import ROUTING_SOURCE_ASSET_TYPE
 from .approval_scopes import ApprovalScopeService
 from .errors import (
     ApplicationConflictError,
@@ -54,6 +55,9 @@ class ApprovalCycleRoutingInput:
     task_catalog_item_id: str | None
     approval_scope_ids: tuple[str, ...]
     proposed_resource_id: str | None
+    line_kind: str = "WORKFORCE"
+    asset_type_id: str | None = None
+    proposed_asset_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +74,8 @@ class ApprovalRequirementSnapshot:
     proposed_resource_id: str | None
     routing_sources: tuple[str, ...]
     approvers: tuple[ApprovalApproverSnapshot, ...]
+    asset_type_id: str | None = None
+    proposed_asset_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +87,8 @@ class ApprovalRequirementRecord:
     proposed_resource_id: str | None
     routing_sources: tuple[str, ...]
     approvers: tuple[ApprovalApproverSnapshot, ...]
+    asset_type_id: str | None = None
+    proposed_asset_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -350,6 +358,8 @@ class ApprovalCycleService:
                         ],
                         "suggested_scope_code": resolved.suggested_scope_code,
                         "proposed_resource_id": routing.proposed_resource_id,
+                        "asset_type_id": routing.asset_type_id,
+                        "proposed_asset_id": routing.proposed_asset_id,
                         "diagnostics": list(resolved.resolution.diagnostics),
                     },
                 )
@@ -364,15 +374,14 @@ class ApprovalCycleService:
                     key=lambda candidate: candidate.user_id,
                 )
             )
-            source_kinds = tuple(
-                sorted(
-                    {
-                        source
-                        for approver in approvers
-                        for source in approver.sources
-                    }
-                )
-            )
+            source_kinds_set = {
+                source
+                for approver in approvers
+                for source in approver.sources
+            }
+            if routing.line_kind == "ASSET":
+                source_kinds_set.add(ROUTING_SOURCE_ASSET_TYPE)
+            source_kinds = tuple(sorted(source_kinds_set))
             requirement = ApprovalRequirementSnapshot(
                 request_line_id=line_id,
                 task_catalog_item_id=resolved.task_catalog_item_id,
@@ -380,6 +389,8 @@ class ApprovalCycleService:
                 proposed_resource_id=routing.proposed_resource_id,
                 routing_sources=source_kinds,
                 approvers=approvers,
+                asset_type_id=routing.asset_type_id,
+                proposed_asset_id=routing.proposed_asset_id,
             )
             requirements.append(requirement)
             fingerprint_routing.append(
@@ -391,6 +402,7 @@ class ApprovalCycleService:
                     ),
                     source_kinds=source_kinds,
                     proposed_resource_id=routing.proposed_resource_id,
+                    proposed_asset_id=routing.proposed_asset_id,
                 )
             )
 
@@ -462,6 +474,7 @@ class ApprovalCycleService:
                     ),
                     source_kinds=source_kinds,
                     proposed_resource_id=row.proposed_resource_id,
+                    proposed_asset_id=row.proposed_asset_id,
                 )
             )
         return self._fingerprint(
