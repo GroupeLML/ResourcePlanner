@@ -1819,34 +1819,27 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   });
   expect(bumpVersion.status(), await bumpVersion.text()).toBe(201);
 
-  let requirementCard = assetPanel.locator(
-    `.asset-requirement-card[data-requirement-id="${extendedRequirementId}"]`,
-  );
-  await expect(requirementCard).toBeVisible();
-  await requirementCard.getByRole("combobox").first().selectOption(lift63Id);
-  await requirementCard.getByRole("button", { name: "Réserver cette unité" }).click();
-  await expect(assetPanel.locator(".asset-planning-feedback")).toContainText(
-    "Le planning a changé depuis l’ouverture de cette vue",
-  );
+  await aliceShift.getByRole("button", { name: /Assigner un actif/ }).click();
+  const quickAssetDialog = coordinator.page.getByRole("dialog", { name: "Assigner un actif" });
+  await expect(quickAssetDialog).toBeVisible();
+  await expect(quickAssetDialog).toContainText(demandNumber);
+  await quickAssetDialog.getByLabel("Besoin actif").selectOption(extendedRequirementId);
+  await quickAssetDialog.getByLabel("Unité").selectOption(lift63Id);
 
-  demandRequirements = assetPanel.locator(".asset-requirement-card").filter({ hasText: demandNumber });
-  requirementCard = assetPanel.locator(
-    `.asset-requirement-card[data-requirement-id="${extendedRequirementId}"]`,
-  );
-  await expect(requirementCard).toBeVisible();
-  await requirementCard.getByRole("combobox").first().selectOption(lift63Id);
-  await requirementCard.getByRole("button", { name: "Réserver cette unité" }).click();
-  await expect(assetPanel.locator(".asset-planning-feedback")).toContainText("Réservation enregistrée");
+  const refreshedSnapshot = coordinator.page.waitForResponse((response) => (
+    response.request().method() === "GET"
+    && response.url().includes("/api/v1/planning/snapshot")
+    && response.ok()
+  ));
+  await quickAssetDialog.getByRole("button", { name: "Réserver et associer" }).click();
+  await expect(quickAssetDialog).toContainText("Le planning a changé");
+  await refreshedSnapshot;
 
-  requirementCard = assetPanel.locator(".asset-requirement-card").filter({
-    has: coordinator.page.locator(".asset-current-allocation strong").filter({ hasText: "Nacelle #63" }),
-  }).first();
-  await expect(requirementCard).toContainText("décision manuelle verrouillée");
-  let operatorSelect = requirementCard.getByLabel(/Opérateur qualifiant/);
-  await expect(operatorSelect.locator('option[value="R-ALICE"]')).toBeAttached();
-  await operatorSelect.selectOption("R-ALICE");
-  await requirementCard.getByRole("button", { name: "Enregistrer l’opérateur" }).click();
-  await expect(assetPanel.locator(".asset-planning-feedback")).toContainText("Opérateur qualifiant enregistré");
+  await quickAssetDialog.getByRole("button", { name: "Réserver et associer" }).click();
+  await expect(quickAssetDialog).toBeHidden();
+
+  aliceShift = aliceRow.locator(".shift-card").filter({ hasText: demandNumber }).first();
+  await expect(aliceShift).toContainText("Nacelle #63");
 
   demandRequirements = assetPanel.locator(".asset-requirement-card").filter({ hasText: demandNumber });
   const secondRequirement = demandRequirements.filter({ hasText: "À réserver" }).first();
@@ -1857,7 +1850,7 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   const secondAllocated = assetPanel.locator(".asset-requirement-card").filter({
     has: coordinator.page.locator(".asset-current-allocation strong").filter({ hasText: "Nacelle #64" }),
   }).first();
-  operatorSelect = secondAllocated.getByLabel(/Opérateur qualifiant/);
+  const operatorSelect = secondAllocated.getByLabel(/Opérateur qualifiant/);
   await expect(operatorSelect.locator('option[value="R-ALICE"]')).toBeAttached();
   await operatorSelect.selectOption("R-ALICE");
   await secondAllocated.getByRole("button", { name: "Enregistrer l’opérateur" }).click();

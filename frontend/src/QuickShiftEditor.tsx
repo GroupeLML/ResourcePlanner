@@ -17,8 +17,9 @@ type Props = {
   weekEnd: string;
   defaultDay: string;
   initialProjectNumber?: string | null;
+  initialResourceId?: string | null;
   onClose: () => void;
-  onSaved: () => void;
+  onSaved: (created: { day: string; resourceName: string }) => void;
 };
 
 type RetryReceipt = {
@@ -42,10 +43,9 @@ function errorMessage(reason: unknown) {
 
 export default function QuickShiftEditor({
   open,
-  weekStart,
-  weekEnd,
   defaultDay,
   initialProjectNumber,
+  initialResourceId,
   onClose,
   onSaved,
 }: Props) {
@@ -97,6 +97,11 @@ export default function QuickShiftEditor({
         setProjectNumber((current) =>
           sortedProjects.some((row) => row.number === current) ? current : "",
         );
+        setTechnician(
+          initialResourceId
+            ? sortedResources.find((row) => row.id === initialResourceId)?.name ?? ""
+            : "",
+        );
       })
       .catch((reason: unknown) => {
         if (reason instanceof DOMException && reason.name === "AbortError") return;
@@ -107,7 +112,7 @@ export default function QuickShiftEditor({
       });
 
     return () => controller.abort();
-  }, [open, canManagePlanning, defaultDay, initialProjectNumber]);
+  }, [open, canManagePlanning, defaultDay, initialProjectNumber, initialResourceId]);
 
   useEffect(() => {
     if (!open || !canManagePlanning) return;
@@ -148,8 +153,8 @@ export default function QuickShiftEditor({
       setError("Sélectionne un technicien actif.");
       return;
     }
-    if (!day || day < weekStart || day > weekEnd) {
-      setError("La date doit être comprise dans la semaine affichée.");
+    if (!day || !/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+      setError("Sélectionne une date valide.");
       return;
     }
     if (!Number.isFinite(numericHours) || numericHours <= 0) {
@@ -179,7 +184,7 @@ export default function QuickShiftEditor({
     try {
       await createQuickShift(payload, idempotencyKey);
       retryReceipt.current = null;
-      onSaved();
+      onSaved({ day, resourceName: selectedResource.name });
     } catch (reason: unknown) {
       setError(errorMessage(reason));
     } finally {
@@ -218,7 +223,7 @@ export default function QuickShiftEditor({
           <div className="dialog-form-grid">
             <label><span>Projet</span><select value={projectNumber} onChange={(event) => setProjectNumber(event.target.value)} disabled={saving || loadingChoices} required autoFocus><option value="">Sélectionner un projet…</option>{projects.map((row) => <option value={row.number} key={row.id}>{row.number} — {row.name}</option>)}</select></label>
             <label><span>Technicien</span><select value={technician} onChange={(event) => setTechnician(event.target.value)} disabled={saving || loadingChoices} required><option value="">Sélectionner une ressource…</option>{resources.map((row) => <option value={row.name} key={row.id}>{row.name}{row.resource_class ? ` — ${row.resource_class}` : ""}</option>)}</select></label>
-            <label><span>Date</span><input type="date" min={weekStart} max={weekEnd} value={day} onChange={(event) => setDay(event.target.value)} disabled={saving} required /></label>
+            <label><span>Date</span><input type="date" value={day} onChange={(event) => setDay(event.target.value)} disabled={saving} required /></label>
             <label><span>Heures</span><input type="number" min="0.25" step="0.25" value={hours} onChange={(event) => setHours(event.target.value)} disabled={saving} required /></label>
             <label><span>Confirmation</span><select value={confirmation} onChange={(event) => setConfirmation(event.target.value as "Tentative" | "Confirmée")} disabled={saving}><option value="Confirmée">Confirmée</option><option value="Tentative">Tentative</option></select></label>
             <label className="checkbox-field"><input type="checkbox" checked={outsideStandardHours} onChange={(event) => setOutsideStandardHours(event.target.checked)} disabled={saving} /><span>Autoriser ce quart en dehors de l’horaire standard</span></label>
