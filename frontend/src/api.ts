@@ -1253,6 +1253,21 @@ export function getMediumTermBudget(
   );
 }
 
+export function getMediumTermBudgetSummary(
+  projectNumber: string,
+  signal?: AbortSignal,
+  scope: ViewScope = "global",
+) {
+  const params = new URLSearchParams({
+    project_number: projectNumber,
+    scope,
+  });
+  return getJson<MediumTermBudgetReadModel>(
+    `/api/v1/medium-term/budget?${params.toString()}`,
+    signal,
+  );
+}
+
 export function getMediumTermUnlinkedSegments(
   start: string,
   end: string,

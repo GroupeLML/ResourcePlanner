@@ -5,7 +5,7 @@
 .mt-demands-button:hover { background: #274f90; }
 .mt-create-package { border: 1px solid var(--border); background: white; color: var(--accent); }
 .mt-create-package:hover { border-color: #aebbd0; background: #f8fafc; }
-.mt-filters { grid-template-columns: minmax(240px, 1fr) repeat(2, minmax(170px, .6fr)); }
+.mt-filters { grid-template-columns: minmax(240px, 1fr) repeat(3, minmax(150px, .55fr)); }
 .mt-metrics strong { font-size: 1.18rem; }
 
 .mt-capacity-panel { margin: .85rem 0; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); overflow: hidden; transition: opacity .15s; }

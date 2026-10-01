@@ -8,12 +8,14 @@ import {
   ApiError,
   BusinessContactReadModel,
   ContactLinkReadModel,
+  MediumTermBudgetReadModel,
   ProjectReadModel,
   ProjectTaskSyncMetadata,
   TaskCatalogItemReadModel,
   getAcumaticaIntegrationStatus,
   getAcumaticaProjectTaskSyncMetadata,
   getBusinessContacts,
+  getMediumTermBudgetSummary,
   getProjectBusinessContacts,
   getProjects,
   getTaskCatalog,
@@ -33,6 +35,31 @@ function sourceLabel(project: ProjectReadModel) {
   return project.erp_external_id ? "Acumatica" : "Local";
 }
 
+const BUDGET_DIAGNOSTIC_LABELS: Record<string, string> = {
+  BUDGET_UNAVAILABLE: "Budget ERP non disponible",
+  WORK_PACKAGE_LOAD_UNAVAILABLE: "Charge WorkPackage non disponible",
+  NO_WORK_PACKAGES: "Budget positif sans WorkPackage",
+  PARTIALLY_COVERED: "Budget partiellement structuré",
+  FULLY_COVERED: "Budget entièrement structuré",
+  OVERALLOCATED: "Dépassement du budget",
+};
+
+const BUDGET_ATTENTION = new Set([
+  "BUDGET_UNAVAILABLE",
+  "WORK_PACKAGE_LOAD_UNAVAILABLE",
+  "NO_WORK_PACKAGES",
+  "OVERALLOCATED",
+]);
+
+function formatHours(value: number | null | undefined) {
+  if (value == null) return "—";
+  return `${new Intl.NumberFormat("fr-CA", { maximumFractionDigits: 2 }).format(value)} h`;
+}
+
+function budgetDiagnosticLabel(code: string) {
+  return BUDGET_DIAGNOSTIC_LABELS[code] || code;
+}
+
 function apiErrorMessage(reason: unknown, fallback: string) {
   if (reason instanceof ApiError) {
     return `${reason.message}${reason.code ? ` (${reason.code})` : ""}`;
@@ -50,6 +77,9 @@ export default function ProjectsPage() {
   const [selectedProjectNumber, setSelectedProjectNumber] = useState<string | null>(null);
   const [projectContactLink, setProjectContactLink] = useState<ContactLinkReadModel | null>(null);
   const [projectTasks, setProjectTasks] = useState<TaskCatalogItemReadModel[]>([]);
+  const [projectBudget, setProjectBudget] = useState<MediumTermBudgetReadModel | null>(null);
+  const [projectBudgetLoading, setProjectBudgetLoading] = useState(false);
+  const [projectBudgetError, setProjectBudgetError] = useState<string | null>(null);
   const [contactPending, setContactPending] = useState(false);
   const [integration, setIntegration] = useState<AcumaticaIntegrationStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -100,7 +130,7 @@ export default function ProjectsPage() {
   }, [refreshKey, scope, scopeLoading]);
 
   useEffect(() => {
-    if (!selectedProject) {
+    if (!selectedProject || (!canManageContacts && !canSyncProjects)) {
       setProjectContactLink(null);
       setProjectTasks([]);
       setTaskSyncMetadata(null);
@@ -108,9 +138,15 @@ export default function ProjectsPage() {
     }
     const controller = new AbortController();
     Promise.all([
-      getProjectBusinessContacts(selectedProject.number, controller.signal),
-      getTaskCatalog(selectedProject.number, "", false, controller.signal),
-      getAcumaticaProjectTaskSyncMetadata(selectedProject.id, controller.signal),
+      canManageContacts
+        ? getProjectBusinessContacts(selectedProject.number, controller.signal)
+        : Promise.resolve(null),
+      canManageContacts
+        ? getTaskCatalog(selectedProject.number, "", false, controller.signal)
+        : Promise.resolve([]),
+      canSyncProjects
+        ? getAcumaticaProjectTaskSyncMetadata(selectedProject.id, controller.signal)
+        : Promise.resolve(null),
     ])
       .then(([link, taskRows, metadata]) => {
         setProjectContactLink(link);
@@ -122,7 +158,32 @@ export default function ProjectsPage() {
         setError(apiErrorMessage(reason, "Impossible de charger les données du projet."));
       });
     return () => controller.abort();
-  }, [selectedProject, refreshKey]);
+  }, [selectedProject, refreshKey, canManageContacts, canSyncProjects]);
+
+  useEffect(() => {
+    if (!selectedProject) {
+      setProjectBudget(null);
+      setProjectBudgetError(null);
+      setProjectBudgetLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    setProjectBudgetLoading(true);
+    setProjectBudgetError(null);
+    getMediumTermBudgetSummary(selectedProject.number, controller.signal, scope)
+      .then(setProjectBudget)
+      .catch((reason: unknown) => {
+        if (reason instanceof DOMException && reason.name === "AbortError") return;
+        setProjectBudget(null);
+        setProjectBudgetError(
+          apiErrorMessage(reason, "Impossible de charger les budgets de tâches ERP."),
+        );
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setProjectBudgetLoading(false);
+      });
+    return () => controller.abort();
+  }, [selectedProject, refreshKey, scope]);
 
   const managers = useMemo(() => {
     const values = new Set(
@@ -276,12 +337,14 @@ export default function ProjectsPage() {
         `${result.source_rows} lignes reçues · ${result.task_count} tâches · ${result.rejected_rows} rejet · `
         + `${result.created} créées · ${result.updated} mises à jour · ${result.unchanged} inchangées`,
       );
-      const [taskRows, metadata] = await Promise.all([
+      const [taskRows, metadata, budget] = await Promise.all([
         getTaskCatalog(selectedProject.number, "", false),
         getAcumaticaProjectTaskSyncMetadata(selectedProject.id),
+        getMediumTermBudgetSummary(selectedProject.number, undefined, scope),
       ]);
       setProjectTasks(taskRows);
       setTaskSyncMetadata(metadata);
+      setProjectBudget(budget);
     } catch (reason: unknown) {
       setTaskSyncError(apiErrorMessage(reason, "La synchronisation des tâches ERP a échoué."));
     } finally {
@@ -434,7 +497,7 @@ export default function ProjectsPage() {
                   <th>Chargé de projet</th>
                   <th>Statut</th>
                   <th>Source</th>
-                  {canManageContacts && <th>Contacts</th>}
+                  <th>Détail</th>
                 </tr>
               </thead>
               <tbody>
@@ -456,17 +519,15 @@ export default function ProjectsPage() {
                         {sourceLabel(project)}
                       </span>
                     </td>
-                    {canManageContacts && (
-                      <td>
-                        <button
-                          className="quiet-button"
-                          type="button"
-                          onClick={() => setSelectedProjectNumber(project.number)}
-                        >
-                          Configurer
-                        </button>
-                      </td>
-                    )}
+                    <td>
+                      <button
+                        className="quiet-button"
+                        type="button"
+                        onClick={() => setSelectedProjectNumber(project.number)}
+                      >
+                        Ouvrir
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -474,13 +535,13 @@ export default function ProjectsPage() {
           </div>
         )}
       </div>
-      {canManageContacts && selectedProjectNumber && (
+      {selectedProjectNumber && (
         <section className="admin-card project-contact-admin">
           <div className="panel-heading">
             <div>
-              <span className="eyebrow">Contacts métier</span>
+              <span className="eyebrow">Détail projet</span>
               <h2>{selectedProjectNumber}</h2>
-              <p>Le chargé de projet est le dernier fallback du responsable opérationnel. Les tâches peuvent définir leur propre responsable et coordonnateur.</p>
+              <p>Budgets de tâches ERP et charge WorkPackage issus de la projection backend Moyen terme #502.</p>
             </div>
             <button className="quiet-button" type="button" onClick={() => setSelectedProjectNumber(null)}>Fermer</button>
           </div>
@@ -522,6 +583,62 @@ export default function ProjectsPage() {
             </div>
           )}
 
+          <div className="project-task-contact-list">
+            <div className="projects-table-header">
+              <strong>Budgets tâches ERP</strong>
+              <span>Budget ERP, heures structurées et solde sont lus directement depuis la projection #502.</span>
+            </div>
+            {projectBudgetLoading ? (
+              <p className="projects-empty">Chargement des budgets…</p>
+            ) : projectBudgetError ? (
+              <div className="error-panel">
+                <strong>Les budgets du projet n’ont pas pu être chargés.</strong>
+                <span>{projectBudgetError}</span>
+              </div>
+            ) : projectBudget && projectBudget.tasks.length > 0 ? (
+              <div className="projects-table-scroll">
+                <table className="projects-table">
+                  <thead>
+                    <tr>
+                      <th>Tâche ERP</th>
+                      <th>Budget ERP</th>
+                      <th>WorkPackages</th>
+                      <th>Solde</th>
+                      <th>Diagnostic</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {projectBudget.tasks.map((task) => (
+                      <tr key={task.task_catalog_item_id}>
+                        <td><strong>{task.task_code}</strong><span>{task.task_label}</span></td>
+                        <td>{formatHours(task.budget_hours)}</td>
+                        <td>{formatHours(task.planned_wp_hours)}</td>
+                        <td>{formatHours(task.remaining_budget_hours)}</td>
+                        <td>
+                          <span className={BUDGET_ATTENTION.has(task.diagnostic_state) ? "project-status is-inactive" : "projects-muted"}>
+                            {BUDGET_ATTENTION.has(task.diagnostic_state) ? "⚑ " : ""}
+                            {budgetDiagnosticLabel(task.diagnostic_state)}
+                          </span>
+                          {task.budget_source_diagnostic && <small>{task.budget_source_diagnostic}</small>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="projects-empty">Aucune tâche ERP DEPMO dans la projection de ce projet.</p>
+            )}
+          </div>
+
+          {projectBudget && projectBudget.unclassified_work_packages.length > 0 && (
+            <div className="projects-sync-message" role="status">
+              ⚑ {projectBudget.unclassified_work_packages.length} WorkPackage(s) historique(s) non classé(s). Aucun rattachement à une tâche ERP n’est déduit du nom ou du code.
+            </div>
+          )}
+
+          {canManageContacts && (
+            <>
           <label>
             Chargé de projet
             <ContactSelect
@@ -575,6 +692,8 @@ export default function ProjectsPage() {
               </div>
             )}
           </div>
+            </>
+          )}
         </section>
       )}
 

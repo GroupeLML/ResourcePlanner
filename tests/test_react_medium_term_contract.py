@@ -32,6 +32,22 @@ class ReactMediumTermContractTests(unittest.TestCase):
         self.assertIn('getWorkPackages("", false, controller.signal, scope)', page)
         self.assertIn("medium_term_window_pair_required", (ROOT / "app" / "server" / "routes_reads.py").read_text(encoding="utf-8"))
 
+    def test_project_selector_defaults_to_backend_active_projects_and_can_include_history(self) -> None:
+        page = (ROOT / "frontend" / "src" / "MediumTermPage.tsx").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('const [includeInactiveProjects, setIncludeInactiveProjects] = useState(false)', page)
+        self.assertIn("getProjects(!includeInactiveProjects, controller.signal, scope)", page)
+        self.assertIn('value={includeInactiveProjects ? "all" : "active"}', page)
+        self.assertIn('setIncludeInactiveProjects(event.target.value === "all")', page)
+        self.assertIn("Actifs seulement", page)
+        self.assertIn("Actifs + historique", page)
+        self.assertIn("current && projectRows.some((project) => project.number === current)", page)
+        self.assertNotIn('project.status === "Terminé"', page)
+        self.assertNotIn('project.status === "Annulé"', page)
+        self.assertNotIn('normalize(project.status)', page)
+
     def test_gantt_renders_project_task_work_package_budget_hierarchy_from_backend(self) -> None:
         page = (ROOT / "frontend" / "src" / "MediumTermPage.tsx").read_text(
             encoding="utf-8"
