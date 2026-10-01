@@ -49,7 +49,10 @@ class PlannerQueryPort(Protocol):
     def medium_term_budget_projection(
         self,
         *,
-        project_number: str,
+        project_number: str | None = None,
+        task_catalog_item_id: str | None = None,
+        resource_class_code: str | None = None,
+        include_inactive_projects: bool = False,
         project_ids: Sequence[str] | None = None,
         start: date | None = None,
         end: date | None = None,
