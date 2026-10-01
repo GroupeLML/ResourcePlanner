@@ -50,6 +50,17 @@ class Asset(TimestampMixin, Base):
     metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class AssetApprover(Base):
+    __tablename__ = "asset_approvers"
+
+    asset_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("assets.id"), primary_key=True
+    )
+    app_user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("app_users.id"), primary_key=True, index=True
+    )
+
+
 class AssetUnavailability(TimestampMixin, Base):
     __tablename__ = "asset_unavailability"
     __table_args__ = (CheckConstraint("end_date >= start_date", name="asset_unavailability_window"),)
