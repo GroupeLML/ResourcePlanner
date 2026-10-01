@@ -15,6 +15,17 @@ import {
   updateWorkPackage,
 } from "./api";
 import { createClientId } from "./clientId";
+import {
+  getResourceClassOptions,
+  type ResourceClassOptionReadModel,
+} from "./resourceClassesApi";
+
+const RESOURCE_CLASS_DIVERGENCE = "WORK_PACKAGE_TASK_RESOURCE_CLASS_DIVERGENCE";
+
+function resourceClassDisplay(code: string | null | undefined, label: string | null | undefined) {
+  if (!code) return "Aucune classe de ressource";
+  return label ? `${label} (${code})` : code;
+}
 
 const STATUS_OPTIONS = [
   ["planned", "Planifié"],
@@ -26,7 +37,7 @@ const STATUS_OPTIONS = [
 type FormState = {
   projectNumber: string;
   taskCatalogItemId: string;
-  code: string;
+  resourceClassCode: string;
   name: string;
   description: string;
   startDate: string;
@@ -47,7 +58,7 @@ function initialState(
   return {
     projectNumber: workPackage?.project_number || defaultProjectNumber,
     taskCatalogItemId: workPackage?.task_catalog_item_id || "",
-    code: workPackage?.code || "",
+    resourceClassCode: workPackage?.resource_class_code || "",
     name: workPackage?.name || "",
     description: workPackage?.description || "",
     startDate: workPackage?.start_date || "",
@@ -62,7 +73,6 @@ function toPayload(form: FormState): WorkPackageWrite {
   return {
     project_number: form.projectNumber,
     task_catalog_item_id: form.taskCatalogItemId.trim() || null,
-    code: form.code.trim() || null,
     name: form.name.trim(),
     description: form.description.trim() || null,
     start_date: form.startDate || null,
@@ -114,6 +124,10 @@ function apiMessage(reason: ApiError) {
   switch (reason.code) {
     case "work_package_version_conflict":
       return "Conflit de version : ce WorkPackage a changé. Recharge les données avant de réessayer; aucune modification concurrente n’a été écrasée.";
+    case "work_package_resource_class_not_found":
+      return "Cette classe de ressource n’existe plus dans le référentiel. Recharge les classes puis choisis une valeur valide.";
+    case "work_package_resource_class_inactive":
+      return "Cette classe de ressource est inactive et ne peut pas être choisie comme nouvelle affectation. Une classe historique déjà liée demeure toutefois lisible.";
     case "work_package_weekly_load_replan_required":
       return "Cette modification de dates ou de charge rendrait la répartition existante incohérente. Une nouvelle répartition explicite est requise; aucune redistribution automatique n’a été faite.";
     case "work_package_weekly_load_dates_required":
@@ -156,6 +170,9 @@ export default function WorkPackageEditor({
   const [saving, setSaving] = useState(false);
   const [tasks, setTasks] = useState<TaskCatalogItemReadModel[]>([]);
   const [tasksLoading, setTasksLoading] = useState(false);
+  const [resourceClasses, setResourceClasses] = useState<ResourceClassOptionReadModel[]>([]);
+  const [resourceClassesLoading, setResourceClassesLoading] = useState(false);
+  const [resourceClassTouched, setResourceClassTouched] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const createRetry = useRef<{ fingerprint: string; key: string } | null>(null);
   const editing = Boolean(workPackage);
@@ -174,9 +191,26 @@ export default function WorkPackageEditor({
 
   useEffect(() => {
     setForm(initialState(workPackage, defaultProjectNumber));
+    setResourceClassTouched(false);
     setError(null);
     createRetry.current = null;
   }, [workPackage, defaultProjectNumber]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setResourceClassesLoading(true);
+    getResourceClassOptions(controller.signal)
+      .then((rows) => setResourceClasses(rows))
+      .catch((reason: unknown) => {
+        if (reason instanceof DOMException && reason.name === "AbortError") return;
+        setResourceClasses([]);
+        setError(reason instanceof Error ? reason.message : "Impossible de charger les classes de ressource.");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setResourceClassesLoading(false);
+      });
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     setWeeklyDraft(weeklyRows(mediumTermWorkPackage));
@@ -225,6 +259,7 @@ export default function WorkPackageEditor({
               expenses_enabled: null,
               operational_responsible_contact_id: null,
               coordinator_contact_id: null,
+              resource_class_code: workPackage.task_resource_class_code,
             } satisfies TaskCatalogItemReadModel]
           : [];
         setTasks([...current, ...rows]);
@@ -242,6 +277,66 @@ export default function WorkPackageEditor({
     workPackage?.task_catalog_item_id,
     workPackage?.task_code,
     workPackage?.task_label,
+  ]);
+
+  const selectedTask = useMemo(
+    () => tasks.find((task) => task.id === form.taskCatalogItemId) ?? null,
+    [tasks, form.taskCatalogItemId],
+  );
+
+  const resourceClassOptions = useMemo(() => {
+    const rows = resourceClasses
+      .filter((row) => row.active)
+      .map((row) => ({ ...row }))
+      .sort((left, right) => left.label.localeCompare(right.label, "fr-CA"));
+    const historicalCode = workPackage?.resource_class_code;
+    if (
+      historicalCode
+      && workPackage?.resource_class_active === false
+      && !rows.some((row) => row.code === historicalCode)
+    ) {
+      rows.push({
+        code: historicalCode,
+        label: workPackage.resource_class_label || historicalCode,
+        active: false,
+      });
+    }
+    return rows;
+  }, [
+    resourceClasses,
+    workPackage?.resource_class_active,
+    workPackage?.resource_class_code,
+    workPackage?.resource_class_label,
+  ]);
+
+  const selectedTaskClassCode = selectedTask?.resource_class_code?.trim() || null;
+  const selectedTaskClass = selectedTaskClassCode
+    ? resourceClasses.find((row) => row.code === selectedTaskClassCode) ?? null
+    : null;
+  const selectedTaskClassDisplay = resourceClassDisplay(
+    selectedTaskClassCode,
+    selectedTaskClass?.label,
+  );
+
+  useEffect(() => {
+    if (editing || resourceClassTouched || resourceClassesLoading) return;
+    const suggestedCode = selectedTask?.resource_class_code?.trim() || "";
+    const usableSuggestion = suggestedCode
+      && resourceClasses.some((row) => row.code === suggestedCode && row.active)
+      ? suggestedCode
+      : "";
+    setForm((current) => {
+      if (current.taskCatalogItemId !== (selectedTask?.id || "")) return current;
+      if (current.resourceClassCode === usableSuggestion) return current;
+      return { ...current, resourceClassCode: usableSuggestion };
+    });
+  }, [
+    editing,
+    resourceClassTouched,
+    resourceClasses,
+    resourceClassesLoading,
+    selectedTask?.id,
+    selectedTask?.resource_class_code,
   ]);
 
   const distributedHours = useMemo(
@@ -267,7 +362,19 @@ export default function WorkPackageEditor({
     if (saving) return;
     setError(null);
 
-    const payload = toPayload(form);
+    const basePayload = toPayload(form);
+    const selectedResourceClassCode = form.resourceClassCode.trim() || null;
+    const payload: WorkPackageWrite = workPackage
+      ? {
+          ...basePayload,
+          ...(resourceClassTouched
+            ? { resource_class_code: selectedResourceClassCode }
+            : {}),
+        }
+      : {
+          ...basePayload,
+          resource_class_code: selectedResourceClassCode,
+        };
     if (!payload.project_number) {
       setError("Choisis un projet.");
       return;
@@ -477,10 +584,73 @@ export default function WorkPackageEditor({
             )}
           </label>
 
-          <label>
-            <span>Code</span>
-            <input value={form.code} onChange={(event) => field("code", event.target.value)} placeholder="DEV, INST, MES…" />
+          <label className="wp-full">
+            <span>Classe de ressource</span>
+            <select
+              value={form.resourceClassCode}
+              disabled={resourceClassesLoading}
+              onChange={(event) => {
+                setResourceClassTouched(true);
+                field("resourceClassCode", event.target.value);
+              }}
+            >
+              <option value="">
+                {resourceClassesLoading ? "Chargement des classes…" : "Aucune classe de ressource"}
+              </option>
+              {resourceClassOptions.map((resourceClass) => (
+                <option
+                  key={resourceClass.code}
+                  value={resourceClass.code}
+                  disabled={!resourceClass.active}
+                >
+                  {resourceClassDisplay(resourceClass.code, resourceClass.label)}
+                  {resourceClass.active ? "" : " — inactive"}
+                </option>
+              ))}
+            </select>
+            <small>
+              Classe métier canonique du WorkPackage. La tâche ERP peut proposer une valeur à la création,
+              mais elle ne remplace jamais automatiquement une classe déjà persistée.
+            </small>
+            {selectedTaskClassCode && (
+              <small>
+                Classe de la tâche ERP : {selectedTaskClassDisplay}.{" "}
+                {editing
+                  ? "Cette valeur reste informative : changer la tâche ne change pas automatiquement la classe du WorkPackage."
+                  : resourceClassTouched
+                    ? "La valeur choisie dans le sélecteur reste celle qui sera envoyée."
+                    : "Cette valeur est proposée dans le sélecteur lorsqu’elle est active; la valeur affichée est celle qui sera envoyée."}
+              </small>
+            )}
+            {workPackage?.resource_class_active === false
+              && form.resourceClassCode === workPackage.resource_class_code && (
+              <small className="wp-class-inactive">
+                Classe historique inactive — elle reste lisible et n’empêche pas les autres modifications.
+                Choisissez une classe active pour la remplacer, ou laissez-la inchangée.
+              </small>
+            )}
           </label>
+
+          {workPackage?.resource_class_diagnostic === RESOURCE_CLASS_DIVERGENCE
+            && !resourceClassTouched && (
+            <div className="wp-class-diagnostic wp-full" role="status">
+              La classe actuelle du WorkPackage est différente de celle de la tâche ERP.
+              La classe du WorkPackage demeure la valeur utilisée pour classifier ce WorkPackage;
+              aucune correction automatique n’est effectuée.
+            </div>
+          )}
+
+          {editing && workPackage?.code && (
+            <div className="wp-legacy-code wp-full">
+              <span>Code WorkPackage historique</span>
+              <strong>{workPackage.code}</strong>
+              <small>
+                Ce code libre est conservé pour compatibilité. Il est distinct de la classe de ressource
+                et de la tâche ERP.
+              </small>
+            </div>
+          )}
+
           <label>
             <span>Statut</span>
             <select value={form.status} onChange={(event) => field("status", event.target.value)}>
