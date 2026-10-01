@@ -282,7 +282,7 @@ class PlanningDragDropApiTests(unittest.TestCase):
                     json={"technician": "Bob DnD", "day": "2026-09-23"},
                 )
                 self.assertEqual(response.status_code, 422, response.text)
-                self.assertIn("horaire standard", response.json()["error"]["message"])
+                self.assertIn("Vacances", response.json()["error"]["message"])
 
                 shifts = client.get(
                     "/api/v1/shifts",

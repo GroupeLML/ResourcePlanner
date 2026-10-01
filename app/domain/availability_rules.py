@@ -128,6 +128,20 @@ class AvailabilityDayState:
     reason: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class OutsideStandardHoursDecision:
+    state: AvailabilityDayState
+    allowed: bool
+    override_eligible: bool
+    override_required: bool
+    override_applied: bool
+
+
+_OUTSIDE_STANDARD_HOURS_OVERRIDABLE_REASONS = frozenset(
+    {"Hors horaire standard", "Jour férié"}
+)
+
+
 def availability_state_for_day(
     records: Iterable[dict[str, Any]],
     resource_id: str,
@@ -140,6 +154,33 @@ def availability_state_for_day(
     if not has_standard_schedule_in_window(rows, resource_id, day, day):
         return AvailabilityDayState(False, 0.0, "Aucun horaire standard")
 
+    standards_in_window = [
+        row
+        for row in rows
+        if str(row.get("Type") or "").strip() == "Horaire standard"
+        and str(row.get("Technicien") or "").strip() == resource_id
+        and _record_applies(row, day)
+    ]
+    valid_standards: list[tuple[dict[str, Any], float]] = []
+    for row in standards_in_window:
+        start = _time_hours(row.get("HeureDebut"))
+        end = _time_hours(row.get("HeureFin"))
+        if start is None or end is None:
+            continue
+        if end < start:
+            end += 24.0
+        hours = max(end - start, 0.0)
+        if hours > 0:
+            valid_standards.append((row, hours))
+    if not valid_standards:
+        return AvailabilityDayState(False, 0.0, "Horaire standard invalide")
+
+    for row in rows:
+        if str(row.get("Type") or "").strip() != "Vacances":
+            continue
+        if str(row.get("Technicien") or "").strip() == resource_id and _record_applies(row, day):
+            return AvailabilityDayState(False, 0.0, "Vacances")
+
     for row in rows:
         if str(row.get("Type") or "").strip() != "Jour férié":
             continue
@@ -149,33 +190,45 @@ def availability_state_for_day(
         if _record_applies(row, day):
             return AvailabilityDayState(False, 0.0, "Jour férié")
 
-    for row in rows:
-        if str(row.get("Type") or "").strip() != "Vacances":
-            continue
-        if str(row.get("Technicien") or "").strip() == resource_id and _record_applies(row, day):
-            return AvailabilityDayState(False, 0.0, "Vacances")
-
-    standards = [
-        row
-        for row in rows
-        if str(row.get("Type") or "").strip() == "Horaire standard"
-        and str(row.get("Technicien") or "").strip() == resource_id
-        and _record_applies(row, day)
-        and _weekday_matches(row, day)
+    matching_standards = [
+        (row, hours)
+        for row, hours in valid_standards
+        if _weekday_matches(row, day)
     ]
-    if not standards:
+    if not matching_standards:
         return AvailabilityDayState(False, 0.0, "Hors horaire standard")
 
-    start = _time_hours(standards[0].get("HeureDebut"))
-    end = _time_hours(standards[0].get("HeureFin"))
-    if start is None or end is None:
-        return AvailabilityDayState(False, 0.0, "Horaire standard invalide")
-    if end < start:
-        end += 24.0
-    hours = max(end - start, 0.0)
-    if hours <= 0:
-        return AvailabilityDayState(False, 0.0, "Horaire standard invalide")
-    return AvailabilityDayState(True, hours, None)
+    return AvailabilityDayState(True, matching_standards[0][1], None)
+
+
+def outside_standard_hours_decision_for_day(
+    records: Iterable[dict[str, Any]],
+    resource_id: str,
+    day: date,
+    *,
+    outside_standard_hours: bool,
+) -> OutsideStandardHoursDecision:
+    """Apply the canonical #536 override policy while preserving the root cause."""
+
+    state = availability_state_for_day(records, resource_id, day)
+    if state.available:
+        return OutsideStandardHoursDecision(
+            state=state,
+            allowed=True,
+            override_eligible=False,
+            override_required=False,
+            override_applied=False,
+        )
+
+    override_eligible = state.reason in _OUTSIDE_STANDARD_HOURS_OVERRIDABLE_REASONS
+    override_applied = override_eligible and bool(outside_standard_hours)
+    return OutsideStandardHoursDecision(
+        state=state,
+        allowed=override_applied,
+        override_eligible=override_eligible,
+        override_required=override_eligible and not bool(outside_standard_hours),
+        override_applied=override_applied,
+    )
 
 
 def availability_hours_for_day(
@@ -183,45 +236,8 @@ def availability_hours_for_day(
     resource_id: str,
     day: date,
 ) -> float:
-    """Return historical schedulable hours using an in-memory availability snapshot."""
-    rows = [row for row in records if is_active(row.get("Actif"))]
-    resource_id = str(resource_id or "").strip()
-    if not has_standard_schedule_in_window(rows, resource_id, day, day):
-        return 0.0
-
-    for row in rows:
-        if str(row.get("Type") or "").strip() != "Jour férié":
-            continue
-        target = str(row.get("Technicien") or "").strip()
-        if target and target != resource_id:
-            continue
-        if _record_applies(row, day):
-            return 0.0
-
-    for row in rows:
-        if str(row.get("Type") or "").strip() != "Vacances":
-            continue
-        if str(row.get("Technicien") or "").strip() == resource_id and _record_applies(row, day):
-            return 0.0
-
-    standards = [
-        row
-        for row in rows
-        if str(row.get("Type") or "").strip() == "Horaire standard"
-        and str(row.get("Technicien") or "").strip() == resource_id
-        and _record_applies(row, day)
-        and _weekday_matches(row, day)
-    ]
-    if not standards:
-        return 0.0
-
-    start = _time_hours(standards[0].get("HeureDebut"))
-    end = _time_hours(standards[0].get("HeureFin"))
-    if start is None or end is None:
-        return 0.0
-    if end < start:
-        end += 24.0
-    return max(end - start, 0.0)
+    """Return historical schedulable hours using the canonical classified state."""
+    return availability_state_for_day(records, resource_id, day).hours
 
 
 def outside_schedule_eligible_for_day(

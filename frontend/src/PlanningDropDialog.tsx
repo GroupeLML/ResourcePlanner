@@ -56,7 +56,12 @@ export default function PlanningDropDialog({
   onReevaluate: (outsideStandardHours: boolean) => Promise<void>;
   onExecute: (request: PlanningDropExecutionRequest) => Promise<void>;
 }) {
+  const outsideWarning = evaluation.warnings.find(
+    (warning) => warning.code === "OUTSIDE_STANDARD_HOURS_REQUIRED",
+  );
+  const targetKey = `${evaluation.allocation_id}:${evaluation.target_resource_id}:${evaluation.target_day}`;
   const [outsideStandardHours, setOutsideStandardHours] = useState(false);
+  const [outsideOptionPresented, setOutsideOptionPresented] = useState(Boolean(outsideWarning));
   const [overallocationPolicy, setOverallocationPolicy] = useState<OverallocationPolicy | null>(null);
   const [transferHours, setTransferHours] = useState(() => (
     Math.max(Number(shift.hours || 0) / 2, 0.01).toFixed(2)
@@ -64,16 +69,18 @@ export default function PlanningDropDialog({
 
   useEffect(() => {
     setOutsideStandardHours(false);
+    setOutsideOptionPresented(false);
     setOverallocationPolicy(null);
     setTransferHours(Math.max(Number(shift.hours || 0) / 2, 0.01).toFixed(2));
-  }, [evaluation.allocation_id, shift.hours]);
+  }, [targetKey, shift.hours]);
+
+  useEffect(() => {
+    if (outsideWarning) setOutsideOptionPresented(true);
+  }, [outsideWarning]);
 
   const executionActions = useMemo(
     () => evaluation.actions.filter((action) => action.code !== "CANCEL"),
     [evaluation.actions],
-  );
-  const outsideWarning = evaluation.warnings.find(
-    (warning) => warning.code === "OUTSIDE_STANDARD_HOURS_REQUIRED",
   );
   const evaluationOverallocationWarning = evaluation.warnings.find(
     (warning) => warning.code === "OVERALLOCATION_CHOICE_REQUIRED",
@@ -175,7 +182,7 @@ export default function PlanningDropDialog({
             </div>
           )}
 
-          {outsideWarning && (
+          {outsideOptionPresented && (
             <label className="planning-drop-option">
               <input
                 type="checkbox"

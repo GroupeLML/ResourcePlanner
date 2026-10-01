@@ -158,6 +158,8 @@ class ManualAllocationMoveCommand:
     technician: str
     day: date
     resource_id: str | None = None
+    outside_standard_hours: bool = False
+    expected_planning_version: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -49,6 +49,7 @@ class AllocationCommandPort(Protocol):
         allocation_id: str,
         technician: str,
         day_value: Any,
+        outside_standard_hours: bool = False,
     ) -> None: ...
 
     def release_manual(self, allocation_id: str) -> None: ...

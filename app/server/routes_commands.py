@@ -58,6 +58,7 @@ from .schemas import (
     AllocationMoveRequest,
     AllocationSplitRequest,
     AllocationWindowExtensionProposalRequest,
+    AtomicAllocationBaseRequest,
     AvailabilityRuleCreateRequest,
     AvailabilityRuleUpdateRequest,
     DemandAlternativeSelectionRequest,
@@ -572,7 +573,7 @@ def build_command_router(
                         number=number,
                         comment=body.comment,
                         expected_version=body.expected_version,
-                        expected_planning_version=body.expected_planning_version,
+                        expected_planning_version=getattr(body, "expected_planning_version", None),
                     )
                 )
             ),
@@ -816,7 +817,7 @@ def build_command_router(
             facade.assign_segment(
                 SegmentAssignCommand(
                     segment_id=segment_id,
-                    technician=body.technician or "",
+                    technician=getattr(body, "technician", None) or "",
                     resource_id=body.resource_id,
                 )
             )
@@ -1023,6 +1024,8 @@ def build_command_router(
                     technician=body.technician or "",
                     day=body.day,
                     resource_id=body.resource_id,
+                    outside_standard_hours=body.outside_standard_hours,
+                    expected_planning_version=body.expected_planning_version,
                 )
             )
         )

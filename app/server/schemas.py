@@ -421,6 +421,8 @@ class SegmentAssignRequest(ResourceReferenceRequest):
 
 class AllocationMoveRequest(ResourceReferenceRequest):
     day: date
+    outside_standard_hours: bool = False
+    expected_planning_version: int | None = Field(default=None, ge=1)
 
 
 class ManualAllocationRequest(ResourceReferenceRequest):
