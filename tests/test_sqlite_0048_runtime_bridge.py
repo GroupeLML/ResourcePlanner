@@ -103,6 +103,63 @@ def _reshape_as_0048(path: Path) -> None:
             DROP TABLE IF EXISTS work_package_audit;
             DROP TABLE IF EXISTS work_package_weekly_loads;
 
+
+            DROP TABLE IF EXISTS asset_approvers;
+            DROP TABLE IF EXISTS asset_type_approval_scope_mappings;
+
+            CREATE TABLE approval_requirements_0048 (
+                id VARCHAR(36) NOT NULL PRIMARY KEY,
+                approval_cycle_id VARCHAR(36) NOT NULL,
+                request_line_id VARCHAR(36) NOT NULL,
+                task_catalog_item_id VARCHAR(36),
+                approval_scope_id VARCHAR(36),
+                proposed_resource_id VARCHAR(36),
+                routing_sources_text TEXT DEFAULT '[]' NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                CONSTRAINT uq_approval_requirement_cycle_line
+                    UNIQUE (approval_cycle_id, request_line_id),
+                FOREIGN KEY(approval_cycle_id) REFERENCES request_approval_cycles (id),
+                FOREIGN KEY(request_line_id) REFERENCES request_lines (id),
+                FOREIGN KEY(task_catalog_item_id) REFERENCES task_catalog_items (id),
+                FOREIGN KEY(approval_scope_id) REFERENCES approval_scopes (id),
+                FOREIGN KEY(proposed_resource_id) REFERENCES resources (id)
+            );
+            INSERT INTO approval_requirements_0048 (
+                id,
+                approval_cycle_id,
+                request_line_id,
+                task_catalog_item_id,
+                approval_scope_id,
+                proposed_resource_id,
+                routing_sources_text,
+                created_at,
+                updated_at
+            )
+            SELECT
+                id,
+                approval_cycle_id,
+                request_line_id,
+                task_catalog_item_id,
+                approval_scope_id,
+                proposed_resource_id,
+                routing_sources_text,
+                created_at,
+                updated_at
+            FROM approval_requirements;
+            DROP TABLE approval_requirements;
+            ALTER TABLE approval_requirements_0048 RENAME TO approval_requirements;
+            CREATE INDEX ix_approval_requirements_approval_scope_id
+                ON approval_requirements (approval_scope_id);
+            CREATE INDEX ix_approval_requirements_cycle
+                ON approval_requirements (approval_cycle_id);
+            CREATE INDEX ix_approval_requirements_proposed_resource_id
+                ON approval_requirements (proposed_resource_id);
+            CREATE INDEX ix_approval_requirements_request_line_id
+                ON approval_requirements (request_line_id);
+            CREATE INDEX ix_approval_requirements_task_catalog_item_id
+                ON approval_requirements (task_catalog_item_id);
+
             CREATE TABLE auth_sessions_0048 AS
             SELECT
                 id,
