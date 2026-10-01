@@ -43,8 +43,6 @@ function errorMessage(reason: unknown) {
 
 export default function QuickShiftEditor({
   open,
-  weekStart,
-  weekEnd,
   defaultDay,
   initialProjectNumber,
   initialResourceId,
