@@ -104,7 +104,7 @@ function storyFact(card: Locator, name: string) {
 
 test("362F Delivery traverse PM, Team Lead et technicien sans élargir Planning", async ({ browser }) => {
   test.setTimeout(180_000);
-  const workPackageCode = "WP-DELIVERY-362F";
+  const workPackageLabel = "WP-DELIVERY-362F — Lot Delivery acceptation";
   const epicTitle = "Epic acceptation 362F";
   const storyTitle = "Story acceptation 362F";
   const { start, end } = deliveryDates();
@@ -130,8 +130,8 @@ test("362F Delivery traverse PM, Team Lead et technicien sans élargir Planning"
   const dialog = projectManager.page.getByRole("dialog", { name: "Créer un lot" });
   await labelled(dialog, "Projet", "select").selectOption("P-251");
   await selectOptionContaining(labelled(dialog, "Tâche ERP", "select"), "210 — AUTOMATISATION E2E");
-  await labelled(dialog, "Code", "input").fill(workPackageCode);
-  await labelled(dialog, "Nom", "input").fill("WP-DELIVERY-362F — Lot Delivery acceptation");
+  await labelled(dialog, "Classe de ressource", "select").selectOption("PROGRAMMEUR");
+  await labelled(dialog, "Nom", "input").fill(workPackageLabel);
   await labelled(dialog, "Début", "input").fill(start);
   await labelled(dialog, "Fin", "input").fill(end);
   await labelled(dialog, "Heures prévues", "input").fill("40");
@@ -139,7 +139,13 @@ test("362F Delivery traverse PM, Team Lead et technicien sans élargir Planning"
   await dialog.getByRole("button", { name: "Créer le WorkPackage" }).click();
   await expect(dialog).toBeHidden();
 
-  await openDelivery(projectManager.page, workPackageCode);
+  await openDelivery(projectManager.page, workPackageLabel);
+  await expect(projectManager.page.locator(".delivery-selected-reference")).toContainText(
+    "Classe de ressource",
+  );
+  await expect(projectManager.page.locator(".delivery-selected-reference")).toContainText(
+    "Programmeur (PROGRAMMEUR)",
+  );
   await expect(projectManager.page.getByText("Aucun DeliveryPlan", { exact: false })).toBeVisible();
   await projectManager.page.getByRole("button", { name: "Créer le DeliveryPlan" }).click();
   await expect(projectManager.page.locator(".delivery-plan-toolbar")).toContainText("DRAFT");
@@ -153,7 +159,7 @@ test("362F Delivery traverse PM, Team Lead et technicien sans élargir Planning"
   await expect(toolbar).toContainText("Version Delivery 3");
 
   const leadA = await openAs(browser, "TEAM_LEAD");
-  await openDelivery(leadA.page, workPackageCode);
+  await openDelivery(leadA.page, workPackageLabel);
   const createForm = leadA.page.locator(".delivery-create-item");
   await expect(createForm).toBeVisible();
 
@@ -191,7 +197,7 @@ test("362F Delivery traverse PM, Team Lead et technicien sans élargir Planning"
   expect(leadPlanningBody.error.context.required_permission).toBe("manage_planning");
 
   const leadB = await openAs(browser, "TEAM_LEAD");
-  await openDelivery(leadB.page, workPackageCode);
+  await openDelivery(leadB.page, workPackageLabel);
   const leadBStory = storyCard(leadB.page, storyTitle);
   await labelled(leadBStory, "Restant (h)", "input").fill("6");
   await leadBStory.getByRole("button", { name: "Enregistrer" }).click();
@@ -223,7 +229,7 @@ test("362F Delivery traverse PM, Team Lead et technicien sans élargir Planning"
   ).toHaveText("0 h");
 
   const technician = await openAs(browser, "DELIVERY_TECHNICIAN");
-  await openDelivery(technician.page, workPackageCode, true);
+  await openDelivery(technician.page, workPackageLabel, true);
   let techStory = storyCard(technician.page, storyTitle);
   await expect(labelled(techStory, "AppUser assigné", "input")).toHaveCount(0);
   await expect(labelled(techStory, "Estimation (h)", "input")).toHaveCount(0);
