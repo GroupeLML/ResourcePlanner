@@ -45,39 +45,128 @@ def upgrade() -> None:
     )
 
     op.create_table(
-        "asset_approval_approvers",
+        "asset_approvers",
         sa.Column("asset_id", sa.String(length=36), nullable=False),
         sa.Column("app_user_id", sa.String(length=36), nullable=False),
         sa.ForeignKeyConstraint(
             ["asset_id"],
             ["assets.id"],
-            name="fk_asset_approval_approvers_asset",
+            name="fk_asset_approvers_asset",
         ),
         sa.ForeignKeyConstraint(
             ["app_user_id"],
             ["app_users.id"],
-            name="fk_asset_approval_approvers_user",
+            name="fk_asset_approvers_user",
         ),
         sa.PrimaryKeyConstraint(
             "asset_id",
             "app_user_id",
-            name="pk_asset_approval_approvers",
+            name="pk_asset_approvers",
         ),
     )
     op.create_index(
-        "ix_asset_approval_approvers_user",
-        "asset_approval_approvers",
+        "ix_asset_approvers_user",
+        "asset_approvers",
         ["app_user_id"],
         unique=False,
     )
 
+    bind = op.get_bind()
+    asset_type_column = sa.Column("asset_type_id", sa.String(length=36), nullable=True)
+    proposed_asset_column = sa.Column("proposed_asset_id", sa.String(length=36), nullable=True)
+    if bind.dialect.name == "sqlite":
+        with op.batch_alter_table("approval_requirements", recreate="always") as batch_op:
+            batch_op.add_column(asset_type_column)
+            batch_op.add_column(proposed_asset_column)
+            batch_op.create_foreign_key(
+                "fk_approval_requirements_asset_type",
+                "asset_types",
+                ["asset_type_id"],
+                ["id"],
+            )
+            batch_op.create_foreign_key(
+                "fk_approval_requirements_proposed_asset",
+                "assets",
+                ["proposed_asset_id"],
+                ["id"],
+            )
+            batch_op.create_index(
+                "ix_approval_requirements_asset_type_id",
+                ["asset_type_id"],
+                unique=False,
+            )
+            batch_op.create_index(
+                "ix_approval_requirements_proposed_asset_id",
+                ["proposed_asset_id"],
+                unique=False,
+            )
+    else:
+        op.add_column("approval_requirements", asset_type_column)
+        op.add_column("approval_requirements", proposed_asset_column)
+        op.create_foreign_key(
+            "fk_approval_requirements_asset_type",
+            "approval_requirements",
+            "asset_types",
+            ["asset_type_id"],
+            ["id"],
+        )
+        op.create_foreign_key(
+            "fk_approval_requirements_proposed_asset",
+            "approval_requirements",
+            "assets",
+            ["proposed_asset_id"],
+            ["id"],
+        )
+        op.create_index(
+            "ix_approval_requirements_asset_type_id",
+            "approval_requirements",
+            ["asset_type_id"],
+            unique=False,
+        )
+        op.create_index(
+            "ix_approval_requirements_proposed_asset_id",
+            "approval_requirements",
+            ["proposed_asset_id"],
+            unique=False,
+        )
+
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    if bind.dialect.name == "sqlite":
+        with op.batch_alter_table("approval_requirements", recreate="always") as batch_op:
+            batch_op.drop_index("ix_approval_requirements_proposed_asset_id")
+            batch_op.drop_index("ix_approval_requirements_asset_type_id")
+            batch_op.drop_constraint("fk_approval_requirements_proposed_asset", type_="foreignkey")
+            batch_op.drop_constraint("fk_approval_requirements_asset_type", type_="foreignkey")
+            batch_op.drop_column("proposed_asset_id")
+            batch_op.drop_column("asset_type_id")
+    else:
+        op.drop_index(
+            "ix_approval_requirements_proposed_asset_id",
+            table_name="approval_requirements",
+        )
+        op.drop_index(
+            "ix_approval_requirements_asset_type_id",
+            table_name="approval_requirements",
+        )
+        op.drop_constraint(
+            "fk_approval_requirements_proposed_asset",
+            "approval_requirements",
+            type_="foreignkey",
+        )
+        op.drop_constraint(
+            "fk_approval_requirements_asset_type",
+            "approval_requirements",
+            type_="foreignkey",
+        )
+        op.drop_column("approval_requirements", "proposed_asset_id")
+        op.drop_column("approval_requirements", "asset_type_id")
     op.drop_index(
-        "ix_asset_approval_approvers_user",
-        table_name="asset_approval_approvers",
+        "ix_asset_approvers_user",
+        table_name="asset_approvers",
     )
-    op.drop_table("asset_approval_approvers")
+    op.drop_table("asset_approvers")
     op.drop_index(
         "ix_asset_type_approval_scope_mappings_scope",
         table_name="asset_type_approval_scope_mappings",
