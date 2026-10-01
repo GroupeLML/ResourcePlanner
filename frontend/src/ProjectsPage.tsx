@@ -7,12 +7,15 @@ import {
   AcumaticaIntegrationStatus,
   ApiError,
   BusinessContactReadModel,
+  GlobalProjectTaskSyncResult,
   ContactLinkReadModel,
   MediumTermBudgetReadModel,
   ProjectReadModel,
   ProjectTaskSyncMetadata,
   TaskCatalogItemReadModel,
   getAcumaticaIntegrationStatus,
+  getAcumaticaProjectTaskSyncRun,
+  getCurrentAcumaticaProjectTaskSyncRun,
   getAcumaticaProjectTaskSyncMetadata,
   getBusinessContacts,
   getMediumTermBudgetSummary,
@@ -67,6 +70,37 @@ function apiErrorMessage(reason: unknown, fallback: string) {
   return reason instanceof Error ? reason.message : fallback;
 }
 
+const GLOBAL_TASK_SYNC_ACTIVE = new Set(["PENDING", "RUNNING"]);
+
+function isGlobalTaskSyncActive(run: GlobalProjectTaskSyncResult | null) {
+  return Boolean(run && GLOBAL_TASK_SYNC_ACTIVE.has(run.status));
+}
+
+function globalTaskSyncSummary(run: GlobalProjectTaskSyncResult) {
+  const outcome = run.status === "COMPLETED_WITH_ERRORS"
+    ? "Synchronisation complétée avec erreurs projet"
+    : "Synchronisation complétée";
+  const metrics = [
+    `${run.projects_inspected} projets inspectés`,
+    `${run.projects_synchronized} synchronisés`,
+    `${run.projects_ignored} ignorés`,
+    `${run.projects_rejected} rejetés`,
+    `${run.tasks_received} tâches reçues`,
+    `${run.tasks_created} créées`,
+    `${run.tasks_updated} mises à jour`,
+    `${run.tasks_unchanged} inchangées`,
+    `${run.tasks_deactivated} désactivées`,
+    `${run.tasks_rejected} non admissibles`,
+  ];
+  if (run.source_requests != null) metrics.push(`${run.source_requests} requête(s) ERP`);
+  if (run.source_rows_scanned != null) metrics.push(`${run.source_rows_scanned} lignes ERP parcourues`);
+  if (run.source_read_duration_ms != null) {
+    metrics.push(`lecture source ${(run.source_read_duration_ms / 1000).toFixed(1)} s`);
+  }
+  if (run.duration_ms != null) metrics.push(`durée totale ${(run.duration_ms / 1000).toFixed(1)} s`);
+  return `${outcome} · ${metrics.join(" · ")}`;
+}
+
 export default function ProjectsPage() {
   const { can } = useAuth();
   const { scope, loading: scopeLoading } = useViewScope();
@@ -92,8 +126,10 @@ export default function ProjectsPage() {
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [globalTaskSyncing, setGlobalTaskSyncing] = useState(false);
+  const [globalTaskSyncRun, setGlobalTaskSyncRun] = useState<GlobalProjectTaskSyncResult | null>(null);
   const [globalTaskSyncMessage, setGlobalTaskSyncMessage] = useState<string | null>(null);
   const [globalTaskSyncError, setGlobalTaskSyncError] = useState<string | null>(null);
+  const [globalTaskSyncTrackingError, setGlobalTaskSyncTrackingError] = useState<string | null>(null);
   const [taskSyncing, setTaskSyncing] = useState(false);
   const [taskSyncMessage, setTaskSyncMessage] = useState<string | null>(null);
   const [taskSyncError, setTaskSyncError] = useState<string | null>(null);
@@ -128,6 +164,89 @@ export default function ProjectsPage() {
       });
     return () => controller.abort();
   }, [refreshKey, scope, scopeLoading]);
+
+  useEffect(() => {
+    if (!canSyncProjects || !integration?.project_tasks_configured) return;
+    const controller = new AbortController();
+    getCurrentAcumaticaProjectTaskSyncRun(controller.signal)
+      .then((run) => {
+        if (controller.signal.aborted || !run) return;
+        setGlobalTaskSyncRun(run);
+        setGlobalTaskSyncTrackingError(null);
+        const active = isGlobalTaskSyncActive(run);
+        setGlobalTaskSyncing(active);
+        if (active) {
+          setGlobalTaskSyncError(null);
+          setGlobalTaskSyncMessage(null);
+        } else if (run.status === "COMPLETED" || run.status === "COMPLETED_WITH_ERRORS") {
+          setGlobalTaskSyncError(null);
+          setGlobalTaskSyncMessage(globalTaskSyncSummary(run));
+        } else {
+          setGlobalTaskSyncMessage(null);
+          setGlobalTaskSyncError(
+            run.status === "INTERRUPTED"
+              ? "La synchronisation précédente a été interrompue par un redémarrage du backend."
+              : `La synchronisation a échoué${run.error_code ? ` (${run.error_code})` : ""}.`,
+          );
+        }
+      })
+      .catch((reason: unknown) => {
+        if (reason instanceof DOMException && reason.name === "AbortError") return;
+        setGlobalTaskSyncTrackingError(
+          apiErrorMessage(reason, "Impossible de retrouver le run de synchronisation courant."),
+        );
+      });
+    return () => controller.abort();
+  }, [canSyncProjects, integration?.project_tasks_configured]);
+
+  useEffect(() => {
+    if (!globalTaskSyncRun || !isGlobalTaskSyncActive(globalTaskSyncRun)) return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const poll = async () => {
+      try {
+        const run = await getAcumaticaProjectTaskSyncRun(
+          globalTaskSyncRun.run_id,
+          controller.signal,
+        );
+        if (controller.signal.aborted) return;
+        setGlobalTaskSyncRun(run);
+        setGlobalTaskSyncTrackingError(null);
+        if (isGlobalTaskSyncActive(run)) {
+          setGlobalTaskSyncing(true);
+          timer = setTimeout(() => void poll(), 1000);
+          return;
+        }
+
+        setGlobalTaskSyncing(false);
+        if (run.status === "COMPLETED" || run.status === "COMPLETED_WITH_ERRORS") {
+          setGlobalTaskSyncError(null);
+          setGlobalTaskSyncMessage(globalTaskSyncSummary(run));
+          setRefreshKey((value) => value + 1);
+        } else {
+          setGlobalTaskSyncMessage(null);
+          setGlobalTaskSyncError(
+            run.status === "INTERRUPTED"
+              ? "La synchronisation a été interrompue par un redémarrage du backend. Vous pouvez la relancer."
+              : `La synchronisation a échoué${run.error_code ? ` (${run.error_code})` : ""}. Vous pouvez la relancer.`,
+          );
+        }
+      } catch (reason: unknown) {
+        if (controller.signal.aborted) return;
+        setGlobalTaskSyncTrackingError(
+          apiErrorMessage(reason, "Le suivi de la synchronisation est temporairement indisponible."),
+        );
+        timer = setTimeout(() => void poll(), 1500);
+      }
+    };
+
+    timer = setTimeout(() => void poll(), 250);
+    return () => {
+      controller.abort();
+      if (timer) clearTimeout(timer);
+    };
+  }, [globalTaskSyncRun?.run_id, globalTaskSyncRun?.status]);
 
   useEffect(() => {
     if (!selectedProject || (!canManageContacts && !canSyncProjects)) {
@@ -296,28 +415,30 @@ export default function ProjectsPage() {
       || !canSyncProjects
     ) return;
     setGlobalTaskSyncing(true);
+    setGlobalTaskSyncRun(null);
     setGlobalTaskSyncMessage(null);
     setGlobalTaskSyncError(null);
+    setGlobalTaskSyncTrackingError(null);
     try {
-      const result = await syncAcumaticaActiveProjectTasks();
-      const performanceSummary = result.source_requests == null
-        ? ""
-        : ` · ${result.source_requests} requête(s) ERP · ${(result.duration_ms / 1000).toFixed(1)} s`;
-      setGlobalTaskSyncMessage(
-        `${result.projects_inspected} projets inspectés · ${result.projects_synchronized} synchronisés · `
-        + `${result.projects_ignored} ignorés · ${result.projects_rejected} rejetés · `
-        + `${result.tasks_received} tâches reçues · ${result.tasks_created} créées · `
-        + `${result.tasks_updated} mises à jour · ${result.tasks_unchanged} inchangées · `
-        + `${result.tasks_rejected} non admissibles`
-        + performanceSummary,
-      );
-      setRefreshKey((value) => value + 1);
+      const run = await syncAcumaticaActiveProjectTasks();
+      setGlobalTaskSyncRun(run);
+      const active = isGlobalTaskSyncActive(run);
+      setGlobalTaskSyncing(active);
+      if (!active) {
+        if (run.status === "COMPLETED" || run.status === "COMPLETED_WITH_ERRORS") {
+          setGlobalTaskSyncMessage(globalTaskSyncSummary(run));
+          setRefreshKey((value) => value + 1);
+        } else {
+          setGlobalTaskSyncError(
+            `La synchronisation a échoué${run.error_code ? ` (${run.error_code})` : ""}.`,
+          );
+        }
+      }
     } catch (reason: unknown) {
+      setGlobalTaskSyncing(false);
       setGlobalTaskSyncError(
         apiErrorMessage(reason, "La synchronisation globale des tâches ERP a échoué."),
       );
-    } finally {
-      setGlobalTaskSyncing(false);
     }
   }
 
@@ -415,7 +536,7 @@ export default function ProjectsPage() {
                   disabled={globalTaskSyncing || syncing || loading}
                 >
                   {globalTaskSyncing
-                    ? "Synchronisation des tâches…"
+                    ? "Synchronisation en cours…"
                     : "Synchroniser les tâches des projets actifs"}
                 </button>
               )}
@@ -432,8 +553,28 @@ export default function ProjectsPage() {
           <small>Les projets déjà présents en SQL restent inchangés et disponibles.</small>
         </div>
       )}
-      {globalTaskSyncMessage && (
+      {globalTaskSyncing && globalTaskSyncRun && (
+        <div className="projects-sync-message" role="status">
+          Synchronisation en cours… {globalTaskSyncRun.projects_processed} / {globalTaskSyncRun.projects_total || "…"} projets traités
+          {globalTaskSyncRun.source_requests != null ? ` · ${globalTaskSyncRun.source_requests} requête(s) ERP` : ""}
+          {globalTaskSyncRun.source_rows_scanned != null ? ` · ${globalTaskSyncRun.source_rows_scanned} lignes ERP parcourues` : ""}
+        </div>
+      )}
+      {!globalTaskSyncing && globalTaskSyncMessage && (
         <div className="projects-sync-message" role="status">{globalTaskSyncMessage}</div>
+      )}
+      {globalTaskSyncTrackingError && globalTaskSyncing && (
+        <div className="projects-sync-message" role="status">
+          Suivi temporairement indisponible · {globalTaskSyncTrackingError}
+        </div>
+      )}
+      {!globalTaskSyncing && globalTaskSyncRun?.status === "COMPLETED_WITH_ERRORS" && (
+        <div className="projects-sync-message" role="status">
+          Erreurs projet : {globalTaskSyncRun.project_results
+            .filter((row) => row.status === "rejected")
+            .map((row) => `${row.project_number} (${row.error_code || row.reason_code || "rejet"})`)
+            .join(" · ")}
+        </div>
       )}
       {globalTaskSyncError && (
         <div className="error-panel">
