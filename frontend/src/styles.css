@@ -629,6 +629,10 @@ h1 { font-size: 1.6rem; }
 .planning-board-toolbar, .pending-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: .7rem; padding: .75rem .9rem; border-bottom: 1px solid var(--border); }
 .planning-board-toolbar strong, .planning-board-toolbar span { display: block; }
 .planning-board-toolbar > div:first-child span { margin-top: .1rem; color: var(--muted); font-size: .68rem; }
+.planning-board-options { display: flex; align-items: flex-end; justify-content: flex-end; gap: .7rem; flex-wrap: wrap; }
+.planning-resource-sort { display: grid; gap: .2rem; min-width: 160px; }
+.planning-resource-sort > span { color: var(--muted); font-size: .61rem; font-weight: 700; }
+.planning-resource-sort select { min-height: 32px; border: 1px solid var(--border); border-radius: 8px; background: white; color: var(--ink); padding: .3rem .45rem; font-size: .66rem; }
 .legend { display: flex; gap: .7rem; flex-wrap: wrap; color: var(--muted); font-size: .65rem; }
 .legend span { display: flex; align-items: center; gap: .28rem; }
 .legend-dot { width: 8px; height: 8px; border-radius: 50%; background: #9ca3af; }
@@ -645,7 +649,10 @@ h1 { font-size: 1.6rem; }
 .day-header small { display: block; margin-top: .08rem; color: var(--accent); font-size: .58rem; }
 .today-column { background: #f5f8ff !important; }
 .resource-group { display: contents; }
-.resource-group-heading { grid-column: 1 / -1; position: sticky; left: 0; z-index: 5; display: flex; justify-content: space-between; padding: .42rem .65rem; background: #e9eef6; border-bottom: 1px solid #d5deeb; color: #44536b; font-size: .67rem; }
+.resource-group-heading { grid-column: 1 / -1; position: sticky; left: 0; z-index: 5; display: flex; align-items: center; justify-content: space-between; width: 100%; padding: .42rem .65rem; border: 0; border-bottom: 1px solid #d5deeb; background: #e9eef6; color: #44536b; font: inherit; font-size: .67rem; text-align: left; cursor: pointer; appearance: none; }
+.resource-group-heading:hover { background: #e3eaf4; }
+.resource-group-heading:focus-visible { z-index: 7; outline: 2px solid var(--accent); outline-offset: -2px; }
+.resource-group-title { display: flex !important; align-items: center; gap: .35rem; min-width: 0; }
 .resource-row { display: contents; }
 .resource-cell { min-height: 88px; padding: .45rem; border-right: 1px solid #e6eaf0; border-bottom: 1px solid #e6eaf0; background: white; }
 .resource-identity { position: sticky; left: 0; z-index: 4; background: #fbfcfe; }

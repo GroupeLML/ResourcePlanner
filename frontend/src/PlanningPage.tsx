@@ -26,6 +26,15 @@ import {
   toIsoDate,
   weekDays,
 } from "./dates";
+import {
+  ResourceSortMode,
+  loadCollapsedPlanningClasses,
+  loadPlanningResourceSort,
+  loadPlanningWeekStart,
+  saveCollapsedPlanningClasses,
+  savePlanningResourceSort,
+  savePlanningWeekStart,
+} from "./planningPreferences";
 import { useAuth } from "./AuthContext";
 import { useViewScope } from "./ViewScopeContext";
 import ViewScopeSelector from "./ViewScopeSelector";
@@ -61,6 +70,37 @@ import ShiftAssetAssignmentDialog from "./ShiftAssetAssignmentDialog";
 import ShiftEditor from "./ShiftEditor";
 
 type ConfirmationFilter = "all" | "confirmed" | "tentative";
+type ResourceGroupEntry = {
+  resource: ResourceReadModel;
+  shifts: ShiftReadModel[];
+  capacity: PlanningResourceCapacityReadModel | null;
+  pendingLoads: PendingDemandLoadReadModel[];
+};
+
+function compareResourceGroupEntries(
+  left: ResourceGroupEntry,
+  right: ResourceGroupEntry,
+  mode: ResourceSortMode,
+) {
+  if (mode === "manual") {
+    const manualOrder = left.resource.sort_order - right.resource.sort_order;
+    if (manualOrder !== 0) return manualOrder;
+  }
+
+  if (mode === "availability") {
+    if (left.capacity && !right.capacity) return -1;
+    if (!left.capacity && right.capacity) return 1;
+    if (left.capacity && right.capacity) {
+      const freeCapacity = right.capacity.prudent_free - left.capacity.prudent_free;
+      if (freeCapacity !== 0) return freeCapacity;
+    }
+  }
+
+  const nameOrder = left.resource.name.localeCompare(right.resource.name, "fr-CA");
+  if (nameOrder !== 0) return nameOrder;
+  return left.resource.id.localeCompare(right.resource.id, "fr-CA");
+}
+
 type EmergencyShiftReadModel = ShiftReadModel & { emergency_override_active?: boolean };
 type OverallocationShiftReadModel = ShiftReadModel & {
   segment_planned_hours?: number;
@@ -522,10 +562,18 @@ function ResourceRow({
 }
 
 export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => void }) {
-  const { can } = useAuth();
+  const { can, principal } = useAuth();
   const { scope, loading: scopeLoading, error: scopeError } = useViewScope();
   const canManagePlanning = can("manage_planning");
-  const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
+  const preferenceOwnerId = principal?.local_user_id ?? null;
+  const [loadedPreferenceOwnerId, setLoadedPreferenceOwnerId] = useState<string | null>(preferenceOwnerId);
+  const [weekStart, setWeekStart] = useState(() => loadPlanningWeekStart(preferenceOwnerId));
+  const [resourceSortMode, setResourceSortMode] = useState<ResourceSortMode>(
+    () => loadPlanningResourceSort(preferenceOwnerId),
+  );
+  const [collapsedClasses, setCollapsedClasses] = useState<Set<string>>(
+    () => new Set(loadCollapsedPlanningClasses(preferenceOwnerId)),
+  );
   const [snapshot, setSnapshot] = useState<PlanningSnapshotReadModel | null>(null);
   const [capacityGrid, setCapacityGrid] = useState<PlanningCapacityGridReadModel | null>(null);
   const [actions, setActions] = useState<PlanningActionReadModel[]>([]);
@@ -553,6 +601,38 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
     message: string;
   } | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+
+  useEffect(() => {
+    if (loadedPreferenceOwnerId === preferenceOwnerId) return;
+    setWeekStart(loadPlanningWeekStart(preferenceOwnerId));
+    setResourceSortMode(loadPlanningResourceSort(preferenceOwnerId));
+    setCollapsedClasses(new Set(loadCollapsedPlanningClasses(preferenceOwnerId)));
+    setLoadedPreferenceOwnerId(preferenceOwnerId);
+  }, [loadedPreferenceOwnerId, preferenceOwnerId]);
+
+  useEffect(() => {
+    if (loadedPreferenceOwnerId !== preferenceOwnerId) return;
+    savePlanningWeekStart(preferenceOwnerId, weekStart);
+  }, [loadedPreferenceOwnerId, preferenceOwnerId, weekStart]);
+
+  useEffect(() => {
+    if (loadedPreferenceOwnerId !== preferenceOwnerId) return;
+    savePlanningResourceSort(preferenceOwnerId, resourceSortMode);
+  }, [loadedPreferenceOwnerId, preferenceOwnerId, resourceSortMode]);
+
+  useEffect(() => {
+    if (loadedPreferenceOwnerId !== preferenceOwnerId) return;
+    saveCollapsedPlanningClasses(preferenceOwnerId, [...collapsedClasses]);
+  }, [collapsedClasses, loadedPreferenceOwnerId, preferenceOwnerId]);
+
+  function toggleResourceClass(className: string) {
+    setCollapsedClasses((current) => {
+      const next = new Set(current);
+      if (next.has(className)) next.delete(className);
+      else next.add(className);
+      return next;
+    });
+  }
 
   const days = useMemo(() => weekDays(weekStart), [weekStart]);
   const start = toIsoDate(weekStart);
@@ -711,39 +791,37 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
 
   const visibleResourceGroups = useMemo(() => {
     if (!snapshot) return [];
-    const groups = new Map<string, Array<{
-      resource: ResourceReadModel;
-      shifts: ShiftReadModel[];
-      capacity: PlanningResourceCapacityReadModel | null;
-      pendingLoads: PendingDemandLoadReadModel[];
-    }>>();
+    const groups = new Map<string, ResourceGroupEntry[]>();
 
-    [...snapshot.resources]
-      .sort((left, right) => left.sort_order - right.sort_order || left.name.localeCompare(right.name, "fr-CA"))
-      .forEach((resource) => {
-        const capacity = capacityByResource.get(resource.id) ?? null;
-        if (classFilter !== "all" && (resource.resource_class || "Non classé") !== classFilter) return;
-        if (resourceFilter !== "all" && resource.id !== resourceFilter) return;
-        if (onlyWithCapacity && (!capacity || capacity.prudent_free <= 0.01)) return;
+    snapshot.resources.forEach((resource) => {
+      const capacity = capacityByResource.get(resource.id) ?? null;
+      if (classFilter !== "all" && (resource.resource_class || "Non classé") !== classFilter) return;
+      if (resourceFilter !== "all" && resource.id !== resourceFilter) return;
+      if (onlyWithCapacity && (!capacity || capacity.prudent_free <= 0.01)) return;
 
-        const resourceMatches = !query || normalize(`${resource.name} ${resource.resource_class ?? ""} ${resource.competencies ?? ""}`).includes(query);
-        const shifts = shiftsPassingGlobalFilters.filter((shift) => {
-          if (shift.resource_id !== resource.id) return false;
-          if (!query || resourceMatches) return true;
-          return shiftText(shift).includes(query);
-        });
-        const pendingLoads = visiblePendingLoads.filter((load) => load.proposed_resource === resource.name);
-        const restrictiveProjectConfirmation = project !== "all" || confirmation !== "all";
-        if (query && !resourceMatches && shifts.length === 0 && pendingLoads.length === 0) return;
-        if (restrictiveProjectConfirmation && shifts.length === 0 && pendingLoads.length === 0) return;
-
-        const className = resource.resource_class || "Non classé";
-        const entries = groups.get(className) ?? [];
-        entries.push({ resource, shifts, capacity, pendingLoads });
-        groups.set(className, entries);
+      const resourceMatches = !query || normalize(`${resource.name} ${resource.resource_class ?? ""} ${resource.competencies ?? ""}`).includes(query);
+      const shifts = shiftsPassingGlobalFilters.filter((shift) => {
+        if (shift.resource_id !== resource.id) return false;
+        if (!query || resourceMatches) return true;
+        return shiftText(shift).includes(query);
       });
+      const pendingLoads = visiblePendingLoads.filter((load) => load.proposed_resource === resource.name);
+      const restrictiveProjectConfirmation = project !== "all" || confirmation !== "all";
+      if (query && !resourceMatches && shifts.length === 0 && pendingLoads.length === 0) return;
+      if (restrictiveProjectConfirmation && shifts.length === 0 && pendingLoads.length === 0) return;
 
-    return [...groups.entries()].sort((left, right) => left[0].localeCompare(right[0], "fr-CA"));
+      const className = resource.resource_class || "Non classé";
+      const entries = groups.get(className) ?? [];
+      entries.push({ resource, shifts, capacity, pendingLoads });
+      groups.set(className, entries);
+    });
+
+    return [...groups.entries()]
+      .map(([className, rows]) => [
+        className,
+        [...rows].sort((left, right) => compareResourceGroupEntries(left, right, resourceSortMode)),
+      ] as [string, ResourceGroupEntry[]])
+      .sort((left, right) => left[0].localeCompare(right[0], "fr-CA"));
   }, [
     snapshot,
     capacityByResource,
@@ -755,6 +833,7 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
     project,
     confirmation,
     query,
+    resourceSortMode,
   ]);
 
   const visibleShiftHours = shiftsPassingGlobalFilters
@@ -1204,12 +1283,25 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
                 </small>
               )}
             </div>
-            <div className="legend">
-              <span><i className="legend-dot confirmed" />Confirmée</span>
-              <span><i className="legend-dot tentative" />Tentative</span>
-              <span><i className="legend-dot outside" />Hors horaire</span>
-              <span><i className="legend-dot ghost" />Attente d’approbation</span>
-              <span><i className="legend-dot unavailable" />Indisponible</span>
+            <div className="planning-board-options">
+              <label className="planning-resource-sort">
+                <span>Ordre des ressources</span>
+                <select
+                  value={resourceSortMode}
+                  onChange={(event) => setResourceSortMode(event.target.value as ResourceSortMode)}
+                >
+                  <option value="manual">Manuel</option>
+                  <option value="availability">Disponibilité</option>
+                  <option value="alphabetical">Alphabétique</option>
+                </select>
+              </label>
+              <div className="legend">
+                <span><i className="legend-dot confirmed" />Confirmée</span>
+                <span><i className="legend-dot tentative" />Tentative</span>
+                <span><i className="legend-dot outside" />Hors horaire</span>
+                <span><i className="legend-dot ghost" />Attente d’approbation</span>
+                <span><i className="legend-dot unavailable" />Indisponible</span>
+              </div>
             </div>
           </div>
 
@@ -1227,37 +1319,48 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
                 <div className="planning-empty">Aucune ressource ou aucun quart ne correspond aux filtres.</div>
               )}
 
-              {visibleResourceGroups.map(([className, rows]) => (
-                <div className="resource-group" key={className}>
-                  <div className="resource-group-heading">
-                    <strong>{className}</strong>
-                    <span>{rows.length} ressource(s)</span>
+              {visibleResourceGroups.map(([className, rows]) => {
+                const collapsed = collapsedClasses.has(className);
+                return (
+                  <div className="resource-group" key={className}>
+                    <button
+                      type="button"
+                      className="resource-group-heading"
+                      aria-expanded={!collapsed}
+                      onClick={() => toggleResourceClass(className)}
+                    >
+                      <span className="resource-group-title">
+                        <span aria-hidden="true">{collapsed ? "▶" : "▼"}</span>
+                        <strong>{className}</strong>
+                      </span>
+                      <span>{rows.length} ressource(s)</span>
+                    </button>
+                    {!collapsed && rows.map(({ resource, shifts, capacity, pendingLoads }) => (
+                      <ResourceRow
+                        resource={resource}
+                        days={days}
+                        shifts={shifts}
+                        capacity={capacity}
+                        pendingLoads={pendingLoads}
+                        diagnostics={diagnosticsBySegment}
+                        assetsByShift={assetsByShift}
+                        assetAssignableShiftIds={assetAssignableShiftIds}
+                        onEditShift={setEditingShift}
+                        onAssignAsset={canManagePlanning ? setAssetAssignmentShift : undefined}
+                        onCreateQuickShift={canManagePlanning ? (targetResource, day) => {
+                          setQuickShiftSeed({ resourceId: targetResource.id, day });
+                          setQuickShiftOpen(true);
+                        } : undefined}
+                        onOpenDemand={setDetailDemandNumber}
+                        dragEnabled={canManagePlanning && !dropBusy}
+                        onDropShift={(payload, target, day) => void moveShiftFromDrop(payload, target, day)}
+                        onDropSegment={(payload, target) => void assignSegmentFromDrop(payload, target)}
+                        key={resource.id}
+                      />
+                    ))}
                   </div>
-                  {rows.map(({ resource, shifts, capacity, pendingLoads }) => (
-                    <ResourceRow
-                      resource={resource}
-                      days={days}
-                      shifts={shifts}
-                      capacity={capacity}
-                      pendingLoads={pendingLoads}
-                      diagnostics={diagnosticsBySegment}
-                      assetsByShift={assetsByShift}
-                      assetAssignableShiftIds={assetAssignableShiftIds}
-                      onEditShift={setEditingShift}
-                      onAssignAsset={canManagePlanning ? setAssetAssignmentShift : undefined}
-                      onCreateQuickShift={canManagePlanning ? (targetResource, day) => {
-                        setQuickShiftSeed({ resourceId: targetResource.id, day });
-                        setQuickShiftOpen(true);
-                      } : undefined}
-                      onOpenDemand={setDetailDemandNumber}
-                      dragEnabled={canManagePlanning && !dropBusy}
-                      onDropShift={(payload, target, day) => void moveShiftFromDrop(payload, target, day)}
-                      onDropSegment={(payload, target) => void assignSegmentFromDrop(payload, target)}
-                      key={resource.id}
-                    />
-                  ))}
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>

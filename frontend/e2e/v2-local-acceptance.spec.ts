@@ -1914,6 +1914,7 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
 
   await coordinator.page.reload();
   await navigateMain(coordinator.page, "Planning opérationnel");
+  await coordinator.page.getByRole("button", { name: "Aujourd’hui", exact: true }).click();
   await coordinator.page.getByRole("button", { name: /Suivante/ }).click();
   const refreshedAssetPanel = coordinator.page.locator(".asset-planning-panel");
   let conflictCard = refreshedAssetPanel.locator(".asset-requirement-card").filter({ hasText: conflictNumber }).first();
