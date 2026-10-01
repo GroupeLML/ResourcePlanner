@@ -311,16 +311,51 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
       name: "Synchroniser les tâches des projets actifs",
     });
     await expect(syncButton).toBeVisible();
-    await syncButton.click();
-    await expect(
-      page.getByRole("button", { name: "Synchronisation des tâches…" }),
-    ).toBeVisible();
 
+    const launchResponsePromise = page.waitForResponse((response) => (
+      response.request().method() === "POST"
+      && new URL(response.url()).pathname === "/api/v1/integrations/acumatica/projects/tasks/sync"
+    ));
+    await syncButton.click();
+    const launchResponse = await launchResponsePromise;
+    expect(launchResponse.status()).toBe(202);
+    const launchedRun = await launchResponse.json() as { run_id: string; status: string };
+    expect(launchedRun.run_id).toBeTruthy();
+    expect(launchedRun.status).toBe("PENDING");
+
+    const runningButton = page.getByRole("button", { name: "Synchronisation en cours…" });
+    await expect(runningButton).toBeVisible();
+    await expect(runningButton).toBeDisabled();
     const status = page.locator(".projects-sync-message");
-    await expect(status).toContainText("1 synchronisés");
-    await expect(status).toContainText("1 tâches reçues");
-    await expect(status).toContainText("1 créées");
-    await expect(status).toContainText("1 requête(s) ERP");
+    await expect(status).toContainText("Synchronisation en cours");
+    await expect(status).toContainText("projets traités");
+
+    const duplicateLaunch = await context.request.post(
+      "/api/v1/integrations/acumatica/projects/tasks/sync",
+    );
+    expect(duplicateLaunch.status()).toBe(202);
+    const duplicateRun = await duplicateLaunch.json() as { run_id: string };
+    expect(duplicateRun.run_id).toBe(launchedRun.run_id);
+
+    await page.reload();
+    await navigateMain(page, "Projets");
+    await expect(page.locator(".projects-sync-message")).toContainText("Synchronisation en cours");
+
+    const currentRun = await context.request.get(
+      "/api/v1/integrations/acumatica/projects/tasks/sync/current",
+    );
+    expect(currentRun.ok()).toBeTruthy();
+    expect((await currentRun.json() as { run_id: string }).run_id).toBe(launchedRun.run_id);
+
+    await expect(page.locator(".projects-sync-message").first()).toContainText(
+      "Synchronisation complétée",
+      { timeout: 10_000 },
+    );
+    await expect(page.locator(".projects-sync-message").first()).toContainText("1 synchronisés");
+    await expect(page.locator(".projects-sync-message").first()).toContainText("1 tâches reçues");
+    await expect(page.locator(".projects-sync-message").first()).toContainText("1 créées");
+    await expect(page.locator(".projects-sync-message").first()).toContainText("1 requête(s) ERP");
+    await expect(page.locator(".projects-sync-message").first()).toContainText("lignes ERP parcourues");
     await closeContext(context);
   });
 
