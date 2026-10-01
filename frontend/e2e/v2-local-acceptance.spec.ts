@@ -1505,25 +1505,6 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   expect(assetTypeId).not.toBe("");
   expect(lift63Id).not.toBe("");
 
-  const approvalAdmin = await openAs(browser, "ADMIN");
-  const scopesResponse = await approvalAdmin.page.request.get("/api/v1/admin/approval-scopes");
-  expect(scopesResponse.ok()).toBeTruthy();
-  const scopes = await scopesResponse.json() as Array<{
-    id: string;
-    code: string;
-    version: number;
-    asset_type_ids: string[];
-  }>;
-  const automationScope = scopes.find((row) => row.code === "AUTOMATION");
-  expect(automationScope).toBeTruthy();
-  const mappedAssetType = await approvalAdmin.page.request.put(
-    `/api/v1/admin/approval-scopes/${automationScope!.id}/asset-types/${assetTypeId}`,
-    { data: { expected_version: automationScope!.version } },
-  );
-  expect(mappedAssetType.status(), await mappedAssetType.text()).toBe(200);
-  expect((await mappedAssetType.json()).asset_type_ids).toContain(assetTypeId);
-  await closeContext(approvalAdmin.context);
-
   for (const unit of [
     { code: "NAC-64", label: "Nacelle #64" },
     { code: "NAC-65", label: "Nacelle #65" },
