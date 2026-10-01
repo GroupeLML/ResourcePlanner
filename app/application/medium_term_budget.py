@@ -19,6 +19,8 @@ MEDIUM_TERM_DIAGNOSTIC_CAPACITY_ZERO = "WORKFORCE_CAPACITY_ZERO"
 WEEK_DIAGNOSTIC_LOAD_INCOMPLETE = "WORK_PACKAGE_LOAD_INCOMPLETE"
 WEEK_DIAGNOSTIC_CAPACITY_ZERO = "WORKFORCE_CAPACITY_ZERO"
 APPROVED_TIME_CUTOFF_UNAVAILABLE = "APPROVED_TIME_CUTOFF_UNAVAILABLE"
+ERP_FINANCIAL_BUDGET_UNAVAILABLE = "ERP_FINANCIAL_BUDGET_UNAVAILABLE"
+ERP_FINANCIAL_BUDGET_INCOMPLETE = "ERP_FINANCIAL_BUDGET_INCOMPLETE"
 
 CANCELLED_WORK_PACKAGE_STATUSES = frozenset(
     {
@@ -55,6 +57,18 @@ def work_package_is_budget_included(status: object) -> bool:
 def work_package_is_current_load_included(status: object) -> bool:
     """Current medium-term load excludes closed/completed and cancelled packages."""
     return normalize_work_package_status(status) not in INACTIVE_WORK_PACKAGE_STATUSES
+
+
+def erp_financial_budget_diagnostic(
+    *,
+    budget_amount_cad: Decimal | None,
+    budget_actual_cad: Decimal | None,
+) -> str | None:
+    if budget_amount_cad is None and budget_actual_cad is None:
+        return ERP_FINANCIAL_BUDGET_UNAVAILABLE
+    if budget_amount_cad is None or budget_actual_cad is None:
+        return ERP_FINANCIAL_BUDGET_INCOMPLETE
+    return None
 
 
 def task_budget_diagnostic(
@@ -118,6 +132,7 @@ class MediumTermBudgetTaskReadModel:
     budget_amount_cad: Decimal | None
     budget_actual_cad: Decimal | None
     remaining_budget_cad: Decimal | None
+    financial_diagnostic: str | None
     budget_hours: Decimal | None
     planned_wp_hours: Decimal | None
     remaining_budget_hours: Decimal | None
