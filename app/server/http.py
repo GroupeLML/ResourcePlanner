@@ -722,6 +722,7 @@ def create_api_app(
     app.include_router(
         build_integration_router(
             session_dependency,
+            session_factory=factory,
             project_source=project_source,
             employee_source=employee_source,
             user_source=user_source,
