@@ -66,6 +66,8 @@ def required_permission(method: str, path: str) -> str | None:
         return PERMISSION_MANAGE_COMMUNICATIONS
     if path == "/api/v1/demand-requesters":
         return PERMISSION_MANAGE_DEMANDS
+    if path.startswith("/api/v1/integrations/acumatica/projects/tasks/sync"):
+        return PERMISSION_SYNC_PROJECTS
     if verb == "GET":
         return PERMISSION_READ
     if (
