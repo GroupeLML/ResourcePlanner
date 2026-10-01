@@ -1562,7 +1562,7 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   await expect(scopeCard.getByText("Types d’actifs couverts", { exact: true })).toBeVisible();
   const assetTypeMapping = scopeCard.locator("label").filter({ hasText: "LIFT496" }).getByRole("checkbox");
   await expect(assetTypeMapping).not.toBeChecked();
-  await assetTypeMapping.check();
+  await assetTypeMapping.click();
   await expect(assetTypeMapping).toBeChecked();
   await expect(approvalAdmin.page.locator(".configuration-notice")).toContainText(
     "Types d’actifs couverts",
