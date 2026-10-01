@@ -20,7 +20,11 @@ from app.infrastructure.sql import (
     create_sql_engine,
 )
 from app.server import create_api_app
-from tests.approval_test_support import routed_demand_payload, seed_test_approval_routing
+from tests.approval_test_support import (
+    map_asset_type_to_test_approval_scope,
+    routed_demand_payload,
+    seed_test_approval_routing,
+)
 from tests.http_test_auth import TEST_ADMIN_AUTH_RESOLVER
 
 
@@ -70,6 +74,11 @@ class AssetQualificationTests(unittest.TestCase):
         )
         self.assertEqual(asset_type.status_code, 201, asset_type.text)
         self.type_id = asset_type.json()["id"]
+
+        engine = create_sql_engine(self.url)
+        with create_session_factory(engine).begin() as session:
+            map_asset_type_to_test_approval_scope(session, self.type_id)
+        engine.dispose()
 
         asset = self.client.post(
             "/api/v1/assets",
