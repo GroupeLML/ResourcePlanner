@@ -230,6 +230,7 @@ class DemandCreateCommand:
             )
             or 1,
             required_competencies=optional_text(values.get("CompetencesRequises")),
+            required_resource_class=optional_text(values.get("RequiredResourceClass")),
             estimated_hours=float_value(
                 values.get("TempsEstimeHeures"),
                 field="demand_estimated_hours",
