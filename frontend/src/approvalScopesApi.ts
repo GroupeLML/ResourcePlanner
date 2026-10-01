@@ -9,6 +9,7 @@ export type ApprovalScopeReadModel = {
   version: number;
   approver_user_ids: string[];
   resource_class_codes: string[];
+  asset_type_ids: string[];
   task_catalog_item_ids: string[];
 };
 
