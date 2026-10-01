@@ -13,6 +13,11 @@ function localIso(value: Date) {
   return adjusted.toISOString().slice(0, 10);
 }
 
+function startOfWeek(value: Date) {
+  const day = value.getDay();
+  return addDays(value, -(day === 0 ? 6 : day - 1));
+}
+
 async function openCoordinator(browser: Browser) {
   const context = await browser.newContext({
     baseURL: BASE_URL,
@@ -35,21 +40,24 @@ async function navigateMain(page: Page, label: string) {
 
 test("Quick Shift depuis une cellule préremplit la ressource et accepte une date hors semaine", async ({ browser }) => {
   test.setTimeout(120_000);
-  const today = localIso(new Date());
-  const outsideDisplayedWeek = localIso(addDays(new Date(), 14));
+  const targetWeekStart = addDays(startOfWeek(new Date()), 14);
+  const targetDay = localIso(targetWeekStart);
+  const outsideDisplayedWeek = localIso(addDays(targetWeekStart, 21));
   const { context, page } = await openCoordinator(browser);
 
   try {
     await navigateMain(page, "Planning opérationnel");
+    await page.getByRole("button", { name: /Suivante/ }).click();
+    await page.getByRole("button", { name: /Suivante/ }).click();
 
     const aliceRow = page.locator(".resource-row").filter({ hasText: "Alice" }).first();
     await expect(aliceRow).toBeVisible();
-    const todayCell = aliceRow.locator(`.planning-drop-day[data-day="${today}"]`);
-    await expect(todayCell).toBeVisible();
-    await todayCell.hover();
+    const targetCell = aliceRow.locator(`.planning-drop-day[data-day="${targetDay}"]`);
+    await expect(targetCell).toBeVisible();
+    await targetCell.hover();
 
-    const cellShortcut = todayCell.getByRole("button", {
-      name: `Créer un Quick Shift pour Alice le ${today}`,
+    const cellShortcut = targetCell.getByRole("button", {
+      name: `Créer un Quick Shift pour Alice le ${targetDay}`,
     });
     await expect(cellShortcut).toBeVisible();
     await cellShortcut.click();
@@ -57,16 +65,16 @@ test("Quick Shift depuis une cellule préremplit la ressource et accepte une dat
     let dialog = page.getByRole("dialog", { name: "Créer un Quick Shift" });
     await expect(dialog).toBeVisible();
     await expect(dialog.getByLabel("Technicien")).toHaveValue("Alice");
-    await expect(dialog.getByLabel("Date")).toHaveValue(today);
+    await expect(dialog.getByLabel("Date")).toHaveValue(targetDay);
     await dialog.getByLabel("Projet").selectOption("P-251");
     await dialog.getByLabel("Heures").fill("1");
     await dialog.getByRole("button", { name: "Créer le Quick Shift" }).click();
 
     await expect(dialog).toBeHidden();
     await expect(page.locator(".planning-drag-feedback")).toContainText(
-      `Quick Shift créé pour Alice le ${today}.`,
+      `Quick Shift créé pour Alice le ${targetDay}.`,
     );
-    await expect(todayCell.locator(".shift-card").filter({ hasText: "P-251" })).not.toHaveCount(0);
+    await expect(targetCell.locator(".shift-card").filter({ hasText: "P-251" })).not.toHaveCount(0);
 
     await page.getByRole("button", { name: "+ Quick Shift", exact: true }).click();
     dialog = page.getByRole("dialog", { name: "Créer un Quick Shift" });
