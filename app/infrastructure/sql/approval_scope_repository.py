@@ -281,6 +281,34 @@ class SqlApprovalScopeRepository(ApprovalScopeRepositoryPort):
         self._session.flush()
         return self._record(row)
 
+    def set_asset_type_scope(
+        self,
+        scope_id: str,
+        asset_type_id: str,
+        *,
+        assigned: bool,
+        expected_version: int,
+    ) -> ApprovalScopeRecord:
+        row = self._acquire_scope_version(scope_id, expected_version)
+        type_id = _text(asset_type_id)
+        if self._session.get(AssetType, type_id) is None:
+            raise KeyError(f"Type d'actif {type_id} introuvable")
+        existing = self._session.get(
+            AssetTypeApprovalScopeMapping,
+            (type_id, row.id),
+        )
+        if assigned and existing is None:
+            self._session.add(
+                AssetTypeApprovalScopeMapping(
+                    asset_type_id=type_id,
+                    approval_scope_id=row.id,
+                )
+            )
+        elif not assigned and existing is not None:
+            self._session.delete(existing)
+        self._session.flush()
+        return self._record(row)
+
     def get_request_line(
         self,
         line_id: str,
