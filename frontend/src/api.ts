@@ -242,6 +242,9 @@ export type MediumTermBudgetWorkPackageReadModel = {
   planned_hours: number | null;
   status: string;
   budget_included: boolean;
+  project_id: string;
+  project_number: string;
+  project_name: string;
   start_date: string | null;
   end_date: string | null;
   version: number;
@@ -272,6 +275,34 @@ export type MediumTermBudgetTaskReadModel = {
   work_packages: MediumTermBudgetWorkPackageReadModel[];
   active: boolean;
   workforce_eligible: boolean | null;
+  project_id: string;
+  project_number: string;
+  project_name: string;
+};
+
+export type MediumTermTaskOptionReadModel = {
+  task_catalog_item_id: string;
+  project_id: string;
+  project_number: string;
+  project_name: string;
+  task_code: string;
+  task_label: string;
+};
+
+export type MediumTermResourceClassOptionReadModel = {
+  code: string;
+  label: string;
+  active: boolean;
+};
+
+export type MediumTermClassWeekReadModel = {
+  resource_class_code: string | null;
+  resource_class_label: string;
+  capacity_hours: number;
+  work_package_hours: number | null;
+  utilization: number | null;
+  state: "available" | "warning" | "overloaded" | "unavailable";
+  diagnostics: string[];
 };
 
 export type MediumTermWeekReadModel = {
@@ -279,13 +310,15 @@ export type MediumTermWeekReadModel = {
   work_package_hours: number | null;
   capacity_hours: number;
   utilization: number | null;
+  state: "available" | "warning" | "overloaded" | "unavailable";
   diagnostics: string[];
+  classes: MediumTermClassWeekReadModel[];
 };
 
 export type MediumTermBudgetReadModel = {
-  project_id: string;
-  project_number: string;
-  project_name: string;
+  project_id: string | null;
+  project_number: string | null;
+  project_name: string | null;
   tasks: MediumTermBudgetTaskReadModel[];
   unclassified_work_packages: MediumTermBudgetWorkPackageReadModel[];
   diagnostics: string[];
@@ -293,6 +326,15 @@ export type MediumTermBudgetReadModel = {
   window_start: string | null;
   window_end: string | null;
   weeks: MediumTermWeekReadModel[];
+  project_count: number;
+  task_options: MediumTermTaskOptionReadModel[];
+  resource_classes: MediumTermResourceClassOptionReadModel[];
+};
+
+export type MediumTermBudgetFilters = {
+  taskCatalogItemId?: string;
+  resourceClassCode?: string;
+  includeInactiveProjects?: boolean;
 };
 
 export type WorkPackageWeeklyLoadProposalReadModel = {
@@ -1244,13 +1286,22 @@ export function getMediumTermBudget(
   end: string,
   signal?: AbortSignal,
   scope: ViewScope = "global",
+  filters: MediumTermBudgetFilters = {},
 ) {
   const params = new URLSearchParams({
-    project_number: projectNumber,
     start,
     end,
     scope,
+    include_inactive_projects: String(Boolean(filters.includeInactiveProjects)),
   });
+  const project = projectNumber.trim();
+  if (project) params.set("project_number", project);
+  if (filters.taskCatalogItemId) {
+    params.set("task_catalog_item_id", filters.taskCatalogItemId);
+  }
+  if (filters.resourceClassCode) {
+    params.set("resource_class_code", filters.resourceClassCode);
+  }
   return getJson<MediumTermBudgetReadModel>(
     `/api/v1/medium-term/budget?${params.toString()}`,
     signal,
@@ -1265,6 +1316,7 @@ export function getMediumTermBudgetSummary(
   const params = new URLSearchParams({
     project_number: projectNumber,
     scope,
+    include_inactive_projects: "true",
   });
   return getJson<MediumTermBudgetReadModel>(
     `/api/v1/medium-term/budget?${params.toString()}`,
