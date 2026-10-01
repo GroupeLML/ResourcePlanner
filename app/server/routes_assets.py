@@ -12,9 +12,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..application.security import PERMISSION_APPROVE_DEMANDS, normalize_roles, permissions_for_roles
 from ..infrastructure.sql.asset_models import (
     Asset,
     AssetAllocation,
+    AssetApprover,
     AssetRequirement,
     AssetType,
     AssetUnavailability,
@@ -25,6 +27,7 @@ from ..infrastructure.sql.asset_qualification import (
     required_competencies,
 )
 from ..infrastructure.sql.asset_service import SqlAssetService
+from ..infrastructure.sql.identity_models import AppUser
 from ..infrastructure.sql.planning_version import SqlPlanningMutationVersionRepository
 
 
@@ -105,6 +108,25 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
     @router.get("/catalog")
     def catalog(session: Session = Depends(session_dependency)) -> dict:
         type_rows = tuple(session.scalars(select(AssetType).order_by(AssetType.code)))
+        asset_rows = tuple(session.scalars(select(Asset).order_by(Asset.code)))
+        approvers_by_asset: dict[str, list[str]] = {}
+        for asset_id, user_id in session.execute(
+            select(AssetApprover.asset_id, AssetApprover.app_user_id)
+            .order_by(AssetApprover.asset_id, AssetApprover.app_user_id)
+        ).all():
+            approvers_by_asset.setdefault(asset_id, []).append(user_id)
+        approver_candidates = []
+        for user in session.scalars(select(AppUser).order_by(AppUser.display_name, AppUser.id)).all():
+            try:
+                roles = normalize_roles(
+                    tuple(str(value) for value in json.loads(user.roles_json or "[]"))
+                )
+            except (TypeError, ValueError, json.JSONDecodeError):
+                roles = ()
+            if user.active and PERMISSION_APPROVE_DEMANDS in permissions_for_roles(roles):
+                approver_candidates.append(
+                    {"id": user.id, "display_name": user.display_name}
+                )
         return {
             "types": [
                 {
@@ -123,9 +145,19 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
                 }
                 for row in type_rows
             ],
-            "assets": [{"id": row.id, "code": row.code, "label": row.label, "asset_type_id": row.asset_type_id,
-                        "active": row.active, "metadata": json.loads(row.metadata_json or "{}")}
-                       for row in session.scalars(select(Asset).order_by(Asset.code))],
+            "assets": [
+                {
+                    "id": row.id,
+                    "code": row.code,
+                    "label": row.label,
+                    "asset_type_id": row.asset_type_id,
+                    "active": row.active,
+                    "approver_user_ids": approvers_by_asset.get(row.id, []),
+                    "metadata": json.loads(row.metadata_json or "{}"),
+                }
+                for row in asset_rows
+            ],
+            "approver_candidates": approver_candidates,
             "planning_version": SqlPlanningMutationVersionRepository(session).current_version(),
         }
 
@@ -170,6 +202,32 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
     def update_asset(identifier: str, body: AssetUpdate, request: Request, session: Session = Depends(session_dependency)) -> dict:
         return service(session, request).update_catalog(Asset, identifier,
             body.model_dump(exclude_unset=True, exclude={"expected_planning_version"}), body.expected_planning_version)
+
+    @router.put("/{identifier}/approvers/{user_id}")
+    def assign_asset_approver(
+        identifier: str,
+        user_id: str,
+        request: Request,
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        return service(session, request).set_approver(
+            asset_id=identifier,
+            user_id=user_id,
+            assigned=True,
+        )
+
+    @router.delete("/{identifier}/approvers/{user_id}")
+    def remove_asset_approver(
+        identifier: str,
+        user_id: str,
+        request: Request,
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        return service(session, request).set_approver(
+            asset_id=identifier,
+            user_id=user_id,
+            assigned=False,
+        )
 
     @router.post("/{identifier}/unavailability", status_code=201)
     def add_unavailability(identifier: str, body: UnavailabilityCreate, request: Request,
