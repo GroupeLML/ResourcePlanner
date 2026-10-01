@@ -2,7 +2,7 @@ import { Browser, BrowserContext, Locator, Page, expect, test } from "@playwrigh
 
 const BASE_URL = process.env.RESOURCEPLANNER_E2E_BASE_URL || "http://127.0.0.1:8765";
 
-async function openAs(browser: Browser, role: "COORDINATOR" | "PROJECT_MANAGER") {
+async function openAs(browser: Browser, role: "ADMIN" | "COORDINATOR" | "PROJECT_MANAGER") {
   const context = await browser.newContext({
     baseURL: BASE_URL,
     locale: "fr-CA",
@@ -144,10 +144,22 @@ test("Demandes recherche les référentiels, clear sans submit et conserve les c
 });
 
 test("Demandes affiche une ressource historique sans la recréer comme option active", async ({ browser }) => {
-  const { context, page } = await openAs(browser, "PROJECT_MANAGER");
+  const admin = await openAs(browser, "ADMIN");
+  const projectManager = await openAs(browser, "PROJECT_MANAGER");
   try {
     const historicalName = "Ressource historique E2E";
-    const create = await page.request.post("/api/v1/demands", {
+    const resourceCreate = await admin.page.request.post("/api/v1/resources", {
+      data: {
+        name: historicalName,
+        resource_class: "PROGRAMMEUR",
+        competencies: "SCADA",
+        sort_order: 900,
+      },
+    });
+    expect(resourceCreate.status(), await resourceCreate.text()).toBe(201);
+    const { resource_id: resourceId } = await resourceCreate.json() as { resource_id: string };
+
+    const demandCreate = await projectManager.page.request.post("/api/v1/demands", {
       headers: { "Idempotency-Key": "issue-546-historical-resource" },
       data: {
         project_number: "P-251",
@@ -158,15 +170,20 @@ test("Demandes affiche une ressource historique sans la recréer comme option ac
         submit: false,
       },
     });
-    expect(create.status(), await create.text()).toBe(201);
-    const { demand_number: demandNumber } = await create.json() as { demand_number: string };
+    expect(demandCreate.status(), await demandCreate.text()).toBe(201);
+    const { demand_number: demandNumber } = await demandCreate.json() as { demand_number: string };
 
-    await navigateMain(page, "Demandes");
-    const card = page.locator(".demand-card").filter({ hasText: demandNumber }).first();
+    const deactivate = await admin.page.request.post(
+      `/api/v1/resources/${encodeURIComponent(resourceId)}/deactivate`,
+    );
+    expect(deactivate.status(), await deactivate.text()).toBe(200);
+
+    await navigateMain(projectManager.page, "Demandes");
+    const card = projectManager.page.locator(".demand-card").filter({ hasText: demandNumber }).first();
     await expect(card).toBeVisible();
     await card.click();
 
-    const editor = page.locator(".demand-editor-form");
+    const editor = projectManager.page.locator(".demand-editor-form");
     const resource = combobox(editor, "Ressource proposée");
     await expect(resource).toHaveValue(`${historicalName} — inactive/non listée`);
     await expect(resource).toHaveAttribute("data-combobox-value", /historical:resource-name:/);
@@ -177,6 +194,7 @@ test("Demandes affiche une ressource historique sans la recréer comme option ac
     await resource.press("Escape");
     await expect(resource).toHaveValue(`${historicalName} — inactive/non listée`);
   } finally {
-    await closeContext(context);
+    await closeContext(projectManager.context);
+    await closeContext(admin.context);
   }
 });
