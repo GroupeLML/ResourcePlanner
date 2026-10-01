@@ -122,7 +122,8 @@ class ReactDemandsContractTests(unittest.TestCase):
         self.assertNotIn("taskSearch", source)
         self.assertIn("<span>Tâche ERP</span>", source)
         self.assertIn("getTaskCatalog(projectNumber", source)
-        self.assertIn("visibleTasks.map", source)
+        self.assertIn("<SearchableCombobox", source)
+        self.assertIn("visibleTasks.filter", source)
 
     def test_multi_line_editor_groups_dates_and_keeps_compact_business_fields(self) -> None:
         editor = (ROOT / "frontend" / "src" / "DemandLinesEditor.tsx").read_text(
