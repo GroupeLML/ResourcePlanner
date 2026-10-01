@@ -86,6 +86,15 @@ class TaskCatalogProjectSnapshot:
     items: tuple[TaskCatalogItem, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class TaskCatalogPortfolioSnapshot:
+    """One bounded RP_ProjectTasks read partitioned into project snapshots."""
+
+    source_rows: int
+    source_pages: int
+    snapshots: tuple[TaskCatalogProjectSnapshot, ...]
+
+
 class ProjectTaskCatalogSourcePort(Protocol):
     """Source contract for targeted RP_ProjectTasks synchronization."""
 
