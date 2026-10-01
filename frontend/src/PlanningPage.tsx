@@ -57,6 +57,7 @@ import PlanningActionPanel from "./PlanningActionPanel";
 import PlanningDropDialog, { PlanningDropExecutionRequest } from "./PlanningDropDialog";
 import QuickShiftEditor from "./QuickShiftEditor";
 import SegmentEditor from "./SegmentEditor";
+import ShiftAssetAssignmentDialog from "./ShiftAssetAssignmentDialog";
 import ShiftEditor from "./ShiftEditor";
 
 type ConfirmationFilter = "all" | "confirmed" | "tentative";
@@ -179,12 +180,16 @@ function ShiftCard({
   diagnostic,
   assetLabels,
   onEdit,
+  onAssignAsset,
+  assetAssignmentAvailable,
   dragEnabled,
 }: {
   shift: ShiftReadModel;
   diagnostic: PlanningSegmentCapacityDiagnosticReadModel | null;
   assetLabels: string[];
   onEdit: (shift: ShiftReadModel) => void;
+  onAssignAsset?: (shift: ShiftReadModel) => void;
+  assetAssignmentAvailable: boolean;
   dragEnabled: boolean;
 }) {
   const confirmation = confirmationKind(shift.confirmation);
@@ -201,16 +206,27 @@ function ShiftCard({
     excess > 0 ? `⚠ Surallocation manuelle +${hours(excess)} h` : null,
     unplaced > 0 ? `⚠ ${hours(unplaced)} h non placées` : null,
   ].filter(Boolean);
+  const editLabel = `Modifier le quart ${shift.project_number || shift.project_name || shift.allocation_id}, ${hours(shift.hours)} heures${emergencyOverride ? ", dérogation urgente active" : ""}${excess > 0 ? `, surallocation manuelle de ${hours(excess)} heures` : ""}${unplaced > 0 ? `, ${hours(unplaced)} heures non placées` : ""}`;
+  const title = [
+    dragEnabled ? "Glisser vers une autre ressource/journée, ou cliquer pour modifier" : "Cliquer pour modifier",
+    emergencyOverride ? "⚠ Dérogation d’approbation urgente — régularisation requise" : null,
+    excess > 0 ? `⚠ Surallocation manuelle : ${hours(overallocationShift.segment_locked_hours)} h verrouillées pour ${hours(overallocationShift.segment_planned_hours)} h prévues` : null,
+    unplaced > 0 ? `⚠ Capacité standard insuffisante : ${hours(unplaced)} h du segment restent à placer` : null,
+    shift.project_name,
+    shift.demand_number ? `Demande ${shift.demand_number}` : null,
+    shift.project_manager ? `Responsable: ${shift.project_manager}` : null,
+    shift.requester ? `Demandeur: ${shift.requester}` : null,
+    shift.note,
+  ].filter(Boolean).join("\n");
 
   return (
-    <button
-      type="button"
+    <article
       className={`shift-card shift-${confirmation} ${shift.outside_standard_hours ? "shift-outside" : ""} ${excess > 0 ? "shift-overallocated" : ""} ${unplaced > 0 ? "shift-unplaced" : ""} ${dragEnabled ? "is-draggable" : ""}`}
       draggable={dragEnabled}
       data-allocation-id={shift.allocation_id}
       data-segment-id={shift.segment_id}
       onDragStart={(event) => {
-        if (!dragEnabled) {
+        if (!dragEnabled || (event.target as HTMLElement).closest(".shift-asset-action")) {
           event.preventDefault();
           return;
         }
@@ -221,39 +237,45 @@ function ShiftCard({
           work_date: shift.work_date,
         });
       }}
-      onClick={() => onEdit(shift)}
-      aria-label={`Modifier le quart ${shift.project_number || shift.project_name || shift.allocation_id}, ${hours(shift.hours)} heures${emergencyOverride ? ", dérogation urgente active" : ""}${excess > 0 ? `, surallocation manuelle de ${hours(excess)} heures` : ""}${unplaced > 0 ? `, ${hours(unplaced)} heures non placées` : ""}`}
-      title={[
-        dragEnabled ? "Glisser vers une autre ressource/journée, ou cliquer pour modifier" : "Cliquer pour modifier",
-        emergencyOverride ? "⚠ Dérogation d’approbation urgente — régularisation requise" : null,
-        excess > 0 ? `⚠ Surallocation manuelle : ${hours(overallocationShift.segment_locked_hours)} h verrouillées pour ${hours(overallocationShift.segment_planned_hours)} h prévues` : null,
-        unplaced > 0 ? `⚠ Capacité standard insuffisante : ${hours(unplaced)} h du segment restent à placer` : null,
-        shift.project_name,
-        shift.demand_number ? `Demande ${shift.demand_number}` : null,
-        shift.project_manager ? `Responsable: ${shift.project_manager}` : null,
-        shift.requester ? `Demandeur: ${shift.requester}` : null,
-        shift.note,
-      ].filter(Boolean).join("\n")}
     >
-      <div className="shift-card-heading">
-        <div className="shift-project">
-          <ProjectLabel number={shift.project_number} name={shift.project_name} />
+      <button
+        type="button"
+        className="shift-card-main"
+        onClick={() => onEdit(shift)}
+        aria-label={editLabel}
+        title={title}
+      >
+        <div className="shift-card-heading">
+          <div className="shift-project">
+            <ProjectLabel number={shift.project_number} name={shift.project_name} />
+          </div>
+          <strong className="shift-hours">{hours(shift.hours)} h</strong>
         </div>
-        <strong className="shift-hours">{hours(shift.hours)} h</strong>
-      </div>
-      <div className="shift-badges">
-        <span className={`confirmation-badge confirmation-${confirmation}`}>
-          {confirmationLabel(shift.confirmation)}
-        </span>
-        {shift.demand_number && <span>#{shift.demand_number}</span>}
-      </div>
-      {meta.length > 0 && <small>{meta.join(" · ")}</small>}
-      {assetLabels.length > 0 && (
-        <small className="shift-assets" aria-label="Actifs réservés">
-          {assetLabels.length === 1 ? "Actif : " : "Actifs : "}{assetLabels.join(" · ")}
-        </small>
+        <div className="shift-badges">
+          <span className={`confirmation-badge confirmation-${confirmation}`}>
+            {confirmationLabel(shift.confirmation)}
+          </span>
+          {shift.demand_number && <span>#{shift.demand_number}</span>}
+        </div>
+        {meta.length > 0 && <small>{meta.join(" · ")}</small>}
+        {assetLabels.length > 0 && (
+          <small className="shift-assets" aria-label="Actifs réservés">
+            {assetLabels.length === 1 ? "Actif : " : "Actifs : "}{assetLabels.join(" · ")}
+          </small>
+        )}
+      </button>
+      {assetAssignmentAvailable && onAssignAsset && (
+        <button
+          type="button"
+          className="shift-asset-action"
+          draggable={false}
+          onClick={() => onAssignAsset(shift)}
+          aria-label={`Assigner un actif à ${shift.resource_name} pour la demande ${shift.demand_number}`}
+        >
+          Assigner un actif
+        </button>
       )}
-    </button>
+    </article>
   );
 }
 
@@ -339,7 +361,10 @@ function ResourceRow({
   pendingLoads,
   diagnostics,
   assetsByShift,
+  assetAssignableShiftIds,
   onEditShift,
+  onAssignAsset,
+  onCreateQuickShift,
   onOpenDemand,
   dragEnabled,
   onDropShift,
@@ -352,7 +377,10 @@ function ResourceRow({
   pendingLoads: PendingDemandLoadReadModel[];
   diagnostics: Map<string, PlanningSegmentCapacityDiagnosticReadModel>;
   assetsByShift: Map<string, string[]>;
+  assetAssignableShiftIds: Set<string>;
   onEditShift: (shift: ShiftReadModel) => void;
+  onAssignAsset?: (shift: ShiftReadModel) => void;
+  onCreateQuickShift?: (resource: ResourceReadModel, day: string) => void;
   onOpenDemand?: (demandNumber: string) => void;
   dragEnabled: boolean;
   onDropShift: (payload: ShiftDragPayload, resource: ResourceReadModel, day: string) => void;
@@ -441,6 +469,17 @@ function ResourceRow({
               onDropShift(payload, resource, iso);
             }}
           >
+            {onCreateQuickShift && (
+              <button
+                type="button"
+                className="cell-quick-shift-button"
+                onClick={() => onCreateQuickShift(resource, iso)}
+                aria-label={`Créer un Quick Shift pour ${resource.name} le ${iso}`}
+                title={`Créer un Quick Shift pour ${resource.name} le ${iso}`}
+              >
+                +
+              </button>
+            )}
             {cellCapacity && (
               <div className={`day-capacity ${cellCapacity.overloaded ? "is-overloaded" : ""} ${!cellCapacity.available ? "is-unavailable" : ""}`}>
                 {cellCapacity.available ? (
@@ -461,6 +500,8 @@ function ResourceRow({
                 diagnostic={diagnostics.get(shift.segment_id) ?? null}
                 assetLabels={assetsByShift.get(shift.allocation_id) ?? []}
                 onEdit={onEditShift}
+                onAssignAsset={onAssignAsset}
+                assetAssignmentAvailable={assetAssignableShiftIds.has(shift.allocation_id)}
                 dragEnabled={dragEnabled}
                 key={shift.allocation_id}
               />
@@ -500,6 +541,8 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
   const [editingShift, setEditingShift] = useState<ShiftReadModel | null>(null);
   const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null);
   const [quickShiftOpen, setQuickShiftOpen] = useState(false);
+  const [quickShiftSeed, setQuickShiftSeed] = useState<{ resourceId: string; day: string } | null>(null);
+  const [assetAssignmentShift, setAssetAssignmentShift] = useState<ShiftReadModel | null>(null);
   const [manualAllocationOpen, setManualAllocationOpen] = useState(false);
   const [detailDemandNumber, setDetailDemandNumber] = useState<string | null>(null);
   const [detailContextDirty, setDetailContextDirty] = useState(false);
@@ -621,6 +664,21 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
       }
     });
     return linked;
+  }, [snapshot]);
+
+  const assetAssignableShiftIds = useMemo(() => {
+    const result = new Set<string>();
+    if (!snapshot) return result;
+    snapshot.shifts.forEach((shift) => {
+      if (!shift.demand_number) return;
+      const hasMatchingRequirement = snapshot.asset_requirements.some((requirement) => (
+        requirement.demand_number === shift.demand_number
+        && requirement.start_date <= shift.work_date
+        && requirement.end_date >= shift.work_date
+      ));
+      if (hasMatchingRequirement) result.add(shift.allocation_id);
+    });
+    return result;
   }, [snapshot]);
 
   const query = normalize(search);
@@ -985,7 +1043,14 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
           <button className="manual-allocation-button" type="button" onClick={() => setManualAllocationOpen(true)}>
             + Quart manuel
           </button>
-          <button className="quick-shift-button" type="button" onClick={() => setQuickShiftOpen(true)}>
+          <button
+            className="quick-shift-button"
+            type="button"
+            onClick={() => {
+              setQuickShiftSeed(null);
+              setQuickShiftOpen(true);
+            }}
+          >
             + Quick Shift
           </button>
           <div className="week-navigation" role="group" aria-label="Navigation par semaine">
@@ -1177,7 +1242,13 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
                       pendingLoads={pendingLoads}
                       diagnostics={diagnosticsBySegment}
                       assetsByShift={assetsByShift}
+                      assetAssignableShiftIds={assetAssignableShiftIds}
                       onEditShift={setEditingShift}
+                      onAssignAsset={canManagePlanning ? setAssetAssignmentShift : undefined}
+                      onCreateQuickShift={canManagePlanning ? (targetResource, day) => {
+                        setQuickShiftSeed({ resourceId: targetResource.id, day });
+                        setQuickShiftOpen(true);
+                      } : undefined}
                       onOpenDemand={setDetailDemandNumber}
                       dragEnabled={canManagePlanning && !dropBusy}
                       onDropShift={(payload, target, day) => void moveShiftFromDrop(payload, target, day)}
@@ -1221,6 +1292,15 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
         <AssetPlanningPanel
           snapshot={snapshot}
           canManage={canManagePlanning && !loading}
+          onRefresh={() => setRefreshKey((value) => value + 1)}
+        />
+      )}
+
+      {assetAssignmentShift && snapshot && (
+        <ShiftAssetAssignmentDialog
+          shift={assetAssignmentShift}
+          snapshot={snapshot}
+          onClose={() => setAssetAssignmentShift(null)}
           onRefresh={() => setRefreshKey((value) => value + 1)}
         />
       )}
@@ -1333,11 +1413,20 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
         open={quickShiftOpen}
         weekStart={start}
         weekEnd={end}
-        defaultDay={quickShiftDefaultDay}
+        defaultDay={quickShiftSeed?.day ?? quickShiftDefaultDay}
         initialProjectNumber={project === "all" ? null : project}
-        onClose={() => setQuickShiftOpen(false)}
-        onSaved={() => {
+        initialResourceId={quickShiftSeed?.resourceId ?? null}
+        onClose={() => {
           setQuickShiftOpen(false);
+          setQuickShiftSeed(null);
+        }}
+        onSaved={({ day, resourceName }) => {
+          setQuickShiftOpen(false);
+          setQuickShiftSeed(null);
+          setDragFeedback({
+            tone: "success",
+            message: `Quick Shift créé pour ${resourceName} le ${day}.`,
+          });
           setRefreshKey((value) => value + 1);
         }}
       />
