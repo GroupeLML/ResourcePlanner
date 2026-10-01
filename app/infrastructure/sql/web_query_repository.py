@@ -49,6 +49,7 @@ from .models import (
     WorkforceRequest,
     WorkforceRequestHistory,
     TaskCatalogEntry,
+    TaskCatalogProjectSyncState,
     WorkPackage,
     WorkPackageWeeklyLoad,
 )
@@ -430,6 +431,21 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                 if load_complete
                 else None
             )
+            budget_amount_cad = (
+                Decimal(task.budget_amount_cad)
+                if task.budget_amount_cad is not None
+                else None
+            )
+            budget_actual_cad = (
+                Decimal(task.budget_actual_cad)
+                if task.budget_actual_cad is not None
+                else None
+            )
+            remaining_budget_cad = (
+                budget_amount_cad - budget_actual_cad
+                if budget_amount_cad is not None and budget_actual_cad is not None
+                else None
+            )
             budget_hours = (
                 Decimal(task.budget_hours)
                 if task.budget_hours is not None
@@ -447,6 +463,9 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                     task_label=task.label,
                     erp_task_id=_optional_text(task.erp_task_id),
                     account_group=_text(task.account_group),
+                    budget_amount_cad=budget_amount_cad,
+                    budget_actual_cad=budget_actual_cad,
+                    remaining_budget_cad=remaining_budget_cad,
                     budget_hours=budget_hours,
                     planned_wp_hours=planned_wp_hours,
                     remaining_budget_hours=remaining_budget_hours,
@@ -684,6 +703,14 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
             if wanted_project is not None and selected_projects
             else None
         )
+        budget_sync_state = (
+            self._web_session.get(
+                TaskCatalogProjectSyncState,
+                selected_project.number,
+            )
+            if selected_project is not None
+            else None
+        )
         return MediumTermBudgetReadModel(
             project_id=selected_project.id if selected_project is not None else None,
             project_number=(
@@ -697,6 +724,11 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                 else None
             ),
             tasks=tuple(task_models),
+            erp_budget_last_success_at=(
+                budget_sync_state.last_success_at
+                if budget_sync_state is not None
+                else None
+            ),
             unclassified_work_packages=tuple(displayed_unclassified),
             diagnostics=tuple(dict.fromkeys(diagnostics)),
             weekly_diagnostics=tuple(dict.fromkeys(weekly_diagnostics)),
