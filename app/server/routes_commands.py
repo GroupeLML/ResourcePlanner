@@ -260,7 +260,9 @@ def build_command_router(
             key=idempotency_key,
             request_payload=_json_body(body),
             action=lambda: _payload(
-                facade.create_work_package(WorkPackageCreateCommand(**body.model_dump()))
+                facade.create_work_package(
+                    WorkPackageCreateCommand(**body.model_dump(exclude_unset=True))
+                )
             ),
         )
 
