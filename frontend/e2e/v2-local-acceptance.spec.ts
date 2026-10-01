@@ -302,6 +302,28 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await closeContext(projectManager.context);
   });
 
+  await test.step("admin synchronizes active project tasks through React and FastAPI", async () => {
+    const { context, page } = await openAs(browser, "ADMIN");
+    await navigateMain(page, "Projets");
+    await expect(page.getByRole("heading", { name: "Projets", level: 1 })).toBeVisible();
+
+    const syncButton = page.getByRole("button", {
+      name: "Synchroniser les tâches des projets actifs",
+    });
+    await expect(syncButton).toBeVisible();
+    await syncButton.click();
+    await expect(
+      page.getByRole("button", { name: "Synchronisation des tâches…" }),
+    ).toBeVisible();
+
+    const status = page.locator(".projects-sync-message");
+    await expect(status).toContainText("1 synchronisés");
+    await expect(status).toContainText("1 tâches reçues");
+    await expect(status).toContainText("1 créées");
+    await expect(status).toContainText("1 requête(s) ERP");
+    await closeContext(context);
+  });
+
   await test.step("project manager creates WorkPackage, demand, periods and selected alternative", async () => {
     const { context, page } = await openAs(browser, "PROJECT_MANAGER", { disableRandomUUID: true });
 
