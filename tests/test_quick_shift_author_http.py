@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from functools import partial
 
-from datetime import date
+from datetime import date, time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -13,6 +13,7 @@ from app.infrastructure.sql import (
     Base,
     Project,
     Resource,
+    ResourceAvailabilityRule,
     create_session_factory,
     create_sql_engine,
     transactional_session,
@@ -45,6 +46,18 @@ class QuickShiftAuthorHttpTests(unittest.TestCase):
                     )
                 )
                 session.add(Resource(id="R1", name="Alice", active=True))
+                session.flush()
+                session.add(
+                    ResourceAvailabilityRule(
+                        id="STD-R1",
+                        resource_id="R1",
+                        availability_type="Horaire standard",
+                        weekdays="Lun,Mar,Mer,Jeu,Ven",
+                        start_time=time(8, 0),
+                        end_time=time(16, 0),
+                        active=True,
+                    )
+                )
             engine.dispose()
 
             app = create_api_app(
