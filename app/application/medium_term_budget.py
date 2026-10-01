@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 
@@ -18,6 +18,9 @@ MEDIUM_TERM_DIAGNOSTIC_WEEKLY_LOAD_INCOMPLETE = "WEEKLY_LOAD_INCOMPLETE"
 MEDIUM_TERM_DIAGNOSTIC_CAPACITY_ZERO = "WORKFORCE_CAPACITY_ZERO"
 WEEK_DIAGNOSTIC_LOAD_INCOMPLETE = "WORK_PACKAGE_LOAD_INCOMPLETE"
 WEEK_DIAGNOSTIC_CAPACITY_ZERO = "WORKFORCE_CAPACITY_ZERO"
+APPROVED_TIME_CUTOFF_UNAVAILABLE = "APPROVED_TIME_CUTOFF_UNAVAILABLE"
+ERP_FINANCIAL_BUDGET_UNAVAILABLE = "ERP_FINANCIAL_BUDGET_UNAVAILABLE"
+ERP_FINANCIAL_BUDGET_INCOMPLETE = "ERP_FINANCIAL_BUDGET_INCOMPLETE"
 
 CANCELLED_WORK_PACKAGE_STATUSES = frozenset(
     {
@@ -54,6 +57,18 @@ def work_package_is_budget_included(status: object) -> bool:
 def work_package_is_current_load_included(status: object) -> bool:
     """Current medium-term load excludes closed/completed and cancelled packages."""
     return normalize_work_package_status(status) not in INACTIVE_WORK_PACKAGE_STATUSES
+
+
+def erp_financial_budget_diagnostic(
+    *,
+    budget_amount_cad: Decimal | None,
+    budget_actual_cad: Decimal | None,
+) -> str | None:
+    if budget_amount_cad is None and budget_actual_cad is None:
+        return ERP_FINANCIAL_BUDGET_UNAVAILABLE
+    if budget_amount_cad is None or budget_actual_cad is None:
+        return ERP_FINANCIAL_BUDGET_INCOMPLETE
+    return None
 
 
 def task_budget_diagnostic(
@@ -114,6 +129,10 @@ class MediumTermBudgetTaskReadModel:
     task_label: str
     erp_task_id: str | None
     account_group: str
+    budget_amount_cad: Decimal | None
+    budget_actual_cad: Decimal | None
+    remaining_budget_cad: Decimal | None
+    financial_diagnostic: str | None
     budget_hours: Decimal | None
     planned_wp_hours: Decimal | None
     remaining_budget_hours: Decimal | None
@@ -174,6 +193,11 @@ class MediumTermBudgetReadModel:
     project_number: str | None
     project_name: str | None
     tasks: tuple[MediumTermBudgetTaskReadModel, ...]
+    last_approved_time_date: date | None = None
+    cutoff_status: str = "UNAVAILABLE"
+    cutoff_source: str | None = None
+    cutoff_diagnostic: str | None = APPROVED_TIME_CUTOFF_UNAVAILABLE
+    erp_budget_last_success_at: datetime | None = None
     unclassified_work_packages: tuple[MediumTermBudgetWorkPackageReadModel, ...] = ()
     diagnostics: tuple[str, ...] = ()
     weekly_diagnostics: tuple[str, ...] = ()

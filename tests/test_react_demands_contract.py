@@ -122,8 +122,17 @@ class ReactDemandsContractTests(unittest.TestCase):
         self.assertNotIn("taskSearch", source)
         self.assertIn("<span>Tâche ERP</span>", source)
         self.assertIn("getTaskCatalog(projectNumber", source)
-        self.assertIn("<SearchableCombobox", source)
+        self.assertIn('import SearchableCombobox from "./SearchableCombobox"', source)
         self.assertIn("visibleTasks.filter((task) => task.active).map", source)
+        self.assertIn("value: taskIdentity(task)", source)
+        self.assertIn("historicalIdentity(\"task\", form.task_code)", source)
+        self.assertIn(
+            "const task = tasks.find((row) => taskIdentity(row) === value);",
+            source,
+        )
+        self.assertIn("setForm((current) => ({", source)
+        self.assertIn('task_code: task?.code ?? ""', source)
+        self.assertIn("required_resource_class:", source)
 
     def test_multi_line_editor_groups_dates_and_keeps_compact_business_fields(self) -> None:
         editor = (ROOT / "frontend" / "src" / "DemandLinesEditor.tsx").read_text(

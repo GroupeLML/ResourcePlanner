@@ -282,6 +282,10 @@ export type MediumTermBudgetTaskReadModel = {
   task_label: string;
   erp_task_id: string | null;
   account_group: string;
+  budget_amount_cad: number | null;
+  budget_actual_cad: number | null;
+  remaining_budget_cad: number | null;
+  financial_diagnostic: string | null;
   budget_hours: number | null;
   planned_wp_hours: number | null;
   remaining_budget_hours: number | null;
@@ -337,6 +341,11 @@ export type MediumTermBudgetReadModel = {
   project_number: string | null;
   project_name: string | null;
   tasks: MediumTermBudgetTaskReadModel[];
+  last_approved_time_date: string | null;
+  cutoff_status: string;
+  cutoff_source: string | null;
+  cutoff_diagnostic: string | null;
+  erp_budget_last_success_at: string | null;
   unclassified_work_packages: MediumTermBudgetWorkPackageReadModel[];
   diagnostics: string[];
   weekly_diagnostics: string[];
