@@ -61,38 +61,6 @@ class ApprovalScopeApprover(Base):
     )
 
 
-class AssetTypeApprovalScopeMapping(Base):
-    __tablename__ = "asset_type_approval_scope_mappings"
-
-    asset_type_id: Mapped[str] = mapped_column(
-        String(ID_LENGTH),
-        ForeignKey("asset_types.id"),
-        primary_key=True,
-    )
-    approval_scope_id: Mapped[str] = mapped_column(
-        String(ID_LENGTH),
-        ForeignKey("approval_scopes.id"),
-        primary_key=True,
-        index=True,
-    )
-
-
-class AssetApprovalApprover(Base):
-    __tablename__ = "asset_approval_approvers"
-
-    asset_id: Mapped[str] = mapped_column(
-        String(ID_LENGTH),
-        ForeignKey("assets.id"),
-        primary_key=True,
-    )
-    app_user_id: Mapped[str] = mapped_column(
-        String(ID_LENGTH),
-        ForeignKey("app_users.id"),
-        primary_key=True,
-        index=True,
-    )
-
-
 class ResourceClassApprovalScopeMapping(Base):
     __tablename__ = "resource_class_approval_scope_mappings"
 
