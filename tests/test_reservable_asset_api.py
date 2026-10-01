@@ -8,9 +8,19 @@ import unittest
 
 from fastapi.testclient import TestClient
 
-from app.infrastructure.sql import Base, Project, create_session_factory, create_sql_engine
+from app.infrastructure.sql import (
+    AssetTypeApprovalScopeMapping,
+    Base,
+    Project,
+    create_session_factory,
+    create_sql_engine,
+)
 from app.server import create_api_app
-from tests.approval_test_support import routed_demand_payload, seed_test_approval_routing
+from tests.approval_test_support import (
+    TEST_APPROVAL_SCOPE_ID,
+    routed_demand_payload,
+    seed_test_approval_routing,
+)
 from tests.http_test_auth import TEST_ADMIN_AUTH_RESOLVER
 
 
@@ -29,6 +39,14 @@ class ReservableAssetApiTests(unittest.TestCase):
         result = self.client.post("/api/v1/assets/types", json={"code": "NACELLE", "label": "Nacelle", "category": "EQUIPMENT"})
         self.assertEqual(result.status_code, 201, result.text)
         self.type_id = result.json()["id"]
+        factory = self.client.app.state.session_factory
+        with factory() as session, session.begin():
+            session.add(
+                AssetTypeApprovalScopeMapping(
+                    asset_type_id=self.type_id,
+                    approval_scope_id=TEST_APPROVAL_SCOPE_ID,
+                )
+            )
         self.asset_ids = []
         for code in ("N1", "N2"):
             result = self.client.post("/api/v1/assets", json={"code": code, "label": code, "asset_type_id": self.type_id})
