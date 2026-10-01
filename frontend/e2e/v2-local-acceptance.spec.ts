@@ -1719,6 +1719,7 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   await chooseCombobox(aliceLine, "Ressource proposée", "ali", "Alice");
   await labelled(aliceLine, "Heures", "input").fill("8");
   await labelled(aliceLine, "Description spécifique", "textarea").fill("Support Alice pour les nacelles");
+  await expect(editor.locator(".request-lines-summary")).toContainText("8heure(s) humaines projetées");
 
   await editor.getByRole("button", { name: "+ Ajouter une ligne" }).click();
   cards = editor.locator(".request-line-card");
