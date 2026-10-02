@@ -491,11 +491,16 @@ class Approval276ERoutingTests(unittest.TestCase):
 
         with self.factory() as session, session.begin():
             line = session.get(RequestLine, "L-T216")
-            line.required_resource_class = "PROGRAMMEUR"
+            # Historical/free-form class values must not supersede the explicit
+            # TaskCatalogEntry -> ApprovalScope authority override from ADR-010.
+            line.required_resource_class = "LEGACY_FREE_FORM"
 
         overridden = self._resolve("L-T216")
         historical = self._resolve("L-T-NO-CLASS")
-        self.assertEqual(overridden.effective_resource_class, "PROGRAMMEUR")
+        self.assertEqual(
+            overridden.effective_resource_class,
+            "LEGACY_FREE_FORM",
+        )
         self.assertEqual(
             overridden.resolution.approval_scope_id,
             "S-ELEC",
