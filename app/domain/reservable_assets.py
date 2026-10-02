@@ -21,6 +21,11 @@ class OccupancyPolicy(StrEnum):
     EXCLUSIVE_DAY = "EXCLUSIVE_DAY"
 
 
+class AssetRequirementOrigin(StrEnum):
+    REQUEST = "REQUEST"
+    SHIFT_AD_HOC = "SHIFT_AD_HOC"
+
+
 @dataclass(frozen=True, slots=True)
 class CapacityOwner:
     kind: LineKind
