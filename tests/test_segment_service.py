@@ -111,6 +111,64 @@ class SegmentServiceTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "segment_date_window_invalid")
         self.assertEqual(segments.events, [])
 
+    def test_update_without_demand_requires_canonical_adhoc_origin(self) -> None:
+        orphan_request = SegmentReadModel(
+            segment_id="SEG-ORPHAN",
+            demand_number=None,
+            project_number="P-1",
+            project_name="Projet",
+            resource_name=None,
+            start_date=date(2026, 8, 25),
+            end_date=date(2026, 8, 25),
+            planned_hours=8,
+            status="À assigner",
+            origin="REQUEST",
+        )
+        segments = _Segments(record=orphan_request)
+        service = SegmentService(segments, _Planning(segments.events))
+
+        with self.assertRaises(ApplicationValidationError) as raised:
+            service.update_command(
+                SegmentUpdateCommand(
+                    segment_id="SEG-ORPHAN",
+                    end_date=date(2026, 8, 29),
+                )
+            )
+
+        self.assertEqual(raised.exception.code, "segment_autonomous_origin_required")
+        self.assertEqual(segments.events, [])
+
+    def test_update_without_demand_accepts_canonical_quick_shift_origin(self) -> None:
+        quick_shift = SegmentReadModel(
+            segment_id="SEG-QUICK",
+            demand_number=None,
+            project_number="P-1",
+            project_name="Projet",
+            resource_name="Alice",
+            start_date=date(2026, 8, 25),
+            end_date=date(2026, 8, 25),
+            planned_hours=8,
+            status="Planifié",
+            origin="QUICK_SHIFT",
+        )
+        segments = _Segments(record=quick_shift)
+        service = SegmentService(segments, _Planning(segments.events))
+
+        service.update_command(
+            SegmentUpdateCommand(
+                segment_id="SEG-QUICK",
+                end_date=date(2026, 8, 29),
+            )
+        )
+
+        self.assertEqual(
+            segments.events,
+            [
+                ("update", "SEG-QUICK", {"DateFin": date(2026, 8, 29)}),
+                ("rebuild",),
+            ],
+        )
+
     def test_unknown_segment_is_structured_not_found(self) -> None:
         segments = _Segments(record=None)
         segments.record = None

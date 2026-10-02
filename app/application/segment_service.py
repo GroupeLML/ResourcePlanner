@@ -96,6 +96,17 @@ class SegmentService:
                 context={"segment_id": identifier},
             )
 
+        origin = str(existing.origin or "").strip().upper()
+        if (
+            not str(existing.demand_number or "").strip()
+            and origin not in {"QUICK_SHIFT", "AD_HOC"}
+        ):
+            raise ApplicationValidationError(
+                "Un segment sans demande doit provenir d'un besoin ad hoc canonique.",
+                code="segment_autonomous_origin_required",
+                context={"segment_id": identifier, "origin": existing.origin},
+            )
+
         values = command.to_repository_values()
         if "NoDemande" in values and not str(values["NoDemande"] or "").strip():
             raise ApplicationValidationError(

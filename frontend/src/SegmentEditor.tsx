@@ -27,6 +27,12 @@ import {
 } from "./segments-api";
 
 type ConfirmationChoice = "inherit" | "Tentative" | "Confirmée";
+const AD_HOC_SEGMENT_ORIGINS = new Set(["QUICK_SHIFT", "AD_HOC"]);
+
+function isCanonicalAdHocSegment(segment: SegmentReadModel | null | undefined) {
+  return Boolean(segment && AD_HOC_SEGMENT_ORIGINS.has((segment.origin ?? "").trim().toUpperCase()));
+}
+
 type PlanningSegment = SegmentReadModel & {
   locked_hours?: number;
   overallocated_hours?: number;
@@ -66,6 +72,9 @@ function messageFromError(reason: unknown) {
 }
 
 function confirmationChoice(segment: SegmentReadModel): ConfirmationChoice {
+  if (!segment.demand_number && isCanonicalAdHocSegment(segment)) {
+    return segment.confirmation === "Tentative" ? "Tentative" : "Confirmée";
+  }
   if (!segment.confirmation_overridden) return "inherit";
   return segment.confirmation === "Tentative" ? "Tentative" : "Confirmée";
 }
@@ -206,6 +215,12 @@ export default function SegmentEditor({
   const effectiveDemandNumber = segment?.demand_number ?? demand?.number ?? null;
   const effectiveProjectNumber = segment?.project_number ?? demand?.project_number ?? null;
   const effectiveProjectName = segment?.project_name ?? demand?.project_name ?? null;
+  const editingCanonicalAdHoc = Boolean(
+    segmentId
+    && segment
+    && !effectiveDemandNumber
+    && isCanonicalAdHocSegment(segment),
+  );
   const busy = loading || saving || cancelling;
   const planningSegment = segment as PlanningSegment | null;
   const currentExcess = Number(planningSegment?.overallocated_hours ?? 0);
@@ -220,8 +235,8 @@ export default function SegmentEditor({
     setError(null);
 
     const plannedHours = Number(form.planned_hours.replace(",", "."));
-    if (!effectiveDemandNumber) {
-      setError("Une demande est requise pour créer ou modifier un segment.");
+    if (!effectiveDemandNumber && !editingCanonicalAdHoc) {
+      setError("Une demande est requise, sauf pour un besoin ad hoc canonique existant.");
       return;
     }
     if (!form.start_date || !form.end_date) {
@@ -268,6 +283,10 @@ export default function SegmentEditor({
           allowLockedOverallocation,
         );
       } else {
+        if (!effectiveDemandNumber) {
+          setError("Une demande est requise pour créer un segment.");
+          return;
+        }
         const createPayload: SegmentWrite = {
           demand_number: effectiveDemandNumber,
           project_number: effectiveProjectNumber,
@@ -349,7 +368,11 @@ export default function SegmentEditor({
             <span className="eyebrow">Besoin ressource</span>
             <h2 id="segment-dialog-title">{segmentId ? "Modifier le segment" : "Créer un segment"}</h2>
             <p>
-              {effectiveDemandNumber ? `Demande ${effectiveDemandNumber}` : "Demande non définie"}
+              {effectiveDemandNumber
+                ? `Demande ${effectiveDemandNumber}`
+                : editingCanonicalAdHoc
+                  ? "Besoin ad hoc sans demande"
+                  : "Demande non définie"}
               {effectiveProjectNumber ? ` · ${effectiveProjectNumber}` : ""}
               {effectiveProjectName ? ` — ${effectiveProjectName}` : ""}
             </p>
@@ -480,7 +503,7 @@ export default function SegmentEditor({
               <label>
                 <span>Confirmation</span>
                 <select value={form.confirmation} onChange={(event) => setField("confirmation", event.target.value as ConfirmationChoice)}>
-                  <option value="inherit">Héritée de la demande</option>
+                  {!editingCanonicalAdHoc && <option value="inherit">Héritée de la demande</option>}
                   <option value="Tentative">Tentative</option>
                   <option value="Confirmée">Confirmée</option>
                 </select>
