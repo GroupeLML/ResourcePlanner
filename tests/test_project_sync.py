@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 
 from sqlalchemy import select
@@ -12,6 +13,8 @@ from app.infrastructure.sql import (
     BusinessContact,
     ErpUserDirectoryEntry,
     Project,
+    ProjectCoManager,
+    ProjectManagerAudit,
     create_session_factory,
     create_sql_engine,
     transactional_session,
@@ -224,7 +227,7 @@ class ProjectSyncTests(unittest.TestCase):
             self.assertEqual(row.project_manager_contact_id, "BC-PM")
 
 
-    def test_padded_project_manager_employee_id_links_business_contact(self) -> None:
+    def test_padded_project_manager_employee_id_does_not_materialize_legacy_fk(self) -> None:
         self._seed_app_user(
             employee_external_id="TROTJCHA",
             contact_id="BC-TROTJCHA",
@@ -251,7 +254,7 @@ class ProjectSyncTests(unittest.TestCase):
             row = session.scalar(select(Project).where(Project.number == "P-TROT"))
             assert row is not None
             self.assertEqual(row.project_manager_external_id, "TROTJCHA")
-            self.assertEqual(row.project_manager_contact_id, "BC-TROTJCHA")
+            self.assertIsNone(row.project_manager_contact_id)
             self.assertEqual(len(session.scalars(select(BusinessContact)).all()), 1)
             self.assertEqual(len(session.scalars(select(AppUser)).all()), 1)
 
@@ -378,7 +381,7 @@ class ProjectSyncTests(unittest.TestCase):
         with self.factory() as session:
             row = session.scalar(select(Project).where(Project.number == "P-MULTI"))
             assert row is not None
-            self.assertEqual(row.project_manager_contact_id, "BC-MULTI")
+            self.assertIsNone(row.project_manager_contact_id)
 
     def test_manager_change_to_unlinked_employee_clears_stale_contact(self) -> None:
         self._seed_app_user(
@@ -413,6 +416,135 @@ class ProjectSyncTests(unittest.TestCase):
             self.assertEqual(row.project_manager_external_id, "EMP-UNLINKED")
             self.assertEqual(row.project_manager_name, "Nouveau chargé")
             self.assertIsNone(row.project_manager_contact_id)
+
+    def test_manager_change_a_to_b_audits_once_and_preserves_local_co_managers(self) -> None:
+        with transactional_session(self.factory) as session:
+            session.add_all(
+                [
+                    BusinessContact(
+                        id="BC-LEGACY",
+                        display_name="Ancienne FK",
+                        source="LOCAL",
+                    ),
+                    BusinessContact(
+                        id="BC-CO",
+                        display_name="Co chargé",
+                        source="LOCAL",
+                    ),
+                    AppUser(
+                        id="U-CO",
+                        issuer=None,
+                        subject=None,
+                        display_name="Co chargé",
+                        email=None,
+                        employee_external_id=None,
+                        business_contact_id="BC-CO",
+                        roles_json='["PROJECT_MANAGER"]',
+                        active=True,
+                    ),
+                    Project(
+                        id="P-AUDIT",
+                        erp_external_id="ERP-AUDIT",
+                        number="P-AUDIT",
+                        name="Projet audit",
+                        project_manager_external_id="EMP-A",
+                        project_manager_name="Principal A",
+                        project_manager_contact_id="BC-LEGACY",
+                        co_managers_version=5,
+                        status="Active",
+                    ),
+                ]
+            )
+            session.flush()
+            session.add(
+                ProjectCoManager(
+                    project_id="P-AUDIT",
+                    business_contact_id="BC-CO",
+                    created_by_user_id="U-CO",
+                )
+            )
+
+        source = StubProjectSource(
+            [
+                ExternalProjectRecord(
+                    external_id="ERP-AUDIT",
+                    number="P-AUDIT",
+                    name="Projet audit",
+                    project_manager_external_id="EMP-B",
+                    project_manager_name=None,
+                    status="Active",
+                )
+            ]
+        )
+        changed = self._sync(source)
+        replay = self._sync(source)
+
+        self.assertEqual(changed.updated, 1)
+        self.assertEqual(replay.unchanged, 1)
+        with self.factory() as session:
+            row = session.get(Project, "P-AUDIT")
+            assert row is not None
+            self.assertEqual(row.project_manager_external_id, "EMP-B")
+            self.assertIsNone(row.project_manager_name)
+            self.assertEqual(row.project_manager_contact_id, "BC-LEGACY")
+            self.assertEqual(row.co_managers_version, 5)
+            self.assertIsNotNone(
+                session.get(ProjectCoManager, ("P-AUDIT", "BC-CO"))
+            )
+            audits = session.scalars(
+                select(ProjectManagerAudit).where(
+                    ProjectManagerAudit.project_id == "P-AUDIT"
+                )
+            ).all()
+            self.assertEqual(len(audits), 1)
+            self.assertEqual(audits[0].action, "ERP_PRIMARY_CHANGED")
+            self.assertEqual(audits[0].source, "ERP")
+            self.assertIsNone(audits[0].actor_user_id)
+            self.assertEqual(
+                json.loads(audits[0].before_json),
+                {
+                    "display_name": "Principal A",
+                    "employee_external_id": "EMP-A",
+                },
+            )
+            self.assertEqual(
+                json.loads(audits[0].after_json),
+                {
+                    "display_name": None,
+                    "employee_external_id": "EMP-B",
+                },
+            )
+
+    def test_same_manager_id_with_omitted_name_preserves_known_name_without_audit(self) -> None:
+        source = StubProjectSource(
+            [
+                ExternalProjectRecord(
+                    external_id="ERP-SAME",
+                    number="P-SAME",
+                    name="Projet stable",
+                    project_manager_external_id="EMP-SAME",
+                    project_manager_name="Nom stable",
+                )
+            ]
+        )
+        self._sync(source)
+        source.rows[0] = ExternalProjectRecord(
+            external_id="ERP-SAME",
+            number="P-SAME",
+            name="Projet stable",
+            project_manager_external_id="EMP-SAME",
+            project_manager_name=None,
+        )
+        replay = self._sync(source)
+        self.assertEqual(replay.unchanged, 1)
+        with self.factory() as session:
+            row = session.scalar(select(Project).where(Project.number == "P-SAME"))
+            assert row is not None
+            self.assertEqual(row.project_manager_name, "Nom stable")
+            self.assertEqual(
+                session.scalars(select(ProjectManagerAudit)).all(),
+                [],
+            )
 
     def test_missing_project_is_preserved_and_explicit_inactive_status_is_synced(self) -> None:
         source = StubProjectSource(
