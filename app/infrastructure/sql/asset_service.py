@@ -1158,25 +1158,8 @@ class SqlAssetService:
         requirement = self.session.get(AssetRequirement, requirement_id)
         if requirement is None or requirement.status == "Annulé":
             raise ApplicationNotFoundError("Besoin d'actif introuvable.", code="asset_requirement_not_found")
-        reference = self.session.get(RequestApprovalReference, requirement.workforce_request_id)
-        if reference is None or requirement.approval_revision_id != reference.active_revision_id:
-            raise ApplicationConflictError("Révision approuvée obsolète.", code="asset_approval_revision_conflict")
-        revision = self.session.get(RequestApprovalRevision, reference.active_revision_id)
-        choices = SqlRequestOperationalChoiceRepository(self.session).state_for_request_id(requirement.workforce_request_id)
-        if revision is None or choices is None or choices.approval_revision_id != revision.id:
-            raise ApplicationConflictError("Autorisation opérationnelle absente.", code="asset_approval_revision_conflict")
-        envelope = approval_envelope_from_snapshot_payload(json.loads(revision.payload_text)["authorization"])
-        approved = next((entry for entry in envelope.entries
-                         if entry.identity.stable_key == requirement.approved_entry_key and entry.line_kind == "ASSET"), None)
-        if (approved is None or approved.asset_type_id != requirement.asset_type_id
-                or approved.project_id != requirement.project_id
-                or requirement.start_date < approved.start_date or requirement.end_date > approved.end_date
-                or (approved.group is not None and choices.selections.get(approved.group.stable_key) != approved.identity.stable_key)):
-            raise ApplicationConflictError("Le besoin ne correspond plus à l'autorisation active.", code="asset_approval_entry_conflict")
-        current = self.session.scalars(select(AssetAllocation).where(AssetAllocation.asset_requirement_id == requirement.id)).all()
-        if len(current) > 1:
-            raise ApplicationConflictError("Plusieurs allocations pour un slot.", code="asset_slot_conflict")
-        previous = current[0] if current else None
+        self._validate_request_authority(requirement)
+        previous = self._allocation_for_requirement(requirement.id)
         before = ({"asset_id": previous.asset_id, "start_date": previous.start_date, "end_date": previous.end_date}
                   if previous else None)
         if asset_id is None:
@@ -1186,30 +1169,21 @@ class SqlAssetService:
             result_id = None
             after = None
         else:
-            asset = self.session.get(Asset, asset_id)
-            asset_type = self.session.get(AssetType, requirement.asset_type_id)
-            if asset is None or not asset.active or asset_type is None or not asset_type.active or asset.asset_type_id != asset_type.id:
+            asset, _asset_type = self._active_asset(asset_id)
+            if asset.asset_type_id != requirement.asset_type_id:
                 raise ApplicationValidationError("Actif inactif ou incompatible.", code="asset_incompatible")
             begin = date.fromisoformat(start_date) if start_date else requirement.start_date
             end = date.fromisoformat(end_date) if end_date else requirement.end_date
             if not (requirement.start_date <= begin <= end <= requirement.end_date):
                 raise ApplicationValidationError("Réservation hors fenêtre approuvée.", code="asset_outside_approved_window")
-            candidate = AssetOccupation(previous.id if previous else new_id(), asset_id, begin, end)
-            existing = self.session.scalars(select(AssetAllocation).where(
-                AssetAllocation.asset_id == asset_id, AssetAllocation.start_date <= end, AssetAllocation.end_date >= begin
-            )).all()
-            conflicts = overlapping_asset_occupations(candidate, (
-                AssetOccupation(row.id, row.asset_id, row.start_date, row.end_date, row.locked) for row in existing
-            ))
-            if conflicts:
-                raise ApplicationConflictError("Actif déjà réservé.", code="asset_double_booking", context={"allocation_ids": conflicts})
-            unavailable = self.session.scalar(select(AssetUnavailability.id).where(
-                AssetUnavailability.asset_id == asset_id, AssetUnavailability.start_date <= end,
-                AssetUnavailability.end_date >= begin,
-            ))
-            if unavailable:
-                raise ApplicationConflictError("Actif indisponible.", code="asset_unavailable")
-            row = previous or AssetAllocation(id=candidate.allocation_id, asset_requirement_id=requirement.id)
+            allocation_id = previous.id if previous else new_id()
+            self._assert_asset_available(
+                asset_id=asset_id,
+                start_date=begin,
+                end_date=end,
+                allocation_id=allocation_id,
+            )
+            row = previous or AssetAllocation(id=allocation_id, asset_requirement_id=requirement.id)
             row.asset_id, row.start_date, row.end_date = asset_id, begin, end
             row.locked = True  # An explicit coordinator decision survives rebuild/reapproval.
             self.session.add(row)
