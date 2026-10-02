@@ -75,6 +75,11 @@ def required_permission(method: str, path: str) -> str | None:
         and (path.endswith("/reservation") or path.endswith("/operator"))
     ):
         return PERMISSION_MANAGE_PLANNING
+    if (
+        path.startswith("/api/v1/assets/shifts/")
+        and path.endswith("/assignment")
+    ):
+        return PERMISSION_MANAGE_PLANNING
     if path.startswith("/api/v1/assets/") and "/unavailability" in path:
         return PERMISSION_MANAGE_PLANNING
     if path.startswith("/api/v1/assets"):
