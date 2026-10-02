@@ -241,6 +241,8 @@ class CompositeAllocationMutationResult(ApplicationResult):
     approval_revision_id: str | None = None
     operational_version: int | None = None
     auto_source_converted: bool = False
+    asset_assignment_policy: str | None = None
+    target_asset_assignment_inherited: bool = False
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, Any]) -> "CompositeAllocationMutationResult":
@@ -269,4 +271,12 @@ class CompositeAllocationMutationResult(ApplicationResult):
                 int(operational) if operational is not None else None
             ),
             auto_source_converted=bool(source.get("auto_source_converted")),
+            asset_assignment_policy=(
+                str(source.get("asset_assignment_policy"))
+                if source.get("asset_assignment_policy") is not None
+                else None
+            ),
+            target_asset_assignment_inherited=bool(
+                source.get("target_asset_assignment_inherited")
+            ),
         )
