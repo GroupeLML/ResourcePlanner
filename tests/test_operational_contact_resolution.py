@@ -247,7 +247,7 @@ class SqlOperationalContactRepositoryTests(unittest.TestCase):
                     name="Projet 1",
                     project_manager_external_id="EMP-PM",
                     project_manager_name="Jean PM",
-                    project_manager_contact_id="C-PM",
+                    project_manager_contact_id="C-TASK",
                 )
             )
             session.add(
