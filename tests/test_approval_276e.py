@@ -14,13 +14,17 @@ from app.domain.approval_routing import (
     DIAGNOSTIC_APPROVER_INACTIVE,
     DIAGNOSTIC_APPROVER_PERMISSION_MISSING,
     DIAGNOSTIC_NO_ELIGIBLE_APPROVER,
+    DIAGNOSTIC_PROPOSED_RESOURCE_INACTIVE,
+    DIAGNOSTIC_PROPOSED_RESOURCE_UNKNOWN,
     DIAGNOSTIC_RESOURCE_CLASS_INACTIVE,
     DIAGNOSTIC_RESOURCE_CLASS_MISSING,
     DIAGNOSTIC_RESOURCE_CLASS_NOT_FOUND,
+    DIAGNOSTIC_ROUTING_SOURCE_MISSING,
+    ROUTING_SOURCE_PROPOSED_RESOURCE_CLASS,
+    ROUTING_SOURCE_REQUIRED_RESOURCE_CLASS,
     DIAGNOSTIC_SCOPE_AMBIGUOUS,
     DIAGNOSTIC_SCOPE_INACTIVE,
     DIAGNOSTIC_SCOPE_UNMAPPED,
-    DIAGNOSTIC_TASK_REFERENCE_MISSING,
 )
 from app.infrastructure.sql import (
     AppUser,
@@ -29,6 +33,7 @@ from app.infrastructure.sql import (
     Base,
     Project,
     RequestLine,
+    Resource,
     ResourceClassApprovalScopeMapping,
     ResourceClassConfig,
     SqlApprovalScopeRepository,
@@ -118,6 +123,34 @@ class Approval276ERoutingTests(unittest.TestCase):
                     average_hourly_cost_cad=70,
                     active=False,
                     version=1,
+                ),
+            ]
+        )
+        session.add_all(
+            [
+                Resource(
+                    id="R-PROG",
+                    name="Programmeur proposé",
+                    resource_class="PROGRAMMEUR",
+                    active=True,
+                ),
+                Resource(
+                    id="R-ELEC",
+                    name="Installateur proposé",
+                    resource_class="INSTALLATEUR_ELECTRIQUE",
+                    active=True,
+                ),
+                Resource(
+                    id="R-NO-CLASS",
+                    name="Ressource sans classe",
+                    resource_class=None,
+                    active=True,
+                ),
+                Resource(
+                    id="R-INACTIVE",
+                    name="Ressource inactive",
+                    resource_class="PROGRAMMEUR",
+                    active=False,
                 ),
             ]
         )
@@ -282,10 +315,12 @@ class Approval276ERoutingTests(unittest.TestCase):
             ["U-AUTO"],
         )
 
-    def test_missing_task_reference_keeps_erp_snapshot_in_diagnostic_context(self) -> None:
+    def test_no_routing_source_keeps_erp_snapshot_but_reports_real_cause(self) -> None:
         with self.factory() as session, session.begin():
             line = session.get(RequestLine, "L-T216")
             line.task_catalog_item_id = None
+            line.required_resource_class = None
+            line.proposed_resource_id = None
 
         resolved = self._resolve("L-T216")
 
@@ -294,9 +329,102 @@ class Approval276ERoutingTests(unittest.TestCase):
         self.assertEqual(resolved.task_label, "216")
         self.assertIsNone(resolved.task_catalog_item_id)
         self.assertIn(
-            DIAGNOSTIC_TASK_REFERENCE_MISSING,
+            DIAGNOSTIC_ROUTING_SOURCE_MISSING,
             resolved.resolution.diagnostics,
         )
+        self.assertNotIn(
+            "task_reference_missing",
+            resolved.resolution.diagnostics,
+        )
+
+    def test_explicit_class_routes_without_task(self) -> None:
+        with self.factory() as session, session.begin():
+            line = session.get(RequestLine, "L-T216")
+            line.task_catalog_item_id = None
+            line.required_resource_class = "PROGRAMMEUR"
+            line.proposed_resource_id = None
+
+        resolved = self._resolve("L-T216")
+
+        self.assertFalse(resolved.resolution.blocked)
+        self.assertEqual(resolved.effective_resource_class, "PROGRAMMEUR")
+        self.assertEqual(
+            resolved.routing_sources,
+            (ROUTING_SOURCE_REQUIRED_RESOURCE_CLASS,),
+        )
+        self.assertEqual(resolved.resolution.approval_scope_id, "S-AUTO")
+        self.assertEqual(
+            [row.user_id for row in resolved.resolution.eligible_approvers],
+            ["U-AUTO"],
+        )
+
+    def test_proposed_resource_routes_without_task_from_canonical_class(self) -> None:
+        with self.factory() as session, session.begin():
+            line = session.get(RequestLine, "L-T216")
+            line.task_catalog_item_id = None
+            line.required_resource_class = None
+            line.proposed_resource_id = "R-PROG"
+
+        resolved = self._resolve("L-T216")
+
+        self.assertFalse(resolved.resolution.blocked)
+        self.assertEqual(resolved.effective_resource_class, "PROGRAMMEUR")
+        self.assertEqual(
+            resolved.routing_sources,
+            (ROUTING_SOURCE_PROPOSED_RESOURCE_CLASS,),
+        )
+        self.assertEqual(resolved.resolution.approval_scope_id, "S-AUTO")
+
+    def test_explicit_class_is_authoritative_over_resource_and_task_class(self) -> None:
+        with self.factory() as session, session.begin():
+            line = session.get(RequestLine, "L-T216")
+            line.required_resource_class = "INSTALLATEUR_ELECTRIQUE"
+            line.proposed_resource_id = "R-PROG"
+
+        resolved = self._resolve("L-T216")
+
+        self.assertFalse(resolved.resolution.blocked)
+        self.assertEqual(
+            resolved.effective_resource_class,
+            "INSTALLATEUR_ELECTRIQUE",
+        )
+        self.assertEqual(
+            resolved.routing_sources,
+            (ROUTING_SOURCE_REQUIRED_RESOURCE_CLASS,),
+        )
+        self.assertEqual(resolved.resolution.approval_scope_id, "S-ELEC")
+
+    def test_invalid_explicit_class_never_falls_back_to_task(self) -> None:
+        with self.factory() as session, session.begin():
+            line = session.get(RequestLine, "L-T216")
+            line.required_resource_class = "INACTIVE_CLASS"
+
+        resolved = self._resolve("L-T216")
+
+        self.assertTrue(resolved.resolution.blocked)
+        self.assertEqual(resolved.effective_resource_class, "INACTIVE_CLASS")
+        self.assertIn(
+            DIAGNOSTIC_RESOURCE_CLASS_INACTIVE,
+            resolved.resolution.diagnostics,
+        )
+
+    def test_resource_routing_reports_missing_inactive_and_classless_resources(self) -> None:
+        cases = {
+            "R-MISSING": DIAGNOSTIC_PROPOSED_RESOURCE_UNKNOWN,
+            "R-INACTIVE": DIAGNOSTIC_PROPOSED_RESOURCE_INACTIVE,
+            "R-NO-CLASS": DIAGNOSTIC_RESOURCE_CLASS_MISSING,
+        }
+        for resource_id, diagnostic in cases.items():
+            with self.subTest(resource_id=resource_id):
+                with self.factory() as session, session.begin():
+                    line = session.get(RequestLine, "L-T216")
+                    line.task_catalog_item_id = None
+                    line.required_resource_class = None
+                    line.proposed_resource_id = resource_id
+
+                resolved = self._resolve("L-T216")
+                self.assertTrue(resolved.resolution.blocked)
+                self.assertIn(diagnostic, resolved.resolution.diagnostics)
 
     def test_inactive_scope_approver_is_reported_before_no_eligible_approver(self) -> None:
         with self.factory() as session, session.begin():
@@ -345,8 +473,13 @@ class Approval276ERoutingTests(unittest.TestCase):
                 )
             )
 
+        with self.factory() as session, session.begin():
+            line = session.get(RequestLine, "L-T216")
+            line.required_resource_class = "PROGRAMMEUR"
+
         overridden = self._resolve("L-T216")
         historical = self._resolve("L-T-NO-CLASS")
+        self.assertEqual(overridden.effective_resource_class, "PROGRAMMEUR")
         self.assertEqual(
             overridden.resolution.approval_scope_id,
             "S-ELEC",
