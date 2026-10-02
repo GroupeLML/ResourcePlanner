@@ -47,8 +47,9 @@ class ReactAssetUxContractTests(unittest.TestCase):
         self.assertIn("approver_candidates", api)
         self.assertIn("/approvers/", api)
 
-    def test_planning_keeps_humans_first_and_links_only_actual_allocations(self) -> None:
+    def test_planning_keeps_humans_first_and_consumes_canonical_shift_asset_projection(self) -> None:
         source = (ROOT / "frontend" / "src" / "PlanningPage.tsx").read_text(encoding="utf-8")
+        api = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
 
         human = source.index('<div className="planning-layout">')
         asset_panel = source.index("<AssetPlanningPanel", human)
@@ -56,15 +57,15 @@ class ReactAssetUxContractTests(unittest.TestCase):
         self.assertIn("Ressources et quarts", source[human:asset_panel])
         self.assertIn("Demandes en attente", source[human:asset_panel])
 
-        self.assertIn("snapshot.asset_allocations.forEach", source)
-        self.assertIn("allocation.operator_resource_id !== shift.resource_id", source)
-        self.assertIn("requirement.demand_number !== shift.demand_number", source)
-        self.assertIn(
-            "allocation.start_date > shift.work_date || allocation.end_date < shift.work_date",
-            source,
-        )
-        self.assertIn("labels.set(allocation.asset_id", source)
-        self.assertIn('aria-label="Actifs réservés"', source)
+        self.assertIn("shift.asset_assignment", source)
+        self.assertIn("shift.asset_actions?.assign.allowed", source)
+        self.assertIn("assignment.asset_code", source)
+        self.assertIn("asset_assignment: ShiftAssetReservationReadModel | null", api)
+        self.assertIn("related_asset_reservations: ShiftAssetReservationReadModel[]", api)
+        self.assertNotIn("snapshot.asset_allocations.forEach", source)
+        self.assertNotIn("allocation.operator_resource_id !== shift.resource_id", source)
+        self.assertNotIn("requirement.demand_number !== shift.demand_number", source)
+        self.assertNotIn("labels.set(allocation.asset_id", source)
         self.assertNotIn("proposed_asset_id", source)
 
     def test_asset_capacity_cells_use_backend_scoped_occupation_projection(self) -> None:
