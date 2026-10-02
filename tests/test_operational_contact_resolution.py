@@ -25,6 +25,7 @@ from app.domain.operational_contacts import (
     resolve_operational_responsible,
 )
 from app.infrastructure.sql import (
+    AppUser,
     Base,
     BusinessContact,
     Project,
@@ -225,6 +226,19 @@ class SqlOperationalContactRepositoryTests(unittest.TestCase):
                         phone="555-5000",
                     ),
                 ]
+            )
+            session.add(
+                AppUser(
+                    id="U-PM",
+                    issuer="urn:test",
+                    subject="pm",
+                    display_name="Jean PM",
+                    email="configured-jean",
+                    employee_external_id="EMP-PM",
+                    business_contact_id="C-PM",
+                    roles_json='["PROJECT_MANAGER"]',
+                    active=True,
+                )
             )
             session.add(
                 Project(
