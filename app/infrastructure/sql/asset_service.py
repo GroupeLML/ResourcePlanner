@@ -1033,6 +1033,11 @@ class SqlAssetService:
                 code="shift_asset_requirement_origin_invalid",
             )
 
+        if (start_date is None) != (end_date is None):
+            raise ApplicationValidationError(
+                "Les dates réelles de réservation doivent être fournies ensemble.",
+                code="asset_reservation_dates_required",
+            )
         previous = self._allocation_for_requirement(requirement.id)
         requirement_id_value = requirement.id
         before = (
@@ -1530,6 +1535,11 @@ class SqlAssetService:
         if requirement is None or requirement.status == "Annulé":
             raise ApplicationNotFoundError("Besoin d'actif introuvable.", code="asset_requirement_not_found")
         self._validate_request_authority(requirement)
+        if (start_date is None) != (end_date is None):
+            raise ApplicationValidationError(
+                "Les dates réelles de réservation doivent être fournies ensemble.",
+                code="asset_reservation_dates_required",
+            )
         previous = self._allocation_for_requirement(requirement.id)
         before = (
             {
