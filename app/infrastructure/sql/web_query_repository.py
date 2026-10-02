@@ -36,6 +36,7 @@ from ...application.medium_term_budget import (
     work_package_is_budget_included,
     work_package_is_current_load_included,
 )
+from ...application.project_managers import ProjectManagerResolutionService
 from ...application.query_models import (
     PlanningHistoryReadModel,
     work_package_resource_class_diagnostic,
@@ -57,8 +58,10 @@ from .models import (
     WorkPackage,
     WorkPackageWeeklyLoad,
 )
-from .business_contact_models import BusinessContact
 from .resource_class_models import ResourceClassConfig
+from .project_manager_resolution_repository import (
+    SqlProjectManagerResolutionRepository,
+)
 from .planning_audit import PlanningChangeHistory
 from .capacity_query_repository import SqlPlannerQueryRepository
 from .medium_term_capacity_query import (
@@ -289,29 +292,9 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
             else ()
         )
         project_records_by_id = {row.id: row for row in project_rows}
-        project_manager_contact_ids = tuple(
-            sorted(
-                {
-                    row.project_manager_contact_id
-                    for row in project_rows
-                    if _optional_text(row.project_manager_contact_id) is not None
-                }
-            )
-        )
-        project_manager_contacts = (
-            tuple(
-                self._web_session.scalars(
-                    select(BusinessContact).where(
-                        BusinessContact.id.in_(project_manager_contact_ids)
-                    )
-                ).all()
-            )
-            if project_manager_contact_ids
-            else ()
-        )
-        project_manager_contacts_by_id = {
-            row.id: row for row in project_manager_contacts
-        }
+        project_manager_projections = ProjectManagerResolutionService(
+            SqlProjectManagerResolutionRepository(self._web_session)
+        ).resolve_projects(list(selected_project_ids))
         budget_sync_states = (
             tuple(
                 self._web_session.scalars(
@@ -482,15 +465,24 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
             if project is None:
                 continue
             project_record = project_records_by_id.get(project.id)
-            project_manager_contact_id = (
-                _optional_text(project_record.project_manager_contact_id)
-                if project_record is not None
+            manager_projection = project_manager_projections.get(project.id)
+            project_manager = (
+                manager_projection.primary
+                if manager_projection is not None
                 else None
             )
-            project_manager_contact = (
-                project_manager_contacts_by_id.get(project_manager_contact_id)
-                if project_manager_contact_id is not None
+            project_manager_contact_id = (
+                project_manager.business_contact_id
+                if project_manager is not None
                 else None
+            )
+            manager_group_key = (
+                f"erp:{project_manager.employee_external_id}"
+                if (
+                    project_manager is not None
+                    and project_manager.employee_external_id is not None
+                )
+                else "erp:unassigned"
             )
             project_budget_sync_state = budget_sync_by_project_number.get(
                 project.number
@@ -630,9 +622,29 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                     project_name=project.name,
                     project_manager_contact_id=project_manager_contact_id,
                     project_manager_display_name=(
-                        _optional_text(project_manager_contact.display_name)
-                        if project_manager_contact is not None
+                        project_manager.display_name
+                        if project_manager is not None
                         else None
+                    ),
+                    manager_group_key=manager_group_key,
+                    manager_display_name=(
+                        project_manager.display_name
+                        if project_manager is not None
+                        else "Sans chargé de projet ERP"
+                    ),
+                    manager_resolution_status=(
+                        project_manager.resolution_status
+                        if project_manager is not None
+                        else "UNRESOLVED"
+                    ),
+                    manager_diagnostics=(
+                        project_manager.diagnostics
+                        if project_manager is not None
+                        else (
+                            manager_projection.diagnostics
+                            if manager_projection is not None
+                            else ()
+                        )
                     ),
                     erp_budget_last_success_at=(
                         project_budget_sync_state.last_success_at
