@@ -255,6 +255,12 @@ class SqlSchemaTests(unittest.TestCase):
         )
         self.assertTrue(asset_requirements.usage_hours.nullable)
         self.assertFalse(asset_requirements.asset_type_id.nullable)
+        self.assertFalse(asset_requirements.origin.nullable)
+        self.assertTrue(asset_requirements.shift_id.nullable)
+        self.assertTrue(asset_requirements.workforce_request_id.nullable)
+        self.assertTrue(asset_requirements.source_request_line_id.nullable)
+        self.assertTrue(asset_requirements.approved_entry_key.nullable)
+        self.assertFalse(asset_allocations.asset_requirement_id.nullable)
         self.assertFalse(asset_allocations.asset_id.nullable)
         self.assertTrue(asset_allocations.operator_resource_id.nullable)
         self.assertEqual(

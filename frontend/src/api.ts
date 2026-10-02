@@ -1087,6 +1087,7 @@ export type AssetAllocationPlanningReadModel = {
   asset_id: string;
   asset_code: string;
   asset_label: string;
+  project_number: string | null;
   start_date: string;
   end_date: string;
   locked: boolean;
@@ -1114,6 +1115,8 @@ export type AssetDayCapacityPlanningReadModel = {
   remaining_units: number;
   unavailable: boolean;
   available: boolean;
+  visible_occupations: AssetAllocationPlanningReadModel[];
+  has_hidden_occupancy: boolean;
 };
 
 export type AssetPlanningDiagnosticReadModel = {

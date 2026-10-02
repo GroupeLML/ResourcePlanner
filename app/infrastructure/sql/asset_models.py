@@ -6,8 +6,9 @@ from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import Boolean, CheckConstraint, Date, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, false, text, true
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from ...domain.reservable_assets import AssetRequirementOrigin
 from .base import Base, TimestampMixin, new_id
 
 
@@ -77,23 +78,78 @@ class AssetRequirement(TimestampMixin, Base):
     __table_args__ = (
         CheckConstraint("end_date >= start_date", name="asset_requirement_window"),
         CheckConstraint("usage_hours IS NULL OR usage_hours > 0", name="asset_requirement_hours_positive"),
-        UniqueConstraint("workforce_request_id", "approved_entry_key", "slot_index", name="uq_asset_requirement_entry_slot"),
+        CheckConstraint(
+            "origin IN ('REQUEST', 'SHIFT_AD_HOC')",
+            name="asset_requirement_origin_values",
+        ),
+        CheckConstraint(
+            "("
+            "origin = 'REQUEST' "
+            "AND shift_id IS NULL "
+            "AND workforce_request_id IS NOT NULL "
+            "AND source_request_line_id IS NOT NULL "
+            "AND approved_entry_key IS NOT NULL"
+            ") OR ("
+            "origin = 'SHIFT_AD_HOC' "
+            "AND shift_id IS NOT NULL "
+            "AND workforce_request_id IS NULL "
+            "AND source_request_line_id IS NULL "
+            "AND source_period_id IS NULL "
+            "AND approval_revision_id IS NULL "
+            "AND approved_entry_key IS NULL"
+            ")",
+            name="asset_requirement_origin_provenance",
+        ),
+        Index(
+            "ux_asset_requirements_request_entry_slot",
+            "workforce_request_id",
+            "approved_entry_key",
+            "slot_index",
+            unique=True,
+            sqlite_where=text("origin = 'REQUEST'"),
+            mssql_where=text("origin = 'REQUEST'"),
+        ),
+        Index(
+            "ux_asset_requirements_shift_ad_hoc",
+            "shift_id",
+            unique=True,
+            sqlite_where=text("origin = 'SHIFT_AD_HOC'"),
+            mssql_where=text("origin = 'SHIFT_AD_HOC'"),
+        ),
         Index("ix_asset_requirements_request", "workforce_request_id", "source_request_line_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     project_id: Mapped[str] = mapped_column(String(36), ForeignKey("projects.id"), nullable=False)
-    workforce_request_id: Mapped[str] = mapped_column(String(36), ForeignKey("workforce_requests.id"), nullable=False)
-    source_request_line_id: Mapped[str] = mapped_column(String(36), ForeignKey("request_lines.id"), nullable=False)
+    origin: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        server_default=text(f"'{AssetRequirementOrigin.REQUEST.value}'"),
+    )
+    shift_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("shifts.id"), nullable=True
+    )
+    workforce_request_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("workforce_requests.id"), nullable=True
+    )
+    source_request_line_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("request_lines.id"), nullable=True
+    )
     source_period_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("workforce_request_periods.id"), nullable=True)
     approval_revision_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("request_approval_revisions.id"), nullable=True)
-    approved_entry_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    approved_entry_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     slot_index: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     asset_type_id: Mapped[str] = mapped_column(String(36), ForeignKey("asset_types.id"), nullable=False)
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date] = mapped_column(Date, nullable=False)
     usage_hours: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, server_default=text("'À affecter'"))
+
+    shift = relationship(
+        "Shift",
+        back_populates="asset_requirements",
+        foreign_keys=[shift_id],
+    )
 
 
 class AssetAllocation(TimestampMixin, Base):

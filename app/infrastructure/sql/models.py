@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, time
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     Boolean,
@@ -20,9 +21,12 @@ from sqlalchemy import (
     text,
     true,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base, TimestampMixin, new_id
+
+if TYPE_CHECKING:
+    from .asset_models import AssetRequirement
 
 
 ID_LENGTH = 36
@@ -712,3 +716,9 @@ class Shift(TimestampMixin, Base):
     outside_standard_hours: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false())
     confirmation: Mapped[str | None] = mapped_column(String(32), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    asset_requirements: Mapped[list["AssetRequirement"]] = relationship(
+        "AssetRequirement",
+        back_populates="shift",
+        passive_deletes="all",
+    )

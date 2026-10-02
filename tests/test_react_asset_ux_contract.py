@@ -67,6 +67,19 @@ class ReactAssetUxContractTests(unittest.TestCase):
         self.assertIn('aria-label="Actifs réservés"', source)
         self.assertNotIn("proposed_asset_id", source)
 
+    def test_asset_capacity_cells_use_backend_scoped_occupation_projection(self) -> None:
+        panel = (ROOT / "frontend" / "src" / "AssetPlanningPanel.tsx").read_text(encoding="utf-8")
+        api = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
+
+        self.assertIn("visible_occupations: AssetAllocationPlanningReadModel[]", api)
+        self.assertIn("has_hidden_occupancy: boolean", api)
+        self.assertIn("capacity?.visible_occupations", panel)
+        self.assertIn("capacity?.has_hidden_occupancy", panel)
+        self.assertIn("occupation.project_number", panel)
+        self.assertIn("occupation.operator_resource_name", panel)
+        self.assertIn("Occupé hors périmètre", panel)
+        self.assertNotIn("snapshot.asset_allocations.filter", panel)
+
     def test_asset_api_preserves_backend_authority_and_planning_cas(self) -> None:
         api = (ROOT / "frontend" / "src" / "assetApi.ts").read_text(encoding="utf-8")
         panel = (ROOT / "frontend" / "src" / "AssetCatalogPanel.tsx").read_text(encoding="utf-8")

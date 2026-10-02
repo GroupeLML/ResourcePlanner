@@ -403,6 +403,7 @@ class AssetAllocationReadModel:
     qualification_state: str = "SATISFIED"
     required_competency_ids: tuple[str, ...] = ()
     required_competency_names: tuple[str, ...] = ()
+    project_number: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -455,6 +456,8 @@ class AssetDayCapacityReadModel:
     remaining_units: int
     unavailable: bool
     available: bool
+    visible_occupations: tuple[AssetAllocationReadModel, ...] = ()
+    has_hidden_occupancy: bool = False
 
 
 @dataclass(frozen=True, slots=True)

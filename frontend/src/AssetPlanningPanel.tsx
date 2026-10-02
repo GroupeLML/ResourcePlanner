@@ -560,14 +560,21 @@ export default function AssetPlanningPanel({
                   </div>
                   {days.map((day) => {
                     const capacity = capacityByAssetDay.get(`${asset.id}:${day}`);
+                    const occupiedUnits = Number(capacity?.occupied_units ?? 0);
+                    const visibleOccupations = capacity?.visible_occupations ?? [];
+                    const hasHiddenOccupancy = Boolean(capacity?.has_hidden_occupancy);
                     const state = capacity?.unavailable
                       ? "Indisponible"
-                      : Number(capacity?.occupied_units ?? 0) > 0
-                        ? "Occupé"
+                      : occupiedUnits > 0
+                        ? (
+                          visibleOccupations.length === 0 && hasHiddenOccupancy
+                            ? "Occupé hors périmètre"
+                            : "Occupé"
+                        )
                         : "Libre";
                     const stateClass = capacity?.unavailable
                       ? "unavailable"
-                      : Number(capacity?.occupied_units ?? 0) > 0
+                      : occupiedUnits > 0
                         ? "occupied"
                         : "free";
                     return (
@@ -576,7 +583,34 @@ export default function AssetPlanningPanel({
                         key={day}
                       >
                         <strong>{state}</strong>
-                        {Number(capacity?.occupied_units ?? 0) > 1 && <small>{capacity?.occupied_units} conflits</small>}
+                        {visibleOccupations.length > 0 && (
+                          <div className="asset-capacity-occupations">
+                            {visibleOccupations.map((occupation) => (
+                              <div
+                                className="asset-capacity-occupation"
+                                key={occupation.allocation_id}
+                              >
+                                {occupation.project_number && <span>{occupation.project_number}</span>}
+                                {occupation.operator_resource_name && (
+                                  <small>{occupation.operator_resource_name}</small>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {hasHiddenOccupancy
+                          && (visibleOccupations.length > 0 || capacity?.unavailable) && (
+                          <small className="asset-capacity-hidden">
+                            {visibleOccupations.length > 0
+                              ? "+ occupation hors périmètre"
+                              : "Occupation hors périmètre"}
+                          </small>
+                        )}
+                        {occupiedUnits > 1 && (
+                          <small className="asset-capacity-conflict">
+                            {occupiedUnits} occupations · conflit
+                          </small>
+                        )}
                       </div>
                     );
                   })}

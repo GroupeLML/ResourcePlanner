@@ -947,9 +947,22 @@ h1 { font-size: 1.6rem; }
 .asset-capacity-identity span { display: block; }
 .asset-capacity-identity strong { font-size: .68rem; }
 .asset-capacity-identity span { color: var(--muted); font-size: .58rem; margin-top: .08rem; }
-.asset-capacity-cell { display: grid; place-content: center; text-align: center; background: white; }
+.asset-capacity-cell {
+  display: grid;
+  place-content: center;
+  gap: .22rem;
+  min-width: 0;
+  text-align: center;
+  background: white;
+}
 .asset-capacity-cell strong { font-size: .62rem; }
 .asset-capacity-cell small { color: var(--danger); font-size: .55rem; }
+.asset-capacity-occupations { display: grid; gap: .18rem; }
+.asset-capacity-occupation { display: grid; gap: .04rem; line-height: 1.15; }
+.asset-capacity-occupation span { font-size: .58rem; font-weight: 800; }
+.asset-capacity-occupation small { color: inherit; font-size: .54rem; }
+.asset-capacity-hidden { color: var(--muted) !important; }
+.asset-capacity-conflict { color: var(--danger) !important; }
 .asset-capacity-cell.is-free { background: var(--good-soft); color: var(--good); }
 .asset-capacity-cell.is-occupied { background: var(--accent-soft); color: var(--accent); }
 .asset-capacity-cell.is-unavailable { background: #eef1f5; color: #6b7280; }
