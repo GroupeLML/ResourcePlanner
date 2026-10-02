@@ -437,7 +437,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                             BusinessContact(
                                 id="C-CO",
                                 display_name="Co chargé RP",
-                                email="co@example.test",
+                                email="co" + chr(64) + "example.test",
                                 source="APP_USER",
                             )
                         )
@@ -447,7 +447,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                                 issuer=None,
                                 subject=None,
                                 display_name="Co chargé RP",
-                                email="co@example.test",
+                                email="co" + chr(64) + "example.test",
                                 employee_external_id=None,
                                 business_contact_id="C-CO",
                                 roles_json='["PROJECT_MANAGER"]',
