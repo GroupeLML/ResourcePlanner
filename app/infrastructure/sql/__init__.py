@@ -146,6 +146,10 @@ from .operational_contact_repository import SqlOperationalContactRepository
 from .project_communication_repository import SqlProjectCommunicationRepository
 from .project_manager_models import ProjectCoManager, ProjectManagerAudit
 from .project_co_manager_repository import SqlProjectCoManagerRepository
+from .project_manager_resolution_repository import (
+    SqlProjectManagerResolutionRepository,
+    project_managed_by_user_predicate,
+)
 from .period_approved_sync import SqlPeriodAwareApprovedDemandSyncAdapter
 from .planning_audit import PlanningChangeHistory
 from .planning_authorization_repository import SqlRequestPlanningAuthorizationRepository
@@ -275,6 +279,7 @@ __all__ = [
     "SqlRequestOperationalChoiceRepository",
     "SqlProjectCommunicationRepository",
     "SqlProjectCoManagerRepository",
+    "SqlProjectManagerResolutionRepository",
     "SqlOverallocationAllocationCommandAdapter",
     "SqlPeriodAwareApprovedDemandSyncAdapter",
     "SqlPlannerQueryRepository",
@@ -310,5 +315,6 @@ __all__ = [
     "create_session_factory",
     "create_sql_engine",
     "new_id",
+    "project_managed_by_user_predicate",
     "transactional_session",
 ]
