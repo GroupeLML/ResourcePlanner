@@ -1568,14 +1568,6 @@ export function getProjectBusinessContacts(projectNumber: string, signal?: Abort
   );
 }
 
-export function setProjectManagerContact(projectNumber: string, contactId: string | null) {
-  return sendJson<ContactLinkReadModel>(
-    `/api/v1/projects/${encodeURIComponent(projectNumber)}/project-manager-contact`,
-    "PATCH",
-    { contact_id: contactId },
-  );
-}
-
 export function setTaskBusinessContacts(
   taskId: string,
   payload: {
