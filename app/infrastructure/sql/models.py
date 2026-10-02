@@ -37,6 +37,12 @@ ORIGIN_AD_HOC = "AD_HOC"
 
 class Project(TimestampMixin, Base):
     __tablename__ = "projects"
+    __table_args__ = (
+        CheckConstraint(
+            "co_managers_version >= 1",
+            name="co_managers_version_positive",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True, default=new_id)
     erp_external_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
@@ -47,6 +53,9 @@ class Project(TimestampMixin, Base):
     project_manager_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     project_manager_contact_id: Mapped[str | None] = mapped_column(
         String(ID_LENGTH), ForeignKey("business_contacts.id"), nullable=True, index=True
+    )
+    co_managers_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("1")
     )
     status: Mapped[str] = mapped_column(String(32), nullable=False, server_default=text("'active'"), index=True)
 

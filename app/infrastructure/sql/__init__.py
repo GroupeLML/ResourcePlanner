@@ -144,6 +144,8 @@ from .operational_choice_models import RequestOperationalState
 from .operational_choice_repository import SqlRequestOperationalChoiceRepository
 from .operational_contact_repository import SqlOperationalContactRepository
 from .project_communication_repository import SqlProjectCommunicationRepository
+from .project_manager_models import ProjectCoManager, ProjectManagerAudit
+from .project_co_manager_repository import SqlProjectCoManagerRepository
 from .period_approved_sync import SqlPeriodAwareApprovedDemandSyncAdapter
 from .planning_audit import PlanningChangeHistory
 from .planning_authorization_repository import SqlRequestPlanningAuthorizationRepository
@@ -222,6 +224,8 @@ __all__ = [
     "PlanningChangeHistory",
     "PlanningMutationState",
     "Project",
+    "ProjectCoManager",
+    "ProjectManagerAudit",
     "RequestLine",
     "RequestApprovalCycle",
     "RequestApprovalReference",
@@ -270,6 +274,7 @@ __all__ = [
     "SqlOperationalContactRepository",
     "SqlRequestOperationalChoiceRepository",
     "SqlProjectCommunicationRepository",
+    "SqlProjectCoManagerRepository",
     "SqlOverallocationAllocationCommandAdapter",
     "SqlPeriodAwareApprovedDemandSyncAdapter",
     "SqlPlannerQueryRepository",

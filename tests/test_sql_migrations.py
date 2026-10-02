@@ -18,7 +18,7 @@ MIGRATIONS = ROOT / "migrations"
 VERSIONS = MIGRATIONS / "versions"
 BASELINE_FILE = VERSIONS / "0001_v2_production_baseline.py"
 BASELINE_REVISION = "v2_production_baseline"
-HEAD_REVISION = "0006_asset_requirement_origins"
+HEAD_REVISION = "0007_project_co_managers"
 
 
 def alembic_config(database_path: Path) -> Config:
@@ -72,6 +72,7 @@ class SqlMigrationTests(unittest.TestCase):
                 "0004_asset_approval_authority.py",
                 "0005_acumatica_project_task_sync_runs.py",
                 "0006_asset_requirement_origins.py",
+                "0007_project_co_managers.py",
             ],
         )
 
@@ -90,6 +91,7 @@ class SqlMigrationTests(unittest.TestCase):
             [revision.revision for revision in script.walk_revisions()],
             [
                 HEAD_REVISION,
+                "0006_asset_requirement_origins",
                 "0005_task_sync_runs",
                 "0004_asset_approval_authority",
                 "0003_work_package_resource_class",
@@ -97,6 +99,54 @@ class SqlMigrationTests(unittest.TestCase):
                 BASELINE_REVISION,
             ],
         )
+
+    def test_project_co_manager_migration_is_additive_and_starts_empty(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_path = Path(directory) / "project-co-managers.db"
+            config = alembic_config(database_path)
+            command.upgrade(config, "0006_asset_requirement_origins")
+
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "INSERT INTO projects (id, number, name) "
+                        "VALUES ('P-573-A', 'P-573-A', 'Projet historique')"
+                    )
+                )
+            engine.dispose()
+
+            command.upgrade(config, "head")
+
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            try:
+                inspector = inspect(engine)
+                self.assertIn("project_co_managers", inspector.get_table_names())
+                self.assertIn("project_manager_audit", inspector.get_table_names())
+                with engine.connect() as connection:
+                    self.assertEqual(
+                        connection.execute(
+                            text(
+                                "SELECT co_managers_version FROM projects "
+                                "WHERE id = 'P-573-A'"
+                            )
+                        ).scalar_one(),
+                        1,
+                    )
+                    self.assertEqual(
+                        connection.execute(
+                            text("SELECT COUNT(*) FROM project_co_managers")
+                        ).scalar_one(),
+                        0,
+                    )
+                    self.assertEqual(
+                        connection.execute(
+                            text("SELECT COUNT(*) FROM project_manager_audit")
+                        ).scalar_one(),
+                        0,
+                    )
+            finally:
+                engine.dispose()
 
     def test_asset_requirement_origin_migration_preserves_historical_rows(self) -> None:
         with TemporaryDirectory() as directory:
@@ -347,6 +397,9 @@ class SqlMigrationTests(unittest.TestCase):
             "CREATE TABLE WORK_PACKAGES",
             "CREATE TABLE WORK_PACKAGE_AUDIT",
             "CREATE TABLE WORK_PACKAGE_WEEKLY_LOADS",
+            "CREATE TABLE PROJECT_CO_MANAGERS",
+            "CREATE TABLE PROJECT_MANAGER_AUDIT",
+            "CO_MANAGERS_VERSION",
             "RESOURCE_CLASS_CODE",
             "CREATE TABLE AUTH_SESSIONS",
             "CREATE TABLE ASSET_TYPE_APPROVAL_SCOPE_MAPPINGS",

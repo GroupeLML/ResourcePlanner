@@ -479,6 +479,15 @@ def _critical_statements():
         )
         .values(version=WorkPackage.version + 1)
     )
+    yield "project_co_manager_version_cas", (
+        update(Project)
+        .where(
+            Project.id == bindparam("project_co_manager_project_id"),
+            Project.co_managers_version
+            == bindparam("project_co_manager_expected_version"),
+        )
+        .values(co_managers_version=Project.co_managers_version + 1)
+    )
     # Prevent accidental removal of timestamp compilation coverage.
     yield "timestamp_bind", select(Project.id).where(Project.created_at >= start)
 
