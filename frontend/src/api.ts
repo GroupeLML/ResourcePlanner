@@ -781,6 +781,29 @@ export type SegmentReadModel = {
   load_profile: string;
 };
 
+export type ShiftAssetReservationReadModel = {
+  requirement_id: string;
+  allocation_id: string;
+  origin: "REQUEST" | "SHIFT_AD_HOC" | string;
+  asset_id: string;
+  asset_code: string;
+  asset_label: string;
+  asset_active: boolean;
+  operator_resource_id: string | null;
+  qualification_state: "SATISFIED" | "MISSING_OPERATOR" | "SKILL_MISMATCH" | "NO_OVERLAP" | string;
+};
+
+export type ShiftAssetActionReadModel = {
+  allowed: boolean;
+  reason: string | null;
+};
+
+export type ShiftAssetActionsReadModel = {
+  assign: ShiftAssetActionReadModel;
+  change: ShiftAssetActionReadModel;
+  release: ShiftAssetActionReadModel;
+};
+
 export type ShiftReadModel = {
   allocation_id: string;
   segment_id: string;
@@ -801,6 +824,10 @@ export type ShiftReadModel = {
   project_name: string | null;
   project_manager: string | null;
   requester: string | null;
+  asset_assignment: ShiftAssetReservationReadModel | null;
+  related_asset_reservations: ShiftAssetReservationReadModel[];
+  asset_actions: ShiftAssetActionsReadModel | null;
+  asset_diagnostics: string[];
 };
 
 export type DemandPeriodReadModel = {
