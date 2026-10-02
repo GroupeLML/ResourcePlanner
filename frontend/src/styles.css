@@ -1106,6 +1106,148 @@ h1 { font-size: 1.6rem; }
 .shift-asset-diagnostics strong,
 .shift-asset-diagnostics span { display: block; }
 
+.shift-asset-diagnostic {
+  color: #9a6700;
+  font-weight: 900;
+}
+
+.shift-asset-dialog-body {
+  padding: .9rem 1.1rem 1.05rem;
+}
+
+.shift-asset-candidate-detail {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .5rem;
+  margin-top: .7rem;
+}
+
+.shift-asset-candidate-detail > div,
+.shift-asset-current-state,
+.shift-asset-release-confirmation {
+  min-width: 0;
+  padding: .55rem .6rem;
+  border: 1px solid #e4e8ef;
+  border-radius: 8px;
+  background: #fbfcfe;
+}
+
+.shift-asset-candidate-detail span,
+.shift-asset-candidate-detail strong,
+.shift-asset-current-state strong,
+.shift-asset-current-state span,
+.shift-asset-release-confirmation strong,
+.shift-asset-release-confirmation span {
+  display: block;
+}
+
+.shift-asset-candidate-detail span,
+.shift-asset-current-state span,
+.shift-asset-release-confirmation span {
+  color: var(--muted);
+  font-size: .62rem;
+  line-height: 1.4;
+}
+
+.shift-asset-candidate-detail strong,
+.shift-asset-current-state strong,
+.shift-asset-release-confirmation strong {
+  font-size: .7rem;
+}
+
+.shift-asset-current-state,
+.shift-asset-release-confirmation {
+  display: grid;
+  gap: .2rem;
+  margin-top: .7rem;
+}
+
+.shift-asset-section {
+  display: grid;
+  gap: .6rem;
+  margin-bottom: .85rem;
+  padding: .75rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fbfcfe;
+}
+
+.shift-asset-section-heading,
+.shift-asset-owned,
+.shift-asset-section-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .65rem;
+}
+
+.shift-asset-section-heading > div,
+.shift-asset-owned > div {
+  min-width: 0;
+}
+
+.shift-asset-section-heading strong,
+.shift-asset-section-heading span,
+.shift-asset-owned span,
+.shift-asset-owned strong,
+.shift-asset-owned small,
+.shift-asset-empty strong,
+.shift-asset-empty span,
+.shift-asset-action-reasons small {
+  display: block;
+}
+
+.shift-asset-section-heading span,
+.shift-asset-owned span,
+.shift-asset-owned small,
+.shift-asset-empty span,
+.shift-asset-action-reasons small {
+  color: var(--muted);
+  font-size: .64rem;
+  line-height: 1.35;
+}
+
+.shift-asset-owned strong {
+  margin-top: .12rem;
+  font-size: .72rem;
+}
+
+.shift-asset-section-actions {
+  justify-content: flex-end;
+  flex: 0 0 auto;
+}
+
+.shift-related-assets {
+  display: grid;
+  gap: .35rem;
+  padding-top: .55rem;
+  border-top: 1px solid var(--border);
+}
+
+.shift-related-assets > strong {
+  font-size: .68rem;
+}
+
+.shift-related-assets > div {
+  display: grid;
+  gap: .08rem;
+}
+
+.shift-related-assets span {
+  font-size: .68rem;
+}
+
+.shift-related-assets small,
+.shift-asset-source-retains {
+  color: var(--muted);
+  font-size: .62rem;
+}
+
+.shift-asset-source-retains {
+  color: #765a15 !important;
+  font-weight: 700;
+}
+
 @media (pointer: coarse) {
   .cell-quick-shift-button {
     opacity: .72;
@@ -1114,7 +1256,10 @@ h1 { font-size: 1.6rem; }
 }
 
 @media (max-width: 720px) {
-  .shift-asset-summary { grid-template-columns: 1fr; }
+  .shift-asset-summary,
+  .shift-asset-candidate-detail { grid-template-columns: 1fr; }
+  .shift-asset-section-heading,
+  .shift-asset-owned { align-items: flex-start; flex-direction: column; }
 }
 
 /* #557 — identification visuelle explicite de l'environnement DEV */
