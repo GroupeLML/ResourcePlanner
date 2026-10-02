@@ -1104,3 +1104,57 @@ h1 { font-size: 1.6rem; }
   .shift-asset-summary { grid-template-columns: 1fr; }
 }
 
+/* #557 — identification visuelle explicite de l'environnement DEV */
+.environment-banner { display: none; }
+.app-shell.is-dev-environment .environment-banner {
+  position: fixed;
+  top: 8px;
+  left: 50%;
+  z-index: 9999;
+  display: block;
+  transform: translateX(-50%);
+  padding: 5px 12px;
+  border: 1px solid #8a6b00;
+  border-radius: 999px;
+  background: #f2c94c;
+  color: #172033;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: .08em;
+  pointer-events: none;
+}
+.app-shell.is-dev-environment .app-sidebar {
+  background: #d7a500;
+  color: #172033;
+}
+.app-shell.is-dev-environment .brand-mark {
+  background: #172033;
+  color: #ffd84d;
+}
+.app-shell.is-dev-environment .brand-block span,
+.app-shell.is-dev-environment .sidebar-footer {
+  color: #3f3a22;
+}
+.app-shell.is-dev-environment .sidebar-footer strong,
+.app-shell.is-dev-environment .main-nav button,
+.app-shell.is-dev-environment .main-nav .nav-short {
+  color: #172033;
+}
+.app-shell.is-dev-environment .main-nav button:hover,
+.app-shell.is-dev-environment .main-nav button.active {
+  background: #b98e00;
+  color: #172033;
+}
+.app-shell.is-dev-environment .main-nav button.active span {
+  color: #172033;
+}
+.app-shell.is-dev-environment .sidebar-collapse-button,
+.app-shell.is-dev-environment .sidebar-logout-button {
+  border-color: #8a6b00;
+  color: #172033;
+}
+.app-shell.is-dev-environment .topbar {
+  background: #fff3bf;
+  border-bottom: 3px solid #d7a338;
+}
+

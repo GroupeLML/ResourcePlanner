@@ -6,6 +6,10 @@ COPY frontend/package*.json ./
 RUN npm install --no-audit --no-fund
 
 COPY frontend/ ./
+
+ARG VITE_RESOURCEPLANNER_ENVIRONMENT=PROD
+ENV VITE_RESOURCEPLANNER_ENVIRONMENT=${VITE_RESOURCEPLANNER_ENVIRONMENT}
+
 RUN npm run build
 
 FROM nginx:1.28-alpine AS runtime

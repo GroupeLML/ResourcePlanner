@@ -127,6 +127,8 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
+      args:
+        VITE_RESOURCEPLANNER_ENVIRONMENT: "${RESOURCEPLANNER_ENVIRONMENT:-PROD}"
     image: ${RESOURCEPLANNER_FRONTEND_IMAGE:-resourceplanner-frontend}:${RESOURCEPLANNER_IMAGE_TAG:-local}
     depends_on:
       backend:
