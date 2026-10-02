@@ -66,7 +66,7 @@ import PlanningActionPanel from "./PlanningActionPanel";
 import PlanningDropDialog, { PlanningDropExecutionRequest } from "./PlanningDropDialog";
 import QuickShiftEditor from "./QuickShiftEditor";
 import SegmentEditor from "./SegmentEditor";
-import ShiftAssetAssignmentDialog from "./ShiftAssetAssignmentDialog";
+import ShiftAssetAssignmentDialog, { ShiftAssetAssignmentMode } from "./ShiftAssetAssignmentDialog";
 import ShiftEditor from "./ShiftEditor";
 
 type ConfirmationFilter = "all" | "confirmed" | "tentative";
@@ -215,21 +215,32 @@ function ProjectLabel({ number, name }: { number: string | null; name: string | 
   );
 }
 
+function shiftAssetDiagnosticLabel(code: string) {
+  switch (code) {
+    case "asset_assignment_incomplete":
+      return "Affectation d’actif incomplète";
+    case "asset_inactive":
+      return "Actif inactif";
+    case "operator_not_qualified":
+      return "Opérateur non qualifié";
+    case "related_request_reservation_ambiguous":
+      return "Plusieurs réservations liées à la demande";
+    default:
+      return code;
+  }
+}
+
 function ShiftCard({
   shift,
   diagnostic,
-  assetLabels,
   onEdit,
   onAssignAsset,
-  assetAssignmentAvailable,
   dragEnabled,
 }: {
   shift: ShiftReadModel;
   diagnostic: PlanningSegmentCapacityDiagnosticReadModel | null;
-  assetLabels: string[];
   onEdit: (shift: ShiftReadModel) => void;
   onAssignAsset?: (shift: ShiftReadModel) => void;
-  assetAssignmentAvailable: boolean;
   dragEnabled: boolean;
 }) {
   const confirmation = confirmationKind(shift.confirmation);
@@ -237,6 +248,8 @@ function ShiftCard({
   const overallocationShift = shift as OverallocationShiftReadModel;
   const excess = Number(overallocationShift.segment_overallocated_hours ?? 0);
   const unplaced = Number(diagnostic?.unplaced_hours ?? 0);
+  const asset = shift.asset_assignment;
+  const assetDiagnostics = shift.asset_diagnostics ?? [];
   const meta = [
     shift.allocation_type,
     shift.source !== "AUTO" ? shift.source : null,
@@ -252,6 +265,7 @@ function ShiftCard({
     emergencyOverride ? "⚠ Dérogation d’approbation urgente — régularisation requise" : null,
     excess > 0 ? `⚠ Surallocation manuelle : ${hours(overallocationShift.segment_locked_hours)} h verrouillées pour ${hours(overallocationShift.segment_planned_hours)} h prévues` : null,
     unplaced > 0 ? `⚠ Capacité standard insuffisante : ${hours(unplaced)} h du segment restent à placer` : null,
+    ...assetDiagnostics.map((code) => `⚠ ${shiftAssetDiagnosticLabel(code)}`),
     shift.project_name,
     shift.demand_number ? `Demande ${shift.demand_number}` : null,
     shift.project_manager ? `Responsable: ${shift.project_manager}` : null,
@@ -298,19 +312,26 @@ function ShiftCard({
           {shift.demand_number && <span>#{shift.demand_number}</span>}
         </div>
         {meta.length > 0 && <small>{meta.join(" · ")}</small>}
-        {assetLabels.length > 0 && (
-          <small className="shift-assets" aria-label="Actifs réservés">
-            {assetLabels.length === 1 ? "Actif : " : "Actifs : "}{assetLabels.join(" · ")}
-          </small>
-        )}
+        <small className="shift-assets" aria-label={asset ? "Actif affecté au quart" : "Aucun actif affecté au quart"}>
+          {asset ? `Actif : ${asset.asset_code}${asset.asset_active ? "" : " · inactif"}` : "Aucun actif"}
+          {assetDiagnostics.length > 0 && (
+            <span
+              className="shift-asset-diagnostic"
+              aria-label={assetDiagnostics.map(shiftAssetDiagnosticLabel).join(", ")}
+              title={assetDiagnostics.map(shiftAssetDiagnosticLabel).join("\n")}
+            >
+              {" "}⚠
+            </span>
+          )}
+        </small>
       </button>
-      {assetAssignmentAvailable && onAssignAsset && (
+      {!asset && shift.asset_actions?.assign.allowed && onAssignAsset && (
         <button
           type="button"
           className="shift-asset-action"
           draggable={false}
           onClick={() => onAssignAsset(shift)}
-          aria-label={`Assigner un actif à ${shift.resource_name} pour la demande ${shift.demand_number}`}
+          aria-label={`Assigner un actif à ${shift.resource_name} pour le quart ${shift.allocation_id}`}
         >
           Assigner un actif
         </button>
@@ -400,8 +421,6 @@ function ResourceRow({
   capacity,
   pendingLoads,
   diagnostics,
-  assetsByShift,
-  assetAssignableShiftIds,
   onEditShift,
   onAssignAsset,
   onCreateQuickShift,
@@ -416,8 +435,6 @@ function ResourceRow({
   capacity: PlanningResourceCapacityReadModel | null;
   pendingLoads: PendingDemandLoadReadModel[];
   diagnostics: Map<string, PlanningSegmentCapacityDiagnosticReadModel>;
-  assetsByShift: Map<string, string[]>;
-  assetAssignableShiftIds: Set<string>;
   onEditShift: (shift: ShiftReadModel) => void;
   onAssignAsset?: (shift: ShiftReadModel) => void;
   onCreateQuickShift?: (resource: ResourceReadModel, day: string) => void;
@@ -538,10 +555,8 @@ function ResourceRow({
               <ShiftCard
                 shift={shift}
                 diagnostic={diagnostics.get(shift.segment_id) ?? null}
-                assetLabels={assetsByShift.get(shift.allocation_id) ?? []}
                 onEdit={onEditShift}
                 onAssignAsset={onAssignAsset}
-                assetAssignmentAvailable={assetAssignableShiftIds.has(shift.allocation_id)}
                 dragEnabled={dragEnabled}
                 key={shift.allocation_id}
               />
@@ -590,7 +605,10 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
   const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null);
   const [quickShiftOpen, setQuickShiftOpen] = useState(false);
   const [quickShiftSeed, setQuickShiftSeed] = useState<{ resourceId: string; day: string } | null>(null);
-  const [assetAssignmentShift, setAssetAssignmentShift] = useState<ShiftReadModel | null>(null);
+  const [assetAssignment, setAssetAssignment] = useState<{
+    shift: ShiftReadModel;
+    mode: ShiftAssetAssignmentMode;
+  } | null>(null);
   const [manualAllocationOpen, setManualAllocationOpen] = useState(false);
   const [detailDemandNumber, setDetailDemandNumber] = useState<string | null>(null);
   const [detailContextDirty, setDetailContextDirty] = useState(false);
@@ -719,47 +737,6 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
     () => new Map((capacityGrid?.segment_diagnostics ?? []).map((row) => [row.segment_id, row])),
     [capacityGrid],
   );
-
-  const assetsByShift = useMemo(() => {
-    const linked = new Map<string, string[]>();
-    if (!snapshot) return linked;
-    const requirementById = new Map(
-      snapshot.asset_requirements.map((requirement) => [requirement.requirement_id, requirement]),
-    );
-    snapshot.shifts.forEach((shift) => {
-      if (!shift.demand_number) return;
-      const labels = new Map<string, string>();
-      snapshot.asset_allocations.forEach((allocation) => {
-        if (allocation.operator_resource_id !== shift.resource_id) return;
-        if (allocation.start_date > shift.work_date || allocation.end_date < shift.work_date) return;
-        const requirement = requirementById.get(allocation.requirement_id);
-        if (!requirement || requirement.demand_number !== shift.demand_number) return;
-        labels.set(allocation.asset_id, allocation.asset_label || allocation.asset_code);
-      });
-      if (labels.size > 0) {
-        linked.set(
-          shift.allocation_id,
-          [...labels.values()].sort((left, right) => left.localeCompare(right, "fr-CA")),
-        );
-      }
-    });
-    return linked;
-  }, [snapshot]);
-
-  const assetAssignableShiftIds = useMemo(() => {
-    const result = new Set<string>();
-    if (!snapshot) return result;
-    snapshot.shifts.forEach((shift) => {
-      if (!shift.demand_number) return;
-      const hasMatchingRequirement = snapshot.asset_requirements.some((requirement) => (
-        requirement.demand_number === shift.demand_number
-        && requirement.start_date <= shift.work_date
-        && requirement.end_date >= shift.work_date
-      ));
-      if (hasMatchingRequirement) result.add(shift.allocation_id);
-    });
-    return result;
-  }, [snapshot]);
 
   const query = normalize(search);
 
@@ -1343,10 +1320,8 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
                         capacity={capacity}
                         pendingLoads={pendingLoads}
                         diagnostics={diagnosticsBySegment}
-                        assetsByShift={assetsByShift}
-                        assetAssignableShiftIds={assetAssignableShiftIds}
                         onEditShift={setEditingShift}
-                        onAssignAsset={canManagePlanning ? setAssetAssignmentShift : undefined}
+                        onAssignAsset={(shift) => setAssetAssignment({ shift, mode: "assign" })}
                         onCreateQuickShift={canManagePlanning ? (targetResource, day) => {
                           setQuickShiftSeed({ resourceId: targetResource.id, day });
                           setQuickShiftOpen(true);
@@ -1399,11 +1374,12 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
         />
       )}
 
-      {assetAssignmentShift && snapshot && (
+      {assetAssignment && snapshot && (
         <ShiftAssetAssignmentDialog
-          shift={assetAssignmentShift}
-          snapshot={snapshot}
-          onClose={() => setAssetAssignmentShift(null)}
+          shift={assetAssignment.shift}
+          mode={assetAssignment.mode}
+          planningVersion={snapshot.planning_version}
+          onClose={() => setAssetAssignment(null)}
           onRefresh={() => setRefreshKey((value) => value + 1)}
         />
       )}
@@ -1442,6 +1418,10 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
               message: "Le planning a changé depuis l'ouverture du quart. Le snapshot a été rafraîchi; rouvre le quart pour réessayer.",
             });
             setRefreshKey((value) => value + 1);
+          }}
+          onAssetAction={(mode) => {
+            setAssetAssignment({ shift: editingShift, mode });
+            setEditingShift(null);
           }}
         />
       )}
