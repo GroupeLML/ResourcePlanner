@@ -74,14 +74,16 @@ test("Quick Shift sans demande peut étendre son segment à la semaine sans mult
     await chooseCombobox(quickShiftDialog, "Projet", "251", "P-251");
     await quickShiftDialog.getByLabel("Heures").fill("8");
     await quickShiftDialog.getByLabel("Confirmation").selectOption("Tentative");
+    await quickShiftDialog.getByLabel("Note").fill("Issue 576 E2E");
     await quickShiftDialog.getByRole("button", { name: "Créer le Quick Shift" }).click();
     await expect(quickShiftDialog).toBeHidden();
 
-    const createdCard = targetCell.locator(".shift-card").filter({ hasText: "P-251" }).last();
-    await expect(createdCard).toBeVisible();
+    const createdCardButton = targetCell.locator('.shift-card-main[title*="Issue 576 E2E"]');
+    await expect(createdCardButton).toHaveCount(1);
+    const createdCard = createdCardButton.locator("..");
     const segmentId = await createdCard.getAttribute("data-segment-id");
     expect(segmentId).toBeTruthy();
-    await createdCard.locator(".shift-card-main").click();
+    await createdCardButton.click();
 
     const shiftDialog = page.getByRole("dialog", { name: "Modifier le quart" });
     await expect(shiftDialog).toBeVisible();
