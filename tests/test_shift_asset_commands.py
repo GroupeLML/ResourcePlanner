@@ -840,7 +840,7 @@ class ShiftAssetCommandTests(unittest.TestCase):
             },
         )
         self.assertEqual(blocked.status_code, 409, blocked.text)
-        self.assertEqual(blocked.json()["error"]["code"], "asset_unavailable")
+        self.assertEqual(blocked.json()["error"]["code"], "asset_double_booking")
 
         requirement, allocation, shift = self._ad_hoc_state()
         self.assertEqual(shift.work_date, DAY)
