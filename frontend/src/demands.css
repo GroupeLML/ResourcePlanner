@@ -333,6 +333,57 @@
   font-size: .72rem;
 }
 
+.demand-editor-heading-side {
+  min-width: min(100%, 460px);
+  display: grid;
+  justify-items: end;
+  gap: .5rem;
+}
+
+.demand-editor-statuses {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: .35rem;
+}
+
+.demand-workflow-status-pill {
+  padding: .28rem .55rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: .68rem;
+  font-weight: 800;
+}
+
+.demand-header-actions {
+  width: 100%;
+}
+
+.demand-header-actions .demand-workflow-page,
+.demand-header-actions .workflow-layout,
+.demand-header-actions .workflow-detail-panel {
+  width: 100%;
+}
+
+.demand-header-actions .workflow-primary-actions {
+  justify-content: flex-end;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.demand-header-actions .workflow-primary-action-group {
+  flex: 0 1 280px;
+  min-width: min(100%, 240px);
+}
+
+.demand-header-actions .error-panel,
+.demand-header-actions .demand-notice {
+  margin: 0 0 .45rem;
+}
+
 .demand-confirmation-pill {
   padding: .28rem .55rem;
   border-radius: 999px;
@@ -774,6 +825,21 @@
   .demand-line-mode-card,
   .request-lines-heading {
     flex-direction: column;
+  }
+
+  .demand-editor-heading-side {
+    width: 100%;
+    min-width: 0;
+    justify-items: stretch;
+  }
+
+  .demand-editor-statuses,
+  .demand-header-actions .workflow-primary-actions {
+    justify-content: flex-start;
+  }
+
+  .demand-header-actions .workflow-primary-action-group {
+    flex-basis: 100%;
   }
 
   .request-lines-actions {

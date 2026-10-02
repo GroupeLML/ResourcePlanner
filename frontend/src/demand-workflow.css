@@ -300,3 +300,29 @@
   display: grid;
   gap: 0.5rem;
 }
+
+
+/* #570 — the header owns workflow commands; the detail surface keeps context only. */
+.demand-workflow-page.actions-only .workflow-layout {
+  display: block;
+}
+
+.demand-workflow-page.actions-only .workflow-detail-panel {
+  gap: 0.55rem;
+}
+
+.demand-workflow-page.actions-only .workflow-state-grid,
+.demand-workflow-page.actions-only .approval-progress-panel,
+.demand-workflow-page.actions-only .workflow-cancellation-state,
+.demand-workflow-page.actions-only .workflow-separation-note,
+.demand-workflow-page.actions-only .workflow-envelope-decision,
+.demand-workflow-page.actions-only .plan-delta-panel,
+.demand-workflow-page.actions-only .plan-delta-unavailable,
+.demand-workflow-page.actions-only .workflow-terminal-state,
+.demand-workflow-page.actions-only .workflow-authority-note {
+  display: none;
+}
+
+.demand-workflow-page.actions-only .workflow-primary-actions {
+  margin: 0;
+}

@@ -289,6 +289,8 @@ type DemandWorkflowPageProps = {
   onChanged?: () => void | Promise<void>;
   refreshToken?: number;
   hasUnsavedChanges?: boolean;
+  actionsOnly?: boolean;
+  showActions?: boolean;
 };
 
 export default function DemandWorkflowPage({
@@ -298,6 +300,8 @@ export default function DemandWorkflowPage({
   onChanged,
   refreshToken = 0,
   hasUnsavedChanges = false,
+  actionsOnly = false,
+  showActions = true,
 }: DemandWorkflowPageProps = {}) {
   const [demands, setDemands] = useState<DemandReadModel[]>([]);
   const [selectedNumber, setSelectedNumber] = useState("");
@@ -416,7 +420,7 @@ export default function DemandWorkflowPage({
   }, [selectedNumber, loading]);
 
   useEffect(() => {
-    if (!currentDemand) {
+    if (actionsOnly || !currentDemand) {
       setApprovalState(null);
       setApprovalStateError(null);
       return;
@@ -434,10 +438,10 @@ export default function DemandWorkflowPage({
         }
       });
     return () => { active = false; };
-  }, [currentDemand?.number, currentDemand?.version, currentDemand?.status]);
+  }, [actionsOnly, currentDemand?.number, currentDemand?.version, currentDemand?.status]);
 
   useEffect(() => {
-    if (!currentDemand || normalStatus(currentDemand.status) !== "soumise") {
+    if (actionsOnly || !currentDemand || normalStatus(currentDemand.status) !== "soumise") {
       setPlanDelta(null);
       setPlanDeltaError(null);
       setPlanDeltaLoading(false);
@@ -460,7 +464,7 @@ export default function DemandWorkflowPage({
         if (active) setPlanDeltaLoading(false);
       });
     return () => { active = false; };
-  }, [currentDemand?.number, currentDemand?.status]);
+  }, [actionsOnly, currentDemand?.number, currentDemand?.status]);
 
   const actions = useMemo(
     () =>
@@ -715,7 +719,7 @@ export default function DemandWorkflowPage({
     && (!currentApprovalCycle || actorApprovalLines.length > 0);
 
   return (
-    <section className="demand-workflow-page">
+    <section className={`demand-workflow-page ${actionsOnly ? "actions-only" : ""}`}>
       {!embedded && (
         <div className="page-heading">
           <div>
@@ -726,8 +730,8 @@ export default function DemandWorkflowPage({
         </div>
       )}
 
-      {error && <div className="error-panel"><strong>Action impossible.</strong><span>{error}</span></div>}
-      {routingDiagnostic && (
+      {showActions && error && <div className="error-panel"><strong>Action impossible.</strong><span>{error}</span></div>}
+      {showActions && routingDiagnostic && (
         <div className="error-panel approval-routing-diagnostic" data-testid="approval-routing-diagnostic" role="alert">
           <strong>Routage d’approbation à corriger</strong>
           <span>La demande n’a pas été soumise. Corrige la configuration ou la référence indiquée, puis soumets-la de nouveau.</span>
@@ -773,8 +777,8 @@ export default function DemandWorkflowPage({
           </div>
         </div>
       )}
-      {notice && <div className="demand-notice" role="status">{notice}</div>}
-      {hasUnsavedChanges && (
+      {showActions && notice && <div className="demand-notice" role="status">{notice}</div>}
+      {showActions && hasUnsavedChanges && (
         <div className="demand-notice workflow-dirty-warning" role="status">
           Enregistre les modifications avant de poursuivre.
         </div>
@@ -814,7 +818,7 @@ export default function DemandWorkflowPage({
         <div className="workflow-detail-panel">
           {currentDemand ? (
             <>
-              {(actions.includes("submit")
+              {showActions && (actions.includes("submit")
                 || actions.includes("cancel")
                 || actions.includes("request-cancellation")
                 || canQuickApprove) && (
@@ -882,7 +886,7 @@ export default function DemandWorkflowPage({
                 </div>
               )}
 
-              <div className="workflow-state-grid">
+              {!actionsOnly && <div className="workflow-state-grid">
                 <div className="workflow-state-card">
                   <span>Approbation / statut</span>
                   <strong>{currentDemand.status || "Non défini"}</strong>
@@ -909,9 +913,9 @@ export default function DemandWorkflowPage({
                     )}
                   </div>
                 )}
-              </div>
+              </div>}
 
-              {currentApprovalCycle && (
+              {!actionsOnly && currentApprovalCycle && (
                 <section className="approval-progress-panel" data-testid="approval-progress">
                   <div className="approval-progress-heading">
                     <div>
@@ -964,7 +968,7 @@ export default function DemandWorkflowPage({
                 </section>
               )}
 
-              {currentDemand.cancellation_state === "PENDING" && (
+              {!actionsOnly && currentDemand.cancellation_state === "PENDING" && (
                 <div className="workflow-cancellation-state" data-testid="cancellation-pending-state">
                   <strong>Annulation demandée</strong>
                   <span>
@@ -976,16 +980,16 @@ export default function DemandWorkflowPage({
                 </div>
               )}
 
-              <div className="workflow-separation-note">
+              {!actionsOnly && <div className="workflow-separation-note">
                 <strong>Approbation ≠ confirmation.</strong>
                 <span>Une demande peut être approuvée tout en restant Tentative; les deux concepts ne sont jamais fusionnés par l’interface.</span>
-              </div>
+              </div>}
 
-              {approvalStateError && (
+              {!actionsOnly && approvalStateError && (
                 <div className="plan-delta-unavailable">{approvalStateError}</div>
               )}
 
-              {approvalState && (
+              {!actionsOnly && approvalState && (
                 <div
                   className={`workflow-envelope-decision ${approvalState.envelope_decision === "REAPPROVAL_REQUIRED" ? "requires-approval" : ""}`}
                   data-testid="envelope-decision"
@@ -1000,7 +1004,7 @@ export default function DemandWorkflowPage({
                 </div>
               )}
 
-              {normalStatus(currentDemand.status) === "soumise" && (
+              {!actionsOnly && normalStatus(currentDemand.status) === "soumise" && (
                 <div className="plan-delta-panel" data-testid="plan-delta-preview">
                   <div className="plan-delta-heading">
                     <div>
@@ -1076,7 +1080,7 @@ export default function DemandWorkflowPage({
                 </div>
               )}
 
-              {actions.includes("correction") && (
+              {showActions && actions.includes("correction") && (
                 <label className="workflow-comment-field">
                   <span>Commentaire de correction (requis)</span>
                   <textarea
@@ -1089,7 +1093,7 @@ export default function DemandWorkflowPage({
                 </label>
               )}
 
-              {(actions.includes("accept-cancellation") || actions.includes("reject-cancellation")) && !cancellationReviewOpen && (
+              {showActions && (actions.includes("accept-cancellation") || actions.includes("reject-cancellation")) && !cancellationReviewOpen && (
                 <div className="workflow-cancellation-treatment">
                   <button
                     type="button"
@@ -1102,7 +1106,7 @@ export default function DemandWorkflowPage({
                 </div>
               )}
 
-              {(actions.includes("accept-cancellation") || actions.includes("reject-cancellation")) && cancellationReviewOpen && (
+              {showActions && (actions.includes("accept-cancellation") || actions.includes("reject-cancellation")) && cancellationReviewOpen && (
                 <div className="workflow-cancellation-review" data-testid="cancellation-review">
                   <div className="plan-delta-heading">
                     <div>
@@ -1217,13 +1221,13 @@ export default function DemandWorkflowPage({
                 </div>
               )}
 
-              {actions.includes("approve") && currentApprovalCycle && actorApprovalLines.length === 0 && !currentApprovalCycle.quorum_complete && (
+              {!actionsOnly && actions.includes("approve") && currentApprovalCycle && actorApprovalLines.length === 0 && !currentApprovalCycle.quorum_complete && (
                 <span className="workflow-terminal-state">
                   Aucune ligne en attente n’est admissible pour votre approbation.
                 </span>
               )}
 
-              {(actions.length === 0 || actions.includes("correction")) && (
+              {showActions && (actions.length === 0 || actions.includes("correction")) && (
                 <div className="workflow-actions">
                   {actions.length === 0 && <span className="workflow-terminal-state">Aucune transition usuelle disponible pour ce statut.</span>}
                   {actions.includes("correction") && (
@@ -1234,9 +1238,13 @@ export default function DemandWorkflowPage({
                 </div>
               )}
 
-              <small className="workflow-authority-note">
-                Les actions affichées proviennent de la projection backend canonique; FastAPI demeure l’autorité pour accepter ou refuser chaque commande.
-              </small>
+              {!actionsOnly && (
+                <small className="workflow-authority-note">
+                  {showActions
+                    ? "Les actions affichées proviennent de la projection backend canonique; FastAPI demeure l’autorité pour accepter ou refuser chaque commande."
+                    : "Les actions disponibles restent dérivées de la projection backend canonique et sont exposées dans le header de la demande; FastAPI demeure l’autorité."}
+                </small>
+              )}
             </>
           ) : (
             <div className="demand-editor-empty">
