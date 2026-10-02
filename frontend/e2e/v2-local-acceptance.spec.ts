@@ -593,14 +593,11 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await labelled(editor, "Description / contexte de la demande", "textarea").fill(
       "Demande acceptation navigateur V2 modifiée avant soumission",
     );
-    const workflowSection = page.locator(".demand-detail-section").filter({ hasText: "Workflow et impact" }).first();
-    if (!(await workflowSection.evaluate((node) => (node as HTMLDetailsElement).open))) {
-      await workflowSection.locator("summary").click();
-    }
-    const submitButton = workflowSection.getByRole("button", { name: "Soumettre", exact: true });
+    const headerActions = page.getByTestId("demand-header-actions");
+    const submitButton = headerActions.getByRole("button", { name: "Soumettre", exact: true });
     await expect(submitButton).toBeDisabled();
     await expect(
-      workflowSection.getByText("Enregistre les modifications avant de poursuivre.", { exact: true }),
+      headerActions.getByText("Enregistre les modifications avant de poursuivre.", { exact: true }),
     ).toBeVisible();
 
     await editor.getByRole("button", { name: "Enregistrer les modifications" }).click();
@@ -2069,7 +2066,7 @@ test("draft demand exposes primary submit and cancel actions and direct cancel s
   const number = demandNumberFrom(await createdNotice.textContent());
 
   const detail = requester.page.locator(`.demand-detail-context[data-demand-number="${number}"]`);
-  const primaryActions = detail.getByTestId("primary-demand-actions");
+  const primaryActions = requester.page.getByTestId("demand-header-actions").getByTestId("primary-demand-actions");
   await expect(primaryActions).toBeVisible();
   const submit = primaryActions.getByRole("button", { name: "Soumettre", exact: true });
   const cancel = primaryActions.getByRole("button", { name: "Annuler la demande", exact: true });
@@ -2082,7 +2079,7 @@ test("draft demand exposes primary submit and cancel actions and direct cancel s
   await cancel.click();
   await expect(detail.locator(".demand-detail-statuses")).toContainText("Annulée");
   await expect(detail.locator(".error-panel")).toHaveCount(0);
-  await expect(detail.getByTestId("primary-demand-actions")).toHaveCount(0);
+  await expect(requester.page.getByTestId("demand-header-actions").getByTestId("primary-demand-actions")).toHaveCount(0);
   await closeContext(requester.context);
 });
 
