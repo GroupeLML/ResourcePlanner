@@ -9,17 +9,22 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from app.application.security import AuthPrincipal, ROLE_PROJECT_MANAGER
 from app.infrastructure.sql import (
     AppUser,
     BusinessContact,
     Project,
+    ProjectCoManager,
     ResourceClassConfig,
     TaskCatalogEntry,
     TaskCatalogProjectSyncState,
     WorkPackage,
     WorkPackageWeeklyLoad,
+    create_session_factory,
+    create_sql_engine,
 )
 from app.server import create_api_app
+from app.server.security import static_auth_resolver
 from tests.http_test_auth import TEST_ADMIN_AUTH_RESOLVER
 from tests.sqlite_test_template import SqliteDatabaseTemplate
 
@@ -380,6 +385,136 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
     @staticmethod
     def _task(payload: dict, code: str) -> dict:
         return next(row for row in payload["tasks"] if row["task_code"] == code)
+
+    def test_co_managers_expand_mine_scope_without_multiplying_medium_term_rows(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    session.add_all(
+                        [
+                            BusinessContact(
+                                id="BC-CO-B",
+                                display_name="Co chargé B",
+                                source="LOCAL",
+                            ),
+                            BusinessContact(
+                                id="BC-CO-C",
+                                display_name="Co chargé C",
+                                source="LOCAL",
+                            ),
+                            AppUser(
+                                id="U-CO-B",
+                                issuer=None,
+                                subject=None,
+                                display_name="Co chargé B",
+                                email=None,
+                                employee_external_id=None,
+                                business_contact_id="BC-CO-B",
+                                roles_json='["PROJECT_MANAGER"]',
+                                active=True,
+                            ),
+                            AppUser(
+                                id="U-CO-C",
+                                issuer=None,
+                                subject=None,
+                                display_name="Co chargé C",
+                                email=None,
+                                employee_external_id=None,
+                                business_contact_id="BC-CO-C",
+                                roles_json='["PROJECT_MANAGER"]',
+                                active=True,
+                            ),
+                        ]
+                    )
+                    project = session.get(Project, "P1")
+                    assert project is not None
+                    project.co_managers_version = 2
+                    session.flush()
+                    session.add_all(
+                        [
+                            ProjectCoManager(
+                                project_id="P1",
+                                business_contact_id="BC-CO-B",
+                                created_by_user_id="U-CO-B",
+                            ),
+                            ProjectCoManager(
+                                project_id="P1",
+                                business_contact_id="BC-CO-C",
+                                created_by_user_id="U-CO-C",
+                            ),
+                        ]
+                    )
+            finally:
+                engine.dispose()
+
+            principals = (
+                AuthPrincipal.from_roles(
+                    local_user_id="U-PM-1",
+                    issuer="urn:test",
+                    subject="pm",
+                    display_name="Benjamin Germain",
+                    email=None,
+                    employee_external_id="EMP-PM-1",
+                    roles=(ROLE_PROJECT_MANAGER,),
+                    auth_mode="local",
+                ),
+                AuthPrincipal.from_roles(
+                    local_user_id="U-CO-B",
+                    issuer="urn:test",
+                    subject="co-b",
+                    display_name="Co chargé B",
+                    email=None,
+                    employee_external_id=None,
+                    roles=(ROLE_PROJECT_MANAGER,),
+                    auth_mode="local",
+                ),
+                AuthPrincipal.from_roles(
+                    local_user_id="U-CO-C",
+                    issuer="urn:test",
+                    subject="co-c",
+                    display_name="Co chargé C",
+                    email=None,
+                    employee_external_id=None,
+                    roles=(ROLE_PROJECT_MANAGER,),
+                    auth_mode="local",
+                ),
+            )
+
+            payloads = []
+            for principal in principals:
+                app = create_api_app.func(
+                    database_url,
+                    auth_resolver=static_auth_resolver(principal),
+                )
+                with TestClient(app) as client:
+                    response = client.get(
+                        "/api/v1/medium-term/budget",
+                        params={"scope": "mine"},
+                    )
+                self.assertEqual(response.status_code, 200, response.text)
+                payloads.append(response.json())
+
+        expected_ids = None
+        for payload in payloads:
+            task_ids = [task["task_catalog_item_id"] for task in payload["tasks"]]
+            self.assertEqual(len(task_ids), len(set(task_ids)))
+            self.assertTrue(task_ids)
+            self.assertTrue(
+                all(task["project_id"] == "P1" for task in payload["tasks"])
+            )
+            self.assertTrue(
+                all(
+                    task["manager_group_key"] == "erp:EMP-PM-1"
+                    for task in payload["tasks"]
+                )
+            )
+            if expected_ids is None:
+                expected_ids = task_ids
+            else:
+                self.assertEqual(task_ids, expected_ids)
 
     def test_projection_aggregates_budget_with_stable_backend_diagnostics(self) -> None:
         with (
