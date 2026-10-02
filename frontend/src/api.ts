@@ -598,15 +598,28 @@ export type DemandDetailMaterializedRequirementReadModel = {
   approval_reference_status: string | null;
 };
 
+export type AssetRequirementOrigin =
+  | "REQUEST"
+  | "SHIFT_AD_HOC"
+  | "PROJECT_DIRECT"
+  | "SEGMENT"
+  | "RESOURCE_PERIOD";
+
 export type DemandDetailAssetRequirementReadModel = {
   requirement_id: string;
-  demand_number: string;
-  project_id: string;
-  project_number: string;
-  source_request_line_id: string;
+  origin: AssetRequirementOrigin;
+  request_id: string | null;
+  demand_number: string | null;
+  project_id: string | null;
+  project_number: string | null;
+  source_request_line_id: string | null;
   source_period_id: string | null;
   approval_revision_id: string | null;
-  approved_entry_key: string;
+  approved_entry_key: string | null;
+  resource_requirement_id: string | null;
+  segment_reference: string | null;
+  shift_id: string | null;
+  context_resource_id: string | null;
   slot_index: number;
   asset_type_id: string;
   asset_type_code: string;
