@@ -149,7 +149,6 @@ class AssetRequirement(TimestampMixin, Base):
         "Shift",
         back_populates="asset_requirements",
         foreign_keys=[shift_id],
-        passive_deletes=True,
     )
 
 
