@@ -155,6 +155,9 @@ class DemandCompletionProjectionTests(unittest.TestCase):
         start_date: date = PAST,
         end_date: date = PAST,
         allocated: bool = True,
+        allocation_start_date: date | None = None,
+        allocation_end_date: date | None = None,
+        usage_hours: float | None = None,
     ) -> None:
         line_id = f"L-{key}"
         requirement_id = f"AREQ-{key}"
@@ -181,6 +184,7 @@ class DemandCompletionProjectionTests(unittest.TestCase):
                 asset_type_id="AT1",
                 start_date=start_date,
                 end_date=end_date,
+                usage_hours=usage_hours,
                 status="Planifié" if allocated else "À affecter",
             )
         )
@@ -191,8 +195,8 @@ class DemandCompletionProjectionTests(unittest.TestCase):
                     id=f"ALLOC-{key}",
                     asset_requirement_id=requirement_id,
                     asset_id="A1",
-                    start_date=start_date,
-                    end_date=end_date,
+                    start_date=allocation_start_date or start_date,
+                    end_date=allocation_end_date or end_date,
                     locked=True,
                     source="MANUAL",
                 )
@@ -271,6 +275,27 @@ class DemandCompletionProjectionTests(unittest.TestCase):
         self.assertFalse(rows["DMO-REMAINDER"].terminal)
         self.assertEqual(rows["DMO-NO-PLAN"].effective_status, "En planification")
         self.assertFalse(rows["DMO-NO-PLAN"].terminal)
+
+    def test_asset_subwindow_allocation_covers_request_requirement(self) -> None:
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        with factory.begin() as session:
+            request = self._request(session, "ASSET-SUBWINDOW")
+            self._asset(
+                session,
+                request,
+                "ASSET-SUBWINDOW",
+                start_date=PAST,
+                end_date=FUTURE,
+                allocation_start_date=PAST,
+                allocation_end_date=PAST,
+                usage_hours=8,
+            )
+        engine.dispose()
+
+        row = self._rows()["DMO-ASSET-SUBWINDOW"]
+        self.assertEqual(row.effective_status, "Complétée")
+        self.assertTrue(row.terminal)
 
     def test_assets_mixed_cancellation_and_reapproval_remain_distinct(self) -> None:
         engine = create_sql_engine(self.url)
