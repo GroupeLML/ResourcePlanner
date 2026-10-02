@@ -28,6 +28,7 @@ from .approval_revision_models import (
     APPROVAL_REFERENCE_CAPTURED,
     RequestApprovalReference,
 )
+from .asset_service import SqlAssetService
 from .base import new_id
 from .command_adapters import INACTIVE_REQUIREMENT_STATUSES, SqlPlanningCommandAdapter
 from .models import ORIGIN_REQUEST, Resource, ResourceRequirement, Shift, WorkforceRequest
@@ -331,6 +332,8 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
             "approval_revision_id": approval_revision_id,
             "operational_version": self._current_operational_version(requirement),
             "auto_source_converted": auto_source_converted,
+            "asset_assignment_policy": "SOURCE_RETAINS",
+            "target_asset_assignment_inherited": False,
         }
 
     def _drop_request_context(
@@ -662,6 +665,10 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
         source.source = "MANUAL"
         source.locked = True
         source.outside_standard_hours = availability.override_applied
+        SqlAssetService(
+            self._session,
+            actor="planning",
+        ).synchronize_shift_ad_hoc_assignment(shift=source)
         self._session.flush()
         self._planning.rebuild()
 
