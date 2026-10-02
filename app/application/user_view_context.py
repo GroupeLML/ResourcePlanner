@@ -95,7 +95,8 @@ class UserViewContextRepositoryPort(Protocol):
 
     def list_managed_project_ids(
         self,
-        employee_external_id: str,
+        local_user_id: str | None,
+        employee_external_id: str | None,
     ) -> tuple[str, ...]: ...
 
     def list_participating_project_ids(
@@ -149,10 +150,9 @@ class UserViewContextService:
         resource_resolution = resolve_personal_resource(principal, self._repository)
         employee_external_id = resource_resolution.employee_external_id
 
-        managed_project_ids = (
-            self._repository.list_managed_project_ids(employee_external_id)
-            if employee_external_id is not None
-            else ()
+        managed_project_ids = self._repository.list_managed_project_ids(
+            principal.local_user_id,
+            employee_external_id,
         )
         participating_project_ids = (
             self._repository.list_participating_project_ids(
