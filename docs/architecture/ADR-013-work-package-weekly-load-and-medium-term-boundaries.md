@@ -234,6 +234,27 @@ Le snapshot Planning existant n'est pas redéfini pour porter cette nouvelle sé
 
 React reste responsable de la présentation du Gantt, pas des règles de budget, d'inclusion, de capacité ou de non-double-comptage.
 
+### 15. #539 utilise le lundi courant comme frontière de lecture entre Actual ERP et charge future
+
+Pour la vue Projet #539, le backend dérive une référence hebdomadaire unique à partir de sa date métier courante :
+
+~~~text
+reference_week_start = lundi de la semaine courante
+actual_through_date = reference_week_start - 1 jour
+~~~
+
+Le contrat produit considère `TaskCatalogEntry.budget_actual_cad` comme la consommation ERP déjà absorbée avant `reference_week_start`. Le solde financier peut être converti en heures avec le même coût horaire moyen canonique #454 déjà projeté avec la tâche.
+
+La charge future comparée à ce solde provient exclusivement des `WorkPackageWeeklyLoad` valides des WorkPackages courants liés par `task_catalog_item_id`, avec :
+
+~~~text
+week_start >= reference_week_start
+~~~
+
+Les semaines antérieures sont considérées comme déjà absorbées par `BudgetActual`; elles ne sont pas soustraites une seconde fois. Une répartition hebdomadaire pertinente absente ou incohérente rend la comparaison future incomplète au lieu de déclencher une redistribution implicite.
+
+Cette lecture ne change pas la sémantique #502 de `remaining_budget_hours = budget_hours - planned_wp_hours`, qui reste une mesure de structuration totale distincte du solde basé sur `BudgetActual`.
+
 ## Alternatives considered
 
 ### Créer un nouveau modèle `ProjectTask`
@@ -301,6 +322,7 @@ Rejeté. Une mutation purement WorkPackage ne constitue pas une mutation globale
 ## References
 
 - #502 — Moyen terme : Gantt budget tâches ERP, WorkPackages et capacité hebdomadaire
+- #539 — Vue Projet : référence hebdomadaire, BudgetActual et charge WorkPackage future
 - #452 — RP_ProjectTasks OData, budgets et synchronisation ciblée
 - #454 — classes de ressources, coûts moyens et standards TaskCD
 - #362 — Delivery WorkPackage / Epics / Stories / Kanban

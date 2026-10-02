@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from functools import partial
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -14,6 +15,7 @@ from app.infrastructure.sql import (
     TaskCatalogEntry,
     TaskCatalogProjectSyncState,
     WorkPackage,
+    WorkPackageWeeklyLoad,
 )
 from app.server import create_api_app
 from tests.http_test_auth import TEST_ADMIN_AUTH_RESOLVER
@@ -68,6 +70,7 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
                     workforce_eligible=True,
                     budget_amount_cad=Decimal("50000.00"),
                     budget_actual_cad=Decimal("31000.00"),
+                    average_hourly_cost_cad=Decimal("100"),
                     budget_hours=Decimal("240"),
                     resource_class_code="PROGRAMMEUR",
                 ),
@@ -82,6 +85,7 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
                     workforce_eligible=True,
                     budget_amount_cad=Decimal("50000.00"),
                     budget_actual_cad=Decimal("52000.00"),
+                    average_hourly_cost_cad=Decimal("100"),
                     budget_hours=Decimal("80"),
                     resource_class_code="PROGRAMMEUR",
                 ),
@@ -94,8 +98,9 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
                     erp_task_id="ERP-218",
                     account_group="DEPMO",
                     workforce_eligible=True,
-                    budget_amount_cad=None,
-                    budget_actual_cad=Decimal("10000.00"),
+                    budget_amount_cad=Decimal("50000.00"),
+                    budget_actual_cad=Decimal("31000.00"),
+                    average_hourly_cost_cad=None,
                     budget_hours=None,
                     budget_diagnostic="AVERAGE_HOURLY_COST_UNAVAILABLE",
                 ),
@@ -130,6 +135,9 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
                     erp_task_id="ERP-221",
                     account_group="DEPMO",
                     workforce_eligible=True,
+                    budget_amount_cad=None,
+                    budget_actual_cad=Decimal("10000.00"),
+                    average_hourly_cost_cad=Decimal("100"),
                     budget_hours=Decimal("40"),
                 ),
                 TaskCatalogEntry(
@@ -165,15 +173,32 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
                     task_catalog_item_id="TASK-216",
                     name="Lot A",
                     resource_class_code="PROGRAMMEUR",
-                    planned_hours=Decimal("120"),
+                    planned_hours=Decimal("130"),
+                    start_date=date(2026, 9, 21),
+                    end_date=date(2026, 10, 5),
+                    weekly_load_origin="MANUAL",
                     status="planned",
                 ),
                 WorkPackage(
                     id="WP-216-B",
                     project_id="P1",
                     task_catalog_item_id="TASK-216",
-                    name="Lot B fermé",
-                    planned_hours=Decimal("80"),
+                    name="Lot B",
+                    planned_hours=Decimal("50"),
+                    start_date=date(2026, 9, 28),
+                    end_date=date(2026, 10, 5),
+                    weekly_load_origin="MANUAL",
+                    status="planned",
+                ),
+                WorkPackage(
+                    id="WP-216-CLOSED",
+                    project_id="P1",
+                    task_catalog_item_id="TASK-216",
+                    name="Lot fermé historique",
+                    planned_hours=Decimal("20"),
+                    start_date=date(2026, 9, 28),
+                    end_date=date(2026, 9, 28),
+                    weekly_load_origin="MANUAL",
                     status="closed",
                 ),
                 WorkPackage(
@@ -183,6 +208,9 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
                     name="Lot suralloué",
                     resource_class_code="INSTALLATEUR_AUTOMATISATION",
                     planned_hours=Decimal("100"),
+                    start_date=date(2026, 9, 28),
+                    end_date=date(2026, 9, 28),
+                    weekly_load_origin="MANUAL",
                     status="active",
                 ),
                 WorkPackage(
@@ -199,6 +227,9 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
                     task_catalog_item_id="TASK-220",
                     name="Lot exact",
                     planned_hours=Decimal("16"),
+                    start_date=date(2026, 9, 28),
+                    end_date=date(2026, 9, 28),
+                    weekly_load_origin="MANUAL",
                     status="active",
                 ),
                 WorkPackage(
@@ -236,6 +267,51 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
                 ),
             ]
         )
+        session.flush()
+        session.add_all(
+            [
+                WorkPackageWeeklyLoad(
+                    work_package_id="WP-216-A",
+                    week_start=date(2026, 9, 21),
+                    hours=Decimal("30"),
+                ),
+                WorkPackageWeeklyLoad(
+                    work_package_id="WP-216-A",
+                    week_start=date(2026, 9, 28),
+                    hours=Decimal("40"),
+                ),
+                WorkPackageWeeklyLoad(
+                    work_package_id="WP-216-A",
+                    week_start=date(2026, 10, 5),
+                    hours=Decimal("60"),
+                ),
+                WorkPackageWeeklyLoad(
+                    work_package_id="WP-216-B",
+                    week_start=date(2026, 9, 28),
+                    hours=Decimal("20"),
+                ),
+                WorkPackageWeeklyLoad(
+                    work_package_id="WP-216-B",
+                    week_start=date(2026, 10, 5),
+                    hours=Decimal("30"),
+                ),
+                WorkPackageWeeklyLoad(
+                    work_package_id="WP-216-CLOSED",
+                    week_start=date(2026, 9, 28),
+                    hours=Decimal("20"),
+                ),
+                WorkPackageWeeklyLoad(
+                    work_package_id="WP-217-A",
+                    week_start=date(2026, 9, 28),
+                    hours=Decimal("100"),
+                ),
+                WorkPackageWeeklyLoad(
+                    work_package_id="WP-220",
+                    week_start=date(2026, 9, 28),
+                    hours=Decimal("16"),
+                ),
+            ]
+        )
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -258,7 +334,13 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
         return next(row for row in payload["tasks"] if row["task_code"] == code)
 
     def test_projection_aggregates_budget_with_stable_backend_diagnostics(self) -> None:
-        with TemporaryDirectory() as directory:
+        with (
+            patch(
+                "app.infrastructure.sql.web_query_repository.current_business_date",
+                return_value=date(2026, 9, 30),
+            ),
+            TemporaryDirectory() as directory,
+        ):
             app = create_api_app(self._database(directory))
             with TestClient(app) as client:
                 response = client.get(
@@ -271,13 +353,14 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
         self.assertEqual(payload["project_id"], "P1")
         self.assertEqual(payload["project_number"], "P-1")
         self.assertEqual(payload["project_name"], "Projet 1")
-        self.assertIsNone(payload["last_approved_time_date"])
-        self.assertEqual(payload["cutoff_status"], "UNAVAILABLE")
-        self.assertIsNone(payload["cutoff_source"])
+        self.assertEqual(payload["reference_week_start"], "2026-09-28")
+        self.assertEqual(payload["actual_through_date"], "2026-09-27")
         self.assertEqual(
-            payload["cutoff_diagnostic"],
-            "APPROVED_TIME_CUTOFF_UNAVAILABLE",
+            payload["reference_basis"],
+            "ERP_BUDGET_ACTUAL_THROUGH_PREVIOUS_WEEK",
         )
+        self.assertNotIn("last_approved_time_date", payload)
+        self.assertNotIn("cutoff_status", payload)
         self.assertTrue(
             payload["erp_budget_last_success_at"].startswith("2026-10-01T13:42:00")
         )
@@ -300,6 +383,24 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
             Decimal("19000"),
         )
         self.assertIsNone(programming["financial_diagnostic"])
+        self.assertEqual(
+            Decimal(str(programming["average_hourly_cost_cad"])),
+            Decimal("100"),
+        )
+        self.assertEqual(
+            Decimal(str(programming["remaining_budget_hours_from_actual"])),
+            Decimal("190"),
+        )
+        self.assertIsNone(programming["actual_hours_diagnostic"])
+        self.assertEqual(
+            Decimal(str(programming["future_work_package_hours"])),
+            Decimal("150"),
+        )
+        self.assertIsNone(programming["future_work_package_diagnostic"])
+        self.assertEqual(
+            Decimal(str(programming["remaining_after_work_packages_hours"])),
+            Decimal("40"),
+        )
         self.assertEqual(Decimal(str(programming["budget_hours"])), Decimal("240"))
         self.assertEqual(Decimal(str(programming["planned_wp_hours"])), Decimal("200"))
         self.assertEqual(
@@ -307,12 +408,12 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
             Decimal("40"),
         )
         self.assertNotEqual(
-            Decimal(str(programming["remaining_budget_cad"])),
+            Decimal(str(programming["remaining_budget_hours_from_actual"])),
             Decimal(str(programming["remaining_budget_hours"])),
         )
         self.assertEqual(programming["diagnostic_state"], "PARTIALLY_COVERED")
-        self.assertEqual(programming["associated_work_package_count"], 2)
-        self.assertEqual(programming["budget_included_work_package_count"], 2)
+        self.assertEqual(programming["associated_work_package_count"], 3)
+        self.assertEqual(programming["budget_included_work_package_count"], 3)
         classed = next(
             row for row in programming["work_packages"] if row["id"] == "WP-216-A"
         )
@@ -322,19 +423,39 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
         self.assertEqual(classed["task_resource_class_code"], "PROGRAMMEUR")
         self.assertIsNone(classed["resource_class_diagnostic"])
 
-        closed = next(row for row in programming["work_packages"] if row["id"] == "WP-216-B")
-        self.assertTrue(closed["budget_included"])
-        self.assertIsNone(closed["resource_class_code"])
-        self.assertEqual(closed["task_resource_class_code"], "PROGRAMMEUR")
+        unclassed = next(
+            row for row in programming["work_packages"] if row["id"] == "WP-216-B"
+        )
+        self.assertTrue(unclassed["budget_included"])
+        self.assertTrue(unclassed["current_load_included"])
+        self.assertIsNone(unclassed["resource_class_code"])
+        self.assertEqual(unclassed["task_resource_class_code"], "PROGRAMMEUR")
         self.assertEqual(
-            closed["resource_class_diagnostic"],
+            unclassed["resource_class_diagnostic"],
             "WORK_PACKAGE_TASK_RESOURCE_CLASS_DIVERGENCE",
         )
+        closed = next(
+            row for row in programming["work_packages"] if row["id"] == "WP-216-CLOSED"
+        )
+        self.assertTrue(closed["budget_included"])
+        self.assertFalse(closed["current_load_included"])
 
         over = self._task(payload, "217")
         self.assertEqual(
             Decimal(str(over["remaining_budget_cad"])),
             Decimal("-2000"),
+        )
+        self.assertEqual(
+            Decimal(str(over["remaining_budget_hours_from_actual"])),
+            Decimal("-20"),
+        )
+        self.assertEqual(
+            Decimal(str(over["future_work_package_hours"])),
+            Decimal("100"),
+        )
+        self.assertEqual(
+            Decimal(str(over["remaining_after_work_packages_hours"])),
+            Decimal("-120"),
         )
         self.assertEqual(Decimal(str(over["planned_wp_hours"])), Decimal("100"))
         self.assertEqual(Decimal(str(over["remaining_budget_hours"])), Decimal("-20"))
@@ -359,10 +480,16 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
         )
 
         unavailable = self._task(payload, "218")
-        self.assertIsNone(unavailable["remaining_budget_cad"])
         self.assertEqual(
-            unavailable["financial_diagnostic"],
-            "ERP_FINANCIAL_BUDGET_INCOMPLETE",
+            Decimal(str(unavailable["remaining_budget_cad"])),
+            Decimal("19000"),
+        )
+        self.assertIsNone(unavailable["financial_diagnostic"])
+        self.assertIsNone(unavailable["average_hourly_cost_cad"])
+        self.assertIsNone(unavailable["remaining_budget_hours_from_actual"])
+        self.assertEqual(
+            unavailable["actual_hours_diagnostic"],
+            "resource_class_cost_missing",
         )
         self.assertIsNone(unavailable["budget_hours"])
         self.assertIsNone(unavailable["remaining_budget_hours"])
@@ -385,11 +512,70 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
         self.assertEqual(Decimal(str(exact["remaining_budget_hours"])), Decimal("0"))
 
         unknown_load = self._task(payload, "221")
+        self.assertEqual(
+            unknown_load["financial_diagnostic"],
+            "ERP_FINANCIAL_BUDGET_INCOMPLETE",
+        )
+        self.assertIsNone(unknown_load["remaining_budget_hours_from_actual"])
+        self.assertIsNone(unknown_load["future_work_package_hours"])
+        self.assertEqual(
+            unknown_load["future_work_package_diagnostic"],
+            "WEEKLY_LOAD_INCOMPLETE",
+        )
+        self.assertIsNone(unknown_load["remaining_after_work_packages_hours"])
         self.assertIsNone(unknown_load["planned_wp_hours"])
         self.assertIsNone(unknown_load["remaining_budget_hours"])
         self.assertEqual(
             unknown_load["diagnostic_state"],
             "WORK_PACKAGE_LOAD_UNAVAILABLE",
+        )
+
+    def test_reference_week_keeps_current_monday_when_as_of_is_monday(self) -> None:
+        with (
+            patch(
+                "app.infrastructure.sql.web_query_repository.current_business_date",
+                return_value=date(2026, 10, 5),
+            ),
+            TemporaryDirectory() as directory,
+        ):
+            app = create_api_app(self._database(directory))
+            with TestClient(app) as client:
+                response = client.get(
+                    "/api/v1/medium-term/budget",
+                    params={"project_number": "P-1"},
+                )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["reference_week_start"], "2026-10-05")
+        self.assertEqual(payload["actual_through_date"], "2026-10-04")
+
+    def test_future_load_uses_weekly_boundary_and_task_identity(self) -> None:
+        with (
+            patch(
+                "app.infrastructure.sql.web_query_repository.current_business_date",
+                return_value=date(2026, 9, 30),
+            ),
+            TemporaryDirectory() as directory,
+        ):
+            app = create_api_app(self._database(directory))
+            with TestClient(app) as client:
+                response = client.get(
+                    "/api/v1/medium-term/budget",
+                    params={"project_number": "P-1"},
+                )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        programming = self._task(payload, "216")
+        installation = self._task(payload, "217")
+        self.assertEqual(
+            Decimal(str(programming["future_work_package_hours"])),
+            Decimal("150"),
+        )
+        self.assertEqual(
+            Decimal(str(installation["future_work_package_hours"])),
+            Decimal("100"),
         )
 
     def test_only_depmo_tasks_contribute_and_historical_unclassified_wp_is_explicit(self) -> None:
@@ -429,7 +615,9 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
         self.assertEqual(len(payload["tasks"]), 1)
         task = payload["tasks"][0]
         self.assertIsNone(payload["erp_budget_last_success_at"])
-        self.assertIsNone(payload["last_approved_time_date"])
+        self.assertIn("reference_week_start", payload)
+        self.assertIn("actual_through_date", payload)
+        self.assertNotIn("last_approved_time_date", payload)
         self.assertEqual(task["task_catalog_item_id"], "TASK-P2-216")
         self.assertEqual(Decimal(str(task["planned_wp_hours"])), Decimal("40"))
         self.assertEqual(Decimal(str(task["remaining_budget_hours"])), Decimal("60"))

@@ -21,6 +21,7 @@ from ...application.medium_term_budget import (
     MEDIUM_TERM_DIAGNOSTIC_WEEKLY_LOAD_INCOMPLETE,
     WEEK_DIAGNOSTIC_CAPACITY_ZERO,
     WEEK_DIAGNOSTIC_LOAD_INCOMPLETE,
+    REFERENCE_BASIS_ERP_BUDGET_ACTUAL_THROUGH_PREVIOUS_WEEK,
     MediumTermBudgetReadModel,
     MediumTermBudgetTaskReadModel,
     MediumTermBudgetWorkPackageReadModel,
@@ -29,6 +30,7 @@ from ...application.medium_term_budget import (
     MediumTermTaskOptionReadModel,
     MediumTermWeekReadModel,
     MediumTermWeeklyLoadReadModel,
+    actual_hours_diagnostic,
     erp_financial_budget_diagnostic,
     task_budget_diagnostic,
     work_package_is_budget_included,
@@ -41,6 +43,7 @@ from ...application.query_models import (
 from ...application.work_package_weekly_load import (
     WorkPackageWeeklyLoadState,
     WeeklyLoadValue,
+    monday_of,
     weekly_load_diagnostic,
 )
 from .models import (
@@ -71,6 +74,12 @@ def _text(value: object) -> str:
 def _optional_text(value: object) -> str | None:
     normalized = _text(value)
     return normalized or None
+
+
+def current_business_date() -> date:
+    """Return the backend business date through a patchable test seam."""
+
+    return date.today()
 
 
 class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
@@ -413,6 +422,9 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                 displayed_by_id[work_package.id] = projected
                 display_by_task[task_id].append(projected)
 
+        reference_week_start = monday_of(current_business_date())
+        actual_through_date = reference_week_start - timedelta(days=1)
+
         task_models: list[MediumTermBudgetTaskReadModel] = []
         for task in tasks:
             project = project_by_number.get(task.project_number)
@@ -447,6 +459,66 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                 if budget_amount_cad is not None and budget_actual_cad is not None
                 else None
             )
+            financial_diagnostic = erp_financial_budget_diagnostic(
+                budget_amount_cad=budget_amount_cad,
+                budget_actual_cad=budget_actual_cad,
+            )
+            average_hourly_cost_cad = (
+                Decimal(task.average_hourly_cost_cad)
+                if task.average_hourly_cost_cad is not None
+                else None
+            )
+            actual_projection_diagnostic = actual_hours_diagnostic(
+                financial_diagnostic=financial_diagnostic,
+                average_hourly_cost_cad=average_hourly_cost_cad,
+            )
+            remaining_budget_hours_from_actual = (
+                remaining_budget_cad / average_hourly_cost_cad
+                if (
+                    remaining_budget_cad is not None
+                    and average_hourly_cost_cad is not None
+                    and actual_projection_diagnostic is None
+                )
+                else None
+            )
+
+            future_packages = tuple(
+                row for row in associated if row.current_load_included
+            )
+            future_load_incomplete = any(
+                row.weekly_load_diagnostic is not None
+                and (
+                    row.end_date is None
+                    or row.end_date >= reference_week_start
+                )
+                for row in future_packages
+            )
+            future_work_package_hours = (
+                None
+                if future_load_incomplete
+                else sum(
+                    (
+                        load.hours
+                        for row in future_packages
+                        for load in row.weekly_loads
+                        if load.week_start >= reference_week_start
+                    ),
+                    Decimal("0"),
+                )
+            )
+            future_work_package_diagnostic = (
+                MEDIUM_TERM_DIAGNOSTIC_WEEKLY_LOAD_INCOMPLETE
+                if future_load_incomplete
+                else None
+            )
+            remaining_after_work_packages_hours = (
+                remaining_budget_hours_from_actual - future_work_package_hours
+                if (
+                    remaining_budget_hours_from_actual is not None
+                    and future_work_package_hours is not None
+                )
+                else None
+            )
             budget_hours = (
                 Decimal(task.budget_hours)
                 if task.budget_hours is not None
@@ -467,10 +539,13 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                     budget_amount_cad=budget_amount_cad,
                     budget_actual_cad=budget_actual_cad,
                     remaining_budget_cad=remaining_budget_cad,
-                    financial_diagnostic=erp_financial_budget_diagnostic(
-                        budget_amount_cad=budget_amount_cad,
-                        budget_actual_cad=budget_actual_cad,
-                    ),
+                    financial_diagnostic=financial_diagnostic,
+                    average_hourly_cost_cad=average_hourly_cost_cad,
+                    remaining_budget_hours_from_actual=remaining_budget_hours_from_actual,
+                    actual_hours_diagnostic=actual_projection_diagnostic,
+                    future_work_package_hours=future_work_package_hours,
+                    future_work_package_diagnostic=future_work_package_diagnostic,
+                    remaining_after_work_packages_hours=remaining_after_work_packages_hours,
                     budget_hours=budget_hours,
                     planned_wp_hours=planned_wp_hours,
                     remaining_budget_hours=remaining_budget_hours,
@@ -729,6 +804,9 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                 else None
             ),
             tasks=tuple(task_models),
+            reference_week_start=reference_week_start,
+            actual_through_date=actual_through_date,
+            reference_basis=REFERENCE_BASIS_ERP_BUDGET_ACTUAL_THROUGH_PREVIOUS_WEEK,
             erp_budget_last_success_at=(
                 budget_sync_state.last_success_at
                 if budget_sync_state is not None

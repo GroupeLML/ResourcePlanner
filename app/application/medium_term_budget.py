@@ -18,9 +18,14 @@ MEDIUM_TERM_DIAGNOSTIC_WEEKLY_LOAD_INCOMPLETE = "WEEKLY_LOAD_INCOMPLETE"
 MEDIUM_TERM_DIAGNOSTIC_CAPACITY_ZERO = "WORKFORCE_CAPACITY_ZERO"
 WEEK_DIAGNOSTIC_LOAD_INCOMPLETE = "WORK_PACKAGE_LOAD_INCOMPLETE"
 WEEK_DIAGNOSTIC_CAPACITY_ZERO = "WORKFORCE_CAPACITY_ZERO"
-APPROVED_TIME_CUTOFF_UNAVAILABLE = "APPROVED_TIME_CUTOFF_UNAVAILABLE"
+REFERENCE_BASIS_ERP_BUDGET_ACTUAL_THROUGH_PREVIOUS_WEEK = (
+    "ERP_BUDGET_ACTUAL_THROUGH_PREVIOUS_WEEK"
+)
 ERP_FINANCIAL_BUDGET_UNAVAILABLE = "ERP_FINANCIAL_BUDGET_UNAVAILABLE"
 ERP_FINANCIAL_BUDGET_INCOMPLETE = "ERP_FINANCIAL_BUDGET_INCOMPLETE"
+ACTUAL_HOURS_DIAGNOSTIC_COST_MISSING = "resource_class_cost_missing"
+ACTUAL_HOURS_DIAGNOSTIC_COST_ZERO = "resource_class_cost_zero"
+ACTUAL_HOURS_DIAGNOSTIC_COST_NEGATIVE = "resource_class_cost_negative"
 
 CANCELLED_WORK_PACKAGE_STATUSES = frozenset(
     {
@@ -68,6 +73,22 @@ def erp_financial_budget_diagnostic(
         return ERP_FINANCIAL_BUDGET_UNAVAILABLE
     if budget_amount_cad is None or budget_actual_cad is None:
         return ERP_FINANCIAL_BUDGET_INCOMPLETE
+    return None
+
+
+def actual_hours_diagnostic(
+    *,
+    financial_diagnostic: str | None,
+    average_hourly_cost_cad: Decimal | None,
+) -> str | None:
+    if financial_diagnostic is not None:
+        return None
+    if average_hourly_cost_cad is None:
+        return ACTUAL_HOURS_DIAGNOSTIC_COST_MISSING
+    if average_hourly_cost_cad == 0:
+        return ACTUAL_HOURS_DIAGNOSTIC_COST_ZERO
+    if average_hourly_cost_cad < 0:
+        return ACTUAL_HOURS_DIAGNOSTIC_COST_NEGATIVE
     return None
 
 
@@ -133,6 +154,12 @@ class MediumTermBudgetTaskReadModel:
     budget_actual_cad: Decimal | None
     remaining_budget_cad: Decimal | None
     financial_diagnostic: str | None
+    average_hourly_cost_cad: Decimal | None
+    remaining_budget_hours_from_actual: Decimal | None
+    actual_hours_diagnostic: str | None
+    future_work_package_hours: Decimal | None
+    future_work_package_diagnostic: str | None
+    remaining_after_work_packages_hours: Decimal | None
     budget_hours: Decimal | None
     planned_wp_hours: Decimal | None
     remaining_budget_hours: Decimal | None
@@ -193,10 +220,9 @@ class MediumTermBudgetReadModel:
     project_number: str | None
     project_name: str | None
     tasks: tuple[MediumTermBudgetTaskReadModel, ...]
-    last_approved_time_date: date | None = None
-    cutoff_status: str = "UNAVAILABLE"
-    cutoff_source: str | None = None
-    cutoff_diagnostic: str | None = APPROVED_TIME_CUTOFF_UNAVAILABLE
+    reference_week_start: date | None = None
+    actual_through_date: date | None = None
+    reference_basis: str = REFERENCE_BASIS_ERP_BUDGET_ACTUAL_THROUGH_PREVIOUS_WEEK
     erp_budget_last_success_at: datetime | None = None
     unclassified_work_packages: tuple[MediumTermBudgetWorkPackageReadModel, ...] = ()
     diagnostics: tuple[str, ...] = ()
