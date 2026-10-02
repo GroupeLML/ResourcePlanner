@@ -205,6 +205,7 @@ class PlannerQueryPort(Protocol):
         resource_name: str | None = None,
         resource_id: str | None = None,
         project_ids: Sequence[str] | None = None,
+        can_manage_planning: bool = False,
     ) -> Sequence[ShiftReadModel]: ...
 
     def planning_snapshot(
@@ -214,4 +215,5 @@ class PlannerQueryPort(Protocol):
         end: date,
         project_ids: Sequence[str] | None = None,
         include_resource_ids: Sequence[str] = (),
+        can_manage_planning: bool = False,
     ) -> PlanningSnapshotReadModel: ...
