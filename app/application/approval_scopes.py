@@ -85,14 +85,14 @@ class ApprovalRequestLineRecord:
     id: str
     active: bool
     task_catalog_item_id: str | None
-    required_resource_class: str | None = None
-    proposed_resource_id: str | None = None
     kind: str = "WORKFORCE"
     asset_type_id: str | None = None
     proposed_asset_id: str | None = None
     position: int = 0
     erp_task_code: str | None = None
     erp_task_label: str | None = None
+    required_resource_class: str | None = None
+    proposed_resource_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,9 +112,6 @@ class RequestLineApprovalResolution:
     task_code: str | None = None
     task_label: str | None = None
     effective_resource_class: str | None = None
-    required_resource_class: str | None = None
-    proposed_resource_id: str | None = None
-    routing_sources: tuple[str, ...] = ()
     approval_scope_candidates: tuple[ApprovalScopeRecord, ...] = ()
     line_kind: str = "WORKFORCE"
     asset_type_id: str | None = None
@@ -123,6 +120,9 @@ class RequestLineApprovalResolution:
     proposed_asset_id: str | None = None
     proposed_asset_code: str | None = None
     proposed_asset_label: str | None = None
+    required_resource_class: str | None = None
+    proposed_resource_id: str | None = None
+    routing_sources: tuple[str, ...] = ()
 
 
 class ApprovalScopeRepositoryPort(Protocol):
