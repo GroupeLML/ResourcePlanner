@@ -103,7 +103,6 @@ export default function ShiftAssetAssignmentDialog({
   const actionAllowed = projectedAction?.allowed === true;
 
   useEffect(() => {
-    setFeedback(null);
     setLoadError(null);
     setSelectedAssetId(shift.asset_assignment?.asset_id ?? "");
 
