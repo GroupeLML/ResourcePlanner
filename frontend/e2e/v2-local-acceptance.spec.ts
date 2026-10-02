@@ -1572,6 +1572,8 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   let lift63Id = "";
   let lift64Id = "";
   let lift65Id = "";
+  let adhocAssetAId = "";
+  let adhocAssetBId = "";
 
   const catalogManager = await openAs(browser, "COORDINATOR");
   await navigateMain(catalogManager.page, "Ressources");
@@ -1629,6 +1631,34 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   lift65Id = catalog.assets.find((row) => row.code === "NAC-65")?.id ?? "";
   expect(lift64Id).not.toBe("");
   expect(lift65Id).not.toBe("");
+
+  const adhocTypeResponse = await catalogManager.page.request.post("/api/v1/assets/types", {
+    data: {
+      code: "TOOL560D",
+      label: "Outil ad hoc 560D",
+      category: "TOOL",
+    },
+  });
+  expect(adhocTypeResponse.status(), await adhocTypeResponse.text()).toBe(201);
+  const adhocTypeId = ((await adhocTypeResponse.json()) as { id: string }).id;
+  for (const unit of [
+    { code: "ADHOC-560D-A", label: "Outil ad hoc A" },
+    { code: "ADHOC-560D-B", label: "Outil ad hoc B" },
+  ]) {
+    const created = await catalogManager.page.request.post("/api/v1/assets", {
+      data: {
+        code: unit.code,
+        label: unit.label,
+        asset_type_id: adhocTypeId,
+      },
+    });
+    expect(created.status(), await created.text()).toBe(201);
+    const payload = await created.json() as { id: string; code: string };
+    if (payload.code === "ADHOC-560D-A") adhocAssetAId = payload.id;
+    if (payload.code === "ADHOC-560D-B") adhocAssetBId = payload.id;
+  }
+  expect(adhocAssetAId).not.toBe("");
+  expect(adhocAssetBId).not.toBe("");
 
   await catalogPanel.locator(".asset-unit-row").filter({ hasText: "Nacelle #63" }).first().click();
   const catalogUnavailability = catalogPanel.locator(".asset-catalog-unavailability-form");
@@ -1764,10 +1794,6 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   expect(activeAssets.every((line) => line.asset_type_id === assetTypeId)).toBeTruthy();
   expect(activeWorkforce).toHaveLength(2);
   expect(new Set(activeWorkforce.map((line) => line.proposed_resource_id))).toEqual(new Set(["R-ALICE", "R-BOB"]));
-  const extendedAssetLine = [...activeAssets].sort((left, right) => left.position - right.position)[0];
-  expect(extendedAssetLine?.line_id).toBeTruthy();
-  const extendedAssetLineId = extendedAssetLine.line_id;
-
   await workflowSelect(projectManager.page, demandNumber);
   await projectManager.page.getByRole("button", { name: "Soumettre", exact: true }).click();
   await expect(projectManager.page.locator(".demand-notice").filter({ hasText: "soumise pour approbation" })).toContainText(
@@ -1806,30 +1832,25 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   await expect(demandRequirements.nth(0)).toContainText("À réserver");
   await expect(demandRequirements.nth(1)).toContainText("À réserver");
 
-  const requirementSnapshotResponse = await coordinator.page.request.get(
-    "/api/v1/planning/snapshot?start=" + d1 + "&end=" + d5 + "&scope=global",
-  );
-  expect(requirementSnapshotResponse.ok()).toBeTruthy();
-  const requirementSnapshot = await requirementSnapshotResponse.json() as {
-    asset_requirements: Array<{
-      requirement_id: string;
-      demand_number: string;
-      source_request_line_id: string;
-    }>;
-  };
-  const extendedRequirementId = requirementSnapshot.asset_requirements.find(
-    (row) => row.demand_number === demandNumber && row.source_request_line_id === extendedAssetLineId,
-  )?.requirement_id ?? "";
-  expect(extendedRequirementId).not.toBe("");
-
   const aliceRow = coordinator.page.locator(".resource-row").filter({ hasText: "Alice" }).first();
   const bobRow = coordinator.page.locator(".resource-row").filter({ hasText: "Bob" }).first();
   let aliceShift = aliceRow.locator(".shift-card").filter({ hasText: demandNumber }).first();
   let bobShift = bobRow.locator(".shift-card").filter({ hasText: demandNumber }).first();
   await expect(aliceShift).toBeVisible();
   await expect(bobShift).toBeVisible();
+  await expect(aliceShift).toContainText("Aucun actif");
   await expect(aliceShift).not.toContainText("Nacelle #63");
   await expect(bobShift).not.toContainText("Nacelle #63");
+
+  await aliceShift.locator(".shift-card-main").click();
+  let shiftDialog = coordinator.page.getByRole("dialog", { name: "Modifier le quart" });
+  await expect(shiftDialog.getByTestId("shift-asset-section")).toContainText("Aucun actif associé");
+  await shiftDialog.getByRole("button", { name: "Assigner un actif", exact: true }).click();
+
+  let quickAssetDialog = coordinator.page.getByRole("dialog", { name: "Assigner un actif" });
+  await expect(quickAssetDialog).toBeVisible();
+  await expect(quickAssetDialog).toContainText(demandNumber);
+  await chooseCombobox(quickAssetDialog, "Actif", "ADHOC-560D-A", "ADHOC-560D-A");
 
   catalogResponse = await coordinator.page.request.get("/api/v1/assets/catalog");
   expect(catalogResponse.ok()).toBeTruthy();
@@ -1844,49 +1865,93 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   });
   expect(bumpVersion.status(), await bumpVersion.text()).toBe(201);
 
-  await aliceShift.getByRole("button", { name: /Assigner un actif/ }).click();
-  const quickAssetDialog = coordinator.page.getByRole("dialog", { name: "Assigner un actif" });
-  await expect(quickAssetDialog).toBeVisible();
-  await expect(quickAssetDialog).toContainText(demandNumber);
-  await quickAssetDialog.getByLabel("Besoin actif").selectOption(extendedRequirementId);
-  await quickAssetDialog.getByLabel("Unité").selectOption(lift63Id);
-
   const refreshedSnapshot = coordinator.page.waitForResponse((response) => (
     response.request().method() === "GET"
     && response.url().includes("/api/v1/planning/snapshot")
     && response.ok()
   ));
-  await quickAssetDialog.getByRole("button", { name: "Réserver et associer" }).click();
+  await quickAssetDialog.getByRole("button", { name: "Assigner l’actif" }).click();
   await expect(quickAssetDialog).toContainText("Le planning a changé");
   await refreshedSnapshot;
-
-  await quickAssetDialog.getByRole("button", { name: "Réserver et associer" }).click();
+  await expect(quickAssetDialog.getByRole("combobox", { name: "Actif", exact: true })).toBeEnabled();
+  await chooseCombobox(quickAssetDialog, "Actif", "ADHOC-560D-A", "ADHOC-560D-A");
+  await quickAssetDialog.getByRole("button", { name: "Assigner l’actif" }).click();
   await expect(quickAssetDialog).toBeHidden();
 
   aliceShift = aliceRow.locator(".shift-card").filter({ hasText: demandNumber }).first();
-  await expect(aliceShift).toContainText("Nacelle #63");
+  await expect(aliceShift).toContainText("Actif :");
+  await expect(aliceShift).toContainText("ADHOC-560D-A");
+
+  await aliceShift.locator(".shift-card-main").click();
+  shiftDialog = coordinator.page.getByRole("dialog", { name: "Modifier le quart" });
+  await expect(shiftDialog.getByTestId("shift-asset-section")).toContainText("ADHOC-560D-A");
+  await shiftDialog.getByRole("button", { name: "Changer", exact: true }).click();
+
+  quickAssetDialog = coordinator.page.getByRole("dialog", { name: "Changer l’actif" });
+  await chooseCombobox(quickAssetDialog, "Nouvel actif", "ADHOC-560D-B", "ADHOC-560D-B");
+  await quickAssetDialog.getByRole("button", { name: "Changer l’actif" }).click();
+  await expect(quickAssetDialog).toBeHidden();
+
+  aliceShift = aliceRow.locator(".shift-card").filter({ hasText: demandNumber }).first();
+  await expect(aliceShift).toContainText("ADHOC-560D-B");
+  await expect(aliceShift).not.toContainText("ADHOC-560D-A");
 
   demandRequirements = assetPanel.locator(".asset-requirement-card").filter({ hasText: demandNumber });
-  const secondRequirement = demandRequirements.filter({ hasText: "À réserver" }).first();
-  await secondRequirement.getByRole("combobox").first().selectOption(lift64Id);
-  await secondRequirement.getByRole("button", { name: "Réserver cette unité" }).click();
+  let requestRequirement = demandRequirements.filter({ hasText: "À réserver" }).first();
+  await requestRequirement.getByRole("combobox").first().selectOption(lift63Id);
+  await requestRequirement.getByRole("button", { name: "Réserver cette unité" }).click();
   await expect(assetPanel.locator(".asset-planning-feedback")).toContainText("Réservation enregistrée");
 
-  const secondAllocated = assetPanel.locator(".asset-requirement-card").filter({
-    has: coordinator.page.locator(".asset-current-allocation strong").filter({ hasText: "Nacelle #64" }),
+  let allocatedRequest = assetPanel.locator(".asset-requirement-card").filter({
+    has: coordinator.page.locator(".asset-current-allocation strong").filter({ hasText: "Nacelle #63" }),
   }).first();
-  const operatorSelect = secondAllocated.getByLabel(/Opérateur qualifiant/);
+  let operatorSelect = allocatedRequest.getByLabel(/Opérateur qualifiant/);
   await expect(operatorSelect.locator('option[value="R-ALICE"]')).toBeAttached();
   await operatorSelect.selectOption("R-ALICE");
-  await secondAllocated.getByRole("button", { name: "Enregistrer l’opérateur" }).click();
+  await allocatedRequest.getByRole("button", { name: "Enregistrer l’opérateur" }).click();
+  await expect(assetPanel.locator(".asset-planning-feedback")).toContainText("Opérateur qualifiant enregistré");
+
+  demandRequirements = assetPanel.locator(".asset-requirement-card").filter({ hasText: demandNumber });
+  requestRequirement = demandRequirements.filter({ hasText: "À réserver" }).first();
+  await requestRequirement.getByRole("combobox").first().selectOption(lift64Id);
+  await requestRequirement.getByRole("button", { name: "Réserver cette unité" }).click();
+  await expect(assetPanel.locator(".asset-planning-feedback")).toContainText("Réservation enregistrée");
+
+  allocatedRequest = assetPanel.locator(".asset-requirement-card").filter({
+    has: coordinator.page.locator(".asset-current-allocation strong").filter({ hasText: "Nacelle #64" }),
+  }).first();
+  operatorSelect = allocatedRequest.getByLabel(/Opérateur qualifiant/);
+  await expect(operatorSelect.locator('option[value="R-ALICE"]')).toBeAttached();
+  await operatorSelect.selectOption("R-ALICE");
+  await allocatedRequest.getByRole("button", { name: "Enregistrer l’opérateur" }).click();
   await expect(assetPanel.locator(".asset-planning-feedback")).toContainText("Opérateur qualifiant enregistré");
 
   aliceShift = aliceRow.locator(".shift-card").filter({ hasText: demandNumber }).first();
   bobShift = bobRow.locator(".shift-card").filter({ hasText: demandNumber }).first();
-  await expect(aliceShift).toContainText("Nacelle #63");
-  await expect(aliceShift).toContainText("Nacelle #64");
+  await expect(aliceShift).toContainText("ADHOC-560D-B");
+  await expect(aliceShift).not.toContainText("Nacelle #63");
+  await expect(aliceShift).not.toContainText("Nacelle #64");
   await expect(bobShift).not.toContainText("Nacelle #63");
   await expect(bobShift).not.toContainText("Nacelle #64");
+
+  await aliceShift.locator(".shift-card-main").click();
+  shiftDialog = coordinator.page.getByRole("dialog", { name: "Modifier le quart" });
+  const assetSection = shiftDialog.getByTestId("shift-asset-section");
+  await expect(assetSection).toContainText("ADHOC-560D-B");
+  await expect(assetSection).toContainText("Réservations liées à la demande");
+  await expect(assetSection).toContainText("NAC-63");
+  await expect(assetSection).toContainText("NAC-64");
+  await expect(assetSection).toContainText("Plusieurs réservations liées à la demande");
+  await shiftDialog.getByRole("button", { name: "Libérer", exact: true }).click();
+
+  quickAssetDialog = coordinator.page.getByRole("dialog", { name: "Libérer l’actif" });
+  await expect(quickAssetDialog).toContainText("ADHOC-560D-B");
+  await quickAssetDialog.getByRole("button", { name: "Libérer l’actif" }).click();
+  await expect(quickAssetDialog).toBeHidden();
+
+  aliceShift = aliceRow.locator(".shift-card").filter({ hasText: demandNumber }).first();
+  await expect(aliceShift).toContainText("Aucun actif");
+  await expect(aliceShift.getByRole("button", { name: /Assigner un actif/ })).toBeVisible();
 
   const unavailabilityForm = assetPanel.locator(".asset-unavailability-form");
   await labelled(unavailabilityForm, "Actif", "select").selectOption("A-LIFT-2");
