@@ -59,15 +59,16 @@ class ReactMediumTermContractTests(unittest.TestCase):
         self.assertNotIn('project.status === "Annulé"', page)
         self.assertNotIn('normalize(project.status)', page)
 
-    def test_gantt_renders_project_task_work_package_budget_hierarchy_from_backend(self) -> None:
+    def test_gantt_renders_pm_project_task_work_package_hierarchy_from_backend(self) -> None:
         page = (ROOT / "frontend" / "src" / "MediumTermPage.tsx").read_text(
             encoding="utf-8"
         )
 
-        self.assertIn("Projet → tâche ERP → WorkPackage", page)
+        self.assertIn("Chargé de projet → Projet ERP → Tâche ERP → WorkPackage", page)
         self.assertIn("task.task_code", page)
         self.assertIn("task.task_label", page)
-        self.assertIn("task.budget_hours", page)
+        self.assertIn("task.budget_amount_cad", page)
+        self.assertIn("task.remaining_budget_cad", page)
         self.assertIn("task.planned_wp_hours", page)
         self.assertIn("task.remaining_budget_hours", page)
         self.assertIn("task.diagnostic_state", page)
