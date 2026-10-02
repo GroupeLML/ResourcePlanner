@@ -289,6 +289,14 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
                                                  expected_version=body.expected_planning_version,
                                                  idempotency_key=idempotency_key)
 
+    @router.get("/shifts/{identifier}/assignment/candidates")
+    def shift_asset_candidates(
+        identifier: str,
+        request: Request,
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        return service(session, request).shift_asset_candidates(identifier)
+
     @router.put("/shifts/{identifier}/assignment")
     def set_shift_asset(
         identifier: str,
