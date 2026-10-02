@@ -7,6 +7,10 @@ from sqlalchemy.orm import Session
 
 from ...application.operational_contacts import OperationalContactService
 from ...application.project_communications import ProjectCommunicationRepositoryPort
+from ...application.project_managers import (
+    EffectiveProjectManager,
+    ProjectManagerResolutionService,
+)
 from ...domain.confirmation import effective_confirmation
 from ...domain.planning_engine import MISSING_ALLOCATION_TYPE
 from ...domain.reservable_assets import AssetRequirementOrigin
@@ -22,6 +26,9 @@ from .asset_qualification import (
 from .business_contact_models import BusinessContact
 from .identity_models import AppUser
 from .models import Project, Resource, ResourceRequirement, Shift, WorkforceRequest
+from .project_manager_resolution_repository import (
+    SqlProjectManagerResolutionRepository,
+)
 
 
 DIAGNOSTIC_PROJECT_MANAGER_CONTACT_MISSING = "PROJECT_MANAGER_CONTACT_MISSING"
@@ -62,24 +69,35 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
     def _project_manager(
         self,
         *,
-        project: Project,
+        manager: EffectiveProjectManager | None,
         contacts: dict[str, BusinessContact],
-        users_by_contact: dict[str, AppUser],
     ) -> ProjectCommunicationParticipant:
         diagnostics: list[str] = []
-        contact_id = _text(project.project_manager_contact_id) or None
+        if manager is None:
+            diagnostics.append(DIAGNOSTIC_PROJECT_MANAGER_CONTACT_MISSING)
+            return ProjectCommunicationParticipant(
+                contact_id=None,
+                user_id=None,
+                display_name="Chargé de projet non défini",
+                email=None,
+                phone=None,
+                active=False,
+                diagnostics=_unique(diagnostics),
+            )
+
+        diagnostics.extend(manager.diagnostics)
+        contact_id = _text(manager.business_contact_id) or None
         contact = contacts.get(contact_id) if contact_id else None
-        user = users_by_contact.get(contact_id) if contact_id else None
 
         if contact_id is None:
             diagnostics.append(DIAGNOSTIC_PROJECT_MANAGER_CONTACT_MISSING)
         elif contact is None:
             diagnostics.append(DIAGNOSTIC_PROJECT_MANAGER_CONTACT_INVALID)
-        if contact is not None and not bool(contact.active):
-            diagnostics.append(DIAGNOSTIC_PROJECT_MANAGER_INACTIVE)
-        if contact_id is not None and user is None:
-            diagnostics.append(DIAGNOSTIC_PROJECT_MANAGER_USER_MISSING)
-        if user is not None and not bool(user.active):
+        if (
+            manager.user_active is False
+            or manager.contact_active is False
+            or (contact is not None and not bool(contact.active))
+        ):
             diagnostics.append(DIAGNOSTIC_PROJECT_MANAGER_INACTIVE)
 
         email = _text(contact.email) if contact is not None else ""
@@ -88,19 +106,15 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
 
         return ProjectCommunicationParticipant(
             contact_id=contact_id,
-            user_id=user.id if user is not None else None,
-            display_name=(
-                contact.display_name
-                if contact is not None
-                else (_text(project.project_manager_name) or "Chargé de projet non défini")
-            ),
+            user_id=manager.app_user_id,
+            display_name=manager.display_name,
             email=email or None,
             phone=(_text(contact.phone) or None) if contact is not None else None,
             active=bool(
                 contact is not None
                 and contact.active
-                and user is not None
-                and user.active
+                and manager.user_active is not False
+                and manager.contact_active is not False
             ),
             diagnostics=_unique(diagnostics),
         )
@@ -294,13 +308,26 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
         }
 
         resolutions = {
-            shift.id: self._operational_contacts.resolve_shift(shift.id)
-            for shift, _requirement, _resource, _project in rows
+            resolution.shift_id: resolution
+            for resolution in self._operational_contacts.resolve_shifts(shift_ids)
+            if resolution.shift_id is not None
+        }
+        project_ids = tuple(
+            dict.fromkeys(
+                project.id for _shift, _requirement, _resource, project in rows
+            )
+        )
+        project_manager_projections = ProjectManagerResolutionService(
+            SqlProjectManagerResolutionRepository(self._session)
+        ).resolve_projects(list(project_ids))
+        project_managers = {
+            project_id: projection.primary
+            for project_id, projection in project_manager_projections.items()
         }
         relevant_contact_ids = {
-            _text(project.project_manager_contact_id)
-            for _shift, _requirement, _resource, project in rows
-            if _text(project.project_manager_contact_id)
+            _text(manager.business_contact_id)
+            for manager in project_managers.values()
+            if manager is not None and _text(manager.business_contact_id)
         }
         relevant_contact_ids.update(
             _text(user.business_contact_id)
@@ -353,9 +380,8 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                 task_label=resolution.task_label,
             )
             manager = self._project_manager(
-                project=project,
+                manager=project_managers.get(project.id),
                 contacts=contacts_by_id,
-                users_by_contact=users_by_contact,
             )
             resource_contact = self._resource_contact(
                 resource=resource,
