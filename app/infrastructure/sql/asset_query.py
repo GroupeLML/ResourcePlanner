@@ -20,6 +20,7 @@ from ...application.query_models import (
     AssetUnavailabilityReadModel,
 )
 from ...domain.approval_envelope import approval_envelope_from_snapshot_payload
+from ...domain.reservable_assets import AssetRequirementOrigin
 from .approval_revision_models import (
     APPROVAL_REFERENCE_CAPTURED,
     RequestApprovalReference,
@@ -40,7 +41,7 @@ from .asset_qualification import (
     evaluate_asset_qualification,
     required_competencies,
 )
-from .models import Project, WorkforceRequest
+from .models import Project, ResourceRequirement, WorkforceRequest
 from .operational_choice_models import RequestOperationalState
 
 
@@ -77,23 +78,50 @@ class SqlAssetPlanningQuery:
         if not rows:
             return ()
 
-        project_ids = {row.project_id for row in rows}
-        request_ids = {row.workforce_request_id for row in rows}
+        project_ids = {row.project_id for row in rows if row.project_id}
+        request_ids = {
+            row.workforce_request_id for row in rows if row.workforce_request_id
+        }
+        resource_requirement_ids = {
+            row.resource_requirement_id
+            for row in rows
+            if row.resource_requirement_id
+        }
         type_ids = {row.asset_type_id for row in rows}
         requirement_ids = {row.id for row in rows}
 
-        projects = {
-            row.id: row
-            for row in self._session.scalars(
-                select(Project).where(Project.id.in_(project_ids))
-            ).all()
-        }
-        requests = {
-            row.id: row
-            for row in self._session.scalars(
-                select(WorkforceRequest).where(WorkforceRequest.id.in_(request_ids))
-            ).all()
-        }
+        projects = (
+            {
+                row.id: row
+                for row in self._session.scalars(
+                    select(Project).where(Project.id.in_(project_ids))
+                ).all()
+            }
+            if project_ids
+            else {}
+        )
+        requests = (
+            {
+                row.id: row
+                for row in self._session.scalars(
+                    select(WorkforceRequest).where(WorkforceRequest.id.in_(request_ids))
+                ).all()
+            }
+            if request_ids
+            else {}
+        )
+        human_requirements = (
+            {
+                row.id: row
+                for row in self._session.scalars(
+                    select(ResourceRequirement).where(
+                        ResourceRequirement.id.in_(resource_requirement_ids)
+                    )
+                ).all()
+            }
+            if resource_requirement_ids
+            else {}
+        )
         asset_types = {
             row.id: row
             for row in self._session.scalars(
@@ -125,6 +153,7 @@ class SqlAssetPlanningQuery:
             project = projects.get(row.project_id)
             request = requests.get(row.workforce_request_id)
             asset_type = asset_types.get(row.asset_type_id)
+            human_requirement = human_requirements.get(row.resource_requirement_id)
             allocation = allocations.get(row.id)
             asset = assets.get(allocation.asset_id) if allocation is not None else None
             qualification = evaluate_asset_qualification(
@@ -135,6 +164,8 @@ class SqlAssetPlanningQuery:
             result.append(
                 AssetRequirementReadModel(
                     requirement_id=row.id,
+                    origin=row.origin,
+                    request_id=row.workforce_request_id,
                     demand_number=(
                         _text(request.legacy_demand_number) or request.id
                         if request is not None
@@ -148,6 +179,17 @@ class SqlAssetPlanningQuery:
                     source_period_id=row.source_period_id,
                     approval_revision_id=row.approval_revision_id,
                     approved_entry_key=row.approved_entry_key,
+                    resource_requirement_id=row.resource_requirement_id,
+                    segment_reference=(
+                        (
+                            _text(human_requirement.legacy_segment_id)
+                            or human_requirement.id
+                        )
+                        if human_requirement is not None
+                        else None
+                    ),
+                    shift_id=row.shift_id,
+                    context_resource_id=row.context_resource_id,
                     slot_index=int(row.slot_index or 0),
                     asset_type_id=row.asset_type_id,
                     asset_type_code=(
@@ -196,6 +238,7 @@ class SqlAssetPlanningQuery:
         rows = self._session.scalars(
             select(AssetRequirement)
             .where(
+                AssetRequirement.origin == AssetRequirementOrigin.REQUEST.value,
                 AssetRequirement.workforce_request_id == request.id,
                 AssetRequirement.status != "Annulé",
             )
@@ -212,8 +255,14 @@ class SqlAssetPlanningQuery:
         self,
         requirements: Sequence[AssetRequirement],
     ) -> list[AssetPlanningDiagnosticReadModel]:
-        rows = tuple(requirements)
-        request_ids = {row.workforce_request_id for row in rows}
+        rows = tuple(
+            row
+            for row in requirements
+            if row.origin == AssetRequirementOrigin.REQUEST.value
+        )
+        request_ids = {
+            row.workforce_request_id for row in rows if row.workforce_request_id
+        }
         references = {
             row.workforce_request_id: row
             for row in self._session.scalars(
@@ -540,7 +589,7 @@ class SqlAssetPlanningQuery:
             if allocation is None:
                 add_diagnostic(
                     "ASSET_REQUIREMENT_UNASSIGNED",
-                    "Le besoin d'actif approuvé n'a aucune réservation.",
+                    "Le besoin d'actif n'a aucune réservation.",
                     requirement_id=requirement.id,
                 )
                 continue
@@ -571,7 +620,7 @@ class SqlAssetPlanningQuery:
             ):
                 add_diagnostic(
                     "ASSET_OUTSIDE_REQUIREMENT_WINDOW",
-                    "La réservation d'actif dépasse la fenêtre approuvée du besoin.",
+                    "La réservation d'actif dépasse la fenêtre du besoin.",
                     requirement_id=requirement.id,
                     allocation_id=allocation.id,
                     asset_id=allocation.asset_id,

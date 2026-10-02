@@ -57,6 +57,8 @@ SOURCE_MISSING_COLUMNS = {
     "asset_requirements": {
         "origin",
         "shift_id",
+        "resource_requirement_id",
+        "context_resource_id",
     },
 }
 

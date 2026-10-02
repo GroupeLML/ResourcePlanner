@@ -24,6 +24,9 @@ class OccupancyPolicy(StrEnum):
 class AssetRequirementOrigin(StrEnum):
     REQUEST = "REQUEST"
     SHIFT_AD_HOC = "SHIFT_AD_HOC"
+    PROJECT_DIRECT = "PROJECT_DIRECT"
+    SEGMENT = "SEGMENT"
+    RESOURCE_PERIOD = "RESOURCE_PERIOD"
 
 
 @dataclass(frozen=True, slots=True)

@@ -448,13 +448,19 @@ class AssetUnavailabilityReadModel:
 @dataclass(frozen=True, slots=True)
 class AssetRequirementReadModel:
     requirement_id: str
-    demand_number: str
-    project_id: str
-    project_number: str
-    source_request_line_id: str
+    origin: str
+    request_id: str | None
+    demand_number: str | None
+    project_id: str | None
+    project_number: str | None
+    source_request_line_id: str | None
     source_period_id: str | None
     approval_revision_id: str | None
-    approved_entry_key: str
+    approved_entry_key: str | None
+    resource_requirement_id: str | None
+    segment_reference: str | None
+    shift_id: str | None
+    context_resource_id: str | None
     slot_index: int
     asset_type_id: str
     asset_type_code: str

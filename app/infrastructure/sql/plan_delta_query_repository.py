@@ -15,6 +15,7 @@ from ...application.plan_delta import (
     DemandPlanDeltaItemReadModel,
     DemandPlanDeltaReadModel,
 )
+from ...domain.reservable_assets import AssetRequirementOrigin
 from ...domain.active_days import split_total_workforce_hours
 from ...domain.availability_rules import availability_hours_for_day
 from ...domain.confirmation import CONFIRMATION_CONFIRMED, normalize_confirmation
@@ -243,6 +244,7 @@ class SqlPlannerQueryRepositoryWithPlanDelta(SqlPlannerQueryRepositoryWeb):
             self._delta_session.scalars(
                 select(AssetRequirement)
                 .where(
+                    AssetRequirement.origin == AssetRequirementOrigin.REQUEST.value,
                     AssetRequirement.workforce_request_id == request_id,
                     AssetRequirement.status != "Annulé",
                 )

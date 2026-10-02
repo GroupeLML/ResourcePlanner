@@ -253,10 +253,25 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
         allocation_rows = tuple(session.scalars(select(AssetAllocation)))
         requirements_by_id = {row.id: row for row in requirement_rows}
         return {
-            "requirements": [{"id": row.id, "request_id": row.workforce_request_id, "asset_type_id": row.asset_type_id,
-                              "start_date": row.start_date, "end_date": row.end_date, "usage_hours": row.usage_hours,
-                              "status": row.status, "approved_entry_key": row.approved_entry_key}
-                             for row in requirement_rows],
+            "requirements": [
+                {
+                    "id": row.id,
+                    "origin": row.origin,
+                    "request_id": row.workforce_request_id,
+                    "request_line_id": row.source_request_line_id,
+                    "project_id": row.project_id,
+                    "resource_requirement_id": row.resource_requirement_id,
+                    "shift_id": row.shift_id,
+                    "context_resource_id": row.context_resource_id,
+                    "asset_type_id": row.asset_type_id,
+                    "start_date": row.start_date,
+                    "end_date": row.end_date,
+                    "usage_hours": row.usage_hours,
+                    "status": row.status,
+                    "approved_entry_key": row.approved_entry_key,
+                }
+                for row in requirement_rows
+            ],
             "allocations": [
                 {
                     "id": row.id,

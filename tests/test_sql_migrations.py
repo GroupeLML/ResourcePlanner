@@ -18,7 +18,7 @@ MIGRATIONS = ROOT / "migrations"
 VERSIONS = MIGRATIONS / "versions"
 BASELINE_FILE = VERSIONS / "0001_v2_production_baseline.py"
 BASELINE_REVISION = "v2_production_baseline"
-HEAD_REVISION = "0007_project_co_managers"
+HEAD_REVISION = "0008_asset_requirement_contexts"
 
 
 def alembic_config(database_path: Path) -> Config:
@@ -73,6 +73,7 @@ class SqlMigrationTests(unittest.TestCase):
                 "0005_acumatica_project_task_sync_runs.py",
                 "0006_asset_requirement_origins.py",
                 "0007_project_co_managers.py",
+                "0008_asset_requirement_contexts.py",
             ],
         )
 
@@ -91,6 +92,7 @@ class SqlMigrationTests(unittest.TestCase):
             [revision.revision for revision in script.walk_revisions()],
             [
                 HEAD_REVISION,
+                "0007_project_co_managers",
                 "0006_asset_requirement_origins",
                 "0005_task_sync_runs",
                 "0004_asset_approval_authority",
@@ -194,13 +196,19 @@ class SqlMigrationTests(unittest.TestCase):
                 with engine.connect() as connection:
                     row = connection.execute(
                         text(
-                            "SELECT id, origin, shift_id "
+                            "SELECT id, origin, shift_id, resource_requirement_id, "
+                            "context_resource_id, project_id, start_date, end_date "
                             "FROM asset_requirements WHERE id = 'AR-HIST'"
                         )
                     ).one()
                     self.assertEqual(row.id, "AR-HIST")
                     self.assertEqual(row.origin, "REQUEST")
                     self.assertIsNone(row.shift_id)
+                    self.assertIsNone(row.resource_requirement_id)
+                    self.assertIsNone(row.context_resource_id)
+                    self.assertEqual(row.project_id, "P-HIST")
+                    self.assertEqual(str(row.start_date), "2026-09-01")
+                    self.assertEqual(str(row.end_date), "2026-09-01")
             finally:
                 engine.dispose()
 

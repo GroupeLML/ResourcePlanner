@@ -79,19 +79,57 @@ class AssetRequirement(TimestampMixin, Base):
         CheckConstraint("end_date >= start_date", name="asset_requirement_window"),
         CheckConstraint("usage_hours IS NULL OR usage_hours > 0", name="asset_requirement_hours_positive"),
         CheckConstraint(
-            "origin IN ('REQUEST', 'SHIFT_AD_HOC')",
+            "origin IN ('REQUEST', 'SHIFT_AD_HOC', 'PROJECT_DIRECT', 'SEGMENT', 'RESOURCE_PERIOD')",
             name="asset_requirement_origin_values",
         ),
         CheckConstraint(
             "("
             "origin = 'REQUEST' "
+            "AND project_id IS NOT NULL "
             "AND shift_id IS NULL "
+            "AND resource_requirement_id IS NULL "
+            "AND context_resource_id IS NULL "
             "AND workforce_request_id IS NOT NULL "
             "AND source_request_line_id IS NOT NULL "
             "AND approved_entry_key IS NOT NULL"
             ") OR ("
             "origin = 'SHIFT_AD_HOC' "
+            "AND project_id IS NOT NULL "
             "AND shift_id IS NOT NULL "
+            "AND resource_requirement_id IS NULL "
+            "AND context_resource_id IS NULL "
+            "AND workforce_request_id IS NULL "
+            "AND source_request_line_id IS NULL "
+            "AND source_period_id IS NULL "
+            "AND approval_revision_id IS NULL "
+            "AND approved_entry_key IS NULL"
+            ") OR ("
+            "origin = 'PROJECT_DIRECT' "
+            "AND project_id IS NOT NULL "
+            "AND shift_id IS NULL "
+            "AND resource_requirement_id IS NULL "
+            "AND context_resource_id IS NULL "
+            "AND workforce_request_id IS NULL "
+            "AND source_request_line_id IS NULL "
+            "AND source_period_id IS NULL "
+            "AND approval_revision_id IS NULL "
+            "AND approved_entry_key IS NULL"
+            ") OR ("
+            "origin = 'SEGMENT' "
+            "AND project_id IS NOT NULL "
+            "AND shift_id IS NULL "
+            "AND resource_requirement_id IS NOT NULL "
+            "AND context_resource_id IS NULL "
+            "AND workforce_request_id IS NULL "
+            "AND source_request_line_id IS NULL "
+            "AND source_period_id IS NULL "
+            "AND approval_revision_id IS NULL "
+            "AND approved_entry_key IS NULL"
+            ") OR ("
+            "origin = 'RESOURCE_PERIOD' "
+            "AND shift_id IS NULL "
+            "AND resource_requirement_id IS NULL "
+            "AND context_resource_id IS NOT NULL "
             "AND workforce_request_id IS NULL "
             "AND source_request_line_id IS NULL "
             "AND source_period_id IS NULL "
@@ -117,10 +155,12 @@ class AssetRequirement(TimestampMixin, Base):
             mssql_where=text("origin = 'SHIFT_AD_HOC'"),
         ),
         Index("ix_asset_requirements_request", "workforce_request_id", "source_request_line_id"),
+        Index("ix_asset_requirements_resource_requirement_id", "resource_requirement_id"),
+        Index("ix_asset_requirements_context_resource_id", "context_resource_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    project_id: Mapped[str] = mapped_column(String(36), ForeignKey("projects.id"), nullable=False)
+    project_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("projects.id"), nullable=True)
     origin: Mapped[str] = mapped_column(
         String(32),
         nullable=False,
@@ -128,6 +168,12 @@ class AssetRequirement(TimestampMixin, Base):
     )
     shift_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("shifts.id"), nullable=True
+    )
+    resource_requirement_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("resource_requirements.id"), nullable=True
+    )
+    context_resource_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("resources.id"), nullable=True
     )
     workforce_request_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("workforce_requests.id"), nullable=True
