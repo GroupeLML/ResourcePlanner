@@ -1115,6 +1115,124 @@ class SqlAssetService:
             "planning_version": self.version.current_version(),
         }
 
+    def shift_ad_hoc_attachment(
+        self,
+        shift_id: str,
+    ) -> tuple[AssetRequirement | None, AssetAllocation | None]:
+        """Return the shift-owned ad-hoc requirement/allocation without changing it."""
+
+        requirement = self.session.scalar(
+            select(AssetRequirement).where(
+                AssetRequirement.origin
+                == AssetRequirementOrigin.SHIFT_AD_HOC.value,
+                AssetRequirement.shift_id == shift_id,
+            )
+        )
+        if requirement is None:
+            return None, None
+        return requirement, self._allocation_for_requirement(requirement.id)
+
+    def synchronize_shift_ad_hoc_assignment(
+        self,
+        *,
+        shift: Shift,
+    ) -> dict | None:
+        """Keep one SHIFT_AD_HOC reservation aligned with its owning Shift.
+
+        The caller owns the transaction and planning CAS.  This method intentionally
+        does not acquire another version and does not commit.  It mutates the existing
+        requirement/allocation identities, then reuses the canonical #291/#292
+        availability and qualification rules before the surrounding transaction can
+        commit.
+        """
+
+        requirement, allocation = self.shift_ad_hoc_attachment(shift.id)
+        if requirement is None:
+            return None
+        if allocation is None:
+            raise ApplicationConflictError(
+                "L'affectation d'actif ad hoc du quart est incomplète.",
+                code="shift_asset_assignment_incomplete",
+                context={
+                    "shift_id": shift.id,
+                    "requirement_id": requirement.id,
+                },
+            )
+
+        asset, _asset_type = self._active_asset(allocation.asset_id)
+        requirement.start_date = shift.work_date
+        requirement.end_date = shift.work_date
+        allocation.start_date = shift.work_date
+        allocation.end_date = shift.work_date
+        allocation.operator_resource_id = shift.resource_id
+        self.session.flush()
+
+        self._assert_asset_available(
+            asset_id=asset.id,
+            start_date=shift.work_date,
+            end_date=shift.work_date,
+            allocation_id=allocation.id,
+        )
+        qualification = evaluate_asset_qualification(
+            self.session,
+            requirement=requirement,
+            allocation=allocation,
+        )
+        if qualification.state != QUALIFICATION_SATISFIED:
+            raise self._qualification_error(qualification.state)
+
+        return {
+            "requirement_id": requirement.id,
+            "allocation_id": allocation.id,
+            "asset_id": allocation.asset_id,
+            "operator_resource_id": allocation.operator_resource_id,
+            "qualification_state": qualification.state,
+            "start_date": allocation.start_date,
+            "end_date": allocation.end_date,
+        }
+
+    def assert_shift_can_return_auto(self, shift: Shift) -> None:
+        """Fail closed while a shift-owned ad-hoc asset is still attached."""
+
+        requirement, _allocation = self.shift_ad_hoc_attachment(shift.id)
+        if requirement is None:
+            return
+        raise ApplicationConflictError(
+            "Libère l'actif ad hoc avant de retourner le quart vers l'automatique.",
+            code="asset_assignment_must_be_released",
+            context={
+                "shift_id": shift.id,
+                "requirement_id": requirement.id,
+            },
+        )
+
+    def delete_shift_ad_hoc_assignment(
+        self,
+        *,
+        shift: Shift,
+    ) -> dict | None:
+        """Explicitly delete allocation then requirement before deleting a Shift."""
+
+        requirement, allocation = self.shift_ad_hoc_attachment(shift.id)
+        if requirement is None:
+            return None
+
+        result = {
+            "requirement_id": requirement.id,
+            "allocation_id": allocation.id if allocation is not None else None,
+            "asset_id": allocation.asset_id if allocation is not None else None,
+            "operator_resource_id": (
+                allocation.operator_resource_id if allocation is not None else None
+            ),
+            "origin": requirement.origin,
+        }
+        if allocation is not None:
+            self.session.delete(allocation)
+            self.session.flush()
+        self.session.delete(requirement)
+        self.session.flush()
+        return result
+
     def add_unavailability(self, *, asset_id: str, start_date: date, end_date: date,
                            reason: str | None, expected_version: int) -> dict:
         self.version.acquire(expected_version)
