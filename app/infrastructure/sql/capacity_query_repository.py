@@ -20,6 +20,7 @@ class SqlPlannerQueryRepository(_BaseSqlPlannerQueryRepository):
         resource_name: str | None = None,
         resource_id: str | None = None,
         project_ids: Sequence[str] | None = None,
+        can_manage_planning: bool = False,
     ) -> tuple[ShiftReadModel, ...]:
         return super().list_shifts(
             start=start,
@@ -27,6 +28,7 @@ class SqlPlannerQueryRepository(_BaseSqlPlannerQueryRepository):
             resource_name=resource_name,
             resource_id=resource_id,
             project_ids=project_ids,
+            can_manage_planning=can_manage_planning,
         )
 
     def planning_snapshot(
@@ -36,12 +38,14 @@ class SqlPlannerQueryRepository(_BaseSqlPlannerQueryRepository):
         end: date,
         project_ids: Sequence[str] | None = None,
         include_resource_ids: Sequence[str] = (),
+        can_manage_planning: bool = False,
     ) -> PlanningSnapshotReadModel:
         snapshot = super().planning_snapshot(
             start=start,
             end=end,
             project_ids=project_ids,
             include_resource_ids=include_resource_ids,
+            can_manage_planning=can_manage_planning,
         )
         # Medium-term capacity remains an organization-wide reference. The contextual
         # scope filters projects/work packages/cards, not the company's capacity pool.
