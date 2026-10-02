@@ -24,8 +24,8 @@ from app.domain.approval_routing import (
     APPROVER_SOURCE_RESOURCE,
     APPROVER_SOURCE_SCOPE,
     DIAGNOSTIC_NO_ELIGIBLE_APPROVER,
+    DIAGNOSTIC_ROUTING_SOURCE_MISSING,
     DIAGNOSTIC_SCOPE_AMBIGUOUS,
-    DIAGNOSTIC_TASK_REFERENCE_MISSING,
 )
 from app.infrastructure.sql import (
     AppUser,
@@ -773,6 +773,12 @@ class ApprovalCycleTests(unittest.TestCase):
                     TaskApprovalScopeMapping.task_catalog_item_id == "T1"
                 )
             )
+            session.execute(
+                delete(ResourceClassApprovalScopeMapping).where(
+                    ResourceClassApprovalScopeMapping.resource_class_code
+                    == "AUT"
+                )
+            )
             session.commit()
             with self.assertRaises(ApplicationValidationError) as unmapped:
                 self._service(session).initialize_cycle(
@@ -817,10 +823,12 @@ class ApprovalCycleTests(unittest.TestCase):
                 context["diagnostics"],
             )
 
-    def test_missing_task_reference_reports_erp_snapshot_and_precise_reason(self) -> None:
+    def test_no_routing_source_reports_erp_snapshot_and_precise_reason(self) -> None:
         with self.factory() as session:
             line = session.get(RequestLine, "L1")
             line.task_catalog_item_id = None
+            line.required_resource_class = None
+            line.proposed_resource_id = None
             session.commit()
 
             with self.assertRaises(ApplicationValidationError) as error:
@@ -834,8 +842,9 @@ class ApprovalCycleTests(unittest.TestCase):
             self.assertIsNone(context["task_catalog_item_id"])
             self.assertEqual(context["task_code"], "210")
             self.assertEqual(context["task_label"], "Automatisation")
+            self.assertEqual(context["routing_sources"], [])
             self.assertIn(
-                DIAGNOSTIC_TASK_REFERENCE_MISSING,
+                DIAGNOSTIC_ROUTING_SOURCE_MISSING,
                 context["diagnostics"],
             )
 
@@ -862,7 +871,9 @@ class ApprovalCycleTests(unittest.TestCase):
                 )
             )
             session.get(TaskCatalogEntry, "T1").resource_class_code = "PROGRAMMEUR"
-            session.get(RequestLine, "L1").proposed_resource_id = None
+            line = session.get(RequestLine, "L1")
+            line.required_resource_class = None
+            line.proposed_resource_id = None
             session.execute(
                 delete(ApprovalScopeApprover).where(
                     ApprovalScopeApprover.approval_scope_id == "S1"
