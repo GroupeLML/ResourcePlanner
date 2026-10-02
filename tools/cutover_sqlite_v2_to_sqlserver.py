@@ -29,7 +29,7 @@ from app.infrastructure.sql import Base, create_sql_engine  # noqa: E402
 
 DATABASE_ENV = "RESOURCEPLANNER_DATABASE_URL"
 DEFAULT_REPORT = ROOT / "sqlite_v2_cutover_report.json"
-POLICY_VERSION = "492-v2"
+POLICY_VERSION = "492-v3"
 DEV_IDENTITY_ISSUER = "urn:resourceplanner:dev"
 
 KEEP = "KEEP"
@@ -50,10 +50,15 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
             "asset_approvers",
             "acumatica_project_task_sync_runs",
             "acumatica_project_task_sync_project_results",
+            "project_co_managers",
+            "project_manager_audit",
         },
         "missing_columns": {
             "auth_sessions": {
                 "auth_mode": None,
+            },
+            "projects": {
+                "co_managers_version": 1,
             },
             "work_packages": {
                 "task_catalog_item_id": None,
@@ -143,6 +148,12 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
         "Préserve les UUID/FK et champs locaux; les attributs ERP sont réconciliés après.",
         post_action="RESYNC_ACUMATICA_PROJECTS",
     ),
+    "project_co_managers": _keep(
+        "Nominations locales durables des co-chargés RP; les associations doivent survivre au cutover."
+    ),
+    "project_manager_audit": _keep(
+        "Audit durable des nominations de co-chargés et de leur version CAS."
+    ),
     "request_approval_cycles": _keep("Cycles d'approbation persistants."),
     "request_approval_references": _keep("Références approuvées historisées."),
     "request_approval_revisions": _keep("Révisions approuvées historisées."),
@@ -196,6 +207,16 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
 
 RELATIONSHIP_CONTROLS: dict[str, tuple[str, ...]] = {
     "projects": ("id",),
+    "project_co_managers": (
+        "project_id",
+        "business_contact_id",
+        "created_by_user_id",
+    ),
+    "project_manager_audit": (
+        "id",
+        "project_id",
+        "actor_user_id",
+    ),
     "work_packages": ("id", "project_id"),
     "work_package_weekly_loads": ("work_package_id", "week_start"),
     "workforce_requests": ("id", "project_id", "work_package_id"),
