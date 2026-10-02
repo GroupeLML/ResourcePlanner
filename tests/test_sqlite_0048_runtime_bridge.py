@@ -407,6 +407,23 @@ class Sqlite0048RuntimeBridgeTests(unittest.TestCase):
                         for column in inspect(connection).get_columns("auth_sessions")
                     }
                     self.assertIn("auth_mode", auth_columns)
+                    asset_requirement_columns = {
+                        column["name"]: column
+                        for column in inspect(connection).get_columns(
+                            "asset_requirements"
+                        )
+                    }
+                    self.assertIn(
+                        "resource_requirement_id",
+                        asset_requirement_columns,
+                    )
+                    self.assertIn(
+                        "context_resource_id",
+                        asset_requirement_columns,
+                    )
+                    self.assertTrue(
+                        asset_requirement_columns["project_id"]["nullable"]
+                    )
                     session = connection.execute(
                         select(AuthSession).where(AuthSession.id == "SESSION-BRIDGE")
                     ).scalar_one()
