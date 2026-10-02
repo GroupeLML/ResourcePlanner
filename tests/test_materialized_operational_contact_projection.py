@@ -18,6 +18,7 @@ from app.domain.operational_contacts import (
     STATUS_UNRESOLVED,
 )
 from app.infrastructure.sql import (
+    AppUser,
     Base,
     BusinessContact,
     Project,
@@ -84,10 +85,23 @@ class MaterializedOperationalContactProjectionTests(unittest.TestCase):
                         email="configured-shift",
                         phone="555-0600",
                     ),
+                    AppUser(
+                        id="U-PM",
+                        issuer="urn:test",
+                        subject="pm",
+                        display_name="Jean PM",
+                        email="configured-jean",
+                        employee_external_id="EMP-PM",
+                        business_contact_id="C-PM",
+                        roles_json='["PROJECT_MANAGER"]',
+                        active=True,
+                    ),
                     Project(
                         id="P1",
                         number="P-1",
                         name="Projet 1",
+                        project_manager_external_id="EMP-PM",
+                        project_manager_name="Jean PM",
                         project_manager_contact_id="C-PM",
                     ),
                     TaskCatalogEntry(

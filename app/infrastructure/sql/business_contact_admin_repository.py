@@ -12,10 +12,14 @@ from ...application.business_contact_admin import (
     ContactLinkRecord,
     DemandOverrideMutationResult,
 )
-from ...application.errors import ApplicationConflictError
+from ...application.errors import ApplicationConflictError, ApplicationValidationError
+from ...application.project_managers import ProjectManagerResolutionService
 from .base import new_id, utc_now
 from .business_contact_models import BusinessContact
 from .identity_models import AppUser
+from .project_manager_resolution_repository import (
+    SqlProjectManagerResolutionRepository,
+)
 from .models import (
     Project,
     Resource,
@@ -217,24 +221,28 @@ class SqlBusinessContactAdminRepository(BusinessContactAdminRepositoryPort):
         )
         if row is None:
             return None
+        managers = ProjectManagerResolutionService(
+            SqlProjectManagerResolutionRepository(self._session)
+        ).resolve_project(row.id)
         return ContactLinkRecord(
             entity_type="PROJECT",
             entity_id=row.id,
             entity_label=row.number,
-            project_manager_contact_id=row.project_manager_contact_id,
+            project_manager_contact_id=(
+                managers.primary.business_contact_id
+                if managers.primary is not None
+                else None
+            ),
         )
 
     def set_project_manager_contact(
         self, project_number: str, contact_id: str | None
     ) -> ContactLinkRecord:
-        row = self._session.scalar(
-            select(Project).where(Project.number == _text(project_number))
+        raise ApplicationValidationError(
+            "Le chargé principal du projet est autoritaire dans l’ERP et ne peut pas être modifié localement.",
+            code="project_manager_erp_authoritative",
+            context={"project_number": _text(project_number)},
         )
-        if row is None:
-            raise KeyError(f"Projet {project_number} introuvable")
-        row.project_manager_contact_id = self._require_contact(contact_id)
-        self._session.flush()
-        return self.project_link(project_number)  # type: ignore[return-value]
 
     def task_link(self, task_id: str) -> ContactLinkRecord | None:
         row = self._session.get(TaskCatalogEntry, _text(task_id))

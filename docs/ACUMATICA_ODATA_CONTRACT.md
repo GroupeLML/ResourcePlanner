@@ -112,14 +112,16 @@ trim(RP_Employees.EmployeID)
         =
 trim(RP_Users.EmployeID)
         ↓
+Project.project_manager_external_id
+        ↓ résolution à la lecture
 AppUser.employee_external_id
         ↓
 AppUser.business_contact_id
         ↓
-Project.project_manager_contact_id
+BusinessContact
 ```
 
-`RP_Users.UserID` reste l'identité du compte ERP et ne participe jamais à cette jointure. En absence d'`AppUser`/contact correspondant, l'identité et le libellé ERP sont conservés et le contact projet reste nul; aucun fallback par nom ou courriel n'est autorisé.
+`RP_Users.UserID` reste l'identité du compte ERP et ne participe jamais à cette jointure. Depuis ADR-017 / 573C, la synchronisation conserve uniquement l'identité et le libellé ERP du principal; elle ne matérialise plus `Project.project_manager_contact_id` comme cache. En absence d'`AppUser`/contact correspondant, l'identité et le libellé ERP restent disponibles avec un diagnostic explicite; aucun fallback par nom ou courriel n'est autorisé.
 
 ## Statuts
 

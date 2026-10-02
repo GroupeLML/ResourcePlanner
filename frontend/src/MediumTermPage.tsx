@@ -47,12 +47,11 @@ type ProjectTaskGroup = {
 
 type ManagerTaskGroup = {
   key: string;
-  contact_id: string | null;
   label: string;
+  resolution_status: string;
+  diagnostics: string[];
   projects: ProjectTaskGroup[];
 };
-
-const UNRESOLVED_MANAGER_KEY = "__UNRESOLVED_PROJECT_MANAGER__";
 
 const BUDGET_DIAGNOSTIC_LABELS: Record<string, string> = {
   BUDGET_UNAVAILABLE: "Budget ERP non disponible",
@@ -589,17 +588,14 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
   const managerGroups = useMemo<ManagerTaskGroup[]>(() => {
     const groups: ManagerTaskGroup[] = [];
     visibleTasks.forEach((task) => {
-      const managerKey = task.project_manager_contact_id
-        ? `contact:${task.project_manager_contact_id}`
-        : UNRESOLVED_MANAGER_KEY;
+      const managerKey = task.manager_group_key;
       let manager = groups.find((candidate) => candidate.key === managerKey);
       if (!manager) {
         manager = {
           key: managerKey,
-          contact_id: task.project_manager_contact_id,
-          label: task.project_manager_contact_id
-            ? task.project_manager_display_name || "Chargé de projet résolu"
-            : "Sans chargé de projet résolu",
+          label: task.manager_display_name || "Sans chargé de projet ERP",
+          resolution_status: task.manager_resolution_status,
+          diagnostics: task.manager_diagnostics,
           projects: [],
         };
         groups.push(manager);
@@ -633,11 +629,9 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
       });
     });
 
-    return groups.sort((left, right) => {
-      if (left.key === UNRESOLVED_MANAGER_KEY) return 1;
-      if (right.key === UNRESOLVED_MANAGER_KEY) return -1;
-      return left.label.localeCompare(right.label, "fr-CA");
-    });
+    return groups.sort((left, right) => (
+      left.label.localeCompare(right.label, "fr-CA")
+    ));
   }, [visibleTasks]);
 
   const visibleUnclassified = useMemo(

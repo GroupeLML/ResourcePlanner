@@ -62,6 +62,8 @@ class ContactCandidate:
     contact_id: str | None = None
     contact: BusinessContactSnapshot | None = None
     diagnostics: tuple[str, ...] = ()
+    external_id: str | None = None
+    display_name_hint: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,7 +89,21 @@ def _unique(values: tuple[str, ...]) -> tuple[str, ...]:
 
 def _candidate_resolution(candidate: ContactCandidate) -> ContactResolution:
     if candidate.contact_id is None:
-        raise ValueError("An absent candidate cannot be materialized as a resolution.")
+        if candidate.external_id is None:
+            raise ValueError("An absent candidate cannot be materialized as a resolution.")
+        return ContactResolution(
+            status=STATUS_UNRESOLVED,
+            contact_id=None,
+            display_name=candidate.display_name_hint or candidate.external_id,
+            email=None,
+            phone=None,
+            source_type=candidate.source_type,
+            source_entity_id=candidate.source_entity_id,
+            source_label=candidate.source_label,
+            diagnostics=_unique(
+                candidate.diagnostics + (DIAGNOSTIC_CONTACT_UNRESOLVED,)
+            ),
+        )
 
     contact = candidate.contact
     if contact is None:
@@ -136,7 +152,7 @@ def resolve_contact_candidates(
     """Resolve first configured candidate without hiding broken explicit references."""
 
     for candidate in candidates:
-        if candidate.contact_id is None:
+        if candidate.contact_id is None and candidate.external_id is None:
             continue
         return _candidate_resolution(candidate)
 
