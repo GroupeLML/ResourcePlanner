@@ -10,13 +10,16 @@ from ...application.operational_contacts import (
     OperationalContactRepositoryPort,
     RequestLineContactContext,
 )
+from ...application.project_managers import (
+    EffectiveProjectManager,
+    ProjectManagerResolutionService,
+)
 from ...domain.operational_contacts import (
     BusinessContactSnapshot,
     ContactCandidate,
     DIAGNOSTIC_APPROVED_CONTACT_CONTEXT_LEGACY_UNKNOWN,
     DIAGNOSTIC_APPROVED_TASK_PROJECT_MISMATCH,
     DIAGNOSTIC_APPROVED_TASK_REFERENCE_INVALID,
-    DIAGNOSTIC_PROJECT_MANAGER_CONTACT_UNMIGRATED,
     DIAGNOSTIC_RESOURCE_INACTIVE,
     DIAGNOSTIC_RESOURCE_REFERENCE_INVALID,
     DIAGNOSTIC_TASK_INACTIVE,
@@ -31,6 +34,9 @@ from ...domain.operational_contacts import (
     SOURCE_TASK_RESPONSIBLE,
 )
 from .business_contact_models import BusinessContact
+from .project_manager_resolution_repository import (
+    SqlProjectManagerResolutionRepository,
+)
 from .models import (
     Project,
     RequestLine,
@@ -104,6 +110,8 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
         contact_id: str | None,
         contacts: dict[str, BusinessContact],
         diagnostics: tuple[str, ...] = (),
+        external_id: str | None = None,
+        display_name_hint: str | None = None,
     ) -> ContactCandidate:
         return ContactCandidate(
             source_type=source_type,
@@ -112,6 +120,68 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
             contact_id=contact_id,
             contact=_snapshot(contacts.get(contact_id)) if contact_id else None,
             diagnostics=diagnostics,
+            external_id=external_id,
+            display_name_hint=display_name_hint,
+        )
+
+    def _project_manager_primaries(
+        self,
+        project_ids: Sequence[str],
+    ) -> dict[str, EffectiveProjectManager | None]:
+        wanted = tuple(
+            dict.fromkeys(
+                str(project_id or "").strip()
+                for project_id in project_ids
+                if str(project_id or "").strip()
+            )
+        )
+        if not wanted:
+            return {}
+        projections = ProjectManagerResolutionService(
+            SqlProjectManagerResolutionRepository(self._session)
+        ).resolve_projects(list(wanted))
+        return {
+            project_id: projection.primary
+            for project_id, projection in projections.items()
+        }
+
+    @staticmethod
+    def _project_manager_candidate(
+        *,
+        project: Project,
+        manager: EffectiveProjectManager | None,
+        contacts: dict[str, BusinessContact],
+    ) -> ContactCandidate:
+        if manager is None:
+            return ContactCandidate(
+                source_type=SOURCE_PROJECT_MANAGER,
+                source_entity_id=project.id,
+                source_label=f"Chargé de projet ERP · {project.number}",
+            )
+
+        contact = (
+            contacts.get(manager.business_contact_id)
+            if manager.business_contact_id
+            else None
+        )
+        snapshot = _snapshot(contact)
+        if snapshot is not None and manager.user_active is False:
+            snapshot = BusinessContactSnapshot(
+                contact_id=snapshot.contact_id,
+                display_name=snapshot.display_name,
+                email=snapshot.email,
+                phone=snapshot.phone,
+                active=False,
+            )
+        return ContactCandidate(
+            source_type=SOURCE_PROJECT_MANAGER,
+            source_entity_id=project.id,
+            source_label=f"Chargé de projet ERP · {project.number}",
+            contact_id=manager.business_contact_id,
+            contact=snapshot,
+            diagnostics=manager.diagnostics,
+            external_id=manager.employee_external_id,
+            display_name_hint=manager.display_name,
         )
 
     def _task_for_line(
@@ -219,6 +289,7 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
         *,
         requirement: ResourceRequirement,
         shift: Shift | None = None,
+        project_managers: dict[str, EffectiveProjectManager | None] | None = None,
     ) -> MaterializedContactContext | None:
         project = self._session.get(Project, requirement.project_id)
         if project is None:
@@ -250,16 +321,15 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
             )
         )
 
-        if (
-            project.project_manager_contact_id is None
-            and (project.project_manager_external_id or project.project_manager_name)
-        ):
-            diagnostics.append(DIAGNOSTIC_PROJECT_MANAGER_CONTACT_UNMIGRATED)
-
+        manager = (
+            self._project_manager_primaries((project.id,)).get(project.id)
+            if project_managers is None
+            else project_managers.get(project.id)
+        )
         contact_ids = (
             requirement.approved_operational_responsible_override_contact_id,
             task.operational_responsible_contact_id if task is not None else None,
-            project.project_manager_contact_id,
+            manager.business_contact_id if manager is not None else None,
             resource.coordinator_contact_id if resource is not None else None,
             task.coordinator_contact_id if task is not None else None,
         )
@@ -313,11 +383,9 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
                 ),
                 contacts=contacts,
             ),
-            project_manager=self._candidate(
-                source_type=SOURCE_PROJECT_MANAGER,
-                source_entity_id=project.id,
-                source_label=f"Chargé de projet · {project.number}",
-                contact_id=project.project_manager_contact_id,
+            project_manager=self._project_manager_candidate(
+                project=project,
+                manager=manager,
                 contacts=contacts,
             ),
             resource_coordinator=self._candidate(
@@ -359,6 +427,7 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
         tuple[WorkforceRequest, ...],
         tuple[TaskCatalogEntry, ...],
         tuple[Resource, ...],
+        dict[str, EffectiveProjectManager | None],
     ]:
         """Prime the SQLAlchemy identity map for fixed-cost materialized resolution."""
 
@@ -426,6 +495,7 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
         )
 
         project_by_id = {row.id: row for row in projects}
+        project_managers = self._project_manager_primaries(tuple(project_by_id))
         task_by_id = {row.id: row for row in tasks}
         resource_by_id = {row.id: row for row in resources}
         contact_ids: list[str | None] = []
@@ -445,8 +515,11 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
                         else None
                     ),
                     (
-                        project.project_manager_contact_id
-                        if project is not None
+                        project_managers[project.id].business_contact_id
+                        if (
+                            project is not None
+                            and project_managers.get(project.id) is not None
+                        )
                         else None
                     ),
                     (
@@ -459,7 +532,7 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
         for resource in resources:
             contact_ids.append(resource.coordinator_contact_id)
         self._contacts(tuple(contact_ids))
-        return projects, requests, tasks, resources
+        return projects, requests, tasks, resources, project_managers
 
     def get_resource_requirement_contact_contexts(
         self,
@@ -483,13 +556,15 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
         )
         by_id = {row.id: row for row in requirements}
         primed = self._prime_materialized_context_rows(requirements)
+        project_managers = primed[4]
         result = tuple(
             context
             for requirement_id in wanted
             if (requirement := by_id.get(requirement_id)) is not None
             and (
                 context := self._materialized_context(
-                    requirement=requirement
+                    requirement=requirement,
+                    project_managers=project_managers,
                 )
             )
             is not None
@@ -537,6 +612,7 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
             requirements,
             shifts=shifts,
         )
+        project_managers = primed[4]
         result: list[MaterializedContactContext] = []
         for shift_id in wanted:
             shift = shift_by_id.get(shift_id)
@@ -548,6 +624,7 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
             context = self._materialized_context(
                 requirement=requirement,
                 shift=shift,
+                project_managers=project_managers,
             )
             if context is not None:
                 result.append(context)
@@ -631,6 +708,7 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
                 select(Project).where(Project.id.in_(tuple(project_ids)))
             ).all()
         }
+        project_managers = self._project_manager_primaries(tuple(projects))
 
         direct_task_ids = {
             line.task_catalog_item_id
@@ -742,17 +820,7 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
                 elif not bool(resource.active):
                     diagnostics.append(DIAGNOSTIC_RESOURCE_INACTIVE)
 
-            if (
-                project.project_manager_contact_id is None
-                and (
-                    project.project_manager_external_id
-                    or project.project_manager_name
-                )
-            ):
-                diagnostics.append(
-                    DIAGNOSTIC_PROJECT_MANAGER_CONTACT_UNMIGRATED
-                )
-
+            manager = project_managers.get(project.id)
             all_contact_ids.extend(
                 (
                     request.operational_responsible_override_contact_id,
@@ -761,7 +829,7 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
                         if task is not None
                         else None
                     ),
-                    project.project_manager_contact_id,
+                    manager.business_contact_id if manager is not None else None,
                     (
                         resource.coordinator_contact_id
                         if resource is not None
@@ -847,13 +915,9 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
                         ),
                         contacts=contacts,
                     ),
-                    project_manager=self._candidate(
-                        source_type=SOURCE_PROJECT_MANAGER,
-                        source_entity_id=project.id,
-                        source_label=(
-                            f"Chargé de projet · {project.number}"
-                        ),
-                        contact_id=project.project_manager_contact_id,
+                    project_manager=self._project_manager_candidate(
+                        project=project,
+                        manager=project_managers.get(project.id),
                         contacts=contacts,
                     ),
                     resource_coordinator=self._candidate(

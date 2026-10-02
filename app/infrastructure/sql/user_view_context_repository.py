@@ -7,6 +7,7 @@ from ...application.operational_contacts import OperationalContactService
 from ...application.query_models import ResourceReadModel
 from ...application.user_view_context import UserViewContextRepositoryPort
 from .identity_models import AppUser
+from .project_manager_resolution_repository import project_managed_by_user_predicate
 from .models import (
     Project,
     RequestLine,
@@ -64,15 +65,33 @@ class SqlUserViewContextRepository(UserViewContextRepositoryPort):
 
     def list_managed_project_ids(
         self,
-        employee_external_id: str,
+        local_user_id: str | None,
+        employee_external_id: str | None,
     ) -> tuple[str, ...]:
-        external_id = str(employee_external_id or "").strip()
-        if not external_id:
+        user_id = str(local_user_id or "").strip()
+        external_id = str(employee_external_id or "").strip() or None
+        business_contact_id: str | None = None
+        if user_id:
+            user = self._session.get(AppUser, user_id)
+            if user is not None:
+                business_contact_id = (
+                    str(user.business_contact_id or "").strip() or None
+                )
+                external_id = (
+                    str(user.employee_external_id or "").strip()
+                    or external_id
+                )
+        if external_id is None and business_contact_id is None:
             return ()
         return tuple(
             self._session.scalars(
                 select(Project.id)
-                .where(Project.project_manager_external_id == external_id)
+                .where(
+                    project_managed_by_user_predicate(
+                        employee_external_id=external_id,
+                        business_contact_id=business_contact_id,
+                    )
+                )
                 .order_by(Project.number, Project.id)
             ).all()
         )

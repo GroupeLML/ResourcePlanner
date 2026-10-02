@@ -13,7 +13,7 @@ class ReactBusinessContactContractTests(unittest.TestCase):
         source = (FRONTEND / "api.ts").read_text(encoding="utf-8")
 
         self.assertIn("getBusinessContacts", source)
-        self.assertIn("setProjectManagerContact", source)
+        self.assertNotIn("setProjectManagerContact", source)
         self.assertIn("setTaskBusinessContacts", source)
         self.assertIn("setResourceCoordinatorContact", source)
         self.assertIn("setDemandOperationalResponsible", source)
@@ -35,6 +35,9 @@ class ReactBusinessContactContractTests(unittest.TestCase):
         source = (FRONTEND / "ProjectsPage.tsx").read_text(encoding="utf-8")
 
         self.assertIn("Chargé de projet", source)
+        self.assertIn("Chargé de projet principal (ERP)", source)
+        self.assertIn("Utilisateur RessourcePlanner non lié", source)
+        self.assertNotIn("changeProjectManager", source)
         self.assertIn("Responsable opérationnel", source)
         self.assertIn("Coordonnateur", source)
         self.assertIn("operational_responsible_contact_id", source)

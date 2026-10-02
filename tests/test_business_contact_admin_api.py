@@ -49,6 +49,7 @@ class BusinessContactAdminApiTests(unittest.TestCase):
                         number="P-1",
                         name="Projet 1",
                         project_manager_name="Chargé legacy",
+                        project_manager_contact_id="C-OLD",
                     ),
                     Resource(
                         id="R1",
@@ -162,10 +163,10 @@ class BusinessContactAdminApiTests(unittest.TestCase):
                     "/api/v1/projects/P-1/project-manager-contact",
                     json={"contact_id": contact_id},
                 )
-                self.assertEqual(project.status_code, 200, project.text)
+                self.assertEqual(project.status_code, 422, project.text)
                 self.assertEqual(
-                    project.json()["project_manager_contact_id"],
-                    contact_id,
+                    project.json()["error"]["code"],
+                    "project_manager_erp_authoritative",
                 )
 
                 task = client.patch(
@@ -326,31 +327,38 @@ class BusinessContactAdminApiTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
-    def test_invalid_contact_link_fails_without_clearing_existing_link(self) -> None:
+    def test_legacy_project_manager_setter_is_refused_without_mutation(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
             app = create_api_app(database_url)
             with TestClient(app) as client:
-                linked = client.patch(
+                refused = client.patch(
                     "/api/v1/projects/P-1/project-manager-contact",
                     json={"contact_id": "C-OLD"},
                 )
-                self.assertEqual(linked.status_code, 200, linked.text)
-
-                invalid = client.patch(
-                    "/api/v1/projects/P-1/project-manager-contact",
-                    json={"contact_id": "C-MISSING"},
+                self.assertEqual(refused.status_code, 422, refused.text)
+                self.assertEqual(
+                    refused.json()["error"]["code"],
+                    "project_manager_erp_authoritative",
                 )
-                self.assertEqual(invalid.status_code, 404, invalid.text)
 
                 current = client.get(
                     "/api/v1/projects/P-1/business-contacts"
                 )
                 self.assertEqual(current.status_code, 200)
-                self.assertEqual(
-                    current.json()["project_manager_contact_id"],
-                    "C-OLD",
+                self.assertIsNone(
+                    current.json()["project_manager_contact_id"]
                 )
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory() as session:
+                    project = session.get(Project, "P1")
+                    assert project is not None
+                    self.assertEqual(project.project_manager_contact_id, "C-OLD")
+            finally:
+                engine.dispose()
 
 
 if __name__ == "__main__":

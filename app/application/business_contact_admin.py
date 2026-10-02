@@ -226,11 +226,9 @@ class BusinessContactAdminService:
         self, project_number: str, contact_id: str | None
     ) -> ContactLinkRecord:
         number = _required_text(project_number, field="project_number")
-        return call_application_port(
-            lambda: self._repository.set_project_manager_contact(
-                number, _optional_text(contact_id)
-            ),
-            code_prefix="project_contact_link_update",
+        raise ApplicationValidationError(
+            "Le chargé principal du projet est autoritaire dans l’ERP et ne peut pas être modifié localement.",
+            code="project_manager_erp_authoritative",
             context={"project_number": number},
         )
 
