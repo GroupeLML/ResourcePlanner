@@ -133,6 +133,8 @@ class ShiftAssetSqlServerConcurrencyTests(unittest.TestCase):
                             shift_id=shift_id,
                             asset_id=asset_id,
                             requirement_id=None,
+                            start_date=None,
+                            end_date=None,
                             expected_version=expected_version,
                             idempotency_key=key,
                         )
