@@ -82,9 +82,18 @@ class ReactDemandWorkflowContractTests(unittest.TestCase):
         self.assertIn("RequestLine", page)
         self.assertIn("Tâche ERP", page)
         self.assertIn("Classe effective", page)
+        self.assertIn("Classe explicite", page)
+        self.assertIn("Ressource proposée", page)
+        self.assertIn("Sources de routage", page)
+        self.assertIn("context.required_resource_class", page)
+        self.assertIn("context.proposed_resource_id", page)
+        self.assertIn("context.routing_sources", page)
         self.assertIn("Scope d’approbation", page)
         for diagnostic in (
             "task_reference_missing",
+            "routing_source_missing",
+            "proposed_resource_unknown",
+            "proposed_resource_inactive",
             "approval_scope_unmapped",
             "approval_scope_ambiguous",
             "no_eligible_approver",
