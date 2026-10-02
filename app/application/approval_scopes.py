@@ -7,9 +7,14 @@ from ..domain.approval_routing import (
     ApprovalLineResolution,
     ApprovalRoutingUser,
     ApprovalScopeCandidate,
+    DIAGNOSTIC_PROPOSED_RESOURCE_INACTIVE,
+    DIAGNOSTIC_PROPOSED_RESOURCE_UNKNOWN,
     DIAGNOSTIC_RESOURCE_CLASS_INACTIVE,
     DIAGNOSTIC_RESOURCE_CLASS_MISSING,
     DIAGNOSTIC_RESOURCE_CLASS_NOT_FOUND,
+    DIAGNOSTIC_ROUTING_SOURCE_MISSING,
+    ROUTING_SOURCE_PROPOSED_RESOURCE_CLASS,
+    ROUTING_SOURCE_REQUIRED_RESOURCE_CLASS,
     resolve_asset_line_approvers,
     resolve_line_approvers,
     suggested_approval_scope_code,
@@ -52,6 +57,13 @@ class ApprovalResourceClassRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class ApprovalResourceRecord:
+    id: str
+    active: bool
+    resource_class_code: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ApprovalAssetTypeRecord:
     id: str
     code: str
@@ -73,6 +85,8 @@ class ApprovalRequestLineRecord:
     id: str
     active: bool
     task_catalog_item_id: str | None
+    required_resource_class: str | None = None
+    proposed_resource_id: str | None = None
     kind: str = "WORKFORCE"
     asset_type_id: str | None = None
     proposed_asset_id: str | None = None
@@ -98,6 +112,9 @@ class RequestLineApprovalResolution:
     task_code: str | None = None
     task_label: str | None = None
     effective_resource_class: str | None = None
+    required_resource_class: str | None = None
+    proposed_resource_id: str | None = None
+    routing_sources: tuple[str, ...] = ()
     approval_scope_candidates: tuple[ApprovalScopeRecord, ...] = ()
     line_kind: str = "WORKFORCE"
     asset_type_id: str | None = None
@@ -158,6 +175,7 @@ class ApprovalScopeRepositoryPort(Protocol):
         self,
         class_code: str,
     ) -> ApprovalResourceClassRecord | None: ...
+    def get_resource(self, resource_id: str) -> ApprovalResourceRecord | None: ...
     def get_asset_type(self, asset_type_id: str) -> ApprovalAssetTypeRecord | None: ...
     def get_asset(self, asset_id: str) -> ApprovalAssetRecord | None: ...
     def list_task_scopes(self, task_id: str) -> tuple[ApprovalScopeRecord, ...]: ...
@@ -426,6 +444,10 @@ class ApprovalScopeService:
         diagnostic: str,
         line_position: int | None = None,
         task: ApprovalTaskRecord | None = None,
+        effective_resource_class: str | None = None,
+        required_resource_class: str | None = None,
+        proposed_resource_id: str | None = None,
+        routing_sources: Sequence[str] = (),
         approval_scope_candidates: Sequence[ApprovalScopeRecord] = (),
     ) -> RequestLineApprovalResolution:
         return RequestLineApprovalResolution(
@@ -442,8 +464,13 @@ class ApprovalScopeService:
             task_code=task.code if task is not None else None,
             task_label=task.label if task is not None else None,
             effective_resource_class=(
-                task.resource_class_code if task is not None else None
+                effective_resource_class
+                if effective_resource_class is not None
+                else (task.resource_class_code if task is not None else None)
             ),
+            required_resource_class=required_resource_class,
+            proposed_resource_id=proposed_resource_id,
+            routing_sources=tuple(routing_sources),
             approval_scope_candidates=tuple(approval_scope_candidates),
         )
 
@@ -604,6 +631,147 @@ class ApprovalScopeService:
             else ()
         )
 
+        explicit_class_code = (
+            str(line.required_resource_class or "").strip() or None
+        )
+        proposed_resource_id = (
+            str(line.proposed_resource_id or "").strip() or None
+        )
+        effective_class_code: str | None = None
+        routing_sources: list[str] = []
+        resolved_resource_class: ApprovalResourceClassRecord | None = None
+
+        if explicit_class_code is not None:
+            effective_class_code = explicit_class_code
+            routing_sources.append(ROUTING_SOURCE_REQUIRED_RESOURCE_CLASS)
+        elif proposed_resource_id is not None:
+            proposed_resource = call_application_port(
+                lambda: self._repository.get_resource(proposed_resource_id),
+                code_prefix="approval_routing_resource_read",
+                context={"proposed_resource_id": proposed_resource_id},
+            )
+            if proposed_resource is None:
+                return self._blocked_resolution(
+                    request_line_id=identifier,
+                    task_catalog_item_id=task_id,
+                    suggested_scope_code=(
+                        suggested_approval_scope_code(task.code)
+                        if task is not None
+                        else None
+                    ),
+                    diagnostic=DIAGNOSTIC_PROPOSED_RESOURCE_UNKNOWN,
+                    line_position=line.position,
+                    task=task,
+                    required_resource_class=explicit_class_code,
+                    proposed_resource_id=proposed_resource_id,
+                    routing_sources=(ROUTING_SOURCE_PROPOSED_RESOURCE_CLASS,),
+                )
+            if not proposed_resource.active:
+                return self._blocked_resolution(
+                    request_line_id=identifier,
+                    task_catalog_item_id=task_id,
+                    suggested_scope_code=(
+                        suggested_approval_scope_code(task.code)
+                        if task is not None
+                        else None
+                    ),
+                    diagnostic=DIAGNOSTIC_PROPOSED_RESOURCE_INACTIVE,
+                    line_position=line.position,
+                    task=task,
+                    effective_resource_class=proposed_resource.resource_class_code,
+                    required_resource_class=explicit_class_code,
+                    proposed_resource_id=proposed_resource_id,
+                    routing_sources=(ROUTING_SOURCE_PROPOSED_RESOURCE_CLASS,),
+                )
+            effective_class_code = (
+                str(proposed_resource.resource_class_code or "").strip()
+                or None
+            )
+            routing_sources.append(ROUTING_SOURCE_PROPOSED_RESOURCE_CLASS)
+        elif task is not None and task.active:
+            effective_class_code = (
+                str(task.resource_class_code or "").strip() or None
+            )
+        elif task_id is None:
+            return self._blocked_resolution(
+                request_line_id=identifier,
+                task_catalog_item_id=None,
+                suggested_scope_code=None,
+                diagnostic=DIAGNOSTIC_ROUTING_SOURCE_MISSING,
+                line_position=line.position,
+                task=None,
+                required_resource_class=None,
+                proposed_resource_id=None,
+                routing_sources=(),
+            )
+
+        # The selected class source is authoritative. An invalid explicit class or
+        # proposed-resource class must fail closed instead of falling back to task data.
+        if effective_class_code is not None and (
+            explicit_class_code is not None
+            or proposed_resource_id is not None
+        ):
+            resolved_resource_class = call_application_port(
+                lambda: self._repository.get_resource_class(
+                    effective_class_code
+                ),
+                code_prefix="approval_routing_resource_class_read",
+                context={"resource_class_code": effective_class_code},
+            )
+            if resolved_resource_class is None:
+                return self._blocked_resolution(
+                    request_line_id=identifier,
+                    task_catalog_item_id=task_id,
+                    suggested_scope_code=(
+                        suggested_approval_scope_code(task.code)
+                        if task is not None
+                        else None
+                    ),
+                    diagnostic=DIAGNOSTIC_RESOURCE_CLASS_NOT_FOUND,
+                    line_position=line.position,
+                    task=task,
+                    effective_resource_class=effective_class_code,
+                    required_resource_class=explicit_class_code,
+                    proposed_resource_id=proposed_resource_id,
+                    routing_sources=routing_sources,
+                )
+            if not resolved_resource_class.active:
+                return self._blocked_resolution(
+                    request_line_id=identifier,
+                    task_catalog_item_id=task_id,
+                    suggested_scope_code=(
+                        suggested_approval_scope_code(task.code)
+                        if task is not None
+                        else None
+                    ),
+                    diagnostic=DIAGNOSTIC_RESOURCE_CLASS_INACTIVE,
+                    line_position=line.position,
+                    task=task,
+                    effective_resource_class=effective_class_code,
+                    required_resource_class=explicit_class_code,
+                    proposed_resource_id=proposed_resource_id,
+                    routing_sources=routing_sources,
+                )
+        elif (
+            proposed_resource_id is not None
+            and effective_class_code is None
+        ):
+            return self._blocked_resolution(
+                request_line_id=identifier,
+                task_catalog_item_id=task_id,
+                suggested_scope_code=(
+                    suggested_approval_scope_code(task.code)
+                    if task is not None
+                    else None
+                ),
+                diagnostic=DIAGNOSTIC_RESOURCE_CLASS_MISSING,
+                line_position=line.position,
+                task=task,
+                required_resource_class=explicit_class_code,
+                proposed_resource_id=proposed_resource_id,
+                routing_sources=routing_sources,
+            )
+
         scopes: tuple[ApprovalScopeRecord, ...] = ()
         if task is not None and task.active and line.active:
             active_task_scopes = tuple(
@@ -615,47 +783,77 @@ class ApprovalScopeService:
                 scopes = active_task_scopes
             elif task_scopes:
                 scopes = task_scopes
-            else:
-                class_code = str(task.resource_class_code or "").strip()
-                suggested = suggested_approval_scope_code(task.code)
-                if not class_code:
-                    return self._blocked_resolution(
-                        request_line_id=identifier,
-                        task_catalog_item_id=task_id,
-                        suggested_scope_code=suggested,
-                        diagnostic=DIAGNOSTIC_RESOURCE_CLASS_MISSING,
-                        line_position=line.position,
-                        task=task,
-                    )
-                resource_class = call_application_port(
-                    lambda: self._repository.get_resource_class(class_code),
-                    code_prefix="approval_routing_resource_class_read",
-                    context={"resource_class_code": class_code},
+
+        # Task -> ApprovalScope remains an explicit authority override. When there is
+        # no override, route the effective class selected by the #562 priority.
+        if not scopes and line.active and (
+            task is None or not task_scopes
+        ):
+            if (
+                effective_class_code is None
+                and task is not None
+                and task.active
+            ):
+                return self._blocked_resolution(
+                    request_line_id=identifier,
+                    task_catalog_item_id=task_id,
+                    suggested_scope_code=suggested_approval_scope_code(task.code),
+                    diagnostic=DIAGNOSTIC_RESOURCE_CLASS_MISSING,
+                    line_position=line.position,
+                    task=task,
+                    required_resource_class=explicit_class_code,
+                    proposed_resource_id=proposed_resource_id,
+                    routing_sources=routing_sources,
                 )
-                if resource_class is None:
-                    return self._blocked_resolution(
-                        request_line_id=identifier,
-                        task_catalog_item_id=task_id,
-                        suggested_scope_code=suggested,
-                        diagnostic=DIAGNOSTIC_RESOURCE_CLASS_NOT_FOUND,
-                        line_position=line.position,
-                        task=task,
+            if effective_class_code is not None:
+                if resolved_resource_class is None:
+                    resolved_resource_class = call_application_port(
+                        lambda: self._repository.get_resource_class(
+                            effective_class_code
+                        ),
+                        code_prefix="approval_routing_resource_class_read",
+                        context={"resource_class_code": effective_class_code},
                     )
-                if not resource_class.active:
-                    return self._blocked_resolution(
-                        request_line_id=identifier,
-                        task_catalog_item_id=task_id,
-                        suggested_scope_code=suggested,
-                        diagnostic=DIAGNOSTIC_RESOURCE_CLASS_INACTIVE,
-                        line_position=line.position,
-                        task=task,
-                    )
+                    if resolved_resource_class is None:
+                        return self._blocked_resolution(
+                            request_line_id=identifier,
+                            task_catalog_item_id=task_id,
+                            suggested_scope_code=(
+                                suggested_approval_scope_code(task.code)
+                                if task is not None
+                                else None
+                            ),
+                            diagnostic=DIAGNOSTIC_RESOURCE_CLASS_NOT_FOUND,
+                            line_position=line.position,
+                            task=task,
+                            effective_resource_class=effective_class_code,
+                            required_resource_class=explicit_class_code,
+                            proposed_resource_id=proposed_resource_id,
+                            routing_sources=routing_sources,
+                        )
+                    if not resolved_resource_class.active:
+                        return self._blocked_resolution(
+                            request_line_id=identifier,
+                            task_catalog_item_id=task_id,
+                            suggested_scope_code=(
+                                suggested_approval_scope_code(task.code)
+                                if task is not None
+                                else None
+                            ),
+                            diagnostic=DIAGNOSTIC_RESOURCE_CLASS_INACTIVE,
+                            line_position=line.position,
+                            task=task,
+                            effective_resource_class=effective_class_code,
+                            required_resource_class=explicit_class_code,
+                            proposed_resource_id=proposed_resource_id,
+                            routing_sources=routing_sources,
+                        )
                 class_scopes = call_application_port(
                     lambda: self._repository.list_resource_class_scopes(
-                        class_code
+                        effective_class_code
                     ),
                     code_prefix="approval_routing_scope_read",
-                    context={"resource_class_code": class_code},
+                    context={"resource_class_code": effective_class_code},
                 )
                 active_class_scopes = tuple(
                     scope for scope in class_scopes if scope.active
@@ -729,8 +927,9 @@ class ApprovalScopeService:
             task_label=(
                 task.label if task is not None else line.erp_task_label
             ),
-            effective_resource_class=(
-                task.resource_class_code if task is not None else None
-            ),
+            effective_resource_class=effective_class_code,
+            required_resource_class=explicit_class_code,
+            proposed_resource_id=proposed_resource_id,
+            routing_sources=tuple(routing_sources),
             approval_scope_candidates=tuple(scopes),
         )
