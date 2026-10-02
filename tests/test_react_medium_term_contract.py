@@ -94,7 +94,7 @@ class ReactMediumTermContractTests(unittest.TestCase):
         self.assertIn('className="mt-yellow-flag"', page)
         self.assertNotIn('"PARTIALLY_COVERED",\n]);', page)
 
-    def test_capacity_band_displays_backend_fields_and_preserves_unknown_load(self) -> None:
+    def test_capacity_band_is_one_compact_backend_driven_row_per_class(self) -> None:
         panel = (ROOT / "frontend" / "src" / "MediumTermCapacityPanel.tsx").read_text(
             encoding="utf-8"
         )
@@ -102,12 +102,12 @@ class ReactMediumTermContractTests(unittest.TestCase):
             encoding="utf-8"
         )
 
+        self.assertIn("classRows.map", panel)
         self.assertIn("bucket.capacity_hours", panel)
         self.assertIn("bucket.work_package_hours", panel)
         self.assertIn("bucket.utilization", panel)
         self.assertIn("STATE_LABELS[bucket.state]", panel)
-        self.assertIn('className={`mt-capacity-cell ${bucket ? `is-${bucket.state}` : "is-unavailable"}`}', panel)
-        self.assertIn("Charge non disponible", panel)
+        self.assertIn("mt-capacity-grid is-compact", panel)
         self.assertIn("Charge inconnue — pas 0 h", panel)
         self.assertIn("Non calculable", panel)
         self.assertIn("WORKFORCE_CAPACITY_ZERO", panel)
@@ -119,6 +119,56 @@ class ReactMediumTermContractTests(unittest.TestCase):
         self.assertNotIn("* 100", panel)
         self.assertNotIn(">= 0.85", panel)
         self.assertNotIn("> 1", panel)
+
+    def test_issue_556_groups_by_canonical_project_manager_and_project(self) -> None:
+        page = (ROOT / "frontend" / "src" / "MediumTermPage.tsx").read_text(
+            encoding="utf-8"
+        )
+        api = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
+
+        self.assertIn("project_manager_contact_id", api)
+        self.assertIn("project_manager_display_name", api)
+        self.assertIn("erp_budget_last_success_at", api)
+        self.assertIn("task.project_manager_contact_id", page)
+        self.assertIn("UNRESOLVED_MANAGER_KEY", page)
+        self.assertIn("Sans chargé de projet résolu", page)
+        self.assertIn("candidate.project_id === task.project_id", page)
+        self.assertIn("collapsedManagers", page)
+        self.assertIn("collapsedProjects", page)
+        self.assertIn("toggleManager", page)
+        self.assertIn("toggleProject", page)
+        self.assertNotIn("project.project_manager", page)
+        self.assertNotIn("task.project_manager_display_name || task.project_manager_contact_id", page)
+
+    def test_issue_556_budget_toggle_keeps_cad_and_hours_separate(self) -> None:
+        page = (ROOT / "frontend" / "src" / "MediumTermPage.tsx").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('type BudgetMode = "initial" | "remaining"', page)
+        self.assertIn('option value="initial">Budget initial', page)
+        self.assertIn('option value="remaining">Budget restant', page)
+        self.assertIn("task.budget_amount_cad", page)
+        self.assertIn("task.remaining_budget_cad", page)
+        self.assertIn("cad(financialValue)", page)
+        self.assertIn("Charge WP", page)
+        self.assertIn("hours(task.planned_wp_hours)", page)
+        self.assertIn("hours(task.remaining_budget_hours)", page)
+        self.assertIn("ERP synchronisé", page)
+        self.assertNotIn("remaining_budget_cad /", page)
+        self.assertNotIn("budget_amount_cad /", page)
+
+    def test_issue_556_moves_unlinked_classification_after_gantt(self) -> None:
+        page = (ROOT / "frontend" / "src" / "MediumTermPage.tsx").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertGreater(
+            page.index("<MediumTermUnlinkedSegmentsPanel"),
+            page.index('className={`mt-board'),
+        )
+        self.assertIn("Aucun WorkPackage", page)
+        self.assertIn("is-compact", page)
 
     def test_closed_and_cancelled_load_state_comes_from_backend_projection(self) -> None:
         page = (ROOT / "frontend" / "src" / "MediumTermPage.tsx").read_text(
