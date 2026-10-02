@@ -629,11 +629,9 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
       });
     });
 
-    return groups.sort((left, right) => {
-      if (left.key === UNRESOLVED_MANAGER_KEY) return 1;
-      if (right.key === UNRESOLVED_MANAGER_KEY) return -1;
-      return left.label.localeCompare(right.label, "fr-CA");
-    });
+    return groups.sort((left, right) => (
+      left.label.localeCompare(right.label, "fr-CA")
+    ));
   }, [visibleTasks]);
 
   const visibleUnclassified = useMemo(
