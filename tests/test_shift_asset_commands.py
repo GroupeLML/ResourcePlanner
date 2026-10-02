@@ -8,7 +8,7 @@ from unittest.mock import patch
 import unittest
 
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 
 from app.domain.reservable_assets import AssetRequirementOrigin
 from app.infrastructure.sql import (
@@ -27,6 +27,7 @@ from app.infrastructure.sql import (
     ResourceCompetency,
     ResourceRequirement,
     Shift,
+    SqlPlannerQueryRepository,
     WorkforceRequest,
     create_session_factory,
     create_sql_engine,
@@ -956,6 +957,104 @@ class ShiftAssetCommandTests(unittest.TestCase):
                 )
         finally:
             engine.dispose()
+
+    def test_shift_asset_projection_query_count_does_not_grow_per_shift(self) -> None:
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        with factory.begin() as session:
+            for index in range(8):
+                asset_id = f"ASSET-N1-{index}"
+                human_id = f"HUMAN-N1-{index}"
+                shift_id = f"SHIFT-N1-{index}"
+                asset_requirement_id = f"AREQ-N1-{index}"
+                session.add(
+                    Asset(
+                        id=asset_id,
+                        code=f"N1-{index}",
+                        label=f"Actif N1 {index}",
+                        asset_type_id="TYPE-560B",
+                    )
+                )
+                session.add(
+                    ResourceRequirement(
+                        id=human_id,
+                        project_id="PROJECT-560B",
+                        workforce_request_id=None,
+                        origin=ORIGIN_AD_HOC,
+                        start_date=DAY,
+                        end_date=DAY,
+                        planned_hours=Decimal("8"),
+                        status="Planifié",
+                    )
+                )
+                session.flush()
+                session.add(
+                    Shift(
+                        id=shift_id,
+                        resource_requirement_id=human_id,
+                        resource_id="RESOURCE-SKILLED",
+                        work_date=DAY,
+                        hours=Decimal("8"),
+                        source="MANUAL",
+                        locked=True,
+                    )
+                )
+                session.flush()
+                session.add(
+                    AssetRequirement(
+                        id=asset_requirement_id,
+                        project_id="PROJECT-560B",
+                        origin=AssetRequirementOrigin.SHIFT_AD_HOC.value,
+                        shift_id=shift_id,
+                        asset_type_id="TYPE-560B",
+                        start_date=DAY,
+                        end_date=DAY,
+                        status="Planifié",
+                    )
+                )
+                session.flush()
+                session.add(
+                    AssetAllocation(
+                        id=f"AALLOC-N1-{index}",
+                        asset_requirement_id=asset_requirement_id,
+                        asset_id=asset_id,
+                        operator_resource_id="RESOURCE-SKILLED",
+                        start_date=DAY,
+                        end_date=DAY,
+                        locked=True,
+                        source="MANUAL",
+                    )
+                )
+
+        statements = 0
+        def count_statement(*_args, **_kwargs) -> None:
+            nonlocal statements
+            statements += 1
+
+        event.listen(engine, "before_cursor_execute", count_statement)
+        try:
+            with factory() as session:
+                rows = SqlPlannerQueryRepository(session).list_shifts(
+                    start=DAY,
+                    end=DAY,
+                    can_manage_planning=True,
+                )
+                self.assertGreaterEqual(len(rows), 10)
+                projected = [
+                    row for row in rows
+                    if row.allocation_id.startswith("SHIFT-N1-")
+                ]
+                self.assertEqual(len(projected), 8)
+                self.assertTrue(
+                    all(row.asset_assignment is not None for row in projected)
+                )
+        finally:
+            event.remove(engine, "before_cursor_execute", count_statement)
+            engine.dispose()
+
+        # Bounded batch reads: increasing the Shift count must not add one query
+        # per asset relation or qualification.
+        self.assertLessEqual(statements, 9)
 
     def test_manage_planning_permission_is_required(self) -> None:
         with TestClient(
