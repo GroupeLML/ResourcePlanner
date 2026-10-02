@@ -25,8 +25,11 @@ from app.application.user_view_context import (
     UserViewContextService,
 )
 from app.infrastructure.sql import (
+    AppUser,
     Base,
+    BusinessContact,
     Project,
+    ProjectCoManager,
     Resource,
     ResourceRequirement,
     Shift,
@@ -202,6 +205,66 @@ class UserViewContextTests(unittest.TestCase):
         self.assertIn("resource_not_found", context.diagnostics)
         self.assertEqual(context.view_policy.default_scope, SCOPE_MINE)
 
+    def test_co_manager_without_employee_id_has_managed_scope_without_new_permissions(self) -> None:
+        with self.factory.begin() as session:
+            session.add(
+                BusinessContact(
+                    id="C-CO",
+                    display_name="Co chargé local",
+                    active=True,
+                    source="LOCAL",
+                )
+            )
+            session.add(
+                AppUser(
+                    id="U-CO",
+                    issuer=None,
+                    subject=None,
+                    display_name="Co chargé local",
+                    email=None,
+                    roles_json='["TECHNICIAN"]',
+                    active=True,
+                    employee_external_id=None,
+                    business_contact_id="C-CO",
+                )
+            )
+            session.add(
+                Project(
+                    id="P-CO",
+                    number="P-500",
+                    name="Projet co-géré",
+                    status="Actif",
+                )
+            )
+            session.flush()
+            session.add(
+                ProjectCoManager(
+                    project_id="P-CO",
+                    business_contact_id="C-CO",
+                    created_by_user_id="U-CO",
+                )
+            )
+
+        principal = AuthPrincipal.from_roles(
+            local_user_id="U-CO",
+            issuer="urn:test",
+            subject="co",
+            display_name="Co chargé local",
+            email=None,
+            employee_external_id=None,
+            roles=(ROLE_TECHNICIAN,),
+            auth_mode="local",
+        )
+        with self.factory() as session:
+            relations = UserViewContextService(
+                SqlUserViewContextRepository(session)
+            ).resolve_relations(principal)
+
+        self.assertEqual(relations.managed_project_ids, ("P-CO",))
+        self.assertEqual(relations.participating_project_ids, ())
+        self.assertEqual(relations.personal_project_ids, ("P-CO",))
+        self.assertNotIn("manage_demands", principal.permissions)
+
     def test_unlinked_transverse_identity_defaults_global(self) -> None:
         with self.factory() as session:
             context = UserViewContextService(
@@ -257,7 +320,11 @@ class TechnicianScheduleResolverTests(unittest.TestCase):
                 self_external = employee_external_id
                 return resource if self_external == "EMP-DIRECT" else None
 
-            def list_managed_project_ids(self, employee_external_id: str):
+            def list_managed_project_ids(
+                self,
+                local_user_id: str | None,
+                employee_external_id: str | None,
+            ):
                 return ()
 
             def list_participating_project_ids(self, resource_id: str):
