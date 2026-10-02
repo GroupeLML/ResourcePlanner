@@ -162,16 +162,18 @@ Le chemin de rattachement métier RessourcePlanner est :
 ```text
 RP_Projects.ProjectManagerId
         ↓ EmployeID
+Project.project_manager_external_id
+        ↓ résolution à la lecture
 AppUser.employee_external_id
         ↓
 AppUser.business_contact_id
         ↓
-Project.project_manager_contact_id
+BusinessContact
 ```
 
-Si aucun `AppUser` ou `BusinessContact` local correspondant n'existe, la synchronisation doit conserver l'identité ERP et les libellés descriptifs sans inventer une relation par nom ou courriel.
+Si aucun `AppUser` ou `BusinessContact` local correspondant n'existe, la synchronisation conserve l'identité ERP et les libellés descriptifs sans inventer une relation par nom ou courriel.
 
-468B maintient ce rattachement lors de la synchronisation des projets : lorsque `ProjectManagerId` est explicitement fourni, il est normalisé avec `strip()` puis résolu uniquement contre `AppUser.employee_external_id`. Le `business_contact_id` déjà porté par cet `AppUser` est copié vers `Project.project_manager_contact_id`; aucun `AppUser` ni `BusinessContact` n'est créé par cette synchronisation. Une relation explicitement non résolue laisse le contact à `null`; un import incomplet qui omet entièrement l'identité du chargé de projet conserve le rattachement local existant. Plusieurs `RP_Users` partageant le même `EmployeID` n'influencent pas cette résolution.
+468B a initialement matérialisé ce rattachement dans `Project.project_manager_contact_id`. ADR-017 / 573C remplace ce comportement : lorsque `ProjectManagerId` est explicitement fourni, il est normalisé avec `strip()` puis stocké comme `Project.project_manager_external_id`; la résolution `AppUser.employee_external_id → business_contact_id → BusinessContact` est effectuée par le resolver canonique 573B au moment de la lecture. La synchronisation ne crée aucun `AppUser`, aucun `BusinessContact`, ne touche aucun `ProjectCoManager` et ne met plus à jour `project_manager_contact_id`. Un import incomplet qui omet l'identité du chargé conserve le principal ERP existant.
 
 ### Champs observés
 
