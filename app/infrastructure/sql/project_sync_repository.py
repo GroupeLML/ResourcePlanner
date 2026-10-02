@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import json
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ...application.errors import ApplicationConflictError, ApplicationValidationError
+from ...application.project_managers import PROJECT_MANAGER_SOURCE_ERP
 from ...application.project_sync import ExternalProjectRecord, ProjectSyncRepositoryPort
-from .identity_models import AppUser
 from .models import Project
+from .project_manager_models import ProjectManagerAudit
 
 
 def _text(value: object) -> str:
@@ -23,30 +26,6 @@ class SqlProjectSyncRepository(ProjectSyncRepositoryPort):
 
     def __init__(self, session: Session) -> None:
         self._session = session
-
-    def _resolve_project_manager_contact_id(
-        self,
-        employee_external_id: str,
-    ) -> str | None:
-        """Resolve an ERP EmployeID through the canonical AppUser employee link only."""
-        employee_id = _text(employee_external_id)
-        if not employee_id:
-            return None
-        matches = self._session.scalars(
-            select(AppUser).where(AppUser.employee_external_id == employee_id)
-        ).all()
-        if len(matches) > 1:
-            # The SQL model already forbids this state. Keep the sync fail-closed
-            # rather than selecting an arbitrary identity if legacy/corrupt data
-            # bypassed the uniqueness constraint.
-            raise ApplicationConflictError(
-                "Plusieurs utilisateurs locaux partagent le même identifiant employé ERP.",
-                code="project_sync_manager_identity_conflict",
-                context={"employee_external_id": employee_id},
-            )
-        if not matches:
-            return None
-        return _optional_text(matches[0].business_contact_id)
 
     def upsert_external_project(self, project: ExternalProjectRecord) -> str:
         external_id = _text(project.external_id)
@@ -90,11 +69,6 @@ class SqlProjectSyncRepository(ProjectSyncRepositoryPort):
                     client=_optional_text(project.client),
                     project_manager_external_id=manager_external_id,
                     project_manager_name=_optional_text(project.project_manager_name),
-                    project_manager_contact_id=(
-                        self._resolve_project_manager_contact_id(manager_external_id)
-                        if manager_external_id is not None
-                        else None
-                    ),
                     status=_text(project.status) or "active",
                 )
             )
@@ -122,17 +96,22 @@ class SqlProjectSyncRepository(ProjectSyncRepositoryPort):
             project.project_manager_external_id
         )
         incoming_manager_name = _optional_text(project.project_manager_name)
-        # Current export/source contracts cannot distinguish omitted from explicit
-        # clear. Fail safe: an omitted manager field must not erase an existing
-        # stable mapping. A future Acumatica contract may add explicit clear semantics.
+        previous_manager_external_id = _optional_text(row.project_manager_external_id)
+        previous_manager_name = _optional_text(row.project_manager_name)
+        manager_identity_changed = bool(
+            incoming_manager_external_id is not None
+            and incoming_manager_external_id != previous_manager_external_id
+        )
+        # The current ERP feeds cannot distinguish omission from explicit clearing.
+        # Omission therefore preserves a stable principal. A real identity change,
+        # however, must never retain the descriptive name of the previous principal.
         if incoming_manager_external_id is not None:
             values["project_manager_external_id"] = incoming_manager_external_id
-            values["project_manager_contact_id"] = (
-                self._resolve_project_manager_contact_id(
-                    incoming_manager_external_id
-                )
-            )
-        if incoming_manager_name is not None:
+            if manager_identity_changed:
+                values["project_manager_name"] = incoming_manager_name
+            elif incoming_manager_name is not None:
+                values["project_manager_name"] = incoming_manager_name
+        elif incoming_manager_name is not None:
             values["project_manager_name"] = incoming_manager_name
         if external_id:
             # Manual XLSX exports do not expose the Acumatica REST row id. In that
@@ -146,6 +125,34 @@ class SqlProjectSyncRepository(ProjectSyncRepositoryPort):
                 changed = True
 
         if changed:
+            if manager_identity_changed:
+                self._session.add(
+                    ProjectManagerAudit(
+                        project_id=row.id,
+                        action="ERP_PRIMARY_CHANGED",
+                        source=PROJECT_MANAGER_SOURCE_ERP,
+                        actor_user_id=None,
+                        before_json=json.dumps(
+                            {
+                                "employee_external_id": previous_manager_external_id,
+                                "display_name": previous_manager_name,
+                            },
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                        after_json=json.dumps(
+                            {
+                                "employee_external_id": incoming_manager_external_id,
+                                "display_name": incoming_manager_name,
+                            },
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                        resulting_version=None,
+                    )
+                )
             self._session.flush()
             return "updated"
         return "unchanged"
