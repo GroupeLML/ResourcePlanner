@@ -86,6 +86,7 @@ class QuickShiftServiceTests(unittest.TestCase):
         self.assertEqual(segments.created["DateFin"], date(2026, 8, 26))
         self.assertEqual(segments.created["HeuresPrevues"], 7.5)
         self.assertEqual(segments.created["TypePlanification"], "Fixe")
+        self.assertEqual(segments.created["ConfirmationOverride"], True)
         self.assertEqual(segments.created[SEGMENT_ORIGIN_FIELD], QUICK_SHIFT_ORIGIN)
         self.assertEqual(
             allocations.calls,
