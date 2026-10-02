@@ -38,8 +38,11 @@ SOURCE_MISSING_TABLES = {
     "asset_approvers",
     "acumatica_project_task_sync_project_results",
     "acumatica_project_task_sync_runs",
+    "project_co_managers",
+    "project_manager_audit",
 }
 SOURCE_MISSING_COLUMNS = {
+    "projects": {"co_managers_version"},
     "auth_sessions": {"auth_mode"},
     "work_packages": {
         "task_catalog_item_id",

@@ -102,12 +102,65 @@ def _reshape_as_0048(path: Path) -> None:
             DROP TABLE IF EXISTS break_glass_credentials;
             DROP TABLE IF EXISTS work_package_audit;
             DROP TABLE IF EXISTS work_package_weekly_loads;
+            DROP TABLE IF EXISTS project_manager_audit;
+            DROP TABLE IF EXISTS project_co_managers;
 
 
             DROP TABLE IF EXISTS acumatica_project_task_sync_project_results;
             DROP TABLE IF EXISTS acumatica_project_task_sync_runs;
             DROP TABLE IF EXISTS asset_approvers;
             DROP TABLE IF EXISTS asset_type_approval_scope_mappings;
+
+            CREATE TABLE projects_0048 (
+                id VARCHAR(36) NOT NULL PRIMARY KEY,
+                erp_external_id VARCHAR(128),
+                number VARCHAR(64) NOT NULL UNIQUE,
+                name VARCHAR(255) DEFAULT '' NOT NULL,
+                client VARCHAR(255),
+                project_manager_external_id VARCHAR(128),
+                project_manager_name VARCHAR(255),
+                project_manager_contact_id VARCHAR(36),
+                status VARCHAR(32) DEFAULT 'active' NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                FOREIGN KEY(project_manager_contact_id) REFERENCES business_contacts (id)
+            );
+            INSERT INTO projects_0048 (
+                id,
+                erp_external_id,
+                number,
+                name,
+                client,
+                project_manager_external_id,
+                project_manager_name,
+                project_manager_contact_id,
+                status,
+                created_at,
+                updated_at
+            )
+            SELECT
+                id,
+                erp_external_id,
+                number,
+                name,
+                client,
+                project_manager_external_id,
+                project_manager_name,
+                project_manager_contact_id,
+                status,
+                created_at,
+                updated_at
+            FROM projects;
+            DROP TABLE projects;
+            ALTER TABLE projects_0048 RENAME TO projects;
+            CREATE INDEX ix_projects_erp_external_id
+                ON projects (erp_external_id);
+            CREATE INDEX ix_projects_project_manager_contact_id
+                ON projects (project_manager_contact_id);
+            CREATE INDEX ix_projects_project_manager_external_id
+                ON projects (project_manager_external_id);
+            CREATE INDEX ix_projects_status
+                ON projects (status);
 
             CREATE TABLE approval_requirements_0048 (
                 id VARCHAR(36) NOT NULL PRIMARY KEY,
