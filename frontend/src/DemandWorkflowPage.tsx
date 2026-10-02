@@ -289,6 +289,8 @@ type DemandWorkflowPageProps = {
   onChanged?: () => void | Promise<void>;
   refreshToken?: number;
   hasUnsavedChanges?: boolean;
+  actionsOnly?: boolean;
+  showActions?: boolean;
 };
 
 export default function DemandWorkflowPage({
@@ -298,6 +300,8 @@ export default function DemandWorkflowPage({
   onChanged,
   refreshToken = 0,
   hasUnsavedChanges = false,
+  actionsOnly = false,
+  showActions = true,
 }: DemandWorkflowPageProps = {}) {
   const [demands, setDemands] = useState<DemandReadModel[]>([]);
   const [selectedNumber, setSelectedNumber] = useState("");
@@ -715,7 +719,7 @@ export default function DemandWorkflowPage({
     && (!currentApprovalCycle || actorApprovalLines.length > 0);
 
   return (
-    <section className="demand-workflow-page">
+    <section className={`demand-workflow-page ${actionsOnly ? "actions-only" : ""}`}>
       {!embedded && (
         <div className="page-heading">
           <div>
@@ -814,7 +818,7 @@ export default function DemandWorkflowPage({
         <div className="workflow-detail-panel">
           {currentDemand ? (
             <>
-              {(actions.includes("submit")
+              {showActions && (actions.includes("submit")
                 || actions.includes("cancel")
                 || actions.includes("request-cancellation")
                 || canQuickApprove) && (
@@ -1076,7 +1080,7 @@ export default function DemandWorkflowPage({
                 </div>
               )}
 
-              {actions.includes("correction") && (
+              {showActions && actions.includes("correction") && (
                 <label className="workflow-comment-field">
                   <span>Commentaire de correction (requis)</span>
                   <textarea
@@ -1089,7 +1093,7 @@ export default function DemandWorkflowPage({
                 </label>
               )}
 
-              {(actions.includes("accept-cancellation") || actions.includes("reject-cancellation")) && !cancellationReviewOpen && (
+              {showActions && (actions.includes("accept-cancellation") || actions.includes("reject-cancellation")) && !cancellationReviewOpen && (
                 <div className="workflow-cancellation-treatment">
                   <button
                     type="button"
@@ -1102,7 +1106,7 @@ export default function DemandWorkflowPage({
                 </div>
               )}
 
-              {(actions.includes("accept-cancellation") || actions.includes("reject-cancellation")) && cancellationReviewOpen && (
+              {showActions && (actions.includes("accept-cancellation") || actions.includes("reject-cancellation")) && cancellationReviewOpen && (
                 <div className="workflow-cancellation-review" data-testid="cancellation-review">
                   <div className="plan-delta-heading">
                     <div>
@@ -1223,7 +1227,7 @@ export default function DemandWorkflowPage({
                 </span>
               )}
 
-              {(actions.length === 0 || actions.includes("correction")) && (
+              {showActions && (actions.length === 0 || actions.includes("correction")) && (
                 <div className="workflow-actions">
                   {actions.length === 0 && <span className="workflow-terminal-state">Aucune transition usuelle disponible pour ce statut.</span>}
                   {actions.includes("correction") && (
@@ -1235,7 +1239,9 @@ export default function DemandWorkflowPage({
               )}
 
               <small className="workflow-authority-note">
-                Les actions affichées proviennent de la projection backend canonique; FastAPI demeure l’autorité pour accepter ou refuser chaque commande.
+                {showActions
+                  ? "Les actions affichées proviennent de la projection backend canonique; FastAPI demeure l’autorité pour accepter ou refuser chaque commande."
+                  : "Les actions disponibles restent dérivées de la projection backend canonique et sont exposées dans le header de la demande; FastAPI demeure l’autorité."}
               </small>
             </>
           ) : (
