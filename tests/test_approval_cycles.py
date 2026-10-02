@@ -545,6 +545,10 @@ class ApprovalCycleTests(unittest.TestCase):
             )
             session.get(TaskCatalogEntry, "T1").resource_class_code = "RC-AUT"
             session.get(TaskCatalogEntry, "T2").resource_class_code = "RC-ELEC"
+            line1 = session.get(RequestLine, "L1")
+            line1.required_resource_class = None
+            line1.proposed_resource_id = None
+            session.get(RequestLine, "L2").required_resource_class = None
             session.commit()
 
             service = self._service(session)
