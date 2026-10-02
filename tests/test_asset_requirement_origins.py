@@ -233,6 +233,7 @@ class AssetRequirementOriginTests(unittest.TestCase):
                     category="VEHICLE",
                 )
             )
+            session.flush()
             session.add(
                 Asset(
                     id="ASSET-1",
