@@ -21,6 +21,7 @@ from ...domain.confirmation import CONFIRMATION_CONFIRMED, normalize_confirmatio
 from ...domain.planning_engine import build_allocation_plan
 from ...domain.planning_projection import project_planning_snapshot
 from ...domain.value_coercion import date_from_value
+from .asset_service import SqlAssetService
 from .base import new_id, utc_now
 from .models import (
     ORIGIN_REQUEST,
@@ -375,6 +376,10 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             normalize_confirmation(confirmation) if _text(confirmation) else None
         )
         shift.note = _text(note) or None
+        SqlAssetService(
+            self._session,
+            actor="planning",
+        ).synchronize_shift_ad_hoc_assignment(shift=shift)
         self._session.flush()
         self._planning.rebuild()
 
@@ -411,6 +416,10 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
         shift.source = "MANUAL"
         shift.locked = True
         shift.outside_standard_hours = availability.override_applied
+        SqlAssetService(
+            self._session,
+            actor="planning",
+        ).synchronize_shift_ad_hoc_assignment(shift=shift)
         self._session.flush()
         self._planning.rebuild()
 
@@ -419,6 +428,10 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
         shift = self._shift(allocation_id)
         if shift is None:
             return
+        SqlAssetService(
+            self._session,
+            actor="planning",
+        ).assert_shift_can_return_auto(shift)
         shift.locked = False
         self._session.flush()
         self._planning.rebuild()
@@ -428,6 +441,10 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
         shift = self._shift(allocation_id)
         if shift is None:
             return
+        SqlAssetService(
+            self._session,
+            actor="planning",
+        ).delete_shift_ad_hoc_assignment(shift=shift)
         self._session.delete(shift)
         self._session.flush()
         self._planning.rebuild()
