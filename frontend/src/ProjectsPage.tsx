@@ -59,6 +59,13 @@ const FINANCIAL_DIAGNOSTIC_LABELS: Record<string, string> = {
   ERP_FINANCIAL_BUDGET_INCOMPLETE: "Budget financier ERP incomplet",
 };
 
+const ACTUAL_PROJECTION_DIAGNOSTIC_LABELS: Record<string, string> = {
+  resource_class_cost_missing: "Coût horaire moyen non disponible",
+  resource_class_cost_zero: "Coût horaire moyen nul",
+  resource_class_cost_negative: "Coût horaire moyen invalide",
+  WEEKLY_LOAD_INCOMPLETE: "Répartition hebdomadaire WorkPackage incomplète",
+};
+
 function formatCurrency(value: number | null | undefined) {
   if (value == null) return "—";
   return new Intl.NumberFormat("fr-CA", {
@@ -87,12 +94,21 @@ function formatHours(value: number | null | undefined) {
   return `${new Intl.NumberFormat("fr-CA", { maximumFractionDigits: 2 }).format(value)} h`;
 }
 
+function formatHourlyRate(value: number | null | undefined) {
+  if (value == null) return "—";
+  return `${formatCurrency(value)}/h`;
+}
+
 function budgetDiagnosticLabel(code: string) {
   return BUDGET_DIAGNOSTIC_LABELS[code] || code;
 }
 
 function financialDiagnosticLabel(code: string | null) {
   return code ? FINANCIAL_DIAGNOSTIC_LABELS[code] || code : null;
+}
+
+function actualProjectionDiagnosticLabel(code: string | null) {
+  return code ? ACTUAL_PROJECTION_DIAGNOSTIC_LABELS[code] || code : null;
 }
 
 function apiErrorMessage(reason: unknown, fallback: string) {
@@ -762,22 +778,16 @@ export default function ProjectsPage() {
 
           <div className="project-task-contact-list">
             <div className="projects-table-header">
-              <strong>Temps approuvés</strong>
-              {projectBudget?.last_approved_time_date ? (
-                <span>
-                  Dernières heures approuvées : {formatProjectDate(projectBudget.last_approved_time_date)}
-                  {projectBudget.cutoff_source ? ` · source ${projectBudget.cutoff_source}` : ""}
-                </span>
-              ) : (
-                <span>Dernières heures approuvées : Indisponible — source ERP d’approbation des temps non configurée.</span>
-              )}
+              <strong>Référence hebdomadaire</strong>
+              <span>
+                Semaine du {formatProjectDate(projectBudget?.reference_week_start)}
+                {" · "}
+                BudgetActual considéré jusqu’au {formatProjectDate(projectBudget?.actual_through_date)}
+              </span>
             </div>
-            {projectBudget?.cutoff_status !== "AVAILABLE" && (
-              <div className="projects-sync-message" role="status">
-                Cutoff des temps approuvés indisponible — filtre temporel des WorkPackages non appliqué.
-                {projectBudget?.cutoff_diagnostic ? ` Diagnostic : ${projectBudget.cutoff_diagnostic}.` : ""}
-              </div>
-            )}
+            <div className="projects-sync-message" role="status">
+              BudgetActual ERP représente la consommation absorbée avant cette semaine; la charge WorkPackage future commence au lundi de référence.
+            </div>
           </div>
 
           <div className="project-task-contact-list">
@@ -806,9 +816,13 @@ export default function ProjectsPage() {
                       <th>Budget ERP</th>
                       <th>Actual ERP</th>
                       <th>Restant ERP</th>
-                      <th>Budget dérivé main-d’œuvre</th>
-                      <th>Charge WorkPackages</th>
-                      <th>Solde heures structuré</th>
+                      <th>Coût moyen</th>
+                      <th>Budget restant selon Actual</th>
+                      <th>Charge WP à partir du lundi</th>
+                      <th>Marge après charge future</th>
+                      <th>Budget total dérivé</th>
+                      <th>WorkPackages structurés</th>
+                      <th>Solde de structuration</th>
                       <th>WorkPackages liés</th>
                       <th>Diagnostic</th>
                     </tr>
@@ -820,6 +834,10 @@ export default function ProjectsPage() {
                         <td>{formatCurrency(task.budget_amount_cad)}</td>
                         <td>{formatCurrency(task.budget_actual_cad)}</td>
                         <td>{formatCurrency(task.remaining_budget_cad)}</td>
+                        <td>{formatHourlyRate(task.average_hourly_cost_cad)}</td>
+                        <td>{formatHours(task.remaining_budget_hours_from_actual)}</td>
+                        <td>{formatHours(task.future_work_package_hours)}</td>
+                        <td>{formatHours(task.remaining_after_work_packages_hours)}</td>
                         <td>{formatHours(task.budget_hours)}</td>
                         <td>{formatHours(task.planned_wp_hours)}</td>
                         <td>{formatHours(task.remaining_budget_hours)}</td>
@@ -841,6 +859,16 @@ export default function ProjectsPage() {
                           {financialDiagnosticLabel(task.financial_diagnostic) && (
                             <span className="project-status is-inactive">
                               ⚑ {financialDiagnosticLabel(task.financial_diagnostic)}
+                            </span>
+                          )}
+                          {actualProjectionDiagnosticLabel(task.actual_hours_diagnostic) && (
+                            <span className="project-status is-inactive">
+                              ⚑ {actualProjectionDiagnosticLabel(task.actual_hours_diagnostic)}
+                            </span>
+                          )}
+                          {actualProjectionDiagnosticLabel(task.future_work_package_diagnostic) && (
+                            <span className="project-status is-inactive">
+                              ⚑ {actualProjectionDiagnosticLabel(task.future_work_package_diagnostic)}
                             </span>
                           )}
                           <span className={BUDGET_ATTENTION.has(task.diagnostic_state) ? "project-status is-inactive" : "projects-muted"}>
