@@ -463,11 +463,7 @@ class ApprovalScopeService:
             line_position=line_position,
             task_code=task.code if task is not None else None,
             task_label=task.label if task is not None else None,
-            effective_resource_class=(
-                effective_resource_class
-                if effective_resource_class is not None
-                else (task.resource_class_code if task is not None else None)
-            ),
+            effective_resource_class=effective_resource_class,
             required_resource_class=required_resource_class,
             proposed_resource_id=proposed_resource_id,
             routing_sources=tuple(routing_sources),
