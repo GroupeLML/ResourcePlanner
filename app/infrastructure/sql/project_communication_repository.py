@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ...application.operational_contacts import OperationalContactService
@@ -241,7 +241,7 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                     AssetAllocation.asset_requirement_id == AssetRequirement.id,
                 )
                 .where(
-                    *asset_scope,
+                    or_(*asset_scope),
                     AssetAllocation.start_date <= week_end,
                     AssetAllocation.end_date >= week_start,
                 )
