@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from ...application.errors import ApplicationConflictError, ApplicationValidationError
@@ -105,10 +105,37 @@ class SqlProjectSyncRepository(ProjectSyncRepositoryPort):
         # The current ERP feeds cannot distinguish omission from explicit clearing.
         # Omission therefore preserves a stable principal. A real identity change,
         # however, must never retain the descriptive name of the previous principal.
+        manager_changed_by_cas = False
         if incoming_manager_external_id is not None:
-            values["project_manager_external_id"] = incoming_manager_external_id
             if manager_identity_changed:
-                values["project_manager_name"] = incoming_manager_name
+                manager_update = self._session.execute(
+                    update(Project)
+                    .where(
+                        Project.id == row.id,
+                        Project.project_manager_external_id
+                        == previous_manager_external_id,
+                    )
+                    .values(
+                        project_manager_external_id=incoming_manager_external_id,
+                        project_manager_name=incoming_manager_name,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                if int(manager_update.rowcount or 0) != 1:
+                    raise ApplicationConflictError(
+                        "Le chargé principal ERP du projet a changé pendant la synchronisation.",
+                        code="project_sync_manager_concurrency_conflict",
+                        context={
+                            "project_number": row.number,
+                            "expected_employee_external_id": previous_manager_external_id,
+                            "incoming_employee_external_id": incoming_manager_external_id,
+                        },
+                    )
+                manager_changed_by_cas = True
+                self._session.expire(
+                    row,
+                    ["project_manager_external_id", "project_manager_name"],
+                )
             elif incoming_manager_name is not None:
                 values["project_manager_name"] = incoming_manager_name
         elif incoming_manager_name is not None:
@@ -118,7 +145,7 @@ class SqlProjectSyncRepository(ProjectSyncRepositoryPort):
             # case preserve any existing binding; a later live ERP sync can attach it.
             values["erp_external_id"] = external_id
 
-        changed = False
+        changed = manager_changed_by_cas
         for field, value in values.items():
             if getattr(row, field) != value:
                 setattr(row, field, value)
