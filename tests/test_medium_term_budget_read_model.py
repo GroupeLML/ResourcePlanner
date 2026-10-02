@@ -10,6 +10,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app.infrastructure.sql import (
+    AppUser,
     BusinessContact,
     Project,
     ResourceClassConfig,
@@ -29,17 +30,37 @@ create_api_app = partial(create_api_app, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
 class MediumTermBudgetReadModelTests(unittest.TestCase):
     @staticmethod
     def _seed_database(session) -> None:
-        session.add(
-            BusinessContact(
-                id="BC-PM-1",
-                display_name="Benjamin Germain",
-                source="ERP",
-                external_system="ACUMATICA",
-                external_entity="EMPLOYEE",
-                external_id="EMP-PM-1",
-            )
+        session.add_all(
+            [
+                BusinessContact(
+                    id="BC-PM-1",
+                    display_name="Benjamin Germain",
+                    source="ERP",
+                    external_system="ACUMATICA",
+                    external_entity="EMPLOYEE",
+                    external_id="EMP-PM-1",
+                ),
+                BusinessContact(
+                    id="BC-LEGACY",
+                    display_name="Ancienne FK ignorée",
+                    source="LOCAL",
+                ),
+            ]
         )
         session.flush()
+        session.add(
+            AppUser(
+                id="U-PM-1",
+                issuer="urn:test",
+                subject="pm-1",
+                display_name="Benjamin Germain",
+                email=None,
+                employee_external_id="EMP-PM-1",
+                business_contact_id="BC-PM-1",
+                roles_json='["PROJECT_MANAGER"]',
+                active=True,
+            )
+        )
         session.add_all(
             [
                 Project(
@@ -47,7 +68,8 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
                     number="P-1",
                     name="Projet 1",
                     status="Actif",
-                    project_manager_contact_id="BC-PM-1",
+                    project_manager_external_id="EMP-PM-1",
+                    project_manager_contact_id="BC-LEGACY",
                     project_manager_name="Libellé ERP non autoritaire",
                 ),
                 Project(
@@ -55,6 +77,7 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
                     number="P-2",
                     name="Projet 2",
                     status="Actif",
+                    project_manager_external_id="EMP-PM-2",
                     project_manager_name="Nom sans identité canonique",
                 ),
                 ResourceClassConfig(
@@ -400,6 +423,9 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
             programming["project_manager_display_name"],
             "Benjamin Germain",
         )
+        self.assertEqual(programming["manager_group_key"], "erp:EMP-PM-1")
+        self.assertEqual(programming["manager_display_name"], "Benjamin Germain")
+        self.assertEqual(programming["manager_resolution_status"], "RESOLVED")
         self.assertTrue(
             programming["erp_budget_last_success_at"].startswith(
                 "2026-10-01T13:42:00"
@@ -655,7 +681,20 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
         self.assertNotIn("last_approved_time_date", payload)
         self.assertEqual(task["task_catalog_item_id"], "TASK-P2-216")
         self.assertIsNone(task["project_manager_contact_id"])
-        self.assertIsNone(task["project_manager_display_name"])
+        self.assertEqual(
+            task["project_manager_display_name"],
+            "Nom sans identité canonique",
+        )
+        self.assertEqual(task["manager_group_key"], "erp:EMP-PM-2")
+        self.assertEqual(
+            task["manager_display_name"],
+            "Nom sans identité canonique",
+        )
+        self.assertEqual(task["manager_resolution_status"], "UNRESOLVED_USER")
+        self.assertIn(
+            "ERP_PROJECT_MANAGER_APP_USER_NOT_LINKED",
+            task["manager_diagnostics"],
+        )
         self.assertIsNone(task["erp_budget_last_success_at"])
         self.assertEqual(Decimal(str(task["planned_wp_hours"])), Decimal("40"))
         self.assertEqual(Decimal(str(task["remaining_budget_hours"])), Decimal("60"))
