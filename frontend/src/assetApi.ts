@@ -225,6 +225,74 @@ export function setAssetApprover(
   );
 }
 
+export type ShiftAssetCandidate = {
+  id: string;
+  code: string;
+  label: string;
+  asset_type_id: string;
+  asset_type_code: string;
+  asset_type_label: string;
+  active: boolean;
+  compatible: boolean;
+  available: boolean;
+  qualification_state: string;
+  allowed: boolean;
+  reason: string | null;
+  diagnostics: string[];
+  currently_assigned: boolean;
+};
+
+export type ShiftAssetCandidates = {
+  shift_id: string;
+  work_date: string;
+  operator_resource_id: string;
+  current_requirement_id: string | null;
+  current_allocation_id: string | null;
+  candidates: ShiftAssetCandidate[];
+  planning_version: number;
+};
+
+export type ShiftAssetAssignmentResult = {
+  operation: "ASSIGN" | "CHANGE" | "RELEASE";
+  shift_id: string;
+  requirement_id: string;
+  requirement_origin: string;
+  allocation_id: string | null;
+  asset_id: string | null;
+  operator_resource_id: string | null;
+  qualification_state: string | null;
+  shift_source: string;
+  shift_locked: boolean;
+  planning_version: number;
+};
+
+export function getShiftAssetCandidates(
+  shiftId: string,
+  signal?: AbortSignal,
+) {
+  return getJson<ShiftAssetCandidates>(
+    `/api/v1/assets/shifts/${encodeURIComponent(shiftId)}/assignment/candidates`,
+    signal,
+  );
+}
+
+export function setShiftAssetAssignment(
+  shiftId: string,
+  payload: {
+    asset_id: string | null;
+    asset_requirement_id: string | null;
+    expected_planning_version: number;
+  },
+  idempotencyKey: string,
+) {
+  return sendJson<ShiftAssetAssignmentResult>(
+    `/api/v1/assets/shifts/${encodeURIComponent(shiftId)}/assignment`,
+    "PUT",
+    payload,
+    { "Idempotency-Key": idempotencyKey },
+  );
+}
+
 export type AssetOperatorCandidate = {
   resource_id: string;
   resource_name: string;

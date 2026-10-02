@@ -47,8 +47,10 @@ class ReactAssetUxContractTests(unittest.TestCase):
         self.assertIn("approver_candidates", api)
         self.assertIn("/approvers/", api)
 
-    def test_planning_keeps_humans_first_and_links_only_actual_allocations(self) -> None:
+    def test_planning_keeps_humans_first_and_uses_shift_owned_asset_projection(self) -> None:
         source = (ROOT / "frontend" / "src" / "PlanningPage.tsx").read_text(encoding="utf-8")
+        api = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
+        editor = (ROOT / "frontend" / "src" / "ShiftEditor.tsx").read_text(encoding="utf-8")
 
         human = source.index('<div className="planning-layout">')
         asset_panel = source.index("<AssetPlanningPanel", human)
@@ -56,15 +58,22 @@ class ReactAssetUxContractTests(unittest.TestCase):
         self.assertIn("Ressources et quarts", source[human:asset_panel])
         self.assertIn("Demandes en attente", source[human:asset_panel])
 
-        self.assertIn("snapshot.asset_allocations.forEach", source)
-        self.assertIn("allocation.operator_resource_id !== shift.resource_id", source)
-        self.assertIn("requirement.demand_number !== shift.demand_number", source)
-        self.assertIn(
-            "allocation.start_date > shift.work_date || allocation.end_date < shift.work_date",
-            source,
-        )
-        self.assertIn("labels.set(allocation.asset_id", source)
-        self.assertIn('aria-label="Actifs réservés"', source)
+        self.assertIn("asset_assignment: ShiftAssetReservationReadModel | null", api)
+        self.assertIn("related_asset_reservations: ShiftAssetReservationReadModel[]", api)
+        self.assertIn("asset_actions: ShiftAssetActionsReadModel | null", api)
+        self.assertIn("asset_diagnostics: string[]", api)
+
+        self.assertIn("shift.asset_assignment", source)
+        self.assertIn('aria-label={asset ? "Actif affecté au quart"', source)
+        self.assertNotIn("snapshot.asset_allocations.forEach", source)
+        self.assertNotIn("allocation.operator_resource_id !== shift.resource_id", source)
+        self.assertNotIn("requirement.demand_number !== shift.demand_number", source)
+
+        self.assertIn("Réservations liées à la demande", editor)
+        self.assertIn("shift.related_asset_reservations", editor)
+        self.assertIn("shift.asset_actions?.change.allowed", editor)
+        self.assertIn("shift.asset_actions?.release.allowed", editor)
+        self.assertIn("L’actif associé restera sur le quart source.", editor)
         self.assertNotIn("proposed_asset_id", source)
 
     def test_asset_capacity_cells_use_backend_scoped_occupation_projection(self) -> None:

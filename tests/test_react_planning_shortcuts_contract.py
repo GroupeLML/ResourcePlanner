@@ -33,31 +33,34 @@ class ReactPlanningShortcutContractTests(unittest.TestCase):
         self.assertIn("defaultDay={quickShiftSeed?.day ?? quickShiftDefaultDay}", planning)
         self.assertIn("Quick Shift créé pour ${resourceName} le ${day}.", planning)
 
-    def test_shift_asset_shortcut_uses_explicit_requirement_link_and_existing_commands(self) -> None:
+    def test_shift_asset_shortcut_consumes_canonical_560c_contracts(self) -> None:
         planning = (ROOT / "frontend" / "src" / "PlanningPage.tsx").read_text(encoding="utf-8")
         dialog = (ROOT / "frontend" / "src" / "ShiftAssetAssignmentDialog.tsx").read_text(encoding="utf-8")
+        api = (ROOT / "frontend" / "src" / "assetApi.ts").read_text(encoding="utf-8")
 
-        self.assertIn("requirement.demand_number === shift.demand_number", planning)
-        self.assertIn("requirement.start_date <= shift.work_date", planning)
-        self.assertIn("requirement.end_date >= shift.work_date", planning)
-        self.assertIn("assetAssignableShiftIds.has(shift.allocation_id)", planning)
+        self.assertIn("shift.asset_assignment", planning)
+        self.assertIn("shift.asset_actions?.assign.allowed", planning)
+        self.assertIn("shift.asset_diagnostics", planning)
+        self.assertIn("Aucun actif", planning)
         self.assertIn("Assigner un actif", planning)
+        self.assertNotIn("assetsByShift", planning)
+        self.assertNotIn("assetAssignableShiftIds", planning)
+        self.assertNotIn("requirement.demand_number === shift.demand_number", planning)
 
-        self.assertIn("requirement.demand_number === shift.demand_number", dialog)
-        self.assertIn("requirement.start_date <= shift.work_date", dialog)
-        self.assertIn("requirement.end_date >= shift.work_date", dialog)
-        self.assertIn("asset.asset_type_id === requirement.asset_type_id", dialog)
-        self.assertIn("reserveAssetRequirement(", dialog)
-        self.assertIn("start_date: selectedAssetId ? requirement.start_date : null", dialog)
-        self.assertIn("end_date: selectedAssetId ? requirement.end_date : null", dialog)
-        self.assertIn("expected_planning_version: snapshot.planning_version", dialog)
-        self.assertIn("getAssetOperatorCandidates(requirement.requirement_id)", dialog)
-        self.assertIn("candidate.resource_id === shift.resource_id", dialog)
-        self.assertIn("setAssetRequirementOperator(", dialog)
-        self.assertIn("expected_planning_version: operatorState.planning_version", dialog)
-        self.assertIn('"planning_version_conflict"', dialog)
-        self.assertIn('"planning_version_stale"', dialog)
+        self.assertIn("getShiftAssetCandidates(", dialog)
+        self.assertIn("setShiftAssetAssignment(", dialog)
+        self.assertIn("selectedCandidate?.allowed", dialog)
+        self.assertIn("candidate.reason", dialog)
+        self.assertIn("planningVersion", dialog)
+        self.assertIn("candidateState?.planning_version", dialog)
         self.assertIn("la même clé d’idempotence sera réutilisée", dialog)
+        self.assertNotIn("reserveAssetRequirement(", dialog)
+        self.assertNotIn("setAssetRequirementOperator(", dialog)
+        self.assertNotIn("snapshot.asset_requirements", dialog)
+
+        self.assertIn("/api/v1/assets/shifts/", api)
+        self.assertIn("/assignment/candidates", api)
+        self.assertIn("/assignment", api)
 
     def test_shift_actions_are_siblings_and_cell_shortcut_keeps_drop_target(self) -> None:
         planning = (ROOT / "frontend" / "src" / "PlanningPage.tsx").read_text(encoding="utf-8")
@@ -75,13 +78,17 @@ class ReactPlanningShortcutContractTests(unittest.TestCase):
         self.assertIn(".planning-day-cell:hover .cell-quick-shift-button", styles)
         self.assertIn(".planning-day-cell:focus-within .cell-quick-shift-button", styles)
 
-    def test_asset_shortcut_never_turns_failed_qualification_into_success(self) -> None:
+    def test_shift_asset_candidate_authority_and_stale_state_fail_closed(self) -> None:
         dialog = (ROOT / "frontend" / "src" / "ShiftAssetAssignmentDialog.tsx").read_text(encoding="utf-8")
 
-        self.assertIn("n’est pas admissible comme opérateur", dialog)
-        self.assertIn("Affectation incomplète", dialog)
-        self.assertIn("l’opérateur n’a pas pu être associé", dialog)
+        self.assertIn("disabled: !candidate.allowed", dialog)
+        self.assertIn("!selectedCandidate?.allowed", dialog)
+        self.assertIn('"planning_version_conflict"', dialog)
+        self.assertIn("L’état canonique est resynchronisé", dialog)
         self.assertIn("onRefresh();", dialog)
+        self.assertIn("setCandidateReloadKey", dialog)
+        self.assertNotIn("candidate.available &&", dialog)
+        self.assertNotIn("candidate.qualification_state ===", dialog)
         self.assertNotIn("QuickAssetAllocation", dialog)
 
 
