@@ -18,7 +18,7 @@ MIGRATIONS = ROOT / "migrations"
 VERSIONS = MIGRATIONS / "versions"
 BASELINE_FILE = VERSIONS / "0001_v2_production_baseline.py"
 BASELINE_REVISION = "v2_production_baseline"
-HEAD_REVISION = "0005_task_sync_runs"
+HEAD_REVISION = "0006_asset_requirement_origins"
 
 
 def alembic_config(database_path: Path) -> Config:
@@ -71,6 +71,7 @@ class SqlMigrationTests(unittest.TestCase):
                 "0003_work_package_resource_class.py",
                 "0004_asset_approval_authority.py",
                 "0005_acumatica_project_task_sync_runs.py",
+                "0006_asset_requirement_origins.py",
             ],
         )
 
@@ -89,12 +90,107 @@ class SqlMigrationTests(unittest.TestCase):
             [revision.revision for revision in script.walk_revisions()],
             [
                 HEAD_REVISION,
+                "0005_task_sync_runs",
                 "0004_asset_approval_authority",
                 "0003_work_package_resource_class",
                 "0002_work_package_weekly_loads",
                 BASELINE_REVISION,
             ],
         )
+
+    def test_asset_requirement_origin_migration_preserves_historical_rows(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_path = Path(directory) / "asset-requirement-origin.db"
+            config = alembic_config(database_path)
+            command.upgrade(config, "0005_task_sync_runs")
+
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO asset_requirements (
+                            id,
+                            project_id,
+                            workforce_request_id,
+                            source_request_line_id,
+                            approved_entry_key,
+                            slot_index,
+                            asset_type_id,
+                            start_date,
+                            end_date,
+                            status
+                        ) VALUES (
+                            'AR-HIST',
+                            'P-HIST',
+                            'WR-HIST',
+                            'RL-HIST',
+                            'ENTRY-HIST',
+                            0,
+                            'AT-HIST',
+                            '2026-09-01',
+                            '2026-09-01',
+                            'À affecter'
+                        )
+                        """
+                    )
+                )
+            engine.dispose()
+
+            command.upgrade(config, "head")
+
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            try:
+                with engine.connect() as connection:
+                    row = connection.execute(
+                        text(
+                            "SELECT id, origin, shift_id "
+                            "FROM asset_requirements WHERE id = 'AR-HIST'"
+                        )
+                    ).one()
+                    self.assertEqual(row.id, "AR-HIST")
+                    self.assertEqual(row.origin, "REQUEST")
+                    self.assertIsNone(row.shift_id)
+            finally:
+                engine.dispose()
+
+    def test_asset_requirement_origin_downgrade_refuses_ad_hoc_data(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_path = Path(directory) / "asset-requirement-origin-downgrade.db"
+            config = alembic_config(database_path)
+            command.upgrade(config, "head")
+
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO asset_requirements (
+                            id,
+                            project_id,
+                            origin,
+                            shift_id,
+                            asset_type_id,
+                            start_date,
+                            end_date,
+                            status
+                        ) VALUES (
+                            'AR-AD-HOC',
+                            'P-AD-HOC',
+                            'SHIFT_AD_HOC',
+                            'SHIFT-AD-HOC',
+                            'AT-AD-HOC',
+                            '2026-09-01',
+                            '2026-09-01',
+                            'Planifié'
+                        )
+                        """
+                    )
+                )
+            engine.dispose()
+
+            with self.assertRaisesRegex(RuntimeError, "SHIFT_AD_HOC"):
+                command.downgrade(config, "0005_task_sync_runs")
 
     def test_fresh_sqlite_upgrade_reaches_baseline_with_only_technical_seed(self) -> None:
         with TemporaryDirectory() as directory:
@@ -262,6 +358,8 @@ class SqlMigrationTests(unittest.TestCase):
             "CREATE TABLE BREAK_GLASS_CREDENTIALS",
             "CREATE TABLE AUTH_SECURITY_AUDIT",
             "CREATE TABLE PLANNING_MUTATION_STATE",
+            "SHIFT_AD_HOC",
+            "UX_ASSET_REQUIREMENTS_SHIFT_AD_HOC",
         ):
             self.assertIn(token, ddl)
         self.assertIn(BASELINE_REVISION.upper(), ddl)
