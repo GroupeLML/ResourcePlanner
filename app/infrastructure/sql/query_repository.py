@@ -1443,8 +1443,39 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         project_ids: Sequence[str] | None = None,
         can_manage_planning: bool = False,
     ) -> tuple[ShiftReadModel, ...]:
+        asset_context_marker = (
+            select(AssetRequirement.id)
+            .where(
+                AssetRequirement.status != "Annulé",
+                or_(
+                    (
+                        AssetRequirement.origin
+                        == AssetRequirementOrigin.SHIFT_AD_HOC.value
+                    )
+                    & (AssetRequirement.shift_id == Shift.id),
+                    (
+                        AssetRequirement.origin
+                        == AssetRequirementOrigin.REQUEST.value
+                    )
+                    & (
+                        AssetRequirement.workforce_request_id
+                        == ResourceRequirement.workforce_request_id
+                    ),
+                ),
+            )
+            .limit(1)
+            .correlate(Shift, ResourceRequirement)
+            .scalar_subquery()
+        )
         statement = (
-            select(Shift, ResourceRequirement, Resource, Project, WorkforceRequest)
+            select(
+                Shift,
+                ResourceRequirement,
+                Resource,
+                Project,
+                WorkforceRequest,
+                asset_context_marker.label("asset_context_marker"),
+            )
             .join(
                 ResourceRequirement,
                 Shift.resource_requirement_id == ResourceRequirement.id,
@@ -1490,7 +1521,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         visible_request_ids = tuple(
             dict.fromkeys(
                 requirement.workforce_request_id
-                for _shift, requirement, _resource, _project, _request in rows
+                for _shift, requirement, _resource, _project, _request, _marker in rows
                 if requirement.workforce_request_id
             )
         )
@@ -1511,15 +1542,20 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                     )
                 )
             )
-        asset_requirements = tuple(
-            self._session.scalars(
-                select(AssetRequirement)
-                .where(
-                    AssetRequirement.status != "Annulé",
-                    or_(*asset_scope),
-                )
-                .order_by(AssetRequirement.id)
-            ).all()
+        has_asset_context = any(marker is not None for *_row, marker in rows)
+        asset_requirements = (
+            tuple(
+                self._session.scalars(
+                    select(AssetRequirement)
+                    .where(
+                        AssetRequirement.status != "Annulé",
+                        or_(*asset_scope),
+                    )
+                    .order_by(AssetRequirement.id)
+                ).all()
+            )
+            if has_asset_context
+            else ()
         )
         requirement_ids = tuple(row.id for row in asset_requirements)
         allocations = (
@@ -1671,7 +1707,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
 
         visible_shift_context = {
             shift.id: (shift, requirement)
-            for shift, requirement, _resource, _project, _request in rows
+            for shift, requirement, _resource, _project, _request, _marker in rows
         }
 
         def qualification_state(
@@ -1753,7 +1789,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             )
 
         result: list[ShiftReadModel] = []
-        for shift, requirement, resource, project, request in rows:
+        for shift, requirement, resource, project, request, _asset_marker in rows:
             confirmation = effective_confirmation(
                 shift.confirmation,
                 requirement.confirmation,
