@@ -29,6 +29,7 @@ from app.infrastructure.sql import (
     Base,
     BusinessContact,
     Project,
+    ProjectCoManager,
     RequestLine,
     Resource,
     SqlOperationalContactRepository,
@@ -339,6 +340,60 @@ class SqlOperationalContactRepositoryTests(unittest.TestCase):
         self.assertEqual(
             result.coordinator.source_type,
             SOURCE_TASK_COORDINATOR,
+        )
+
+    def test_unresolved_erp_principal_stays_project_manager_and_does_not_fallback_to_co_manager(self) -> None:
+        with self.factory.begin() as session:
+            task = session.get(TaskCatalogEntry, "T1")
+            project = session.get(Project, "P1")
+            assert task is not None and project is not None
+            task.operational_responsible_contact_id = None
+            project.project_manager_external_id = "EMP-UNRESOLVED"
+            project.project_manager_name = "Principal ERP non lié"
+            session.add(
+                BusinessContact(
+                    id="C-CO",
+                    display_name="Co chargé RP",
+                    email="co@example.invalid",
+                    phone="555-6000",
+                )
+            )
+            session.add(
+                AppUser(
+                    id="U-CO",
+                    issuer=None,
+                    subject=None,
+                    display_name="Co chargé RP",
+                    email="co@example.invalid",
+                    employee_external_id=None,
+                    business_contact_id="C-CO",
+                    roles_json='["PROJECT_MANAGER"]',
+                    active=True,
+                )
+            )
+            session.flush()
+            session.add(
+                ProjectCoManager(
+                    project_id="P1",
+                    business_contact_id="C-CO",
+                    created_by_user_id="U-CO",
+                )
+            )
+
+        result = self.resolve()
+        self.assertEqual(result.operational_responsible.status, STATUS_UNRESOLVED)
+        self.assertEqual(
+            result.operational_responsible.source_type,
+            SOURCE_PROJECT_MANAGER,
+        )
+        self.assertIsNone(result.operational_responsible.contact_id)
+        self.assertEqual(
+            result.operational_responsible.display_name,
+            "Principal ERP non lié",
+        )
+        self.assertIn(
+            "ERP_PROJECT_MANAGER_APP_USER_NOT_LINKED",
+            result.operational_responsible.diagnostics,
         )
 
     def test_sql_request_override_takes_priority(self) -> None:
