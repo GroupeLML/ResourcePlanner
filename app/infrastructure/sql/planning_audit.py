@@ -13,6 +13,8 @@ from ...application.command_ports import AllocationCommandPort, ApprovedDemandSy
 from ...application.repository_ports import SegmentRepositoryPort
 from ...application.read_models import SegmentReadModel
 from .base import Base, new_id, utc_now
+from ...domain.reservable_assets import AssetRequirementOrigin
+from .asset_models import Asset, AssetAllocation, AssetRequirement
 from .models import Project, Resource, ResourceRequirement, Shift, WorkforceRequest
 
 
@@ -159,6 +161,51 @@ class SqlPlanningAuditJournal:
             "confirmation": shift.confirmation,
             "note": shift.note,
         }
+        asset_row = self._session.execute(
+            select(AssetRequirement, AssetAllocation, Asset)
+            .outerjoin(
+                AssetAllocation,
+                AssetAllocation.asset_requirement_id == AssetRequirement.id,
+            )
+            .outerjoin(Asset, Asset.id == AssetAllocation.asset_id)
+            .where(
+                AssetRequirement.origin
+                == AssetRequirementOrigin.SHIFT_AD_HOC.value,
+                AssetRequirement.shift_id == shift.id,
+            )
+        ).one_or_none()
+        if asset_row is None:
+            snapshot["asset_assignment"] = None
+        else:
+            asset_requirement, asset_allocation, asset = asset_row
+            snapshot["asset_assignment"] = {
+                "requirement_id": asset_requirement.id,
+                "allocation_id": (
+                    asset_allocation.id if asset_allocation is not None else None
+                ),
+                "origin": asset_requirement.origin,
+                "asset_id": (
+                    asset_allocation.asset_id
+                    if asset_allocation is not None
+                    else None
+                ),
+                "asset_code": asset.code if asset is not None else None,
+                "operator_resource_id": (
+                    asset_allocation.operator_resource_id
+                    if asset_allocation is not None
+                    else None
+                ),
+                "start_date": (
+                    asset_allocation.start_date
+                    if asset_allocation is not None
+                    else asset_requirement.start_date
+                ),
+                "end_date": (
+                    asset_allocation.end_date
+                    if asset_allocation is not None
+                    else asset_requirement.end_date
+                ),
+            }
         return shift.id, reference, parent, snapshot
 
     def request_requirements(self, demand_number: str) -> dict[str, tuple[str, dict[str, object]]]:
