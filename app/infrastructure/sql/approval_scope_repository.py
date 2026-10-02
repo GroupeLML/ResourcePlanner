@@ -11,6 +11,7 @@ from ...application.approval_scopes import (
     ApprovalAssetTypeRecord,
     ApprovalRequestLineRecord,
     ApprovalResourceClassRecord,
+    ApprovalResourceRecord,
     ApprovalScopeRecord,
     ApprovalScopeRepositoryPort,
     ApprovalTaskRecord,
@@ -28,7 +29,7 @@ from .approval_scope_models import (
 from .asset_models import Asset, AssetApprover, AssetType
 from .base import new_id
 from .identity_models import AppUser
-from .models import RequestLine, TaskCatalogEntry
+from .models import RequestLine, Resource, TaskCatalogEntry
 from .resource_class_models import ResourceClassConfig
 
 
@@ -320,6 +321,8 @@ class SqlApprovalScopeRepository(ApprovalScopeRepositoryPort):
             id=row.id,
             active=bool(row.active),
             task_catalog_item_id=row.task_catalog_item_id,
+            required_resource_class=_text(row.required_resource_class) or None,
+            proposed_resource_id=_text(row.proposed_resource_id) or None,
             kind=_text(row.kind) or "WORKFORCE",
             asset_type_id=_text(row.asset_type_id) or None,
             proposed_asset_id=_text(row.proposed_asset_id) or None,
@@ -350,6 +353,19 @@ class SqlApprovalScopeRepository(ApprovalScopeRepositoryPort):
         return ApprovalResourceClassRecord(
             code=row.code,
             active=bool(row.active),
+        )
+
+    def get_resource(
+        self,
+        resource_id: str,
+    ) -> ApprovalResourceRecord | None:
+        row = self._session.get(Resource, _text(resource_id))
+        if row is None:
+            return None
+        return ApprovalResourceRecord(
+            id=row.id,
+            active=bool(row.active),
+            resource_class_code=_text(row.resource_class) or None,
         )
 
     def get_asset_type(

@@ -104,6 +104,32 @@ class ApprovalRoutingPolicyTests(unittest.TestCase):
             result.diagnostics,
         )
 
+    def test_taskless_line_can_resolve_an_existing_scope(self) -> None:
+        result = resolve_line_approvers(
+            line_active=True,
+            task_catalog_item_id=None,
+            task_exists=False,
+            task_active=False,
+            scope_candidates=(
+                ApprovalScopeCandidate("scope-a", True),
+            ),
+            scope_approver_user_ids=("u1",),
+            users={
+                "u1": ApprovalRoutingUser(
+                    "u1",
+                    True,
+                    ("approve_demands",),
+                ),
+            },
+        )
+
+        self.assertFalse(result.blocked)
+        self.assertEqual(result.approval_scope_id, "scope-a")
+        self.assertEqual(
+            [row.user_id for row in result.eligible_approvers],
+            ["u1"],
+        )
+
     def test_unmapped_ambiguous_and_inactive_scope_are_explicit_blocks(
         self,
     ) -> None:

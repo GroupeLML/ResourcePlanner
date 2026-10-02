@@ -334,9 +334,13 @@ class ApprovalCycleService:
                         "task_catalog_item_id": resolved.task_catalog_item_id,
                         "task_code": resolved.task_code,
                         "task_label": resolved.task_label,
+                        "required_resource_class": (
+                            resolved.required_resource_class
+                        ),
                         "effective_resource_class": (
                             resolved.effective_resource_class
                         ),
+                        "routing_sources": list(resolved.routing_sources),
                         "approval_scope": (
                             {
                                 "id": resolved_scope.id,
@@ -384,6 +388,8 @@ class ApprovalCycleService:
                 for approver in approvers
                 for source in approver.sources
             }
+            if resolved.task_catalog_item_id is None:
+                source_kinds_set.update(resolved.routing_sources)
             if routing.line_kind == "ASSET":
                 source_kinds_set.add(ROUTING_SOURCE_ASSET_TYPE)
             source_kinds = tuple(sorted(source_kinds_set))
