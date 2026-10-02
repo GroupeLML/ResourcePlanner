@@ -196,14 +196,14 @@ class SqlPlanningAuditJournal:
                     else None
                 ),
                 "start_date": (
-                    asset_allocation.start_date
+                    asset_allocation.start_date.isoformat()
                     if asset_allocation is not None
-                    else asset_requirement.start_date
+                    else asset_requirement.start_date.isoformat()
                 ),
                 "end_date": (
-                    asset_allocation.end_date
+                    asset_allocation.end_date.isoformat()
                     if asset_allocation is not None
-                    else asset_requirement.end_date
+                    else asset_requirement.end_date.isoformat()
                 ),
             }
         return shift.id, reference, parent, snapshot
