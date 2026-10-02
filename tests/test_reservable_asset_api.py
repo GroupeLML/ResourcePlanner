@@ -71,7 +71,11 @@ class ReservableAssetApiTests(unittest.TestCase):
         return number
 
     def reserve(self, requirement_id: str, *, asset_id: str | None, version: int, key: str,
-                start_date: str | None = None, end_date: str | None = None):
+                start_date: str | None = None, end_date: str | None = None,
+                include_dates: bool = True):
+        if include_dates and asset_id is not None and start_date is None and end_date is None:
+            start_date = "2026-09-24"
+            end_date = "2026-09-24"
         return self.client.put(f"/api/v1/assets/requirements/{requirement_id}/reservation",
                                json={"asset_id": asset_id, "start_date": start_date, "end_date": end_date,
                                      "expected_planning_version": version},
@@ -95,6 +99,110 @@ class ReservableAssetApiTests(unittest.TestCase):
         state = self.client.get("/api/v1/assets/requirements").json()
         self.assertEqual(len(state["allocations"]), 2)
         self.assertEqual(state["planning_version"], version + 2)
+
+    def test_request_dates_are_explicit_and_existing_mutation_preserves_them(self) -> None:
+        self.approve()
+        state = self.client.get("/api/v1/assets/requirements").json()
+        requirement_id = state["requirements"][0]["id"]
+        version = state["planning_version"]
+
+        missing = self.reserve(
+            requirement_id,
+            asset_id=self.asset_ids[0],
+            version=version,
+            key="dates-missing",
+            include_dates=False,
+        )
+        self.assertEqual(missing.status_code, 422, missing.text)
+        self.assertEqual(
+            missing.json()["error"]["code"],
+            "asset_reservation_dates_required",
+        )
+
+        partial = self.reserve(
+            requirement_id,
+            asset_id=self.asset_ids[0],
+            version=version,
+            key="dates-partial",
+            start_date="2026-09-24",
+            end_date=None,
+            include_dates=False,
+        )
+        self.assertEqual(partial.status_code, 422, partial.text)
+        self.assertEqual(
+            partial.json()["error"]["code"],
+            "asset_reservation_dates_required",
+        )
+
+        outside = self.reserve(
+            requirement_id,
+            asset_id=self.asset_ids[0],
+            version=version,
+            key="dates-outside",
+            start_date="2026-09-23",
+            end_date="2026-09-23",
+        )
+        self.assertEqual(outside.status_code, 422, outside.text)
+        self.assertEqual(
+            outside.json()["error"]["code"],
+            "asset_outside_approved_window",
+        )
+
+        reserved = self.reserve(
+            requirement_id,
+            asset_id=self.asset_ids[0],
+            version=version,
+            key="dates-create",
+            start_date="2026-09-25",
+            end_date="2026-09-25",
+        )
+        self.assertEqual(reserved.status_code, 200, reserved.text)
+        allocation_id = reserved.json()["allocation_id"]
+        created_state = self.client.get("/api/v1/assets/requirements").json()
+        allocation = created_state["allocations"][0]
+        self.assertEqual(allocation["start_date"], "2026-09-25")
+        self.assertEqual(allocation["end_date"], "2026-09-25")
+
+        different_intent = self.reserve(
+            requirement_id,
+            asset_id=self.asset_ids[0],
+            version=version,
+            key="dates-create",
+            start_date="2026-09-26",
+            end_date="2026-09-26",
+        )
+        self.assertEqual(different_intent.status_code, 409, different_intent.text)
+
+        changed_asset = self.reserve(
+            requirement_id,
+            asset_id=self.asset_ids[1],
+            version=reserved.json()["planning_version"],
+            key="dates-preserve",
+            include_dates=False,
+        )
+        self.assertEqual(changed_asset.status_code, 200, changed_asset.text)
+        self.assertEqual(changed_asset.json()["allocation_id"], allocation_id)
+        changed_state = self.client.get("/api/v1/assets/requirements").json()
+        allocation = changed_state["allocations"][0]
+        self.assertEqual(allocation["id"], allocation_id)
+        self.assertEqual(allocation["asset_id"], self.asset_ids[1])
+        self.assertEqual(allocation["start_date"], "2026-09-25")
+        self.assertEqual(allocation["end_date"], "2026-09-25")
+
+        moved_dates = self.reserve(
+            requirement_id,
+            asset_id=self.asset_ids[1],
+            version=changed_asset.json()["planning_version"],
+            key="dates-move",
+            start_date="2026-09-24",
+            end_date="2026-09-26",
+        )
+        self.assertEqual(moved_dates.status_code, 200, moved_dates.text)
+        moved_state = self.client.get("/api/v1/assets/requirements").json()
+        allocation = moved_state["allocations"][0]
+        self.assertEqual(allocation["id"], allocation_id)
+        self.assertEqual(allocation["start_date"], "2026-09-24")
+        self.assertEqual(allocation["end_date"], "2026-09-26")
 
     def test_draft_asset_request_can_be_submitted_through_workflow(self) -> None:
         created = self.client.post("/api/v1/demands", json=routed_demand_payload({
@@ -149,7 +257,14 @@ class ReservableAssetApiTests(unittest.TestCase):
         self.assertEqual(unavailable.status_code, 201, unavailable.text)
         stale = self.reserve(identifier, asset_id=self.asset_ids[0], version=version, key="stale")
         self.assertEqual(stale.json()["error"]["code"], "planning_version_conflict")
-        blocked = self.reserve(identifier, asset_id=self.asset_ids[0], version=version + 1, key="blocked")
+        blocked = self.reserve(
+            identifier,
+            asset_id=self.asset_ids[0],
+            version=version + 1,
+            key="blocked",
+            start_date="2026-09-25",
+            end_date="2026-09-25",
+        )
         self.assertEqual(blocked.json()["error"]["code"], "asset_unavailable")
         reserved = self.reserve(identifier, asset_id=self.asset_ids[1], version=version + 1, key="okay")
         self.assertEqual(reserved.status_code, 200, reserved.text)
