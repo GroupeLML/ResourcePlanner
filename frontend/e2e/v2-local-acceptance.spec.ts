@@ -2046,7 +2046,8 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   );
   const preserved63 = reapprover.page.locator(".asset-detail-row").filter({ hasText: "Nacelle #63" }).first();
   const preserved64 = reapprover.page.locator(".asset-detail-row").filter({ hasText: "Nacelle #64" }).first();
-  await expect(preserved63).toContainText(d1 + " → " + d3);
+  await expect(preserved63).toContainText(d1 + " → " + d2);
+  await expect(preserved64).toContainText(d1 + " → " + d3);
   await expect(preserved63).toContainText("NAC-63 · verrouillée");
   await expect(preserved64).toContainText("NAC-64 · verrouillée");
   await closeContext(reapprover.context);
