@@ -81,9 +81,9 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                         id="P2",
                         number="2000",
                         name="Deuxième projet",
-                        project_manager_external_id="LEGACY-PM",
+                        project_manager_external_id="PM-1",
                         project_manager_name="Ancien nom",
-                        project_manager_contact_id="C-PM",
+                        project_manager_contact_id="C-RESP",
                         status="Actif",
                     )
                 )
@@ -203,9 +203,9 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 id="P1",
                 number="1000",
                 name="Projet projection",
-                project_manager_external_id="LEGACY-PM",
+                project_manager_external_id="PM-1",
                 project_manager_name="Ancien nom",
-                project_manager_contact_id="C-PM",
+                project_manager_contact_id="C-RESP",
                 status="Actif",
             )
         )
