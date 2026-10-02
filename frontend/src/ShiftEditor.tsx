@@ -53,6 +53,53 @@ function hoursLabel(value: number | null | undefined) {
   return new Intl.NumberFormat("fr-CA", { maximumFractionDigits: 2 }).format(Number(value ?? 0));
 }
 
+function assetActionReason(reason: string | null | undefined) {
+  switch (reason) {
+    case "permission_denied":
+      return "Permission de planification requise.";
+    case "shift_state_invalid":
+      return "L’état du quart ne permet pas cette action.";
+    case "asset_assignment_missing":
+      return "Aucun actif n’est associé à ce quart.";
+    case "asset_assignment_incomplete":
+      return "L’affectation d’actif est incomplète et doit être régularisée.";
+    case "asset_assignment_attached":
+      return "Un actif est déjà associé à ce quart.";
+    default:
+      return reason || "Action non disponible.";
+  }
+}
+
+function assetDiagnosticLabel(code: string) {
+  switch (code) {
+    case "asset_assignment_incomplete":
+      return "Affectation d’actif incomplète";
+    case "asset_inactive":
+      return "Actif inactif";
+    case "operator_not_qualified":
+      return "Opérateur non qualifié";
+    case "related_request_reservation_ambiguous":
+      return "Plusieurs réservations REQUEST sont liées à ce travail";
+    default:
+      return code;
+  }
+}
+
+function assetQualificationLabel(state: string | null | undefined) {
+  switch (state) {
+    case "SATISFIED":
+      return "Conforme";
+    case "SKILL_MISMATCH":
+      return "Opérateur non qualifié";
+    case "MISSING_OPERATOR":
+      return "Opérateur manquant";
+    case "NO_OVERLAP":
+      return "Hors fenêtre";
+    default:
+      return state || "À vérifier";
+  }
+}
+
 function newAtomicIdempotencyKey() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
@@ -67,6 +114,7 @@ export default function ShiftEditor({
   onClose,
   onSaved,
   onStale,
+  onAssetAction,
 }: {
   shift: ShiftReadModel;
   resources: ResourceReadModel[];
@@ -74,6 +122,7 @@ export default function ShiftEditor({
   onClose: () => void;
   onSaved: () => void;
   onStale: () => void;
+  onAssetAction: (mode: "assign" | "change" | "release") => void;
 }) {
   const { can } = useAuth();
   const canManagePlanning = can("manage_planning");
@@ -439,6 +488,103 @@ export default function ShiftEditor({
             <div><span>État</span><strong>{shift.locked ? "Verrouillé" : "Automatique"}</strong></div>
           </div>
 
+          <section className="shift-asset-section" aria-label="Actif">
+            <div className="shift-asset-section-heading">
+              <div>
+                <strong>Actif</strong>
+                <span>L’affectation possédée par ce quart provient de la projection backend canonique.</span>
+              </div>
+              {!shift.asset_assignment && shift.asset_actions?.assign.allowed && (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => onAssetAction("assign")}
+                  disabled={saving}
+                >
+                  Assigner un actif
+                </button>
+              )}
+            </div>
+
+            {shift.asset_assignment ? (
+              <div className="shift-asset-owned">
+                <div>
+                  <span>Actif affecté au quart</span>
+                  <strong>
+                    {shift.asset_assignment.asset_code}
+                    {shift.asset_assignment.asset_label ? ` — ${shift.asset_assignment.asset_label}` : ""}
+                    {!shift.asset_assignment.asset_active ? " · Inactif" : ""}
+                  </strong>
+                  <small>Qualification : {assetQualificationLabel(shift.asset_assignment.qualification_state)}</small>
+                </div>
+                <div className="shift-asset-section-actions">
+                  {shift.asset_actions?.change.allowed && (
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => onAssetAction("change")}
+                      disabled={saving}
+                    >
+                      Changer
+                    </button>
+                  )}
+                  {shift.asset_actions?.release.allowed && (
+                    <button
+                      type="button"
+                      className="danger-button"
+                      onClick={() => onAssetAction("release")}
+                      disabled={saving}
+                    >
+                      Libérer
+                    </button>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="shift-asset-empty">
+                <strong>Aucun actif associé</strong>
+                {!shift.asset_actions?.assign.allowed && shift.asset_actions?.assign.reason && (
+                  <span>{assetActionReason(shift.asset_actions.assign.reason)}</span>
+                )}
+              </div>
+            )}
+
+            {shift.asset_assignment && (
+              <div className="shift-asset-action-reasons">
+                {!shift.asset_actions?.change.allowed && shift.asset_actions?.change.reason && (
+                  <small>Changer : {assetActionReason(shift.asset_actions.change.reason)}</small>
+                )}
+                {!shift.asset_actions?.release.allowed && shift.asset_actions?.release.reason && (
+                  <small>Libérer : {assetActionReason(shift.asset_actions.release.reason)}</small>
+                )}
+              </div>
+            )}
+
+            {(shift.asset_diagnostics ?? []).length > 0 && (
+              <div className="shift-asset-diagnostics" role="status">
+                <strong>Diagnostics</strong>
+                {(shift.asset_diagnostics ?? []).map((code) => (
+                  <span key={code}>{assetDiagnosticLabel(code)}</span>
+                ))}
+              </div>
+            )}
+
+            {(shift.related_asset_reservations ?? []).length > 0 && (
+              <div className="shift-related-assets">
+                <strong>Réservations liées à la demande</strong>
+                {(shift.related_asset_reservations ?? []).map((reservation) => (
+                  <div key={reservation.allocation_id}>
+                    <span>{reservation.asset_code} — {reservation.asset_label}</span>
+                    <small>
+                      REQUEST · Qualification : {assetQualificationLabel(reservation.qualification_state)}
+                      {!reservation.asset_active ? " · Inactif" : ""}
+                    </small>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
           <div className="segment-parent-link">
             <div>
               <strong>Besoin ressource parent</strong>
@@ -463,6 +609,9 @@ export default function ShiftEditor({
               <div>
                 <strong>Partager ou dupliquer ce quart</strong>
                 <span>Le nouveau quart reste sous le même besoin. Le backend valide le budget, les versions et le reliquat avant de recalculer.</span>
+                {shift.asset_assignment && (
+                  <span className="shift-asset-source-retains">L’actif associé restera sur le quart source.</span>
+                )}
               </div>
               {!atomicAction && (
                 <div className="atomic-action-buttons">
