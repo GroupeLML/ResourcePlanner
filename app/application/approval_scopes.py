@@ -692,7 +692,7 @@ class ApprovalScopeService:
             effective_class_code = (
                 str(task.resource_class_code or "").strip() or None
             )
-        elif task_id is None:
+        elif task_id is None and line.active:
             return self._blocked_resolution(
                 request_line_id=identifier,
                 task_catalog_item_id=None,
