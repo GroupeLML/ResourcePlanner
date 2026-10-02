@@ -720,5 +720,5 @@ class Shift(TimestampMixin, Base):
     asset_requirements: Mapped[list["AssetRequirement"]] = relationship(
         "AssetRequirement",
         back_populates="shift",
-        passive_deletes=True,
+        passive_deletes="all",
     )
