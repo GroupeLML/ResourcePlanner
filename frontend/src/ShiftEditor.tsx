@@ -60,11 +60,41 @@ function newAtomicIdempotencyKey() {
   return `atomic-allocation-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function assetActionReasonLabel(reason: string | null | undefined) {
+  const labels: Record<string, string> = {
+    permission_denied: "Permission insuffisante pour modifier l’actif.",
+    shift_state_invalid: "L’état du quart ne permet pas cette action.",
+    asset_assignment_missing: "Aucun actif ad hoc n’est associé au quart.",
+    asset_assignment_attached: "Un actif ad hoc est déjà associé au quart.",
+    asset_assignment_incomplete: "L’affectation d’actif est incomplète.",
+  };
+  return reason ? labels[reason] ?? reason : null;
+}
+
+function assetDiagnosticLabel(code: string) {
+  const labels: Record<string, string> = {
+    asset_assignment_incomplete: "Affectation d’actif incomplète",
+    asset_inactive: "Actif inactif",
+    operator_not_qualified: "Opérateur non qualifié",
+    related_request_reservation_ambiguous: "Plusieurs réservations liées à la demande",
+  };
+  return labels[code] ?? code;
+}
+
+function qualificationLabel(state: string) {
+  if (state === "SATISFIED") return "Qualifié";
+  if (state === "SKILL_MISMATCH") return "Non qualifié";
+  if (state === "MISSING_OPERATOR") return "Opérateur manquant";
+  if (state === "NO_OVERLAP") return "Hors fenêtre";
+  return state;
+}
+
 export default function ShiftEditor({
   shift,
   resources,
   planningVersion,
   onClose,
+  onAssetAction,
   onSaved,
   onStale,
 }: {
@@ -72,6 +102,7 @@ export default function ShiftEditor({
   resources: ResourceReadModel[];
   planningVersion: number;
   onClose: () => void;
+  onAssetAction?: (action: "assign" | "change" | "release") => void;
   onSaved: () => void;
   onStale: () => void;
 }) {
@@ -92,6 +123,8 @@ export default function ShiftEditor({
   const [atomicPreparing, setAtomicPreparing] = useState(false);
   const overallocationShift = shift as OverallocationShift;
   const currentExcess = Number(overallocationShift.segment_overallocated_hours ?? 0);
+  const assetAssignment = shift.asset_assignment;
+  const assetActions = shift.asset_actions;
 
   useEffect(() => {
     if (!canManagePlanning || segmentOpen) return;
@@ -439,6 +472,103 @@ export default function ShiftEditor({
             <div><span>État</span><strong>{shift.locked ? "Verrouillé" : "Automatique"}</strong></div>
           </div>
 
+          <section className="shift-asset-section" data-testid="shift-asset-section">
+            <div className="shift-asset-section-heading">
+              <div>
+                <strong>Actif</strong>
+                <span>L’affectation possédée par ce quart provient de la projection backend canonique.</span>
+              </div>
+              <div className="shift-asset-section-actions">
+                {!assetAssignment && assetActions?.assign.allowed && onAssetAction && (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={saving}
+                    onClick={() => onAssetAction("assign")}
+                  >
+                    Assigner un actif
+                  </button>
+                )}
+                {assetAssignment && assetActions?.change.allowed && onAssetAction && (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={saving}
+                    onClick={() => onAssetAction("change")}
+                  >
+                    Changer
+                  </button>
+                )}
+                {assetAssignment && assetActions?.release.allowed && onAssetAction && (
+                  <button
+                    type="button"
+                    className="danger-button"
+                    disabled={saving}
+                    onClick={() => onAssetAction("release")}
+                  >
+                    Libérer
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {assetAssignment ? (
+              <div className="shift-asset-current">
+                <div>
+                  <span>Actif affecté au quart</span>
+                  <strong>{assetAssignment.asset_code}</strong>
+                  <small>{assetAssignment.asset_label}</small>
+                </div>
+                <div>
+                  <span>Qualification</span>
+                  <strong>{qualificationLabel(assetAssignment.qualification_state)}</strong>
+                  {!assetAssignment.asset_active && <small className="asset-warning">Actif inactif</small>}
+                </div>
+              </div>
+            ) : (
+              <div className="shift-asset-empty">
+                <strong>Aucun actif associé</strong>
+                {!assetActions?.assign.allowed && assetActions?.assign.reason && (
+                  <span>{assetActionReasonLabel(assetActions.assign.reason)}</span>
+                )}
+              </div>
+            )}
+
+            {shift.asset_diagnostics.length > 0 && (
+              <div className="shift-asset-diagnostics" role="status">
+                <strong>Diagnostics</strong>
+                {shift.asset_diagnostics.map((diagnostic) => (
+                  <span key={diagnostic}>{assetDiagnosticLabel(diagnostic)}</span>
+                ))}
+              </div>
+            )}
+
+            {assetAssignment && (
+              <div className="shift-asset-action-reasons">
+                {!assetActions?.change.allowed && assetActions?.change.reason && (
+                  <span>Changer : {assetActionReasonLabel(assetActions.change.reason)}</span>
+                )}
+                {!assetActions?.release.allowed && assetActions?.release.reason && (
+                  <span>Libérer : {assetActionReasonLabel(assetActions.release.reason)}</span>
+                )}
+              </div>
+            )}
+
+            {shift.related_asset_reservations.length > 0 && (
+              <div className="shift-related-assets">
+                <strong>Réservations liées à la demande</strong>
+                <span>Ces réservations REQUEST sont distinctes de l’actif possédé par le quart.</span>
+                {shift.related_asset_reservations.map((reservation) => (
+                  <div className="shift-related-asset-row" key={reservation.allocation_id}>
+                    <strong>{reservation.asset_code}</strong>
+                    <span>{reservation.asset_label}</span>
+                    <small>{qualificationLabel(reservation.qualification_state)}</small>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
           <div className="segment-parent-link">
             <div>
               <strong>Besoin ressource parent</strong>
@@ -463,6 +593,9 @@ export default function ShiftEditor({
               <div>
                 <strong>Partager ou dupliquer ce quart</strong>
                 <span>Le nouveau quart reste sous le même besoin. Le backend valide le budget, les versions et le reliquat avant de recalculer.</span>
+                {assetAssignment && (
+                  <span className="asset-source-retention-note">L’actif associé restera sur le quart source.</span>
+                )}
               </div>
               {!atomicAction && (
                 <div className="atomic-action-buttons">
