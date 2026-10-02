@@ -19,6 +19,7 @@ from ...application.query_models import DemandCancellationMaterializationReadMod
 from ...application.read_models import DemandLineReadModel, DemandReadModel
 from ...application.repository_ports import DemandRepositoryPort
 from ...domain.planning_engine import MISSING_ALLOCATION_TYPE
+from ...domain.reservable_assets import AssetRequirementOrigin
 from .asset_models import AssetAllocation, AssetRequirement
 from .base import new_id, utc_now
 from .request_version import acquire_request_aggregate_version
@@ -1414,14 +1415,38 @@ class SqlDemandRepository(DemandRepositoryPort):
             else []
         )
 
-        asset_requirements = list(
+        request_asset_requirements = list(
             self._session.scalars(
                 select(AssetRequirement)
-                .where(AssetRequirement.workforce_request_id == request.id)
+                .where(
+                    AssetRequirement.origin
+                    == AssetRequirementOrigin.REQUEST.value,
+                    AssetRequirement.workforce_request_id == request.id,
+                )
                 .order_by(AssetRequirement.id)
             ).all()
         )
-        asset_requirement_ids = tuple(row.id for row in asset_requirements)
+        human_shift_ids = tuple(row.id for row in human_shifts)
+        ad_hoc_asset_requirements = (
+            list(
+                self._session.scalars(
+                    select(AssetRequirement)
+                    .where(
+                        AssetRequirement.origin
+                        == AssetRequirementOrigin.SHIFT_AD_HOC.value,
+                        AssetRequirement.shift_id.in_(human_shift_ids),
+                    )
+                    .order_by(AssetRequirement.id)
+                ).all()
+            )
+            if human_shift_ids
+            else []
+        )
+        asset_requirements = [
+            *request_asset_requirements,
+            *ad_hoc_asset_requirements,
+        ]
+        asset_requirement_ids = tuple(dict.fromkeys(row.id for row in asset_requirements))
         asset_allocations = (
             list(
                 self._session.scalars(
@@ -1434,17 +1459,29 @@ class SqlDemandRepository(DemandRepositoryPort):
             else []
         )
 
-        human_shift_ids = tuple(row.id for row in human_shifts)
-        asset_allocation_ids = tuple(row.id for row in asset_allocations)
+        asset_allocation_ids = tuple(dict.fromkeys(row.id for row in asset_allocations))
+        ad_hoc_asset_requirement_ids = tuple(
+            row.id for row in ad_hoc_asset_requirements
+        )
         locked_human = sum(1 for row in human_shifts if bool(row.locked))
         locked_assets = sum(1 for row in asset_allocations if bool(row.locked))
 
         # ADR-009 explicitly authorizes deletion of locked decisions inside this
-        # request-owned cancellation scope. No global force flag is introduced.
-        for row in human_shifts:
-            self._session.delete(row)
+        # request-owned cancellation scope.  ADR-016 adds a second ownership path:
+        # allocations first, then SHIFT_AD_HOC requirements, then their owning Shift.
+        # No cascade/rebuild is used as cleanup authority.
         for row in asset_allocations:
             self._session.delete(row)
+        if asset_allocations:
+            self._session.flush()
+        for row in ad_hoc_asset_requirements:
+            self._session.delete(row)
+        if ad_hoc_asset_requirements:
+            self._session.flush()
+        for row in human_shifts:
+            self._session.delete(row)
+        if human_shifts:
+            self._session.flush()
 
         cancelled_workforce = 0
         for row in workforce_requirements:
@@ -1453,7 +1490,7 @@ class SqlDemandRepository(DemandRepositoryPort):
                 cancelled_workforce += 1
 
         cancelled_assets = 0
-        for row in asset_requirements:
+        for row in request_asset_requirements:
             if row.status != "Terminé":
                 row.status = "Annulé"
                 cancelled_assets += 1
@@ -1497,6 +1534,9 @@ class SqlDemandRepository(DemandRepositoryPort):
                 "resolution_comment": request.cancellation_resolution_comment,
                 "deleted_human_shift_ids": list(human_shift_ids),
                 "deleted_asset_allocation_ids": list(asset_allocation_ids),
+                "deleted_ad_hoc_asset_requirement_ids": list(
+                    ad_hoc_asset_requirement_ids
+                ),
                 "workforce_requirement_ids": list(workforce_requirement_ids),
                 "asset_requirement_ids": list(asset_requirement_ids),
                 "released_locked_human_shifts": locked_human,
@@ -1510,6 +1550,9 @@ class SqlDemandRepository(DemandRepositoryPort):
             "deleted_asset_allocations": len(asset_allocations),
             "cancelled_workforce_requirements": cancelled_workforce,
             "cancelled_asset_requirements": cancelled_assets,
+            "deleted_ad_hoc_asset_requirements": len(
+                ad_hoc_asset_requirements
+            ),
             "released_locked_human_shifts": locked_human,
             "released_locked_asset_allocations": locked_assets,
         }
