@@ -86,7 +86,7 @@ class ReactProjectsContractTests(unittest.TestCase):
         self.assertIn("scope,", api)
         self.assertIn("/api/v1/medium-term/budget?", api)
 
-    def test_project_budget_detail_separates_erp_finance_cutoff_and_planned_hours(self) -> None:
+    def test_project_budget_detail_separates_actual_future_load_and_structured_budget(self) -> None:
         page = (ROOT / "frontend" / "src" / "ProjectsPage.tsx").read_text(
             encoding="utf-8"
         )
@@ -97,10 +97,15 @@ class ReactProjectsContractTests(unittest.TestCase):
             "budget_actual_cad",
             "remaining_budget_cad",
             "financial_diagnostic",
-            "last_approved_time_date",
-            "cutoff_status",
-            "cutoff_source",
-            "cutoff_diagnostic",
+            "average_hourly_cost_cad",
+            "remaining_budget_hours_from_actual",
+            "actual_hours_diagnostic",
+            "future_work_package_hours",
+            "future_work_package_diagnostic",
+            "remaining_after_work_packages_hours",
+            "reference_week_start",
+            "actual_through_date",
+            "reference_basis",
             "erp_budget_last_success_at",
         ):
             self.assertIn(field, api)
@@ -108,21 +113,28 @@ class ReactProjectsContractTests(unittest.TestCase):
 
         self.assertIn('style: "currency"', page)
         self.assertIn('currency: "CAD"', page)
+        self.assertIn("Référence hebdomadaire", page)
+        self.assertIn("BudgetActual considéré jusqu’au", page)
         self.assertIn("Budget ERP", page)
         self.assertIn("Actual ERP", page)
         self.assertIn("Restant ERP", page)
-        self.assertIn("Budget dérivé main-d’œuvre", page)
-        self.assertIn("Charge WorkPackages", page)
-        self.assertIn("Solde heures structuré", page)
-        self.assertIn("Dernières heures approuvées", page)
-        self.assertIn("Indisponible — source ERP d’approbation des temps non configurée", page)
-        self.assertIn("filtre temporel des WorkPackages non appliqué", page)
+        self.assertIn("Coût moyen", page)
+        self.assertIn("Budget restant selon Actual", page)
+        self.assertIn("Charge WP à partir du lundi", page)
+        self.assertIn("Marge après charge future", page)
+        self.assertIn("Budget total dérivé", page)
+        self.assertIn("WorkPackages structurés", page)
+        self.assertIn("Solde de structuration", page)
         self.assertIn("Budgets ERP synchronisés", page)
         self.assertIn("Aucun WorkPackage associé", page)
         self.assertIn("Date non définie", page)
         self.assertIn("task.work_packages.map", page)
         self.assertIn("workPackage.id", page)
-        self.assertNotIn("task.budget_amount_cad - task.budget_actual_cad", page)
+        self.assertNotIn("Dernières heures approuvées", page)
+        self.assertNotIn("source ERP d’approbation des temps", page)
+        self.assertNotIn("cutoff", page.casefold())
+        self.assertNotIn("task.remaining_budget_cad / task.average_hourly_cost_cad", page)
+        self.assertNotIn("task.weekly_loads.filter", page)
         self.assertNotIn("task.work_packages.filter", page)
 
     def test_project_budget_detail_is_readable_without_contact_management_permission(self) -> None:
