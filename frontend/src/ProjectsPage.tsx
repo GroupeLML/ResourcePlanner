@@ -22,7 +22,6 @@ import {
   getProjectBusinessContacts,
   getProjects,
   getTaskCatalog,
-  setProjectManagerContact,
   setTaskBusinessContacts,
   syncAcumaticaActiveProjectTasks,
   syncAcumaticaProjectTasks,
@@ -393,20 +392,6 @@ export default function ProjectsPage() {
   const activeCount = projects.filter((project) => project.active).length;
   const inactiveCount = projects.length - activeCount;
   const erpCount = projects.filter((project) => Boolean(project.erp_external_id)).length;
-
-  async function changeProjectManager(contactId: string | null) {
-    if (!selectedProjectNumber || contactPending) return;
-    setContactPending(true);
-    setError(null);
-    try {
-      const link = await setProjectManagerContact(selectedProjectNumber, contactId);
-      setProjectContactLink(link);
-    } catch (reason) {
-      setError(apiErrorMessage(reason, "Impossible d'enregistrer le chargé de projet métier."));
-    } finally {
-      setContactPending(false);
-    }
-  }
 
   async function changeTaskContact(
     task: TaskCatalogItemReadModel,
@@ -897,16 +882,13 @@ export default function ProjectsPage() {
 
           {canManageContacts && (
             <>
-          <label>
-            Chargé de projet
-            <ContactSelect
-              contacts={contacts}
-              value={projectContactLink?.project_manager_contact_id ?? null}
-              onChange={(value) => void changeProjectManager(value)}
-              disabled={contactPending}
-              inheritLabel="Aucun contact métier lié"
-            />
-          </label>
+          <div className="projects-sync-message" role="status">
+            <strong>Chargé de projet principal (ERP)</strong>{" "}
+            {selectedProject?.project_manager || "Non défini dans l’ERP"}
+            {selectedProject?.project_manager && !projectContactLink?.project_manager_contact_id && (
+              <> · Utilisateur RessourcePlanner non lié</>
+            )}
+          </div>
 
           <div className="project-task-contact-list">
             <div className="projects-table-header">

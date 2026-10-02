@@ -175,6 +175,10 @@ class MediumTermBudgetTaskReadModel:
     project_name: str = ""
     project_manager_contact_id: str | None = None
     project_manager_display_name: str | None = None
+    manager_group_key: str = "erp:unassigned"
+    manager_display_name: str | None = None
+    manager_resolution_status: str = "UNRESOLVED"
+    manager_diagnostics: tuple[str, ...] = ()
     erp_budget_last_success_at: datetime | None = None
 
 
