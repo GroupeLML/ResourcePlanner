@@ -71,7 +71,7 @@ def upgrade() -> None:
         "origin",
         sa.String(length=32),
         nullable=False,
-        server_default=sa.text("'REQUEST'"),
+        server_default=sa.text(f"'{REQUEST_ORIGIN}'"),
     )
     shift_column = sa.Column("shift_id", sa.String(length=36), nullable=True)
 
@@ -246,7 +246,11 @@ def downgrade() -> None:
         nullable=False,
     )
     op.drop_column("asset_requirements", "shift_id")
-    op.drop_column("asset_requirements", "origin")
+    op.drop_column(
+        "asset_requirements",
+        "origin",
+        mssql_drop_default=True,
+    )
     op.create_unique_constraint(
         "uq_asset_requirement_entry_slot",
         "asset_requirements",
