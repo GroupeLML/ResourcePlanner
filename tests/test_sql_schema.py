@@ -57,6 +57,8 @@ EXPECTED_TABLES = {
     "planning_change_history",
     "planning_mutation_state",
     "projects",
+    "project_co_managers",
+    "project_manager_audit",
     "request_approval_cycles",
     "request_approval_references",
     "request_approval_revisions",
@@ -122,6 +124,8 @@ class SqlSchemaTests(unittest.TestCase):
         task_catalog = Base.metadata.tables["task_catalog_items"].c
         work_packages = Base.metadata.tables["work_packages"].c
         work_package_audit = Base.metadata.tables["work_package_audit"].c
+        project_co_managers = Base.metadata.tables["project_co_managers"].c
+        project_manager_audit = Base.metadata.tables["project_manager_audit"].c
         task_sync_state = Base.metadata.tables["task_catalog_project_sync_state"].c
         global_task_sync_runs = Base.metadata.tables["acumatica_project_task_sync_runs"].c
         global_task_sync_results = Base.metadata.tables["acumatica_project_task_sync_project_results"].c
@@ -164,6 +168,18 @@ class SqlSchemaTests(unittest.TestCase):
         self.assertFalse(work_package_audit.work_package_id.nullable)
         self.assertFalse(work_package_audit.actor_user_id.nullable)
         self.assertFalse(work_package_audit.resulting_version.nullable)
+        self.assertFalse(projects.co_managers_version.nullable)
+        self.assertFalse(project_co_managers.project_id.nullable)
+        self.assertFalse(project_co_managers.business_contact_id.nullable)
+        self.assertFalse(project_co_managers.created_at.nullable)
+        self.assertFalse(project_co_managers.created_by_user_id.nullable)
+        self.assertFalse(project_manager_audit.project_id.nullable)
+        self.assertFalse(project_manager_audit.action.nullable)
+        self.assertFalse(project_manager_audit.source.nullable)
+        self.assertTrue(project_manager_audit.actor_user_id.nullable)
+        self.assertFalse(project_manager_audit.before_json.nullable)
+        self.assertFalse(project_manager_audit.after_json.nullable)
+        self.assertTrue(project_manager_audit.resulting_version.nullable)
         self.assertFalse(resource_classes.code.nullable)
         self.assertTrue(resource_classes.average_hourly_cost_cad.nullable)
         self.assertFalse(resource_classes.version.nullable)
