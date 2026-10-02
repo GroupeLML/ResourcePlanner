@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import { MediumTermClassWeekReadModel, MediumTermWeekReadModel } from "./api";
 import { formatWeekRange, parseIsoDate } from "./dates";
 
@@ -101,7 +102,7 @@ export default function MediumTermCapacityPanel({
             ))}
 
             {classRows.map(([key, resourceClass]) => (
-              <>
+              <Fragment key={key}>
                 <div className="mt-capacity-label is-class" key={`label-${key}`}>
                   <strong>{resourceClass.label}</strong>
                   {resourceClass.code == null && (
@@ -146,7 +147,7 @@ export default function MediumTermCapacityPanel({
                     </div>
                   );
                 })}
-              </>
+              </Fragment>
             ))}
           </div>
         </div>
