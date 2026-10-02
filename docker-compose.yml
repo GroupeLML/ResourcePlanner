@@ -136,7 +136,7 @@ services:
     environment:
       RESOURCEPLANNER_FRAME_ANCESTORS: "${RESOURCEPLANNER_FRAME_ANCESTORS:-'self'}"
     ports:
-      - "127.0.0.1:${RESOURCEPLANNER_HTTP_PORT:-8080}:8080"
+      - "0.0.0.0:${RESOURCEPLANNER_HTTP_PORT:-8080}:8080"
     restart: unless-stopped
 
   dev-cockpit:
