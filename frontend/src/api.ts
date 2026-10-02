@@ -307,6 +307,10 @@ export type MediumTermBudgetTaskReadModel = {
   project_name: string;
   project_manager_contact_id: string | null;
   project_manager_display_name: string | null;
+  manager_group_key: string;
+  manager_display_name: string | null;
+  manager_resolution_status: string;
+  manager_diagnostics: string[];
   erp_budget_last_success_at: string | null;
 };
 
