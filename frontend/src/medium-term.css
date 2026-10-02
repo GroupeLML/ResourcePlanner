@@ -422,3 +422,102 @@
   .wp-weekly-origin { text-align: left; }
   .wp-weekly-row { grid-template-columns: 1fr; }
 }
+
+
+/* #556 — compact capacity + PM/project hierarchy */
+.mt-budget-mode {
+  display: grid;
+  gap: .18rem;
+  min-width: 150px;
+}
+.mt-budget-mode > span {
+  color: var(--muted);
+  font-size: .52rem;
+  font-weight: 800;
+}
+.mt-budget-mode select {
+  min-height: 38px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: white;
+  color: var(--ink);
+  padding: .42rem .55rem;
+  font: inherit;
+  font-weight: 700;
+}
+
+.mt-capacity-grid.is-compact {
+  min-width: 820px;
+}
+.mt-capacity-label.is-class {
+  min-height: 58px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.mt-capacity-cell.is-compact {
+  min-height: 58px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: .08rem;
+}
+.mt-capacity-cell.is-compact .mt-capacity-main {
+  flex-wrap: wrap;
+}
+.mt-capacity-cell.is-compact .mt-capacity-main strong {
+  font-size: .66rem;
+}
+.mt-capacity-cell.is-compact .mt-capacity-detail {
+  margin-top: .08rem;
+}
+
+.mt-manager-group {
+  border-bottom: 1px solid #d5deeb;
+}
+.mt-manager-toggle {
+  width: 100%;
+  min-width: 1040px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .5rem;
+  border: 0;
+  border-bottom: 1px solid #d5deeb;
+  background: #e9eef6;
+  color: #44536b;
+  padding: .46rem .65rem;
+  text-align: left;
+  cursor: pointer;
+}
+.mt-manager-toggle strong {
+  font-size: .68rem;
+}
+.mt-manager-toggle span {
+  color: var(--muted);
+  font-size: .56rem;
+  font-weight: 700;
+}
+.mt-manager-toggle:hover,
+.mt-collapse-toggle:hover {
+  filter: brightness(.985);
+}
+.mt-project-strip.mt-collapse-toggle {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid #e5eaf1;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.mt-task-group .mt-no-package.is-compact {
+  min-height: 0;
+  padding: .42rem 1rem .48rem;
+  font-size: .56rem;
+  font-style: italic;
+  background: #fbfcfe;
+}
+
+@media (max-width: 860px) {
+  .mt-budget-mode { width: 100%; }
+}
