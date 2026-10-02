@@ -785,9 +785,11 @@ export default function ProjectsPage() {
                 BudgetActual considéré jusqu’au {formatProjectDate(projectBudget?.actual_through_date)}
               </span>
             </div>
-            <div className="projects-sync-message" role="status">
-              BudgetActual ERP représente la consommation absorbée avant cette semaine; la charge WorkPackage future commence au lundi de référence.
-            </div>
+            {projectBudget?.reference_basis === "ERP_BUDGET_ACTUAL_THROUGH_PREVIOUS_WEEK" && (
+              <div className="projects-sync-message" role="status">
+                BudgetActual ERP représente la consommation absorbée avant cette semaine; la charge WorkPackage future commence au lundi de référence.
+              </div>
+            )}
           </div>
 
           <div className="project-task-contact-list">
