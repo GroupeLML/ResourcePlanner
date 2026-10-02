@@ -82,7 +82,7 @@ def actual_hours_diagnostic(
     average_hourly_cost_cad: Decimal | None,
 ) -> str | None:
     if financial_diagnostic is not None:
-        return financial_diagnostic
+        return None
     if average_hourly_cost_cad is None:
         return ACTUAL_HOURS_DIAGNOSTIC_COST_MISSING
     if average_hourly_cost_cad == 0:
