@@ -194,6 +194,81 @@ def _reshape_as_0048(path: Path) -> None:
             DROP TABLE work_packages;
             ALTER TABLE work_packages_0048 RENAME TO work_packages;
 
+            CREATE TABLE asset_requirements_0048 (
+                id VARCHAR(36) NOT NULL,
+                project_id VARCHAR(36) NOT NULL,
+                workforce_request_id VARCHAR(36) NOT NULL,
+                source_request_line_id VARCHAR(36) NOT NULL,
+                source_period_id VARCHAR(36),
+                approval_revision_id VARCHAR(36),
+                approved_entry_key VARCHAR(512) NOT NULL,
+                slot_index INTEGER DEFAULT 0 NOT NULL,
+                asset_type_id VARCHAR(36) NOT NULL,
+                start_date DATE NOT NULL,
+                end_date DATE NOT NULL,
+                usage_hours NUMERIC(12, 2),
+                status VARCHAR(32) DEFAULT 'À affecter' NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                CONSTRAINT ck_asset_requirements_asset_requirement_window
+                    CHECK (end_date >= start_date),
+                CONSTRAINT ck_asset_requirements_asset_requirement_hours_positive
+                    CHECK (usage_hours IS NULL OR usage_hours > 0),
+                CONSTRAINT fk_asset_requirements_approval_revision_id_request_approval_revisions
+                    FOREIGN KEY(approval_revision_id) REFERENCES request_approval_revisions (id),
+                CONSTRAINT fk_asset_requirements_asset_type_id_asset_types
+                    FOREIGN KEY(asset_type_id) REFERENCES asset_types (id),
+                CONSTRAINT fk_asset_requirements_project_id_projects
+                    FOREIGN KEY(project_id) REFERENCES projects (id),
+                CONSTRAINT fk_asset_requirements_source_period_id_workforce_request_periods
+                    FOREIGN KEY(source_period_id) REFERENCES workforce_request_periods (id),
+                CONSTRAINT fk_asset_requirements_source_request_line_id_request_lines
+                    FOREIGN KEY(source_request_line_id) REFERENCES request_lines (id),
+                CONSTRAINT fk_asset_requirements_workforce_request_id_workforce_requests
+                    FOREIGN KEY(workforce_request_id) REFERENCES workforce_requests (id),
+                CONSTRAINT pk_asset_requirements PRIMARY KEY (id),
+                CONSTRAINT uq_asset_requirement_entry_slot
+                    UNIQUE (workforce_request_id, approved_entry_key, slot_index)
+            );
+            INSERT INTO asset_requirements_0048 (
+                id,
+                project_id,
+                workforce_request_id,
+                source_request_line_id,
+                source_period_id,
+                approval_revision_id,
+                approved_entry_key,
+                slot_index,
+                asset_type_id,
+                start_date,
+                end_date,
+                usage_hours,
+                status,
+                created_at,
+                updated_at
+            )
+            SELECT
+                id,
+                project_id,
+                workforce_request_id,
+                source_request_line_id,
+                source_period_id,
+                approval_revision_id,
+                approved_entry_key,
+                slot_index,
+                asset_type_id,
+                start_date,
+                end_date,
+                usage_hours,
+                status,
+                created_at,
+                updated_at
+            FROM asset_requirements;
+            DROP TABLE asset_requirements;
+            ALTER TABLE asset_requirements_0048 RENAME TO asset_requirements;
+            CREATE INDEX ix_asset_requirements_request
+                ON asset_requirements (workforce_request_id, source_request_line_id);
+
             UPDATE alembic_version
             SET version_num = '0048_identity_admin_audit';
             """
