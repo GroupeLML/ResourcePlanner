@@ -281,6 +281,7 @@ class SqlAssetService:
                 "Besoin d'actif introuvable.",
                 code="asset_requirement_not_found",
             )
+        self._validate_request_authority(requirement)
         allocation = self.session.scalar(
             select(AssetAllocation).where(
                 AssetAllocation.asset_requirement_id == requirement.id
@@ -356,6 +357,7 @@ class SqlAssetService:
                 "Besoin d'actif introuvable.",
                 code="asset_requirement_not_found",
             )
+        self._validate_request_authority(requirement)
         allocation = self.session.scalar(
             select(AssetAllocation).where(
                 AssetAllocation.asset_requirement_id == requirement.id
