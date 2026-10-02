@@ -9,16 +9,21 @@ APPROVAL_SCOPE_CODE_AUTOMATION = "AUTOMATION"
 APPROVER_SOURCE_SCOPE = "APPROVAL_SCOPE"
 APPROVER_SOURCE_RESOURCE = "PROPOSED_RESOURCE"
 APPROVER_SOURCE_ASSET = "PROPOSED_ASSET"
+ROUTING_SOURCE_REQUIRED_RESOURCE_CLASS = "REQUIRED_RESOURCE_CLASS"
+ROUTING_SOURCE_PROPOSED_RESOURCE_CLASS = "PROPOSED_RESOURCE_CLASS"
 ROUTING_SOURCE_ASSET_TYPE = "ASSET_TYPE"
 PERMISSION_APPROVE_DEMANDS = "approve_demands"
 
 DIAGNOSTIC_LINE_INACTIVE = "line_inactive"
 DIAGNOSTIC_TASK_REFERENCE_MISSING = "task_reference_missing"
+DIAGNOSTIC_ROUTING_SOURCE_MISSING = "routing_source_missing"
 DIAGNOSTIC_TASK_NOT_FOUND = "task_not_found"
 DIAGNOSTIC_TASK_INACTIVE = "task_inactive"
 DIAGNOSTIC_RESOURCE_CLASS_MISSING = "resource_class_missing"
 DIAGNOSTIC_RESOURCE_CLASS_NOT_FOUND = "resource_class_not_found"
 DIAGNOSTIC_RESOURCE_CLASS_INACTIVE = "resource_class_inactive"
+DIAGNOSTIC_PROPOSED_RESOURCE_UNKNOWN = "proposed_resource_unknown"
+DIAGNOSTIC_PROPOSED_RESOURCE_INACTIVE = "proposed_resource_inactive"
 DIAGNOSTIC_SCOPE_UNMAPPED = "approval_scope_unmapped"
 DIAGNOSTIC_SCOPE_AMBIGUOUS = "approval_scope_ambiguous"
 DIAGNOSTIC_SCOPE_INACTIVE = "approval_scope_inactive"
@@ -99,15 +104,13 @@ def resolve_line_approvers(
         return ApprovalLineResolution(None, (), tuple(diagnostics), True)
 
     task_id = str(task_catalog_item_id or "").strip()
-    if not task_id:
-        diagnostics.append(DIAGNOSTIC_TASK_REFERENCE_MISSING)
-        return ApprovalLineResolution(None, (), tuple(diagnostics), True)
-    if not task_exists:
-        diagnostics.append(DIAGNOSTIC_TASK_NOT_FOUND)
-        return ApprovalLineResolution(None, (), tuple(diagnostics), True)
-    if not task_active:
-        diagnostics.append(DIAGNOSTIC_TASK_INACTIVE)
-        return ApprovalLineResolution(None, (), tuple(diagnostics), True)
+    if task_id:
+        if not task_exists:
+            diagnostics.append(DIAGNOSTIC_TASK_NOT_FOUND)
+            return ApprovalLineResolution(None, (), tuple(diagnostics), True)
+        if not task_active:
+            diagnostics.append(DIAGNOSTIC_TASK_INACTIVE)
+            return ApprovalLineResolution(None, (), tuple(diagnostics), True)
 
     candidates = tuple(sorted(scope_candidates, key=lambda row: row.scope_id))
     if not candidates:
