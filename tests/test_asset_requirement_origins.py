@@ -48,6 +48,8 @@ class AssetRequirementOriginTests(unittest.TestCase):
             "project_id": "P-1",
             "origin": AssetRequirementOrigin.REQUEST.value,
             "shift_id": None,
+            "resource_requirement_id": None,
+            "context_resource_id": None,
             "workforce_request_id": "WR-1",
             "source_request_line_id": "RL-1",
             "source_period_id": None,
@@ -63,8 +65,16 @@ class AssetRequirementOriginTests(unittest.TestCase):
         return values
 
     def test_canonical_origin_values_are_shared(self) -> None:
-        self.assertEqual(AssetRequirementOrigin.REQUEST.value, "REQUEST")
-        self.assertEqual(AssetRequirementOrigin.SHIFT_AD_HOC.value, "SHIFT_AD_HOC")
+        self.assertEqual(
+            tuple(origin.value for origin in AssetRequirementOrigin),
+            (
+                "REQUEST",
+                "SHIFT_AD_HOC",
+                "PROJECT_DIRECT",
+                "SEGMENT",
+                "RESOURCE_PERIOD",
+            ),
+        )
 
     def test_request_and_shift_ad_hoc_shapes_are_mutually_exclusive(self) -> None:
         engine = self._engine()
@@ -119,6 +129,146 @@ class AssetRequirementOriginTests(unittest.TestCase):
                         connection.execute(requirements.insert().values(**values))
 
         engine.dispose()
+
+    def test_new_origin_shapes_enforce_explicit_contexts(self) -> None:
+        engine = self._engine()
+        requirements = Base.metadata.tables["asset_requirements"]
+
+        valid_rows = (
+            self._requirement_values(
+                "AR-PROJECT",
+                origin=AssetRequirementOrigin.PROJECT_DIRECT.value,
+                workforce_request_id=None,
+                source_request_line_id=None,
+                approved_entry_key=None,
+            ),
+            self._requirement_values(
+                "AR-SEGMENT",
+                origin=AssetRequirementOrigin.SEGMENT.value,
+                resource_requirement_id="RR-SEGMENT",
+                workforce_request_id=None,
+                source_request_line_id=None,
+                approved_entry_key=None,
+            ),
+            self._requirement_values(
+                "AR-RESOURCE-PERIOD",
+                origin=AssetRequirementOrigin.RESOURCE_PERIOD.value,
+                project_id=None,
+                context_resource_id="RESOURCE-CONTEXT",
+                workforce_request_id=None,
+                source_request_line_id=None,
+                approved_entry_key=None,
+            ),
+            self._requirement_values(
+                "AR-RESOURCE-PERIOD-PROJECT",
+                origin=AssetRequirementOrigin.RESOURCE_PERIOD.value,
+                project_id="P-2",
+                context_resource_id="RESOURCE-CONTEXT-2",
+                workforce_request_id=None,
+                source_request_line_id=None,
+                approved_entry_key=None,
+            ),
+        )
+        with engine.begin() as connection:
+            for values in valid_rows:
+                connection.execute(requirements.insert().values(**values))
+
+        invalid_rows = (
+            self._requirement_values(
+                "AR-PROJECT-NO-PROJECT",
+                origin=AssetRequirementOrigin.PROJECT_DIRECT.value,
+                project_id=None,
+                workforce_request_id=None,
+                source_request_line_id=None,
+                approved_entry_key=None,
+            ),
+            self._requirement_values(
+                "AR-PROJECT-WITH-SHIFT",
+                origin=AssetRequirementOrigin.PROJECT_DIRECT.value,
+                shift_id="SHIFT-X",
+                workforce_request_id=None,
+                source_request_line_id=None,
+                approved_entry_key=None,
+            ),
+            self._requirement_values(
+                "AR-SEGMENT-NO-SEGMENT",
+                origin=AssetRequirementOrigin.SEGMENT.value,
+                workforce_request_id=None,
+                source_request_line_id=None,
+                approved_entry_key=None,
+            ),
+            self._requirement_values(
+                "AR-SEGMENT-NO-PROJECT",
+                origin=AssetRequirementOrigin.SEGMENT.value,
+                project_id=None,
+                resource_requirement_id="RR-X",
+                workforce_request_id=None,
+                source_request_line_id=None,
+                approved_entry_key=None,
+            ),
+            self._requirement_values(
+                "AR-SEGMENT-WITH-CONTEXT",
+                origin=AssetRequirementOrigin.SEGMENT.value,
+                resource_requirement_id="RR-X",
+                context_resource_id="RESOURCE-X",
+                workforce_request_id=None,
+                source_request_line_id=None,
+                approved_entry_key=None,
+            ),
+            self._requirement_values(
+                "AR-RESOURCE-NO-CONTEXT",
+                origin=AssetRequirementOrigin.RESOURCE_PERIOD.value,
+                project_id=None,
+                workforce_request_id=None,
+                source_request_line_id=None,
+                approved_entry_key=None,
+            ),
+            self._requirement_values(
+                "AR-RESOURCE-WITH-SEGMENT",
+                origin=AssetRequirementOrigin.RESOURCE_PERIOD.value,
+                project_id=None,
+                resource_requirement_id="RR-X",
+                context_resource_id="RESOURCE-X",
+                workforce_request_id=None,
+                source_request_line_id=None,
+                approved_entry_key=None,
+            ),
+            self._requirement_values(
+                "AR-RESOURCE-WITH-APPROVAL",
+                origin=AssetRequirementOrigin.RESOURCE_PERIOD.value,
+                project_id=None,
+                context_resource_id="RESOURCE-X",
+                workforce_request_id="WR-X",
+                source_request_line_id="RL-X",
+                approved_entry_key="ENTRY-X",
+            ),
+        )
+        for values in invalid_rows:
+            with self.subTest(identifier=values["id"]):
+                with self.assertRaises(IntegrityError):
+                    with engine.begin() as connection:
+                        connection.execute(requirements.insert().values(**values))
+
+        engine.dispose()
+
+    def test_context_foreign_keys_and_indexes_are_canonical(self) -> None:
+        table = Base.metadata.tables["asset_requirements"]
+        foreign_keys = {
+            foreign_key.parent.name: foreign_key.column.table.name
+            for foreign_key in table.foreign_keys
+        }
+        self.assertEqual(
+            foreign_keys["resource_requirement_id"],
+            "resource_requirements",
+        )
+        self.assertEqual(foreign_keys["context_resource_id"], "resources")
+        self.assertTrue(table.c.project_id.nullable)
+
+        indexes = {index.name for index in table.indexes}
+        self.assertIn("ix_asset_requirements_resource_requirement_id", indexes)
+        self.assertIn("ix_asset_requirements_context_resource_id", indexes)
+        self.assertIn("ux_asset_requirements_request_entry_slot", indexes)
+        self.assertIn("ux_asset_requirements_shift_ad_hoc", indexes)
 
     def test_request_and_shift_ad_hoc_uniqueness_are_independent(self) -> None:
         engine = self._engine()
