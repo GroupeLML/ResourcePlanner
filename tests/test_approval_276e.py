@@ -394,6 +394,22 @@ class Approval276ERoutingTests(unittest.TestCase):
         )
         self.assertEqual(resolved.resolution.approval_scope_id, "S-ELEC")
 
+    def test_explicit_class_without_mapping_fails_closed_without_task(self) -> None:
+        with self.factory() as session, session.begin():
+            line = session.get(RequestLine, "L-T216")
+            line.task_catalog_item_id = None
+            line.required_resource_class = "NO_SCOPE"
+            line.proposed_resource_id = None
+
+        resolved = self._resolve("L-T216")
+
+        self.assertTrue(resolved.resolution.blocked)
+        self.assertEqual(resolved.effective_resource_class, "NO_SCOPE")
+        self.assertIn(
+            DIAGNOSTIC_SCOPE_UNMAPPED,
+            resolved.resolution.diagnostics,
+        )
+
     def test_invalid_explicit_class_never_falls_back_to_task(self) -> None:
         with self.factory() as session, session.begin():
             line = session.get(RequestLine, "L-T216")
