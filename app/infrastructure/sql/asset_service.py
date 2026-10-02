@@ -1233,6 +1233,122 @@ class SqlAssetService:
         self.session.flush()
         return result
 
+    def shift_asset_candidates(self, shift_id: str) -> dict:
+        """Read candidate assets for one Shift without exposing hidden occupancies."""
+
+        shift, _human_requirement = self._shift_context(shift_id)
+        current_requirement, current_allocation = self.shift_ad_hoc_attachment(
+            shift.id
+        )
+
+        asset_rows = tuple(
+            self.session.execute(
+                select(Asset, AssetType)
+                .join(AssetType, Asset.asset_type_id == AssetType.id)
+                .order_by(AssetType.code, Asset.code, Asset.id)
+            ).all()
+        )
+        type_ids = tuple(dict.fromkeys(row.asset_type_id for row, _type in asset_rows))
+        required_by_type: dict[str, set[str]] = {}
+        if type_ids:
+            for type_id, competency_id in self.session.execute(
+                select(
+                    AssetTypeCompetency.asset_type_id,
+                    AssetTypeCompetency.competency_id,
+                ).where(AssetTypeCompetency.asset_type_id.in_(type_ids))
+            ).all():
+                required_by_type.setdefault(type_id, set()).add(competency_id)
+
+        operator = self.session.get(Resource, shift.resource_id)
+        operator_competencies = set(
+            self.session.scalars(
+                select(ResourceCompetency.competency_id).where(
+                    ResourceCompetency.resource_id == shift.resource_id
+                )
+            ).all()
+        )
+
+        overlapping_allocations = tuple(
+            self.session.scalars(
+                select(AssetAllocation).where(
+                    AssetAllocation.start_date <= shift.work_date,
+                    AssetAllocation.end_date >= shift.work_date,
+                )
+            ).all()
+        )
+        occupied_asset_ids = {
+            row.asset_id
+            for row in overlapping_allocations
+            if current_allocation is None or row.id != current_allocation.id
+        }
+        unavailable_asset_ids = set(
+            self.session.scalars(
+                select(AssetUnavailability.asset_id).where(
+                    AssetUnavailability.start_date <= shift.work_date,
+                    AssetUnavailability.end_date >= shift.work_date,
+                )
+            ).all()
+        )
+
+        candidates: list[dict] = []
+        for asset, asset_type in asset_rows:
+            required = required_by_type.get(asset.asset_type_id, set())
+            qualification_state = QUALIFICATION_SATISFIED
+            if (
+                operator is None
+                or not operator.active
+                or not required.issubset(operator_competencies)
+            ):
+                qualification_state = QUALIFICATION_SKILL_MISMATCH
+
+            compatible = bool(asset.active and asset_type.active)
+            available = bool(
+                asset.id not in occupied_asset_ids
+                and asset.id not in unavailable_asset_ids
+            )
+            reasons: list[str] = []
+            if not compatible:
+                reasons.append("asset_inactive")
+            if qualification_state != QUALIFICATION_SATISFIED:
+                reasons.append("operator_not_qualified")
+            if not available:
+                reasons.append("asset_unavailable")
+
+            candidates.append(
+                {
+                    "id": asset.id,
+                    "code": asset.code,
+                    "label": asset.label,
+                    "asset_type_id": asset.asset_type_id,
+                    "asset_type_code": asset_type.code,
+                    "asset_type_label": asset_type.label,
+                    "active": bool(asset.active),
+                    "compatible": compatible,
+                    "available": available,
+                    "qualification_state": qualification_state,
+                    "allowed": not reasons,
+                    "reason": reasons[0] if reasons else None,
+                    "diagnostics": reasons,
+                    "currently_assigned": bool(
+                        current_allocation is not None
+                        and current_allocation.asset_id == asset.id
+                    ),
+                }
+            )
+        return {
+            "shift_id": shift.id,
+            "work_date": shift.work_date,
+            "operator_resource_id": shift.resource_id,
+            "current_requirement_id": (
+                current_requirement.id if current_requirement is not None else None
+            ),
+            "current_allocation_id": (
+                current_allocation.id if current_allocation is not None else None
+            ),
+            "candidates": candidates,
+            "planning_version": self.version.current_version(),
+        }
+
     def add_unavailability(self, *, asset_id: str, start_date: date, end_date: date,
                            reason: str | None, expected_version: int) -> dict:
         self.version.acquire(expected_version)
