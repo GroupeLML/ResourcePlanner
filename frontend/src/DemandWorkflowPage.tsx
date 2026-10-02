@@ -420,7 +420,7 @@ export default function DemandWorkflowPage({
   }, [selectedNumber, loading]);
 
   useEffect(() => {
-    if (!currentDemand) {
+    if (actionsOnly || !currentDemand) {
       setApprovalState(null);
       setApprovalStateError(null);
       return;
@@ -438,10 +438,10 @@ export default function DemandWorkflowPage({
         }
       });
     return () => { active = false; };
-  }, [currentDemand?.number, currentDemand?.version, currentDemand?.status]);
+  }, [actionsOnly, currentDemand?.number, currentDemand?.version, currentDemand?.status]);
 
   useEffect(() => {
-    if (!currentDemand || normalStatus(currentDemand.status) !== "soumise") {
+    if (actionsOnly || !currentDemand || normalStatus(currentDemand.status) !== "soumise") {
       setPlanDelta(null);
       setPlanDeltaError(null);
       setPlanDeltaLoading(false);
@@ -464,7 +464,7 @@ export default function DemandWorkflowPage({
         if (active) setPlanDeltaLoading(false);
       });
     return () => { active = false; };
-  }, [currentDemand?.number, currentDemand?.status]);
+  }, [actionsOnly, currentDemand?.number, currentDemand?.status]);
 
   const actions = useMemo(
     () =>
