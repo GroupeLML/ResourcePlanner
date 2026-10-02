@@ -105,11 +105,11 @@ def upgrade() -> None:
                 ["id"],
             )
             batch_op.create_check_constraint(
-                ORIGIN_VALUES_CHECK,
+                op.f(ORIGIN_VALUES_CHECK),
                 "origin IN ('REQUEST', 'SHIFT_AD_HOC')",
             )
             batch_op.create_check_constraint(
-                ORIGIN_PROVENANCE_CHECK,
+                op.f(ORIGIN_PROVENANCE_CHECK),
                 _origin_provenance_sql(),
             )
         _create_filtered_indexes()
@@ -148,12 +148,12 @@ def upgrade() -> None:
         ["id"],
     )
     op.create_check_constraint(
-        ORIGIN_VALUES_CHECK,
+        op.f(ORIGIN_VALUES_CHECK),
         "asset_requirements",
         "origin IN ('REQUEST', 'SHIFT_AD_HOC')",
     )
     op.create_check_constraint(
-        ORIGIN_PROVENANCE_CHECK,
+        op.f(ORIGIN_PROVENANCE_CHECK),
         "asset_requirements",
         _origin_provenance_sql(),
     )
@@ -186,8 +186,8 @@ def downgrade() -> None:
 
     if bind.dialect.name == "sqlite":
         with op.batch_alter_table("asset_requirements", recreate="always") as batch_op:
-            batch_op.drop_constraint(ORIGIN_PROVENANCE_CHECK, type_="check")
-            batch_op.drop_constraint(ORIGIN_VALUES_CHECK, type_="check")
+            batch_op.drop_constraint(op.f(ORIGIN_PROVENANCE_CHECK), type_="check")
+            batch_op.drop_constraint(op.f(ORIGIN_VALUES_CHECK), type_="check")
             batch_op.drop_constraint(SHIFT_FK, type_="foreignkey")
             batch_op.alter_column(
                 "workforce_request_id",
@@ -213,12 +213,12 @@ def downgrade() -> None:
         return
 
     op.drop_constraint(
-        ORIGIN_PROVENANCE_CHECK,
+        op.f(ORIGIN_PROVENANCE_CHECK),
         "asset_requirements",
         type_="check",
     )
     op.drop_constraint(
-        ORIGIN_VALUES_CHECK,
+        op.f(ORIGIN_VALUES_CHECK),
         "asset_requirements",
         type_="check",
     )
