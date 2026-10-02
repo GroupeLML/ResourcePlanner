@@ -33,6 +33,7 @@ import SearchableCombobox from "./SearchableCombobox";
 import { ContactSelect, ResolutionSummary } from "./BusinessContactUi";
 import { useAuth } from "./AuthContext";
 import DemandDetail from "./DemandDetail";
+import DemandWorkflowPage from "./DemandWorkflowPage";
 import DemandLinesEditor, {
   DemandLineDefaults,
   DemandLineDraft,
@@ -886,15 +887,30 @@ export default function DemandsPage({ initialDemandNumber = null }: DemandsPageP
                   )}
                 </div>
                 {!creating && selectedDemand && (
-                  selectedDemand.line_mode ? (
-                    <div className="demand-confirmation-pill confirmed">
-                      {(selectedDemand.lines ?? []).filter((line) => line.active).length} ligne(s)
+                  <div className="demand-editor-heading-side">
+                    <div className="demand-editor-statuses" aria-label="État de la demande">
+                      {selectedDemand.line_mode ? (
+                        <div className="demand-confirmation-pill confirmed">
+                          {(selectedDemand.lines ?? []).filter((line) => line.active).length} ligne(s)
+                        </div>
+                      ) : (
+                        <div className={`demand-confirmation-pill ${selectedDemand.confirmation === "Tentative" ? "tentative" : "confirmed"}`}>
+                          {selectedDemand.confirmation || "Confirmée"}
+                        </div>
+                      )}
+                      <div className="demand-workflow-status-pill">{selectedDemand.status || "—"}</div>
                     </div>
-                  ) : (
-                    <div className={`demand-confirmation-pill ${selectedDemand.confirmation === "Tentative" ? "tentative" : "confirmed"}`}>
-                      {selectedDemand.confirmation || "Confirmée"}
+                    <div className="demand-header-actions" data-testid="demand-header-actions">
+                      <DemandWorkflowPage
+                        demandNumber={selectedDemand.number}
+                        canonicalDetail={selectedDetail}
+                        embedded
+                        actionsOnly
+                        hasUnsavedChanges={editorDirty || contextDirty}
+                        onChanged={() => reloadDemand(selectedDemand.number)}
+                      />
                     </div>
-                  )
+                  </div>
                 )}
               </div>
 
