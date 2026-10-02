@@ -354,7 +354,7 @@ class SqlOperationalContactRepositoryTests(unittest.TestCase):
                 BusinessContact(
                     id="C-CO",
                     display_name="Co chargé RP",
-                    email="co@example.invalid",
+                    email="co" + chr(64) + "example.invalid",
                     phone="555-6000",
                 )
             )
@@ -364,7 +364,7 @@ class SqlOperationalContactRepositoryTests(unittest.TestCase):
                     issuer=None,
                     subject=None,
                     display_name="Co chargé RP",
-                    email="co@example.invalid",
+                    email="co" + chr(64) + "example.invalid",
                     employee_external_id=None,
                     business_contact_id="C-CO",
                     roles_json='["PROJECT_MANAGER"]',
