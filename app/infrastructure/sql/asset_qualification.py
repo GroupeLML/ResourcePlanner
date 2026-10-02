@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from sqlalchemy import select, true
 from sqlalchemy.orm import Session
 
+from ...domain.reservable_assets import AssetRequirementOrigin
 from .asset_models import AssetAllocation, AssetRequirement, AssetTypeCompetency
 from .models import Competency, Resource, ResourceCompetency, ResourceRequirement, Shift
 
@@ -67,26 +68,30 @@ def has_compatible_assignment(
     allocation: AssetAllocation,
     resource_id: str,
 ) -> bool:
-    return (
-        session.scalar(
-            select(Shift.id)
-            .join(
-                ResourceRequirement,
-                Shift.resource_requirement_id == ResourceRequirement.id,
-            )
-            .where(
-                Shift.resource_id == resource_id,
-                Shift.work_date >= allocation.start_date,
-                Shift.work_date <= allocation.end_date,
-                ResourceRequirement.project_id == requirement.project_id,
-                ResourceRequirement.workforce_request_id
-                == requirement.workforce_request_id,
-                ResourceRequirement.status != "Annulé",
-            )
-            .limit(1)
+    statement = (
+        select(Shift.id)
+        .join(
+            ResourceRequirement,
+            Shift.resource_requirement_id == ResourceRequirement.id,
         )
-        is not None
+        .where(
+            Shift.resource_id == resource_id,
+            Shift.work_date >= allocation.start_date,
+            Shift.work_date <= allocation.end_date,
+            ResourceRequirement.project_id == requirement.project_id,
+            ResourceRequirement.status != "Annulé",
+        )
     )
+    if requirement.origin == AssetRequirementOrigin.SHIFT_AD_HOC.value:
+        if not requirement.shift_id:
+            return False
+        statement = statement.where(Shift.id == requirement.shift_id)
+    else:
+        statement = statement.where(
+            ResourceRequirement.workforce_request_id
+            == requirement.workforce_request_id
+        )
+    return session.scalar(statement.limit(1)) is not None
 
 
 def evaluate_asset_qualification(

@@ -86,6 +86,12 @@ class ReservationChange(StrictBody):
     expected_planning_version: int = Field(ge=1)
 
 
+class ShiftAssetAssignmentChange(StrictBody):
+    asset_id: str | None = None
+    asset_requirement_id: str | None = None
+    expected_planning_version: int = Field(ge=1)
+
+
 class TypeQualificationUpdate(StrictBody):
     competency_ids: list[str] = Field(default_factory=list)
     qualification_policy: str = QUALIFICATION_POLICY_ANY_ASSIGNED_WORKFORCE
@@ -282,6 +288,22 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
                                                  start_date=body.start_date, end_date=body.end_date,
                                                  expected_version=body.expected_planning_version,
                                                  idempotency_key=idempotency_key)
+
+    @router.put("/shifts/{identifier}/assignment")
+    def set_shift_asset(
+        identifier: str,
+        body: ShiftAssetAssignmentChange,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key", min_length=1),
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        return service(session, request).set_shift_asset(
+            shift_id=identifier,
+            asset_id=body.asset_id,
+            requirement_id=body.asset_requirement_id,
+            expected_version=body.expected_planning_version,
+            idempotency_key=idempotency_key,
+        )
 
     @router.get("/requirements/{identifier}/operator-candidates")
     def operator_candidates(
