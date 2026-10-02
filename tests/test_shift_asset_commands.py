@@ -713,6 +713,87 @@ class ShiftAssetCommandTests(unittest.TestCase):
             "RESOURCE-SKILLED",
         )
 
+    def test_extend_and_move_updates_ad_hoc_asset_in_same_transaction(self) -> None:
+        assigned = self._set_asset(
+            asset_id="ASSET-A",
+            version=self._version(),
+            key="extend-move-assign-560c",
+        )
+        self.assertEqual(assigned.status_code, 200, assigned.text)
+        requirement_id = assigned.json()["requirement_id"]
+        allocation_id = assigned.json()["allocation_id"]
+        next_day = DAY + timedelta(days=1)
+
+        moved = self.client.post(
+            "/api/v1/allocations/ALLOC-SKILLED/extend-and-move",
+            headers={"Idempotency-Key": "extend-move-560c"},
+            json={
+                "resource_id": "RESOURCE-SKILLED",
+                "day": next_day.isoformat(),
+                "expected_planning_version": assigned.json()["planning_version"],
+                "confirm_window_extension": True,
+            },
+        )
+        self.assertEqual(moved.status_code, 200, moved.text)
+        self.assertEqual(moved.json()["operation"], "EXTEND_AND_MOVE")
+
+        requirement, allocation, shift = self._ad_hoc_state()
+        self.assertEqual(requirement.id, requirement_id)
+        self.assertEqual(allocation.id, allocation_id)
+        self.assertEqual(shift.work_date, next_day)
+        self.assertEqual(allocation.start_date, next_day)
+        self.assertEqual(allocation.end_date, next_day)
+        self.assertEqual(
+            allocation.operator_resource_id,
+            "RESOURCE-SKILLED",
+        )
+
+    def test_duplicate_keeps_asset_only_on_source(self) -> None:
+        assigned = self._set_asset(
+            asset_id="ASSET-A",
+            version=self._version(),
+            key="duplicate-assign-560c",
+        )
+        self.assertEqual(assigned.status_code, 200, assigned.text)
+
+        duplicated = self.client.post(
+            "/api/v1/allocations/ALLOC-SKILLED/duplicate",
+            headers={"Idempotency-Key": "duplicate-560c"},
+            json={
+                "resource_id": "RESOURCE-SKILLED",
+                "day": DAY.isoformat(),
+                "expected_planning_version": assigned.json()["planning_version"],
+                "overallocation_policy": "KEEP_EXCEPTION",
+            },
+        )
+        self.assertEqual(duplicated.status_code, 201, duplicated.text)
+        payload = duplicated.json()
+        self.assertEqual(payload["asset_assignment_policy"], "SOURCE_RETAINS")
+        self.assertFalse(payload["target_asset_assignment_inherited"])
+
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory() as session:
+                source_requirement = session.scalar(
+                    select(AssetRequirement).where(
+                        AssetRequirement.origin
+                        == AssetRequirementOrigin.SHIFT_AD_HOC.value,
+                        AssetRequirement.shift_id == "SHIFT-SKILLED",
+                    )
+                )
+                self.assertIsNotNone(source_requirement)
+                target_requirement = session.scalar(
+                    select(AssetRequirement).where(
+                        AssetRequirement.origin
+                        == AssetRequirementOrigin.SHIFT_AD_HOC.value,
+                        AssetRequirement.shift_id == payload["target_shift_id"],
+                    )
+                )
+                self.assertIsNone(target_requirement)
+        finally:
+            engine.dispose()
+
     def test_resource_change_to_unqualified_operator_rolls_back_everything(self) -> None:
         assigned = self._set_asset(
             asset_id="ASSET-A",
