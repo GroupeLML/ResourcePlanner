@@ -389,6 +389,34 @@ class AssetQualificationTests(unittest.TestCase):
         self.assertEqual(assigned.status_code, 200, assigned.text)
         self.assertEqual(assigned.json()["qualification_state"], "SATISFIED")
 
+        invalid_dates = self.client.put(
+            f"/api/v1/assets/requirements/{requirement['id']}/reservation",
+            headers={"Idempotency-Key": "operator-retained-invalid-dates"},
+            json={
+                "asset_id": self.asset_id,
+                "start_date": "2026-09-24",
+                "end_date": "2026-09-24",
+                "expected_planning_version": assigned.json()["planning_version"],
+            },
+        )
+        self.assertEqual(invalid_dates.status_code, 422, invalid_dates.text)
+        self.assertEqual(
+            invalid_dates.json()["error"]["code"],
+            "asset_operator_no_overlap",
+        )
+        state_after_rejection = self.client.get("/api/v1/assets/requirements").json()
+        preserved = next(
+            row
+            for row in state_after_rejection["allocations"]
+            if row["asset_requirement_id"] == requirement["id"]
+        )
+        self.assertEqual(preserved["start_date"], "2026-09-24")
+        self.assertEqual(preserved["end_date"], "2026-09-26")
+        self.assertEqual(
+            preserved["operator_resource_id"],
+            self.skilled_resource_id,
+        )
+
         engine = create_sql_engine(self.url)
         factory = create_session_factory(engine)
         with factory() as session:
