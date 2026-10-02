@@ -129,9 +129,6 @@ class MediumTermBudgetWorkPackageReadModel:
     project_id: str = ""
     project_number: str = ""
     project_name: str = ""
-    project_manager_contact_id: str | None = None
-    project_manager_display_name: str | None = None
-    erp_budget_last_success_at: datetime | None = None
     start_date: date | None = None
     end_date: date | None = None
     version: int = 1
@@ -176,6 +173,9 @@ class MediumTermBudgetTaskReadModel:
     project_id: str = ""
     project_number: str = ""
     project_name: str = ""
+    project_manager_contact_id: str | None = None
+    project_manager_display_name: str | None = None
+    erp_budget_last_success_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
