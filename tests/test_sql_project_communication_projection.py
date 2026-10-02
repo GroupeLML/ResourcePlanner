@@ -5,6 +5,7 @@ from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -17,6 +18,7 @@ from app.infrastructure.sql import (
     Base,
     BusinessContact,
     Project,
+    ProjectCoManager,
     RequestLine,
     Resource,
     ResourceRequirement,
@@ -379,6 +381,113 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
 
         self.assertEqual({row.shift_id for row in assignments}, {"S1", "S2"})
         self.assertNotIn("S-MISSING", {row.shift_id for row in assignments})
+
+    def test_assignment_projection_uses_bulk_operational_resolution(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            try:
+                with factory() as session:
+                    operational = OperationalContactService(
+                        SqlOperationalContactRepository(session)
+                    )
+                    with patch.object(
+                        operational,
+                        "resolve_shift",
+                        side_effect=AssertionError("single-shift resolution is an N+1"),
+                    ), patch.object(
+                        operational,
+                        "resolve_shifts",
+                        wraps=operational.resolve_shifts,
+                    ) as bulk:
+                        assignments = SqlProjectCommunicationRepository(
+                            session,
+                            operational_contacts=operational,
+                        ).list_assignments(
+                            week_start=WEEK,
+                            week_end=WEEK,
+                        )
+            finally:
+                engine.dispose()
+
+        self.assertEqual({row.shift_id for row in assignments}, {"S1", "S2"})
+        bulk.assert_called_once()
+        self.assertEqual(set(bulk.call_args.args[0]), {"S1", "S2"})
+
+    def test_co_manager_only_change_does_not_change_project_message_fingerprint(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app) as client:
+                before = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23"
+                )
+                self.assertEqual(before.status_code, 200, before.text)
+
+                engine = create_sql_engine(database_url)
+                factory = create_session_factory(engine)
+                try:
+                    with factory.begin() as session:
+                        session.add(
+                            BusinessContact(
+                                id="C-CO",
+                                display_name="Co chargé RP",
+                                email="co@example.test",
+                                source="APP_USER",
+                            )
+                        )
+                        session.add(
+                            AppUser(
+                                id="U-CO",
+                                issuer=None,
+                                subject=None,
+                                display_name="Co chargé RP",
+                                email="co@example.test",
+                                employee_external_id=None,
+                                business_contact_id="C-CO",
+                                roles_json='["PROJECT_MANAGER"]',
+                                active=True,
+                            )
+                        )
+                        project = session.get(Project, "P1")
+                        assert project is not None
+                        project.co_managers_version += 1
+                        session.flush()
+                        session.add(
+                            ProjectCoManager(
+                                project_id="P1",
+                                business_contact_id="C-CO",
+                                created_by_user_id="U-CO",
+                            )
+                        )
+                finally:
+                    engine.dispose()
+
+                after = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23"
+                )
+                self.assertEqual(after.status_code, 200, after.text)
+
+        before_payload = before.json()
+        after_payload = after.json()
+        self.assertEqual(
+            after_payload["snapshot_fingerprint"],
+            before_payload["snapshot_fingerprint"],
+        )
+        self.assertEqual(
+            after_payload["drafts"][0]["to_recipient"],
+            before_payload["drafts"][0]["to_recipient"],
+        )
+        self.assertEqual(
+            after_payload["drafts"][0]["cc_recipients"],
+            before_payload["drafts"][0]["cc_recipients"],
+        )
 
     def test_projection_uses_approved_context_and_user_backed_contacts(self) -> None:
         with TemporaryDirectory() as directory:
