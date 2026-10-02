@@ -1831,40 +1831,22 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   await expect(aliceShift).not.toContainText("Nacelle #63");
   await expect(bobShift).not.toContainText("Nacelle #63");
 
-  catalogResponse = await coordinator.page.request.get("/api/v1/assets/catalog");
-  expect(catalogResponse.ok()).toBeTruthy();
-  catalog = await catalogResponse.json() as typeof catalog;
-  const bumpVersion = await coordinator.page.request.post("/api/v1/assets/A-LIFT-2/unavailability", {
-    data: {
-      start_date: d5,
-      end_date: d5,
-      reason: "Bump version E2E",
-      expected_planning_version: catalog.planning_version,
-    },
-  });
-  expect(bumpVersion.status(), await bumpVersion.text()).toBe(201);
+  let extendedRequirement = assetPanel.locator(
+    `.asset-requirement-card[data-requirement-id="${extendedRequirementId}"]`,
+  );
+  await expect(extendedRequirement).toBeVisible();
+  await extendedRequirement.getByRole("combobox").first().selectOption(lift63Id);
+  await extendedRequirement.getByRole("button", { name: "Réserver cette unité" }).click();
+  await expect(assetPanel.locator(".asset-planning-feedback")).toContainText("Réservation enregistrée");
 
-  await aliceShift.getByRole("button", { name: /Assigner un actif/ }).click();
-  const quickAssetDialog = coordinator.page.getByRole("dialog", { name: "Assigner un actif" });
-  await expect(quickAssetDialog).toBeVisible();
-  await expect(quickAssetDialog).toContainText(demandNumber);
-  await quickAssetDialog.getByLabel("Besoin actif").selectOption(extendedRequirementId);
-  await quickAssetDialog.getByLabel("Unité").selectOption(lift63Id);
-
-  const refreshedSnapshot = coordinator.page.waitForResponse((response) => (
-    response.request().method() === "GET"
-    && response.url().includes("/api/v1/planning/snapshot")
-    && response.ok()
-  ));
-  await quickAssetDialog.getByRole("button", { name: "Réserver et associer" }).click();
-  await expect(quickAssetDialog).toContainText("Le planning a changé");
-  await refreshedSnapshot;
-
-  await quickAssetDialog.getByRole("button", { name: "Réserver et associer" }).click();
-  await expect(quickAssetDialog).toBeHidden();
-
-  aliceShift = aliceRow.locator(".shift-card").filter({ hasText: demandNumber }).first();
-  await expect(aliceShift).toContainText("Nacelle #63");
+  extendedRequirement = assetPanel.locator(
+    `.asset-requirement-card[data-requirement-id="${extendedRequirementId}"]`,
+  );
+  const extendedOperator = extendedRequirement.getByLabel(/Opérateur qualifiant/);
+  await expect(extendedOperator.locator('option[value="R-ALICE"]')).toBeAttached();
+  await extendedOperator.selectOption("R-ALICE");
+  await extendedRequirement.getByRole("button", { name: "Enregistrer l’opérateur" }).click();
+  await expect(assetPanel.locator(".asset-planning-feedback")).toContainText("Opérateur qualifiant enregistré");
 
   demandRequirements = assetPanel.locator(".asset-requirement-card").filter({ hasText: demandNumber });
   const secondRequirement = demandRequirements.filter({ hasText: "À réserver" }).first();
@@ -1883,10 +1865,21 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
 
   aliceShift = aliceRow.locator(".shift-card").filter({ hasText: demandNumber }).first();
   bobShift = bobRow.locator(".shift-card").filter({ hasText: demandNumber }).first();
-  await expect(aliceShift).toContainText("Nacelle #63");
-  await expect(aliceShift).toContainText("Nacelle #64");
+  await expect(aliceShift).toContainText("Aucun actif");
+  await expect(aliceShift).not.toContainText("Nacelle #63");
+  await expect(aliceShift).not.toContainText("Nacelle #64");
   await expect(bobShift).not.toContainText("Nacelle #63");
   await expect(bobShift).not.toContainText("Nacelle #64");
+
+  await aliceShift.locator(".shift-card-main").click();
+  const shiftAssetPopup = coordinator.page.getByRole("dialog", { name: "Modifier le quart" });
+  const shiftAssetRegion = shiftAssetPopup.getByRole("region", { name: "Actif" });
+  await expect(shiftAssetRegion).toContainText("Aucun actif associé");
+  await expect(shiftAssetRegion).toContainText("Réservations liées à la demande");
+  await expect(shiftAssetRegion).toContainText("Nacelle #63");
+  await expect(shiftAssetRegion).toContainText("Nacelle #64");
+  await expect(shiftAssetRegion.getByRole("button", { name: "Assigner un actif" })).toBeVisible();
+  await shiftAssetPopup.getByRole("button", { name: "Fermer" }).click();
 
   const unavailabilityForm = assetPanel.locator(".asset-unavailability-form");
   await labelled(unavailabilityForm, "Actif", "select").selectOption("A-LIFT-2");
