@@ -36,7 +36,7 @@ from .asset_qualification import (
     required_competencies,
 )
 from .identity_models import AppUser
-from .models import Competency, ResourceRequirement, Shift
+from .models import Competency, Resource, ResourceCompetency, ResourceRequirement, Shift
 from .approval_revision_models import RequestApprovalReference, RequestApprovalRevision
 from .base import new_id
 from .idempotency import SqlCommandIdempotencyAdapter
