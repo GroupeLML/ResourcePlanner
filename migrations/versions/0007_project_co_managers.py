@@ -28,8 +28,11 @@ def _add_project_version() -> None:
         server_default=sa.text("1"),
     )
     if bind.dialect.name == "sqlite":
+        # SQLite can ADD this non-null column directly because it has a constant
+        # default. Rebuild only after the column exists so Alembic does not have
+        # to order a freshly-added column while recreating the table.
+        op.add_column("projects", column)
         with op.batch_alter_table("projects", recreate="always") as batch_op:
-            batch_op.add_column(column)
             batch_op.create_check_constraint(
                 op.f(PROJECT_VERSION_CHECK),
                 "co_managers_version >= 1",
