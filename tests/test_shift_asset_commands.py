@@ -712,15 +712,24 @@ class ShiftAssetCommandTests(unittest.TestCase):
             human.end_date = next_day
         engine.dispose()
 
+        move_body = {
+            "resource_id": "RESOURCE-SKILLED",
+            "day": next_day.isoformat(),
+            "expected_planning_version": assigned.json()["planning_version"],
+        }
         moved = self.client.post(
             "/api/v1/allocations/ALLOC-SKILLED/move",
-            json={
-                "resource_id": "RESOURCE-SKILLED",
-                "day": next_day.isoformat(),
-                "expected_planning_version": assigned.json()["planning_version"],
-            },
+            headers={"Idempotency-Key": "move-lifecycle-560c"},
+            json=move_body,
+        )
+        replay = self.client.post(
+            "/api/v1/allocations/ALLOC-SKILLED/move",
+            headers={"Idempotency-Key": "move-lifecycle-560c"},
+            json=move_body,
         )
         self.assertEqual(moved.status_code, 200, moved.text)
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertEqual(replay.json(), moved.json())
 
         requirement, allocation, shift = self._ad_hoc_state()
         self.assertEqual(requirement.id, requirement_id)
@@ -733,6 +742,94 @@ class ShiftAssetCommandTests(unittest.TestCase):
         self.assertEqual(
             allocation.operator_resource_id,
             "RESOURCE-SKILLED",
+        )
+
+    def test_move_to_physically_occupied_day_rolls_back_shift_and_asset(self) -> None:
+        assigned = self._set_asset(
+            asset_id="ASSET-A",
+            version=self._version(),
+            key="occupied-move-assign-560c",
+        )
+        self.assertEqual(assigned.status_code, 200, assigned.text)
+        next_day = DAY + timedelta(days=1)
+
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        with factory.begin() as session:
+            human = session.get(ResourceRequirement, "HUMAN-SKILLED")
+            self.assertIsNotNone(human)
+            human.end_date = next_day
+            session.add(
+                ResourceRequirement(
+                    id="HUMAN-OCCUPY-560C",
+                    project_id="PROJECT-560B",
+                    workforce_request_id=None,
+                    origin=ORIGIN_AD_HOC,
+                    start_date=next_day,
+                    end_date=next_day,
+                    planned_hours=Decimal("8"),
+                    status="Planifié",
+                )
+            )
+            session.flush()
+            session.add(
+                Shift(
+                    id="SHIFT-OCCUPY-560C",
+                    resource_requirement_id="HUMAN-OCCUPY-560C",
+                    resource_id="RESOURCE-SKILLED",
+                    work_date=next_day,
+                    hours=Decimal("8"),
+                    source="MANUAL",
+                    locked=True,
+                )
+            )
+            session.flush()
+            session.add(
+                AssetRequirement(
+                    id="AREQ-OCCUPY-560C",
+                    project_id="PROJECT-560B",
+                    origin=AssetRequirementOrigin.SHIFT_AD_HOC.value,
+                    shift_id="SHIFT-OCCUPY-560C",
+                    asset_type_id="TYPE-560B",
+                    start_date=next_day,
+                    end_date=next_day,
+                    status="Planifié",
+                )
+            )
+            session.flush()
+            session.add(
+                AssetAllocation(
+                    id="AALLOC-OCCUPY-560C",
+                    asset_requirement_id="AREQ-OCCUPY-560C",
+                    asset_id="ASSET-A",
+                    operator_resource_id="RESOURCE-SKILLED",
+                    start_date=next_day,
+                    end_date=next_day,
+                    locked=True,
+                    source="MANUAL",
+                )
+            )
+        engine.dispose()
+
+        blocked = self.client.post(
+            "/api/v1/allocations/ALLOC-SKILLED/move",
+            headers={"Idempotency-Key": "occupied-move-560c"},
+            json={
+                "resource_id": "RESOURCE-SKILLED",
+                "day": next_day.isoformat(),
+                "expected_planning_version": assigned.json()["planning_version"],
+            },
+        )
+        self.assertEqual(blocked.status_code, 409, blocked.text)
+        self.assertEqual(blocked.json()["error"]["code"], "asset_unavailable")
+
+        requirement, allocation, shift = self._ad_hoc_state()
+        self.assertEqual(shift.work_date, DAY)
+        self.assertEqual(requirement.start_date, DAY)
+        self.assertEqual(allocation.start_date, DAY)
+        self.assertEqual(
+            self._version(),
+            assigned.json()["planning_version"],
         )
 
     def test_extend_and_move_updates_ad_hoc_asset_in_same_transaction(self) -> None:
@@ -942,8 +1039,39 @@ class ShiftAssetCommandTests(unittest.TestCase):
         self.assertEqual(requirement.id, requirement_id)
         self.assertEqual(allocation.id, allocation_id)
 
-        deleted = self.client.delete("/api/v1/allocations/ALLOC-SKILLED")
+        stale_delete = self.client.delete(
+            "/api/v1/allocations/ALLOC-SKILLED",
+            params={
+                "expected_planning_version": assigned.json()["planning_version"]
+            },
+            headers={"Idempotency-Key": "delete-stale-560c"},
+        )
+        self.assertEqual(stale_delete.status_code, 409, stale_delete.text)
+        self.assertEqual(
+            stale_delete.json()["error"]["code"],
+            "planning_version_conflict",
+        )
+        requirement, allocation, shift = self._ad_hoc_state()
+        self.assertIsNotNone(requirement)
+        self.assertIsNotNone(allocation)
+        self.assertIsNotNone(shift)
+
+        current_version = self._version()
+        delete_params = {"expected_planning_version": current_version}
+        delete_headers = {"Idempotency-Key": "delete-final-560c"}
+        deleted = self.client.delete(
+            "/api/v1/allocations/ALLOC-SKILLED",
+            params=delete_params,
+            headers=delete_headers,
+        )
+        replay = self.client.delete(
+            "/api/v1/allocations/ALLOC-SKILLED",
+            params=delete_params,
+            headers=delete_headers,
+        )
         self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertEqual(replay.json(), deleted.json())
         engine = create_sql_engine(self.url)
         factory = create_session_factory(engine)
         try:
