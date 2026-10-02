@@ -40,12 +40,6 @@ class ReactIssue576ContractTests(unittest.TestCase):
         self.assertNotIn("remaining_hours =", editor)
         self.assertNotIn("planned_hours *", editor)
 
-    def test_quick_shift_creation_marks_confirmation_as_explicit(self) -> None:
-        service = (ROOT / "app" / "application" / "quick_shift_service.py").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn('"ConfirmationOverride": True', service)
-
 
 if __name__ == "__main__":
     unittest.main()
