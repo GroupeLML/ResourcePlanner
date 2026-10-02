@@ -225,6 +225,8 @@ class AssetQualificationTests(unittest.TestCase):
             headers={"Idempotency-Key": f"reserve-{request_id}"},
             json={
                 "asset_id": self.asset_id,
+                "start_date": "2026-09-24",
+                "end_date": "2026-09-26",
                 "expected_planning_version": version,
             },
         )
@@ -262,6 +264,49 @@ class AssetQualificationTests(unittest.TestCase):
         self.assertEqual(projected["qualification_state"], "SATISFIED")
         self.assertEqual(projected["required_competency_ids"], [])
         self.assertIsNone(projected["operator_resource_id"])
+
+    def test_type_without_prerequisite_still_allows_context_operator(self) -> None:
+        version = self.client.get("/api/v1/assets/catalog").json()["planning_version"]
+        cleared = self.client.put(
+            f"/api/v1/assets/types/{self.type_id}/qualification",
+            json={
+                "competency_ids": [],
+                "qualification_policy": "ANY_ASSIGNED_WORKFORCE",
+                "expected_planning_version": version,
+            },
+        )
+        self.assertEqual(cleared.status_code, 200, cleared.text)
+
+        _number, request_id, human_requirement_id = self._approve()
+        self.assertIsNotNone(human_requirement_id)
+        assert human_requirement_id is not None
+        self._add_shift(
+            requirement_id=human_requirement_id,
+            resource_id=self.unskilled_resource_id,
+            work_date=date(2026, 9, 25),
+            shift_id="SHIFT-NO-PREREQ",
+        )
+        requirement, reserved = self._reserve(request_id)
+
+        candidates = self.client.get(
+            f"/api/v1/assets/requirements/{requirement['id']}/operator-candidates"
+        )
+        self.assertEqual(candidates.status_code, 200, candidates.text)
+        self.assertEqual(
+            [row["resource_id"] for row in candidates.json()["candidates"]],
+            [self.unskilled_resource_id],
+        )
+
+        assigned = self.client.put(
+            f"/api/v1/assets/requirements/{requirement['id']}/operator",
+            headers={"Idempotency-Key": "operator-no-prereq"},
+            json={
+                "operator_resource_id": self.unskilled_resource_id,
+                "expected_planning_version": reserved["planning_version"],
+            },
+        )
+        self.assertEqual(assigned.status_code, 200, assigned.text)
+        self.assertEqual(assigned.json()["qualification_state"], "SATISFIED")
 
     def test_operator_validation_candidates_revalidation_and_audit(self) -> None:
         _number, request_id, human_requirement_id = self._approve()
