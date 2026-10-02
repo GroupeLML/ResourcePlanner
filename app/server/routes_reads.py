@@ -50,7 +50,7 @@ from ..application.demand_workflow_policy import (
     demand_workflow_state,
 )
 from ..application.query_models import PlanningHistoryReadModel
-from ..application.security import AuthPrincipal
+from ..application.security import AuthPrincipal, PERMISSION_MANAGE_PLANNING
 from ..application.user_view_context import (
     SCOPE_GLOBAL,
     SCOPE_MINE,
@@ -572,12 +572,17 @@ def build_read_router(
     ) -> list[ShiftReadModel]:
         _window(start, end)
         project_ids = _project_ids_for_scope(request, scope, context_repository)
+        principal: AuthPrincipal = request.state.auth_principal
+        can_manage_planning = principal.has_permission(
+            PERMISSION_MANAGE_PLANNING
+        )
         if project_ids is None:
             return list(
                 queries.list_shifts(
                     start=start,
                     end=end,
                     resource_name=resource_name,
+                    can_manage_planning=can_manage_planning,
                 )
             )
         return list(
@@ -586,6 +591,7 @@ def build_read_router(
                 end=end,
                 resource_name=resource_name,
                 project_ids=project_ids,
+                can_manage_planning=can_manage_planning,
             )
         )
 
@@ -695,13 +701,22 @@ def build_read_router(
             scope,
             context_repository,
         )
+        principal: AuthPrincipal = request.state.auth_principal
+        can_manage_planning = principal.has_permission(
+            PERMISSION_MANAGE_PLANNING
+        )
         if project_ids is None:
-            return queries.planning_snapshot(start=start, end=end)
+            return queries.planning_snapshot(
+                start=start,
+                end=end,
+                can_manage_planning=can_manage_planning,
+            )
         return queries.planning_snapshot(
             start=start,
             end=end,
             project_ids=project_ids,
             include_resource_ids=personal_resource_ids,
+            can_manage_planning=can_manage_planning,
         )
 
     return router

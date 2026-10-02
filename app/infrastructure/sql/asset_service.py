@@ -36,7 +36,7 @@ from .asset_qualification import (
     required_competencies,
 )
 from .identity_models import AppUser
-from .models import Competency, ResourceRequirement, Shift
+from .models import Competency, Resource, ResourceCompetency, ResourceRequirement, Shift
 from .approval_revision_models import RequestApprovalReference, RequestApprovalRevision
 from .base import new_id
 from .idempotency import SqlCommandIdempotencyAdapter
@@ -1112,6 +1112,240 @@ class SqlAssetService:
             "qualification_state": qualification.state,
             "shift_source": shift.source,
             "shift_locked": bool(shift.locked),
+            "planning_version": self.version.current_version(),
+        }
+
+    def shift_ad_hoc_attachment(
+        self,
+        shift_id: str,
+    ) -> tuple[AssetRequirement | None, AssetAllocation | None]:
+        """Return the shift-owned ad-hoc requirement/allocation without changing it."""
+
+        requirement = self.session.scalar(
+            select(AssetRequirement).where(
+                AssetRequirement.origin
+                == AssetRequirementOrigin.SHIFT_AD_HOC.value,
+                AssetRequirement.shift_id == shift_id,
+            )
+        )
+        if requirement is None:
+            return None, None
+        return requirement, self._allocation_for_requirement(requirement.id)
+
+    def synchronize_shift_ad_hoc_assignment(
+        self,
+        *,
+        shift: Shift,
+    ) -> dict | None:
+        """Keep one SHIFT_AD_HOC reservation aligned with its owning Shift.
+
+        The caller owns the transaction and planning CAS.  This method intentionally
+        does not acquire another version and does not commit.  It mutates the existing
+        requirement/allocation identities, then reuses the canonical #291/#292
+        availability and qualification rules before the surrounding transaction can
+        commit.
+        """
+
+        requirement, allocation = self.shift_ad_hoc_attachment(shift.id)
+        if requirement is None:
+            return None
+        if allocation is None:
+            raise ApplicationConflictError(
+                "L'affectation d'actif ad hoc du quart est incomplète.",
+                code="shift_asset_assignment_incomplete",
+                context={
+                    "shift_id": shift.id,
+                    "requirement_id": requirement.id,
+                },
+            )
+
+        asset, _asset_type = self._active_asset(allocation.asset_id)
+        requirement.start_date = shift.work_date
+        requirement.end_date = shift.work_date
+        allocation.start_date = shift.work_date
+        allocation.end_date = shift.work_date
+        allocation.operator_resource_id = shift.resource_id
+        self.session.flush()
+
+        self._assert_asset_available(
+            asset_id=asset.id,
+            start_date=shift.work_date,
+            end_date=shift.work_date,
+            allocation_id=allocation.id,
+        )
+        qualification = evaluate_asset_qualification(
+            self.session,
+            requirement=requirement,
+            allocation=allocation,
+        )
+        if qualification.state != QUALIFICATION_SATISFIED:
+            raise self._qualification_error(qualification.state)
+
+        return {
+            "requirement_id": requirement.id,
+            "allocation_id": allocation.id,
+            "asset_id": allocation.asset_id,
+            "operator_resource_id": allocation.operator_resource_id,
+            "qualification_state": qualification.state,
+            "start_date": allocation.start_date,
+            "end_date": allocation.end_date,
+        }
+
+    def assert_shift_can_return_auto(self, shift: Shift) -> None:
+        """Fail closed while a shift-owned ad-hoc asset is still attached."""
+
+        requirement, _allocation = self.shift_ad_hoc_attachment(shift.id)
+        if requirement is None:
+            return
+        raise ApplicationConflictError(
+            "Libère l'actif ad hoc avant de retourner le quart vers l'automatique.",
+            code="asset_assignment_must_be_released",
+            context={
+                "shift_id": shift.id,
+                "requirement_id": requirement.id,
+            },
+        )
+
+    def delete_shift_ad_hoc_assignment(
+        self,
+        *,
+        shift: Shift,
+    ) -> dict | None:
+        """Explicitly delete allocation then requirement before deleting a Shift."""
+
+        requirement, allocation = self.shift_ad_hoc_attachment(shift.id)
+        if requirement is None:
+            return None
+
+        result = {
+            "requirement_id": requirement.id,
+            "allocation_id": allocation.id if allocation is not None else None,
+            "asset_id": allocation.asset_id if allocation is not None else None,
+            "operator_resource_id": (
+                allocation.operator_resource_id if allocation is not None else None
+            ),
+            "origin": requirement.origin,
+        }
+        if allocation is not None:
+            self.session.delete(allocation)
+            self.session.flush()
+        self.session.delete(requirement)
+        self.session.flush()
+        return result
+
+    def shift_asset_candidates(self, shift_id: str) -> dict:
+        """Read candidate assets for one Shift without exposing hidden occupancies."""
+
+        shift, _human_requirement = self._shift_context(shift_id)
+        current_requirement, current_allocation = self.shift_ad_hoc_attachment(
+            shift.id
+        )
+
+        asset_rows = tuple(
+            self.session.execute(
+                select(Asset, AssetType)
+                .join(AssetType, Asset.asset_type_id == AssetType.id)
+                .order_by(AssetType.code, Asset.code, Asset.id)
+            ).all()
+        )
+        type_ids = tuple(dict.fromkeys(row.asset_type_id for row, _type in asset_rows))
+        required_by_type: dict[str, set[str]] = {}
+        if type_ids:
+            for type_id, competency_id in self.session.execute(
+                select(
+                    AssetTypeCompetency.asset_type_id,
+                    AssetTypeCompetency.competency_id,
+                ).where(AssetTypeCompetency.asset_type_id.in_(type_ids))
+            ).all():
+                required_by_type.setdefault(type_id, set()).add(competency_id)
+
+        operator = self.session.get(Resource, shift.resource_id)
+        operator_competencies = set(
+            self.session.scalars(
+                select(ResourceCompetency.competency_id).where(
+                    ResourceCompetency.resource_id == shift.resource_id
+                )
+            ).all()
+        )
+
+        overlapping_allocations = tuple(
+            self.session.scalars(
+                select(AssetAllocation).where(
+                    AssetAllocation.start_date <= shift.work_date,
+                    AssetAllocation.end_date >= shift.work_date,
+                )
+            ).all()
+        )
+        occupied_asset_ids = {
+            row.asset_id
+            for row in overlapping_allocations
+            if current_allocation is None or row.id != current_allocation.id
+        }
+        unavailable_asset_ids = set(
+            self.session.scalars(
+                select(AssetUnavailability.asset_id).where(
+                    AssetUnavailability.start_date <= shift.work_date,
+                    AssetUnavailability.end_date >= shift.work_date,
+                )
+            ).all()
+        )
+
+        candidates: list[dict] = []
+        for asset, asset_type in asset_rows:
+            required = required_by_type.get(asset.asset_type_id, set())
+            qualification_state = QUALIFICATION_SATISFIED
+            if (
+                operator is None
+                or not operator.active
+                or not required.issubset(operator_competencies)
+            ):
+                qualification_state = QUALIFICATION_SKILL_MISMATCH
+
+            compatible = bool(asset.active and asset_type.active)
+            available = bool(
+                asset.id not in occupied_asset_ids
+                and asset.id not in unavailable_asset_ids
+            )
+            reasons: list[str] = []
+            if not compatible:
+                reasons.append("asset_inactive")
+            if qualification_state != QUALIFICATION_SATISFIED:
+                reasons.append("operator_not_qualified")
+            if not available:
+                reasons.append("asset_unavailable")
+
+            candidates.append(
+                {
+                    "id": asset.id,
+                    "code": asset.code,
+                    "label": asset.label,
+                    "asset_type_id": asset.asset_type_id,
+                    "asset_type_code": asset_type.code,
+                    "asset_type_label": asset_type.label,
+                    "active": bool(asset.active),
+                    "compatible": compatible,
+                    "available": available,
+                    "qualification_state": qualification_state,
+                    "allowed": not reasons,
+                    "reason": reasons[0] if reasons else None,
+                    "diagnostics": reasons,
+                    "currently_assigned": bool(
+                        current_allocation is not None
+                        and current_allocation.asset_id == asset.id
+                    ),
+                }
+            )
+        return {
+            "shift_id": shift.id,
+            "work_date": shift.work_date,
+            "operator_resource_id": shift.resource_id,
+            "current_requirement_id": (
+                current_requirement.id if current_requirement is not None else None
+            ),
+            "current_allocation_id": (
+                current_allocation.id if current_allocation is not None else None
+            ),
+            "candidates": candidates,
             "planning_version": self.version.current_version(),
         }
 

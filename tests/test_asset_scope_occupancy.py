@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -12,6 +14,8 @@ from app.infrastructure.sql import (
     Base,
     Project,
     Resource,
+    ResourceRequirement,
+    Shift,
     WorkforceRequest,
     create_session_factory,
     create_sql_engine,
@@ -329,6 +333,57 @@ class AssetScopeOccupancyTests(unittest.TestCase):
         self.assertEqual(occupation["project_number"], "P-561-MINE")
         self.assertIsNone(occupation["operator_resource_id"])
         self.assertIsNone(occupation["operator_resource_name"])
+
+    def test_candidate_availability_is_global_without_hidden_scope_details(self) -> None:
+        hidden_number, hidden_requirement_id = self._approve("P-561-HIDDEN")
+        self._reserve(hidden_requirement_id, self.asset_ids[0])
+        self._set_operator(hidden_requirement_id, "RESOURCE-HIDDEN-561")
+
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        with factory.begin() as session:
+            session.add(
+                ResourceRequirement(
+                    id="REQ-CANDIDATE-561",
+                    project_id="PROJECT-MINE-561",
+                    workforce_request_id=None,
+                    origin="AD_HOC",
+                    start_date=date.fromisoformat(DAY),
+                    end_date=date.fromisoformat(DAY),
+                    planned_hours=Decimal("8"),
+                    status="Planifié",
+                )
+            )
+            session.flush()
+            session.add(
+                Shift(
+                    id="SHIFT-CANDIDATE-561",
+                    resource_requirement_id="REQ-CANDIDATE-561",
+                    resource_id="RESOURCE-VISIBLE-561",
+                    work_date=date.fromisoformat(DAY),
+                    hours=Decimal("8"),
+                    source="MANUAL",
+                    locked=True,
+                )
+            )
+        engine.dispose()
+
+        response = self.pm.get(
+            "/api/v1/assets/shifts/SHIFT-CANDIDATE-561/assignment/candidates"
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        by_id = {row["id"]: row for row in payload["candidates"]}
+        self.assertFalse(by_id[self.asset_ids[0]]["available"])
+        self.assertEqual(
+            by_id[self.asset_ids[0]]["reason"],
+            "asset_unavailable",
+        )
+        self.assertTrue(by_id[self.asset_ids[1]]["available"])
+        self.assertNotIn("P-561-HIDDEN", response.text)
+        self.assertNotIn("Jean Tremblay hors périmètre", response.text)
+        self.assertNotIn(hidden_number, response.text)
+
 
 
 if __name__ == "__main__":

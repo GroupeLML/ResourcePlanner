@@ -76,6 +76,7 @@ class DemandCancellationMutationResult(ApplicationResult):
     request_version: int | None = None
     deleted_human_shifts: int = 0
     deleted_asset_allocations: int = 0
+    deleted_ad_hoc_asset_requirements: int = 0
     cancelled_workforce_requirements: int = 0
     cancelled_asset_requirements: int = 0
     released_locked_human_shifts: int = 0
@@ -241,6 +242,8 @@ class CompositeAllocationMutationResult(ApplicationResult):
     approval_revision_id: str | None = None
     operational_version: int | None = None
     auto_source_converted: bool = False
+    asset_assignment_policy: str | None = None
+    target_asset_assignment_inherited: bool = False
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, Any]) -> "CompositeAllocationMutationResult":
@@ -269,4 +272,12 @@ class CompositeAllocationMutationResult(ApplicationResult):
                 int(operational) if operational is not None else None
             ),
             auto_source_converted=bool(source.get("auto_source_converted")),
+            asset_assignment_policy=(
+                str(source.get("asset_assignment_policy"))
+                if source.get("asset_assignment_policy") is not None
+                else None
+            ),
+            target_asset_assignment_inherited=bool(
+                source.get("target_asset_assignment_inherited")
+            ),
         )

@@ -166,6 +166,32 @@ class PlanningHistoryReadModel:
 
 
 @dataclass(frozen=True, slots=True)
+class ShiftAssetReservationReadModel:
+    requirement_id: str
+    allocation_id: str
+    origin: str
+    asset_id: str
+    asset_code: str
+    asset_label: str
+    asset_active: bool
+    operator_resource_id: str | None
+    qualification_state: str
+
+
+@dataclass(frozen=True, slots=True)
+class ShiftAssetActionReadModel:
+    allowed: bool
+    reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ShiftAssetActionsReadModel:
+    assign: ShiftAssetActionReadModel
+    change: ShiftAssetActionReadModel
+    release: ShiftAssetActionReadModel
+
+
+@dataclass(frozen=True, slots=True)
 class ShiftReadModel:
     allocation_id: str
     segment_id: str
@@ -190,6 +216,10 @@ class ShiftReadModel:
     segment_planned_hours: float = 0.0
     segment_locked_hours: float = 0.0
     segment_overallocated_hours: float = 0.0
+    asset_assignment: ShiftAssetReservationReadModel | None = None
+    related_asset_reservations: tuple[ShiftAssetReservationReadModel, ...] = ()
+    asset_actions: ShiftAssetActionsReadModel | None = None
+    asset_diagnostics: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

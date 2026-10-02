@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from fastapi import APIRouter, Depends, Header, status
+from fastapi import APIRouter, Depends, Header, Query, status
 from fastapi.responses import JSONResponse
 from ..application import (
     AllocationDropEvaluateCommand,
@@ -1015,34 +1015,110 @@ def build_command_router(
     def move_allocation(
         allocation_id: str,
         body: AllocationMoveRequest,
+        idempotency_key: str | None = Header(
+            default=None,
+            alias="Idempotency-Key",
+            min_length=1,
+        ),
         facade: ApplicationFacade = Depends(facade_dependency),
+        idempotency: IdempotentCommandExecutor = Depends(stable_idempotency),
     ) -> dict[str, Any]:
-        return _payload(
-            facade.move_allocation(
-                ManualAllocationMoveCommand(
-                    allocation_id=allocation_id,
-                    technician=body.technician or "",
-                    day=body.day,
-                    resource_id=body.resource_id,
-                    outside_standard_hours=body.outside_standard_hours,
-                    expected_planning_version=body.expected_planning_version,
+        def action() -> dict[str, Any]:
+            return _payload(
+                facade.move_allocation(
+                    ManualAllocationMoveCommand(
+                        allocation_id=allocation_id,
+                        technician=body.technician or "",
+                        day=body.day,
+                        resource_id=body.resource_id,
+                        outside_standard_hours=body.outside_standard_hours,
+                        expected_planning_version=body.expected_planning_version,
+                    )
                 )
             )
+
+        if not idempotency_key:
+            return action()
+        return idempotency.execute(
+            scope="manual_allocation.move",
+            key=idempotency_key,
+            request_payload={
+                "operation": "MOVE",
+                "allocation_id": allocation_id,
+                "body": _json_body(body),
+            },
+            action=action,
         )
 
     @router.post("/allocations/{allocation_id}/release")
     def release_allocation(
         allocation_id: str,
+        expected_planning_version: int | None = Query(default=None, ge=1),
+        idempotency_key: str | None = Header(
+            default=None,
+            alias="Idempotency-Key",
+            min_length=1,
+        ),
         facade: ApplicationFacade = Depends(facade_dependency),
+        idempotency: IdempotentCommandExecutor = Depends(stable_idempotency),
     ) -> dict[str, Any]:
-        return _payload(facade.release_allocation(ManualAllocationReleaseCommand(allocation_id)))
+        def action() -> dict[str, Any]:
+            return _payload(
+                facade.release_allocation(
+                    ManualAllocationReleaseCommand(
+                        allocation_id,
+                        expected_planning_version=expected_planning_version,
+                    )
+                )
+            )
+
+        if not idempotency_key:
+            return action()
+        return idempotency.execute(
+            scope="manual_allocation.release",
+            key=idempotency_key,
+            request_payload={
+                "operation": "RELEASE",
+                "allocation_id": allocation_id,
+                "expected_planning_version": expected_planning_version,
+            },
+            action=action,
+        )
 
     @router.delete("/allocations/{allocation_id}")
     def delete_allocation(
         allocation_id: str,
+        expected_planning_version: int | None = Query(default=None, ge=1),
+        idempotency_key: str | None = Header(
+            default=None,
+            alias="Idempotency-Key",
+            min_length=1,
+        ),
         facade: ApplicationFacade = Depends(facade_dependency),
+        idempotency: IdempotentCommandExecutor = Depends(stable_idempotency),
     ) -> dict[str, Any]:
-        return _payload(facade.delete_allocation(ManualAllocationDeleteCommand(allocation_id)))
+        def action() -> dict[str, Any]:
+            return _payload(
+                facade.delete_allocation(
+                    ManualAllocationDeleteCommand(
+                        allocation_id,
+                        expected_planning_version=expected_planning_version,
+                    )
+                )
+            )
+
+        if not idempotency_key:
+            return action()
+        return idempotency.execute(
+            scope="manual_allocation.delete",
+            key=idempotency_key,
+            request_payload={
+                "operation": "DELETE",
+                "allocation_id": allocation_id,
+                "expected_planning_version": expected_planning_version,
+            },
+            action=action,
+        )
 
     @router.post("/quick-shifts", status_code=status.HTTP_201_CREATED)
     def create_quick_shift(

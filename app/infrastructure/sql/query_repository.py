@@ -24,6 +24,9 @@ from ...application.query_models import (
     ProjectReadModel,
     ResourceReadModel,
     ResourceRecommendationReadModel,
+    ShiftAssetActionReadModel,
+    ShiftAssetActionsReadModel,
+    ShiftAssetReservationReadModel,
     ShiftReadModel,
 )
 from ...application.query_ports import PlannerQueryPort
@@ -31,6 +34,7 @@ from ...application.read_models import DemandPeriodReadModel, DemandReadModel, S
 from ...domain.availability_rules import availability_hours_for_day, availability_state_for_day
 from ...domain.confirmation import effective_confirmation
 from ...domain.planning_engine import MISSING_ALLOCATION_TYPE
+from ...domain.reservable_assets import AssetRequirementOrigin
 from ...domain.demand_periods import (
     DemandPeriodDefinition,
     projected_hours_in_window,
@@ -42,6 +46,19 @@ from ...domain.workload import (
     WorkloadTotals,
     pending_load_mode,
     workload_kind,
+)
+from .asset_models import (
+    Asset,
+    AssetAllocation,
+    AssetRequirement,
+    AssetType,
+    AssetTypeCompetency,
+)
+from .asset_qualification import (
+    QUALIFICATION_MISSING_OPERATOR,
+    QUALIFICATION_NO_OVERLAP,
+    QUALIFICATION_SATISFIED,
+    QUALIFICATION_SKILL_MISMATCH,
 )
 from .asset_query import SqlAssetPlanningQuery
 from .demand_period_repository import SqlDemandPeriodRepository
@@ -1424,9 +1441,41 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         resource_name: str | None = None,
         resource_id: str | None = None,
         project_ids: Sequence[str] | None = None,
+        can_manage_planning: bool = False,
     ) -> tuple[ShiftReadModel, ...]:
+        asset_context_marker = (
+            select(AssetRequirement.id)
+            .where(
+                AssetRequirement.status != "Annulé",
+                or_(
+                    (
+                        AssetRequirement.origin
+                        == AssetRequirementOrigin.SHIFT_AD_HOC.value
+                    )
+                    & (AssetRequirement.shift_id == Shift.id),
+                    (
+                        AssetRequirement.origin
+                        == AssetRequirementOrigin.REQUEST.value
+                    )
+                    & (
+                        AssetRequirement.workforce_request_id
+                        == ResourceRequirement.workforce_request_id
+                    ),
+                ),
+            )
+            .limit(1)
+            .correlate(Shift, ResourceRequirement)
+            .scalar_subquery()
+        )
         statement = (
-            select(Shift, ResourceRequirement, Resource, Project, WorkforceRequest)
+            select(
+                Shift,
+                ResourceRequirement,
+                Resource,
+                Project,
+                WorkforceRequest,
+                asset_context_marker.label("asset_context_marker"),
+            )
             .join(
                 ResourceRequirement,
                 Shift.resource_requirement_id == ResourceRequirement.id,
@@ -1463,12 +1512,391 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                 Shift.id,
             )
         ).all()
+        if not rows:
+            return ()
+
+        # 560C: load every asset relation needed by the visible Shift set in bounded
+        # batches.  The grid must not perform one SQL query per Shift.
+        visible_shift_ids = tuple(shift.id for shift, *_rest in rows)
+        visible_request_ids = tuple(
+            dict.fromkeys(
+                requirement.workforce_request_id
+                for _shift, requirement, _resource, _project, _request, _marker in rows
+                if requirement.workforce_request_id
+            )
+        )
+        asset_scope = [
+            (
+                (AssetRequirement.origin == AssetRequirementOrigin.SHIFT_AD_HOC.value)
+                & (AssetRequirement.shift_id.in_(visible_shift_ids))
+            )
+        ]
+        if visible_request_ids:
+            asset_scope.append(
+                (
+                    (AssetRequirement.origin == AssetRequirementOrigin.REQUEST.value)
+                    & (
+                        AssetRequirement.workforce_request_id.in_(
+                            visible_request_ids
+                        )
+                    )
+                )
+            )
+        has_asset_context = any(marker is not None for *_row, marker in rows)
+        asset_requirements = (
+            tuple(
+                self._session.scalars(
+                    select(AssetRequirement)
+                    .where(
+                        AssetRequirement.status != "Annulé",
+                        or_(*asset_scope),
+                    )
+                    .order_by(AssetRequirement.id)
+                ).all()
+            )
+            if has_asset_context
+            else ()
+        )
+        requirement_ids = tuple(row.id for row in asset_requirements)
+        allocations = (
+            tuple(
+                self._session.scalars(
+                    select(AssetAllocation)
+                    .where(
+                        AssetAllocation.asset_requirement_id.in_(requirement_ids)
+                    )
+                    .order_by(AssetAllocation.id)
+                ).all()
+            )
+            if requirement_ids
+            else ()
+        )
+        allocation_by_requirement = {
+            row.asset_requirement_id: row for row in allocations
+        }
+
+        asset_ids = tuple(dict.fromkeys(row.asset_id for row in allocations))
+        assets = (
+            tuple(
+                self._session.scalars(
+                    select(Asset).where(Asset.id.in_(asset_ids))
+                ).all()
+            )
+            if asset_ids
+            else ()
+        )
+        assets_by_id = {row.id: row for row in assets}
+        type_ids = tuple(
+            dict.fromkeys(row.asset_type_id for row in asset_requirements)
+        )
+        asset_types = (
+            tuple(
+                self._session.scalars(
+                    select(AssetType).where(AssetType.id.in_(type_ids))
+                ).all()
+            )
+            if type_ids
+            else ()
+        )
+        asset_types_by_id = {row.id: row for row in asset_types}
+
+        required_competencies_by_type: dict[str, set[str]] = {}
+        if type_ids:
+            for type_id, competency_id in self._session.execute(
+                select(
+                    AssetTypeCompetency.asset_type_id,
+                    AssetTypeCompetency.competency_id,
+                ).where(AssetTypeCompetency.asset_type_id.in_(type_ids))
+            ).all():
+                required_competencies_by_type.setdefault(type_id, set()).add(
+                    competency_id
+                )
+
+        operator_ids = tuple(
+            dict.fromkeys(
+                row.operator_resource_id
+                for row in allocations
+                if row.operator_resource_id
+            )
+        )
+        operator_resources = (
+            tuple(
+                self._session.scalars(
+                    select(Resource).where(Resource.id.in_(operator_ids))
+                ).all()
+            )
+            if operator_ids
+            else ()
+        )
+        operator_resources_by_id = {row.id: row for row in operator_resources}
+        competencies_by_resource: dict[str, set[str]] = {}
+        if operator_ids:
+            for operator_id, competency_id in self._session.execute(
+                select(
+                    ResourceCompetency.resource_id,
+                    ResourceCompetency.competency_id,
+                ).where(ResourceCompetency.resource_id.in_(operator_ids))
+            ).all():
+                competencies_by_resource.setdefault(operator_id, set()).add(
+                    competency_id
+                )
+
+        request_assignment_days: dict[
+            tuple[str, str, str], set[date]
+        ] = {}
+        request_allocations = tuple(
+            row
+            for row in allocations
+            if next(
+                (
+                    requirement
+                    for requirement in asset_requirements
+                    if requirement.id == row.asset_requirement_id
+                    and requirement.origin
+                    == AssetRequirementOrigin.REQUEST.value
+                ),
+                None,
+            )
+            is not None
+        )
+        if visible_request_ids and request_allocations:
+            allocation_start = min(row.start_date for row in request_allocations)
+            allocation_end = max(row.end_date for row in request_allocations)
+            assignment_rows = self._session.execute(
+                select(Shift, ResourceRequirement)
+                .join(
+                    ResourceRequirement,
+                    Shift.resource_requirement_id == ResourceRequirement.id,
+                )
+                .where(
+                    ResourceRequirement.workforce_request_id.in_(
+                        visible_request_ids
+                    ),
+                    ResourceRequirement.status != "Annulé",
+                    Shift.work_date >= allocation_start,
+                    Shift.work_date <= allocation_end,
+                )
+            ).all()
+            for human_shift, human_requirement in assignment_rows:
+                request_assignment_days.setdefault(
+                    (
+                        human_requirement.workforce_request_id or "",
+                        human_requirement.project_id,
+                        human_shift.resource_id,
+                    ),
+                    set(),
+                ).add(human_shift.work_date)
+
+        requirement_by_id = {row.id: row for row in asset_requirements}
+        ad_hoc_by_shift = {
+            row.shift_id: row
+            for row in asset_requirements
+            if row.origin == AssetRequirementOrigin.SHIFT_AD_HOC.value
+            and row.shift_id
+        }
+        request_by_request: dict[str, list[AssetRequirement]] = {}
+        for row in asset_requirements:
+            if (
+                row.origin == AssetRequirementOrigin.REQUEST.value
+                and row.workforce_request_id
+            ):
+                request_by_request.setdefault(
+                    row.workforce_request_id,
+                    [],
+                ).append(row)
+
+        visible_shift_context = {
+            shift.id: (shift, requirement)
+            for shift, requirement, _resource, _project, _request, _marker in rows
+        }
+
+        def qualification_state(
+            requirement: AssetRequirement,
+            allocation: AssetAllocation,
+        ) -> str:
+            required = required_competencies_by_type.get(
+                requirement.asset_type_id,
+                set(),
+            )
+            operator_id = allocation.operator_resource_id
+            if not operator_id:
+                return (
+                    QUALIFICATION_SATISFIED
+                    if not required
+                    else QUALIFICATION_MISSING_OPERATOR
+                )
+            operator = operator_resources_by_id.get(operator_id)
+            if (
+                operator is None
+                or not operator.active
+                or not required.issubset(
+                    competencies_by_resource.get(operator_id, set())
+                )
+            ):
+                return QUALIFICATION_SKILL_MISMATCH
+
+            if requirement.origin == AssetRequirementOrigin.SHIFT_AD_HOC.value:
+                owner = visible_shift_context.get(requirement.shift_id or "")
+                if owner is None:
+                    return QUALIFICATION_NO_OVERLAP
+                owner_shift, owner_requirement = owner
+                compatible = (
+                    owner_shift.resource_id == operator_id
+                    and owner_requirement.project_id == requirement.project_id
+                    and allocation.start_date
+                    <= owner_shift.work_date
+                    <= allocation.end_date
+                )
+            else:
+                compatible_days = request_assignment_days.get(
+                    (
+                        requirement.workforce_request_id or "",
+                        requirement.project_id,
+                        operator_id,
+                    ),
+                    set(),
+                )
+                compatible = any(
+                    allocation.start_date <= day <= allocation.end_date
+                    for day in compatible_days
+                )
+            return (
+                QUALIFICATION_SATISFIED
+                if compatible
+                else QUALIFICATION_NO_OVERLAP
+            )
+
+        def reservation_model(
+            requirement: AssetRequirement,
+        ) -> ShiftAssetReservationReadModel | None:
+            allocation = allocation_by_requirement.get(requirement.id)
+            if allocation is None:
+                return None
+            asset = assets_by_id.get(allocation.asset_id)
+            return ShiftAssetReservationReadModel(
+                requirement_id=requirement.id,
+                allocation_id=allocation.id,
+                origin=requirement.origin,
+                asset_id=allocation.asset_id,
+                asset_code=asset.code if asset is not None else allocation.asset_id,
+                asset_label=asset.label if asset is not None else allocation.asset_id,
+                asset_active=bool(asset is not None and asset.active),
+                operator_resource_id=allocation.operator_resource_id,
+                qualification_state=qualification_state(
+                    requirement,
+                    allocation,
+                ),
+            )
+
         result: list[ShiftReadModel] = []
-        for shift, requirement, resource, project, request in rows:
+        for shift, requirement, resource, project, request, _asset_marker in rows:
             confirmation = effective_confirmation(
                 shift.confirmation,
                 requirement.confirmation,
             )
+            owned_requirement = ad_hoc_by_shift.get(shift.id)
+            asset_assignment = (
+                reservation_model(owned_requirement)
+                if owned_requirement is not None
+                else None
+            )
+            related: list[ShiftAssetReservationReadModel] = []
+            if requirement.workforce_request_id:
+                for asset_requirement in request_by_request.get(
+                    requirement.workforce_request_id,
+                    (),
+                ):
+                    allocation = allocation_by_requirement.get(
+                        asset_requirement.id
+                    )
+                    if (
+                        asset_requirement.project_id != requirement.project_id
+                        or not (
+                            asset_requirement.start_date
+                            <= shift.work_date
+                            <= asset_requirement.end_date
+                        )
+                        or allocation is None
+                        or not (
+                            allocation.start_date
+                            <= shift.work_date
+                            <= allocation.end_date
+                        )
+                    ):
+                        continue
+                    model = reservation_model(asset_requirement)
+                    if model is not None:
+                        related.append(model)
+
+            diagnostics: list[str] = []
+            if owned_requirement is not None and asset_assignment is None:
+                diagnostics.append("asset_assignment_incomplete")
+            if asset_assignment is not None:
+                asset = assets_by_id.get(asset_assignment.asset_id)
+                asset_type = asset_types_by_id.get(
+                    owned_requirement.asset_type_id
+                    if owned_requirement is not None
+                    else ""
+                )
+                if asset is None or not asset.active or asset_type is None or not asset_type.active:
+                    diagnostics.append("asset_inactive")
+                if asset_assignment.qualification_state != QUALIFICATION_SATISFIED:
+                    diagnostics.append("operator_not_qualified")
+            if len(related) > 1:
+                diagnostics.append("related_request_reservation_ambiguous")
+
+            if not can_manage_planning:
+                denied = ShiftAssetActionReadModel(
+                    allowed=False,
+                    reason="permission_denied",
+                )
+                actions = ShiftAssetActionsReadModel(
+                    assign=denied,
+                    change=denied,
+                    release=denied,
+                )
+            elif requirement.status in {"Annulé", "Terminé"}:
+                denied = ShiftAssetActionReadModel(
+                    allowed=False,
+                    reason="shift_state_invalid",
+                )
+                actions = ShiftAssetActionsReadModel(
+                    assign=denied,
+                    change=denied,
+                    release=denied,
+                )
+            elif owned_requirement is None:
+                actions = ShiftAssetActionsReadModel(
+                    assign=ShiftAssetActionReadModel(allowed=True),
+                    change=ShiftAssetActionReadModel(
+                        allowed=False,
+                        reason="asset_assignment_missing",
+                    ),
+                    release=ShiftAssetActionReadModel(
+                        allowed=False,
+                        reason="asset_assignment_missing",
+                    ),
+                )
+            elif asset_assignment is None:
+                incomplete = ShiftAssetActionReadModel(
+                    allowed=False,
+                    reason="asset_assignment_incomplete",
+                )
+                actions = ShiftAssetActionsReadModel(
+                    assign=incomplete,
+                    change=incomplete,
+                    release=incomplete,
+                )
+            else:
+                actions = ShiftAssetActionsReadModel(
+                    assign=ShiftAssetActionReadModel(
+                        allowed=False,
+                        reason="asset_assignment_attached",
+                    ),
+                    change=ShiftAssetActionReadModel(allowed=True),
+                    release=ShiftAssetActionReadModel(allowed=True),
+                )
+
             result.append(
                 ShiftReadModel(
                     allocation_id=_text(shift.legacy_allocation_id) or shift.id,
@@ -1498,6 +1926,10 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                         if request is not None
                         else _optional_text(requirement.created_by_name)
                     ),
+                    asset_assignment=asset_assignment,
+                    related_asset_reservations=tuple(related),
+                    asset_actions=actions,
+                    asset_diagnostics=tuple(dict.fromkeys(diagnostics)),
                 )
             )
         return tuple(result)
@@ -1509,6 +1941,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         end: date,
         project_ids: Sequence[str] | None = None,
         include_resource_ids: Sequence[str] = (),
+        can_manage_planning: bool = False,
     ) -> PlanningSnapshotReadModel:
         """Read one planning window while keeping capacity semantics separate from scope."""
 
@@ -1521,6 +1954,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             start=start,
             end=end,
             project_ids=project_ids,
+            can_manage_planning=can_manage_planning,
         )
         pending_loads = self.list_pending_loads(
             start=start,

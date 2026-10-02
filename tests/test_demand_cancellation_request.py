@@ -566,6 +566,107 @@ class DemandCancellationRequestTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_accept_cancellation_deletes_shift_owned_ad_hoc_asset_scope(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            with factory.begin() as session:
+                session.add(
+                    Asset(
+                        id="A-ADHOC",
+                        code="TRUCK-ADHOC",
+                        label="Camion ad hoc",
+                        asset_type_id="AT1",
+                    )
+                )
+                session.add(
+                    AssetRequirement(
+                        id="AREQ-ADHOC",
+                        project_id="P1",
+                        origin="SHIFT_AD_HOC",
+                        shift_id="SHIFT-HUMAN",
+                        asset_type_id="AT1",
+                        start_date=DAY,
+                        end_date=DAY,
+                        status="Planifié",
+                    )
+                )
+                session.flush()
+                session.add(
+                    AssetAllocation(
+                        id="ALLOC-ADHOC",
+                        asset_requirement_id="AREQ-ADHOC",
+                        asset_id="A-ADHOC",
+                        operator_resource_id="R1",
+                        start_date=DAY,
+                        end_date=DAY,
+                        locked=True,
+                        source="MANUAL",
+                    )
+                )
+            engine.dispose()
+
+            app = create_api_app(
+                database_url,
+                auth_resolver=TEST_CANCELLATION_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                requested = client.post(
+                    "/api/v1/demands/DMO-CANCEL-HUMAN/request-cancellation",
+                    json={"reason": "Mandat avec actif ad hoc", "expected_version": 4},
+                )
+                self.assertEqual(requested.status_code, 200, requested.text)
+                accepted = client.post(
+                    "/api/v1/demands/DMO-CANCEL-HUMAN/accept-cancellation",
+                    json={
+                        "cancellation_request_id": requested.json()[
+                            "cancellation_request_id"
+                        ],
+                        "comment": "Annulation coordonnée",
+                        "expected_version": 5,
+                        "expected_planning_version": 9,
+                    },
+                    headers={"Idempotency-Key": "accept-adhoc-560c"},
+                )
+
+            self.assertEqual(accepted.status_code, 200, accepted.text)
+            payload = accepted.json()
+            self.assertEqual(payload["deleted_human_shifts"], 1)
+            self.assertEqual(payload["deleted_asset_allocations"], 1)
+            self.assertEqual(payload["deleted_ad_hoc_asset_requirements"], 1)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory() as session:
+                    self.assertIsNone(session.get(Shift, "SHIFT-HUMAN"))
+                    self.assertIsNone(
+                        session.get(AssetRequirement, "AREQ-ADHOC")
+                    )
+                    self.assertIsNone(
+                        session.get(AssetAllocation, "ALLOC-ADHOC")
+                    )
+                    # The REQUEST reservation from another demand is untouched.
+                    self.assertIsNotNone(session.get(AssetRequirement, "AREQ-1"))
+                    self.assertIsNotNone(session.get(AssetAllocation, "ALLOC-ASSET"))
+                    history = session.scalar(
+                        select(WorkforceRequestHistory).where(
+                            WorkforceRequestHistory.workforce_request_id
+                            == "D-HUMAN",
+                            WorkforceRequestHistory.action
+                            == "Acceptation d'annulation",
+                        )
+                    )
+                    self.assertIsNotNone(history)
+                    details = json.loads(history.details or "{}")
+                    self.assertEqual(
+                        details["deleted_ad_hoc_asset_requirement_ids"],
+                        ["AREQ-ADHOC"],
+                    )
+            finally:
+                engine.dispose()
+
     def test_accept_cancellation_deletes_locked_asset_scope(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)

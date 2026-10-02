@@ -165,11 +165,13 @@ class ManualAllocationMoveCommand:
 @dataclass(frozen=True, slots=True)
 class ManualAllocationReleaseCommand:
     allocation_id: str
+    expected_planning_version: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class ManualAllocationDeleteCommand:
     allocation_id: str
+    expected_planning_version: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

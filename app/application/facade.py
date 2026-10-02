@@ -324,6 +324,9 @@ class ApplicationFacade:
             request_version=int(summary.get("request_version") or 0) or None,
             deleted_human_shifts=int(summary.get("deleted_human_shifts") or 0),
             deleted_asset_allocations=int(summary.get("deleted_asset_allocations") or 0),
+            deleted_ad_hoc_asset_requirements=int(
+                summary.get("deleted_ad_hoc_asset_requirements") or 0
+            ),
             cancelled_workforce_requirements=int(
                 summary.get("cancelled_workforce_requirements") or 0
             ),
@@ -419,7 +422,7 @@ class ApplicationFacade:
         self,
         command: ManualAllocationReleaseCommand,
     ) -> AllocationMutationResult:
-        self._acquire_planning_version()
+        self._acquire_planning_version(command.expected_planning_version)
         self._allocations.release_manual_command(command)
         return AllocationMutationResult(_identifier(command.allocation_id), action="released")
 
@@ -427,7 +430,7 @@ class ApplicationFacade:
         self,
         command: ManualAllocationDeleteCommand,
     ) -> AllocationMutationResult:
-        self._acquire_planning_version()
+        self._acquire_planning_version(command.expected_planning_version)
         self._allocations.delete_manual_command(command)
         return AllocationMutationResult(_identifier(command.allocation_id), action="deleted")
 

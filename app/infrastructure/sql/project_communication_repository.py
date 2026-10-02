@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from datetime import date
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ...application.operational_contacts import OperationalContactService
 from ...application.project_communications import ProjectCommunicationRepositoryPort
 from ...domain.confirmation import effective_confirmation
 from ...domain.planning_engine import MISSING_ALLOCATION_TYPE
+from ...domain.reservable_assets import AssetRequirementOrigin
 from ...domain.project_communication import (
     ProjectCommunicationAssignment,
     ProjectCommunicationParticipant,
@@ -221,6 +222,17 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
         requests_by_id = {row.id: row for row in requests}
 
         asset_qualification_diagnostics: dict[str, list[str]] = {}
+        asset_qualification_diagnostics_by_shift: dict[str, list[str]] = {}
+        shift_ids = tuple(
+            shift.id for shift, _requirement, _resource, _project in rows
+        )
+        asset_scope = []
+        if request_ids:
+            asset_scope.append(
+                AssetRequirement.workforce_request_id.in_(request_ids)
+            )
+        if shift_ids:
+            asset_scope.append(AssetRequirement.shift_id.in_(shift_ids))
         asset_rows = (
             self._session.execute(
                 select(AssetAllocation, AssetRequirement)
@@ -229,12 +241,12 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                     AssetAllocation.asset_requirement_id == AssetRequirement.id,
                 )
                 .where(
-                    AssetRequirement.workforce_request_id.in_(request_ids),
+                    or_(*asset_scope),
                     AssetAllocation.start_date <= week_end,
                     AssetAllocation.end_date >= week_start,
                 )
             ).all()
-            if request_ids
+            if asset_scope
             else []
         )
         for allocation, asset_requirement in asset_rows:
@@ -245,10 +257,21 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
             )
             if qualification.state == QUALIFICATION_SATISFIED:
                 continue
-            asset_qualification_diagnostics.setdefault(
-                asset_requirement.workforce_request_id,
-                [],
-            ).append(f"ASSET_QUALIFICATION_{qualification.state}")
+            diagnostic = f"ASSET_QUALIFICATION_{qualification.state}"
+            if (
+                asset_requirement.origin
+                == AssetRequirementOrigin.SHIFT_AD_HOC.value
+                and asset_requirement.shift_id
+            ):
+                asset_qualification_diagnostics_by_shift.setdefault(
+                    asset_requirement.shift_id,
+                    [],
+                ).append(diagnostic)
+            elif asset_requirement.workforce_request_id:
+                asset_qualification_diagnostics.setdefault(
+                    asset_requirement.workforce_request_id,
+                    [],
+                ).append(diagnostic)
 
         resource_external_ids = {
             _text(resource.external_id)
@@ -359,6 +382,12 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                 + list(
                     asset_qualification_diagnostics.get(
                         requirement.workforce_request_id or "",
+                        (),
+                    )
+                )
+                + list(
+                    asset_qualification_diagnostics_by_shift.get(
+                        shift.id,
                         (),
                     )
                 )
