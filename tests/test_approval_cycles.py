@@ -93,7 +93,14 @@ class ApprovalCycleTests(unittest.TestCase):
     @staticmethod
     def _seed(session: Session) -> None:
         session.add(Project(id="P1", number="P-1", name="Projet"))
-        session.add(Resource(id="R1", name="Ressource proposée"))
+        session.add(
+            Resource(
+                id="R1",
+                name="Ressource proposée",
+                resource_class="AUT",
+                active=True,
+            )
+        )
         for user_id in ("U1", "U2", "U3"):
             session.add(
                 AppUser(
@@ -166,6 +173,22 @@ class ApprovalCycleTests(unittest.TestCase):
         )
         session.add_all(
             [
+                ResourceClassConfig(
+                    code="AUT",
+                    label="Automatisation",
+                    active=True,
+                    version=1,
+                ),
+                ResourceClassConfig(
+                    code="ELEC",
+                    label="Électricité",
+                    active=True,
+                    version=1,
+                ),
+            ]
+        )
+        session.add_all(
+            [
                 ApprovalScope(
                     id="S1",
                     code="AUTOMATION",
@@ -182,6 +205,14 @@ class ApprovalCycleTests(unittest.TestCase):
         )
         session.add_all(
             [
+                ResourceClassApprovalScopeMapping(
+                    resource_class_code="AUT",
+                    approval_scope_id="S1",
+                ),
+                ResourceClassApprovalScopeMapping(
+                    resource_class_code="ELEC",
+                    approval_scope_id="S2",
+                ),
                 TaskApprovalScopeMapping(
                     task_catalog_item_id="T1",
                     approval_scope_id="S1",
@@ -272,6 +303,66 @@ class ApprovalCycleTests(unittest.TestCase):
             )
             request = session.get(WorkforceRequest, "D1")
             self.assertEqual(request.aggregate_version, 2)
+
+    def test_cycle_accepts_taskless_class_and_resource_routing_in_same_cycle(self) -> None:
+        with self.factory() as session:
+            line1 = session.get(RequestLine, "L1")
+            line1.task_catalog_item_id = None
+            line1.required_resource_class = None
+            line1.proposed_resource_id = "R1"
+            line2 = session.get(RequestLine, "L2")
+            line2.task_catalog_item_id = None
+            line2.required_resource_class = "ELEC"
+            session.flush()
+
+            cycle = self._service(session).initialize_cycle(
+                "D1",
+                expected_version=1,
+            )
+            session.commit()
+
+            self.assertEqual(len(cycle.requirements), 2)
+            by_line = {
+                row.request_line_id: row
+                for row in cycle.requirements
+            }
+            self.assertIsNone(by_line["L1"].task_catalog_item_id)
+            self.assertIsNone(by_line["L2"].task_catalog_item_id)
+            self.assertEqual(by_line["L1"].approval_scope_id, "S1")
+            self.assertEqual(by_line["L2"].approval_scope_id, "S2")
+            self.assertIn(
+                "PROPOSED_RESOURCE_CLASS",
+                by_line["L1"].routing_sources,
+            )
+            self.assertIn(
+                "REQUIRED_RESOURCE_CLASS",
+                by_line["L2"].routing_sources,
+            )
+
+    def test_unroutable_taskless_line_prevents_partial_cycle_creation(self) -> None:
+        with self.factory() as session:
+            line1 = session.get(RequestLine, "L1")
+            line1.task_catalog_item_id = None
+            line1.required_resource_class = "AUT"
+            line2 = session.get(RequestLine, "L2")
+            line2.task_catalog_item_id = None
+            line2.required_resource_class = None
+            line2.proposed_resource_id = None
+            session.flush()
+
+            with self.assertRaises(ApplicationValidationError):
+                self._service(session).initialize_cycle(
+                    "D1",
+                    expected_version=1,
+                )
+
+            self.assertIsNone(
+                session.scalar(
+                    select(RequestApprovalCycle).where(
+                        RequestApprovalCycle.workforce_request_id == "D1"
+                    )
+                )
+            )
 
     def test_asset_cycle_snapshots_authority_and_tracks_proposed_asset_subject(self) -> None:
         with self.factory() as session, session.begin():
