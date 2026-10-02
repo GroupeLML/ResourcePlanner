@@ -304,15 +304,29 @@ class ApprovalCycleTests(unittest.TestCase):
             request = session.get(WorkforceRequest, "D1")
             self.assertEqual(request.aggregate_version, 2)
 
-    def test_cycle_accepts_taskless_class_and_resource_routing_in_same_cycle(self) -> None:
+    def test_cycle_accepts_mixed_class_task_and_resource_routing(self) -> None:
         with self.factory() as session:
             line1 = session.get(RequestLine, "L1")
             line1.task_catalog_item_id = None
-            line1.required_resource_class = None
-            line1.proposed_resource_id = "R1"
+            line1.required_resource_class = "AUT"
+            line1.proposed_resource_id = None
             line2 = session.get(RequestLine, "L2")
-            line2.task_catalog_item_id = None
-            line2.required_resource_class = "ELEC"
+            line2.required_resource_class = None
+            session.add(
+                RequestLine(
+                    id="L3",
+                    workforce_request_id="D1",
+                    position=2,
+                    kind="WORKFORCE",
+                    desired_start=DAY,
+                    desired_end=date(2026, 10, 2),
+                    estimated_hours=8,
+                    task_catalog_item_id=None,
+                    required_resource_class=None,
+                    proposed_resource_id="R1",
+                    active=True,
+                )
+            )
             session.flush()
 
             cycle = self._service(session).initialize_cycle(
@@ -321,22 +335,24 @@ class ApprovalCycleTests(unittest.TestCase):
             )
             session.commit()
 
-            self.assertEqual(len(cycle.requirements), 2)
+            self.assertEqual(len(cycle.requirements), 3)
             by_line = {
                 row.request_line_id: row
                 for row in cycle.requirements
             }
             self.assertIsNone(by_line["L1"].task_catalog_item_id)
-            self.assertIsNone(by_line["L2"].task_catalog_item_id)
+            self.assertEqual(by_line["L2"].task_catalog_item_id, "T2")
+            self.assertIsNone(by_line["L3"].task_catalog_item_id)
             self.assertEqual(by_line["L1"].approval_scope_id, "S1")
             self.assertEqual(by_line["L2"].approval_scope_id, "S2")
+            self.assertEqual(by_line["L3"].approval_scope_id, "S1")
             self.assertIn(
-                "PROPOSED_RESOURCE_CLASS",
+                "REQUIRED_RESOURCE_CLASS",
                 by_line["L1"].routing_sources,
             )
             self.assertIn(
-                "REQUIRED_RESOURCE_CLASS",
-                by_line["L2"].routing_sources,
+                "PROPOSED_RESOURCE_CLASS",
+                by_line["L3"].routing_sources,
             )
 
     def test_unroutable_taskless_line_prevents_partial_cycle_creation(self) -> None:
