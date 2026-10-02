@@ -393,7 +393,7 @@ class SqlAssetService:
             entity_id=allocation.id,
             entity_reference=requirement.id,
             parent_reference=requirement.workforce_request_id,
-            action="Opérateur d'actif",
+            action="Opérateur qualifiant",
             before=before,
             after={
                 "asset_id": allocation.asset_id,
