@@ -116,13 +116,14 @@ export default function DemandDetail({
       <details className="demand-detail-section" open data-testid="demand-workflow-section">
         <summary>
           <span>Workflow et impact</span>
-          <small>Actions autoritaires visibles, autorisation active et aperçu plan actuel → plan proposé.</small>
+          <small>État, autorisation active et aperçu plan actuel → plan proposé.</small>
         </summary>
         <DemandWorkflowPage
           demandNumber={demandNumber}
           canonicalDetail={detail}
           hasUnsavedChanges={hasUnsavedChanges}
           embedded
+          showActions={false}
           onChanged={changed}
           refreshToken={refreshKey}
         />
