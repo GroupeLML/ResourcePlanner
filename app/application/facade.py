@@ -422,7 +422,7 @@ class ApplicationFacade:
         self,
         command: ManualAllocationReleaseCommand,
     ) -> AllocationMutationResult:
-        self._acquire_planning_version()
+        self._acquire_planning_version(command.expected_planning_version)
         self._allocations.release_manual_command(command)
         return AllocationMutationResult(_identifier(command.allocation_id), action="released")
 
@@ -430,7 +430,7 @@ class ApplicationFacade:
         self,
         command: ManualAllocationDeleteCommand,
     ) -> AllocationMutationResult:
-        self._acquire_planning_version()
+        self._acquire_planning_version(command.expected_planning_version)
         self._allocations.delete_manual_command(command)
         return AllocationMutationResult(_identifier(command.allocation_id), action="deleted")
 
