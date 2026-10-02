@@ -18,14 +18,22 @@ const STATE_LABELS: Record<MediumTermClassWeekReadModel["state"], string> = {
   unavailable: "Indisponible",
 };
 
-function hours(value: number | null) {
-  if (value == null) return "Charge non disponible";
-  return `${new Intl.NumberFormat("fr-CA", { maximumFractionDigits: 2 }).format(value)} h`;
+function number(value: number) {
+  return new Intl.NumberFormat("fr-CA", { maximumFractionDigits: 2 }).format(value);
+}
+
+function loadHours(value: number | null) {
+  if (value == null) return "Charge inconnue";
+  return `${number(value)} h`;
+}
+
+function capacityHours(value: number) {
+  return `${number(value)} h`;
 }
 
 function percent(value: number | null) {
   if (value == null) return "Non calculable";
-  return `${new Intl.NumberFormat("fr-CA", { maximumFractionDigits: 2 }).format(value)} %`;
+  return `${number(value)} %`;
 }
 
 function diagnosticLabel(code: string) {
@@ -55,18 +63,18 @@ export default function MediumTermCapacityPanel({
     });
   });
   const classRows = [...classes.entries()];
+  const template = `minmax(190px, 1.15fr) repeat(${Math.max(weeks.length, 1)}, minmax(132px, 1fr))`;
 
   return (
     <section className={`mt-capacity-panel ${loading ? "is-loading" : ""}`}>
       <header className="mt-capacity-heading">
         <div>
           <span className="eyebrow">Capacité hebdomadaire par classe</span>
-          <h2>Charge WorkPackage / capacité workforce</h2>
+          <h2>Charge / capacité · utilisation</h2>
         </div>
         <p>
-          Valeurs projetées par FastAPI avant déduction des Shift. Projet et tâche réduisent la
-          charge WorkPackage; la capacité reste organisationnelle. Le filtre classe sélectionne
-          la tranche workforce correspondante.
+          Une ligne par classe. Charge, capacité, utilisation, état et diagnostics proviennent
+          directement de FastAPI; React ne recalcule aucune règle de capacité.
         </p>
       </header>
 
@@ -84,109 +92,63 @@ export default function MediumTermCapacityPanel({
         <div className="mt-capacity-empty">Aucune classe de capacité à afficher pour cette fenêtre.</div>
       ) : (
         <div className="mt-capacity-scroll">
-          {classRows.map(([key, resourceClass]) => {
-            const template = `170px repeat(${Math.max(weeks.length, 1)}, minmax(96px, 1fr))`;
-            return (
-              <section className="mt-capacity-class" key={key}>
-                <header className="mt-capacity-class-heading">
+          <div className="mt-capacity-grid is-compact" style={{ gridTemplateColumns: template }}>
+            <div className="mt-capacity-corner">Classe</div>
+            {weeks.map((week) => (
+              <div className="mt-capacity-week" key={week.week_start}>
+                <strong>{formatWeekRange(parseIsoDate(week.week_start))}</strong>
+              </div>
+            ))}
+
+            {classRows.map(([key, resourceClass]) => (
+              <>
+                <div className="mt-capacity-label is-class" key={`label-${key}`}>
                   <strong>{resourceClass.label}</strong>
                   {resourceClass.code == null && (
-                    <span>Capacité et charge non qualifiées — aucune classe canonique déduite</span>
+                    <span>Non classé · aucune classe canonique déduite</span>
                   )}
-                </header>
-                <div className="mt-capacity-grid" style={{ gridTemplateColumns: template }}>
-                  <div className="mt-capacity-corner">Indicateur</div>
-                  {weeks.map((week) => (
-                    <div className="mt-capacity-week" key={week.week_start}>
-                      <strong>{formatWeekRange(parseIsoDate(week.week_start))}</strong>
-                    </div>
-                  ))}
-
-                  <div className="mt-capacity-label">
-                    <strong>Capacité</strong>
-                    <span>Workforce disponible</span>
-                  </div>
-                  {weeks.map((week) => {
-                    const bucket = week.classes.find((row) => classKey(row) === key);
-                    return (
-                      <div
-                        className={`mt-capacity-cell ${bucket ? `is-${bucket.state}` : "is-unavailable"}`}
-                        key={`capacity-${key}-${week.week_start}`}
-                      >
-                        <div className="mt-capacity-main">
-                          <strong>{bucket ? hours(bucket.capacity_hours) : "—"}</strong>
-                        </div>
-                      </div>
-                    );
-                  })}
-
-                  <div className="mt-capacity-label">
-                    <strong>Charge WP</strong>
-                    <span>Répartition persistée</span>
-                  </div>
-                  {weeks.map((week) => {
-                    const bucket = week.classes.find((row) => classKey(row) === key);
-                    return (
-                      <div
-                        className={`mt-capacity-cell ${bucket ? `is-${bucket.state}` : "is-unavailable"}`}
-                        key={`load-${key}-${week.week_start}`}
-                      >
-                        <div className="mt-capacity-main">
-                          <strong>{bucket ? hours(bucket.work_package_hours) : "—"}</strong>
-                        </div>
-                        {bucket?.work_package_hours == null && bucket && (
-                          <small>⚑ Charge inconnue — pas 0 h</small>
-                        )}
-                      </div>
-                    );
-                  })}
-
-                  <div className="mt-capacity-label">
-                    <strong>Utilisation</strong>
-                    <span>Valeur backend</span>
-                  </div>
-                  {weeks.map((week) => {
-                    const bucket = week.classes.find((row) => classKey(row) === key);
-                    return (
-                      <div
-                        className={`mt-capacity-cell ${bucket ? `is-${bucket.state}` : "is-unavailable"}`}
-                        key={`utilization-${key}-${week.week_start}`}
-                      >
-                        <div className="mt-capacity-main">
-                          <strong>{bucket ? percent(bucket.utilization) : "—"}</strong>
-                        </div>
-                        {bucket && bucket.diagnostics.length > 0 && (
-                          <div className="mt-capacity-detail">
-                            {bucket.diagnostics.map((code) => (
-                              <span key={code}>{diagnosticLabel(code)}</span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-
-                  <div className="mt-capacity-label">
-                    <strong>État</strong>
-                    <span>Politique backend</span>
-                  </div>
-                  {weeks.map((week) => {
-                    const bucket = week.classes.find((row) => classKey(row) === key);
-                    return (
-                      <div
-                        className={`mt-capacity-cell ${bucket ? `is-${bucket.state}` : "is-unavailable"}`}
-                        key={`state-${key}-${week.week_start}`}
-                      >
-                        <div className="mt-capacity-main">
-                          <strong>{bucket ? STATE_LABELS[bucket.state] : "Indisponible"}</strong>
-                        </div>
-                      </div>
-                    );
-                  })}
                 </div>
-              </section>
-            );
-          })}
+                {weeks.map((week) => {
+                  const bucket = week.classes.find((row) => classKey(row) === key);
+                  const diagnosticsText = bucket?.diagnostics.map(diagnosticLabel).join(" · ") || "";
+                  return (
+                    <div
+                      className={`mt-capacity-cell is-compact ${bucket ? `is-${bucket.state}` : "is-unavailable"}`}
+                      key={`${key}-${week.week_start}`}
+                      title={diagnosticsText || undefined}
+                    >
+                      {bucket ? (
+                        <>
+                          <div className="mt-capacity-main">
+                            <strong>
+                              {loadHours(bucket.work_package_hours)} / {capacityHours(bucket.capacity_hours)}
+                            </strong>
+                            <span>· {percent(bucket.utilization)}</span>
+                          </div>
+                          <small>
+                            {STATE_LABELS[bucket.state]}
+                            {bucket.work_package_hours == null ? " · ⚑ Charge inconnue — pas 0 h" : ""}
+                          </small>
+                          {bucket.diagnostics.length > 0 && (
+                            <div className="mt-capacity-detail">
+                              {bucket.diagnostics.map((code) => (
+                                <span key={code}>{diagnosticLabel(code)}</span>
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <div className="mt-capacity-main">
+                          <strong>Indisponible</strong>
+                          <span>· Non calculable</span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </>
+            ))}
+          </div>
         </div>
       )}
     </section>
