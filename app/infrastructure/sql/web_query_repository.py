@@ -57,6 +57,7 @@ from .models import (
     WorkPackage,
     WorkPackageWeeklyLoad,
 )
+from .business_contact_models import BusinessContact
 from .resource_class_models import ResourceClassConfig
 from .planning_audit import PlanningChangeHistory
 from .capacity_query_repository import SqlPlannerQueryRepository
@@ -278,6 +279,56 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
         selected_project_ids = tuple(project_by_id)
         selected_project_numbers = tuple(project_by_number)
 
+        project_rows = (
+            tuple(
+                self._web_session.scalars(
+                    select(Project).where(Project.id.in_(selected_project_ids))
+                ).all()
+            )
+            if selected_project_ids
+            else ()
+        )
+        project_records_by_id = {row.id: row for row in project_rows}
+        project_manager_contact_ids = tuple(
+            sorted(
+                {
+                    row.project_manager_contact_id
+                    for row in project_rows
+                    if _optional_text(row.project_manager_contact_id) is not None
+                }
+            )
+        )
+        project_manager_contacts = (
+            tuple(
+                self._web_session.scalars(
+                    select(BusinessContact).where(
+                        BusinessContact.id.in_(project_manager_contact_ids)
+                    )
+                ).all()
+            )
+            if project_manager_contact_ids
+            else ()
+        )
+        project_manager_contacts_by_id = {
+            row.id: row for row in project_manager_contacts
+        }
+        budget_sync_states = (
+            tuple(
+                self._web_session.scalars(
+                    select(TaskCatalogProjectSyncState).where(
+                        TaskCatalogProjectSyncState.project_number.in_(
+                            selected_project_numbers
+                        )
+                    )
+                ).all()
+            )
+            if selected_project_numbers
+            else ()
+        )
+        budget_sync_by_project_number = {
+            row.project_number: row for row in budget_sync_states
+        }
+
         configured_classes = tuple(
             self._web_session.scalars(
                 select(ResourceClassConfig).order_by(
@@ -430,6 +481,20 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
             project = project_by_number.get(task.project_number)
             if project is None:
                 continue
+            project_record = project_records_by_id.get(project.id)
+            project_manager_contact_id = (
+                _optional_text(project_record.project_manager_contact_id)
+                if project_record is not None
+                else None
+            )
+            project_manager_contact = (
+                project_manager_contacts_by_id.get(project_manager_contact_id)
+                if project_manager_contact_id is not None
+                else None
+            )
+            project_budget_sync_state = budget_sync_by_project_number.get(
+                project.number
+            )
             associated = tuple(all_by_task.get(task.id, ()))
             displayed = tuple(display_by_task.get(task.id, ()))
             if wanted_class is not None and not displayed:
@@ -563,6 +628,17 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                     project_id=project.id,
                     project_number=project.number,
                     project_name=project.name,
+                    project_manager_contact_id=project_manager_contact_id,
+                    project_manager_display_name=(
+                        _optional_text(project_manager_contact.display_name)
+                        if project_manager_contact is not None
+                        else None
+                    ),
+                    erp_budget_last_success_at=(
+                        project_budget_sync_state.last_success_at
+                        if project_budget_sync_state is not None
+                        else None
+                    ),
                 )
             )
 
@@ -784,10 +860,7 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
             else None
         )
         budget_sync_state = (
-            self._web_session.get(
-                TaskCatalogProjectSyncState,
-                selected_project.number,
-            )
+            budget_sync_by_project_number.get(selected_project.number)
             if selected_project is not None
             else None
         )

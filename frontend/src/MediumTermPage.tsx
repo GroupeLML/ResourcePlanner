@@ -36,6 +36,23 @@ import WorkPackageEditor from "./WorkPackageEditor";
 
 const HORIZONS = [4, 8, 12] as const;
 type HorizonWeeks = (typeof HORIZONS)[number];
+type BudgetMode = "initial" | "remaining";
+
+type ProjectTaskGroup = {
+  project_id: string;
+  project_number: string;
+  project_name: string;
+  tasks: MediumTermBudgetTaskReadModel[];
+};
+
+type ManagerTaskGroup = {
+  key: string;
+  contact_id: string | null;
+  label: string;
+  projects: ProjectTaskGroup[];
+};
+
+const UNRESOLVED_MANAGER_KEY = "__UNRESOLVED_PROJECT_MANAGER__";
 
 const BUDGET_DIAGNOSTIC_LABELS: Record<string, string> = {
   BUDGET_UNAVAILABLE: "Budget ERP non disponible",
@@ -81,6 +98,25 @@ function normalize(value: string | null | undefined) {
 function hours(value: number | null | undefined) {
   if (value == null) return "—";
   return `${new Intl.NumberFormat("fr-CA", { maximumFractionDigits: 2 }).format(value)} h`;
+}
+
+function cad(value: number | null | undefined) {
+  if (value == null) return "Indisponible";
+  return new Intl.NumberFormat("fr-CA", {
+    style: "currency",
+    currency: "CAD",
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
+function erpFreshness(value: string | null | undefined) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return new Intl.DateTimeFormat("fr-CA", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(parsed);
 }
 
 function isoWeekNumber(value: Date) {
@@ -278,23 +314,38 @@ function WorkPackageRow({
   );
 }
 
-function TaskHeader({ task }: { task: MediumTermBudgetTaskReadModel }) {
+function TaskHeader({
+  task,
+  budgetMode,
+}: {
+  task: MediumTermBudgetTaskReadModel;
+  budgetMode: BudgetMode;
+}) {
   const attention = BUDGET_ATTENTION.has(task.diagnostic_state);
+  const financialValue = budgetMode === "initial"
+    ? task.budget_amount_cad
+    : task.remaining_budget_cad;
+  const financialLabel = budgetMode === "initial" ? "Budget initial" : "Budget restant";
+  const freshness = erpFreshness(task.erp_budget_last_success_at);
+
   return (
     <header className={`mt-task-strip ${attention ? "has-attention" : ""}`}>
       <div className="mt-task-title">
-        <strong>{task.project_number} · {task.task_code}</strong>
+        <strong>{task.task_code}</strong>
         <span>{task.task_label}</span>
         {attention && <span className="mt-yellow-flag" title={task.diagnostic_state}>⚑</span>}
       </div>
       <div className="mt-task-budget" aria-label={`Budget de la tâche ${task.task_code}`}>
-        <span>Budget <strong>{hours(task.budget_hours)}</strong></span>
-        <span>WorkPackages <strong>{hours(task.planned_wp_hours)}</strong></span>
-        <span>Solde <strong>{hours(task.remaining_budget_hours)}</strong></span>
+        <span>{financialLabel} <strong>{cad(financialValue)}</strong></span>
+        <span>Charge WP <strong>{hours(task.planned_wp_hours)}</strong></span>
+        <span>Solde structuré <strong>{hours(task.remaining_budget_hours)}</strong></span>
+        <span>{task.associated_work_package_count} WP</span>
       </div>
       <small>
         {diagnosticLabel(task.diagnostic_state)}
+        {task.financial_diagnostic ? ` · ${task.financial_diagnostic}` : ""}
         {task.budget_source_diagnostic ? ` · ${task.budget_source_diagnostic}` : ""}
+        {freshness ? ` · ERP synchronisé ${freshness}` : ""}
       </small>
     </header>
   );
@@ -320,6 +371,9 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
   const [taskFilter, setTaskFilter] = useState("");
   const [resourceClassFilter, setResourceClassFilter] = useState("");
   const [includeInactiveProjects, setIncludeInactiveProjects] = useState(false);
+  const [budgetMode, setBudgetMode] = useState<BudgetMode>("initial");
+  const [collapsedManagers, setCollapsedManagers] = useState<Set<string>>(() => new Set());
+  const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() => new Set());
   const [editor, setEditor] = useState<WorkPackageReadModel | null | undefined>(undefined);
   const [segmentEditorId, setSegmentEditorId] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -458,11 +512,6 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
     [projects],
   );
 
-  const selectedProject = useMemo(
-    () => projects.find((project) => project.number === projectFilter) ?? null,
-    [projects, projectFilter],
-  );
-
   const taskOptions = useMemo(
     () => [...(projection?.task_options ?? [])].sort((left, right) => (
       left.project_number.localeCompare(right.project_number, "fr-CA")
@@ -522,6 +571,9 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
       return normalize([
         task.task_code,
         task.task_label,
+        task.project_number,
+        task.project_name,
+        task.project_manager_display_name,
         ...task.work_packages.flatMap((workPackage) => [
           workPackage.reference,
           workPackage.code,
@@ -533,6 +585,60 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
     }),
     [projection, query],
   );
+
+  const managerGroups = useMemo<ManagerTaskGroup[]>(() => {
+    const groups: ManagerTaskGroup[] = [];
+    visibleTasks.forEach((task) => {
+      const managerKey = task.project_manager_contact_id
+        ? `contact:${task.project_manager_contact_id}`
+        : UNRESOLVED_MANAGER_KEY;
+      let manager = groups.find((candidate) => candidate.key === managerKey);
+      if (!manager) {
+        manager = {
+          key: managerKey,
+          contact_id: task.project_manager_contact_id,
+          label: task.project_manager_contact_id
+            ? task.project_manager_display_name || "Chargé de projet résolu"
+            : "Sans chargé de projet résolu",
+          projects: [],
+        };
+        groups.push(manager);
+      }
+
+      let project = manager.projects.find(
+        (candidate) => candidate.project_id === task.project_id,
+      );
+      if (!project) {
+        project = {
+          project_id: task.project_id,
+          project_number: task.project_number,
+          project_name: task.project_name,
+          tasks: [],
+        };
+        manager.projects.push(project);
+      }
+      project.tasks.push(task);
+    });
+
+    groups.forEach((manager) => {
+      manager.projects.sort((left, right) => (
+        left.project_number.localeCompare(right.project_number, "fr-CA")
+        || left.project_name.localeCompare(right.project_name, "fr-CA")
+      ));
+      manager.projects.forEach((project) => {
+        project.tasks.sort((left, right) => (
+          left.task_code.localeCompare(right.task_code, "fr-CA")
+          || left.task_label.localeCompare(right.task_label, "fr-CA")
+        ));
+      });
+    });
+
+    return groups.sort((left, right) => {
+      if (left.key === UNRESOLVED_MANAGER_KEY) return 1;
+      if (right.key === UNRESOLVED_MANAGER_KEY) return -1;
+      return left.label.localeCompare(right.label, "fr-CA");
+    });
+  }, [visibleTasks]);
 
   const visibleUnclassified = useMemo(
     () => (projection?.unclassified_work_packages ?? []).filter((workPackage) => (
@@ -590,6 +696,24 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
     );
   }
 
+  function toggleManager(key: string) {
+    setCollapsedManagers((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  function toggleProject(projectId: string) {
+    setCollapsedProjects((current) => {
+      const next = new Set(current);
+      if (next.has(projectId)) next.delete(projectId);
+      else next.add(projectId);
+      return next;
+    });
+  }
+
   return (
     <section className="medium-term-page">
       <div className="page-heading">
@@ -603,6 +727,17 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
         </div>
         <div className="page-actions">
           <ViewScopeSelector />
+          <label className="mt-budget-mode">
+            <span>Lecture budget</span>
+            <select
+              aria-label="Mode budget Moyen terme"
+              value={budgetMode}
+              onChange={(event) => setBudgetMode(event.target.value as BudgetMode)}
+            >
+              <option value="initial">Budget initial</option>
+              <option value="remaining">Budget restant</option>
+            </select>
+          </label>
           <button className="mt-create-package" type="button" onClick={() => setEditor(null)}>
             + WorkPackage
           </button>
@@ -645,7 +780,7 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
       <div className="filter-bar mt-filters">
         <label className="search-field">
           <span>Recherche</span>
-          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Tâche ERP, WorkPackage…" />
+          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Chargé, projet, tâche ERP, WorkPackage…" />
         </label>
         <label>
           <span>Projet</span>
@@ -728,19 +863,10 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
         loading={projectionLoading}
       />
 
-      <MediumTermUnlinkedSegmentsPanel
-        rows={unlinkedSegments.filter((row) => !projectFilter || row.project_number === projectFilter)}
-        workPackages={workPackages}
-        loading={loading}
-        onOpenDemands={onOpenDemands}
-        onOpenSegment={setSegmentEditorId}
-        onLinked={() => setRefreshKey((value) => value + 1)}
-      />
-
       <div className={`mt-board ${loading || projectionLoading ? "is-loading" : ""}`}>
         <div className="mt-board-scroll">
           <div className="mt-header" style={headerStyle}>
-            <div className="mt-project-header">Projet → tâche ERP → WorkPackage</div>
+            <div className="mt-project-header">Chargé de projet → Projet ERP → Tâche ERP → WorkPackage</div>
             {weeks.map((week, index) => (
               <div className="mt-week-header" key={toIsoDate(week)} style={{ gridColumn: index + 2 }}>
                 <strong>S{String(isoWeekNumber(week)).padStart(2, "0")}</strong>
@@ -755,14 +881,6 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
 
           {projection && (
             <div className="mt-project-block">
-              <div className="mt-project-strip">
-                <strong>{projection.project_number || "Tous les projets"}</strong>
-                <span>{projection.project_name || "Portefeuille Moyen terme"}</span>
-                <small>
-                  {selectedProject?.client || `${projection.project_count} projet(s) autorisé(s)`}
-                </small>
-              </div>
-
               {projection.diagnostics.length > 0 && (
                 <div className="mt-projection-diagnostics">
                   {projection.diagnostics.map((code) => (
@@ -777,16 +895,51 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
                 </div>
               )}
 
-              {visibleTasks.map((task) => (
-                <section className="mt-task-group" key={task.task_catalog_item_id}>
-                  <TaskHeader task={task} />
-                  {task.work_packages.length === 0 ? (
-                    <div className="mt-no-package">
-                      Aucun WorkPackage lié à cette tâche ERP.
-                    </div>
-                  ) : task.work_packages.map(renderWorkPackage)}
-                </section>
-              ))}
+              {managerGroups.map((manager) => {
+                const managerCollapsed = collapsedManagers.has(manager.key);
+                return (
+                  <section className="mt-manager-group" key={manager.key}>
+                    <button
+                      className="mt-manager-toggle"
+                      type="button"
+                      aria-expanded={!managerCollapsed}
+                      onClick={() => toggleManager(manager.key)}
+                    >
+                      <strong>{managerCollapsed ? "▶" : "▼"} {manager.label}</strong>
+                      <span>{manager.projects.length} projet(s)</span>
+                    </button>
+
+                    {!managerCollapsed && manager.projects.map((project) => {
+                      const projectCollapsed = collapsedProjects.has(project.project_id);
+                      return (
+                        <section className="mt-project-block" key={project.project_id}>
+                          <button
+                            className="mt-project-strip mt-collapse-toggle"
+                            type="button"
+                            aria-expanded={!projectCollapsed}
+                            onClick={() => toggleProject(project.project_id)}
+                          >
+                            <strong>{projectCollapsed ? "▶" : "▼"} {project.project_number}</strong>
+                            <span>{project.project_name}</span>
+                            <small>{project.tasks.length} tâche(s) ERP</small>
+                          </button>
+
+                          {!projectCollapsed && project.tasks.map((task) => (
+                            <section className="mt-task-group" key={task.task_catalog_item_id}>
+                              <TaskHeader task={task} budgetMode={budgetMode} />
+                              {task.work_packages.length === 0 ? (
+                                <div className="mt-no-package is-compact">
+                                  Aucun WorkPackage
+                                </div>
+                              ) : task.work_packages.map(renderWorkPackage)}
+                            </section>
+                          ))}
+                        </section>
+                      );
+                    })}
+                  </section>
+                );
+              })}
 
               {projection.unclassified_work_packages.length > 0 && (
                 <section className="mt-task-group is-unclassified">
@@ -803,12 +956,6 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
                 </section>
               )}
 
-              {projection.tasks.length > 0
-                && projectedPackageCount === 0
-                && projection.unclassified_work_packages.length === 0 && (
-                <div className="mt-no-package">Aucun WorkPackage ne correspond aux filtres.</div>
-              )}
-
               {query && visibleTasks.length === 0 && visibleUnclassified.length === 0 && (
                 <div className="mt-empty">Aucune tâche ou WorkPackage ne correspond à la recherche.</div>
               )}
@@ -822,10 +969,19 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
         <span><i className="pending" /> ⚑ Diagnostic backend nécessitant une attention</span>
         <span><i className="draft" /> Hors charge courante / historique</span>
         <small>
-          Budget, total WorkPackage, solde, capacité, charge et utilisation sont lus directement depuis FastAPI.
-          React ne reconstruit ni les règles de statut, ni la capacité, ni la proposition AUTO.
+          Les montants Budget initial / Budget restant restent financiers en CAD. Charge WP, solde
+          structuré et capacité restent en heures. React ne convertit jamais les dollars en heures.
         </small>
       </div>
+
+      <MediumTermUnlinkedSegmentsPanel
+        rows={unlinkedSegments.filter((row) => !projectFilter || row.project_number === projectFilter)}
+        workPackages={workPackages}
+        loading={loading}
+        onOpenDemands={onOpenDemands}
+        onOpenSegment={setSegmentEditorId}
+        onLinked={() => setRefreshKey((value) => value + 1)}
+      />
 
       {segmentEditorId && (
         <SegmentEditor

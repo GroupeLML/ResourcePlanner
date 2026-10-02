@@ -459,8 +459,9 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await expect(page.getByText("Lot acceptation Playwright", { exact: true }).first()).toBeVisible();
 
     const mediumTermCapacity = page.locator(".mt-capacity-panel");
-    await expect(mediumTermCapacity).toContainText("Charge WP");
-    await expect(mediumTermCapacity).toContainText("Charge non disponible");
+    await expect(mediumTermCapacity).toContainText("Charge / capacité · utilisation");
+    await expect(mediumTermCapacity).toContainText("Charge inconnue");
+    await expect(mediumTermCapacity).toContainText("Charge WorkPackage non disponible");
 
     const workPackageRow = page.locator(".mt-timeline-row").filter({ hasText: "Lot acceptation Playwright" });
     await expect(workPackageRow).toContainText("Classe de ressource : Programmeur (PROGRAMMEUR)");
@@ -520,7 +521,9 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     const portfolioProjectFilter = labelled(mediumTermFilters, "Projet", "select");
     await portfolioProjectFilter.selectOption("");
     await expect(portfolioProjectFilter).toHaveValue("");
-    await expect(page.locator(".mt-project-strip")).toContainText("Tous les projets");
+    const portfolioProjectGroup = page.locator(".mt-project-strip").filter({ hasText: "P-251" }).first();
+    await expect(portfolioProjectGroup).toContainText("P-251");
+    await expect(portfolioProjectGroup).toContainText("Projet Playwright V2");
 
     const mediumTermTaskFilter = labelled(mediumTermFilters, "Tâche ERP", "select");
     await expect(

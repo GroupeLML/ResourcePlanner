@@ -305,6 +305,9 @@ export type MediumTermBudgetTaskReadModel = {
   project_id: string;
   project_number: string;
   project_name: string;
+  project_manager_contact_id: string | null;
+  project_manager_display_name: string | null;
+  erp_budget_last_success_at: string | null;
 };
 
 export type MediumTermTaskOptionReadModel = {
