@@ -24,8 +24,8 @@ from app.domain.approval_routing import (
     APPROVER_SOURCE_RESOURCE,
     APPROVER_SOURCE_SCOPE,
     DIAGNOSTIC_NO_ELIGIBLE_APPROVER,
+    DIAGNOSTIC_ROUTING_SOURCE_MISSING,
     DIAGNOSTIC_SCOPE_AMBIGUOUS,
-    DIAGNOSTIC_TASK_REFERENCE_MISSING,
 )
 from app.infrastructure.sql import (
     AppUser,
@@ -93,7 +93,14 @@ class ApprovalCycleTests(unittest.TestCase):
     @staticmethod
     def _seed(session: Session) -> None:
         session.add(Project(id="P1", number="P-1", name="Projet"))
-        session.add(Resource(id="R1", name="Ressource proposée"))
+        session.add(
+            Resource(
+                id="R1",
+                name="Ressource proposée",
+                resource_class="AUT",
+                active=True,
+            )
+        )
         for user_id in ("U1", "U2", "U3"):
             session.add(
                 AppUser(
@@ -166,6 +173,22 @@ class ApprovalCycleTests(unittest.TestCase):
         )
         session.add_all(
             [
+                ResourceClassConfig(
+                    code="AUT",
+                    label="Automatisation",
+                    active=True,
+                    version=1,
+                ),
+                ResourceClassConfig(
+                    code="ELEC",
+                    label="Électricité",
+                    active=True,
+                    version=1,
+                ),
+            ]
+        )
+        session.add_all(
+            [
                 ApprovalScope(
                     id="S1",
                     code="AUTOMATION",
@@ -182,6 +205,14 @@ class ApprovalCycleTests(unittest.TestCase):
         )
         session.add_all(
             [
+                ResourceClassApprovalScopeMapping(
+                    resource_class_code="AUT",
+                    approval_scope_id="S1",
+                ),
+                ResourceClassApprovalScopeMapping(
+                    resource_class_code="ELEC",
+                    approval_scope_id="S2",
+                ),
                 TaskApprovalScopeMapping(
                     task_catalog_item_id="T1",
                     approval_scope_id="S1",
@@ -272,6 +303,82 @@ class ApprovalCycleTests(unittest.TestCase):
             )
             request = session.get(WorkforceRequest, "D1")
             self.assertEqual(request.aggregate_version, 2)
+
+    def test_cycle_accepts_mixed_class_task_and_resource_routing(self) -> None:
+        with self.factory() as session:
+            line1 = session.get(RequestLine, "L1")
+            line1.task_catalog_item_id = None
+            line1.required_resource_class = "AUT"
+            line1.proposed_resource_id = None
+            line2 = session.get(RequestLine, "L2")
+            line2.required_resource_class = None
+            session.add(
+                RequestLine(
+                    id="L3",
+                    workforce_request_id="D1",
+                    position=2,
+                    kind="WORKFORCE",
+                    desired_start=DAY,
+                    desired_end=date(2026, 10, 2),
+                    estimated_hours=8,
+                    task_catalog_item_id=None,
+                    required_resource_class=None,
+                    proposed_resource_id="R1",
+                    active=True,
+                )
+            )
+            session.flush()
+
+            cycle = self._service(session).initialize_cycle(
+                "D1",
+                expected_version=1,
+            )
+            session.commit()
+
+            self.assertEqual(len(cycle.requirements), 3)
+            by_line = {
+                row.request_line_id: row
+                for row in cycle.requirements
+            }
+            self.assertIsNone(by_line["L1"].task_catalog_item_id)
+            self.assertEqual(by_line["L2"].task_catalog_item_id, "T2")
+            self.assertIsNone(by_line["L3"].task_catalog_item_id)
+            self.assertEqual(by_line["L1"].approval_scope_id, "S1")
+            self.assertEqual(by_line["L2"].approval_scope_id, "S2")
+            self.assertEqual(by_line["L3"].approval_scope_id, "S1")
+            self.assertIn(
+                "REQUIRED_RESOURCE_CLASS",
+                by_line["L1"].routing_sources,
+            )
+            self.assertIn(
+                "PROPOSED_RESOURCE_CLASS",
+                by_line["L3"].routing_sources,
+            )
+
+    def test_unroutable_taskless_line_prevents_partial_cycle_creation(self) -> None:
+        with self.factory() as session:
+            line1 = session.get(RequestLine, "L1")
+            line1.task_catalog_item_id = None
+            line1.required_resource_class = "AUT"
+            line2 = session.get(RequestLine, "L2")
+            line2.task_catalog_item_id = None
+            line2.required_resource_class = None
+            line2.proposed_resource_id = None
+            session.flush()
+
+            with self.assertRaises(ApplicationValidationError):
+                self._service(session).initialize_cycle(
+                    "D1",
+                    expected_version=1,
+                )
+
+            self.assertIsNone(
+                session.scalar(
+                    select(RequestApprovalCycle).where(
+                        RequestApprovalCycle.workforce_request_id == "D1"
+                    )
+                )
+            )
 
     def test_asset_cycle_snapshots_authority_and_tracks_proposed_asset_subject(self) -> None:
         with self.factory() as session, session.begin():
@@ -454,6 +561,10 @@ class ApprovalCycleTests(unittest.TestCase):
             )
             session.get(TaskCatalogEntry, "T1").resource_class_code = "RC-AUT"
             session.get(TaskCatalogEntry, "T2").resource_class_code = "RC-ELEC"
+            line1 = session.get(RequestLine, "L1")
+            line1.required_resource_class = None
+            line1.proposed_resource_id = None
+            session.get(RequestLine, "L2").required_resource_class = None
             session.commit()
 
             service = self._service(session)
@@ -678,6 +789,12 @@ class ApprovalCycleTests(unittest.TestCase):
                     TaskApprovalScopeMapping.task_catalog_item_id == "T1"
                 )
             )
+            session.execute(
+                delete(ResourceClassApprovalScopeMapping).where(
+                    ResourceClassApprovalScopeMapping.resource_class_code
+                    == "AUT"
+                )
+            )
             session.commit()
             with self.assertRaises(ApplicationValidationError) as unmapped:
                 self._service(session).initialize_cycle(
@@ -722,10 +839,12 @@ class ApprovalCycleTests(unittest.TestCase):
                 context["diagnostics"],
             )
 
-    def test_missing_task_reference_reports_erp_snapshot_and_precise_reason(self) -> None:
+    def test_no_routing_source_reports_erp_snapshot_and_precise_reason(self) -> None:
         with self.factory() as session:
             line = session.get(RequestLine, "L1")
             line.task_catalog_item_id = None
+            line.required_resource_class = None
+            line.proposed_resource_id = None
             session.commit()
 
             with self.assertRaises(ApplicationValidationError) as error:
@@ -739,8 +858,9 @@ class ApprovalCycleTests(unittest.TestCase):
             self.assertIsNone(context["task_catalog_item_id"])
             self.assertEqual(context["task_code"], "210")
             self.assertEqual(context["task_label"], "Automatisation")
+            self.assertEqual(context["routing_sources"], [])
             self.assertIn(
-                DIAGNOSTIC_TASK_REFERENCE_MISSING,
+                DIAGNOSTIC_ROUTING_SOURCE_MISSING,
                 context["diagnostics"],
             )
 
@@ -767,7 +887,9 @@ class ApprovalCycleTests(unittest.TestCase):
                 )
             )
             session.get(TaskCatalogEntry, "T1").resource_class_code = "PROGRAMMEUR"
-            session.get(RequestLine, "L1").proposed_resource_id = None
+            line = session.get(RequestLine, "L1")
+            line.required_resource_class = None
+            line.proposed_resource_id = None
             session.execute(
                 delete(ApprovalScopeApprover).where(
                     ApprovalScopeApprover.approval_scope_id == "S1"

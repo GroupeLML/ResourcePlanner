@@ -57,7 +57,10 @@ type ApprovalRoutingDiagnosticView = {
   requestLineId: string | null;
   lineKind: string;
   task: string;
+  requiredResourceClass: string | null;
   resourceClass: string;
+  proposedResource: string | null;
+  routingSources: string[];
   assetType: string | null;
   proposedAsset: string | null;
   scope: string;
@@ -67,11 +70,14 @@ type ApprovalRoutingDiagnosticView = {
 const ROUTING_DIAGNOSTIC_LABELS: Record<string, string> = {
   line_inactive: "La ligne est inactive.",
   task_reference_missing: "La référence vers la tâche ERP n’est pas persistée sur cette ligne.",
+  routing_source_missing: "Aucune tâche ERP, classe explicite ou ressource proposée ne permet de router cette ligne.",
   task_not_found: "La tâche ERP référencée est introuvable.",
   task_inactive: "La tâche ERP référencée est inactive.",
-  resource_class_missing: "La tâche ERP n’a pas de classe de ressource effective.",
+  resource_class_missing: "La source de routage prioritaire n’a pas de classe de ressource canonique.",
   resource_class_not_found: "La classe de ressource effective est introuvable.",
   resource_class_inactive: "La classe de ressource effective est inactive.",
+  proposed_resource_unknown: "La ressource proposée est introuvable.",
+  proposed_resource_inactive: "La ressource proposée est inactive.",
   approval_scope_unmapped: "Aucun périmètre d’approbation n’est mappé à cette tâche ou classe effective.",
   approval_scope_ambiguous: "Plusieurs périmètres d’approbation sont candidats; aucun choix automatique n’est permis.",
   approval_scope_inactive: "Le périmètre d’approbation résolu est inactif.",
@@ -139,7 +145,14 @@ function approvalRoutingDiagnostic(reason: unknown): ApprovalRoutingDiagnosticVi
     : null;
   const taskCode = diagnosticText(context.task_code);
   const taskLabel = diagnosticText(context.task_label);
+  const requiredResourceClass = diagnosticText(context.required_resource_class);
   const resourceClass = diagnosticText(context.effective_resource_class);
+  const proposedResource = diagnosticText(context.proposed_resource_id);
+  const routingSources = Array.isArray(context.routing_sources)
+    ? context.routing_sources
+        .map(diagnosticText)
+        .filter((value): value is string => Boolean(value))
+    : [];
   const lineKind = diagnosticText(context.line_kind) || "WORKFORCE";
   const assetTypeCode = diagnosticText(context.asset_type_code);
   const assetTypeLabel = diagnosticText(context.asset_type_label);
@@ -181,8 +194,11 @@ function approvalRoutingDiagnostic(reason: unknown): ApprovalRoutingDiagnosticVi
     task: taskCode
       ? `${taskCode}${taskLabel ? ` — ${taskLabel}` : ""}`
       : lineKind === "ASSET" ? "Non utilisée pour le routage ASSET" : "Aucune tâche ERP résolue",
+    requiredResourceClass,
     resourceClass: resourceClass
       || (lineKind === "ASSET" ? "Non utilisée pour le routage ASSET" : "Aucune classe effective résolue"),
+    proposedResource,
+    routingSources,
     assetType,
     proposedAsset,
     scope,
@@ -725,6 +741,16 @@ export default function DemandWorkflowPage({
             </div>
             <div><dt>Nature</dt><dd>{routingDiagnostic.lineKind}</dd></div>
             <div><dt>Tâche ERP</dt><dd>{routingDiagnostic.task}</dd></div>
+            {routingDiagnostic.lineKind !== "ASSET" && (
+              <>
+                <div>
+                  <dt>Sources de routage</dt>
+                  <dd>{routingDiagnostic.routingSources.length > 0 ? routingDiagnostic.routingSources.join(" · ") : "Aucune source de classe prioritaire"}</dd>
+                </div>
+                <div><dt>Classe explicite</dt><dd>{routingDiagnostic.requiredResourceClass || "Aucune"}</dd></div>
+                <div><dt>Ressource proposée</dt><dd>{routingDiagnostic.proposedResource || "Aucune"}</dd></div>
+              </>
+            )}
             <div><dt>Classe effective</dt><dd>{routingDiagnostic.resourceClass}</dd></div>
             {routingDiagnostic.lineKind === "ASSET" && (
               <>
