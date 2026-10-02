@@ -65,6 +65,29 @@ def _origin_provenance_sql() -> str:
     )
 
 
+def _sqlite_copy_table_without_legacy_request_uniqueness(bind) -> sa.Table:
+    metadata = sa.MetaData()
+    table = sa.Table("asset_requirements", metadata, autoload_with=bind)
+    legacy_columns = (
+        "workforce_request_id",
+        "approved_entry_key",
+        "slot_index",
+    )
+
+    for constraint in list(table.constraints):
+        if isinstance(constraint, sa.UniqueConstraint):
+            columns = tuple(column.name for column in constraint.columns)
+            if columns == legacy_columns:
+                table.constraints.remove(constraint)
+
+    for index in list(table.indexes):
+        columns = tuple(column.name for column in index.columns)
+        if index.unique and columns == legacy_columns:
+            table.indexes.remove(index)
+
+    return table
+
+
 def upgrade() -> None:
     bind = op.get_bind()
     origin_column = sa.Column(
@@ -76,13 +99,14 @@ def upgrade() -> None:
     shift_column = sa.Column("shift_id", sa.String(length=36), nullable=True)
 
     if bind.dialect.name == "sqlite":
-        with op.batch_alter_table("asset_requirements", recreate="always") as batch_op:
+        copy_from = _sqlite_copy_table_without_legacy_request_uniqueness(bind)
+        with op.batch_alter_table(
+            "asset_requirements",
+            recreate="always",
+            copy_from=copy_from,
+        ) as batch_op:
             batch_op.add_column(origin_column)
             batch_op.add_column(shift_column)
-            batch_op.drop_constraint(
-                "uq_asset_requirement_entry_slot",
-                type_="unique",
-            )
             batch_op.alter_column(
                 "workforce_request_id",
                 existing_type=sa.String(length=36),
