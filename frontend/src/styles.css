@@ -1050,6 +1050,15 @@ h1 { font-size: 1.6rem; }
   outline-offset: 2px;
   border-radius: 5px;
 }
+.shift-assets {
+  display: block;
+  margin-top: .3rem;
+  color: #40506a;
+  font-size: .58rem;
+}
+.shift-assets strong { font-weight: 900; }
+.shift-asset-diagnostic { color: var(--warn); font-weight: 900; }
+
 .shift-asset-action {
   margin-top: .38rem;
   padding: .22rem .38rem;
