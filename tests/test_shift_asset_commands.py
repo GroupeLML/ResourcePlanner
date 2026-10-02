@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -24,6 +24,7 @@ from app.infrastructure.sql import (
     PlanningChangeHistory,
     Project,
     Resource,
+    ResourceAvailabilityRule,
     ResourceCompetency,
     ResourceRequirement,
     Shift,
@@ -77,6 +78,24 @@ class ShiftAssetCommandTests(unittest.TestCase):
             session.flush()
             session.add_all(
                 [
+                    ResourceAvailabilityRule(
+                        id="STD-SKILLED-560C",
+                        resource_id="RESOURCE-SKILLED",
+                        availability_type="Horaire standard",
+                        weekdays="Lun,Mar,Mer,Jeu,Ven,Sam,Dim",
+                        start_time=time(8, 0),
+                        end_time=time(20, 0),
+                        active=True,
+                    ),
+                    ResourceAvailabilityRule(
+                        id="STD-UNSKILLED-560C",
+                        resource_id="RESOURCE-UNSKILLED",
+                        availability_type="Horaire standard",
+                        weekdays="Lun,Mar,Mer,Jeu,Ven,Sam,Dim",
+                        start_time=time(8, 0),
+                        end_time=time(20, 0),
+                        active=True,
+                    ),
                     ResourceCompetency(
                         resource_id="RESOURCE-SKILLED",
                         competency_id="COMP-560B",
