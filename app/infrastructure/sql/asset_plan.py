@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ...domain.approval_envelope import ApprovalEnvelope, approval_envelope_from_snapshot_payload
+from ...domain.reservable_assets import AssetRequirementOrigin
 from .asset_models import Asset, AssetAllocation, AssetRequirement, AssetType
 from .approval_revision_models import RequestApprovalRevision
 from .base import new_id
@@ -39,7 +40,10 @@ class SqlAssetPlanSynchronizer:
         selections: dict[str, str] | None = None,
     ) -> None:
         current = self.session.scalars(
-            select(AssetRequirement).where(AssetRequirement.workforce_request_id == request.id)
+            select(AssetRequirement).where(
+                AssetRequirement.workforce_request_id == request.id,
+                AssetRequirement.origin == AssetRequirementOrigin.REQUEST.value,
+            )
         ).all()
         by_key = {(row.approved_entry_key, row.slot_index): row for row in current}
         retained: set[str] = set()
@@ -60,6 +64,7 @@ class SqlAssetPlanSynchronizer:
                 if row is None:
                     row = AssetRequirement(
                         id=new_id(), project_id=entry.project_id,
+                        origin=AssetRequirementOrigin.REQUEST.value,
                         workforce_request_id=request.id,
                         source_request_line_id=entry.identity.line_id,
                         approved_entry_key=entry.identity.stable_key,
@@ -104,7 +109,12 @@ class SqlAssetPlanSynchronizer:
         self.session.flush()
 
     def cancel(self, request: WorkforceRequest) -> None:
-        rows = self.session.scalars(select(AssetRequirement).where(AssetRequirement.workforce_request_id == request.id)).all()
+        rows = self.session.scalars(
+            select(AssetRequirement).where(
+                AssetRequirement.workforce_request_id == request.id,
+                AssetRequirement.origin == AssetRequirementOrigin.REQUEST.value,
+            )
+        ).all()
         for row in rows:
             allocations = self.session.scalars(select(AssetAllocation).where(AssetAllocation.asset_requirement_id == row.id)).all()
             if any(item.locked for item in allocations):
