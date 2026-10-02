@@ -86,11 +86,17 @@ def has_compatible_assignment(
         if not requirement.shift_id:
             return False
         statement = statement.where(Shift.id == requirement.shift_id)
-    else:
+    elif requirement.origin == AssetRequirementOrigin.REQUEST.value:
+        if not requirement.workforce_request_id or not requirement.project_id:
+            return False
         statement = statement.where(
             ResourceRequirement.workforce_request_id
             == requirement.workforce_request_id
         )
+    else:
+        # 575A makes the new origins readable but does not implement their
+        # qualification policy. Fail closed instead of treating them as REQUEST.
+        return False
     return session.scalar(statement.limit(1)) is not None
 
 
