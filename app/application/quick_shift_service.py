@@ -109,7 +109,6 @@ class QuickShiftService:
             "TypePlanification": "Fixe",
             "Priorite": "Normale",
             "Confirmation": command.confirmation,
-            "ConfirmationOverride": True,
             self.ORIGIN_FIELD: self.ORIGIN_QUICK_SHIFT,
         }
 
