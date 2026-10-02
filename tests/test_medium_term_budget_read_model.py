@@ -10,6 +10,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app.infrastructure.sql import (
+    BusinessContact,
     Project,
     ResourceClassConfig,
     TaskCatalogEntry,
@@ -28,10 +29,34 @@ create_api_app = partial(create_api_app, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
 class MediumTermBudgetReadModelTests(unittest.TestCase):
     @staticmethod
     def _seed_database(session) -> None:
+        session.add(
+            BusinessContact(
+                id="BC-PM-1",
+                display_name="Benjamin Germain",
+                source="ERP",
+                external_system="ACUMATICA",
+                external_entity="EMPLOYEE",
+                external_id="EMP-PM-1",
+            )
+        )
+        session.flush()
         session.add_all(
             [
-                Project(id="P1", number="P-1", name="Projet 1", status="Actif"),
-                Project(id="P2", number="P-2", name="Projet 2", status="Actif"),
+                Project(
+                    id="P1",
+                    number="P-1",
+                    name="Projet 1",
+                    status="Actif",
+                    project_manager_contact_id="BC-PM-1",
+                    project_manager_name="Libellé ERP non autoritaire",
+                ),
+                Project(
+                    id="P2",
+                    number="P-2",
+                    name="Projet 2",
+                    status="Actif",
+                    project_manager_name="Nom sans identité canonique",
+                ),
                 ResourceClassConfig(
                     code="PROGRAMMEUR",
                     label="Programmeur",
@@ -370,6 +395,16 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
         )
 
         programming = self._task(payload, "216")
+        self.assertEqual(programming["project_manager_contact_id"], "BC-PM-1")
+        self.assertEqual(
+            programming["project_manager_display_name"],
+            "Benjamin Germain",
+        )
+        self.assertTrue(
+            programming["erp_budget_last_success_at"].startswith(
+                "2026-10-01T13:42:00"
+            )
+        )
         self.assertEqual(
             Decimal(str(programming["budget_amount_cad"])),
             Decimal("50000"),
@@ -619,6 +654,9 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
         self.assertIn("actual_through_date", payload)
         self.assertNotIn("last_approved_time_date", payload)
         self.assertEqual(task["task_catalog_item_id"], "TASK-P2-216")
+        self.assertIsNone(task["project_manager_contact_id"])
+        self.assertIsNone(task["project_manager_display_name"])
+        self.assertIsNone(task["erp_budget_last_success_at"])
         self.assertEqual(Decimal(str(task["planned_wp_hours"])), Decimal("40"))
         self.assertEqual(Decimal(str(task["remaining_budget_hours"])), Decimal("60"))
         self.assertEqual(task["diagnostic_state"], "PARTIALLY_COVERED")
