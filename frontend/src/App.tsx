@@ -35,6 +35,8 @@ const navItems: NavItem[] = [
 ];
 
 const SIDEBAR_COMPACT_STORAGE_KEY = "resourceplanner.sidebar.compact";
+const RUNTIME_ENVIRONMENT = (import.meta.env.VITE_RESOURCEPLANNER_ENVIRONMENT || "PROD").trim().toUpperCase();
+const IS_DEV_ENVIRONMENT = RUNTIME_ENVIRONMENT === "DEV";
 
 function displayInitials(displayName: string) {
   const parts = displayName.trim().split(/\s+/).filter(Boolean);
@@ -156,7 +158,12 @@ export default function App() {
   }
 
   return (
-    <div className={`app-shell ${sidebarCompact ? "is-sidebar-compact" : ""}`}>
+    <div className={`app-shell ${sidebarCompact ? "is-sidebar-compact" : ""} ${IS_DEV_ENVIRONMENT ? "is-dev-environment" : ""}`}>
+      {IS_DEV_ENVIRONMENT && (
+        <div className="environment-banner" role="status" aria-label="Environnement de développement">
+          ENVIRONNEMENT DEV
+        </div>
+      )}
       <aside className={`app-sidebar ${sidebarOpen ? "is-open" : ""} ${sidebarCompact ? "is-compact" : ""}`}>
         <div className="brand-block">
           <div className="brand-mark" aria-hidden="true">RP</div>
