@@ -553,6 +553,27 @@ class ShiftAssetCommandTests(unittest.TestCase):
         self.assertEqual(changed.json()["requirement_id"], asset_requirement_id)
         self.assertEqual(changed.json()["allocation_id"], payload["allocation_id"])
 
+        projected = self.client.get(
+            "/api/v1/shifts",
+            params={"start": DAY.isoformat(), "end": DAY.isoformat()},
+        )
+        self.assertEqual(projected.status_code, 200, projected.text)
+        request_shift = next(
+            row
+            for row in projected.json()
+            if row["allocation_id"] == "SHIFT-REQUEST-560B"
+        )
+        self.assertIsNone(request_shift["asset_assignment"])
+        self.assertEqual(len(request_shift["related_asset_reservations"]), 1)
+        self.assertEqual(
+            request_shift["related_asset_reservations"][0]["origin"],
+            "REQUEST",
+        )
+        self.assertEqual(
+            request_shift["related_asset_reservations"][0]["asset_id"],
+            "ASSET-B",
+        )
+
         released = self._set_asset(
             shift_id="SHIFT-REQUEST-560B",
             asset_id=None,
