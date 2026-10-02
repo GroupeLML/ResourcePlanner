@@ -533,7 +533,7 @@ export default function AssetPlanningPanel({
                   busy === `reserve:${requirement.requirement_id}`
                   || busy === `operator:${requirement.requirement_id}`
                 }
-                onReserve={(row, assetId) => void reserve(row, assetId)}
+                onReserve={(row, assetId, startDate, endDate) => void reserve(row, assetId, startDate, endDate)}
                 onOperator={(row, resourceId) => void assignOperator(row, resourceId)}
               />
             ))}
