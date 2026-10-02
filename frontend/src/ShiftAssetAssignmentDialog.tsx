@@ -91,6 +91,8 @@ export default function ShiftAssetAssignmentDialog({
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(
     mode === "change" ? shift.asset_assignment?.asset_id ?? null : null,
   );
+  const [reservationStart, setReservationStart] = useState(shift.work_date);
+  const [reservationEnd, setReservationEnd] = useState(shift.work_date);
   const [loadingCandidates, setLoadingCandidates] = useState(mode !== "release");
   const [candidateError, setCandidateError] = useState<string | null>(null);
   const [candidateReloadKey, setCandidateReloadKey] = useState(0);
@@ -103,9 +105,11 @@ export default function ShiftAssetAssignmentDialog({
 
   useEffect(() => {
     setSelectedAssetId(mode === "change" ? shift.asset_assignment?.asset_id ?? null : null);
+    setReservationStart(shift.work_date);
+    setReservationEnd(shift.work_date);
     setFeedback(null);
     retryKeys.current.clear();
-  }, [mode, shift.allocation_id, shift.asset_assignment?.asset_id]);
+  }, [mode, shift.allocation_id, shift.asset_assignment?.asset_id, shift.work_date]);
 
   useEffect(() => {
     if (mode === "release") {
@@ -187,6 +191,8 @@ export default function ShiftAssetAssignmentDialog({
       mode,
       assetId || "release",
       requirementId || "auto",
+      mode === "release" ? "none" : reservationStart,
+      mode === "release" ? "none" : reservationEnd,
       expectedVersion,
     ].join("|");
 
@@ -198,6 +204,8 @@ export default function ShiftAssetAssignmentDialog({
         {
           asset_id: assetId,
           asset_requirement_id: requirementId,
+          start_date: mode === "release" ? null : reservationStart,
+          end_date: mode === "release" ? null : reservationEnd,
           expected_planning_version: expectedVersion,
         },
         keyFor(fingerprint),
@@ -233,7 +241,17 @@ export default function ShiftAssetAssignmentDialog({
   const current = shift.asset_assignment;
   const noChange = mode === "change" && selectedAssetId === current?.asset_id;
   const saveDisabled = busy
-    || (mode !== "release" && (loadingCandidates || !selectedAssetId || !selectedCandidate?.allowed || noChange));
+    || (
+      mode !== "release"
+      && (
+        loadingCandidates
+        || !selectedAssetId
+        || !selectedCandidate?.allowed
+        || noChange
+        || !reservationStart
+        || !reservationEnd
+      )
+    );
 
   return (
     <div
@@ -316,6 +334,37 @@ export default function ShiftAssetAssignmentDialog({
                 }
                 autoFocus
               />
+
+              <div className="dialog-form-grid">
+                <label>
+                  <span>Date début réelle</span>
+                  <input
+                    type="date"
+                    value={reservationStart}
+                    onChange={(event) => {
+                      setReservationStart(event.target.value);
+                      setFeedback(null);
+                    }}
+                    disabled={busy}
+                  />
+                </label>
+                <label>
+                  <span>Date fin réelle</span>
+                  <input
+                    type="date"
+                    value={reservationEnd}
+                    onChange={(event) => {
+                      setReservationEnd(event.target.value);
+                      setFeedback(null);
+                    }}
+                    disabled={busy}
+                  />
+                </label>
+                <small className="span-2">
+                  Ces dates sont envoyées explicitement lorsqu’un besoin REQUEST est utilisé.
+                  Pour une affectation SHIFT_AD_HOC, le backend conserve la date canonique du quart.
+                </small>
+              </div>
 
               {selectedCandidate && (
                 <div className="shift-asset-candidate-detail" data-testid="shift-asset-candidate-detail">
