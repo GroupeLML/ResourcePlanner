@@ -173,7 +173,7 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
                     task_catalog_item_id="TASK-216",
                     name="Lot A",
                     resource_class_code="PROGRAMMEUR",
-                    planned_hours=Decimal("120"),
+                    planned_hours=Decimal("130"),
                     start_date=date(2026, 9, 21),
                     end_date=date(2026, 10, 5),
                     weekly_load_origin="MANUAL",
@@ -184,8 +184,8 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
                     project_id="P1",
                     task_catalog_item_id="TASK-216",
                     name="Lot B",
-                    planned_hours=Decimal("80"),
-                    start_date=date(2026, 9, 21),
+                    planned_hours=Decimal("50"),
+                    start_date=date(2026, 9, 28),
                     end_date=date(2026, 10, 5),
                     weekly_load_origin="MANUAL",
                     status="planned",
@@ -195,7 +195,10 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
                     project_id="P1",
                     task_catalog_item_id="TASK-216",
                     name="Lot fermé historique",
-                    planned_hours=Decimal("0"),
+                    planned_hours=Decimal("20"),
+                    start_date=date(2026, 9, 28),
+                    end_date=date(2026, 9, 28),
+                    weekly_load_origin="MANUAL",
                     status="closed",
                 ),
                 WorkPackage(
@@ -280,12 +283,7 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
                 WorkPackageWeeklyLoad(
                     work_package_id="WP-216-A",
                     week_start=date(2026, 10, 5),
-                    hours=Decimal("50"),
-                ),
-                WorkPackageWeeklyLoad(
-                    work_package_id="WP-216-B",
-                    week_start=date(2026, 9, 21),
-                    hours=Decimal("30"),
+                    hours=Decimal("60"),
                 ),
                 WorkPackageWeeklyLoad(
                     work_package_id="WP-216-B",
@@ -296,6 +294,11 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
                     work_package_id="WP-216-B",
                     week_start=date(2026, 10, 5),
                     hours=Decimal("30"),
+                ),
+                WorkPackageWeeklyLoad(
+                    work_package_id="WP-216-CLOSED",
+                    week_start=date(2026, 9, 28),
+                    hours=Decimal("20"),
                 ),
                 WorkPackageWeeklyLoad(
                     work_package_id="WP-217-A",
@@ -391,12 +394,12 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
         self.assertIsNone(programming["actual_hours_diagnostic"])
         self.assertEqual(
             Decimal(str(programming["future_work_package_hours"])),
-            Decimal("140"),
+            Decimal("150"),
         )
         self.assertIsNone(programming["future_work_package_diagnostic"])
         self.assertEqual(
             Decimal(str(programming["remaining_after_work_packages_hours"])),
-            Decimal("50"),
+            Decimal("40"),
         )
         self.assertEqual(Decimal(str(programming["budget_hours"])), Decimal("240"))
         self.assertEqual(Decimal(str(programming["planned_wp_hours"])), Decimal("200"))
@@ -568,7 +571,7 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
         installation = self._task(payload, "217")
         self.assertEqual(
             Decimal(str(programming["future_work_package_hours"])),
-            Decimal("140"),
+            Decimal("150"),
         )
         self.assertEqual(
             Decimal(str(installation["future_work_package_hours"])),
