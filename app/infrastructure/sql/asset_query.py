@@ -441,6 +441,10 @@ class SqlAssetPlanningQuery:
         visible_requirements_by_id = {
             row.id: row for row in visible_requirements
         }
+        visible_requirement_models = self._requirement_models(visible_requirements)
+        visible_requirement_models_by_id = {
+            row.requirement_id: row for row in visible_requirement_models
+        }
         allocation_models_list: list[AssetAllocationReadModel] = []
         for row in visible_allocations:
             requirement = visible_requirements_by_id[row.asset_requirement_id]
@@ -473,6 +477,9 @@ class SqlAssetPlanningQuery:
                     qualification_state=qualification.state,
                     required_competency_ids=qualification.required_competency_ids,
                     required_competency_names=qualification.required_competency_names,
+                    project_number=visible_requirement_models_by_id[
+                        row.asset_requirement_id
+                    ].project_number,
                 )
             )
         allocation_models = tuple(allocation_models_list)
@@ -659,6 +666,12 @@ class SqlAssetPlanningQuery:
                     if allocation.asset_id == asset.id
                     and allocation.start_date <= cursor <= allocation.end_date
                 )
+                visible_occupations = tuple(
+                    allocation
+                    for allocation in allocation_models
+                    if allocation.asset_id == asset.id
+                    and allocation.start_date <= cursor <= allocation.end_date
+                )
                 unavailable = any(
                     row.start_date <= cursor <= row.end_date
                     for row in unavailability_by_asset.get(asset.id, ())
@@ -679,6 +692,8 @@ class SqlAssetPlanningQuery:
                         remaining_units=remaining,
                         unavailable=unavailable,
                         available=remaining > 0,
+                        visible_occupations=visible_occupations,
+                        has_hidden_occupancy=occupied > len(visible_occupations),
                     )
                 )
             cursor += timedelta(days=1)
@@ -714,7 +729,7 @@ class SqlAssetPlanningQuery:
                 )
                 for row in asset_rows
             ),
-            requirements=self._requirement_models(visible_requirements),
+            requirements=visible_requirement_models,
             allocations=allocation_models,
             unavailability=unavailability_models,
             capacity=tuple(capacity),
