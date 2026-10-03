@@ -843,7 +843,7 @@ export default function WorkPackageEditor({
             <button
               type="submit"
               className="wp-primary"
-              disabled={saving || lifecycleBusy || terminal}
+              disabled={saving || lifecycleBusy}
             >
               {saving ? "Enregistrement…" : editing ? "Enregistrer le WorkPackage" : "Créer le WorkPackage"}
             </button>
