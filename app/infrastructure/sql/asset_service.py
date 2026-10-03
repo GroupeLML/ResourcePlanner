@@ -1891,7 +1891,11 @@ class SqlAssetService:
             entity_type="ASSET_ALLOCATION",
             entity_id=allocation.id,
             entity_reference=requirement.id,
-            parent_reference=requirement.project_id or requirement.context_resource_id,
+            parent_reference=(
+                requirement.resource_requirement_id
+                if expected_origin == AssetRequirementOrigin.SEGMENT
+                else requirement.project_id or requirement.context_resource_id
+            ),
             action="Modification réservation directe",
             before=before,
             after={
