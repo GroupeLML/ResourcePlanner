@@ -112,6 +112,13 @@ class WorkPackageCreateRequest(StrictRequest):
     resource_class_code: str | None = None
 
 
+class WorkPackageLoadIntervalRequest(StrictRequest):
+    id: str | None = None
+    start_date: date
+    end_date: date
+    hours: Decimal = Field(ge=0)
+
+
 class WorkPackageUpdateRequest(StrictRequest):
     expected_version: int = Field(ge=1)
     project_number: str | None = None
@@ -124,6 +131,11 @@ class WorkPackageUpdateRequest(StrictRequest):
     end_date: date | None = None
     planned_hours: float | None = Field(default=None, ge=0)
     status: str | None = None
+    load_intervals: list[WorkPackageLoadIntervalRequest] = Field(default_factory=list)
+
+
+class WorkPackageLifecycleRequest(StrictRequest):
+    expected_version: int = Field(ge=1)
 
 
 class WorkPackageWeeklyLoadRequest(StrictRequest):
