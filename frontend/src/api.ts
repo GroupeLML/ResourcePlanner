@@ -129,6 +129,42 @@ export type ContactLinkReadModel = {
   status: string | null;
 };
 
+export type ProjectManagerResolutionStatus =
+  | "RESOLVED"
+  | "UNRESOLVED_USER"
+  | "UNRESOLVED_CONTACT"
+  | "INVALID_REFERENCE"
+  | "IDENTITY_CONFLICT";
+
+export type EffectiveProjectManagerReadModel = {
+  sources: Array<"ERP" | "RP">;
+  employee_external_id: string | null;
+  erp_display_name: string | null;
+  app_user_id: string | null;
+  business_contact_id: string | null;
+  display_name: string;
+  user_active: boolean | null;
+  contact_active: boolean | null;
+  resolution_status: ProjectManagerResolutionStatus;
+  diagnostics: string[];
+};
+
+export type ProjectManagersReadModel = {
+  project_id: string;
+  project_number: string;
+  co_managers_version: number;
+  primary: EffectiveProjectManagerReadModel | null;
+  co_managers: EffectiveProjectManagerReadModel[];
+  diagnostics: string[];
+};
+
+export type ProjectCoManagerMutationResult = {
+  project_id: string;
+  business_contact_id: string;
+  version: number;
+  action: "PROJECT_CO_MANAGER_ADDED" | "PROJECT_CO_MANAGER_REMOVED";
+};
+
 export type ContactResolutionReadModel = {
   status: "RESOLVED" | "UNRESOLVED" | "INVALID_REFERENCE" | "INACTIVE";
   contact_id: string | null;
@@ -1539,10 +1575,14 @@ export function getAcumaticaProjectTaskSyncMetadata(
   );
 }
 
-export function getBusinessContacts(activeOnly = false, signal?: AbortSignal) {
+export function getBusinessContacts(
+  activeOnly = false,
+  signal?: AbortSignal,
+  userBackedOnly = true,
+) {
   const params = new URLSearchParams({
     active_only: String(activeOnly),
-    user_backed_only: "true",
+    user_backed_only: String(userBackedOnly),
   });
   return getJson<BusinessContactReadModel[]>(
     `/api/v1/business-contacts?${params.toString()}`,
@@ -1578,6 +1618,46 @@ export function getProjectBusinessContacts(projectNumber: string, signal?: Abort
   return getJson<ContactLinkReadModel>(
     `/api/v1/projects/${encodeURIComponent(projectNumber)}/business-contacts`,
     signal,
+  );
+}
+
+export function getProjectManagers(
+  projectNumber: string,
+  signal?: AbortSignal,
+  scope: ViewScope = "global",
+) {
+  const params = new URLSearchParams({ scope });
+  return getJson<ProjectManagersReadModel>(
+    `/api/v1/projects/${encodeURIComponent(projectNumber)}/managers?${params.toString()}`,
+    signal,
+  );
+}
+
+export function addProjectCoManager(
+  projectNumber: string,
+  businessContactId: string,
+  expectedVersion: number,
+  idempotencyKey: string,
+) {
+  return sendJson<ProjectCoManagerMutationResult>(
+    `/api/v1/projects/${encodeURIComponent(projectNumber)}/co-managers/${encodeURIComponent(businessContactId)}`,
+    "PUT",
+    { expected_version: expectedVersion },
+    { "Idempotency-Key": idempotencyKey },
+  );
+}
+
+export function removeProjectCoManager(
+  projectNumber: string,
+  businessContactId: string,
+  expectedVersion: number,
+  idempotencyKey: string,
+) {
+  return sendJson<ProjectCoManagerMutationResult>(
+    `/api/v1/projects/${encodeURIComponent(projectNumber)}/co-managers/${encodeURIComponent(businessContactId)}`,
+    "DELETE",
+    { expected_version: expectedVersion },
+    { "Idempotency-Key": idempotencyKey },
   );
 }
 
