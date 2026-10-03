@@ -30,7 +30,6 @@ class WorkPackageService:
             "start_date": command.start_date,
             "end_date": command.end_date,
             "planned_hours": command.planned_hours,
-            "status": command.status,
         }
         if command.resource_class_code is not UNSET:
             values["resource_class_code"] = command.resource_class_code
@@ -120,3 +119,37 @@ class WorkPackageService:
             action="weekly_loads_replaced",
             version=row.version,
         )
+
+    def close(self, reference: str, *, expected_version: int) -> WorkPackageMutationResult:
+        row = call_application_port(
+            lambda: self._repository.set_terminal_status(
+                reference,
+                terminal_status="closed",
+                expected_version=expected_version,
+            ),
+            code_prefix="work_package_close",
+            context={"reference": reference},
+        )
+        return WorkPackageMutationResult(
+            reference=row.reference,
+            action="closed",
+            version=row.version,
+        )
+
+    def cancel(self, reference: str, *, expected_version: int) -> WorkPackageMutationResult:
+        row = call_application_port(
+            lambda: self._repository.set_terminal_status(
+                reference,
+                terminal_status="cancelled",
+                expected_version=expected_version,
+            ),
+            code_prefix="work_package_cancel",
+            context={"reference": reference},
+        )
+        return WorkPackageMutationResult(
+            reference=row.reference,
+            action="cancelled",
+            version=row.version,
+        )
+
+
