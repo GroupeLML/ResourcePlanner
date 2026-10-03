@@ -133,6 +133,7 @@ from .models import (
     WorkforceRequestHistory,
     WorkPackage,
     WorkPackageAudit,
+    WorkPackageLoadInterval,
     WorkPackageWeeklyLoad,
 )
 from .identity_constraints import (
@@ -305,6 +306,7 @@ __all__ = [
     "WORKFORCE_REQUEST_NUMBER_INDEX",
     "WorkPackage",
     "WorkPackageAudit",
+    "WorkPackageLoadInterval",
     "WorkPackageWeeklyLoad",
     "WorkforceRequest",
     "WorkforceRequestCompetency",

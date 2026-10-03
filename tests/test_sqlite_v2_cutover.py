@@ -333,6 +333,7 @@ def _reshape_source_as_0048(path: Path) -> None:
             DROP TABLE IF EXISTS break_glass_credentials;
             DROP TABLE IF EXISTS work_package_audit;
             DROP TABLE IF EXISTS work_package_weekly_loads;
+            DROP TABLE IF EXISTS work_package_load_intervals;
 
 
             DROP TABLE IF EXISTS acumatica_project_task_sync_project_results;

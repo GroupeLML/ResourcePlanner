@@ -18,6 +18,7 @@ from app.infrastructure.sql import (
     TaskCatalogEntry,
     WorkPackage,
     WorkPackageAudit,
+    WorkPackageLoadInterval,
     WorkPackageWeeklyLoad,
     create_session_factory,
     create_sql_engine,
@@ -355,7 +356,7 @@ class WorkPackageWeeklyLoadTests(unittest.TestCase):
                 "work_package_weekly_load_dates_required",
             )
 
-    def test_stale_cas_and_invalidating_edit_leave_persisted_distribution_unchanged(self) -> None:
+    def test_stale_cas_and_planned_hour_increase_preserves_explicit_intent(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
             app = create_api_app(database_url)
@@ -376,7 +377,7 @@ class WorkPackageWeeklyLoadTests(unittest.TestCase):
                         "loads": self._loads(),
                     },
                 )
-                invalidating = client.patch(
+                increased = client.patch(
                     "/api/v1/work-packages/EFF-VALID",
                     json={"expected_version": 2, "planned_hours": 12.0},
                 )
@@ -387,11 +388,8 @@ class WorkPackageWeeklyLoadTests(unittest.TestCase):
                 stale.json()["error"]["code"],
                 "work_package_version_conflict",
             )
-            self.assertEqual(invalidating.status_code, 409, invalidating.text)
-            self.assertEqual(
-                invalidating.json()["error"]["code"],
-                "work_package_weekly_load_replan_required",
-            )
+            self.assertEqual(increased.status_code, 200, increased.text)
+            self.assertEqual(increased.json()["version"], 3)
 
             engine = create_sql_engine(database_url)
             factory = create_session_factory(engine)
@@ -405,11 +403,22 @@ class WorkPackageWeeklyLoadTests(unittest.TestCase):
                             .order_by(WorkPackageWeeklyLoad.week_start)
                         ).all()
                     )
-                    self.assertEqual(wp.version, 2)
-                    self.assertEqual(Decimal(wp.planned_hours), Decimal("10.01"))
+                    intervals = tuple(
+                        session.scalars(
+                            select(WorkPackageLoadInterval)
+                            .where(WorkPackageLoadInterval.work_package_id == "WP-VALID")
+                            .order_by(WorkPackageLoadInterval.start_date)
+                        ).all()
+                    )
+                    self.assertEqual(wp.version, 3)
+                    self.assertEqual(Decimal(wp.planned_hours), Decimal("12.00"))
                     self.assertEqual(
                         [Decimal(row.hours) for row in rows],
                         [Decimal("3.34"), Decimal("3.34"), Decimal("3.33")],
+                    )
+                    self.assertEqual(
+                        sum((Decimal(row.hours) for row in intervals), Decimal("0.00")),
+                        Decimal("10.01"),
                     )
             finally:
                 engine.dispose()

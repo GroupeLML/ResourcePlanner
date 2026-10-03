@@ -375,9 +375,9 @@ class MediumTermClassPortfolioTests(unittest.TestCase):
         self.assertEqual(Decimal(str(installer["capacity_hours"])), Decimal("10.00"))
         self.assertEqual(Decimal(str(installer["work_package_hours"])), Decimal("6"))
         fourth_installer = self._class_bucket(weeks[3], "INSTALLATEUR")
-        self.assertIsNone(fourth_installer["work_package_hours"])
-        self.assertEqual(fourth_installer["state"], "unavailable")
-        self.assertIn("WORK_PACKAGE_LOAD_INCOMPLETE", fourth_installer["diagnostics"])
+        self.assertEqual(Decimal(str(fourth_installer["work_package_hours"])), Decimal("11.00"))
+        self.assertEqual(fourth_installer["state"], "overloaded")
+        self.assertNotIn("WORK_PACKAGE_LOAD_INCOMPLETE", fourth_installer["diagnostics"])
 
         unclassified = self._class_bucket(weeks[0], None)
         self.assertEqual(unclassified["resource_class_label"], "Non classé")

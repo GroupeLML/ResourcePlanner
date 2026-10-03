@@ -71,6 +71,7 @@ EXPECTED_TABLES = {
     "resources",
     "work_packages",
     "work_package_weekly_loads",
+    "work_package_load_intervals",
     "work_package_audit",
     "workforce_requests",
     "workforce_request_competencies",
@@ -165,6 +166,13 @@ class SqlSchemaTests(unittest.TestCase):
             "resource_class_configs.code",
         )
         self.assertFalse(work_packages.version.nullable)
+        self.assertTrue(work_packages.terminal_status.nullable)
+        load_intervals = Base.metadata.tables["work_package_load_intervals"].c
+        self.assertFalse(load_intervals.work_package_id.nullable)
+        self.assertFalse(load_intervals.start_date.nullable)
+        self.assertFalse(load_intervals.end_date.nullable)
+        self.assertFalse(load_intervals.hours.nullable)
+        self.assertFalse(load_intervals.origin.nullable)
         self.assertFalse(work_package_audit.work_package_id.nullable)
         self.assertFalse(work_package_audit.actor_user_id.nullable)
         self.assertFalse(work_package_audit.resulting_version.nullable)

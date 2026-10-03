@@ -188,38 +188,46 @@ class ReactMediumTermContractTests(unittest.TestCase):
         self.assertNotIn('status === "closed"', page)
         self.assertNotIn('status === "cancelled"', page)
 
-    def test_editor_reuses_work_package_form_and_exposes_explicit_weekly_workflow(self) -> None:
+    def test_editor_reuses_work_package_form_and_exposes_dated_interval_workflow(self) -> None:
         editor = (ROOT / "frontend" / "src" / "WorkPackageEditor.tsx").read_text(
             encoding="utf-8"
         )
         api = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
 
         self.assertIn("await createWorkPackage(payload, key)", editor)
-        self.assertIn("await updateWorkPackage(workPackage.reference, payload, workPackage.version)", editor)
+        self.assertIn("await updateWorkPackage(workPackage.reference, payload, expectedVersion)", editor)
         self.assertIn("mediumTermWorkPackage", editor)
-        self.assertIn("proposeWorkPackageWeeklyLoads(workPackage.reference)", editor)
-        self.assertIn("replaceWorkPackageWeeklyLoads(", editor)
-        self.assertIn("Proposition AUTO prévisualisée — elle n’est pas encore enregistrée.", editor)
-        self.assertIn("Accepter la proposition AUTO", editor)
-        self.assertIn("Enregistrer la répartition manuelle", editor)
-        self.assertIn('setWeeklyOrigin("MANUAL")', editor)
-        self.assertIn("Somme affichée", editor)
-        self.assertIn("FastAPI reste autoritaire pour la validation exacte.", editor)
-        self.assertIn("/weekly-loads/proposal", api)
-        self.assertIn("/weekly-loads", api)
-        self.assertIn('"Idempotency-Key"', api)
+        self.assertIn("load_intervals: intervalPayload(intervalDraft)", editor)
+        self.assertIn("Répartition facultative", editor)
+        self.assertIn("Intervalles explicites", editor)
+        self.assertIn("+ Ajouter un intervalle", editor)
+        self.assertIn("Tout remettre en automatique", editor)
+        self.assertIn("Charge explicite", editor)
+        self.assertIn("Solde automatique", editor)
+        self.assertIn("jours calendaires", editor)
+        self.assertIn("FastAPI reste autoritaire", editor)
+        self.assertIn("closeWorkPackage(", editor)
+        self.assertIn("cancelWorkPackage(", editor)
+        self.assertIn("/close", api)
+        self.assertIn("/cancel", api)
+        self.assertNotIn("proposeWorkPackageWeeklyLoads", editor)
+        self.assertNotIn("replaceWorkPackageWeeklyLoads", editor)
 
-    def test_editor_handles_cas_and_replan_without_silent_redistribution(self) -> None:
+    def test_editor_handles_cas_atomic_replan_and_read_only_status(self) -> None:
         editor = (ROOT / "frontend" / "src" / "WorkPackageEditor.tsx").read_text(
             encoding="utf-8"
         )
+        api = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
 
         self.assertIn('"work_package_version_conflict"', editor)
-        self.assertIn('"work_package_weekly_load_replan_required"', editor)
-        self.assertIn("aucune redistribution automatique n’a été faite", editor)
+        self.assertIn('"work_package_load_intervals_replan_required"', editor)
+        self.assertIn("Corrige les intervalles dans la même sauvegarde.", editor)
         self.assertIn("Recharger le WorkPackage", editor)
-        self.assertIn("proposalFingerprint === currentFingerprint", editor)
-        self.assertNotIn("proposeWorkPackageWeeklyLoads(workPackage.reference);\n      await replace", editor)
+        self.assertIn("Statut : {statusLabel(workPackage.status)}", editor)
+        self.assertIn("calculé par le backend", editor)
+        self.assertNotIn("STATUS_OPTIONS", editor)
+        self.assertNotIn('status: form.status', editor)
+        self.assertNotIn("status: string;", api.split("export type WorkPackageWrite = {", 1)[1].split("};", 1)[0])
 
     def test_work_package_resource_class_editor_contract_is_explicit_and_backend_driven(self) -> None:
         editor = (ROOT / "frontend" / "src" / "WorkPackageEditor.tsx").read_text(

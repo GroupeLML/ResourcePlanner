@@ -46,6 +46,7 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
             "break_glass_credentials",
             "work_package_audit",
             "work_package_weekly_loads",
+            "work_package_load_intervals",
             "asset_type_approval_scope_mappings",
             "asset_approvers",
             "acumatica_project_task_sync_runs",
@@ -65,6 +66,7 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
                 "version": 1,
                 "weekly_load_origin": None,
                 "resource_class_code": None,
+                "terminal_status": None,
             },
             "approval_requirements": {
                 "asset_type_id": None,
@@ -169,7 +171,10 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
     ),
     "work_packages": _keep("WorkPackages planifiés localement."),
     "work_package_weekly_loads": _keep(
-        "Intentions hebdomadaires WorkPackage validées; elles doivent survivre au cutover."
+        "Intentions hebdomadaires historiques WorkPackage; conservées pour la migration ADR-019."
+    ),
+    "work_package_load_intervals": _keep(
+        "Intentions explicites datées WorkPackage canoniques selon ADR-019."
     ),
     "work_package_audit": _keep("Audit durable des mutations WorkPackage et de leur version CAS."),
     "workforce_requests": _keep("Demandes métier V2."),
@@ -219,6 +224,7 @@ RELATIONSHIP_CONTROLS: dict[str, tuple[str, ...]] = {
     ),
     "work_packages": ("id", "project_id"),
     "work_package_weekly_loads": ("work_package_id", "week_start"),
+    "work_package_load_intervals": ("id", "work_package_id"),
     "workforce_requests": ("id", "project_id", "work_package_id"),
     "request_lines": ("id", "workforce_request_id", "work_package_id"),
     "resource_requirements": (

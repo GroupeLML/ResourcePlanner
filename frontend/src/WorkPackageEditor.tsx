@@ -5,13 +5,13 @@ import {
   MediumTermBudgetWorkPackageReadModel,
   ProjectReadModel,
   TaskCatalogItemReadModel,
+  WorkPackageLoadIntervalWrite,
   WorkPackageReadModel,
-  WorkPackageWeeklyLoadWrite,
   WorkPackageWrite,
+  cancelWorkPackage,
+  closeWorkPackage,
   createWorkPackage,
   getTaskCatalog,
-  proposeWorkPackageWeeklyLoads,
-  replaceWorkPackageWeeklyLoads,
   updateWorkPackage,
 } from "./api";
 import { createClientId } from "./clientId";
@@ -27,12 +27,32 @@ function resourceClassDisplay(code: string | null | undefined, label: string | n
   return label ? `${label} (${code})` : code;
 }
 
-const STATUS_OPTIONS = [
-  ["planned", "Planifié"],
-  ["active", "Actif"],
-  ["closed", "Fermé"],
-  ["cancelled", "Annulé"],
-] as const;
+function statusLabel(status: string | null | undefined) {
+  switch ((status || "").toLowerCase()) {
+    case "active":
+      return "Actif";
+    case "closed":
+      return "Fermé";
+    case "cancelled":
+      return "Annulé";
+    case "planned":
+    default:
+      return "Planifié";
+  }
+}
+
+function intervalOriginLabel(origin: string | null | undefined) {
+  switch (origin) {
+    case "LEGACY_AUTO":
+      return "Historique AUTO";
+    case "LEGACY_MANUAL":
+      return "Historique MANUAL";
+    case "MANUAL":
+      return "Explicite";
+    default:
+      return origin || "Explicite";
+  }
+}
 
 type FormState = {
   projectNumber: string;
@@ -43,12 +63,14 @@ type FormState = {
   startDate: string;
   endDate: string;
   plannedHours: string;
-  status: string;
 };
 
-type WeeklyDraftRow = {
-  week_start: string;
+type IntervalDraftRow = {
+  id: string | null;
+  start_date: string;
+  end_date: string;
   hours: string;
+  origin: string | null;
 };
 
 function initialState(
@@ -64,7 +86,6 @@ function initialState(
     startDate: workPackage?.start_date || "",
     endDate: workPackage?.end_date || "",
     plannedHours: workPackage?.planned_hours == null ? "" : String(workPackage.planned_hours),
-    status: workPackage?.status || "planned",
   };
 }
 
@@ -78,46 +99,28 @@ function toPayload(form: FormState): WorkPackageWrite {
     start_date: form.startDate || null,
     end_date: form.endDate || null,
     planned_hours: hours ? Number(hours.replace(",", ".")) : null,
-    status: form.status,
   };
 }
 
-function weeklyRows(
+function intervalRows(
   workPackage: MediumTermBudgetWorkPackageReadModel | null | undefined,
-): WeeklyDraftRow[] {
-  return (workPackage?.weekly_loads ?? []).map((row) => ({
-    week_start: row.week_start,
+): IntervalDraftRow[] {
+  return (workPackage?.load_intervals ?? []).map((row) => ({
+    id: row.id || null,
+    start_date: row.start_date,
+    end_date: row.end_date,
     hours: String(row.hours),
+    origin: row.origin,
   }));
 }
 
-function weeklyFingerprint(rows: WeeklyDraftRow[]) {
-  return JSON.stringify(rows.map((row) => ({
-    week_start: row.week_start,
-    hours: row.hours.trim().replace(",", "."),
-  })));
-}
-
-function weeklyPayload(rows: WeeklyDraftRow[]): WorkPackageWeeklyLoadWrite[] {
+function intervalPayload(rows: IntervalDraftRow[]): WorkPackageLoadIntervalWrite[] {
   return rows.map((row) => ({
-    week_start: row.week_start,
+    ...(row.id ? { id: row.id } : {}),
+    start_date: row.start_date,
+    end_date: row.end_date,
     hours: Number(row.hours.trim().replace(",", ".")),
   }));
-}
-
-function weeklyDiagnosticLabel(code: string | null | undefined) {
-  switch (code) {
-    case "WEEKLY_LOAD_MISSING":
-      return "Aucune répartition hebdomadaire validée.";
-    case "WEEKLY_LOAD_DATES_MISSING":
-      return "Les dates du WorkPackage sont requises pour répartir la charge.";
-    case "WEEKLY_LOAD_TOTAL_UNKNOWN":
-      return "La charge totale du WorkPackage est requise pour répartir la charge.";
-    case "WEEKLY_LOAD_INCONSISTENT":
-      return "La répartition persistée est incohérente et doit être revue.";
-    default:
-      return code || "Répartition valide.";
-  }
 }
 
 function apiMessage(reason: ApiError) {
@@ -128,22 +131,24 @@ function apiMessage(reason: ApiError) {
       return "Cette classe de ressource n’existe plus dans le référentiel. Recharge les classes puis choisis une valeur valide.";
     case "work_package_resource_class_inactive":
       return "Cette classe de ressource est inactive et ne peut pas être choisie comme nouvelle affectation. Une classe historique déjà liée demeure toutefois lisible.";
-    case "work_package_weekly_load_replan_required":
-      return "Cette modification de dates ou de charge rendrait la répartition existante incohérente. Une nouvelle répartition explicite est requise; aucune redistribution automatique n’a été faite.";
-    case "work_package_weekly_load_dates_required":
-      return "Début et fin sont requis pour générer ou enregistrer une répartition.";
-    case "work_package_weekly_load_planned_hours_required":
-      return "La charge totale est requise pour générer ou enregistrer une répartition.";
-    case "work_package_weekly_load_total_mismatch":
-      return "La somme hebdomadaire ne correspond pas à la charge totale. Ajuste la répartition puis réessaie.";
-    case "work_package_weekly_load_week_start_invalid":
-      return "Chaque semaine doit être identifiée par son lundi.";
-    case "work_package_weekly_load_outside_window":
-      return "Une semaine se trouve hors de la fenêtre du WorkPackage.";
-    case "work_package_weekly_load_duplicate_week":
-      return "Une même semaine apparaît plusieurs fois dans la répartition.";
-    case "work_package_weekly_load_auto_proposal_mismatch":
-      return "La proposition AUTO a été modifiée. Enregistre-la comme répartition manuelle.";
+    case "work_package_load_intervals_replan_required":
+      return "Cette modification exclurait ou surallouerait un intervalle explicite. Corrige les intervalles dans la même sauvegarde.";
+    case "work_package_load_planned_hours_required":
+      return "La charge totale du WorkPackage est requise lorsqu’une répartition explicite existe.";
+    case "work_package_load_dates_required":
+      return "Les dates du WorkPackage sont requises lorsqu’une répartition explicite existe.";
+    case "work_package_load_interval_window_invalid":
+      return "La fin d’un intervalle ne peut pas précéder son début.";
+    case "work_package_load_interval_outside_window":
+      return "Chaque intervalle explicite doit rester entièrement dans la période du WorkPackage.";
+    case "work_package_load_explicit_exceeds_planned":
+      return "La somme des heures explicites ne peut pas dépasser les heures prévues.";
+    case "work_package_load_precision_invalid":
+      return "Les heures doivent respecter une précision de 0,01 h.";
+    case "work_package_load_interval_duplicate_id":
+      return "Un même intervalle ne peut apparaître qu’une fois.";
+    case "work_package_already_terminal":
+      return "Ce WorkPackage est déjà fermé ou annulé.";
     default:
       return `${reason.message}${reason.code ? ` (${reason.code})` : ""}`;
   }
@@ -167,34 +172,35 @@ export default function WorkPackageEditor({
   onReload?: () => void;
 }) {
   const [form, setForm] = useState(() => initialState(workPackage, defaultProjectNumber));
+  const [intervalDraft, setIntervalDraft] = useState<IntervalDraftRow[]>(
+    () => intervalRows(mediumTermWorkPackage),
+  );
   const [saving, setSaving] = useState(false);
+  const [lifecycleBusy, setLifecycleBusy] = useState(false);
   const [tasks, setTasks] = useState<TaskCatalogItemReadModel[]>([]);
   const [tasksLoading, setTasksLoading] = useState(false);
   const [resourceClasses, setResourceClasses] = useState<ResourceClassOptionReadModel[]>([]);
   const [resourceClassesLoading, setResourceClassesLoading] = useState(false);
   const [resourceClassTouched, setResourceClassTouched] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [versionConflict, setVersionConflict] = useState(false);
   const createRetry = useRef<{ fingerprint: string; key: string } | null>(null);
+  const lifecycleRetry = useRef<{ fingerprint: string; key: string } | null>(null);
   const editing = Boolean(workPackage);
-
-  const [weeklyDraft, setWeeklyDraft] = useState<WeeklyDraftRow[]>(() => weeklyRows(mediumTermWorkPackage));
-  const [weeklyOrigin, setWeeklyOrigin] = useState<"AUTO" | "MANUAL" | null>(
-    mediumTermWorkPackage?.weekly_load_origin ?? null,
-  );
-  const [proposalFingerprint, setProposalFingerprint] = useState<string | null>(null);
-  const [proposalVersion, setProposalVersion] = useState<number | null>(null);
-  const [weeklyDirty, setWeeklyDirty] = useState(false);
-  const [weeklyBusy, setWeeklyBusy] = useState(false);
-  const [weeklyError, setWeeklyError] = useState<string | null>(null);
-  const [weeklyConflict, setWeeklyConflict] = useState(false);
-  const weeklyRetry = useRef<{ fingerprint: string; key: string } | null>(null);
 
   useEffect(() => {
     setForm(initialState(workPackage, defaultProjectNumber));
     setResourceClassTouched(false);
     setError(null);
+    setVersionConflict(false);
     createRetry.current = null;
   }, [workPackage, defaultProjectNumber]);
+
+  useEffect(() => {
+    setIntervalDraft(intervalRows(mediumTermWorkPackage));
+    setError(null);
+    setVersionConflict(false);
+  }, [mediumTermWorkPackage, workPackage?.reference]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -211,17 +217,6 @@ export default function WorkPackageEditor({
       });
     return () => controller.abort();
   }, []);
-
-  useEffect(() => {
-    setWeeklyDraft(weeklyRows(mediumTermWorkPackage));
-    setWeeklyOrigin(mediumTermWorkPackage?.weekly_load_origin ?? null);
-    setProposalFingerprint(null);
-    setProposalVersion(null);
-    setWeeklyDirty(false);
-    setWeeklyError(null);
-    setWeeklyConflict(false);
-    weeklyRetry.current = null;
-  }, [mediumTermWorkPackage, workPackage?.reference]);
 
   const projectOptions = useMemo(
     () => [...projects].sort((left, right) => left.number.localeCompare(right.number, "fr-CA")),
@@ -277,6 +272,7 @@ export default function WorkPackageEditor({
     workPackage?.task_catalog_item_id,
     workPackage?.task_code,
     workPackage?.task_label,
+    workPackage?.task_resource_class_code,
   ]);
 
   const selectedTask = useMemo(
@@ -339,28 +335,44 @@ export default function WorkPackageEditor({
     selectedTask?.resource_class_code,
   ]);
 
-  const distributedHours = useMemo(
-    () => weeklyDraft.reduce((sum, row) => {
+  const explicitHours = useMemo(
+    () => intervalDraft.reduce((sum, row) => {
       const value = Number(row.hours.trim().replace(",", "."));
       return Number.isFinite(value) ? sum + value : sum;
     }, 0),
-    [weeklyDraft],
+    [intervalDraft],
   );
-
-  const baseFormDirty = useMemo(() => {
-    if (!workPackage) return false;
-    const persisted = initialState(workPackage, defaultProjectNumber);
-    return JSON.stringify(form) !== JSON.stringify(persisted);
-  }, [form, workPackage, defaultProjectNumber]);
+  const plannedHours = useMemo(() => {
+    const value = Number(form.plannedHours.trim().replace(",", "."));
+    return form.plannedHours.trim() && Number.isFinite(value) ? value : null;
+  }, [form.plannedHours]);
+  const automaticHours = plannedHours == null ? null : plannedHours - explicitHours;
+  const expectedVersion = mediumTermWorkPackage?.version ?? workPackage?.version ?? 1;
+  const terminal = workPackage?.status === "closed" || workPackage?.status === "cancelled";
 
   function field<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((current) => ({ ...current, [key]: value }));
+    setError(null);
+    setVersionConflict(false);
+  }
+
+  function intervalField<K extends keyof IntervalDraftRow>(
+    index: number,
+    key: K,
+    value: IntervalDraftRow[K],
+  ) {
+    setIntervalDraft((rows) => rows.map((row, rowIndex) => (
+      rowIndex === index ? { ...row, [key]: value } : row
+    )));
+    setError(null);
+    setVersionConflict(false);
   }
 
   async function save(event: FormEvent) {
     event.preventDefault();
     if (saving) return;
     setError(null);
+    setVersionConflict(false);
 
     const basePayload = toPayload(form);
     const selectedResourceClassCode = form.resourceClassCode.trim() || null;
@@ -370,11 +382,15 @@ export default function WorkPackageEditor({
           ...(resourceClassTouched
             ? { resource_class_code: selectedResourceClassCode }
             : {}),
+          ...(mediumTermWorkPackage
+            ? { load_intervals: intervalPayload(intervalDraft) }
+            : {}),
         }
       : {
           ...basePayload,
           resource_class_code: selectedResourceClassCode,
         };
+
     if (!payload.project_number) {
       setError("Choisis un projet.");
       return;
@@ -395,11 +411,23 @@ export default function WorkPackageEditor({
       setError("La date de fin ne peut pas précéder la date de début.");
       return;
     }
+    if (workPackage && intervalDraft.some((row) => !row.start_date || !row.end_date || !row.hours.trim())) {
+      setError("Chaque intervalle explicite doit avoir un début, une fin et un nombre d’heures.");
+      return;
+    }
+    if (intervalDraft.some((row) => row.start_date && row.end_date && row.end_date < row.start_date)) {
+      setError("La fin d’un intervalle ne peut pas précéder son début.");
+      return;
+    }
+    if (plannedHours != null && explicitHours > plannedHours + 0.0001) {
+      setError("La somme des heures explicites ne peut pas dépasser les heures prévues.");
+      return;
+    }
 
     setSaving(true);
     try {
       if (workPackage) {
-        await updateWorkPackage(workPackage.reference, payload, workPackage.version);
+        await updateWorkPackage(workPackage.reference, payload, expectedVersion);
       } else {
         const fingerprint = JSON.stringify(payload);
         const previous = createRetry.current;
@@ -413,6 +441,7 @@ export default function WorkPackageEditor({
     } catch (reason: unknown) {
       if (reason instanceof ApiError) {
         setError(apiMessage(reason));
+        setVersionConflict(reason.code === "work_package_version_conflict");
       } else {
         setError(reason instanceof Error ? reason.message : "Impossible d’enregistrer le WorkPackage.");
       }
@@ -421,89 +450,36 @@ export default function WorkPackageEditor({
     }
   }
 
-  function markManual(update: (rows: WeeklyDraftRow[]) => WeeklyDraftRow[]) {
-    setWeeklyDraft((current) => update(current));
-    setWeeklyOrigin("MANUAL");
-    setWeeklyDirty(true);
-    setWeeklyConflict(false);
-    setWeeklyError(null);
-    weeklyRetry.current = null;
-  }
+  async function applyLifecycle(action: "close" | "cancel") {
+    if (!workPackage || lifecycleBusy || terminal) return;
+    const verb = action === "close" ? "clôturer" : "annuler";
+    if (!window.confirm(`Confirmer : ${verb} ce WorkPackage ?`)) return;
 
-  async function generateProposal() {
-    if (!workPackage || weeklyBusy) return;
-    setWeeklyBusy(true);
-    setWeeklyError(null);
-    setWeeklyConflict(false);
+    setLifecycleBusy(true);
+    setError(null);
+    setVersionConflict(false);
     try {
-      const proposal = await proposeWorkPackageWeeklyLoads(workPackage.reference);
-      const rows = proposal.loads.map((row) => ({
-        week_start: row.week_start,
-        hours: String(row.hours),
-      }));
-      setWeeklyDraft(rows);
-      setWeeklyOrigin("AUTO");
-      setProposalVersion(proposal.version);
-      setProposalFingerprint(weeklyFingerprint(rows));
-      setWeeklyDirty(true);
-      weeklyRetry.current = null;
-    } catch (reason: unknown) {
-      if (reason instanceof ApiError) {
-        setWeeklyError(apiMessage(reason));
-        setWeeklyConflict(reason.code === "work_package_version_conflict");
+      const fingerprint = JSON.stringify({ action, reference: workPackage.reference, expectedVersion });
+      const previous = lifecycleRetry.current;
+      const key = previous?.fingerprint === fingerprint ? previous.key : createClientId();
+      lifecycleRetry.current = { fingerprint, key };
+      if (action === "close") {
+        await closeWorkPackage(workPackage.reference, expectedVersion, key);
       } else {
-        setWeeklyError(reason instanceof Error ? reason.message : "Impossible de générer la proposition.");
+        await cancelWorkPackage(workPackage.reference, expectedVersion, key);
       }
-    } finally {
-      setWeeklyBusy(false);
-    }
-  }
-
-  async function saveWeeklyLoads() {
-    if (!workPackage || weeklyBusy || weeklyDraft.length === 0) return;
-    setWeeklyBusy(true);
-    setWeeklyError(null);
-    setWeeklyConflict(false);
-    try {
-      const currentFingerprint = weeklyFingerprint(weeklyDraft);
-      const origin: "AUTO" | "MANUAL" = weeklyOrigin === "AUTO"
-        && proposalFingerprint === currentFingerprint
-        ? "AUTO"
-        : "MANUAL";
-      const loads = weeklyPayload(weeklyDraft);
-      const expectedVersion = proposalVersion
-        ?? mediumTermWorkPackage?.version
-        ?? workPackage.version;
-      const requestFingerprint = JSON.stringify({ expectedVersion, origin, loads });
-      const previous = weeklyRetry.current;
-      const key = previous?.fingerprint === requestFingerprint
-        ? previous.key
-        : createClientId();
-      weeklyRetry.current = { fingerprint: requestFingerprint, key };
-      await replaceWorkPackageWeeklyLoads(
-        workPackage.reference,
-        expectedVersion,
-        origin,
-        loads,
-        key,
-      );
       onSaved(workPackage.project_number);
     } catch (reason: unknown) {
       if (reason instanceof ApiError) {
-        setWeeklyError(apiMessage(reason));
-        setWeeklyConflict(reason.code === "work_package_version_conflict");
+        setError(apiMessage(reason));
+        setVersionConflict(reason.code === "work_package_version_conflict");
       } else {
-        setWeeklyError(reason instanceof Error ? reason.message : "Impossible d’enregistrer la répartition.");
+        setError(reason instanceof Error ? reason.message : "Impossible de modifier le cycle de vie du WorkPackage.");
       }
     } finally {
-      setWeeklyBusy(false);
+      setLifecycleBusy(false);
     }
   }
-
-  const weeklySaveOrigin: "AUTO" | "MANUAL" = weeklyOrigin === "AUTO"
-    && proposalFingerprint === weeklyFingerprint(weeklyDraft)
-    ? "AUTO"
-    : "MANUAL";
 
   return (
     <div className="wp-editor-backdrop" role="presentation" onMouseDown={onClose}>
@@ -520,12 +496,42 @@ export default function WorkPackageEditor({
             <h2 id="wp-editor-title">{editing ? "Modifier le lot" : "Créer un lot"}</h2>
             {workPackage && (
               <small>
-                Référence : {workPackage.reference} · Version {mediumTermWorkPackage?.version ?? workPackage.version}
+                Référence : {workPackage.reference} · Version {expectedVersion}
               </small>
             )}
           </div>
           <button type="button" className="wp-close" onClick={onClose} aria-label="Fermer">×</button>
         </header>
+
+        {workPackage && (
+          <div className="wp-weekly-notice" role="status">
+            <strong>Statut : {statusLabel(workPackage.status)}</strong>
+            <span> · calculé par le backend à partir du cycle de vie et de la date de début.</span>
+            {workPackage.status_diagnostic && (
+              <small> Diagnostic historique : {workPackage.status_diagnostic}</small>
+            )}
+            {!terminal && (
+              <span className="wp-weekly-actions">
+                <button
+                  type="button"
+                  className="wp-secondary"
+                  disabled={lifecycleBusy || saving}
+                  onClick={() => applyLifecycle("close")}
+                >
+                  Clôturer
+                </button>
+                <button
+                  type="button"
+                  className="wp-secondary"
+                  disabled={lifecycleBusy || saving}
+                  onClick={() => applyLifecycle("cancel")}
+                >
+                  Annuler le WorkPackage
+                </button>
+              </span>
+            )}
+          </div>
+        )}
 
         <form className="wp-form" onSubmit={save}>
           <label className="wp-full">
@@ -542,6 +548,7 @@ export default function WorkPackageEditor({
                     ? current.taskCatalogItemId
                     : "",
                 }));
+                setError(null);
               }}
             >
               <option value="">Choisir un projet</option>
@@ -651,25 +658,31 @@ export default function WorkPackageEditor({
             </div>
           )}
 
-          <label>
-            <span>Statut</span>
-            <select value={form.status} onChange={(event) => field("status", event.target.value)}>
-              {STATUS_OPTIONS.map(([value, label]) => <option value={value} key={value}>{label}</option>)}
-            </select>
-          </label>
-
           <label className="wp-full">
             <span>Nom *</span>
-            <input required value={form.name} onChange={(event) => field("name", event.target.value)} placeholder="Développement automatisation" />
+            <input
+              required
+              value={form.name}
+              onChange={(event) => field("name", event.target.value)}
+              placeholder="Développement automatisation"
+            />
           </label>
 
           <label>
             <span>Début</span>
-            <input type="date" value={form.startDate} onChange={(event) => field("startDate", event.target.value)} />
+            <input
+              type="date"
+              value={form.startDate}
+              onChange={(event) => field("startDate", event.target.value)}
+            />
           </label>
           <label>
             <span>Fin</span>
-            <input type="date" value={form.endDate} onChange={(event) => field("endDate", event.target.value)} />
+            <input
+              type="date"
+              value={form.endDate}
+              onChange={(event) => field("endDate", event.target.value)}
+            />
           </label>
 
           <label>
@@ -694,146 +707,148 @@ export default function WorkPackageEditor({
             />
           </label>
 
-          {error && <div className="wp-error wp-full">{error}</div>}
+          {editing && mediumTermWorkPackage && (
+            <section className="wp-weekly-section wp-full" aria-labelledby="wp-load-title">
+              <header className="wp-weekly-header">
+                <div>
+                  <span className="eyebrow">Répartition facultative</span>
+                  <h3 id="wp-load-title">Intervalles explicites</h3>
+                  <p>
+                    Positionne seulement les portions utiles. Le solde est réparti automatiquement
+                    sur toute la période du WorkPackage, en jours calendaires.
+                  </p>
+                </div>
+              </header>
+
+              <div className="wp-weekly-actions">
+                <button
+                  type="button"
+                  className="wp-secondary"
+                  onClick={() => {
+                    setIntervalDraft((rows) => [
+                      ...rows,
+                      {
+                        id: null,
+                        start_date: form.startDate,
+                        end_date: form.endDate || form.startDate,
+                        hours: "0",
+                        origin: "MANUAL",
+                      },
+                    ]);
+                    setError(null);
+                  }}
+                >
+                  + Ajouter un intervalle
+                </button>
+                {intervalDraft.length > 0 && (
+                  <button
+                    type="button"
+                    className="wp-secondary"
+                    onClick={() => {
+                      setIntervalDraft([]);
+                      setError(null);
+                    }}
+                  >
+                    Tout remettre en automatique
+                  </button>
+                )}
+              </div>
+
+              <div className="wp-weekly-grid">
+                {intervalDraft.length === 0 ? (
+                  <div className="wp-weekly-empty">
+                    Aucun intervalle explicite. Toute la charge sera répartie automatiquement sur la période.
+                  </div>
+                ) : intervalDraft.map((row, index) => (
+                  <div className="wp-weekly-row" key={row.id || `new-${index}`}>
+                    <label>
+                      <span>Début</span>
+                      <input
+                        type="date"
+                        value={row.start_date}
+                        onChange={(event) => intervalField(index, "start_date", event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      <span>Fin</span>
+                      <input
+                        type="date"
+                        value={row.end_date}
+                        onChange={(event) => intervalField(index, "end_date", event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      <span>Heures</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={row.hours}
+                        onChange={(event) => intervalField(index, "hours", event.target.value)}
+                      />
+                    </label>
+                    <span className="wp-weekly-origin">{intervalOriginLabel(row.origin)}</span>
+                    <button
+                      type="button"
+                      className="wp-remove-week"
+                      onClick={() => {
+                        setIntervalDraft((rows) => rows.filter((_, rowIndex) => rowIndex !== index));
+                        setError(null);
+                      }}
+                    >
+                      Retirer
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              <div className="wp-weekly-total">
+                <span>Charge explicite</span>
+                <strong>
+                  {new Intl.NumberFormat("fr-CA", { maximumFractionDigits: 2 }).format(explicitHours)} h
+                </strong>
+                <span>
+                  Solde automatique :{" "}
+                  {automaticHours == null
+                    ? "charge totale inconnue"
+                    : `${new Intl.NumberFormat("fr-CA", { maximumFractionDigits: 2 }).format(Math.max(automaticHours, 0))} h`}
+                </span>
+                <small>
+                  FastAPI reste autoritaire pour le calcul au centième, la validation et la projection hebdomadaire.
+                </small>
+              </div>
+            </section>
+          )}
+
+          {error && (
+            <div className="wp-error wp-full">
+              {error}
+              {versionConflict && onReload && (
+                <button type="button" className="wp-reload" onClick={onReload}>
+                  Recharger le WorkPackage
+                </button>
+              )}
+            </div>
+          )}
 
           <footer className="wp-editor-actions wp-full">
-            <button type="button" className="wp-secondary" onClick={onClose} disabled={saving}>Annuler</button>
-            <button type="submit" className="wp-primary" disabled={saving}>
+            <button
+              type="button"
+              className="wp-secondary"
+              onClick={onClose}
+              disabled={saving || lifecycleBusy}
+            >
+              Retour
+            </button>
+            <button
+              type="submit"
+              className="wp-primary"
+              disabled={saving || lifecycleBusy}
+            >
               {saving ? "Enregistrement…" : editing ? "Enregistrer le WorkPackage" : "Créer le WorkPackage"}
             </button>
           </footer>
         </form>
-
-        {editing && mediumTermWorkPackage && (
-          <section className="wp-weekly-section" aria-labelledby="wp-weekly-title">
-            <header className="wp-weekly-header">
-              <div>
-                <span className="eyebrow">Répartition hebdomadaire</span>
-                <h3 id="wp-weekly-title">Charge dans le temps</h3>
-                <p>{weeklyDiagnosticLabel(mediumTermWorkPackage.weekly_load_diagnostic)}</p>
-              </div>
-              <div className="wp-weekly-origin">
-                <span>Origine persistée</span>
-                <strong>{mediumTermWorkPackage.weekly_load_origin || "Aucune"}</strong>
-              </div>
-            </header>
-
-            {baseFormDirty && (
-              <div className="wp-weekly-notice">
-                Les valeurs du formulaire WorkPackage ne sont pas encore enregistrées. La proposition AUTO
-                utilise toujours les dates et la charge persistées côté backend.
-              </div>
-            )}
-
-            <div className="wp-weekly-actions">
-              <button
-                type="button"
-                className="wp-secondary"
-                disabled={weeklyBusy || baseFormDirty}
-                onClick={generateProposal}
-              >
-                {weeklyBusy ? "Traitement…" : "Générer une proposition automatique"}
-              </button>
-              <button
-                type="button"
-                className="wp-secondary"
-                disabled={weeklyBusy}
-                onClick={() => markManual((rows) => [...rows, { week_start: "", hours: "0" }])}
-              >
-                + Ajouter une semaine
-              </button>
-            </div>
-
-            {proposalFingerprint && weeklySaveOrigin === "AUTO" && (
-              <div className="wp-weekly-preview" role="status">
-                Proposition AUTO prévisualisée — elle n’est pas encore enregistrée.
-              </div>
-            )}
-            {proposalFingerprint && weeklySaveOrigin === "MANUAL" && (
-              <div className="wp-weekly-preview is-manual" role="status">
-                Proposition modifiée — l’enregistrement sera MANUAL, pas AUTO.
-              </div>
-            )}
-
-            <div className="wp-weekly-grid">
-              {weeklyDraft.length === 0 ? (
-                <div className="wp-weekly-empty">
-                  Aucune ligne persistée. Génère une proposition ou saisis une répartition manuelle.
-                </div>
-              ) : weeklyDraft.map((row, index) => (
-                <div className="wp-weekly-row" key={`${row.week_start || "new"}-${index}`}>
-                  <label>
-                    <span>Lundi de semaine</span>
-                    <input
-                      type="date"
-                      value={row.week_start}
-                      onChange={(event) => markManual((rows) => rows.map((candidate, rowIndex) => (
-                        rowIndex === index ? { ...candidate, week_start: event.target.value } : candidate
-                      )))}
-                    />
-                  </label>
-                  <label>
-                    <span>Heures</span>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={row.hours}
-                      onChange={(event) => markManual((rows) => rows.map((candidate, rowIndex) => (
-                        rowIndex === index ? { ...candidate, hours: event.target.value } : candidate
-                      )))}
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    className="wp-remove-week"
-                    onClick={() => markManual((rows) => rows.filter((_, rowIndex) => rowIndex !== index))}
-                  >
-                    Retirer
-                  </button>
-                </div>
-              ))}
-            </div>
-
-            <div className="wp-weekly-total">
-              <span>Somme affichée</span>
-              <strong>{new Intl.NumberFormat("fr-CA", { maximumFractionDigits: 2 }).format(distributedHours)} h</strong>
-              <span>sur {mediumTermWorkPackage.planned_hours == null ? "charge totale inconnue" : `${mediumTermWorkPackage.planned_hours} h prévues`}</span>
-              <small>Cette somme est une aide visuelle; FastAPI reste autoritaire pour la validation exacte.</small>
-            </div>
-
-            {weeklyError && (
-              <div className="wp-error">
-                {weeklyError}
-                {weeklyConflict && onReload && (
-                  <button type="button" className="wp-reload" onClick={onReload}>
-                    Recharger le WorkPackage
-                  </button>
-                )}
-              </div>
-            )}
-
-            <footer className="wp-weekly-footer">
-              <span>
-                {weeklySaveOrigin === "AUTO"
-                  ? "La proposition AUTO sera acceptée explicitement."
-                  : "Les valeurs seront enregistrées comme intention MANUAL."}
-              </span>
-              <button
-                type="button"
-                className="wp-primary"
-                disabled={weeklyBusy || !weeklyDirty || weeklyDraft.length === 0}
-                onClick={saveWeeklyLoads}
-              >
-                {weeklyBusy
-                  ? "Enregistrement…"
-                  : weeklySaveOrigin === "AUTO"
-                    ? "Accepter la proposition AUTO"
-                    : "Enregistrer la répartition manuelle"}
-              </button>
-            </footer>
-          </section>
-        )}
       </section>
     </div>
   );

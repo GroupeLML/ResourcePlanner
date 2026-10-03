@@ -143,6 +143,28 @@ class ApplicationFacade:
     ) -> WorkPackageMutationResult:
         return self._work_package_service().update_command(command)
 
+    def close_work_package(
+        self,
+        reference: str,
+        *,
+        expected_version: int,
+    ) -> WorkPackageMutationResult:
+        return self._work_package_service().close(
+            reference,
+            expected_version=expected_version,
+        )
+
+    def cancel_work_package(
+        self,
+        reference: str,
+        *,
+        expected_version: int,
+    ) -> WorkPackageMutationResult:
+        return self._work_package_service().cancel(
+            reference,
+            expected_version=expected_version,
+        )
+
     def propose_work_package_weekly_loads(
         self,
         reference: str,

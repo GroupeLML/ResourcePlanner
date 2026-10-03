@@ -115,6 +115,17 @@ def task_budget_diagnostic(
 class MediumTermWeeklyLoadReadModel:
     week_start: date
     hours: Decimal
+    explicit_hours: Decimal = Decimal("0.00")
+    automatic_hours: Decimal = Decimal("0.00")
+
+
+@dataclass(frozen=True, slots=True)
+class WorkPackageLoadIntervalReadModel:
+    id: str
+    start_date: date
+    end_date: date
+    hours: Decimal
+    origin: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +137,7 @@ class MediumTermBudgetWorkPackageReadModel:
     planned_hours: Decimal | None
     status: str
     budget_included: bool
+    status_diagnostic: str | None = None
     project_id: str = ""
     project_number: str = ""
     project_name: str = ""
@@ -136,6 +148,9 @@ class MediumTermBudgetWorkPackageReadModel:
     weekly_load_origin: str | None = None
     weekly_loads: tuple[MediumTermWeeklyLoadReadModel, ...] = ()
     weekly_load_diagnostic: str | None = None
+    load_intervals: tuple[WorkPackageLoadIntervalReadModel, ...] = ()
+    explicit_hours: Decimal | None = None
+    automatic_hours: Decimal | None = None
     resource_class_code: str | None = None
     resource_class_label: str | None = None
     resource_class_active: bool | None = None

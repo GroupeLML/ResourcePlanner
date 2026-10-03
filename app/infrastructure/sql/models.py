@@ -223,6 +223,10 @@ class WorkPackage(TimestampMixin, Base):
             "weekly_load_origin IS NULL OR weekly_load_origin IN ('AUTO','MANUAL')",
             name="work_package_weekly_load_origin",
         ),
+        CheckConstraint(
+            "terminal_status IS NULL OR terminal_status IN ('closed','cancelled')",
+            name="work_package_terminal_status",
+        ),
         Index("ix_work_packages_project_status", "project_id", "status"),
         Index("ix_work_packages_task_catalog_item", "task_catalog_item_id"),
     )
@@ -252,8 +256,48 @@ class WorkPackage(TimestampMixin, Base):
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     planned_hours: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, server_default=text("'planned'"), index=True)
+    terminal_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
     weekly_load_origin: Mapped[str | None] = mapped_column(String(16), nullable=True)
     legacy_effort_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+
+
+class WorkPackageLoadInterval(Base):
+    __tablename__ = "work_package_load_intervals"
+    __table_args__ = (
+        CheckConstraint(
+            "end_date >= start_date",
+            name="work_package_load_interval_window",
+        ),
+        CheckConstraint(
+            "hours >= 0",
+            name="work_package_load_interval_hours_non_negative",
+        ),
+        CheckConstraint(
+            "origin IN ('MANUAL','LEGACY_AUTO','LEGACY_MANUAL')",
+            name="work_package_load_interval_origin",
+        ),
+        Index(
+            "ix_work_package_load_intervals_package_start",
+            "work_package_id",
+            "start_date",
+            "end_date",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True, default=new_id)
+    work_package_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("work_packages.id"),
+        nullable=False,
+    )
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    hours: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    origin: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        server_default=text("'MANUAL'"),
+    )
 
 
 class WorkPackageWeeklyLoad(Base):

@@ -460,61 +460,69 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
 
     const mediumTermCapacity = page.locator(".mt-capacity-panel");
     await expect(mediumTermCapacity).toContainText("Charge / capacité · utilisation");
-    await expect(mediumTermCapacity).toContainText("Charge inconnue");
-    await expect(mediumTermCapacity).toContainText("Charge WorkPackage non disponible");
+    await expect(mediumTermCapacity).not.toContainText("Charge inconnue");
+    await expect(mediumTermCapacity).not.toContainText("Charge WorkPackage non disponible");
 
     const workPackageRow = page.locator(".mt-timeline-row").filter({ hasText: "Lot acceptation Playwright" });
     await expect(workPackageRow).toContainText("Classe de ressource : Programmeur (PROGRAMMEUR)");
     await expect(workPackageRow).toContainText("Classe WorkPackage différente de la tâche ERP");
     await workPackageRow.getByRole("button", { name: "Modifier / répartir" }).click();
-    const weeklyEditor = page.getByRole("dialog", { name: "Modifier le lot" });
-    await expect(weeklyEditor).toContainText("Répartition hebdomadaire");
-    await expect(labelled(weeklyEditor, "Classe de ressource", "select")).toHaveValue("PROGRAMMEUR");
-    const editTask = labelled(weeklyEditor, "Tâche ERP", "select");
+    const loadEditor = page.getByRole("dialog", { name: "Modifier le lot" });
+    await expect(loadEditor).toContainText("Répartition facultative");
+    await expect(loadEditor).toContainText("Aucun intervalle explicite");
+    await expect(loadEditor).toContainText("Solde automatique : 40 h");
+    await expect(labelled(loadEditor, "Classe de ressource", "select")).toHaveValue("PROGRAMMEUR");
+    const editTask = labelled(loadEditor, "Tâche ERP", "select");
     await editTask.selectOption({ label: "110 — INSTALLATION ÉLECTRIQUE E2E" });
-    await expect(labelled(weeklyEditor, "Classe de ressource", "select")).toHaveValue("PROGRAMMEUR");
+    await expect(labelled(loadEditor, "Classe de ressource", "select")).toHaveValue("PROGRAMMEUR");
     await editTask.selectOption({ label: "210 — AUTOMATISATION E2E" });
-    await expect(weeklyEditor).toContainText("Aucune répartition hebdomadaire validée.");
-    await weeklyEditor.getByRole("button", { name: "Générer une proposition automatique" }).click();
-    await expect(weeklyEditor).toContainText("Proposition AUTO prévisualisée — elle n’est pas encore enregistrée.");
-    await expect(weeklyEditor).toContainText("Somme affichée");
 
-    const weeklyIdempotencyKeys: string[] = [];
-    let failWeeklySaveOnce = true;
-    const weeklyRoute = /\/api\/v1\/work-packages\/[^/?]+\/weekly-loads$/;
-    await page.route(weeklyRoute, async (route) => {
+    const updatePayloads: Array<Record<string, unknown>> = [];
+    const updateRoute = /\/api\/v1\/work-packages\/[^/?]+$/;
+    await page.route(updateRoute, async (route) => {
       const request = route.request();
-      if (request.method() === "PUT") {
-        weeklyIdempotencyKeys.push(request.headers()["idempotency-key"] || "");
-        if (failWeeklySaveOnce) {
-          failWeeklySaveOnce = false;
-          await route.fulfill({
-            status: 503,
-            contentType: "application/json",
-            body: JSON.stringify({ detail: "E2E transient weekly load failure" }),
-          });
-          return;
-        }
+      if (request.method() === "PATCH") {
+        updatePayloads.push(request.postDataJSON() as Record<string, unknown>);
       }
       await route.continue();
     });
 
-    const weeklySaveButton = weeklyEditor.getByRole("button", { name: "Accepter la proposition AUTO" });
-    await weeklySaveButton.click();
-    await expect.poll(() => weeklyIdempotencyKeys.length).toBe(1);
-    await expect(weeklySaveButton).toBeEnabled();
-    await weeklySaveButton.click();
-    await expect(weeklyEditor).toBeHidden();
-    expect(weeklyIdempotencyKeys).toHaveLength(2);
-    expect(weeklyIdempotencyKeys[0]).toBe(weeklyIdempotencyKeys[1]);
-    expect(weeklyIdempotencyKeys[0]).toMatch(UUID_V4);
-    await page.unroute(weeklyRoute);
+    await loadEditor.getByRole("button", { name: "+ Ajouter un intervalle" }).click();
+    const explicitInterval = loadEditor.locator(".wp-weekly-row").first();
+    await explicitInterval.locator('input[type="date"]').nth(0).fill(d1);
+    await explicitInterval.locator('input[type="date"]').nth(1).fill(d5);
+    await explicitInterval.locator('input[type="number"]').fill("10");
+    await expect(loadEditor).toContainText("Charge explicite");
+    await expect(loadEditor).toContainText("10 h");
+    await expect(loadEditor).toContainText("Solde automatique : 30 h");
+
+    await loadEditor.getByRole("button", { name: "Enregistrer le WorkPackage" }).click();
+    await expect(loadEditor).toBeHidden();
+    expect(updatePayloads).toHaveLength(1);
+    expect(updatePayloads[0].expected_version).toBe(1);
+    expect(updatePayloads[0].planned_hours).toBe(40);
+    expect(updatePayloads[0].load_intervals).toEqual([
+      {
+        start_date: d1,
+        end_date: d5,
+        hours: 10,
+      },
+    ]);
+    await page.unroute(updateRoute);
     await page.evaluate(() => {
       delete (globalThis.crypto as unknown as { randomUUID?: () => string }).randomUUID;
     });
 
     const refreshedWorkPackageRow = page.locator(".mt-timeline-row").filter({ hasText: "Lot acceptation Playwright" });
-    await expect(refreshedWorkPackageRow).toContainText("Répartition AUTO");
+    await expect(refreshedWorkPackageRow).toBeVisible();
+    await refreshedWorkPackageRow.getByRole("button", { name: "Modifier / répartir" }).click();
+    const persistedLoadEditor = page.getByRole("dialog", { name: "Modifier le lot" });
+    await expect(persistedLoadEditor.locator(".wp-weekly-row")).toHaveCount(1);
+    await expect(persistedLoadEditor).toContainText("Charge explicite");
+    await expect(persistedLoadEditor).toContainText("10 h");
+    await expect(persistedLoadEditor).toContainText("Solde automatique : 30 h");
+    await persistedLoadEditor.getByRole("button", { name: "Retour" }).click();
+    await expect(persistedLoadEditor).toBeHidden();
     await expect(page.locator(".mt-task-strip").filter({ hasText: "210" })).toContainText("Budget");
 
     const mediumTermFilters = page.locator(".mt-filters");

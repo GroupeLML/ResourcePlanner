@@ -252,6 +252,7 @@ export type WorkPackageReadModel = {
   end_date: string | null;
   planned_hours: number | null;
   status: string;
+  status_diagnostic: string | null;
   task_catalog_item_id: string | null;
   task_code: string | null;
   task_label: string | null;
@@ -272,8 +273,8 @@ export type WorkPackageWrite = {
   start_date: string | null;
   end_date: string | null;
   planned_hours: number | null;
-  status: string;
   resource_class_code?: string | null;
+  load_intervals?: WorkPackageLoadIntervalWrite[];
 };
 
 export type WorkPackageMutationResult = {
@@ -285,6 +286,23 @@ export type WorkPackageMutationResult = {
 export type MediumTermWeeklyLoadReadModel = {
   week_start: string;
   hours: number;
+  explicit_hours: number;
+  automatic_hours: number;
+};
+
+export type WorkPackageLoadIntervalReadModel = {
+  id: string;
+  start_date: string;
+  end_date: string;
+  hours: number;
+  origin: "MANUAL" | "LEGACY_AUTO" | "LEGACY_MANUAL";
+};
+
+export type WorkPackageLoadIntervalWrite = {
+  id?: string | null;
+  start_date: string;
+  end_date: string;
+  hours: number;
 };
 
 export type MediumTermBudgetWorkPackageReadModel = {
@@ -294,6 +312,7 @@ export type MediumTermBudgetWorkPackageReadModel = {
   name: string;
   planned_hours: number | null;
   status: string;
+  status_diagnostic: string | null;
   budget_included: boolean;
   project_id: string;
   project_number: string;
@@ -305,6 +324,9 @@ export type MediumTermBudgetWorkPackageReadModel = {
   weekly_load_origin: "AUTO" | "MANUAL" | null;
   weekly_loads: MediumTermWeeklyLoadReadModel[];
   weekly_load_diagnostic: string | null;
+  load_intervals: WorkPackageLoadIntervalReadModel[];
+  explicit_hours: number | null;
+  automatic_hours: number | null;
   resource_class_code: string | null;
   resource_class_label: string | null;
   resource_class_active: boolean | null;
@@ -1800,6 +1822,32 @@ export function updateWorkPackage(
     `/api/v1/work-packages/${encodeURIComponent(reference)}`,
     "PATCH",
     { ...payload, expected_version: expectedVersion },
+  );
+}
+
+export function closeWorkPackage(
+  reference: string,
+  expectedVersion: number,
+  idempotencyKey: string,
+) {
+  return sendJson<WorkPackageMutationResult>(
+    `/api/v1/work-packages/${encodeURIComponent(reference)}/close`,
+    "POST",
+    { expected_version: expectedVersion },
+    { "Idempotency-Key": idempotencyKey },
+  );
+}
+
+export function cancelWorkPackage(
+  reference: string,
+  expectedVersion: number,
+  idempotencyKey: string,
+) {
+  return sendJson<WorkPackageMutationResult>(
+    `/api/v1/work-packages/${encodeURIComponent(reference)}/cancel`,
+    "POST",
+    { expected_version: expectedVersion },
+    { "Idempotency-Key": idempotencyKey },
   );
 }
 

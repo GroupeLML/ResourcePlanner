@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from ..errors import ApplicationValidationError
+from ..work_package_load import WorkPackageLoadIntervalValue
 from .common import UNSET, UnsetType, required_text, validate_date_window
 
 
@@ -17,7 +18,6 @@ class WorkPackageCreateCommand:
     start_date: date | None = None
     end_date: date | None = None
     planned_hours: float | None = None
-    status: str = "planned"
     resource_class_code: str | None | UnsetType = UNSET
 
     def __post_init__(self) -> None:
@@ -35,11 +35,6 @@ class WorkPackageCreateCommand:
             self.name,
             field="work_package_name",
             message="Le nom du WorkPackage est requis.",
-        )
-        required_text(
-            self.status,
-            field="work_package_status",
-            message="Le statut du WorkPackage est requis.",
         )
         validate_date_window(self.start_date, self.end_date, prefix="work_package")
         if (
@@ -72,7 +67,7 @@ class WorkPackageUpdateCommand:
     start_date: date | None | UnsetType = UNSET
     end_date: date | None | UnsetType = UNSET
     planned_hours: float | None | UnsetType = UNSET
-    status: str | UnsetType = UNSET
+    load_intervals: tuple[WorkPackageLoadIntervalValue, ...] | UnsetType = UNSET
 
     def __post_init__(self) -> None:
         required_text(
@@ -107,12 +102,6 @@ class WorkPackageUpdateCommand:
                 field="work_package_name",
                 message="Le nom du WorkPackage est requis.",
             )
-        if self.status is not UNSET:
-            required_text(
-                self.status,
-                field="work_package_status",
-                message="Le statut du WorkPackage est requis.",
-            )
         if self.planned_hours is not UNSET and self.planned_hours is not None and self.planned_hours < 0:
             raise ApplicationValidationError(
                 "Les heures prévues ne peuvent pas être négatives.",
@@ -132,7 +121,7 @@ class WorkPackageUpdateCommand:
             "start_date",
             "end_date",
             "planned_hours",
-            "status",
+            "load_intervals",
         ):
             value = getattr(self, field)
             if value is not UNSET:

@@ -102,6 +102,7 @@ def _reshape_as_0048(path: Path) -> None:
             DROP TABLE IF EXISTS break_glass_credentials;
             DROP TABLE IF EXISTS work_package_audit;
             DROP TABLE IF EXISTS work_package_weekly_loads;
+            DROP TABLE IF EXISTS work_package_load_intervals;
             DROP TABLE IF EXISTS project_manager_audit;
             DROP TABLE IF EXISTS project_co_managers;
 

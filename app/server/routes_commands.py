@@ -47,6 +47,7 @@ from ..application import (
     WorkPackageCreateCommand,
     WorkPackageUpdateCommand,
 )
+from ..application.work_package_load import WorkPackageLoadIntervalValue
 from ..application.work_package_weekly_load import (
     WeeklyLoadValue,
     WorkPackageWeeklyLoadReplaceCommand,
@@ -85,6 +86,7 @@ from .schemas import (
     SegmentCreateRequest,
     SegmentUpdateRequest,
     WorkPackageCreateRequest,
+    WorkPackageLifecycleRequest,
     WorkPackageUpdateRequest,
     WorkPackageWeeklyLoadReplaceRequest,
 )
@@ -273,13 +275,64 @@ def build_command_router(
         body: WorkPackageUpdateRequest,
         facade: ApplicationFacade = Depends(facade_dependency),
     ) -> dict[str, Any]:
+        values = body.model_dump(exclude_unset=True, exclude={"load_intervals"})
+        if "load_intervals" in body.model_fields_set:
+            values["load_intervals"] = tuple(
+                WorkPackageLoadIntervalValue(
+                    id=row.id,
+                    start_date=row.start_date,
+                    end_date=row.end_date,
+                    hours=row.hours,
+                )
+                for row in body.load_intervals
+            )
         return _payload(
             facade.update_work_package(
                 WorkPackageUpdateCommand(
                     reference=reference,
-                    **body.model_dump(exclude_unset=True),
+                    **values,
                 )
             )
+        )
+
+    @router.post("/work-packages/{reference}/close")
+    def close_work_package(
+        reference: str,
+        body: WorkPackageLifecycleRequest,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        facade: ApplicationFacade = Depends(facade_dependency),
+        idempotency: IdempotentCommandExecutor = Depends(stable_idempotency),
+    ) -> dict[str, Any]:
+        return idempotency.execute(
+            scope="work_package.close",
+            key=idempotency_key,
+            request_payload=_json_body(body),
+            action=lambda: _payload(
+                facade.close_work_package(
+                    reference,
+                    expected_version=body.expected_version,
+                )
+            ),
+        )
+
+    @router.post("/work-packages/{reference}/cancel")
+    def cancel_work_package(
+        reference: str,
+        body: WorkPackageLifecycleRequest,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        facade: ApplicationFacade = Depends(facade_dependency),
+        idempotency: IdempotentCommandExecutor = Depends(stable_idempotency),
+    ) -> dict[str, Any]:
+        return idempotency.execute(
+            scope="work_package.cancel",
+            key=idempotency_key,
+            request_payload=_json_body(body),
+            action=lambda: _payload(
+                facade.cancel_work_package(
+                    reference,
+                    expected_version=body.expected_version,
+                )
+            ),
         )
 
     @router.post("/work-packages/{reference}/weekly-loads/proposal")
