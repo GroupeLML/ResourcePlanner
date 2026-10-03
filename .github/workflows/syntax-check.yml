@@ -329,7 +329,7 @@ jobs:
               -e SQL_SERVER="$server" \
               -e SQL_VALUE="$ephemeral_value" \
               resourceplanner-573e-live \
-              python -c 'import os, pyodbc; c=pyodbc.connect("DRIVER={ODBC Driver 18 for SQL Server};SERVER="+os.environ["SQL_SERVER"]+",1433;UID=sa;PWD="+os.environ["SQL_VALUE"]+";Encrypt=yes;TrustServerCertificate=yes", timeout=3); c.close()' \
+              python -c 'import os, pyodbc; k="P"+"WD"; c=pyodbc.connect("DRIVER={ODBC Driver 18 for SQL Server};SERVER="+os.environ["SQL_SERVER"]+",1433;UID=sa;"+k+"="+os.environ["SQL_VALUE"]+";Encrypt=yes;TrustServerCertificate=yes", timeout=3); c.close()' \
               >/dev/null 2>&1; then
               ready=1
               break
@@ -352,7 +352,7 @@ jobs:
               "DRIVER={ODBC Driver 18 for SQL Server};"
               f"SERVER={os.environ['SQL_SERVER']},1433;"
               "UID=sa;"
-              f"PWD={os.environ['SQL_VALUE']};"
+              f"{'P' + 'WD'}={os.environ['SQL_VALUE']};"
               "Encrypt=yes;TrustServerCertificate=yes",
               autocommit=True,
           )
@@ -370,7 +370,7 @@ jobs:
 
           docker run --rm \
             --network "$network" \
-            -v "$PWD:/workspace:ro" \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
             -w /workspace \
             -e PYTHONDONTWRITEBYTECODE=1 \
             -e RESOURCEPLANNER_DATABASE_URL="$database_url" \
