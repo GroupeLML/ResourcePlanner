@@ -730,6 +730,13 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
                 end_date=target_end,
                 planned_hours=target_planned_hours,
             )
+            # A canonical interval command supersedes the legacy weekly intent,
+            # including when the explicit collection is intentionally empty.
+            self._session.execute(
+                delete(WorkPackageWeeklyLoad).where(
+                    WorkPackageWeeklyLoad.work_package_id == work_package.id
+                )
+            )
             values["weekly_load_origin"] = None
         else:
             target_intervals = existing_intervals
