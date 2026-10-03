@@ -18,6 +18,12 @@ if str(ROOT) not in sys.path:
 
 from app.application.security import AuthPrincipal, ROLE_ADMIN
 from app.infrastructure.sql import Base, create_session_factory, create_sql_engine
+from app.infrastructure.sql.asset_models import (
+    Asset,
+    AssetAllocation,
+    AssetRequirement,
+    AssetType,
+)
 from app.infrastructure.sql.models import (
     Project,
     RequestLine,
@@ -63,15 +69,22 @@ class DatasetSpec:
     demands: int
     segments: int
     shifts: int
+    assets: int
 
     def shape(self) -> dict[str, int]:
         return asdict(self)
 
 
 DATASETS: dict[str, DatasetSpec] = {
-    "small": DatasetSpec(projects=8, resources=16, demands=32, segments=16, shifts=48),
-    "medium": DatasetSpec(projects=24, resources=48, demands=120, segments=60, shifts=180),
-    "large": DatasetSpec(projects=60, resources=120, demands=360, segments=180, shifts=540),
+    "small": DatasetSpec(
+        projects=8, resources=16, demands=32, segments=16, shifts=48, assets=4
+    ),
+    "medium": DatasetSpec(
+        projects=24, resources=48, demands=120, segments=60, shifts=180, assets=8
+    ),
+    "large": DatasetSpec(
+        projects=60, resources=120, demands=360, segments=180, shifts=540, assets=20
+    ),
 }
 
 
@@ -132,6 +145,27 @@ def _seed(database_url: str, spec: DatasetSpec) -> None:
                 for index in range(1, spec.resources + 1)
             ]
             session.add_all(resources)
+
+            asset_type = AssetType(
+                id="PERF-ASSET-TYPE",
+                code="PERF-EQUIPMENT",
+                label="Équipement performance",
+                category="EQUIPMENT",
+                active=True,
+            )
+            session.add(asset_type)
+            assets = [
+                Asset(
+                    id=f"PERF-ASSET-{index:04d}",
+                    code=f"PERF-ASSET-{index:04d}",
+                    label=f"Actif synthétique {index:04d}",
+                    asset_type_id=asset_type.id,
+                    active=True,
+                )
+                for index in range(1, spec.assets + 1)
+            ]
+            session.add_all(assets)
+
             session.add_all(
                 ResourceAvailabilityRule(
                     id=f"PERF-AV-{index:04d}",
@@ -245,6 +279,34 @@ def _seed(database_url: str, spec: DatasetSpec) -> None:
                     )
                 )
             session.add_all(shifts)
+
+            asset_requirements = [
+                AssetRequirement(
+                    id=f"PERF-AREQ-{index:04d}",
+                    project_id=projects[(index - 1) % len(projects)].id,
+                    origin="PROJECT_DIRECT",
+                    asset_type_id=asset_type.id,
+                    start_date=WINDOW_START,
+                    end_date=WINDOW_END,
+                    status="Planifié",
+                )
+                for index in range(1, spec.assets + 1)
+            ]
+            session.add_all(asset_requirements)
+            session.flush()
+            session.add_all(
+                AssetAllocation(
+                    id=f"PERF-AALLOC-{index:04d}",
+                    asset_requirement_id=requirement.id,
+                    asset_id=assets[(index - 1) % len(assets)].id,
+                    operator_resource_id=resources[(index - 1) % len(resources)].id,
+                    start_date=WINDOW_START,
+                    end_date=WINDOW_END,
+                    locked=True,
+                    source="MANUAL",
+                )
+                for index, requirement in enumerate(asset_requirements, start=1)
+            )
     finally:
         engine.dispose()
 
