@@ -9,6 +9,7 @@ from ..domain.demand_periods import DemandPeriodDefinition
 from ..domain.planning_snapshot import PlanningSnapshot
 from .query_models import WorkPackageReadModel
 from .read_models import DemandPeriodReadModel, DemandReadModel, SegmentReadModel
+from .work_package_load import WorkPackageLoadIntervalValue
 from .work_package_weekly_load import WorkPackageWeeklyLoadState, WeeklyLoadValue
 
 
@@ -38,6 +39,14 @@ class WorkPackageRepositoryPort(Protocol):
         loads: Sequence[WeeklyLoadValue],
         *,
         origin: str,
+        expected_version: int,
+    ) -> WorkPackageReadModel: ...
+
+    def set_terminal_status(
+        self,
+        reference: str,
+        *,
+        terminal_status: str,
         expected_version: int,
     ) -> WorkPackageReadModel: ...
 
