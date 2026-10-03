@@ -39,6 +39,7 @@ from app.infrastructure.sql.models import (  # noqa: E402
     WorkforceRequest,
     WorkforceRequestHistory,
     WorkPackage,
+    WorkPackageLoadInterval,
     WorkPackageWeeklyLoad,
 )
 
@@ -489,6 +490,22 @@ def _critical_statements():
         select(WorkPackage)
         .where(WorkPackage.project_id == bindparam("medium_term_project_id"))
         .order_by(WorkPackage.start_date, WorkPackage.name, WorkPackage.id)
+    )
+    yield "medium_term_load_intervals", (
+        select(WorkPackageLoadInterval)
+        .where(
+            WorkPackageLoadInterval.work_package_id == bindparam("interval_work_package_id")
+        )
+        .order_by(
+            WorkPackageLoadInterval.start_date,
+            WorkPackageLoadInterval.end_date,
+            WorkPackageLoadInterval.id,
+        )
+    )
+    yield "medium_term_load_interval_delete", (
+        delete(WorkPackageLoadInterval).where(
+            WorkPackageLoadInterval.work_package_id == bindparam("interval_delete_work_package_id")
+        )
     )
     yield "medium_term_weekly_loads", (
         select(WorkPackageWeeklyLoad)
