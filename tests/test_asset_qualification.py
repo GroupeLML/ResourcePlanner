@@ -408,7 +408,7 @@ class AssetQualificationTests(unittest.TestCase):
         preserved = next(
             row
             for row in state_after_rejection["allocations"]
-            if row["asset_requirement_id"] == requirement["id"]
+            if row["requirement_id"] == requirement["id"]
         )
         self.assertEqual(preserved["start_date"], "2026-09-24")
         self.assertEqual(preserved["end_date"], "2026-09-26")
