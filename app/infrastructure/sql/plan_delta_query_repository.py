@@ -1240,6 +1240,7 @@ class SqlPlannerQueryRepositoryWithPlanDelta(SqlPlannerQueryRepositoryWeb):
                 request,
                 current_requirements,
                 prepared.specs,
+                target_project_id=prepared.project_id,
             )
             if locked_conflicts:
                 return delta(
