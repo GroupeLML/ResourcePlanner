@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import StringIO
+from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
