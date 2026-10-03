@@ -223,7 +223,7 @@ test("575E relie navigation REQUEST et trois contextes de réservation directe",
     await unitSelect.selectOption("ASSET-575E");
     await form.getByRole("button", { name: "Réserver l’actif" }).click();
     expect(captured.RESOURCE_PERIOD.resource_id).toBe("R-575E");
-    expect(captured.RESOURCE_PERIOD.project_id).toBe("P-575E");
+    expect(captured.RESOURCE_PERIOD.project_id).toBeNull();
 
     await form.getByLabel("Réserver pour").selectOption("SEGMENT");
     await chooseCombobox(form, "Segment", "575E", "P-575E");
