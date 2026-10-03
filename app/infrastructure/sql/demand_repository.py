@@ -222,6 +222,28 @@ class SqlDemandRepository(DemandRepositoryPort):
             .correlate(WorkforceRequest)
             .scalar_subquery()
         )
+        segment_requirement_ids = (
+            select(ResourceRequirement.id)
+            .where(
+                ResourceRequirement.workforce_request_id == WorkforceRequest.id
+            )
+            .correlate(WorkforceRequest)
+        )
+        request_owned_asset_scope = or_(
+            (
+                (AssetRequirement.origin == AssetRequirementOrigin.REQUEST.value)
+                & (
+                    AssetRequirement.workforce_request_id
+                    == WorkforceRequest.id
+                )
+            ),
+            (
+                (AssetRequirement.origin == AssetRequirementOrigin.SEGMENT.value)
+                & AssetRequirement.resource_requirement_id.in_(
+                    segment_requirement_ids
+                )
+            ),
+        )
         asset_allocation_count = (
             select(func.count(AssetAllocation.id))
             .select_from(AssetAllocation)
@@ -229,10 +251,7 @@ class SqlDemandRepository(DemandRepositoryPort):
                 AssetRequirement,
                 AssetAllocation.asset_requirement_id == AssetRequirement.id,
             )
-            .where(
-                AssetRequirement.workforce_request_id == WorkforceRequest.id,
-                AssetRequirement.origin == AssetRequirementOrigin.REQUEST.value,
-            )
+            .where(request_owned_asset_scope)
             .correlate(WorkforceRequest)
             .scalar_subquery()
         )
@@ -244,8 +263,7 @@ class SqlDemandRepository(DemandRepositoryPort):
                 AssetAllocation.asset_requirement_id == AssetRequirement.id,
             )
             .where(
-                AssetRequirement.workforce_request_id == WorkforceRequest.id,
-                AssetRequirement.origin == AssetRequirementOrigin.REQUEST.value,
+                request_owned_asset_scope,
                 AssetAllocation.locked == true(),
             )
             .correlate(WorkforceRequest)
@@ -338,8 +356,7 @@ class SqlDemandRepository(DemandRepositoryPort):
                 AssetAllocation.asset_requirement_id == AssetRequirement.id,
             )
             .where(
-                AssetRequirement.workforce_request_id == WorkforceRequest.id,
-                AssetRequirement.origin == AssetRequirementOrigin.REQUEST.value,
+                request_owned_asset_scope,
                 AssetRequirement.status != "Annulé",
                 AssetAllocation.end_date >= date.today(),
             )
@@ -1429,6 +1446,23 @@ class SqlDemandRepository(DemandRepositoryPort):
                 .order_by(AssetRequirement.id)
             ).all()
         )
+        segment_asset_requirements = (
+            list(
+                self._session.scalars(
+                    select(AssetRequirement)
+                    .where(
+                        AssetRequirement.origin
+                        == AssetRequirementOrigin.SEGMENT.value,
+                        AssetRequirement.resource_requirement_id.in_(
+                            workforce_requirement_ids
+                        ),
+                    )
+                    .order_by(AssetRequirement.id)
+                ).all()
+            )
+            if workforce_requirement_ids
+            else []
+        )
         human_shift_ids = tuple(row.id for row in human_shifts)
         ad_hoc_asset_requirements = (
             list(
@@ -1447,6 +1481,7 @@ class SqlDemandRepository(DemandRepositoryPort):
         )
         asset_requirements = [
             *request_asset_requirements,
+            *segment_asset_requirements,
             *ad_hoc_asset_requirements,
         ]
         asset_requirement_ids = tuple(dict.fromkeys(row.id for row in asset_requirements))
@@ -1466,20 +1501,24 @@ class SqlDemandRepository(DemandRepositoryPort):
         ad_hoc_asset_requirement_ids = tuple(
             row.id for row in ad_hoc_asset_requirements
         )
+        segment_asset_requirement_ids = tuple(
+            row.id for row in segment_asset_requirements
+        )
         locked_human = sum(1 for row in human_shifts if bool(row.locked))
         locked_assets = sum(1 for row in asset_allocations if bool(row.locked))
 
         # ADR-009 explicitly authorizes deletion of locked decisions inside this
-        # request-owned cancellation scope.  ADR-016 adds a second ownership path:
-        # allocations first, then SHIFT_AD_HOC requirements, then their owning Shift.
-        # No cascade/rebuild is used as cleanup authority.
+        # request-owned cancellation scope. ADR-016 adds SHIFT_AD_HOC ownership and
+        # ADR-018 adds SEGMENT ownership through ResourceRequirement. Allocations are
+        # released first, then support requirements, then human shifts. No
+        # cascade/rebuild is used as cleanup authority.
         for row in asset_allocations:
             self._session.delete(row)
         if asset_allocations:
             self._session.flush()
-        for row in ad_hoc_asset_requirements:
+        for row in [*segment_asset_requirements, *ad_hoc_asset_requirements]:
             self._session.delete(row)
-        if ad_hoc_asset_requirements:
+        if segment_asset_requirements or ad_hoc_asset_requirements:
             self._session.flush()
         for row in human_shifts:
             self._session.delete(row)
@@ -1540,6 +1579,9 @@ class SqlDemandRepository(DemandRepositoryPort):
                 "deleted_ad_hoc_asset_requirement_ids": list(
                     ad_hoc_asset_requirement_ids
                 ),
+                "deleted_segment_asset_requirement_ids": list(
+                    segment_asset_requirement_ids
+                ),
                 "workforce_requirement_ids": list(workforce_requirement_ids),
                 "asset_requirement_ids": list(asset_requirement_ids),
                 "released_locked_human_shifts": locked_human,
@@ -1555,6 +1597,9 @@ class SqlDemandRepository(DemandRepositoryPort):
             "cancelled_asset_requirements": cancelled_assets,
             "deleted_ad_hoc_asset_requirements": len(
                 ad_hoc_asset_requirements
+            ),
+            "deleted_segment_asset_requirements": len(
+                segment_asset_requirements
             ),
             "released_locked_human_shifts": locked_human,
             "released_locked_asset_allocations": locked_assets,

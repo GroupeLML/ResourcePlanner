@@ -104,8 +104,22 @@ def has_compatible_assignment(
             requirement.context_resource_id
             and requirement.context_resource_id == resource_id
         )
+    elif requirement.origin == AssetRequirementOrigin.SEGMENT.value:
+        # SEGMENT uses an explicit operator designation in the human requirement
+        # context. It deliberately does not infer ownership from the automatic
+        # target and does not require a synthetic Shift.
+        if not requirement.resource_requirement_id or not requirement.project_id:
+            return False
+        segment = session.get(
+            ResourceRequirement,
+            requirement.resource_requirement_id,
+        )
+        return bool(
+            segment is not None
+            and segment.status != "Annulé"
+            and segment.project_id == requirement.project_id
+        )
     else:
-        # SEGMENT is implemented by 575D. Keep it fail-closed here.
         return False
     return session.scalar(statement.limit(1)) is not None
 

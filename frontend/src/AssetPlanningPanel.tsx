@@ -12,11 +12,13 @@ import {
   getAssetOperatorCandidates,
   releaseProjectDirectReservation,
   releaseResourcePeriodReservation,
+  releaseSegmentReservation,
   removeAssetUnavailability,
   reserveAssetRequirement,
   setAssetRequirementOperator,
   updateProjectDirectReservation,
   updateResourcePeriodReservation,
+  updateSegmentReservation,
 } from "./assetApi";
 import DirectAssetReservationForm from "./DirectAssetReservationForm";
 
@@ -110,7 +112,7 @@ function AssetRequirementCard({
     setOperatorSelected(requirement.operator_resource_id ?? "");
     if (
       !requirement.asset_id
-      || !["REQUEST", "PROJECT_DIRECT"].includes(requirement.origin)
+      || !["REQUEST", "PROJECT_DIRECT", "SEGMENT"].includes(requirement.origin)
     ) {
       setOperatorCandidates([]);
       setCandidateError("");
@@ -144,12 +146,15 @@ function AssetRequirementCard({
   const isRequest = requirement.origin === "REQUEST";
   const isProjectDirect = requirement.origin === "PROJECT_DIRECT";
   const isResourcePeriod = requirement.origin === "RESOURCE_PERIOD";
-  const operatorEditable = isRequest || isProjectDirect;
+  const isSegment = requirement.origin === "SEGMENT";
+  const operatorEditable = isRequest || isProjectDirect || isSegment;
   const contextLabel = isProjectDirect
     ? `Projet ${requirement.project_number ?? requirement.project_id ?? "inconnu"}`
     : isResourcePeriod
       ? `${requirement.operator_resource_name ?? requirement.context_resource_id ?? "Ressource"} · ${requirement.project_number ?? "sans projet"}`
-      : [requirement.demand_number, requirement.project_number].filter(Boolean).join(" · ");
+      : isSegment
+        ? `Segment ${requirement.segment_reference ?? requirement.resource_requirement_id ?? "inconnu"} · ${requirement.project_number ?? "projet inconnu"}`
+        : [requirement.demand_number, requirement.project_number].filter(Boolean).join(" · ");
 
   return (
     <article className="asset-requirement-card" data-requirement-id={requirement.requirement_id}>
@@ -158,7 +163,7 @@ function AssetRequirementCard({
           <span>{contextLabel}</span>
           <strong>{requirement.asset_type_code} — {requirement.asset_type_label}</strong>
           <small>
-            {isRequest ? "Fenêtre autorisée" : "Période directe"} {requirement.start_date} → {requirement.end_date}
+            {isRequest ? "Fenêtre autorisée" : isSegment ? "Fenêtre segment" : "Période directe"} {requirement.start_date} → {requirement.end_date}
           </small>
         </div>
         <span className={requirement.asset_id ? "asset-status is-assigned" : "asset-status"}>
@@ -195,8 +200,8 @@ function AssetRequirementCard({
               <span>Date début réelle</span>
               <input
                 type="date"
-                min={isRequest ? requirement.start_date : undefined}
-                max={isRequest ? requirement.end_date : undefined}
+                min={isRequest || isSegment ? requirement.start_date : undefined}
+                max={isRequest || isSegment ? requirement.end_date : undefined}
                 value={reservationStart}
                 onChange={(event) => setReservationStart(event.target.value)}
                 disabled={!canManage || busy}
@@ -207,8 +212,8 @@ function AssetRequirementCard({
               <span>Date fin réelle</span>
               <input
                 type="date"
-                min={isRequest ? requirement.start_date : undefined}
-                max={isRequest ? requirement.end_date : undefined}
+                min={isRequest || isSegment ? requirement.start_date : undefined}
+                max={isRequest || isSegment ? requirement.end_date : undefined}
                 value={reservationEnd}
                 onChange={(event) => setReservationEnd(event.target.value)}
                 disabled={!canManage || busy}
@@ -253,7 +258,9 @@ function AssetRequirementCard({
               ? `Prérequis : ${requirement.required_competency_names.join(", ")}`
               : isProjectDirect
                 ? "Aucune compétence obligatoire; l’opérateur reste facultatif dans le contexte projet."
-                : "Aucune compétence obligatoire; l’opérateur reste associable dans le contexte REQUEST."}
+                : isSegment
+                  ? "Aucune compétence obligatoire; un opérateur explicite reste requis pour le segment."
+                  : "Aucune compétence obligatoire; l’opérateur reste associable dans le contexte REQUEST."}
           </span>
           <div className="asset-reservation-controls">
             <label>
@@ -264,7 +271,7 @@ function AssetRequirementCard({
                 disabled={!canManage || busy}
                 aria-label={`Opérateur pour ${requirement.asset_type_label} ${requirement.demand_number}`}
               >
-                <option value="">Aucun opérateur</option>
+                <option value="" disabled={isSegment}>Aucun opérateur</option>
                 {requirement.operator_resource_id
                   && !operatorCandidates.some((row) => row.resource_id === requirement.operator_resource_id) && (
                   <option value={requirement.operator_resource_id}>
@@ -404,6 +411,29 @@ export default function AssetPlanningPanel({
             key,
           );
         }
+      } else if (requirement.origin === "SEGMENT") {
+        if (assetId) {
+          if (!requirement.operator_resource_id) {
+            throw new Error("La réservation de segment doit conserver un opérateur explicite.");
+          }
+          await updateSegmentReservation(
+            requirement.requirement_id,
+            {
+              asset_id: assetId,
+              start_date: startDate!,
+              end_date: endDate!,
+              operator_resource_id: requirement.operator_resource_id,
+              expected_planning_version: snapshot.planning_version,
+            },
+            key,
+          );
+        } else {
+          await releaseSegmentReservation(
+            requirement.requirement_id,
+            snapshot.planning_version,
+            key,
+          );
+        }
       } else {
         await reserveAssetRequirement(
           requirement.requirement_id,
@@ -471,6 +501,26 @@ export default function AssetPlanningPanel({
           throw new Error("La réservation projet doit être matérialisée avant de choisir un opérateur.");
         }
         await updateProjectDirectReservation(
+          requirement.requirement_id,
+          {
+            asset_id: requirement.asset_id,
+            start_date: requirement.allocation_start_date,
+            end_date: requirement.allocation_end_date,
+            operator_resource_id: resourceId,
+            expected_planning_version: snapshot.planning_version,
+          },
+          key,
+        );
+      } else if (requirement.origin === "SEGMENT") {
+        if (
+          !resourceId
+          || !requirement.asset_id
+          || !requirement.allocation_start_date
+          || !requirement.allocation_end_date
+        ) {
+          throw new Error("La réservation de segment exige un opérateur explicite.");
+        }
+        await updateSegmentReservation(
           requirement.requirement_id,
           {
             asset_id: requirement.asset_id,

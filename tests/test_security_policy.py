@@ -180,6 +180,13 @@ class SecurityPolicyTests(unittest.TestCase):
         self.assertEqual(
             required_permission(
                 "PUT",
+                "/api/v1/assets/segment-reservations/AR-SEG",
+            ),
+            PERMISSION_MANAGE_PLANNING,
+        )
+        self.assertEqual(
+            required_permission(
+                "PUT",
                 "/api/v1/assets/types/AT-1/qualification",
             ),
             PERMISSION_MANAGE_RESOURCES,

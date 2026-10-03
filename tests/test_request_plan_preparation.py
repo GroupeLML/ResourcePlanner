@@ -7,6 +7,10 @@ import unittest
 from sqlalchemy import select
 
 from app.infrastructure.sql import (
+    Asset,
+    AssetAllocation,
+    AssetRequirement,
+    AssetType,
     Base,
     Project,
     RequestLine,
@@ -29,6 +33,8 @@ from app.infrastructure.sql.request_plan_preparation import (
     LOCKED_HOURS_EXCEED_BUDGET,
     LOCKED_REQUIREMENT_REMOVAL,
     LOCKED_SHIFT_OUTSIDE_WINDOW,
+    SEGMENT_ASSET_OUTSIDE_WINDOW,
+    SEGMENT_ASSET_REQUIREMENT_REMOVAL,
     SqlRequestPlanPreparer,
 )
 
@@ -45,7 +51,23 @@ class SharedRequestPlanPreparationTests(unittest.TestCase):
         with transactional_session(self.factory) as session:
             session.add(Project(id="P1", number="P-1", name="Projet 13C"))
             session.add(Resource(id="R1", name="Alice", active=True))
+            session.add(
+                AssetType(
+                    id="AT-SEG",
+                    code="VEH-SEG",
+                    label="Véhicule segment",
+                    category="VEHICLE",
+                )
+            )
             session.flush()
+            session.add(
+                Asset(
+                    id="A-SEG",
+                    code="A-SEG",
+                    label="Actif segment",
+                    asset_type_id="AT-SEG",
+                )
+            )
             session.add(
                 ResourceAvailabilityRule(
                     id="SCH-R1",
@@ -458,6 +480,180 @@ class SharedRequestPlanPreparationTests(unittest.TestCase):
             self.assertTrue(session.get(Shift, "SHIFT-GUARD-LEG").locked)
             self.assertTrue(session.get(Shift, "SHIFT-GUARD-LINE").locked)
 
+
+    def test_segment_asset_blocks_reapproval_window_shrink(self) -> None:
+        with transactional_session(self.factory) as session:
+            request = WorkforceRequest(
+                id="D-SEG-SHRINK",
+                legacy_demand_number="DEM-SEG-SHRINK",
+                project_id="P1",
+                line_mode=True,
+                status="Soumise",
+            )
+            line = RequestLine(
+                id="L-SEG-SHRINK",
+                workforce_request_id=request.id,
+                position=0,
+                kind="WORKFORCE",
+                slot_count=1,
+                desired_start=D1,
+                desired_end=D1,
+                estimated_hours=Decimal("8"),
+                confirmation="Confirmée",
+                active=True,
+            )
+            requirement = ResourceRequirement(
+                id="REQ-SEG-SHRINK",
+                project_id="P1",
+                workforce_request_id=request.id,
+                source_request_line_id=line.id,
+                start_date=D1,
+                end_date=D2,
+                planned_hours=Decimal("16"),
+                status="Planifié",
+                origin="REQUEST",
+            )
+            session.add(request)
+            session.flush()
+            session.add(line)
+            session.flush()
+            session.add(requirement)
+            session.flush()
+            asset_requirement = AssetRequirement(
+                id="AREQ-SEG-SHRINK",
+                project_id="P1",
+                origin="SEGMENT",
+                resource_requirement_id=requirement.id,
+                asset_type_id="AT-SEG",
+                start_date=D2,
+                end_date=D2,
+                status="Planifié",
+            )
+            session.add(asset_requirement)
+            session.flush()
+            session.add(
+                AssetAllocation(
+                    id="ALLOC-SEG-SHRINK",
+                    asset_requirement_id=asset_requirement.id,
+                    asset_id="A-SEG",
+                    operator_resource_id="R1",
+                    start_date=D2,
+                    end_date=D2,
+                    locked=True,
+                    source="MANUAL",
+                )
+            )
+            session.flush()
+
+            preparer = SqlRequestPlanPreparer(session)
+            plan = preparer.prepare(request, current=[requirement])
+            conflicts = preparer.locked_conflicts(
+                request,
+                [requirement],
+                plan.specs,
+                target_project_id=plan.project_id,
+            )
+
+            self.assertEqual(
+                [row.code for row in conflicts],
+                [SEGMENT_ASSET_OUTSIDE_WINDOW],
+            )
+            with self.assertRaisesRegex(ValueError, "réservation d'actif"):
+                preparer.assert_locked_compatible(
+                    request,
+                    [requirement],
+                    plan.specs,
+                    target_project_id=plan.project_id,
+                )
+
+    def test_segment_asset_blocks_reapproval_that_replaces_owner_requirement(self) -> None:
+        with transactional_session(self.factory) as session:
+            request = WorkforceRequest(
+                id="D-SEG-REMOVE",
+                legacy_demand_number="DEM-SEG-REMOVE",
+                project_id="P1",
+                line_mode=True,
+                status="Soumise",
+            )
+            old_line = RequestLine(
+                id="L-SEG-OLD",
+                workforce_request_id=request.id,
+                position=0,
+                kind="WORKFORCE",
+                slot_count=1,
+                desired_start=D1,
+                desired_end=D2,
+                estimated_hours=Decimal("16"),
+                confirmation="Confirmée",
+                active=False,
+            )
+            new_line = RequestLine(
+                id="L-SEG-NEW",
+                workforce_request_id=request.id,
+                position=1,
+                kind="WORKFORCE",
+                slot_count=1,
+                desired_start=D1,
+                desired_end=D2,
+                estimated_hours=Decimal("16"),
+                confirmation="Confirmée",
+                active=True,
+            )
+            requirement = ResourceRequirement(
+                id="REQ-SEG-REMOVE",
+                project_id="P1",
+                workforce_request_id=request.id,
+                source_request_line_id=old_line.id,
+                start_date=D1,
+                end_date=D2,
+                planned_hours=Decimal("16"),
+                status="Planifié",
+                origin="REQUEST",
+            )
+            session.add(request)
+            session.flush()
+            session.add_all([old_line, new_line])
+            session.flush()
+            session.add(requirement)
+            session.flush()
+            asset_requirement = AssetRequirement(
+                id="AREQ-SEG-REMOVE",
+                project_id="P1",
+                origin="SEGMENT",
+                resource_requirement_id=requirement.id,
+                asset_type_id="AT-SEG",
+                start_date=D1,
+                end_date=D1,
+                status="Planifié",
+            )
+            session.add(asset_requirement)
+            session.flush()
+            session.add(
+                AssetAllocation(
+                    id="ALLOC-SEG-REMOVE",
+                    asset_requirement_id=asset_requirement.id,
+                    asset_id="A-SEG",
+                    operator_resource_id="R1",
+                    start_date=D1,
+                    end_date=D1,
+                    locked=True,
+                    source="MANUAL",
+                )
+            )
+            session.flush()
+
+            preparer = SqlRequestPlanPreparer(session)
+            plan = preparer.prepare(request, current=[requirement])
+            conflicts = preparer.locked_conflicts(
+                request,
+                [requirement],
+                plan.specs,
+                target_project_id=plan.project_id,
+            )
+            self.assertIn(
+                SEGMENT_ASSET_REQUIREMENT_REMOVAL,
+                [row.code for row in conflicts],
+            )
 
 if __name__ == "__main__":
     unittest.main()

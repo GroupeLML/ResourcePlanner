@@ -667,6 +667,171 @@ class DemandCancellationRequestTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_segment_asset_forces_coordinated_cancellation_and_is_released_by_399(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            with factory.begin() as session:
+                session.add_all(
+                    [
+                        Asset(
+                            id="A-SEGMENT-399",
+                            code="TRUCK-SEGMENT-399",
+                            label="Camion segment",
+                            asset_type_id="AT1",
+                        ),
+                        Asset(
+                            id="A-DIRECT-399",
+                            code="TRUCK-DIRECT-399",
+                            label="Camion projet",
+                            asset_type_id="AT1",
+                        ),
+                    ]
+                )
+                segment_requirement = AssetRequirement(
+                    id="AREQ-SEGMENT-399",
+                    project_id="P1",
+                    origin="SEGMENT",
+                    resource_requirement_id="REQ-EMPTY",
+                    asset_type_id="AT1",
+                    start_date=DAY,
+                    end_date=DAY,
+                    status="Planifié",
+                )
+                project_requirement = AssetRequirement(
+                    id="AREQ-DIRECT-399",
+                    project_id="P1",
+                    origin="PROJECT_DIRECT",
+                    asset_type_id="AT1",
+                    start_date=DAY,
+                    end_date=DAY,
+                    status="Planifié",
+                )
+                session.add_all([segment_requirement, project_requirement])
+                session.flush()
+                session.add_all(
+                    [
+                        AssetAllocation(
+                            id="ALLOC-SEGMENT-399",
+                            asset_requirement_id=segment_requirement.id,
+                            asset_id="A-SEGMENT-399",
+                            operator_resource_id="R1",
+                            start_date=DAY,
+                            end_date=DAY,
+                            locked=True,
+                            source="MANUAL",
+                        ),
+                        AssetAllocation(
+                            id="ALLOC-DIRECT-399",
+                            asset_requirement_id=project_requirement.id,
+                            asset_id="A-DIRECT-399",
+                            operator_resource_id="R1",
+                            start_date=DAY,
+                            end_date=DAY,
+                            locked=True,
+                            source="MANUAL",
+                        ),
+                    ]
+                )
+            engine.dispose()
+
+            app = create_api_app(
+                database_url,
+                auth_resolver=TEST_CANCELLATION_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                workflow = client.get(
+                    "/api/v1/demands/DMO-CANCEL-EMPTY/workflow-actions"
+                )
+                self.assertEqual(workflow.status_code, 200, workflow.text)
+                self.assertTrue(
+                    workflow.json()["cancellation"]["has_operational_decisions"]
+                )
+                self.assertFalse(
+                    workflow.json()["cancellation"]["direct_cancel"]
+                )
+                self.assertTrue(
+                    workflow.json()["cancellation"]["request_cancellation"]
+                )
+
+                direct = client.post(
+                    "/api/v1/demands/DMO-CANCEL-EMPTY/cancel",
+                    json={"expected_version": 3},
+                )
+                self.assertEqual(direct.status_code, 409, direct.text)
+                self.assertEqual(
+                    direct.json()["error"]["code"],
+                    "active_operational_decisions",
+                )
+
+                requested = client.post(
+                    "/api/v1/demands/DMO-CANCEL-EMPTY/request-cancellation",
+                    json={
+                        "reason": "Segment et actif à libérer",
+                        "expected_version": 3,
+                    },
+                )
+                self.assertEqual(requested.status_code, 200, requested.text)
+                accepted = client.post(
+                    "/api/v1/demands/DMO-CANCEL-EMPTY/accept-cancellation",
+                    json={
+                        "cancellation_request_id": requested.json()[
+                            "cancellation_request_id"
+                        ],
+                        "comment": "Annulation coordonnée du segment",
+                        "expected_version": 4,
+                        "expected_planning_version": 9,
+                    },
+                    headers={"Idempotency-Key": "accept-segment-575d"},
+                )
+
+            self.assertEqual(accepted.status_code, 200, accepted.text)
+            payload = accepted.json()
+            self.assertEqual(payload["deleted_asset_allocations"], 1)
+            self.assertEqual(payload["deleted_segment_asset_requirements"], 1)
+            self.assertEqual(payload["released_locked_asset_allocations"], 1)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory() as session:
+                    self.assertIsNone(
+                        session.get(AssetRequirement, "AREQ-SEGMENT-399")
+                    )
+                    self.assertIsNone(
+                        session.get(AssetAllocation, "ALLOC-SEGMENT-399")
+                    )
+                    # A project-direct reservation on the same project is not
+                    # request-owned and must remain untouched by #399.
+                    self.assertIsNotNone(
+                        session.get(AssetRequirement, "AREQ-DIRECT-399")
+                    )
+                    self.assertIsNotNone(
+                        session.get(AssetAllocation, "ALLOC-DIRECT-399")
+                    )
+                    owner = session.get(ResourceRequirement, "REQ-EMPTY")
+                    self.assertIsNotNone(owner)
+                    assert owner is not None
+                    self.assertEqual(owner.status, "Annulé")
+                    history = session.scalar(
+                        select(WorkforceRequestHistory).where(
+                            WorkforceRequestHistory.workforce_request_id
+                            == "D-EMPTY",
+                            WorkforceRequestHistory.action
+                            == "Acceptation d'annulation",
+                        )
+                    )
+                    self.assertIsNotNone(history)
+                    assert history is not None
+                    details = json.loads(history.details or "{}")
+                    self.assertEqual(
+                        details["deleted_segment_asset_requirement_ids"],
+                        ["AREQ-SEGMENT-399"],
+                    )
+            finally:
+                engine.dispose()
+
     def test_accept_cancellation_deletes_locked_asset_scope(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)

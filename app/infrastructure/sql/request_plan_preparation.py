@@ -20,6 +20,7 @@ from .demand_period_models import (
     WorkforceRequestPeriodSelection,
 )
 from .operational_choice_repository import SqlRequestOperationalChoiceRepository
+from .segment_asset_guard import segment_asset_dependencies
 from .approval_revision_models import RequestApprovalRevision
 from .models import (
     Competency,
@@ -36,6 +37,9 @@ from .models import (
 LOCKED_REQUIREMENT_REMOVAL = "LOCKED_REQUIREMENT_REMOVAL"
 LOCKED_SHIFT_OUTSIDE_WINDOW = "LOCKED_SHIFT_OUTSIDE_WINDOW"
 LOCKED_HOURS_EXCEED_BUDGET = "LOCKED_HOURS_EXCEED_BUDGET"
+SEGMENT_ASSET_REQUIREMENT_REMOVAL = "SEGMENT_ASSET_REQUIREMENT_REMOVAL"
+SEGMENT_ASSET_OUTSIDE_WINDOW = "SEGMENT_ASSET_OUTSIDE_WINDOW"
+SEGMENT_ASSET_PROJECT_CHANGE = "SEGMENT_ASSET_PROJECT_CHANGE"
 
 
 def _text(value: object) -> str:
@@ -847,6 +851,8 @@ class SqlRequestPlanPreparer:
         request: WorkforceRequest,
         current: Sequence[ResourceRequirement],
         specs: Sequence[PreparedRequirementSpec],
+        *,
+        target_project_id: str | None = None,
     ) -> tuple[LockedPlanningConflict, ...]:
         matches, obsolete = self.match_current(request, current, specs)
         requirement_ids = {row.id for row in current}
@@ -928,6 +934,87 @@ class SqlRequestPlanPreparer:
                         ),
                     )
                 )
+        dependencies_by_requirement: dict[str, list] = defaultdict(list)
+        for dependency in segment_asset_dependencies(
+            self._session,
+            tuple(requirement_ids),
+        ):
+            dependencies_by_requirement[
+                dependency.resource_requirement_id
+            ].append(dependency)
+
+        for requirement in obsolete:
+            dependencies = dependencies_by_requirement.get(requirement.id, [])
+            if dependencies:
+                conflicts.append(
+                    LockedPlanningConflict(
+                        code=SEGMENT_ASSET_REQUIREMENT_REMOVAL,
+                        requirement_id=requirement.id,
+                        spec_key=None,
+                        shift_ids=tuple(
+                            row.allocation_id for row in dependencies
+                        ),
+                        message=(
+                            "La réapprobation supprimerait un segment portant une "
+                            "réservation d'actif. Libère ou adapte explicitement cette "
+                            "réservation avant d'approuver."
+                        ),
+                    )
+                )
+
+        for match in matches:
+            requirement = match.requirement
+            if requirement is None:
+                continue
+            dependencies = dependencies_by_requirement.get(requirement.id, [])
+            if not dependencies:
+                continue
+            if (
+                target_project_id
+                and any(
+                    row.project_id != target_project_id
+                    for row in dependencies
+                )
+            ):
+                conflicts.append(
+                    LockedPlanningConflict(
+                        code=SEGMENT_ASSET_PROJECT_CHANGE,
+                        requirement_id=requirement.id,
+                        spec_key=match.spec.key,
+                        shift_ids=tuple(
+                            row.allocation_id for row in dependencies
+                        ),
+                        message=(
+                            "La réapprobation changerait le projet d'un segment portant "
+                            "une réservation d'actif. Libère cette réservation avant "
+                            "d'approuver."
+                        ),
+                    )
+                )
+                continue
+            outside = [
+                row
+                for row in dependencies
+                if row.start_date < match.spec.start_date
+                or row.end_date > match.spec.end_date
+            ]
+            if outside:
+                conflicts.append(
+                    LockedPlanningConflict(
+                        code=SEGMENT_ASSET_OUTSIDE_WINDOW,
+                        requirement_id=requirement.id,
+                        spec_key=match.spec.key,
+                        shift_ids=tuple(
+                            row.allocation_id for row in outside
+                        ),
+                        message=(
+                            "La nouvelle fenêtre du segment exclut une réservation "
+                            "d'actif existante. Libère ou adapte explicitement cette "
+                            "réservation avant d'approuver."
+                        ),
+                    )
+                )
+
         return tuple(conflicts)
 
     def assert_locked_compatible(
@@ -935,7 +1022,14 @@ class SqlRequestPlanPreparer:
         request: WorkforceRequest,
         current: Sequence[ResourceRequirement],
         specs: Sequence[PreparedRequirementSpec],
+        *,
+        target_project_id: str | None = None,
     ) -> None:
-        conflicts = self.locked_conflicts(request, current, specs)
+        conflicts = self.locked_conflicts(
+            request,
+            current,
+            specs,
+            target_project_id=target_project_id,
+        )
         if conflicts:
             raise ValueError(conflicts[0].message)
