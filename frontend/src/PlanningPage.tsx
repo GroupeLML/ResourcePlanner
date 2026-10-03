@@ -1371,6 +1371,7 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
           snapshot={snapshot}
           canManage={canManagePlanning && !loading}
           onRefresh={() => setRefreshKey((value) => value + 1)}
+          onOpenDemand={setDetailDemandNumber}
         />
       )}
 

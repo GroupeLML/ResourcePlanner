@@ -506,6 +506,113 @@ class AssetQualificationTests(unittest.TestCase):
             "project_communication_not_approvable",
         )
 
+    def test_project_direct_asset_qualification_blocks_project_communication(self) -> None:
+        _number, _request_id, human_requirement_id = self._approve()
+        self.assertIsNotNone(human_requirement_id)
+        assert human_requirement_id is not None
+        self._add_shift(
+            requirement_id=human_requirement_id,
+            resource_id=self.skilled_resource_id,
+            work_date=date(2026, 9, 24),
+            shift_id="SHIFT-PROJECT-DIRECT-COMM",
+        )
+
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        with factory.begin() as session:
+            session.add(
+                AssetRequirement(
+                    id="AREQ-PROJECT-DIRECT-COMM",
+                    project_id="PROJECT-292",
+                    origin="PROJECT_DIRECT",
+                    asset_type_id=self.type_id,
+                    start_date=date(2026, 9, 24),
+                    end_date=date(2026, 9, 24),
+                    status="Planifié",
+                )
+            )
+            session.flush()
+            session.add(
+                AssetAllocation(
+                    id="AALLOC-PROJECT-DIRECT-COMM",
+                    asset_requirement_id="AREQ-PROJECT-DIRECT-COMM",
+                    asset_id=self.asset_id,
+                    operator_resource_id=None,
+                    start_date=date(2026, 9, 24),
+                    end_date=date(2026, 9, 24),
+                    locked=True,
+                    source="MANUAL",
+                )
+            )
+        engine.dispose()
+
+        preview = self.client.get(
+            "/api/v1/communications/project-preview"
+            "?week_start=2026-09-23"
+        )
+        self.assertEqual(preview.status_code, 200, preview.text)
+        draft = preview.json()["drafts"][0]
+        codes = {row["code"] for row in draft["diagnostics"]}
+        self.assertIn("ASSET_QUALIFICATION_MISSING_OPERATOR", codes)
+        self.assertFalse(draft["approvable"])
+
+    def test_segment_asset_qualification_blocks_project_communication_after_skill_loss(self) -> None:
+        _number, _request_id, human_requirement_id = self._approve()
+        self.assertIsNotNone(human_requirement_id)
+        assert human_requirement_id is not None
+        self._add_shift(
+            requirement_id=human_requirement_id,
+            resource_id=self.skilled_resource_id,
+            work_date=date(2026, 9, 24),
+            shift_id="SHIFT-SEGMENT-COMM",
+        )
+
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        with factory.begin() as session:
+            session.add(
+                AssetRequirement(
+                    id="AREQ-SEGMENT-COMM",
+                    project_id="PROJECT-292",
+                    origin="SEGMENT",
+                    resource_requirement_id=human_requirement_id,
+                    asset_type_id=self.type_id,
+                    start_date=date(2026, 9, 24),
+                    end_date=date(2026, 9, 24),
+                    status="Planifié",
+                )
+            )
+            session.flush()
+            session.add(
+                AssetAllocation(
+                    id="AALLOC-SEGMENT-COMM",
+                    asset_requirement_id="AREQ-SEGMENT-COMM",
+                    asset_id=self.asset_id,
+                    operator_resource_id=self.skilled_resource_id,
+                    start_date=date(2026, 9, 24),
+                    end_date=date(2026, 9, 24),
+                    locked=True,
+                    source="MANUAL",
+                )
+            )
+        engine.dispose()
+
+        removed_skill = self.client.patch(
+            f"/api/v1/resources/{self.skilled_resource_id}",
+            json={"competency_ids": []},
+        )
+        self.assertEqual(removed_skill.status_code, 200, removed_skill.text)
+
+        preview = self.client.get(
+            "/api/v1/communications/project-preview"
+            "?week_start=2026-09-23"
+        )
+        self.assertEqual(preview.status_code, 200, preview.text)
+        draft = preview.json()["drafts"][0]
+        codes = {row["code"] for row in draft["diagnostics"]}
+        self.assertIn("ASSET_QUALIFICATION_SKILL_MISMATCH", codes)
+        self.assertFalse(draft["approvable"])
+
     def test_shift_owned_asset_qualification_blocks_communication_after_skill_loss(self) -> None:
         _number, _request_id, human_requirement_id = self._approve()
         self.assertIsNotNone(human_requirement_id)

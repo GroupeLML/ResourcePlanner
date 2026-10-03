@@ -226,6 +226,11 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
             for _shift, requirement, _resource, _project in rows
             if requirement.workforce_request_id
         }
+        project_ids = tuple(
+            dict.fromkeys(
+                project.id for _shift, _requirement, _resource, project in rows
+            )
+        )
         requests = (
             self._session.scalars(
                 select(WorkforceRequest).where(WorkforceRequest.id.in_(request_ids))
@@ -237,6 +242,7 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
 
         asset_qualification_diagnostics: dict[str, list[str]] = {}
         asset_qualification_diagnostics_by_shift: dict[str, list[str]] = {}
+        asset_qualification_diagnostics_by_project: dict[str, list[str]] = {}
         shift_ids = tuple(
             shift.id for shift, _requirement, _resource, _project in rows
         )
@@ -247,6 +253,8 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
             )
         if shift_ids:
             asset_scope.append(AssetRequirement.shift_id.in_(shift_ids))
+        if project_ids:
+            asset_scope.append(AssetRequirement.project_id.in_(project_ids))
         asset_rows = (
             self._session.execute(
                 select(AssetAllocation, AssetRequirement)
@@ -281,9 +289,17 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                     asset_requirement.shift_id,
                     [],
                 ).append(diagnostic)
-            elif asset_requirement.workforce_request_id:
+            elif (
+                asset_requirement.origin == AssetRequirementOrigin.REQUEST.value
+                and asset_requirement.workforce_request_id
+            ):
                 asset_qualification_diagnostics.setdefault(
                     asset_requirement.workforce_request_id,
+                    [],
+                ).append(diagnostic)
+            elif asset_requirement.project_id:
+                asset_qualification_diagnostics_by_project.setdefault(
+                    asset_requirement.project_id,
                     [],
                 ).append(diagnostic)
 
@@ -312,11 +328,6 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
             for resolution in self._operational_contacts.resolve_shifts(shift_ids)
             if resolution.shift_id is not None
         }
-        project_ids = tuple(
-            dict.fromkeys(
-                project.id for _shift, _requirement, _resource, project in rows
-            )
-        )
         project_manager_projections = ProjectManagerResolutionService(
             SqlProjectManagerResolutionRepository(self._session)
         ).resolve_projects(list(project_ids))
@@ -414,6 +425,12 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                 + list(
                     asset_qualification_diagnostics_by_shift.get(
                         shift.id,
+                        (),
+                    )
+                )
+                + list(
+                    asset_qualification_diagnostics_by_project.get(
+                        project.id,
                         (),
                     )
                 )

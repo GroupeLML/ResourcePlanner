@@ -138,6 +138,7 @@ class PlannerQueryPort(Protocol):
         start: date,
         end: date,
         project_ids: Sequence[str] | None = None,
+        context_resource_ids: Sequence[str] = (),
     ) -> AssetPlanningWindowReadModel: ...
 
     def demand_plan_delta(self, number: str) -> DemandPlanDeltaReadModel | None: ...
