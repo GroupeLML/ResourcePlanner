@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from ..errors import ApplicationValidationError
+from ..work_package_load import WorkPackageLoadIntervalValue
 from .common import UNSET, UnsetType, required_text, validate_date_window
 
 
@@ -73,6 +74,7 @@ class WorkPackageUpdateCommand:
     end_date: date | None | UnsetType = UNSET
     planned_hours: float | None | UnsetType = UNSET
     status: str | UnsetType = UNSET
+    load_intervals: tuple[WorkPackageLoadIntervalValue, ...] | UnsetType = UNSET
 
     def __post_init__(self) -> None:
         required_text(
@@ -132,7 +134,7 @@ class WorkPackageUpdateCommand:
             "start_date",
             "end_date",
             "planned_hours",
-            "status",
+            "load_intervals",
         ):
             value = getattr(self, field)
             if value is not UNSET:
