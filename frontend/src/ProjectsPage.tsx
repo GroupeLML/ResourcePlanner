@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useAuth } from "./AuthContext";
 import { useViewScope } from "./ViewScopeContext";
@@ -8,8 +8,8 @@ import {
   ApiError,
   BusinessContactReadModel,
   GlobalProjectTaskSyncResult,
-  ContactLinkReadModel,
   MediumTermBudgetReadModel,
+  ProjectManagersReadModel,
   ProjectReadModel,
   ProjectTaskSyncMetadata,
   TaskCatalogItemReadModel,
@@ -17,11 +17,14 @@ import {
   getAcumaticaProjectTaskSyncRun,
   getCurrentAcumaticaProjectTaskSyncRun,
   getAcumaticaProjectTaskSyncMetadata,
+  addProjectCoManager,
   getBusinessContacts,
   getMediumTermBudgetSummary,
-  getProjectBusinessContacts,
+  getProjectManagerCandidateContacts,
+  getProjectManagers,
   getProjects,
   getTaskCatalog,
+  removeProjectCoManager,
   setTaskBusinessContacts,
   syncAcumaticaActiveProjectTasks,
   syncAcumaticaProjectTasks,
@@ -64,6 +67,31 @@ const ACTUAL_PROJECTION_DIAGNOSTIC_LABELS: Record<string, string> = {
   resource_class_cost_negative: "Coût horaire moyen invalide",
   WEEKLY_LOAD_INCOMPLETE: "Répartition hebdomadaire WorkPackage incomplète",
 };
+
+const PROJECT_MANAGER_STATUS_LABELS: Record<string, string> = {
+  RESOLVED: "Résolu",
+  UNRESOLVED_USER: "Utilisateur RessourcePlanner non lié",
+  UNRESOLVED_CONTACT: "BusinessContact non lié",
+  INVALID_REFERENCE: "Référence invalide",
+  IDENTITY_CONFLICT: "Conflit d’identité",
+};
+
+const PROJECT_MANAGER_DIAGNOSTIC_LABELS: Record<string, string> = {
+  ERP_PROJECT_MANAGER_MISSING: "Chargé principal ERP absent",
+  ERP_PROJECT_MANAGER_APP_USER_NOT_LINKED: "Utilisateur RessourcePlanner non lié",
+  ERP_PROJECT_MANAGER_BUSINESS_CONTACT_NOT_LINKED: "BusinessContact non lié",
+  ERP_PROJECT_MANAGER_APP_USER_INACTIVE: "Utilisateur RessourcePlanner inactif",
+  ERP_PROJECT_MANAGER_BUSINESS_CONTACT_INACTIVE: "BusinessContact inactif",
+  PROJECT_MANAGER_IDENTITY_CONFLICT: "Conflit d’identité",
+  PROJECT_MANAGER_BROKEN_REFERENCE: "Référence invalide",
+  PROJECT_CO_MANAGER_APP_USER_NOT_LINKED: "Co-chargé sans AppUser",
+  PROJECT_CO_MANAGER_APP_USER_INACTIVE: "Utilisateur RessourcePlanner inactif",
+  PROJECT_CO_MANAGER_CONTACT_INACTIVE: "BusinessContact inactif",
+};
+
+function projectManagerDiagnosticLabel(code: string) {
+  return PROJECT_MANAGER_DIAGNOSTIC_LABELS[code] || code;
+}
 
 function formatCurrency(value: number | null | undefined) {
   if (value == null) return "—";
@@ -156,7 +184,14 @@ export default function ProjectsPage() {
   const [projects, setProjects] = useState<ProjectReadModel[]>([]);
   const [contacts, setContacts] = useState<BusinessContactReadModel[]>([]);
   const [selectedProjectNumber, setSelectedProjectNumber] = useState<string | null>(null);
-  const [projectContactLink, setProjectContactLink] = useState<ContactLinkReadModel | null>(null);
+  const [projectManagers, setProjectManagers] = useState<ProjectManagersReadModel | null>(null);
+  const [coManagerContacts, setCoManagerContacts] = useState<BusinessContactReadModel[]>([]);
+  const [coManagerSearch, setCoManagerSearch] = useState("");
+  const [selectedCoManagerId, setSelectedCoManagerId] = useState("");
+  const [coManagerPending, setCoManagerPending] = useState(false);
+  const [coManagerMessage, setCoManagerMessage] = useState<string | null>(null);
+  const [coManagerError, setCoManagerError] = useState<string | null>(null);
+  const coManagerIntentKeys = useRef(new Map<string, string>());
   const [projectTasks, setProjectTasks] = useState<TaskCatalogItemReadModel[]>([]);
   const [projectBudget, setProjectBudget] = useState<MediumTermBudgetReadModel | null>(null);
   const [projectBudgetLoading, setProjectBudgetLoading] = useState(false);
@@ -186,6 +221,29 @@ export default function ProjectsPage() {
     () => projects.find((project) => project.number === selectedProjectNumber) ?? null,
     [projects, selectedProjectNumber],
   );
+
+  const coManagerCandidates = useMemo(() => {
+    const nominated = new Set(
+      projectManagers?.co_managers
+        .map((manager) => manager.business_contact_id)
+        .filter((value): value is string => Boolean(value)) ?? [],
+    );
+    const primaryContactId = projectManagers?.primary?.business_contact_id ?? null;
+    const query = normalize(coManagerSearch);
+    return coManagerContacts.filter((contact) => {
+      if (!contact.active || nominated.has(contact.id) || contact.id === primaryContactId) {
+        return false;
+      }
+      if (!query) return true;
+      return normalize([
+        contact.display_name,
+        contact.email,
+        contact.phone,
+        contact.external_id,
+        contact.id,
+      ].filter(Boolean).join(" ")).includes(query);
+    });
+  }, [coManagerContacts, coManagerSearch, projectManagers]);
 
   useEffect(() => {
     if (scopeLoading) return;
@@ -296,17 +354,23 @@ export default function ProjectsPage() {
   }, [globalTaskSyncRun?.run_id, globalTaskSyncRun?.status]);
 
   useEffect(() => {
-    if (!selectedProject || (!canManageContacts && !canSyncProjects)) {
-      setProjectContactLink(null);
+    if (!selectedProject) {
+      setProjectManagers(null);
+      setCoManagerContacts([]);
       setProjectTasks([]);
       setTaskSyncMetadata(null);
       return;
     }
     const controller = new AbortController();
+    setProjectManagers(null);
+    setCoManagerMessage(null);
+    setCoManagerError(null);
+    setSelectedCoManagerId("");
     Promise.all([
+      getProjectManagers(selectedProject.number, controller.signal, scope),
       canManageContacts
-        ? getProjectBusinessContacts(selectedProject.number, controller.signal)
-        : Promise.resolve(null),
+        ? getProjectManagerCandidateContacts(controller.signal)
+        : Promise.resolve([]),
       canManageContacts
         ? getTaskCatalog(selectedProject.number, "", false, controller.signal)
         : Promise.resolve([]),
@@ -314,8 +378,9 @@ export default function ProjectsPage() {
         ? getAcumaticaProjectTaskSyncMetadata(selectedProject.id, controller.signal)
         : Promise.resolve(null),
     ])
-      .then(([link, taskRows, metadata]) => {
-        setProjectContactLink(link);
+      .then(([managerRows, candidateRows, taskRows, metadata]) => {
+        setProjectManagers(managerRows);
+        setCoManagerContacts(candidateRows);
         setProjectTasks(taskRows);
         setTaskSyncMetadata(metadata);
       })
@@ -324,7 +389,7 @@ export default function ProjectsPage() {
         setError(apiErrorMessage(reason, "Impossible de charger les données du projet."));
       });
     return () => controller.abort();
-  }, [selectedProject, refreshKey, canManageContacts, canSyncProjects]);
+  }, [selectedProject, refreshKey, canManageContacts, canSyncProjects, scope]);
 
   useEffect(() => {
     if (!selectedProject) {
@@ -392,6 +457,147 @@ export default function ProjectsPage() {
   const activeCount = projects.filter((project) => project.active).length;
   const inactiveCount = projects.length - activeCount;
   const erpCount = projects.filter((project) => Boolean(project.erp_external_id)).length;
+
+  function coManagerIntentKey(
+    action: "ADD" | "REMOVE",
+    businessContactId: string,
+    expectedVersion: number,
+  ) {
+    return `${action}:${selectedProject?.number ?? ""}:${businessContactId}:${expectedVersion}`;
+  }
+
+  function idempotencyKeyFor(intent: string) {
+    const existing = coManagerIntentKeys.current.get(intent);
+    if (existing) return existing;
+    const created = crypto.randomUUID();
+    coManagerIntentKeys.current.set(intent, created);
+    return created;
+  }
+
+  async function reloadProjectManagers() {
+    if (!selectedProject) return;
+    const refreshed = await getProjectManagers(selectedProject.number, undefined, scope);
+    setProjectManagers(refreshed);
+  }
+
+  async function addCoManager() {
+    if (
+      !selectedProject
+      || !projectManagers
+      || !selectedCoManagerId
+      || coManagerPending
+      || !canManageContacts
+    ) return;
+
+    const expectedVersion = projectManagers.co_managers_version;
+    const intent = coManagerIntentKey("ADD", selectedCoManagerId, expectedVersion);
+    const idempotencyKey = idempotencyKeyFor(intent);
+    setCoManagerPending(true);
+    setCoManagerMessage(null);
+    setCoManagerError(null);
+    try {
+      const result = await addProjectCoManager(
+        selectedProject.number,
+        selectedCoManagerId,
+        expectedVersion,
+        idempotencyKey,
+      );
+      coManagerIntentKeys.current.delete(intent);
+      setProjectManagers((current) => current
+        ? { ...current, co_managers_version: result.version }
+        : current);
+      setSelectedCoManagerId("");
+      setCoManagerSearch("");
+      setCoManagerMessage("Co-chargé ajouté.");
+      try {
+        await reloadProjectManagers();
+      } catch (reason) {
+        setCoManagerError(
+          apiErrorMessage(reason, "Ajout enregistré, mais la liste n’a pas pu être rechargée."),
+        );
+      }
+    } catch (reason) {
+      if (reason instanceof ApiError) {
+        coManagerIntentKeys.current.delete(intent);
+        if (reason.code === "project_co_managers_version_conflict") {
+          try {
+            await reloadProjectManagers();
+          } catch {
+            // Keep the explicit concurrency message below even if refresh also fails.
+          }
+          setCoManagerError(
+            "La liste des co-chargés a changé. Elle a été rechargée; confirmez votre intention par une nouvelle action.",
+          );
+        } else {
+          setCoManagerError(apiErrorMessage(reason, "Impossible d’ajouter le co-chargé."));
+        }
+      } else {
+        setCoManagerError(
+          "Réponse réseau incertaine. Réessayez la même action pour rejouer la même intention.",
+        );
+      }
+    } finally {
+      setCoManagerPending(false);
+    }
+  }
+
+  async function removeCoManager(businessContactId: string) {
+    if (
+      !selectedProject
+      || !projectManagers
+      || coManagerPending
+      || !canManageContacts
+    ) return;
+
+    const expectedVersion = projectManagers.co_managers_version;
+    const intent = coManagerIntentKey("REMOVE", businessContactId, expectedVersion);
+    const idempotencyKey = idempotencyKeyFor(intent);
+    setCoManagerPending(true);
+    setCoManagerMessage(null);
+    setCoManagerError(null);
+    try {
+      const result = await removeProjectCoManager(
+        selectedProject.number,
+        businessContactId,
+        expectedVersion,
+        idempotencyKey,
+      );
+      coManagerIntentKeys.current.delete(intent);
+      setProjectManagers((current) => current
+        ? { ...current, co_managers_version: result.version }
+        : current);
+      setCoManagerMessage("Co-chargé retiré.");
+      try {
+        await reloadProjectManagers();
+      } catch (reason) {
+        setCoManagerError(
+          apiErrorMessage(reason, "Retrait enregistré, mais la liste n’a pas pu être rechargée."),
+        );
+      }
+    } catch (reason) {
+      if (reason instanceof ApiError) {
+        coManagerIntentKeys.current.delete(intent);
+        if (reason.code === "project_co_managers_version_conflict") {
+          try {
+            await reloadProjectManagers();
+          } catch {
+            // Keep the explicit concurrency message below even if refresh also fails.
+          }
+          setCoManagerError(
+            "La liste des co-chargés a changé. Elle a été rechargée; confirmez votre intention par une nouvelle action.",
+          );
+        } else {
+          setCoManagerError(apiErrorMessage(reason, "Impossible de retirer le co-chargé."));
+        }
+      } else {
+        setCoManagerError(
+          "Réponse réseau incertaine. Réessayez la même action pour rejouer la même intention.",
+        );
+      }
+    } finally {
+      setCoManagerPending(false);
+    }
+  }
 
   async function changeTaskContact(
     task: TaskCatalogItemReadModel,
@@ -880,59 +1086,174 @@ export default function ProjectsPage() {
             </div>
           )}
 
-          {canManageContacts && (
-            <>
-          <div className="projects-sync-message" role="status">
-            <strong>Chargé de projet principal (ERP)</strong>{" "}
-            {selectedProject?.project_manager || "Non défini dans l’ERP"}
-            {selectedProject?.project_manager && !projectContactLink?.project_manager_contact_id && (
-              <> · Utilisateur RessourcePlanner non lié</>
+          <div className="project-task-contact-list">
+            <div className="projects-table-header">
+              <strong>Chargés de projet</strong>
+              <span>Le principal est autoritaire dans l’ERP; les co-chargés sont administrés dans RessourcePlanner.</span>
+            </div>
+
+            {!projectManagers ? (
+              <p className="projects-empty">Chargement des chargés de projet…</p>
+            ) : (
+              <>
+                <div className="projects-sync-message" role="status">
+                  <strong>Chargé principal ERP</strong>{" "}
+                  {projectManagers.primary?.display_name || "Non défini dans l’ERP"}
+                  {" · Source : ERP"}
+                  {projectManagers.primary?.employee_external_id
+                    ? ` · ${projectManagers.primary.employee_external_id}`
+                    : ""}
+                  {projectManagers.primary
+                    ? ` · ${PROJECT_MANAGER_STATUS_LABELS[projectManagers.primary.resolution_status] || projectManagers.primary.resolution_status}`
+                    : ""}
+                  {projectManagers.primary?.diagnostics.length
+                    ? ` · ${projectManagers.primary.diagnostics.map(projectManagerDiagnosticLabel).join(" · ")}`
+                    : ""}
+                  {!projectManagers.primary && projectManagers.diagnostics.length > 0
+                    ? ` · ${projectManagers.diagnostics.map(projectManagerDiagnosticLabel).join(" · ")}`
+                    : ""}
+                </div>
+
+                <div className="projects-table-header">
+                  <strong>Co-chargés RessourcePlanner</strong>
+                  <span>Version {projectManagers.co_managers_version}</span>
+                </div>
+                {projectManagers.co_managers.length === 0 ? (
+                  <p className="projects-empty">Aucun co-chargé RessourcePlanner.</p>
+                ) : (
+                  <div className="projects-table-scroll">
+                    <table className="projects-table">
+                      <thead>
+                        <tr><th>Co-chargé</th><th>État</th><th>Source</th><th>Action</th></tr>
+                      </thead>
+                      <tbody>
+                        {projectManagers.co_managers.map((manager) => (
+                          <tr key={manager.business_contact_id ?? manager.display_name}>
+                            <td>
+                              <strong>{manager.display_name}</strong>
+                              {manager.app_user_id
+                                ? <span>AppUser : {manager.app_user_id}</span>
+                                : <span>AppUser non lié</span>}
+                            </td>
+                            <td>
+                              <span>
+                                {PROJECT_MANAGER_STATUS_LABELS[manager.resolution_status]
+                                  || manager.resolution_status}
+                                {manager.contact_active === false ? " · contact inactif" : ""}
+                                {manager.user_active === false ? " · utilisateur inactif" : ""}
+                              </span>
+                              {manager.diagnostics.length > 0 && (
+                                <small>
+                                  {manager.diagnostics.map(projectManagerDiagnosticLabel).join(" · ")}
+                                </small>
+                              )}
+                            </td>
+                            <td>{manager.sources.join(" + ")}</td>
+                            <td>
+                              {canManageContacts && manager.business_contact_id && (
+                                <button
+                                  type="button"
+                                  onClick={() => void removeCoManager(manager.business_contact_id!)}
+                                  disabled={coManagerPending}
+                                >
+                                  Retirer
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {canManageContacts && (
+                  <div className="projects-sync-message">
+                    <strong>Ajouter un co-chargé</strong>
+                    <input
+                      type="search"
+                      value={coManagerSearch}
+                      onChange={(event) => setCoManagerSearch(event.target.value)}
+                      placeholder="Rechercher un contact actif"
+                      aria-label="Rechercher un co-chargé"
+                      disabled={coManagerPending}
+                    />
+                    <select
+                      value={selectedCoManagerId}
+                      onChange={(event) => setSelectedCoManagerId(event.target.value)}
+                      disabled={coManagerPending}
+                      aria-label="Sélectionner un co-chargé"
+                    >
+                      <option value="">Sélectionner un BusinessContact actif</option>
+                      {coManagerCandidates.map((contact) => (
+                        <option key={contact.id} value={contact.id}>
+                          {contact.display_name} · {contact.email || contact.external_id || contact.id}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => void addCoManager()}
+                      disabled={coManagerPending || !selectedCoManagerId}
+                    >
+                      Ajouter
+                    </button>
+                  </div>
+                )}
+
+                {coManagerMessage && (
+                  <div className="projects-sync-message" role="status">{coManagerMessage}</div>
+                )}
+                {coManagerError && (
+                  <div className="projects-sync-message is-error" role="alert">{coManagerError}</div>
+                )}
+              </>
             )}
           </div>
 
-          <div className="project-task-contact-list">
-            <div className="projects-table-header">
-              <strong>Tâches ERP</strong>
-              <span>Responsable opérationnel et coordonnateur sont deux fonctions distinctes.</span>
-            </div>
-            {projectTasks.length === 0 ? (
-              <p className="projects-empty">Aucune tâche ERP pour ce projet.</p>
-            ) : (
-              <div className="projects-table-scroll">
-                <table className="projects-table">
-                  <thead>
-                    <tr><th>Tâche</th><th>Responsable opérationnel</th><th>Coordonnateur</th></tr>
-                  </thead>
-                  <tbody>
-                    {projectTasks.map((task) => (
-                      <tr key={task.id ?? `${task.project_number}:${task.code}`}>
-                        <td><strong>{task.code}</strong><span>{task.label}</span></td>
-                        <td>
-                          <ContactSelect
-                            contacts={contacts}
-                            value={task.operational_responsible_contact_id}
-                            onChange={(value) => void changeTaskContact(task, "operational_responsible_contact_id", value)}
-                            disabled={contactPending || !task.id}
-                            inheritLabel="Hériter du chargé de projet"
-                          />
-                        </td>
-                        <td>
-                          <ContactSelect
-                            contacts={contacts}
-                            value={task.coordinator_contact_id}
-                            onChange={(value) => void changeTaskContact(task, "coordinator_contact_id", value)}
-                            disabled={contactPending || !task.id}
-                            inheritLabel="Aucun coordonnateur de tâche"
-                          />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+          {canManageContacts && (
+            <div className="project-task-contact-list">
+              <div className="projects-table-header">
+                <strong>Tâches ERP</strong>
+                <span>Responsable opérationnel et coordonnateur sont deux fonctions distinctes.</span>
               </div>
-            )}
-          </div>
-            </>
+              {projectTasks.length === 0 ? (
+                <p className="projects-empty">Aucune tâche ERP pour ce projet.</p>
+              ) : (
+                <div className="projects-table-scroll">
+                  <table className="projects-table">
+                    <thead>
+                      <tr><th>Tâche</th><th>Responsable opérationnel</th><th>Coordonnateur</th></tr>
+                    </thead>
+                    <tbody>
+                      {projectTasks.map((task) => (
+                        <tr key={task.id ?? `${task.project_number}:${task.code}`}>
+                          <td><strong>{task.code}</strong><span>{task.label}</span></td>
+                          <td>
+                            <ContactSelect
+                              contacts={contacts}
+                              value={task.operational_responsible_contact_id}
+                              onChange={(value) => void changeTaskContact(task, "operational_responsible_contact_id", value)}
+                              disabled={contactPending || !task.id}
+                              inheritLabel="Hériter du chargé de projet ERP"
+                            />
+                          </td>
+                          <td>
+                            <ContactSelect
+                              contacts={contacts}
+                              value={task.coordinator_contact_id}
+                              onChange={(value) => void changeTaskContact(task, "coordinator_contact_id", value)}
+                              disabled={contactPending || !task.id}
+                              inheritLabel="Aucun coordonnateur de tâche"
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           )}
         </section>
       )}
