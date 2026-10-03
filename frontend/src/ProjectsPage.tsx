@@ -1097,7 +1097,7 @@ export default function ProjectsPage() {
             ) : (
               <>
                 <div className="projects-sync-message" role="status">
-                  <strong>Chargé principal ERP</strong>{" "}
+                  <strong>Chargé de projet principal (ERP)</strong>{" "}
                   {projectManagers.primary?.display_name || "Non défini dans l’ERP"}
                   {" · Source : ERP"}
                   {projectManagers.primary?.employee_external_id
