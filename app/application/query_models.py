@@ -46,6 +46,7 @@ class WorkPackageReadModel:
     end_date: date | None = None
     planned_hours: float | None = None
     status: str = "planned"
+    status_diagnostic: str | None = None
     task_catalog_item_id: str | None = None
     task_code: str | None = None
     task_label: str | None = None
