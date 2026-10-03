@@ -60,6 +60,7 @@ function AssetRequirementCard({
   busy,
   onReserve,
   onOperator,
+  onOpenDemand,
 }: {
   requirement: AssetRequirementPlanningReadModel;
   snapshot: PlanningSnapshotReadModel;
@@ -72,6 +73,7 @@ function AssetRequirementCard({
     endDate: string | null,
   ) => void;
   onOperator: (requirement: AssetRequirementPlanningReadModel, resourceId: string | null) => void;
+  onOpenDemand?: (demandNumber: string) => void;
 }) {
   const compatible = snapshot.assets.filter((asset) => (
     asset.asset_type_id === requirement.asset_type_id
@@ -170,6 +172,16 @@ function AssetRequirementCard({
           {requirement.asset_id ? "Réservé" : "À réserver"}
         </span>
       </div>
+
+      {isRequest && requirement.demand_number && onOpenDemand && (
+        <button
+          type="button"
+          className="text-button"
+          onClick={() => onOpenDemand(requirement.demand_number!)}
+        >
+          Ouvrir la demande source
+        </button>
+      )}
 
       {requirement.usage_hours != null && (
         <small className="asset-usage-budget">
@@ -316,10 +328,12 @@ export default function AssetPlanningPanel({
   snapshot,
   canManage,
   onRefresh,
+  onOpenDemand,
 }: {
   snapshot: PlanningSnapshotReadModel;
   canManage: boolean;
   onRefresh: () => void;
+  onOpenDemand?: (demandNumber: string) => void;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ tone: "info" | "success" | "error"; message: string } | null>(null);
@@ -692,6 +706,7 @@ export default function AssetPlanningPanel({
                 }
                 onReserve={(row, assetId, startDate, endDate) => void reserve(row, assetId, startDate, endDate)}
                 onOperator={(row, resourceId) => void assignOperator(row, resourceId)}
+                onOpenDemand={onOpenDemand}
               />
             ))}
           </div>
