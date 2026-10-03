@@ -34,6 +34,7 @@ SOURCE_MISSING_TABLES = {
     "break_glass_credentials",
     "work_package_audit",
     "work_package_weekly_loads",
+    "work_package_load_intervals",
     "asset_type_approval_scope_mappings",
     "asset_approvers",
     "acumatica_project_task_sync_project_results",
@@ -49,6 +50,7 @@ SOURCE_MISSING_COLUMNS = {
         "version",
         "weekly_load_origin",
         "resource_class_code",
+        "terminal_status",
     },
     "approval_requirements": {
         "asset_type_id",
