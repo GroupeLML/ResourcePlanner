@@ -42,6 +42,7 @@ from .request_plan_preparation import (
 )
 from .planning_version import SqlPlanningMutationVersionRepository
 from .segment_repository import SqlSegmentRepository
+from .segment_asset_guard import segment_asset_dependencies
 
 
 def _text(value: object) -> str:
@@ -1041,9 +1042,24 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
 
     def cancel_materialized(self, demand_number: str) -> None:
         request = self._request(demand_number)
+        current = self._active_requirements(request.id)
+        segment_assets = segment_asset_dependencies(
+            self._session,
+            tuple(row.id for row in current),
+        )
+        if segment_assets:
+            raise ApplicationConflictError(
+                "La demande contient une réservation d'actif portée par un segment. "
+                "Utilise la demande d'annulation coordonnée pour la libérer explicitement.",
+                code="active_operational_decisions",
+                context={
+                    "asset_allocation_ids": [
+                        row.allocation_id for row in segment_assets
+                    ],
+                },
+            )
         from .asset_plan import SqlAssetPlanSynchronizer
         SqlAssetPlanSynchronizer(self._session).cancel(request)
-        current = self._active_requirements(request.id)
         locked = self._locked_shifts({row.id for row in current})
         protected = [
             row
