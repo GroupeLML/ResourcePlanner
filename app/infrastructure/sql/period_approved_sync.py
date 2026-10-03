@@ -915,7 +915,12 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
         prepared = self._plan_preparer.prepare(request, current=current)
         specs = list(prepared.specs)
         unresolved = prepared.unresolved_groups
-        self._plan_preparer.assert_locked_compatible(request, current, specs)
+        self._plan_preparer.assert_locked_compatible(
+            request,
+            current,
+            specs,
+            target_project_id=prepared.project_id,
+        )
         current_by_key = self._current_requirement_keys(current)
 
         keep: dict[tuple[str, ...], ResourceRequirement | None] = {}
