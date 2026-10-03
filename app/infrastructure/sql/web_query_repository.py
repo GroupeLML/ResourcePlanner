@@ -47,6 +47,7 @@ from ...application.work_package_load import (
     WorkPackageLoadState,
     legacy_weekly_as_intervals,
     load_diagnostic,
+    monday_of,
     projected_weekly_loads,
     work_package_status,
 )
