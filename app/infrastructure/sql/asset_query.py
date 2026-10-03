@@ -34,6 +34,7 @@ from .asset_models import (
     AssetUnavailability,
 )
 from .asset_qualification import (
+    AssetQualification,
     QUALIFICATION_MISSING_OPERATOR,
     QUALIFICATION_NO_OVERLAP,
     QUALIFICATION_SATISFIED,
@@ -70,9 +71,27 @@ class SqlAssetPlanningQuery:
             )
         )
 
+    def _qualification(
+        self,
+        *,
+        requirement: AssetRequirement,
+        allocation: AssetAllocation | None,
+        cache: dict[tuple[str, str | None], AssetQualification],
+    ) -> AssetQualification:
+        key = (requirement.id, allocation.id if allocation is not None else None)
+        if key not in cache:
+            cache[key] = evaluate_asset_qualification(
+                self._session,
+                requirement=requirement,
+                allocation=allocation,
+            )
+        return cache[key]
+
     def _requirement_models(
         self,
         requirements: Sequence[AssetRequirement],
+        *,
+        qualification_cache: dict[tuple[str, str | None], AssetQualification] | None = None,
     ) -> tuple[AssetRequirementReadModel, ...]:
         rows = tuple(requirements)
         if not rows:
@@ -156,10 +175,18 @@ class SqlAssetPlanningQuery:
             human_requirement = human_requirements.get(row.resource_requirement_id)
             allocation = allocations.get(row.id)
             asset = assets.get(allocation.asset_id) if allocation is not None else None
-            qualification = evaluate_asset_qualification(
-                self._session,
-                requirement=row,
-                allocation=allocation,
+            qualification = (
+                self._qualification(
+                    requirement=row,
+                    allocation=allocation,
+                    cache=qualification_cache,
+                )
+                if qualification_cache is not None
+                else evaluate_asset_qualification(
+                    self._session,
+                    requirement=row,
+                    allocation=allocation,
+                )
             )
             result.append(
                 AssetRequirementReadModel(
@@ -506,17 +533,23 @@ class SqlAssetPlanningQuery:
         visible_requirements_by_id = {
             row.id: row for row in visible_requirements
         }
-        visible_requirement_models = self._requirement_models(visible_requirements)
+        qualification_cache: dict[
+            tuple[str, str | None], AssetQualification
+        ] = {}
+        visible_requirement_models = self._requirement_models(
+            visible_requirements,
+            qualification_cache=qualification_cache,
+        )
         visible_requirement_models_by_id = {
             row.requirement_id: row for row in visible_requirement_models
         }
         allocation_models_list: list[AssetAllocationReadModel] = []
         for row in visible_allocations:
             requirement = visible_requirements_by_id[row.asset_requirement_id]
-            qualification = evaluate_asset_qualification(
-                self._session,
+            qualification = self._qualification(
                 requirement=requirement,
                 allocation=row,
+                cache=qualification_cache,
             )
             allocation_models_list.append(
                 AssetAllocationReadModel(
@@ -683,10 +716,10 @@ class SqlAssetPlanningQuery:
                 )
                 incompatible_locked = incompatible_locked or bool(allocation.locked)
 
-            qualification = evaluate_asset_qualification(
-                self._session,
+            qualification = self._qualification(
                 requirement=requirement,
                 allocation=allocation,
+                cache=qualification_cache,
             )
             qualification_messages = {
                 QUALIFICATION_MISSING_OPERATOR: (
