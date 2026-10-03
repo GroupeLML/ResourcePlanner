@@ -74,33 +74,29 @@ Do not reintroduce legacy V1 dependencies into the canonical Web/SQL runtime.
 
 ## 3. Normal development lifecycle
 
-When asked to implement an approved issue or sub-issue, continue autonomously through:
+When asked to implement an approved issue or sub-issue, the DEV agent owns the implementation turn only up to the GitHub handoff point:
 
 ```text
 understand scope
 → inspect relevant code
 → implement
 → targeted tests
-→ broader relevant validation
+→ broader relevant local validation
 → create/update PR
 → enable auto-merge when the PR is complete and eligible
-→ CI
-→ diagnose failures when needed
-→ correct failures
-→ CI green
-→ automatic merge
-→ update relevant GitHub roadmap issue
-→ next approved READY sub-item
+→ report PR number and current head SHA
+→ STOP DEV TURN
 ```
 
-Do not stop simply because:
+Once the PR is complete and auto-merge is armed when permitted, do not remain active merely to poll or wait for CI. DevCockpit owns subsequent observation of GitHub PR/CI/merge evidence.
 
-- implementation is complete;
-- a PR has been created;
-- CI has started;
-- CI failed for a normal implementation reason.
+If DevCockpit later sends a corrective prompt for the same WorkItem because current-head CI is red, resume the same logical DEV session, inspect the exact failure evidence, make the smallest correct fix, run targeted validation, push the correction, ensure auto-merge remains armed when eligible, report the updated PR/head SHA, and stop again.
 
-For normal development work, the expected endpoint is a merged, validated change.
+A completed DEV turn is not the same as a completed WorkItem. The WorkItem remains unfinished until authoritative GitHub and roadmap evidence satisfy the Definition of Done.
+
+Do not begin the next roadmap item on your own after stopping. A new WorkItem starts only from a new authorized DevCockpit prompt or an explicit user instruction.
+
+Architecture gates are outside the automatic DEV lifecycle. A READY `ARCHITECTURE_GATE` must never be started merely because it is READY; DevCockpit requires an explicit human authorization before creating the ARCH prompt.
 
 ---
 
@@ -472,22 +468,24 @@ frontend-validation
 docker-smoke
 ```
 
-When CI fails:
+After the DEV handoff point, DevCockpit observes GitHub CI state. The DEV agent must not continuously poll CI or remain idle waiting for checks to finish.
 
-1. identify the failing job;
-2. inspect the exact failing test/command;
+When DevCockpit explicitly reactivates the same DEV session for a current CI failure:
+
+1. verify the PR number and head SHA in the prompt against GitHub;
+2. inspect the failing job/check and exact failure;
 3. determine whether the failure is caused by the current change;
-4. make the smallest correct fix;
+4. make the smallest correct fix within the authorized WorkItem;
 5. run targeted validation locally;
-6. push the fix;
-7. allow CI to run again;
-8. repeat until green.
+6. push the fix to the existing PR;
+7. ensure auto-merge remains armed when permitted;
+8. report the updated head SHA and stop the DEV turn again.
 
-If auto-merge is enabled on the PR, a red CI must leave the PR open. Do not bypass required checks to force a merge. Resume the PR, correct the failure, and let auto-merge complete only after all required checks are green.
+GitHub and DevCockpit then resume observation. Do not manually loop on CI unless the user explicitly asks you to do so.
 
-Normal CI failures are part of development and do not require user authorization.
+Normal implementation-related CI failures do not require a new product decision. They may be routed automatically back to the same DEV session by DevCockpit.
 
-Do not bypass, delete or weaken a meaningful test merely to obtain a green check.
+Do not bypass required checks, delete tests, weaken meaningful validation, or force a merge merely to obtain a green result.
 
 ---
 
@@ -529,13 +527,15 @@ Do not mix unrelated cleanup into the same PR.
 
 When repository auto-merge is available and the PR is complete, coherent and ready to merge, enable auto-merge instead of waiting manually for CI to finish.
 
-The normal autonomous flow is:
+The normal DEV handoff flow is:
 
 ```text
 PR complete
-→ enable auto-merge
-→ required CI checks run
-→ if red: keep PR open, diagnose, fix and rerun
+→ enable auto-merge when eligible
+→ report PR + head SHA
+→ STOP DEV TURN
+→ DevCockpit observes required CI checks
+→ if red: DevCockpit sends a corrective prompt to the same DEV session
 → if green: GitHub merges automatically
 ```
 
@@ -551,7 +551,7 @@ Do not enable auto-merge when:
 
 Auto-merge is not permission to weaken branch protection, required checks or tests.
 
-Before declaring a PR ready for auto-merge, verify:
+Before the DEV handoff, verify:
 
 - requested behavior is implemented;
 - appropriate local/targeted validation has been performed;
@@ -559,11 +559,7 @@ Before declaring a PR ready for auto-merge, verify:
 - no known blocking defect remains;
 - no stop condition from this file applies.
 
-Once auto-merge is armed, the agent does not need to remain idle merely waiting for green CI. If CI later fails during the active task/session, resume the PR and correct the failure. If the session is interrupted, the PR must remain safely open unless all required repository checks become green and GitHub merges it automatically.
-
-When the task has been approved for autonomous development, a PR that satisfies all required repository checks may be merged automatically without asking for another confirmation unless the user explicitly requested a stop before merge.
-
-If repository protection, required approval or another rule prevents merging, report the blocker rather than circumventing it.
+After auto-merge is armed, the DEV agent stops rather than polling CI. If repository protection, required approval or another rule prevents arming auto-merge, report that blocker at the handoff point; do not circumvent it.
 
 ---
 
@@ -614,6 +610,7 @@ Durable invariants:
 - writeback must fail closed when the pipeline is legacy, invalid, non-stale, or the proposal is no longer the one previewed;
 - use optimistic concurrency against the complete issue body and GitHub `updated_at`; a concurrent roadmap edit must produce a conflict rather than being overwritten;
 - never auto-complete architecture or environment gates from PR/CI evidence;
+- a READY `ARCHITECTURE_GATE` requires explicit human authorization before DevCockpit may create its ARCH PromptDispatch; polling, refresh, CI state, merge state, or dependency satisfaction must never constitute that authorization;
 - never trigger writeback from dashboard polling, refresh, Attention Center, or agent activity;
 - GitHub remains the source of truth; no local roadmap mutation state may be introduced to make writeback easier.
 
@@ -641,32 +638,26 @@ Analytics may describe bottlenecks and trends from observable durations, but it 
 
 ## 20. Chained execution
 
-When explicitly authorized to execute a roadmap block, the agent may proceed automatically from one sub-item to the next.
+DevCockpit, not the DEV agent, owns chaining between roadmap items.
 
-Example:
+A DEV agent must not automatically continue from one sub-item to the next after creating a PR, after CI turns green, or after a merge. The expected sequence is:
 
 ```text
-331A
-→ implementation
-→ CI
-→ fixes if needed
-→ green
-→ merge
-→ roadmap update
-→ synchronize main
-→ 331B
+WorkItem A prompt
+→ DEV implementation
+→ PR + auto-merge armed
+→ DEV STOP
+→ DevCockpit observes CI / merge
+→ explicit roadmap reconciliation when required
+→ canonical roadmap exposes the next READY item
+→ DevCockpit creates a new prompt when that item is authorized
 ```
 
-Automatic chaining is allowed only when the next item:
+The next WorkItem may start only when it is truly authorized by the canonical roadmap and a new prompt or explicit user instruction exists.
 
-- is already clearly defined;
-- belongs to the same approved work block;
-- does not require a new product decision;
-- does not require an unresolved architectural decision.
+A READY `ARCHITECTURE_GATE` is a special human gate: DevCockpit may detect and display it, but must not create or deliver its ARCH prompt automatically. A human must explicitly authorize that gate first.
 
-Always synchronize with `main` after the previous PR is merged before beginning the next sub-item.
-
-Do not automatically consume arbitrary backlog issues outside the approved block.
+Do not automatically consume arbitrary backlog issues or infer permission to cross an architecture gate from the completion of neighboring DEV work.
 
 ---
 
@@ -754,7 +745,15 @@ For normal autonomous implementation work, an item is DONE only when:
 - the relevant GitHub roadmap/issue state reflects reality;
 - no known blocker related to the change remains.
 
-`Code complete` and `CI started` are not definitions of done.
+The DEV agent is not responsible for staying active until all of those facts become true. Its normal turn ends at the explicit GitHub handoff point: PR complete, auto-merge armed when permitted, and PR/head SHA reported.
+
+Therefore:
+
+```text
+DEV TURN COMPLETE ≠ WORKITEM DONE
+```
+
+`Code complete`, `CI started`, and `DEV turn complete` are not definitions of WorkItem DONE.
 
 ---
 
@@ -762,19 +761,17 @@ For normal autonomous implementation work, an item is DONE only when:
 
 Keep progress updates concise.
 
-Useful checkpoints are:
+Useful DEV checkpoints are:
 
 - implementation completed; local tests running;
-- PR created; CI running;
-- CI failed; cause identified;
-- correction pushed;
-- CI green;
-- PR merged;
-- roadmap updated;
-- next approved sub-item started;
+- PR created or updated;
+- auto-merge armed, or reason it could not be armed;
+- PR number and current head SHA reported;
+- corrective CI prompt received; cause identified;
+- correction pushed; updated head SHA reported;
 - architecture/product decision required.
 
-Do not produce lengthy status reports for routine implementation details.
+Do not produce lengthy status reports for routine implementation details, and do not emit repeated status updates merely because CI is still running. DevCockpit owns that waiting/observation phase.
 
 ---
 
