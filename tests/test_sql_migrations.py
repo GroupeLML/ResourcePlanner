@@ -18,7 +18,7 @@ MIGRATIONS = ROOT / "migrations"
 VERSIONS = MIGRATIONS / "versions"
 BASELINE_FILE = VERSIONS / "0001_v2_production_baseline.py"
 BASELINE_REVISION = "v2_production_baseline"
-HEAD_REVISION = "0008_asset_requirement_contexts"
+HEAD_REVISION = "0009_work_package_load_intervals"
 
 
 def alembic_config(database_path: Path) -> Config:
@@ -74,6 +74,7 @@ class SqlMigrationTests(unittest.TestCase):
                 "0006_asset_requirement_origins.py",
                 "0007_project_co_managers.py",
                 "0008_asset_requirement_contexts.py",
+                "0009_work_package_load_intervals.py",
             ],
         )
 
@@ -92,6 +93,7 @@ class SqlMigrationTests(unittest.TestCase):
             [revision.revision for revision in script.walk_revisions()],
             [
                 HEAD_REVISION,
+                "0008_asset_requirement_contexts",
                 "0007_project_co_managers",
                 "0006_asset_requirement_origins",
                 "0005_task_sync_runs",
@@ -101,6 +103,114 @@ class SqlMigrationTests(unittest.TestCase):
                 BASELINE_REVISION,
             ],
         )
+
+    def test_work_package_load_interval_migration_preserves_weekly_intent(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_path = Path(directory) / "work-package-load-intervals.db"
+            config = alembic_config(database_path)
+            command.upgrade(config, "0008_asset_requirement_contexts")
+
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "INSERT INTO projects (id, number, name) "
+                        "VALUES ('P-591', 'P-591', 'Projet 591')"
+                    )
+                )
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO work_packages (
+                            id, project_id, version, name, start_date, end_date,
+                            planned_hours, status, weekly_load_origin
+                        ) VALUES (
+                            'WP-591-MIG', 'P-591', 1, 'Historique',
+                            '2026-09-30', '2026-10-06', 10.00, 'closed', 'AUTO'
+                        )
+                        """
+                    )
+                )
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO work_package_weekly_loads (
+                            work_package_id, week_start, hours
+                        ) VALUES
+                            ('WP-591-MIG', '2026-09-28', 5.00),
+                            ('WP-591-MIG', '2026-10-05', 5.00)
+                        """
+                    )
+                )
+            engine.dispose()
+
+            command.upgrade(config, "head")
+
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            try:
+                with engine.connect() as connection:
+                    terminal = connection.execute(
+                        text(
+                            "SELECT terminal_status FROM work_packages "
+                            "WHERE id = 'WP-591-MIG'"
+                        )
+                    ).scalar_one()
+                    intervals = connection.execute(
+                        text(
+                            """
+                            SELECT start_date, end_date, hours, origin
+                            FROM work_package_load_intervals
+                            WHERE work_package_id = 'WP-591-MIG'
+                            ORDER BY start_date
+                            """
+                        )
+                    ).all()
+
+                self.assertEqual(terminal, "closed")
+                self.assertEqual(
+                    [
+                        (str(row.start_date), str(row.end_date), Decimal(str(row.hours)), row.origin)
+                        for row in intervals
+                    ],
+                    [
+                        ("2026-09-30", "2026-10-04", Decimal("5.00"), "LEGACY_AUTO"),
+                        ("2026-10-05", "2026-10-06", Decimal("5.00"), "LEGACY_AUTO"),
+                    ],
+                )
+            finally:
+                engine.dispose()
+
+    def test_work_package_load_interval_migration_preflight_rejects_origin_without_rows(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_path = Path(directory) / "work-package-load-preflight.db"
+            config = alembic_config(database_path)
+            command.upgrade(config, "0008_asset_requirement_contexts")
+
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "INSERT INTO projects (id, number, name) "
+                        "VALUES ('P-591-PREFLIGHT', 'P-591-PREFLIGHT', 'Projet')"
+                    )
+                )
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO work_packages (
+                            id, project_id, version, name, start_date, end_date,
+                            planned_hours, status, weekly_load_origin
+                        ) VALUES (
+                            'WP-591-PREFLIGHT', 'P-591-PREFLIGHT', 1, 'Anomalie',
+                            '2026-10-01', '2026-10-02', 8.00, 'planned', 'MANUAL'
+                        )
+                        """
+                    )
+                )
+            engine.dispose()
+
+            with self.assertRaisesRegex(RuntimeError, "without persisted rows"):
+                command.upgrade(config, "head")
 
     def test_project_co_manager_migration_is_additive_and_starts_empty(self) -> None:
         with TemporaryDirectory() as directory:
@@ -405,6 +515,8 @@ class SqlMigrationTests(unittest.TestCase):
             "CREATE TABLE WORK_PACKAGES",
             "CREATE TABLE WORK_PACKAGE_AUDIT",
             "CREATE TABLE WORK_PACKAGE_WEEKLY_LOADS",
+            "CREATE TABLE WORK_PACKAGE_LOAD_INTERVALS",
+            "TERMINAL_STATUS",
             "CREATE TABLE PROJECT_CO_MANAGERS",
             "CREATE TABLE PROJECT_MANAGER_AUDIT",
             "CO_MANAGERS_VERSION",
