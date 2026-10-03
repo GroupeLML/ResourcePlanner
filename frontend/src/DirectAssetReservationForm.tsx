@@ -9,10 +9,11 @@ import {
 import {
   createProjectDirectReservation,
   createResourcePeriodReservation,
+  createSegmentReservation,
 } from "./assetApi";
 import SearchableCombobox from "./SearchableCombobox";
 
-type DirectMode = "PROJECT_DIRECT" | "RESOURCE_PERIOD";
+type DirectMode = "PROJECT_DIRECT" | "RESOURCE_PERIOD" | "SEGMENT";
 
 function newKey() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -42,6 +43,7 @@ export default function DirectAssetReservationForm({
   const [projectError, setProjectError] = useState<string | null>(null);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [resourceId, setResourceId] = useState<string | null>(null);
+  const [segmentId, setSegmentId] = useState<string | null>(null);
   const [assetTypeId, setAssetTypeId] = useState("");
   const [assetId, setAssetId] = useState("");
   const [startDate, setStartDate] = useState(snapshot.start);
@@ -93,6 +95,27 @@ export default function DirectAssetReservationForm({
     })),
     [activeResources],
   );
+  const segmentOptions = useMemo(
+    () => snapshot.segments
+      .filter((row) => row.status !== "Annulé" && row.start_date && row.end_date)
+      .map((row) => ({
+        value: row.segment_id,
+        label: [
+          row.project_number,
+          row.description || row.segment_id,
+          row.start_date && row.end_date ? `${row.start_date} → ${row.end_date}` : null,
+        ].filter(Boolean).join(" · "),
+        searchText: [
+          row.segment_id,
+          row.project_number,
+          row.project_name,
+          row.description,
+          row.resource_name,
+          row.automatic_target_resource_name,
+        ].filter(Boolean).join(" "),
+      })),
+    [snapshot.segments],
+  );
 
   const valid = Boolean(
     assetTypeId
@@ -100,7 +123,13 @@ export default function DirectAssetReservationForm({
     && startDate
     && endDate
     && endDate >= startDate
-    && (mode === "PROJECT_DIRECT" ? projectId : resourceId),
+    && (
+      mode === "PROJECT_DIRECT"
+        ? projectId
+        : mode === "RESOURCE_PERIOD"
+          ? resourceId
+          : segmentId && operatorId
+    ),
   );
 
   async function submit() {
@@ -109,6 +138,7 @@ export default function DirectAssetReservationForm({
       mode,
       projectId ?? "none",
       resourceId ?? "none",
+      segmentId ?? "none",
       assetTypeId,
       assetId,
       startDate,
@@ -134,7 +164,7 @@ export default function DirectAssetReservationForm({
           },
           key,
         );
-      } else {
+      } else if (mode === "RESOURCE_PERIOD") {
         await createResourcePeriodReservation(
           {
             resource_id: resourceId!,
@@ -143,6 +173,19 @@ export default function DirectAssetReservationForm({
             asset_id: assetId,
             start_date: startDate,
             end_date: endDate,
+            expected_planning_version: snapshot.planning_version,
+          },
+          key,
+        );
+      } else {
+        await createSegmentReservation(
+          {
+            segment_id: segmentId!,
+            asset_type_id: assetTypeId,
+            asset_id: assetId,
+            start_date: startDate,
+            end_date: endDate,
+            operator_resource_id: operatorId!,
             expected_planning_version: snapshot.planning_version,
           },
           key,
@@ -180,11 +223,20 @@ export default function DirectAssetReservationForm({
               const next = event.target.value as DirectMode;
               setMode(next);
               setOperatorId(null);
-              if (next === "PROJECT_DIRECT") setResourceId(null);
+              if (next === "PROJECT_DIRECT") {
+                setResourceId(null);
+                setSegmentId(null);
+              } else if (next === "RESOURCE_PERIOD") {
+                setSegmentId(null);
+              } else {
+                setResourceId(null);
+                setProjectId(null);
+              }
             }}
           >
             <option value="PROJECT_DIRECT">Un projet</option>
             <option value="RESOURCE_PERIOD">Une ressource pour une période</option>
+            <option value="SEGMENT">Un segment</option>
           </select>
         </label>
 
@@ -198,7 +250,7 @@ export default function DirectAssetReservationForm({
             error={projectError}
             required
           />
-        ) : (
+        ) : mode === "RESOURCE_PERIOD" ? (
           <>
             <SearchableCombobox
               label="Ressource"
@@ -218,6 +270,20 @@ export default function DirectAssetReservationForm({
               clearable
             />
           </>
+        ) : (
+          <SearchableCombobox
+            label="Segment"
+            value={segmentId}
+            options={segmentOptions}
+            onChange={(value) => {
+              setSegmentId(value);
+              const segment = snapshot.segments.find((row) => row.segment_id === value);
+              if (segment?.start_date) setStartDate(segment.start_date);
+              if (segment?.end_date) setEndDate(segment.end_date);
+            }}
+            disabled={!canManage || busy}
+            required
+          />
         )}
 
         <label>
@@ -251,14 +317,15 @@ export default function DirectAssetReservationForm({
           </select>
         </label>
 
-        {mode === "PROJECT_DIRECT" && (
+        {(mode === "PROJECT_DIRECT" || mode === "SEGMENT") && (
           <SearchableCombobox
-            label="Opérateur (facultatif)"
+            label={mode === "SEGMENT" ? "Opérateur" : "Opérateur (facultatif)"}
             value={operatorId}
             options={resourceOptions}
             onChange={setOperatorId}
             disabled={!canManage || busy}
-            clearable
+            clearable={mode !== "SEGMENT"}
+            required={mode === "SEGMENT"}
           />
         )}
 
