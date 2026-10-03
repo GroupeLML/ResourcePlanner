@@ -122,6 +122,24 @@ class ResourcePeriodReservationUpdate(StrictBody):
     expected_planning_version: int = Field(ge=1)
 
 
+class SegmentReservationCreate(StrictBody):
+    segment_id: str
+    asset_type_id: str
+    asset_id: str
+    start_date: date
+    end_date: date
+    operator_resource_id: str
+    expected_planning_version: int = Field(ge=1)
+
+
+class SegmentReservationUpdate(StrictBody):
+    asset_id: str
+    start_date: date
+    end_date: date
+    operator_resource_id: str
+    expected_planning_version: int = Field(ge=1)
+
+
 class ShiftAssetAssignmentChange(StrictBody):
     asset_id: str | None = None
     asset_requirement_id: str | None = None
@@ -437,6 +455,56 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
         session: Session = Depends(session_dependency),
     ) -> dict:
         return service(session, request).release_resource_period_reservation(
+            requirement_id=identifier,
+            expected_version=expected_planning_version,
+            idempotency_key=idempotency_key,
+        )
+
+    @router.post("/segment-reservations", status_code=201)
+    def create_segment_reservation(
+        body: SegmentReservationCreate,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key", min_length=1),
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        return service(session, request).create_segment_reservation(
+            segment_id=body.segment_id,
+            asset_type_id=body.asset_type_id,
+            asset_id=body.asset_id,
+            start_date=body.start_date,
+            end_date=body.end_date,
+            operator_resource_id=body.operator_resource_id,
+            expected_version=body.expected_planning_version,
+            idempotency_key=idempotency_key,
+        )
+
+    @router.put("/segment-reservations/{identifier}")
+    def update_segment_reservation(
+        identifier: str,
+        body: SegmentReservationUpdate,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key", min_length=1),
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        return service(session, request).update_segment_reservation(
+            requirement_id=identifier,
+            asset_id=body.asset_id,
+            start_date=body.start_date,
+            end_date=body.end_date,
+            operator_resource_id=body.operator_resource_id,
+            expected_version=body.expected_planning_version,
+            idempotency_key=idempotency_key,
+        )
+
+    @router.delete("/segment-reservations/{identifier}")
+    def release_segment_reservation(
+        identifier: str,
+        expected_planning_version: int,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key", min_length=1),
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        return service(session, request).release_segment_reservation(
             requirement_id=identifier,
             expected_version=expected_planning_version,
             idempotency_key=idempotency_key,
