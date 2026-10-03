@@ -63,6 +63,7 @@ Voir :
 - `ADR-016-shift-owned-ad-hoc-asset-assignment.md`
 - `ADR-017-erp-project-manager-and-rp-co-managers.md`
 - `ADR-018-asset-reservation-contexts-and-physical-occupation.md`
+- `ADR-019-work-package-load-intervals-and-derived-lifecycle.md`
 
 Chaîne métier actuelle :
 
@@ -118,8 +119,9 @@ Voir :
 
 - `ADR-013-work-package-weekly-load-and-medium-term-boundaries.md`
 - `ADR-015-canonical-work-package-resource-class.md`
+- `ADR-019-work-package-load-intervals-and-derived-lifecycle.md`
 
-ADR-013 fixe la frontière de #502 : `TaskCatalogEntry` est la tâche ERP de référence des WorkPackages, `planned_hours` reste leur charge totale, la répartition hebdomadaire persistée appartient au WorkPackage et n'est jamais redistribuée silencieusement. Le budget ERP, la charge Moyen terme, les `Shift` du Planning et le forecast Delivery restent des autorités distinctes.
+ADR-013 fixe la frontière de #502 : `TaskCatalogEntry` est la tâche ERP de référence des WorkPackages, `planned_hours` reste leur charge totale, tandis que le budget ERP, la charge Moyen terme, les `Shift` du Planning et le forecast Delivery restent des autorités distinctes. ADR-019 supersède partiellement son ancien modèle de répartition hebdomadaire obligatoire : l’intention persistée devient une collection facultative d’intervalles datés, le solde non explicitement positionné est dérivé automatiquement sur toute la période et le statut WorkPackage devient une projection read-only du cycle de vie.
 
 ADR-015 fixe la qualification métier du WorkPackage comme une référence canonique persistée vers `ResourceClassConfig`, distincte de `TaskCatalogEntry.resource_class_code`. La classe de la tâche ERP peut initialiser ou suggérer une valeur, mais ne constitue jamais un fallback dynamique après persistance.
 
@@ -210,8 +212,9 @@ Exemples qui ne nécessitent normalement pas d'ADR :
 | ADR-016 | conserver `AssetAllocation` comme autorité physique et représenter les affectations d’actifs ad hoc par un `AssetRequirement` appartenant au `Shift` |
 | ADR-017 | conserver le principal sous autorité ERP, persister seulement les co-chargés RP et résoudre les deux par une projection backend canonique |
 | ADR-018 | conserver `AssetRequirement → AssetAllocation` pour cinq contextes explicites, séparer fenêtre/budget/occupation et garder opérateur, disponibilité et concurrence sous les autorités Planning existantes |
+| ADR-019 | persister des intervalles WorkPackage explicites facultatifs, dériver le solde automatique sur toute la période et projeter le statut depuis le cycle de vie |
 
-Ces dix-huit ADR sont en statut `Accepted`. ADR-006 reste le socle de concurrence globale. ADR-012 guide les prochaines tranches identité : `AppUser` est l'autorité locale une fois créé et aucune identité OIDC ne crée elle-même un compte. ADR-011 établit SQL Server comme base de référence d'exploitation et réserve SQLite aux usages local/test adaptés. ADR-010 guide #276 pour la multi-approbation par ligne et ses référentiels. ADR-007 guide #291 pour les actifs réservables. ADR-008 guide #362 : `DeliveryPlan`/Epics/Stories restent distincts des `Shift`, les heures WorkPackage actuelles sont une référence de planification et non un budget approuvé, et Delivery consomme une projection read-only du plan actif/approuvé. ADR-015 guide #524 : `WorkPackage.resource_class_code` devient l'autorité de qualification métier du WorkPackage, distincte de la classification ERP de sa tâche. ADR-016 guide #560 : toute réservation physique reste un `AssetAllocation` porté par un `AssetRequirement`, y compris lorsqu’il est créé ad hoc depuis un `Shift`. ADR-017 guide #573 : le principal demeure sous autorité ERP, les co-chargés sont des nominations RP distinctes, et les scopes/projections doivent partager une résolution canonique sans dériver de permissions. ADR-018 guide #575 : les contextes d’actifs restent des `AssetRequirement` explicites, `AssetAllocation` reste l’autorité physique des dates et de l’unité, et fenêtre autorisée, budget d’usage et occupation réelle ne sont jamais confondus.
+Ces dix-neuf ADR sont en statut `Accepted`. ADR-006 reste le socle de concurrence globale. ADR-012 guide les prochaines tranches identité : `AppUser` est l'autorité locale une fois créé et aucune identité OIDC ne crée elle-même un compte. ADR-011 établit SQL Server comme base de référence d'exploitation et réserve SQLite aux usages local/test adaptés. ADR-010 guide #276 pour la multi-approbation par ligne et ses référentiels. ADR-007 guide #291 pour les actifs réservables. ADR-008 guide #362 : `DeliveryPlan`/Epics/Stories restent distincts des `Shift`, les heures WorkPackage actuelles sont une référence de planification et non un budget approuvé, et Delivery consomme une projection read-only du plan actif/approuvé. ADR-015 guide #524 : `WorkPackage.resource_class_code` devient l'autorité de qualification métier du WorkPackage, distincte de la classification ERP de sa tâche. ADR-016 guide #560 : toute réservation physique reste un `AssetAllocation` porté par un `AssetRequirement`, y compris lorsqu’il est créé ad hoc depuis un `Shift`. ADR-017 guide #573 : le principal demeure sous autorité ERP, les co-chargés sont des nominations RP distinctes, et les scopes/projections doivent partager une résolution canonique sans dériver de permissions. ADR-018 guide #575 : les contextes d’actifs restent des `AssetRequirement` explicites, `AssetAllocation` reste l’autorité physique des dates et de l’unité, et fenêtre autorisée, budget d’usage et occupation réelle ne sont jamais confondus. ADR-019 guide #591 : les intervalles explicites WorkPackage sont facultatifs, le solde est dérivé sans seconde autorité persistée et le statut est read-only et dérivé.
 
 ---
 
