@@ -170,7 +170,7 @@ export default function DirectAssetReservationForm({
         <strong>Réserver un actif</strong>
         <span>Sans demande, segment ou quart artificiel</span>
       </div>
-      <div className="asset-unavailability-form">
+      <div className="asset-direct-reservation-form">
         <label>
           <span>Réserver pour</span>
           <select
