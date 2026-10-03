@@ -40,6 +40,7 @@ from .asset_qualification import (
     QUALIFICATION_SATISFIED,
     QUALIFICATION_SKILL_MISMATCH,
     evaluate_asset_qualification,
+    evaluate_asset_qualifications,
     required_competencies,
 )
 from .models import Project, ResourceRequirement, WorkforceRequest
@@ -533,9 +534,21 @@ class SqlAssetPlanningQuery:
         visible_requirements_by_id = {
             row.id: row for row in visible_requirements
         }
+        visible_allocation_by_requirement = {
+            row.asset_requirement_id: row for row in visible_allocations
+        }
         qualification_cache: dict[
             tuple[str, str | None], AssetQualification
-        ] = {}
+        ] = evaluate_asset_qualifications(
+            self._session,
+            pairs=tuple(
+                (
+                    requirement,
+                    visible_allocation_by_requirement.get(requirement.id),
+                )
+                for requirement in visible_requirements
+            ),
+        )
         visible_requirement_models = self._requirement_models(
             visible_requirements,
             qualification_cache=qualification_cache,
