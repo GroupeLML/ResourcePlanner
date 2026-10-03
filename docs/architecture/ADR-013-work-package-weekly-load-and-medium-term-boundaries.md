@@ -3,6 +3,8 @@
 Status: Accepted
 Date: 2026-09-29
 
+> **Supersession partielle — ADR-019.** ADR-019 remplace les décisions de cette ADR concernant WorkPackageWeeklyLoad comme intention primaire, le lundi comme identité de saisie, l’exigence somme persistée = planned_hours, le modèle AUTO persisté, l’invalidité d’une répartition partielle et le statut librement fourni. Cette ADR reste Accepted et autoritaire pour ses autres frontières : tâche ERP, budget, capacité workforce, CAS WorkPackage, séparation Planning/Delivery et frontière de lecture hebdomadaire.
+
 ## Context
 
 L'issue #502 fait évoluer la vue **Moyen terme** sans changer sa nature : elle reste un Gantt de pilotage des `WorkPackage`.
