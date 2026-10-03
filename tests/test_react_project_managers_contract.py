@@ -22,13 +22,13 @@ class ReactProjectManagerAdminContractTests(unittest.TestCase):
         self.assertIn('"Idempotency-Key": idempotencyKey', api)
         self.assertIn("expected_version: expectedVersion", api)
         self.assertIn("getProjectManagerCandidateContacts", api)
-        self.assertIn("getBusinessContacts(true, signal, false)", api)
+        self.assertIn('user_backed_only: "false"', api)
 
     def test_projects_page_uses_backend_diagnostics_and_never_legacy_manager_fk(self) -> None:
         page = (FRONTEND / "ProjectsPage.tsx").read_text(encoding="utf-8")
 
         self.assertIn("getProjectManagers", page)
-        self.assertIn("Chargé principal ERP", page)
+        self.assertIn("Chargé de projet principal (ERP)", page)
         self.assertIn("Co-chargés RessourcePlanner", page)
         self.assertIn("PROJECT_CO_MANAGER_APP_USER_NOT_LINKED", page)
         self.assertIn("PROJECT_CO_MANAGER_CONTACT_INACTIVE", page)
