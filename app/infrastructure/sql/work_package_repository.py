@@ -17,6 +17,15 @@ from ...application.query_models import (
     work_package_resource_class_diagnostic,
 )
 from ...application.repository_ports import WorkPackageRepositoryPort
+from ...application.work_package_load import (
+    LOAD_INTERVAL_ORIGIN_MANUAL,
+    TERMINAL_STATUSES,
+    WorkPackageLoadIntervalValue,
+    legacy_weekly_as_intervals,
+    terminal_status_from_legacy,
+    validate_load_intervals,
+    work_package_status,
+)
 from ...application.work_package_weekly_load import (
     WEEKLY_LOAD_ORIGINS,
     WEEKLY_LOAD_ORIGIN_AUTO,
@@ -34,7 +43,9 @@ from .models import (
     WorkforceRequest,
     WorkPackage,
     WorkPackageAudit,
+    WorkPackageLoadInterval,
     WorkPackageWeeklyLoad,
+    new_id,
 )
 from .resource_class_models import ResourceClassConfig
 
@@ -78,6 +89,11 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
             _optional_text(task.resource_class_code) if task is not None else None
         )
         resource_class_code = _optional_text(work_package.resource_class_code)
+        status, status_diagnostic = work_package_status(
+            start_date=work_package.start_date,
+            terminal_status=work_package.terminal_status,
+            legacy_status=work_package.status,
+        )
         return WorkPackageReadModel(
             id=work_package.id,
             reference=_optional_text(work_package.legacy_effort_id) or work_package.id,
@@ -92,7 +108,8 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
                 if work_package.planned_hours is not None
                 else None
             ),
-            status=_text(work_package.status) or "planned",
+            status=status,
+            status_diagnostic=status_diagnostic,
             task_catalog_item_id=work_package.task_catalog_item_id,
             task_code=_optional_text(task.task_code) if task is not None else None,
             task_label=_optional_text(task.label) if task is not None else None,
@@ -355,7 +372,13 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
                 if work_package.planned_hours is not None
                 else None
             ),
-            "status": _text(work_package.status) or "planned",
+            "status": work_package_status(
+                start_date=work_package.start_date,
+                terminal_status=work_package.terminal_status,
+                legacy_status=work_package.status,
+            )[0],
+            "legacy_status": _text(work_package.status) or "planned",
+            "terminal_status": _optional_text(work_package.terminal_status),
             "weekly_load_origin": _optional_text(work_package.weekly_load_origin),
             "version": int(work_package.version or 1),
         }
@@ -373,6 +396,106 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
             )
             for row in rows
         )
+
+    def _load_intervals(
+        self,
+        work_package: WorkPackage,
+    ) -> tuple[WorkPackageLoadIntervalValue, ...]:
+        rows = self._session.scalars(
+            select(WorkPackageLoadInterval)
+            .where(WorkPackageLoadInterval.work_package_id == work_package.id)
+            .order_by(
+                WorkPackageLoadInterval.start_date,
+                WorkPackageLoadInterval.end_date,
+                WorkPackageLoadInterval.id,
+            )
+        ).all()
+        if rows:
+            return tuple(
+                WorkPackageLoadIntervalValue(
+                    id=row.id,
+                    start_date=row.start_date,
+                    end_date=row.end_date,
+                    hours=Decimal(row.hours),
+                    origin=row.origin,
+                )
+                for row in rows
+            )
+        legacy = self._weekly_loads(work_package.id)
+        return legacy_weekly_as_intervals(
+            work_package_start=work_package.start_date,
+            work_package_end=work_package.end_date,
+            weekly_loads=tuple((row.week_start, row.hours) for row in legacy),
+            origin=_optional_text(work_package.weekly_load_origin),
+        )
+
+    def _replace_load_intervals(
+        self,
+        work_package: WorkPackage,
+        intervals: Sequence[WorkPackageLoadIntervalValue],
+        *,
+        start_date: object,
+        end_date: object,
+        planned_hours: object,
+    ) -> tuple[WorkPackageLoadIntervalValue, ...]:
+        existing = {row.id: row for row in self._load_intervals(work_package) if row.id}
+        prepared = tuple(
+            WorkPackageLoadIntervalValue(
+                id=item.id,
+                start_date=item.start_date,
+                end_date=item.end_date,
+                hours=item.hours,
+                origin=(
+                    existing[item.id].origin
+                    if item.id is not None and item.id in existing
+                    else LOAD_INTERVAL_ORIGIN_MANUAL
+                ),
+            )
+            for item in intervals
+        )
+        normalized = validate_load_intervals(
+            start_date=start_date,  # type: ignore[arg-type]
+            end_date=end_date,  # type: ignore[arg-type]
+            planned_hours=(
+                Decimal(planned_hours) if planned_hours is not None else None
+            ),
+            intervals=prepared,
+        )
+        self._session.execute(
+            delete(WorkPackageLoadInterval).where(
+                WorkPackageLoadInterval.work_package_id == work_package.id
+            )
+        )
+        stored: list[WorkPackageLoadIntervalValue] = []
+        for item in normalized:
+            identifier = item.id or new_id()
+            conflicting = self._session.get(WorkPackageLoadInterval, identifier)
+            if conflicting is not None and conflicting.work_package_id != work_package.id:
+                raise ApplicationConflictError(
+                    "Cet identifiant d'intervalle appartient déjà à un autre WorkPackage.",
+                    code="work_package_load_interval_id_conflict",
+                    context={"id": identifier},
+                )
+            self._session.add(
+                WorkPackageLoadInterval(
+                    id=identifier,
+                    work_package_id=work_package.id,
+                    start_date=item.start_date,
+                    end_date=item.end_date,
+                    hours=item.hours,
+                    origin=item.origin,
+                )
+            )
+            stored.append(
+                WorkPackageLoadIntervalValue(
+                    id=identifier,
+                    start_date=item.start_date,
+                    end_date=item.end_date,
+                    hours=item.hours,
+                    origin=item.origin,
+                )
+            )
+        return tuple(stored)
 
     def get_weekly_load_state(
         self,
@@ -456,7 +579,8 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
             start_date=values.get("start_date"),
             end_date=values.get("end_date"),
             planned_hours=_decimal(values.get("planned_hours")),
-            status=_text(values.get("status")) or "planned",
+            status="planned",
+            terminal_status=None,
         )
         self._session.add(work_package)
         self._session.flush()
@@ -549,7 +673,19 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
         if current_task_id is None and target_task is not None:
             self._validate_regularization(work_package, target_task)
 
-        old_values = self._snapshot(work_package, current_project)
+        old_values = {
+            **self._snapshot(work_package, current_project),
+            "load_intervals": [
+                {
+                    "id": item.id,
+                    "start_date": item.start_date.isoformat(),
+                    "end_date": item.end_date.isoformat(),
+                    "hours": str(item.hours),
+                    "origin": item.origin,
+                }
+                for item in self._load_intervals(work_package)
+            ],
+        }
         values: dict[str, object] = {}
         target_resource_class: ResourceClassConfig | None = (
             self._session.get(ResourceClassConfig, work_package.resource_class_code)
@@ -582,22 +718,36 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
             values["end_date"] = updates.get("end_date")
         if "planned_hours" in updates:
             values["planned_hours"] = _decimal(updates.get("planned_hours"))
-        if "status" in updates:
-            values["status"] = _text(updates.get("status"))
-
-        existing_weekly_loads = self._weekly_loads(work_package.id)
-        if work_package.weekly_load_origin is not None or existing_weekly_loads:
+        target_start = values.get("start_date", work_package.start_date)
+        target_end = values.get("end_date", work_package.end_date)
+        target_planned_hours = values.get("planned_hours", work_package.planned_hours)
+        existing_intervals = self._load_intervals(work_package)
+        if "load_intervals" in updates:
+            target_intervals = self._replace_load_intervals(
+                work_package,
+                updates.get("load_intervals") or (),
+                start_date=target_start,
+                end_date=target_end,
+                planned_hours=target_planned_hours,
+            )
+            values["weekly_load_origin"] = None
+        else:
+            target_intervals = existing_intervals
             try:
-                validate_weekly_loads(
-                    start_date=values.get("start_date", work_package.start_date),  # type: ignore[arg-type]
-                    end_date=values.get("end_date", work_package.end_date),  # type: ignore[arg-type]
-                    planned_hours=values.get("planned_hours", work_package.planned_hours),  # type: ignore[arg-type]
-                    loads=existing_weekly_loads,
+                validate_load_intervals(
+                    start_date=target_start,  # type: ignore[arg-type]
+                    end_date=target_end,  # type: ignore[arg-type]
+                    planned_hours=(
+                        Decimal(target_planned_hours)
+                        if target_planned_hours is not None
+                        else None
+                    ),
+                    intervals=existing_intervals,
                 )
             except ApplicationValidationError as exc:
                 raise ApplicationConflictError(
-                    "La modification rendrait la répartition hebdomadaire incohérente; une nouvelle répartition explicite est requise.",
-                    code="work_package_weekly_load_replan_required",
+                    "La modification exclurait ou surallouerait un intervalle explicite; corrige la collection dans la même commande.",
+                    code="work_package_load_intervals_replan_required",
                     context={
                         "reference": _optional_text(work_package.legacy_effort_id)
                         or work_package.id,
@@ -630,7 +780,19 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
 
         self._session.flush()
         self._session.refresh(work_package)
-        new_values = self._snapshot(work_package, target_project)
+        new_values = {
+            **self._snapshot(work_package, target_project),
+            "load_intervals": [
+                {
+                    "id": item.id,
+                    "start_date": item.start_date.isoformat(),
+                    "end_date": item.end_date.isoformat(),
+                    "hours": str(item.hours),
+                    "origin": item.origin,
+                }
+                for item in target_intervals
+            ],
+        }
         action = (
             "REGULARIZE_TASK"
             if current_task_id is None and target_task_id is not None
@@ -711,6 +873,20 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
                     code="work_package_weekly_load_auto_proposal_mismatch",
                     context={"reference": state.reference},
                 )
+        canonical_intervals = legacy_weekly_as_intervals(
+            work_package_start=work_package.start_date,
+            work_package_end=work_package.end_date,
+            weekly_loads=tuple((item.week_start, item.hours) for item in normalized),
+            origin=origin,
+        )
+        self._replace_load_intervals(
+            work_package,
+            canonical_intervals,
+            start_date=work_package.start_date,
+            end_date=work_package.end_date,
+            planned_hours=work_package.planned_hours,
+        )
+
         project = self._session.get(Project, work_package.project_id)
         if project is None:
             raise KeyError("Projet du WorkPackage introuvable")
