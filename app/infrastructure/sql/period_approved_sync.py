@@ -919,7 +919,7 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             request,
             current,
             specs,
-            target_project_id=prepared.project_id,
+            target_project_id=request.project_id,
         )
         current_by_key = self._current_requirement_keys(current)
 
@@ -1103,7 +1103,7 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             request,
             current_before,
             prepared.specs,
-            target_project_id=prepared.project_id,
+            target_project_id=request.project_id,
         )
         if not bool(request.line_mode) and not periods:
             self._legacy.prevalidate_approved(demand_number)
