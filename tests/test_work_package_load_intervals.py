@@ -268,16 +268,18 @@ class WorkPackageLoadIntervalApiTests(unittest.TestCase):
 
             self.assertEqual(saved.status_code, 200, saved.text)
             self.assertEqual(saved.json()["version"], 2)
-            self.assertEqual(projected["planned_hours"], 120.0)
-            self.assertEqual(projected["explicit_hours"], 40.0)
-            self.assertEqual(projected["automatic_hours"], 80.0)
+            self.assertEqual(Decimal(str(projected["planned_hours"])), Decimal("120.00"))
+            self.assertEqual(Decimal(str(projected["explicit_hours"])), Decimal("40.00"))
+            self.assertEqual(Decimal(str(projected["automatic_hours"])), Decimal("80.00"))
             self.assertEqual(len(projected["load_intervals"]), 1)
             self.assertTrue(projected["load_intervals"][0]["id"])
             self.assertEqual(projected["load_intervals"][0]["origin"], "MANUAL")
-            self.assertAlmostEqual(
-                sum(row["hours"] for row in projected["weekly_loads"]),
-                120.0,
-                places=2,
+            self.assertEqual(
+                sum(
+                    (Decimal(str(row["hours"])) for row in projected["weekly_loads"]),
+                    Decimal("0.00"),
+                ),
+                Decimal("120.00"),
             )
 
             engine = create_sql_engine(database_url)
@@ -420,12 +422,12 @@ class WorkPackageLoadIntervalApiTests(unittest.TestCase):
                 )
                 after = self._projected(client, "EFF-LEGACY-591")
 
-            self.assertEqual(before["explicit_hours"], 8.0)
-            self.assertEqual(before["automatic_hours"], 0.0)
+            self.assertEqual(Decimal(str(before["explicit_hours"])), Decimal("8.00"))
+            self.assertEqual(Decimal(str(before["automatic_hours"])), Decimal("0.00"))
             self.assertEqual(cleared.status_code, 200, cleared.text)
             self.assertEqual(after["load_intervals"], [])
-            self.assertEqual(after["explicit_hours"], 0.0)
-            self.assertEqual(after["automatic_hours"], 8.0)
+            self.assertEqual(Decimal(str(after["explicit_hours"])), Decimal("0.00"))
+            self.assertEqual(Decimal(str(after["automatic_hours"])), Decimal("8.00"))
 
             engine = create_sql_engine(database_url)
             factory = create_session_factory(engine)
