@@ -78,6 +78,7 @@ def required_permission(method: str, path: str) -> str | None:
     if (
         path.startswith("/api/v1/assets/project-reservations")
         or path.startswith("/api/v1/assets/resource-period-reservations")
+        or path.startswith("/api/v1/assets/segment-reservations")
     ):
         return PERMISSION_MANAGE_PLANNING
     if (
