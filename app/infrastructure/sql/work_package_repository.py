@@ -980,3 +980,101 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
             else None
         )
         return self._read_model(work_package, project, task, resource_class)
+
+
+    def set_terminal_status(
+        self,
+        reference: str,
+        *,
+        terminal_status: str,
+        expected_version: int,
+    ) -> WorkPackageReadModel:
+        target_status = str(terminal_status or "").strip().casefold()
+        if target_status not in TERMINAL_STATUSES:
+            raise ApplicationValidationError(
+                "Le statut terminal du WorkPackage doit être closed ou cancelled.",
+                code="work_package_terminal_status_invalid",
+                context={"terminal_status": terminal_status},
+            )
+
+        work_package = self._entity(reference)
+        self._guard(work_package)
+        expected = int(expected_version)
+        current_version = int(work_package.version or 1)
+        if current_version != expected:
+            raise ApplicationConflictError(
+                "Le WorkPackage a été modifié depuis sa lecture.",
+                code="work_package_version_conflict",
+                context={
+                    "reference": _optional_text(work_package.legacy_effort_id)
+                    or work_package.id,
+                    "expected_version": expected,
+                    "current_version": current_version,
+                },
+            )
+
+        current_terminal = (
+            _optional_text(work_package.terminal_status)
+            or terminal_status_from_legacy(work_package.status)
+        )
+        if current_terminal is not None:
+            raise ApplicationConflictError(
+                "Le WorkPackage est déjà dans un état terminal.",
+                code="work_package_already_terminal",
+                context={
+                    "reference": _optional_text(work_package.legacy_effort_id)
+                    or work_package.id,
+                    "terminal_status": current_terminal,
+                },
+            )
+
+        project = self._session.get(Project, work_package.project_id)
+        if project is None:
+            raise KeyError("Projet du WorkPackage introuvable")
+        old_values = self._snapshot(work_package, project)
+        result = self._session.execute(
+            update(WorkPackage)
+            .where(
+                WorkPackage.id == work_package.id,
+                WorkPackage.version == expected,
+            )
+            .values(
+                terminal_status=target_status,
+                status=target_status,
+                version=WorkPackage.version + 1,
+            )
+        )
+        if int(result.rowcount or 0) != 1:
+            actual = self._session.scalar(
+                select(WorkPackage.version).where(WorkPackage.id == work_package.id)
+            )
+            raise ApplicationConflictError(
+                "Le WorkPackage a été modifié par une autre opération.",
+                code="work_package_version_conflict",
+                context={
+                    "reference": _optional_text(work_package.legacy_effort_id)
+                    or work_package.id,
+                    "expected_version": expected,
+                    "current_version": int(actual or current_version),
+                },
+            )
+
+        self._session.flush()
+        self._session.refresh(work_package)
+        self._audit(
+            work_package,
+            action="CLOSE" if target_status == "closed" else "CANCEL",
+            old_values=old_values,
+            new_values=self._snapshot(work_package, project),
+        )
+        task = (
+            self._session.get(TaskCatalogEntry, work_package.task_catalog_item_id)
+            if work_package.task_catalog_item_id is not None
+            else None
+        )
+        resource_class = (
+            self._session.get(ResourceClassConfig, work_package.resource_class_code)
+            if work_package.resource_class_code is not None
+            else None
+        )
+        return self._read_model(work_package, project, task, resource_class)
