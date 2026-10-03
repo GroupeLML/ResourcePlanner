@@ -1621,6 +1621,10 @@ export function getProjectBusinessContacts(projectNumber: string, signal?: Abort
   );
 }
 
+export function getProjectManagerCandidateContacts(signal?: AbortSignal) {
+  return getBusinessContacts(true, signal, false);
+}
+
 export function getProjectManagers(
   projectNumber: string,
   signal?: AbortSignal,
