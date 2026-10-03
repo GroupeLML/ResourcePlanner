@@ -11,7 +11,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 import uuid
 
-from alembic import op
+from alembic import context, op
 import sqlalchemy as sa
 
 
@@ -69,6 +69,28 @@ def _legacy_rows(bind) -> dict[str, list[dict[str, object]]]:
 
 
 def _preflight_legacy_weekly_rows(bind) -> dict[str, list[dict[str, object]]]:
+    missing_rows = tuple(
+        bind.execute(
+            sa.text(
+                """
+                SELECT wp.id, wp.weekly_load_origin
+                FROM work_packages AS wp
+                LEFT JOIN work_package_weekly_loads AS wl
+                  ON wl.work_package_id = wp.id
+                WHERE wp.weekly_load_origin IS NOT NULL
+                GROUP BY wp.id, wp.weekly_load_origin
+                HAVING COUNT(wl.work_package_id) = 0
+                """
+            )
+        ).mappings()
+    )
+    if missing_rows:
+        identifiers = ", ".join(str(row["id"]) for row in missing_rows)
+        raise RuntimeError(
+            "Cannot migrate WorkPackage weekly-load origins without persisted rows: "
+            + identifiers
+        )
+
     grouped = _legacy_rows(bind)
     for work_package_id, rows in grouped.items():
         first = rows[0]
@@ -143,7 +165,8 @@ def _add_terminal_status() -> None:
 
 def upgrade() -> None:
     bind = op.get_bind()
-    legacy = _preflight_legacy_weekly_rows(bind)
+    offline = context.is_offline_mode()
+    legacy = {} if offline else _preflight_legacy_weekly_rows(bind)
 
     _add_terminal_status()
     op.create_table(
@@ -179,6 +202,9 @@ def upgrade() -> None:
         ["work_package_id", "start_date", "end_date"],
         unique=False,
     )
+
+    if offline:
+        return
 
     statuses = bind.execute(
         sa.text("SELECT id, status FROM work_packages")
