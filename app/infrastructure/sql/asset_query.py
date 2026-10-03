@@ -6,7 +6,7 @@ from datetime import date, timedelta
 import json
 from collections.abc import Sequence
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ...application.query_models import (
@@ -409,6 +409,7 @@ class SqlAssetPlanningQuery:
         start: date,
         end: date,
         project_ids: Sequence[str] | None = None,
+        context_resource_ids: Sequence[str] = (),
     ) -> AssetPlanningWindowReadModel:
         type_rows = tuple(
             self._session.scalars(select(AssetType).order_by(AssetType.code)).all()
@@ -426,13 +427,28 @@ class SqlAssetPlanningQuery:
         )
         if project_ids is not None:
             identifiers = tuple(_text(value) for value in project_ids if _text(value))
-            if not identifiers:
+            context_identifiers = tuple(
+                _text(value) for value in context_resource_ids if _text(value)
+            )
+            scope_predicates = []
+            if identifiers:
+                scope_predicates.append(AssetRequirement.project_id.in_(identifiers))
+            if context_identifiers:
+                scope_predicates.append(
+                    (
+                        AssetRequirement.origin
+                        == AssetRequirementOrigin.RESOURCE_PERIOD.value
+                    )
+                    & AssetRequirement.project_id.is_(None)
+                    & AssetRequirement.context_resource_id.in_(context_identifiers)
+                )
+            if not scope_predicates:
                 visible_requirements: tuple[AssetRequirement, ...] = ()
             else:
                 visible_requirements = tuple(
                     self._session.scalars(
                         requirement_statement.where(
-                            AssetRequirement.project_id.in_(identifiers)
+                            or_(*scope_predicates)
                         ).order_by(
                             AssetRequirement.start_date,
                             AssetRequirement.approved_entry_key,
