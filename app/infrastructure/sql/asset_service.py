@@ -1617,8 +1617,8 @@ class SqlAssetService:
             "project_id": requirement.project_id,
             "context_resource_id": requirement.context_resource_id,
             "operator_resource_id": allocation.operator_resource_id,
-            "start_date": allocation.start_date,
-            "end_date": allocation.end_date,
+            "start_date": allocation.start_date.isoformat(),
+            "end_date": allocation.end_date.isoformat(),
             "qualification_state": qualification_state,
             "planning_version": self.version.current_version(),
         }
