@@ -154,6 +154,7 @@ def _seed(database_url: str, spec: DatasetSpec) -> None:
                 active=True,
             )
             session.add(asset_type)
+            session.flush()
             assets = [
                 Asset(
                     id=f"PERF-ASSET-{index:04d}",
