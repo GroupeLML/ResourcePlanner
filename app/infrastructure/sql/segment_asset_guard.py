@@ -42,7 +42,6 @@ def segment_asset_dependencies(
         .where(
             AssetRequirement.origin == AssetRequirementOrigin.SEGMENT.value,
             AssetRequirement.resource_requirement_id.in_(identifiers),
-            AssetRequirement.status != "Annulé",
         )
         .order_by(
             AssetRequirement.resource_requirement_id,
