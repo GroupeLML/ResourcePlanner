@@ -193,7 +193,7 @@ export default function DirectAssetReservationForm({
       }
       retryKeys.current.delete(fingerprint);
       setAssetId("");
-      setFeedback("Réservation directe enregistrée.");
+      setFeedback("Réservation enregistrée.");
       onRefresh();
     } catch (reason: unknown) {
       if (reason instanceof TypeError) {
@@ -211,7 +211,7 @@ export default function DirectAssetReservationForm({
     <div className="asset-unavailability-panel asset-direct-reservation-panel">
       <div className="asset-section-heading">
         <strong>Réserver un actif</strong>
-        <span>Sans demande, segment ou quart artificiel</span>
+        <span>Sans demande ou quart artificiel</span>
       </div>
       <div className="asset-direct-reservation-form">
         <label>
