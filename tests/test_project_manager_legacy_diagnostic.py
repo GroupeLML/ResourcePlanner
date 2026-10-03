@@ -339,14 +339,12 @@ class ProjectManagerLegacyDiagnosticSqliteTests(unittest.TestCase):
         self.assertEqual(row.classification, LEGACY_DIVERGES_FROM_CANONICAL)
         assert row.canonical_primary is not None
         self.assertEqual(row.canonical_primary.business_contact_id, "C-A")
+        with self.factory() as session:
+            co_managers = ProjectManagerResolutionService(
+                SqlProjectManagerResolutionRepository(session)
+            ).resolve_project("P").co_managers
         self.assertEqual(
-            tuple(manager.business_contact_id for manager in (
-                ProjectManagerResolutionService(
-                    SqlProjectManagerResolutionRepository(
-                        self.factory()
-                    )
-                ).resolve_project("P").co_managers
-            )),
+            tuple(manager.business_contact_id for manager in co_managers),
             ("C-C",),
         )
         self.assertLessEqual(
