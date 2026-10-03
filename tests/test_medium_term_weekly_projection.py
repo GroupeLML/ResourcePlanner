@@ -312,10 +312,9 @@ class MediumTermWeeklyProjectionTests(unittest.TestCase):
         self.assertTrue(packages["WP-CLOSED"]["budget_included"])
         self.assertFalse(packages["WP-CANCELLED"]["current_load_included"])
         self.assertFalse(packages["WP-CANCELLED"]["budget_included"])
-        self.assertEqual(
-            packages["WP-MISSING"]["weekly_load_diagnostic"],
-            "WEEKLY_LOAD_MISSING",
-        )
+        self.assertIsNone(packages["WP-MISSING"]["weekly_load_diagnostic"])
+        self.assertEqual(packages["WP-MISSING"]["explicit_hours"], 0.0)
+        self.assertEqual(packages["WP-MISSING"]["automatic_hours"], 10.0)
 
         weeks = {row["week_start"]: row for row in payload["weeks"]}
         first = weeks["2026-09-14"]
@@ -331,15 +330,13 @@ class MediumTermWeeklyProjectionTests(unittest.TestCase):
         self.assertEqual(Decimal(str(second["capacity_hours"])), Decimal("48.00"))
         self.assertEqual(Decimal(str(second["utilization"])), Decimal("41.67"))
 
-        self.assertIsNone(third["work_package_hours"])
+        self.assertEqual(Decimal(str(third["work_package_hours"])), Decimal("10.00"))
         self.assertEqual(Decimal(str(third["capacity_hours"])), Decimal("0.00"))
         self.assertIsNone(third["utilization"])
-        self.assertEqual(
-            set(third["diagnostics"]),
-            {"WORK_PACKAGE_LOAD_INCOMPLETE", "WORKFORCE_CAPACITY_ZERO"},
-        )
+        self.assertEqual(third["state"], "overloaded")
+        self.assertEqual(third["diagnostics"], ["WORKFORCE_CAPACITY_ZERO"])
 
-        self.assertIn("WEEKLY_LOAD_INCOMPLETE", payload["weekly_diagnostics"])
+        self.assertNotIn("WEEKLY_LOAD_INCOMPLETE", payload["weekly_diagnostics"])
         self.assertIn("WORKFORCE_CAPACITY_ZERO", payload["weekly_diagnostics"])
 
         # P2 carries 100h in the first week, but project filtering affects load only.
