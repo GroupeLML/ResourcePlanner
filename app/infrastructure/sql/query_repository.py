@@ -562,11 +562,13 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         start: date,
         end: date,
         project_ids: Sequence[str] | None = None,
+        context_resource_ids: Sequence[str] = (),
     ) -> AssetPlanningWindowReadModel:
         return SqlAssetPlanningQuery(self._session).planning_window(
             start=start,
             end=end,
             project_ids=project_ids,
+            context_resource_ids=context_resource_ids,
         )
 
     def list_pending_loads(
@@ -2020,6 +2022,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             start=start,
             end=end,
             project_ids=project_ids,
+            context_resource_ids=include_resource_ids,
         )
         return PlanningSnapshotReadModel(
             start=start,
