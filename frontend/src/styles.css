@@ -889,7 +889,9 @@ h1 { font-size: 1.6rem; }
 }
 .asset-reservation-controls select,
 .asset-unavailability-form select,
-.asset-unavailability-form input {
+.asset-unavailability-form input,
+.asset-direct-reservation-form select,
+.asset-direct-reservation-form input {
   width: 100%;
   min-height: 36px;
   border: 1px solid var(--border);
