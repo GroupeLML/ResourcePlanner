@@ -13,7 +13,7 @@ from typing import Iterable
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import bindparam, delete, insert, select, true, update
+from sqlalchemy import bindparam, delete, insert, or_, select, true, update
 from sqlalchemy.dialects import mssql
 from sqlalchemy import ForeignKeyConstraint, UniqueConstraint
 from sqlalchemy.schema import CreateIndex, CreateTable
@@ -25,6 +25,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.infrastructure.sql import Base  # noqa: E402
+from app.infrastructure.sql.asset_models import (  # noqa: E402
+    Asset,
+    AssetAllocation,
+    AssetRequirement,
+)
 from app.infrastructure.sql.models import (  # noqa: E402
     Project,
     Resource,
@@ -410,6 +415,51 @@ def _critical_statements():
             ),
         )
         .order_by(Shift.work_date, Shift.id)
+    )
+    yield "asset_planning_scoped_requirements", (
+        select(AssetRequirement)
+        .where(
+            AssetRequirement.status != "Annulé",
+            AssetRequirement.start_date <= bindparam(
+                "asset_window_end",
+                type_=AssetRequirement.__table__.c.end_date.type,
+            ),
+            AssetRequirement.end_date >= bindparam(
+                "asset_window_start",
+                type_=AssetRequirement.__table__.c.start_date.type,
+            ),
+            or_(
+                AssetRequirement.project_id == bindparam("asset_project_id"),
+                (
+                    (AssetRequirement.origin == "RESOURCE_PERIOD")
+                    & AssetRequirement.project_id.is_(None)
+                    & (
+                        AssetRequirement.context_resource_id
+                        == bindparam("asset_context_resource_id")
+                    )
+                ),
+            ),
+        )
+        .order_by(AssetRequirement.start_date, AssetRequirement.id)
+    )
+    yield "asset_global_occupancy", (
+        select(AssetAllocation, AssetRequirement, Asset)
+        .join(
+            AssetRequirement,
+            AssetAllocation.asset_requirement_id == AssetRequirement.id,
+        )
+        .join(Asset, AssetAllocation.asset_id == Asset.id)
+        .where(
+            AssetAllocation.start_date <= bindparam(
+                "asset_occupancy_end",
+                type_=AssetAllocation.__table__.c.end_date.type,
+            ),
+            AssetAllocation.end_date >= bindparam(
+                "asset_occupancy_start",
+                type_=AssetAllocation.__table__.c.start_date.type,
+            ),
+        )
+        .order_by(AssetAllocation.asset_id, AssetAllocation.start_date)
     )
     yield "history", (
         select(WorkforceRequestHistory)
