@@ -169,7 +169,10 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
     ),
     "work_packages": _keep("WorkPackages planifiés localement."),
     "work_package_weekly_loads": _keep(
-        "Intentions hebdomadaires WorkPackage validées; elles doivent survivre au cutover."
+        "Intentions hebdomadaires historiques WorkPackage; conservées pour la migration ADR-019."
+    ),
+    "work_package_load_intervals": _keep(
+        "Intentions explicites datées WorkPackage canoniques selon ADR-019."
     ),
     "work_package_audit": _keep("Audit durable des mutations WorkPackage et de leur version CAS."),
     "workforce_requests": _keep("Demandes métier V2."),
@@ -219,6 +222,7 @@ RELATIONSHIP_CONTROLS: dict[str, tuple[str, ...]] = {
     ),
     "work_packages": ("id", "project_id"),
     "work_package_weekly_loads": ("work_package_id", "week_start"),
+    "work_package_load_intervals": ("id", "work_package_id"),
     "workforce_requests": ("id", "project_id", "work_package_id"),
     "request_lines": ("id", "workforce_request_id", "work_package_id"),
     "resource_requirements": (
