@@ -327,6 +327,9 @@ class ApplicationFacade:
             deleted_ad_hoc_asset_requirements=int(
                 summary.get("deleted_ad_hoc_asset_requirements") or 0
             ),
+            deleted_segment_asset_requirements=int(
+                summary.get("deleted_segment_asset_requirements") or 0
+            ),
             cancelled_workforce_requirements=int(
                 summary.get("cancelled_workforce_requirements") or 0
             ),
