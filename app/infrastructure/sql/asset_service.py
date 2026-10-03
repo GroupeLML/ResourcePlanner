@@ -379,8 +379,8 @@ class SqlAssetService:
         proposed_operator_id = str(operator_resource_id or "").strip() or None
         before = {
             "asset_id": allocation.asset_id,
-            "start_date": allocation.start_date,
-            "end_date": allocation.end_date,
+            "start_date": allocation.start_date.isoformat(),
+            "end_date": allocation.end_date.isoformat(),
             "operator_resource_id": allocation.operator_resource_id,
         }
         qualification_state = self._validate_request_allocation_state(
@@ -1695,6 +1695,9 @@ class SqlAssetService:
             source=allocation.source,
         )
         self.session.add(requirement)
+        # AssetAllocation has an FK to AssetRequirement but no ORM relationship.
+        # Flush the parent first so SQLite/SQL Server never observe the child first.
+        self.session.flush()
         self.session.add(allocation)
         self.audit.append(
             entity_type="ASSET_ALLOCATION",
