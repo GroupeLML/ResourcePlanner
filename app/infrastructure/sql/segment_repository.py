@@ -14,6 +14,7 @@ from ...application.repository_ports import SegmentRepositoryPort
 from ...domain.confirmation import CONFIRMATION_CONFIRMED, normalize_confirmation
 from ...domain.load_profiles import normalize_load_profile
 from .demand_period_models import WorkforceRequestPeriod, WorkforceRequestPeriodRequirement
+from .segment_asset_guard import assert_segment_asset_mutation_compatible
 from .models import (
     ORIGIN_REQUEST,
     Project,
@@ -439,24 +440,51 @@ class SqlSegmentRepository(SegmentRepositoryPort):
     def update(self, segment_id: str, updates: Mapping[str, Any]) -> None:
         requirement = self._requirement(segment_id)
 
-        request = None
-        if "NoDemande" in updates:
-            request = self._request(updates.get("NoDemande"))
-            requirement.workforce_request_id = request.id if request else None
-            line = self._session.get(RequestLine, request.id) if request is not None else None
-            requirement.source_request_line_id = line.id if line is not None else None
-        elif requirement.workforce_request_id:
-            request = self._session.get(WorkforceRequest, requirement.workforce_request_id)
-
+        request = (
+            self._request(updates.get("NoDemande"))
+            if "NoDemande" in updates
+            else (
+                self._session.get(WorkforceRequest, requirement.workforce_request_id)
+                if requirement.workforce_request_id
+                else None
+            )
+        )
+        target_project_id = requirement.project_id
         if "NumeroProjet" in updates:
-            requirement.project_id = self._project(updates.get("NumeroProjet")).id
+            target_project_id = self._project(updates.get("NumeroProjet")).id
         elif request is not None and "NoDemande" in updates:
-            requirement.project_id = request.project_id
+            target_project_id = request.project_id
 
-        if request is not None and request.project_id != requirement.project_id:
+        if request is not None and request.project_id != target_project_id:
             raise ValueError(
                 "Le projet du segment ne correspond pas au projet de la demande."
             )
+
+        assert_segment_asset_mutation_compatible(
+            self._session,
+            requirement,
+            target_project_id=target_project_id,
+            target_start_date=(
+                updates.get("DateDebut")
+                if "DateDebut" in updates
+                else requirement.start_date
+            ),
+            target_end_date=(
+                updates.get("DateFin")
+                if "DateFin" in updates
+                else requirement.end_date
+            ),
+            removing=(
+                "Statut" in updates
+                and _text(updates.get("Statut")) == "Annulé"
+            ),
+        )
+
+        if "NoDemande" in updates:
+            requirement.workforce_request_id = request.id if request else None
+            line = self._session.get(RequestLine, request.id) if request is not None else None
+            requirement.source_request_line_id = line.id if line is not None else None
+        requirement.project_id = target_project_id
 
         effective_source_effort = requirement.source_effort_id
         if "SourceEffortID" in updates or "SourceEffortRow" in updates:
