@@ -283,7 +283,10 @@ class SqlAssetService:
             )
         if requirement.origin == AssetRequirementOrigin.REQUEST.value:
             self._validate_request_authority(requirement)
-        elif requirement.origin != AssetRequirementOrigin.PROJECT_DIRECT.value:
+        elif requirement.origin not in {
+            AssetRequirementOrigin.PROJECT_DIRECT.value,
+            AssetRequirementOrigin.SEGMENT.value,
+        }:
             raise ApplicationConflictError(
                 "Le contexte de réservation ne permet pas de choisir un opérateur.",
                 code="asset_operator_context_unsupported",
@@ -1615,6 +1618,7 @@ class SqlAssetService:
             "allocation_id": allocation.id,
             "asset_id": allocation.asset_id,
             "project_id": requirement.project_id,
+            "resource_requirement_id": requirement.resource_requirement_id,
             "context_resource_id": requirement.context_resource_id,
             "operator_resource_id": allocation.operator_resource_id,
             "start_date": allocation.start_date.isoformat(),
@@ -2033,7 +2037,11 @@ class SqlAssetService:
             entity_id=allocation_id or requirement.id,
             entity_reference=requirement.id,
             parent_reference=requirement.project_id or requirement.context_resource_id,
-            action="Libération réservation directe",
+            action=(
+                "Libération réservation segment"
+                if expected_origin == AssetRequirementOrigin.SEGMENT
+                else "Libération réservation directe"
+            ),
             before=before,
         )
         if allocation is not None:
@@ -2107,6 +2115,337 @@ class SqlAssetService:
             expected_version=expected_version,
             idempotency_key=idempotency_key,
             scope="asset_resource_period_release",
+        )
+
+    def _segment_context(self, identifier: str) -> ResourceRequirement:
+        wanted = str(identifier or "").strip()
+        segment = self.session.scalar(
+            select(ResourceRequirement).where(
+                (ResourceRequirement.id == wanted)
+                | (ResourceRequirement.legacy_segment_id == wanted)
+            )
+        )
+        if segment is None or segment.status == "Annulé":
+            raise ApplicationNotFoundError(
+                "Segment introuvable ou annulé.",
+                code="asset_segment_not_found",
+            )
+        if not segment.project_id:
+            raise ApplicationConflictError(
+                "Le segment n'a pas de projet propriétaire.",
+                code="asset_segment_context_conflict",
+            )
+        return segment
+
+    def _validate_segment_allocation_state(
+        self,
+        *,
+        requirement: AssetRequirement,
+        asset_id: str,
+        start_date: date,
+        end_date: date,
+        operator_resource_id: str | None,
+        allocation_id: str,
+        source: str = "MANUAL",
+    ) -> str:
+        if (
+            requirement.origin != AssetRequirementOrigin.SEGMENT.value
+            or not requirement.resource_requirement_id
+        ):
+            raise ApplicationConflictError(
+                "Le besoin d'actif n'est pas une réservation de segment.",
+                code="asset_segment_origin_conflict",
+            )
+        segment = self._segment_context(requirement.resource_requirement_id)
+        if requirement.project_id != segment.project_id:
+            raise ApplicationConflictError(
+                "Le projet du besoin d'actif ne correspond plus au segment.",
+                code="asset_segment_project_conflict",
+            )
+        self._validate_direct_window(start_date, end_date)
+        if not (
+            segment.start_date
+            <= start_date
+            <= end_date
+            <= segment.end_date
+        ):
+            raise ApplicationValidationError(
+                "Réservation hors fenêtre du segment.",
+                code="asset_outside_segment_window",
+            )
+        operator_id = str(operator_resource_id or "").strip()
+        if not operator_id:
+            raise ApplicationValidationError(
+                "Un opérateur explicite est requis pour une réservation de segment.",
+                code="asset_segment_operator_required",
+            )
+        self._direct_resource(operator_id)
+        asset, _asset_type = self._active_asset(asset_id)
+        if asset.asset_type_id != requirement.asset_type_id:
+            raise ApplicationValidationError(
+                "Actif inactif ou incompatible.",
+                code="asset_incompatible",
+            )
+        self._assert_asset_available(
+            asset_id=asset.id,
+            start_date=start_date,
+            end_date=end_date,
+            allocation_id=allocation_id,
+        )
+        candidate = AssetAllocation(
+            id=allocation_id,
+            asset_requirement_id=requirement.id,
+            asset_id=asset.id,
+            operator_resource_id=operator_id,
+            start_date=start_date,
+            end_date=end_date,
+            locked=True,
+            source=source,
+        )
+        qualification = evaluate_asset_qualification(
+            self.session,
+            requirement=requirement,
+            allocation=candidate,
+        )
+        if qualification.state != QUALIFICATION_SATISFIED:
+            raise self._request_operator_error(qualification.state)
+        return qualification.state
+
+    def _create_segment_reservation(
+        self,
+        *,
+        segment_id: str,
+        asset_type_id: str,
+        asset_id: str,
+        start_date: date,
+        end_date: date,
+        operator_resource_id: str,
+        expected_version: int,
+    ) -> dict:
+        self.version.acquire(expected_version)
+        segment = self._segment_context(segment_id)
+        requirement = AssetRequirement(
+            id=new_id(),
+            project_id=segment.project_id,
+            origin=AssetRequirementOrigin.SEGMENT.value,
+            resource_requirement_id=segment.id,
+            asset_type_id=asset_type_id,
+            start_date=start_date,
+            end_date=end_date,
+            status="Planifié",
+        )
+        allocation = AssetAllocation(
+            id=new_id(),
+            asset_requirement_id=requirement.id,
+            asset_id=asset_id,
+            operator_resource_id=operator_resource_id,
+            start_date=start_date,
+            end_date=end_date,
+            locked=True,
+            source="MANUAL",
+        )
+        qualification_state = self._validate_segment_allocation_state(
+            requirement=requirement,
+            asset_id=asset_id,
+            start_date=start_date,
+            end_date=end_date,
+            operator_resource_id=operator_resource_id,
+            allocation_id=allocation.id,
+            source=allocation.source,
+        )
+        self.session.add(requirement)
+        self.session.flush()
+        self.session.add(allocation)
+        self.audit.append(
+            entity_type="ASSET_ALLOCATION",
+            entity_id=allocation.id,
+            entity_reference=requirement.id,
+            parent_reference=segment.id,
+            action="Réservation d'actif sur segment",
+            after={
+                "origin": requirement.origin,
+                "resource_requirement_id": segment.id,
+                "project_id": segment.project_id,
+                "asset_type_id": asset_type_id,
+                "asset_id": asset_id,
+                "operator_resource_id": operator_resource_id,
+                "start_date": start_date,
+                "end_date": end_date,
+            },
+        )
+        self.session.flush()
+        return self._direct_result(
+            requirement=requirement,
+            allocation=allocation,
+            qualification_state=qualification_state,
+            operation="CREATE",
+        )
+
+    def create_segment_reservation(
+        self,
+        *,
+        segment_id: str,
+        asset_type_id: str,
+        asset_id: str,
+        start_date: date,
+        end_date: date,
+        operator_resource_id: str,
+        expected_version: int,
+        idempotency_key: str,
+    ) -> dict:
+        payload = {
+            "segment_id": segment_id,
+            "asset_type_id": asset_type_id,
+            "asset_id": asset_id,
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "operator_resource_id": operator_resource_id,
+            "expected_version": expected_version,
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode()
+        ).hexdigest()
+        return SqlCommandIdempotencyAdapter(
+            self.session,
+            actor_name=self.actor,
+        ).replay_or_execute(
+            scope="asset_segment_create",
+            key=idempotency_key,
+            request_fingerprint=fingerprint,
+            action=lambda: self._create_segment_reservation(
+                segment_id=segment_id,
+                asset_type_id=asset_type_id,
+                asset_id=asset_id,
+                start_date=start_date,
+                end_date=end_date,
+                operator_resource_id=operator_resource_id,
+                expected_version=expected_version,
+            ),
+        )
+
+    def _update_segment_reservation(
+        self,
+        *,
+        requirement_id: str,
+        asset_id: str,
+        start_date: date,
+        end_date: date,
+        operator_resource_id: str,
+        expected_version: int,
+    ) -> dict:
+        self.version.acquire(expected_version)
+        requirement = self.session.get(AssetRequirement, requirement_id)
+        if (
+            requirement is None
+            or requirement.status == "Annulé"
+            or requirement.origin != AssetRequirementOrigin.SEGMENT.value
+        ):
+            raise ApplicationNotFoundError(
+                "Réservation de segment introuvable.",
+                code="asset_segment_reservation_not_found",
+            )
+        allocation = self._allocation_for_requirement(requirement.id)
+        if allocation is None:
+            raise ApplicationConflictError(
+                "La réservation physique du segment est introuvable.",
+                code="asset_segment_allocation_missing",
+            )
+        before = {
+            "asset_id": allocation.asset_id,
+            "operator_resource_id": allocation.operator_resource_id,
+            "start_date": allocation.start_date,
+            "end_date": allocation.end_date,
+        }
+        qualification_state = self._validate_segment_allocation_state(
+            requirement=requirement,
+            asset_id=asset_id,
+            start_date=start_date,
+            end_date=end_date,
+            operator_resource_id=operator_resource_id,
+            allocation_id=allocation.id,
+            source=allocation.source,
+        )
+        requirement.start_date = start_date
+        requirement.end_date = end_date
+        allocation.asset_id = asset_id
+        allocation.operator_resource_id = operator_resource_id
+        allocation.start_date = start_date
+        allocation.end_date = end_date
+        allocation.locked = True
+        self.audit.append(
+            entity_type="ASSET_ALLOCATION",
+            entity_id=allocation.id,
+            entity_reference=requirement.id,
+            parent_reference=requirement.resource_requirement_id,
+            action="Modification réservation d'actif sur segment",
+            before=before,
+            after={
+                "asset_id": asset_id,
+                "operator_resource_id": operator_resource_id,
+                "start_date": start_date,
+                "end_date": end_date,
+            },
+        )
+        self.session.flush()
+        return self._direct_result(
+            requirement=requirement,
+            allocation=allocation,
+            qualification_state=qualification_state,
+            operation="UPDATE",
+        )
+
+    def update_segment_reservation(
+        self,
+        *,
+        requirement_id: str,
+        asset_id: str,
+        start_date: date,
+        end_date: date,
+        operator_resource_id: str,
+        expected_version: int,
+        idempotency_key: str,
+    ) -> dict:
+        payload = {
+            "requirement_id": requirement_id,
+            "asset_id": asset_id,
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "operator_resource_id": operator_resource_id,
+            "expected_version": expected_version,
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode()
+        ).hexdigest()
+        return SqlCommandIdempotencyAdapter(
+            self.session,
+            actor_name=self.actor,
+        ).replay_or_execute(
+            scope="asset_segment_update",
+            key=idempotency_key,
+            request_fingerprint=fingerprint,
+            action=lambda: self._update_segment_reservation(
+                requirement_id=requirement_id,
+                asset_id=asset_id,
+                start_date=start_date,
+                end_date=end_date,
+                operator_resource_id=operator_resource_id,
+                expected_version=expected_version,
+            ),
+        )
+
+    def release_segment_reservation(
+        self,
+        *,
+        requirement_id: str,
+        expected_version: int,
+        idempotency_key: str,
+    ) -> dict:
+        return self._release_direct(
+            requirement_id=requirement_id,
+            expected_origin=AssetRequirementOrigin.SEGMENT,
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+            scope="asset_segment_release",
         )
 
     def add_unavailability(self, *, asset_id: str, start_date: date, end_date: date,
