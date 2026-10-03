@@ -1837,8 +1837,8 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   await expect(extendedRequirement).toBeVisible();
   await extendedRequirement.getByRole("combobox").first().selectOption(lift63Id);
   await expect(extendedRequirement).toContainText("Fenêtre autorisée");
-  await extendedRequirement.getByLabel(/Date début réelle/).fill(d2);
-  await extendedRequirement.getByLabel(/Date fin réelle/).fill(d2);
+  await extendedRequirement.getByLabel(/Date début réelle/).fill(d1);
+  await extendedRequirement.getByLabel(/Date fin réelle/).fill(d1);
   await extendedRequirement.getByRole("button", { name: "Enregistrer la réservation" }).click();
   await expect(assetPanel.locator(".asset-planning-feedback")).toContainText("Réservation enregistrée");
 
@@ -1846,7 +1846,7 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
     `.asset-requirement-card[data-requirement-id="${extendedRequirementId}"]`,
   );
   await expect(extendedRequirement.getByText("Dates réservées")).toBeVisible();
-  await expect(extendedRequirement).toContainText(`${d2} → ${d2}`);
+  await expect(extendedRequirement).toContainText(`${d1} → ${d1}`);
   const extendedOperator = extendedRequirement.getByLabel("Opérateur");
   await expect(extendedOperator.locator('option[value="R-ALICE"]')).toBeAttached();
   await extendedOperator.selectOption("R-ALICE");
