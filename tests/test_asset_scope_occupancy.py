@@ -69,6 +69,13 @@ class AssetScopeOccupancyTests(unittest.TestCase):
                         active=True,
                         sort_order=20,
                     ),
+                    Resource(
+                        id="RESOURCE-PM-561",
+                        external_id="EMP-PM-561",
+                        name="Chargé ressource 561",
+                        active=True,
+                        sort_order=30,
+                    ),
                 ]
             )
             seed_test_approval_routing(session, map_existing_tasks=True)
@@ -184,6 +191,30 @@ class AssetScopeOccupancyTests(unittest.TestCase):
             headers={"Idempotency-Key": f"reserve-561-{requirement_id}-{asset_id}"},
         )
         self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    def _resource_period(
+        self,
+        *,
+        resource_id: str,
+        asset_id: str,
+        key: str,
+    ) -> dict:
+        state = self.admin.get("/api/v1/assets/requirements").json()
+        response = self.admin.post(
+            "/api/v1/assets/resource-period-reservations",
+            json={
+                "resource_id": resource_id,
+                "project_id": None,
+                "asset_type_id": self.type_id,
+                "asset_id": asset_id,
+                "start_date": DAY,
+                "end_date": DAY,
+                "expected_planning_version": state["planning_version"],
+            },
+            headers={"Idempotency-Key": key},
+        )
+        self.assertEqual(response.status_code, 201, response.text)
         return response.json()
 
     def _set_operator(self, requirement_id: str, resource_id: str) -> None:
@@ -337,6 +368,38 @@ class AssetScopeOccupancyTests(unittest.TestCase):
         self.assertEqual(occupation["project_number"], "P-561-MINE")
         self.assertIsNone(occupation["operator_resource_id"])
         self.assertIsNone(occupation["operator_resource_name"])
+
+    def test_projectless_resource_period_is_visible_only_to_its_personal_resource(self) -> None:
+        mine_reservation = self._resource_period(
+            resource_id="RESOURCE-PM-561",
+            asset_id=self.asset_ids[0],
+            key="resource-period-mine-575e",
+        )
+        hidden_reservation = self._resource_period(
+            resource_id="RESOURCE-HIDDEN-561",
+            asset_id=self.asset_ids[1],
+            key="resource-period-hidden-575e",
+        )
+
+        mine, raw = self._snapshot(self.pm, "mine")
+        requirements = {
+            row["requirement_id"]: row for row in mine["asset_requirements"]
+        }
+        self.assertIn(mine_reservation["requirement_id"], requirements)
+        visible = requirements[mine_reservation["requirement_id"]]
+        self.assertEqual(visible["origin"], "RESOURCE_PERIOD")
+        self.assertIsNone(visible["project_id"])
+        self.assertEqual(visible["context_resource_id"], "RESOURCE-PM-561")
+        self.assertNotIn(hidden_reservation["requirement_id"], requirements)
+        self.assertNotIn("Jean Tremblay hors périmètre", raw)
+
+        own_cell = self._cell(mine, self.asset_ids[0])
+        hidden_cell = self._cell(mine, self.asset_ids[1])
+        self.assertEqual(len(own_cell["visible_occupations"]), 1)
+        self.assertFalse(own_cell["has_hidden_occupancy"])
+        self.assertEqual(hidden_cell["visible_occupations"], [])
+        self.assertTrue(hidden_cell["has_hidden_occupancy"])
+        self.assertFalse(hidden_cell["available"])
 
     def test_candidate_availability_is_global_without_hidden_scope_details(self) -> None:
         hidden_number, hidden_requirement_id = self._approve("P-561-HIDDEN")
