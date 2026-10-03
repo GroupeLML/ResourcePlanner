@@ -1575,14 +1575,10 @@ export function getAcumaticaProjectTaskSyncMetadata(
   );
 }
 
-export function getBusinessContacts(
-  activeOnly = false,
-  signal?: AbortSignal,
-  userBackedOnly = true,
-) {
+export function getBusinessContacts(activeOnly = false, signal?: AbortSignal) {
   const params = new URLSearchParams({
     active_only: String(activeOnly),
-    user_backed_only: String(userBackedOnly),
+    user_backed_only: "true",
   });
   return getJson<BusinessContactReadModel[]>(
     `/api/v1/business-contacts?${params.toString()}`,
@@ -1622,7 +1618,14 @@ export function getProjectBusinessContacts(projectNumber: string, signal?: Abort
 }
 
 export function getProjectManagerCandidateContacts(signal?: AbortSignal) {
-  return getBusinessContacts(true, signal, false);
+  const params = new URLSearchParams({
+    active_only: "true",
+    user_backed_only: "false",
+  });
+  return getJson<BusinessContactReadModel[]>(
+    `/api/v1/business-contacts?${params.toString()}`,
+    signal,
+  );
 }
 
 export function getProjectManagers(
