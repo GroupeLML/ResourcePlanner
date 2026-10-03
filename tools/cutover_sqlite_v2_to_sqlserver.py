@@ -46,6 +46,7 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
             "break_glass_credentials",
             "work_package_audit",
             "work_package_weekly_loads",
+            "work_package_load_intervals",
             "asset_type_approval_scope_mappings",
             "asset_approvers",
             "acumatica_project_task_sync_runs",
@@ -65,6 +66,7 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
                 "version": 1,
                 "weekly_load_origin": None,
                 "resource_class_code": None,
+                "terminal_status": None,
             },
             "approval_requirements": {
                 "asset_type_id": None,
