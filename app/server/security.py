@@ -92,7 +92,10 @@ def required_permission(method: str, path: str) -> str | None:
         or path.startswith("/api/v1/task-catalog")
         or (
             path.startswith("/api/v1/projects/")
-            and path.endswith("/project-manager-contact")
+            and (
+                path.endswith("/project-manager-contact")
+                or "/co-managers/" in path
+            )
         )
     ):
         return PERMISSION_MANAGE_RESOURCES
