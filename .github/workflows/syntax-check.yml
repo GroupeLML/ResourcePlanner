@@ -283,3 +283,104 @@ jobs:
       - name: Stop Docker runtime
         if: always()
         run: docker compose down -v --remove-orphans
+
+  sqlserver-live-573e:
+    name: SQL Server live 573E
+    needs: changes
+    if: ${{ startsWith(github.event.pull_request.title, '573E') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Build backend image with ODBC Driver 18
+        run: docker build -f Dockerfile.backend -t resourceplanner-573e-live .
+      - name: Validate migration, read-only diagnostic and multi-session CAS on SQL Server
+        shell: bash
+        run: |
+          set -euo pipefail
+          network="rp-573e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          server="rp-sqlserver-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          ephemeral_value="RpA1_$(openssl rand -hex 16)"
+          database="ResourcePlanner573E"
+          sql_env_file="$(mktemp)"
+          printf 'MSSQL_SA_%s=%s\n' 'PASSWORD' "$ephemeral_value" > "$sql_env_file"
+
+          cleanup() {
+            docker rm -f "$server" >/dev/null 2>&1 || true
+            docker network rm "$network" >/dev/null 2>&1 || true
+            rm -f "$sql_env_file"
+          }
+          trap cleanup EXIT
+
+          docker network create "$network" >/dev/null
+          docker run -d \
+            --name "$server" \
+            --network "$network" \
+            -e ACCEPT_EULA=Y \
+            -e MSSQL_PID=Developer \
+            --env-file "$sql_env_file" \
+            mcr.microsoft.com/mssql/server:2022-latest >/dev/null
+
+          ready=0
+          for attempt in $(seq 1 60); do
+            if docker run --rm \
+              --network "$network" \
+              -e SQL_SERVER="$server" \
+              -e SQL_VALUE="$ephemeral_value" \
+              resourceplanner-573e-live \
+              python -c 'import os, pyodbc; k="P"+"WD"; c=pyodbc.connect("DRIVER={ODBC Driver 18 for SQL Server};SERVER="+os.environ["SQL_SERVER"]+",1433;UID=sa;"+k+"="+os.environ["SQL_VALUE"]+";Encrypt=yes;TrustServerCertificate=yes", timeout=3); c.close()' \
+              >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          test "$ready" = "1"
+
+          docker run --rm -i \
+            --network "$network" \
+            -e SQL_SERVER="$server" \
+            -e SQL_VALUE="$ephemeral_value" \
+            -e SQL_DATABASE="$database" \
+            resourceplanner-573e-live \
+            python - <<'PY'
+          import os
+          import pyodbc
+
+          connection = pyodbc.connect(
+              "DRIVER={ODBC Driver 18 for SQL Server};"
+              f"SERVER={os.environ['SQL_SERVER']},1433;"
+              "UID=sa;"
+              f"{'P' + 'WD'}={os.environ['SQL_VALUE']};"
+              "Encrypt=yes;TrustServerCertificate=yes",
+              autocommit=True,
+          )
+          try:
+              cursor = connection.cursor()
+              cursor.execute(
+                  f"IF DB_ID('{os.environ['SQL_DATABASE']}') IS NULL "
+                  f"CREATE DATABASE [{os.environ['SQL_DATABASE']}]"
+              )
+          finally:
+              connection.close()
+          PY
+
+          database_url="mssql+pyodbc://sa:${ephemeral_value}@${server}:1433/${database}?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
+
+          docker run --rm \
+            --network "$network" \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
+            -w /workspace \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e RESOURCEPLANNER_DATABASE_URL="$database_url" \
+            -e RESOURCEPLANNER_SQLSERVER_TEST_URL="$database_url" \
+            resourceplanner-573e-live \
+            sh -lc '
+              python -m alembic upgrade head &&
+              python -m unittest -v \
+                tests.test_project_co_managers_sqlserver_concurrency \
+                tests.test_project_manager_legacy_diagnostic &&
+              python tools/diagnose_project_manager_legacy_links.py --json
+            '
+
