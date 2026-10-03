@@ -207,9 +207,9 @@ function AssetRequirementCard({
 
       {requirement.asset_id && (
         <div className="asset-current-allocation">
-          <strong>Dates réservées</strong>
-          <span>{requirement.asset_code} — {requirement.asset_label}</span>
+          <strong>{requirement.asset_code} — {requirement.asset_label}</strong>
           <span>
+            <b>Dates réservées</b>{" "}
             {requirement.allocation_start_date} → {requirement.allocation_end_date}
             {requirement.allocation_locked ? " · décision manuelle verrouillée" : ""}
           </span>
