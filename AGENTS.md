@@ -92,7 +92,9 @@ Once the PR is complete and auto-merge is armed when permitted, do not remain ac
 
 If DevCockpit later sends a corrective prompt for the same WorkItem because current-head CI is red, resume the same logical DEV session, inspect the exact failure evidence, make the smallest correct fix, run targeted validation, push the correction, ensure auto-merge remains armed when eligible, report the updated PR/head SHA, and stop again.
 
-A completed DEV turn is not the same as a completed WorkItem. The WorkItem remains unfinished until authoritative GitHub and roadmap evidence satisfy the Definition of Done.
+After GitHub proves that the PR is merged and required CI is green, DevCockpit may automatically reactivate the same DEV session with a ROADMAP_RECONCILE prompt. That reconciliation turn is authorized to update roadmap #55 directly, without an additional human confirmation, but only to reflect the already-proven delivery: mark the delivered WorkItem DONE, promote the true next already-defined item to READY according to the existing order/dependencies/gates, keep later items BLOCKED when appropriate, and keep human roadmap text/checklists coherent with the canonical block. It must not change scope, ordering, dependencies, REPLACES, WorkItem identity or decomposition.
+
+A completed implementation DEV turn is not the same as a completed WorkItem. The WorkItem remains unfinished until authoritative GitHub and roadmap evidence satisfy the Definition of Done.
 
 Do not begin the next roadmap item on your own after stopping. A new WorkItem starts only from a new authorized DevCockpit prompt or an explicit user instruction.
 
@@ -483,7 +485,9 @@ When DevCockpit explicitly reactivates the same DEV session for a current CI fai
 
 GitHub and DevCockpit then resume observation. Do not manually loop on CI unless the user explicitly asks you to do so.
 
-Normal implementation-related CI failures do not require a new product decision. They may be routed automatically back to the same DEV session by DevCockpit.
+When the PR later becomes merged with green required CI and DevCockpit sends a ROADMAP_RECONCILE follow-up, perform the direct post-merge roadmap reconciliation described in section 19, verify the resulting canonical state, report it, and stop the DEV turn again. Do not begin the next WorkItem.
+
+Normal implementation-related CI failures and deterministic post-merge roadmap reconciliation do not require a new product decision or human confirmation. They may be routed automatically back to the same DEV session by DevCockpit.
 
 Do not bypass required checks, delete tests, weaken meaningful validation, or force a merge merely to obtain a green result.
 
@@ -597,24 +601,48 @@ Do not store the current next issue or current active step in this file. AGENTS.
 
 If a canonical block exists but is invalid, do not work around it by editing the cockpit heuristics or by inferring a different active step from surrounding Markdown. Correct #55 so the canonical contract becomes valid again.
 
-### Dev Cockpit Safe Writeback
+### Dev Cockpit Safe Writeback and deterministic DEV reconciliation
 
-The Dev Cockpit may apply a roadmap reconciliation to #55 only through the explicit Safe Writeback flow.
+Two different roadmap mutation paths exist and must not be confused.
 
-Durable invariants:
+#### Structural/product roadmap changes
+
+The Dev Cockpit Safe Writeback flow remains mandatory for changes that alter product structure or intent, including scope, split/decomposition, order, dependencies, REPLACES, WorkItem identity, or other non-deterministic roadmap decisions.
+
+For that path:
 
 - preview is mandatory before apply;
 - apply must require explicit confirmation;
 - the backend must recompute the current Reconciler proposal instead of trusting a pipeline block sent by the browser;
-- only the exact `COCKPIT_PIPELINE_V1` block may change; all Markdown outside the block must remain byte-for-byte unchanged;
-- writeback must fail closed when the pipeline is legacy, invalid, non-stale, or the proposal is no longer the one previewed;
-- use optimistic concurrency against the complete issue body and GitHub `updated_at`; a concurrent roadmap edit must produce a conflict rather than being overwritten;
-- never auto-complete architecture or environment gates from PR/CI evidence;
-- a READY `ARCHITECTURE_GATE` requires explicit human authorization before DevCockpit may create its ARCH PromptDispatch; polling, refresh, CI state, merge state, or dependency satisfaction must never constitute that authorization;
-- never trigger writeback from dashboard polling, refresh, Attention Center, or agent activity;
-- GitHub remains the source of truth; no local roadmap mutation state may be introduced to make writeback easier.
+- only the exact canonical pipeline mutation authorized by the proposal may be applied;
+- writeback must fail closed when the pipeline is legacy, invalid, stale, or the proposal is no longer the one previewed;
+- use optimistic concurrency against the complete issue body and GitHub `updated_at`; a concurrent roadmap edit must produce a conflict rather than being overwritten.
 
-A writeback conflict must be resolved by refreshing GitHub state and reviewing a new preview. Do not bypass the conflict check.
+#### Post-merge delivery reconciliation
+
+A separate deterministic path restores the historical DEV behavior after a proven delivery.
+
+When DevCockpit observes a strongly associated PR that is merged with required CI green while the WorkItem is still READY, it may automatically send a `ROADMAP_RECONCILE` prompt to the same DEV session. No human confirmation is required for that reconciliation turn.
+
+The DEV must:
+
+1. synchronize with current `main`;
+2. reread this AGENTS.md and the latest #55;
+3. verify the referenced PR is merged and required CI for the delivered head is green;
+4. reread #55 immediately before editing so a concurrent change is not overwritten blindly;
+5. update #55 directly through GitHub;
+6. mark only the proven delivered WorkItem `DONE`;
+7. promote only the true next already-defined item(s) to `READY` according to existing order, dependencies and gates;
+8. keep later items `BLOCKED` when they are not yet authorized;
+9. keep the human roadmap text/checklists consistent with the canonical block;
+10. reread #55 after the edit and verify the canonical parser would resolve the expected active step;
+11. report the resulting roadmap state and stop. Do not begin the next WorkItem.
+
+This deterministic reconciliation must not invent or change scope, WorkItem identity, decomposition, ordering, dependencies or REPLACES. If such a structural change is needed, stop and use the appropriate architecture/product/Safe Writeback path instead.
+
+A delivery reconciliation may promote an already-defined `ARCHITECTURE_GATE` to `READY`, but it must never launch that architecture work. A READY `ARCHITECTURE_GATE` still requires explicit human authorization in DevCockpit before any ARCH PromptDispatch is created.
+
+GitHub remains the source of truth for both paths.
 
 ### Dev Cockpit Flow Analytics
 
@@ -648,9 +676,11 @@ WorkItem A prompt
 → PR + auto-merge armed
 → DEV STOP
 → DevCockpit observes CI / merge
-→ explicit roadmap reconciliation when required
+→ automatic ROADMAP_RECONCILE prompt in the same DEV session
+→ DEV updates #55 directly for deterministic delivery-state reconciliation
+→ DEV verifies #55 and STOPS
 → canonical roadmap exposes the next READY item
-→ DevCockpit creates a new prompt when that item is authorized
+→ DevCockpit creates a new DEV prompt, or requests human authorization if the next item is an ARCHITECTURE_GATE
 ```
 
 The next WorkItem may start only when it is truly authorized by the canonical roadmap and a new prompt or explicit user instruction exists.
@@ -745,7 +775,7 @@ For normal autonomous implementation work, an item is DONE only when:
 - the relevant GitHub roadmap/issue state reflects reality;
 - no known blocker related to the change remains.
 
-The DEV agent is not responsible for staying active until all of those facts become true. Its normal turn ends at the explicit GitHub handoff point: PR complete, auto-merge armed when permitted, and PR/head SHA reported.
+The DEV agent is not responsible for staying active while CI and merge are pending. Its implementation turn ends at the explicit GitHub handoff point: PR complete, auto-merge armed when permitted, and PR/head SHA reported. If DevCockpit later observes a merged green delivery with a stale roadmap, it reactivates the same DEV session for a short deterministic ROADMAP_RECONCILE turn; that reconciliation turn ends after #55 is updated, reread, verified and reported.
 
 Therefore:
 
@@ -769,6 +799,8 @@ Useful DEV checkpoints are:
 - PR number and current head SHA reported;
 - corrective CI prompt received; cause identified;
 - correction pushed; updated head SHA reported;
+- ROADMAP_RECONCILE prompt received after merged green delivery;
+- #55 reconciled, reread and final canonical state reported;
 - architecture/product decision required.
 
 Do not produce lengthy status reports for routine implementation details, and do not emit repeated status updates merely because CI is still running. DevCockpit owns that waiting/observation phase.
