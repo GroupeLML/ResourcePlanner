@@ -38,6 +38,10 @@ class ReactDirectAssetReservationContractTests(unittest.TestCase):
         self.assertIn('requirement.origin === "SEGMENT"', panel)
         self.assertIn("un opérateur explicite reste requis pour le segment", panel)
         self.assertIn("La ressource de contexte reste obligatoirement", panel)
+        self.assertIn("Ouvrir la demande source", panel)
+
+        planning = (ROOT / "frontend/src/PlanningPage.tsx").read_text(encoding="utf-8")
+        self.assertIn("onOpenDemand={setDetailDemandNumber}", planning)
 
 
 if __name__ == "__main__":
