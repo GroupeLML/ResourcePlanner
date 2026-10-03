@@ -313,8 +313,14 @@ class MediumTermWeeklyProjectionTests(unittest.TestCase):
         self.assertFalse(packages["WP-CANCELLED"]["current_load_included"])
         self.assertFalse(packages["WP-CANCELLED"]["budget_included"])
         self.assertIsNone(packages["WP-MISSING"]["weekly_load_diagnostic"])
-        self.assertEqual(packages["WP-MISSING"]["explicit_hours"], 0.0)
-        self.assertEqual(packages["WP-MISSING"]["automatic_hours"], 10.0)
+        self.assertEqual(
+            Decimal(str(packages["WP-MISSING"]["explicit_hours"])),
+            Decimal("0.00"),
+        )
+        self.assertEqual(
+            Decimal(str(packages["WP-MISSING"]["automatic_hours"])),
+            Decimal("10.00"),
+        )
 
         weeks = {row["week_start"]: row for row in payload["weeks"]}
         first = weeks["2026-09-14"]
