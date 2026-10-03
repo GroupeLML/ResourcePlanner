@@ -33,6 +33,7 @@ from ..application.approval_progress import ApprovalProgressService
 from ..application.approval_scopes import ApprovalScopeService
 from ..application.communications import CommunicationService, CommunicationTransportPort
 from ..application.project_communications import ProjectCommunicationService
+from ..application.project_manager_admin import ProjectManagerAdminService
 from ..application.smtp_settings import (
     SecretCipherPort,
     SmtpClientPort,
@@ -59,6 +60,7 @@ from .composition import (
     build_competency_catalog_service,
     build_demand_requester_service,
     build_operational_contact_service,
+    build_project_manager_admin_service,
     build_sql_facade,
     build_sql_idempotency_executor,
     build_sql_query_port,
@@ -84,6 +86,7 @@ from .routes_commands import build_command_router
 from .routes_competencies import build_competency_router
 from .routes_communications import build_communication_router
 from .routes_project_communications import build_project_communication_router
+from .routes_project_managers import build_project_manager_admin_router
 from .routes_dev_user_switcher import build_dev_user_switcher_router
 from .routes_delivery import build_delivery_router
 from .routes_erp_users import build_erp_user_admin_router
@@ -111,6 +114,7 @@ ProjectCommunicationDependency = Callable[..., Any]
 SmtpSettingsDependency = Callable[..., Any]
 CompetencyDependency = Callable[[], Iterator[CompetencyCatalogService]]
 BusinessContactDependency = Callable[[], Iterator[BusinessContactAdminService]]
+ProjectManagerAdminDependency = Callable[[], Iterator[ProjectManagerAdminService]]
 ApprovalScopeDependency = Callable[[], Iterator[ApprovalScopeService]]
 ApprovalProgressDependency = Callable[[], Iterator[ApprovalProgressService]]
 UserViewContextDependency = Callable[[], Iterator[UserViewContextRepositoryPort]]
@@ -390,6 +394,21 @@ def make_business_contact_dependency(
     return dependency
 
 
+def make_project_manager_admin_dependency(
+    factory: SqlSessionFactory,
+    *,
+    session_dependency: SessionDependency | None = None,
+) -> ProjectManagerAdminDependency:
+    request_session = session_dependency or make_session_dependency(factory)
+
+    def dependency(
+        session: Session = Depends(request_session),
+    ) -> Iterator[ProjectManagerAdminService]:
+        yield build_project_manager_admin_service(session)
+
+    return dependency
+
+
 def make_approval_progress_dependency(
     factory: SqlSessionFactory,
     *,
@@ -551,6 +570,10 @@ def create_api_app(
         factory,
         session_dependency=session_dependency,
     )
+    project_manager_admin_dependency = make_project_manager_admin_dependency(
+        factory,
+        session_dependency=session_dependency,
+    )
     approval_scope_dependency = make_approval_scope_dependency(
         factory,
         session_dependency=session_dependency,
@@ -592,6 +615,7 @@ def create_api_app(
     app.state.project_communication_dependency = project_communication_dependency
     app.state.competency_dependency = competency_dependency
     app.state.business_contact_dependency = business_contact_dependency
+    app.state.project_manager_admin_dependency = project_manager_admin_dependency
     app.state.approval_scope_dependency = approval_scope_dependency
     app.state.approval_progress_dependency = approval_progress_dependency
     app.state.runtime_dependencies = dict(runtime_dependencies or {})
@@ -709,6 +733,12 @@ def create_api_app(
         build_business_contact_router(
             business_contact_dependency,
             session_dependency,
+        )
+    )
+    app.include_router(
+        build_project_manager_admin_router(
+            project_manager_admin_dependency,
+            user_view_context_dependency,
         )
     )
     app.include_router(build_task_catalog_router(session_dependency))

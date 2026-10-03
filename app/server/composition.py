@@ -25,6 +25,8 @@ from ..application.approval_scopes import ApprovalScopeService
 from ..application.approval_voting import ApprovalVoteService
 from ..application.communications import CommunicationService, CommunicationTransportPort
 from ..application.operational_contacts import OperationalContactService
+from ..application.project_manager_admin import ProjectManagerAdminService
+from ..application.project_managers import ProjectManagerResolutionService
 from ..application.project_communications import ProjectCommunicationService
 from ..application.smtp_settings import (
     SecretCipherPort,
@@ -56,6 +58,8 @@ from ..infrastructure.sql import (
     SqlOperationalContactRepository,
     SqlRequestOperationalChoiceRepository,
     SqlProjectCommunicationRepository,
+    SqlProjectCoManagerRepository,
+    SqlProjectManagerResolutionRepository,
     SqlPlannerQueryRepositoryWithLoadProfiles,
     SqlPlanningCommandAdapter,
     SqlPlanningMutationVersionRepository,
@@ -67,6 +71,9 @@ from ..infrastructure.sql import (
     SqlWorkPackageRepository,
 )
 from ..infrastructure.sql.communication_repository import SqlCommunicationRepository
+from ..infrastructure.sql.project_manager_admin_repository import (
+    SqlProjectManagerAdminProjectRepository,
+)
 from ..infrastructure.sql.user_view_context_repository import SqlUserViewContextRepository
 from ..infrastructure.sql.emergency_planning_audit import (
     EmergencyAwareApprovedDemandSyncAdapter,
@@ -328,3 +335,17 @@ def build_business_contact_admin_service(
     """Compose business-contact administration inside the request transaction."""
 
     return BusinessContactAdminService(SqlBusinessContactAdminRepository(session))
+
+
+def build_project_manager_admin_service(
+    session: Session,
+) -> ProjectManagerAdminService:
+    """Compose canonical project-manager reads and RP co-manager mutations."""
+
+    return ProjectManagerAdminService(
+        SqlProjectManagerAdminProjectRepository(session),
+        ProjectManagerResolutionService(
+            SqlProjectManagerResolutionRepository(session)
+        ),
+        SqlProjectCoManagerRepository(session),
+    )
