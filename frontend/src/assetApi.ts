@@ -362,6 +362,139 @@ export function reserveAssetRequirement(
   );
 }
 
+export type DirectAssetReservationResult = {
+  operation: "CREATE" | "UPDATE" | "RELEASE";
+  requirement_id: string;
+  requirement_origin: "PROJECT_DIRECT" | "RESOURCE_PERIOD";
+  allocation_id: string | null;
+  asset_id?: string | null;
+  project_id?: string | null;
+  context_resource_id?: string | null;
+  operator_resource_id?: string | null;
+  start_date?: string;
+  end_date?: string;
+  qualification_state?: string;
+  planning_version: number;
+};
+
+export function createProjectDirectReservation(
+  payload: {
+    project_id: string;
+    asset_type_id: string;
+    asset_id: string;
+    start_date: string;
+    end_date: string;
+    operator_resource_id: string | null;
+    expected_planning_version: number;
+  },
+  idempotencyKey: string,
+) {
+  return sendJson<DirectAssetReservationResult>(
+    "/api/v1/assets/project-reservations",
+    "POST",
+    payload,
+    { "Idempotency-Key": idempotencyKey },
+  );
+}
+
+export function updateProjectDirectReservation(
+  requirementId: string,
+  payload: {
+    asset_id: string;
+    start_date: string;
+    end_date: string;
+    operator_resource_id: string | null;
+    expected_planning_version: number;
+  },
+  idempotencyKey: string,
+) {
+  return sendJson<DirectAssetReservationResult>(
+    `/api/v1/assets/project-reservations/${encodeURIComponent(requirementId)}`,
+    "PUT",
+    payload,
+    { "Idempotency-Key": idempotencyKey },
+  );
+}
+
+export function createResourcePeriodReservation(
+  payload: {
+    resource_id: string;
+    project_id: string | null;
+    asset_type_id: string;
+    asset_id: string;
+    start_date: string;
+    end_date: string;
+    expected_planning_version: number;
+  },
+  idempotencyKey: string,
+) {
+  return sendJson<DirectAssetReservationResult>(
+    "/api/v1/assets/resource-period-reservations",
+    "POST",
+    payload,
+    { "Idempotency-Key": idempotencyKey },
+  );
+}
+
+export function updateResourcePeriodReservation(
+  requirementId: string,
+  payload: {
+    project_id: string | null;
+    asset_id: string;
+    start_date: string;
+    end_date: string;
+    expected_planning_version: number;
+  },
+  idempotencyKey: string,
+) {
+  return sendJson<DirectAssetReservationResult>(
+    `/api/v1/assets/resource-period-reservations/${encodeURIComponent(requirementId)}`,
+    "PUT",
+    payload,
+    { "Idempotency-Key": idempotencyKey },
+  );
+}
+
+function releaseDirectReservation(
+  path: string,
+  expectedPlanningVersion: number,
+  idempotencyKey: string,
+) {
+  const params = new URLSearchParams({
+    expected_planning_version: String(expectedPlanningVersion),
+  });
+  return sendJson<DirectAssetReservationResult>(
+    `${path}?${params.toString()}`,
+    "DELETE",
+    {},
+    { "Idempotency-Key": idempotencyKey },
+  );
+}
+
+export function releaseProjectDirectReservation(
+  requirementId: string,
+  expectedPlanningVersion: number,
+  idempotencyKey: string,
+) {
+  return releaseDirectReservation(
+    `/api/v1/assets/project-reservations/${encodeURIComponent(requirementId)}`,
+    expectedPlanningVersion,
+    idempotencyKey,
+  );
+}
+
+export function releaseResourcePeriodReservation(
+  requirementId: string,
+  expectedPlanningVersion: number,
+  idempotencyKey: string,
+) {
+  return releaseDirectReservation(
+    `/api/v1/assets/resource-period-reservations/${encodeURIComponent(requirementId)}`,
+    expectedPlanningVersion,
+    idempotencyKey,
+  );
+}
+
 export function addAssetUnavailability(
   assetId: string,
   payload: {
