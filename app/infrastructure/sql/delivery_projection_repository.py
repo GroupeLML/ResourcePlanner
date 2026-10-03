@@ -17,6 +17,7 @@ from app.application.delivery_contracts import (
     WorkPackagePlanningCapacityReadModel,
 )
 from app.application.query_models import work_package_resource_class_diagnostic
+from app.application.work_package_load import work_package_status
 from app.domain.approval_envelope import approval_envelope_from_snapshot_payload
 
 from .approval_revision_models import (
@@ -89,7 +90,11 @@ class SqlDeliveryPlanningReadRepository:
             work_package_id=work_package.id,
             reference=reference,
             name=work_package.name,
-            status=work_package.status,
+            status=work_package_status(
+                start_date=work_package.start_date,
+                terminal_status=work_package.terminal_status,
+                legacy_status=work_package.status,
+            )[0],
             reference_hours=_float(work_package.planned_hours),
             resource_class_code=resource_class_code,
             resource_class_label=(
