@@ -988,6 +988,7 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             request,
             current,
             prepared.specs,
+            target_project_id=prepared.project_id,
         )
         matches, obsolete = self._plan_preparer.match_current(
             request,
@@ -1081,6 +1082,7 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             request,
             current_before,
             prepared.specs,
+            target_project_id=prepared.project_id,
         )
         if not bool(request.line_mode) and not periods:
             self._legacy.prevalidate_approved(demand_number)
