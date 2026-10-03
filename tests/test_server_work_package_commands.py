@@ -226,7 +226,6 @@ class ServerWorkPackageCommandTests(unittest.TestCase):
                 "start_date": "2026-09-21",
                 "end_date": "2026-10-02",
                 "planned_hours": 40,
-                "status": "planned",
             }
             headers = {"Idempotency-Key": "wp-create-1"}
 
@@ -268,7 +267,6 @@ class ServerWorkPackageCommandTests(unittest.TestCase):
                         "start_date": "2026-09-28",
                         "end_date": "2026-10-09",
                         "planned_hours": 24,
-                        "status": "active",
                     },
                 )
                 rows = client.get(
@@ -288,6 +286,60 @@ class ServerWorkPackageCommandTests(unittest.TestCase):
             self.assertEqual(edited["end_date"], "2026-10-09")
             self.assertEqual(edited["planned_hours"], 24.0)
             self.assertEqual(edited["status"], "active")
+
+    def test_status_is_read_only_and_terminal_actions_are_explicit(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url)
+
+            with TestClient(app, raise_server_exceptions=False) as client:
+                create_with_status = client.post(
+                    "/api/v1/work-packages",
+                    headers={"Idempotency-Key": "wp-status-forbidden-create"},
+                    json={
+                        "project_number": "P-1",
+                        "task_catalog_item_id": "TASK-P1-210",
+                        "name": "Statut fourni",
+                        "status": "closed",
+                    },
+                )
+                patch_with_status = client.patch(
+                    "/api/v1/work-packages/EFF-FREE",
+                    json={"expected_version": 1, "status": "active"},
+                )
+                closed = client.post(
+                    "/api/v1/work-packages/EFF-FREE/close",
+                    headers={"Idempotency-Key": "wp-close-591"},
+                    json={"expected_version": 1},
+                )
+                rows = client.get(
+                    "/api/v1/work-packages?project_number=P-1&active_only=false"
+                )
+
+            self.assertEqual(create_with_status.status_code, 422, create_with_status.text)
+            self.assertEqual(patch_with_status.status_code, 422, patch_with_status.text)
+            self.assertEqual(closed.status_code, 200, closed.text)
+            self.assertEqual(closed.json()["action"], "closed")
+            self.assertEqual(closed.json()["version"], 2)
+            item = next(row for row in rows.json() if row["reference"] == "EFF-FREE")
+            self.assertEqual(item["status"], "closed")
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory() as session:
+                    wp = session.get(WorkPackage, "WP-FREE")
+                    self.assertEqual(wp.terminal_status, "closed")
+                    audits = tuple(
+                        session.scalars(
+                            select(WorkPackageAudit)
+                            .where(WorkPackageAudit.work_package_id == "WP-FREE")
+                            .order_by(WorkPackageAudit.resulting_version)
+                        ).all()
+                    )
+                    self.assertEqual(audits[-1].action, "CLOSE")
+            finally:
+                engine.dispose()
 
     def test_date_window_is_validated_by_application_layer(self) -> None:
         with TemporaryDirectory() as directory:
