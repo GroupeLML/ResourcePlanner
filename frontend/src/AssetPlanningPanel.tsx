@@ -10,10 +10,15 @@ import {
   AssetOperatorCandidate,
   addAssetUnavailability,
   getAssetOperatorCandidates,
+  releaseProjectDirectReservation,
+  releaseResourcePeriodReservation,
   removeAssetUnavailability,
   reserveAssetRequirement,
   setAssetRequirementOperator,
+  updateProjectDirectReservation,
+  updateResourcePeriodReservation,
 } from "./assetApi";
+import DirectAssetReservationForm from "./DirectAssetReservationForm";
 
 const STALE_CODES = new Set([
   "planning_version_conflict",
@@ -75,7 +80,7 @@ function AssetRequirementCard({
     requirement.allocation_start_date ?? requirement.start_date,
   );
   const [reservationEnd, setReservationEnd] = useState(
-    requirement.allocation_end_date ?? requirement.start_date,
+    requirement.allocation_end_date ?? requirement.end_date,
   );
   const [operatorSelected, setOperatorSelected] = useState(requirement.operator_resource_id ?? "");
   const [operatorCandidates, setOperatorCandidates] = useState<AssetOperatorCandidate[]>([]);
@@ -84,7 +89,7 @@ function AssetRequirementCard({
   useEffect(() => {
     setSelected(requirement.asset_id ?? "");
     setReservationStart(requirement.allocation_start_date ?? requirement.start_date);
-    setReservationEnd(requirement.allocation_end_date ?? requirement.start_date);
+    setReservationEnd(requirement.allocation_end_date ?? requirement.end_date);
   }, [
     requirement.requirement_id,
     requirement.asset_id,
@@ -95,7 +100,10 @@ function AssetRequirementCard({
 
   useEffect(() => {
     setOperatorSelected(requirement.operator_resource_id ?? "");
-    if (!requirement.asset_id) {
+    if (
+      !requirement.asset_id
+      || !["REQUEST", "PROJECT_DIRECT"].includes(requirement.origin)
+    ) {
       setOperatorCandidates([]);
       setCandidateError("");
       return undefined;
@@ -125,14 +133,25 @@ function AssetRequirementCard({
       )
     );
   const datesReady = !selected || Boolean(reservationStart && reservationEnd);
+  const isRequest = requirement.origin === "REQUEST";
+  const isProjectDirect = requirement.origin === "PROJECT_DIRECT";
+  const isResourcePeriod = requirement.origin === "RESOURCE_PERIOD";
+  const operatorEditable = isRequest || isProjectDirect;
+  const contextLabel = isProjectDirect
+    ? `Projet ${requirement.project_number ?? requirement.project_id ?? "inconnu"}`
+    : isResourcePeriod
+      ? `${requirement.operator_resource_name ?? requirement.context_resource_id ?? "Ressource"} · ${requirement.project_number ?? "sans projet"}`
+      : [requirement.demand_number, requirement.project_number].filter(Boolean).join(" · ");
 
   return (
     <article className="asset-requirement-card" data-requirement-id={requirement.requirement_id}>
       <div className="asset-requirement-heading">
         <div>
-          <span>{requirement.demand_number} · {requirement.project_number}</span>
+          <span>{contextLabel}</span>
           <strong>{requirement.asset_type_code} — {requirement.asset_type_label}</strong>
-          <small>Fenêtre autorisée {requirement.start_date} → {requirement.end_date}</small>
+          <small>
+            {isRequest ? "Fenêtre autorisée" : "Période directe"} {requirement.start_date} → {requirement.end_date}
+          </small>
         </div>
         <span className={requirement.asset_id ? "asset-status is-assigned" : "asset-status"}>
           {requirement.asset_id ? "Réservé" : "À réserver"}
@@ -168,8 +187,8 @@ function AssetRequirementCard({
               <span>Date début réelle</span>
               <input
                 type="date"
-                min={requirement.start_date}
-                max={requirement.end_date}
+                min={isRequest ? requirement.start_date : undefined}
+                max={isRequest ? requirement.end_date : undefined}
                 value={reservationStart}
                 onChange={(event) => setReservationStart(event.target.value)}
                 disabled={!canManage || busy}
@@ -180,8 +199,8 @@ function AssetRequirementCard({
               <span>Date fin réelle</span>
               <input
                 type="date"
-                min={requirement.start_date}
-                max={requirement.end_date}
+                min={isRequest ? requirement.start_date : undefined}
+                max={isRequest ? requirement.end_date : undefined}
                 value={reservationEnd}
                 onChange={(event) => setReservationEnd(event.target.value)}
                 disabled={!canManage || busy}
@@ -216,7 +235,7 @@ function AssetRequirementCard({
         </div>
       )}
 
-      {requirement.asset_id && (
+      {requirement.asset_id && operatorEditable && (
         <div className="asset-current-allocation asset-qualification">
           <strong>
             {QUALIFICATION_LABELS[requirement.qualification_state] ?? requirement.qualification_state}
@@ -224,7 +243,9 @@ function AssetRequirementCard({
           <span>
             {requirement.required_competency_ids.length > 0
               ? `Prérequis : ${requirement.required_competency_names.join(", ")}`
-              : "Aucune compétence obligatoire; l’opérateur reste associable dans le contexte REQUEST."}
+              : isProjectDirect
+                ? "Aucune compétence obligatoire; l’opérateur reste facultatif dans le contexte projet."
+                : "Aucune compétence obligatoire; l’opérateur reste associable dans le contexte REQUEST."}
           </span>
           <div className="asset-reservation-controls">
             <label>
@@ -263,6 +284,13 @@ function AssetRequirementCard({
             </button>
           </div>
           {candidateError && <small role="alert">{candidateError}</small>}
+        </div>
+      )}
+      {requirement.asset_id && isResourcePeriod && (
+        <div className="asset-current-allocation asset-qualification">
+          <strong>Ressource bénéficiaire et opérateur</strong>
+          <span>{requirement.operator_resource_name ?? requirement.context_resource_id}</span>
+          <small>La ressource de contexte reste obligatoirement l’opérateur sur toute la période.</small>
         </div>
       )}
     </article>
@@ -328,16 +356,58 @@ export default function AssetPlanningPanel({
     setBusy(`reserve:${requirement.requirement_id}`);
     setFeedback(null);
     try {
-      await reserveAssetRequirement(
-        requirement.requirement_id,
-        {
-          asset_id: assetId,
-          start_date: assetId ? startDate : null,
-          end_date: assetId ? endDate : null,
-          expected_planning_version: snapshot.planning_version,
-        },
-        key,
-      );
+      if (requirement.origin === "PROJECT_DIRECT") {
+        if (assetId) {
+          await updateProjectDirectReservation(
+            requirement.requirement_id,
+            {
+              asset_id: assetId,
+              start_date: startDate!,
+              end_date: endDate!,
+              operator_resource_id: requirement.operator_resource_id,
+              expected_planning_version: snapshot.planning_version,
+            },
+            key,
+          );
+        } else {
+          await releaseProjectDirectReservation(
+            requirement.requirement_id,
+            snapshot.planning_version,
+            key,
+          );
+        }
+      } else if (requirement.origin === "RESOURCE_PERIOD") {
+        if (assetId) {
+          await updateResourcePeriodReservation(
+            requirement.requirement_id,
+            {
+              project_id: requirement.project_id,
+              asset_id: assetId,
+              start_date: startDate!,
+              end_date: endDate!,
+              expected_planning_version: snapshot.planning_version,
+            },
+            key,
+          );
+        } else {
+          await releaseResourcePeriodReservation(
+            requirement.requirement_id,
+            snapshot.planning_version,
+            key,
+          );
+        }
+      } else {
+        await reserveAssetRequirement(
+          requirement.requirement_id,
+          {
+            asset_id: assetId,
+            start_date: assetId ? startDate : null,
+            end_date: assetId ? endDate : null,
+            expected_planning_version: snapshot.planning_version,
+          },
+          key,
+        );
+      }
       retryKeys.current.delete(fingerprint);
       setFeedback({
         tone: "success",
@@ -384,14 +454,35 @@ export default function AssetPlanningPanel({
     setBusy(`operator:${requirement.requirement_id}`);
     setFeedback(null);
     try {
-      await setAssetRequirementOperator(
-        requirement.requirement_id,
-        {
-          operator_resource_id: resourceId,
-          expected_planning_version: snapshot.planning_version,
-        },
-        key,
-      );
+      if (requirement.origin === "PROJECT_DIRECT") {
+        if (
+          !requirement.asset_id
+          || !requirement.allocation_start_date
+          || !requirement.allocation_end_date
+        ) {
+          throw new Error("La réservation projet doit être matérialisée avant de choisir un opérateur.");
+        }
+        await updateProjectDirectReservation(
+          requirement.requirement_id,
+          {
+            asset_id: requirement.asset_id,
+            start_date: requirement.allocation_start_date,
+            end_date: requirement.allocation_end_date,
+            operator_resource_id: resourceId,
+            expected_planning_version: snapshot.planning_version,
+          },
+          key,
+        );
+      } else {
+        await setAssetRequirementOperator(
+          requirement.requirement_id,
+          {
+            operator_resource_id: resourceId,
+            expected_planning_version: snapshot.planning_version,
+          },
+          key,
+        );
+      }
       retryKeys.current.delete(fingerprint);
       setFeedback({
         tone: "success",
@@ -498,6 +589,14 @@ export default function AssetPlanningPanel({
         <div className={`asset-planning-feedback is-${feedback.tone}`} role={feedback.tone === "error" ? "alert" : "status"}>
           {feedback.message}
         </div>
+      )}
+
+      {canManage && (
+        <DirectAssetReservationForm
+          snapshot={snapshot}
+          canManage={canManage}
+          onRefresh={onRefresh}
+        />
       )}
 
       {snapshot.asset_diagnostics.length > 0 && (
