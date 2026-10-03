@@ -98,19 +98,33 @@ class SegmentAssetReservationTests(unittest.TestCase):
                 ]
             )
             session.flush()
-            session.add(
-                ResourceRequirement(
-                    id="REQ-575D",
-                    legacy_segment_id="SEG-575D",
-                    project_id="P1",
-                    workforce_request_id="D-575D",
-                    assigned_resource_id="OP-2",
-                    start_date=DAY,
-                    end_date=DAY + timedelta(days=2),
-                    planned_hours=24,
-                    status="Planifié",
-                    origin="REQUEST",
-                )
+            session.add_all(
+                [
+                    ResourceRequirement(
+                        id="REQ-575D",
+                        legacy_segment_id="SEG-575D",
+                        project_id="P1",
+                        workforce_request_id="D-575D",
+                        assigned_resource_id="OP-2",
+                        start_date=DAY,
+                        end_date=DAY + timedelta(days=2),
+                        planned_hours=24,
+                        status="Planifié",
+                        origin="REQUEST",
+                    ),
+                    ResourceRequirement(
+                        id="REQ-575D-STANDALONE",
+                        legacy_segment_id="SEG-575D-STANDALONE",
+                        project_id="P1",
+                        workforce_request_id=None,
+                        assigned_resource_id="OP-2",
+                        start_date=DAY,
+                        end_date=DAY + timedelta(days=2),
+                        planned_hours=24,
+                        status="Planifié",
+                        origin="AD_HOC",
+                    ),
+                ]
             )
         engine.dispose()
 
@@ -298,10 +312,36 @@ class SegmentAssetReservationTests(unittest.TestCase):
                 "segment_asset_reservation_conflict",
             )
 
+            with factory.begin() as session:
+                standalone_requirement = AssetRequirement(
+                    id="AREQ-575D-STANDALONE",
+                    project_id="P1",
+                    origin=AssetRequirementOrigin.SEGMENT.value,
+                    resource_requirement_id="REQ-575D-STANDALONE",
+                    asset_type_id="TYPE-575D",
+                    start_date=DAY + timedelta(days=1),
+                    end_date=DAY + timedelta(days=1),
+                    status="Planifié",
+                )
+                session.add(standalone_requirement)
+                session.flush()
+                session.add(
+                    AssetAllocation(
+                        id="ALLOC-575D-STANDALONE",
+                        asset_requirement_id=standalone_requirement.id,
+                        asset_id="ASSET-B",
+                        operator_resource_id="OP-1",
+                        start_date=DAY + timedelta(days=1),
+                        end_date=DAY + timedelta(days=1),
+                        locked=True,
+                        source="MANUAL",
+                    )
+                )
+
             with self.assertRaises(ApplicationConflictError) as project:
                 with factory.begin() as session:
                     SqlSegmentRepository(session).update(
-                        "SEG-575D",
+                        "SEG-575D-STANDALONE",
                         {"NumeroProjet": "P-OTHER"},
                     )
             self.assertEqual(
