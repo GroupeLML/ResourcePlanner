@@ -58,7 +58,12 @@ function AssetRequirementCard({
   snapshot: PlanningSnapshotReadModel;
   canManage: boolean;
   busy: boolean;
-  onReserve: (requirement: AssetRequirementPlanningReadModel, assetId: string | null) => void;
+  onReserve: (
+    requirement: AssetRequirementPlanningReadModel,
+    assetId: string | null,
+    startDate: string | null,
+    endDate: string | null,
+  ) => void;
   onOperator: (requirement: AssetRequirementPlanningReadModel, resourceId: string | null) => void;
 }) {
   const compatible = snapshot.assets.filter((asset) => (
@@ -66,13 +71,31 @@ function AssetRequirementCard({
     && (asset.active || asset.id === requirement.asset_id)
   ));
   const [selected, setSelected] = useState(requirement.asset_id ?? "");
+  const [reservationStart, setReservationStart] = useState(
+    requirement.allocation_start_date ?? requirement.start_date,
+  );
+  const [reservationEnd, setReservationEnd] = useState(
+    requirement.allocation_end_date ?? requirement.start_date,
+  );
   const [operatorSelected, setOperatorSelected] = useState(requirement.operator_resource_id ?? "");
   const [operatorCandidates, setOperatorCandidates] = useState<AssetOperatorCandidate[]>([]);
   const [candidateError, setCandidateError] = useState("");
 
   useEffect(() => {
+    setSelected(requirement.asset_id ?? "");
+    setReservationStart(requirement.allocation_start_date ?? requirement.start_date);
+    setReservationEnd(requirement.allocation_end_date ?? requirement.start_date);
+  }, [
+    requirement.requirement_id,
+    requirement.asset_id,
+    requirement.allocation_start_date,
+    requirement.allocation_end_date,
+    requirement.start_date,
+  ]);
+
+  useEffect(() => {
     setOperatorSelected(requirement.operator_resource_id ?? "");
-    if (!requirement.asset_id || requirement.required_competency_ids.length === 0) {
+    if (!requirement.asset_id) {
       setOperatorCandidates([]);
       setCandidateError("");
       return undefined;
@@ -93,13 +116,23 @@ function AssetRequirementCard({
     requirement.required_competency_ids,
   ]);
 
+  const reservationChanged = selected !== (requirement.asset_id ?? "")
+    || (
+      Boolean(selected)
+      && (
+        reservationStart !== (requirement.allocation_start_date ?? "")
+        || reservationEnd !== (requirement.allocation_end_date ?? "")
+      )
+    );
+  const datesReady = !selected || Boolean(reservationStart && reservationEnd);
+
   return (
     <article className="asset-requirement-card" data-requirement-id={requirement.requirement_id}>
       <div className="asset-requirement-heading">
         <div>
           <span>{requirement.demand_number} · {requirement.project_number}</span>
           <strong>{requirement.asset_type_code} — {requirement.asset_type_label}</strong>
-          <small>{requirement.start_date} → {requirement.end_date}</small>
+          <small>Fenêtre autorisée {requirement.start_date} → {requirement.end_date}</small>
         </div>
         <span className={requirement.asset_id ? "asset-status is-assigned" : "asset-status"}>
           {requirement.asset_id ? "Réservé" : "À réserver"}
@@ -108,7 +141,7 @@ function AssetRequirementCard({
 
       {requirement.usage_hours != null && (
         <small className="asset-usage-budget">
-          Budget d’usage {requirement.usage_hours} h — distinct des heures de main-d’œuvre.
+          Budget d’usage {requirement.usage_hours} h — distinct des dates d’occupation physique.
         </small>
       )}
 
@@ -129,13 +162,46 @@ function AssetRequirementCard({
             ))}
           </select>
         </label>
+        {selected && (
+          <>
+            <label>
+              <span>Date début réelle</span>
+              <input
+                type="date"
+                min={requirement.start_date}
+                max={requirement.end_date}
+                value={reservationStart}
+                onChange={(event) => setReservationStart(event.target.value)}
+                disabled={!canManage || busy}
+                aria-label={`Date début réelle pour ${requirement.asset_type_label} ${requirement.demand_number}`}
+              />
+            </label>
+            <label>
+              <span>Date fin réelle</span>
+              <input
+                type="date"
+                min={requirement.start_date}
+                max={requirement.end_date}
+                value={reservationEnd}
+                onChange={(event) => setReservationEnd(event.target.value)}
+                disabled={!canManage || busy}
+                aria-label={`Date fin réelle pour ${requirement.asset_type_label} ${requirement.demand_number}`}
+              />
+            </label>
+          </>
+        )}
         <button
           type="button"
           className="secondary-button"
-          disabled={!canManage || busy || selected === (requirement.asset_id ?? "")}
-          onClick={() => onReserve(requirement, selected || null)}
+          disabled={!canManage || busy || !reservationChanged || !datesReady}
+          onClick={() => onReserve(
+            requirement,
+            selected || null,
+            selected ? reservationStart : null,
+            selected ? reservationEnd : null,
+          )}
         >
-          {busy ? "Enregistrement…" : selected ? "Réserver cette unité" : "Libérer"}
+          {busy ? "Enregistrement…" : selected ? "Enregistrer la réservation" : "Libérer"}
         </button>
       </div>
 
@@ -143,58 +209,59 @@ function AssetRequirementCard({
         <div className="asset-current-allocation">
           <strong>{requirement.asset_code} — {requirement.asset_label}</strong>
           <span>
+            <b>Dates réservées</b>{" "}
             {requirement.allocation_start_date} → {requirement.allocation_end_date}
             {requirement.allocation_locked ? " · décision manuelle verrouillée" : ""}
           </span>
         </div>
       )}
 
-      {requirement.required_competency_ids.length > 0 && (
+      {requirement.asset_id && (
         <div className="asset-current-allocation asset-qualification">
           <strong>
             {QUALIFICATION_LABELS[requirement.qualification_state] ?? requirement.qualification_state}
           </strong>
           <span>
-            Prérequis : {requirement.required_competency_names.join(", ")}
+            {requirement.required_competency_ids.length > 0
+              ? `Prérequis : ${requirement.required_competency_names.join(", ")}`
+              : "Aucune compétence obligatoire; l’opérateur reste associable dans le contexte REQUEST."}
           </span>
-          {requirement.asset_id && (
-            <div className="asset-reservation-controls">
-              <label>
-                <span>Opérateur qualifiant</span>
-                <select
-                  value={operatorSelected}
-                  onChange={(event) => setOperatorSelected(event.target.value)}
-                  disabled={!canManage || busy}
-                  aria-label={`Opérateur qualifiant pour ${requirement.asset_type_label} ${requirement.demand_number}`}
-                >
-                  <option value="">Aucun opérateur</option>
-                  {requirement.operator_resource_id
-                    && !operatorCandidates.some((row) => row.resource_id === requirement.operator_resource_id) && (
-                    <option value={requirement.operator_resource_id}>
-                      {requirement.operator_resource_name ?? requirement.operator_resource_id} — non admissible actuellement
-                    </option>
-                  )}
-                  {operatorCandidates.map((candidate) => (
-                    <option value={candidate.resource_id} key={candidate.resource_id}>
-                      {candidate.resource_name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                type="button"
-                className="secondary-button"
-                disabled={
-                  !canManage
-                  || busy
-                  || operatorSelected === (requirement.operator_resource_id ?? "")
-                }
-                onClick={() => onOperator(requirement, operatorSelected || null)}
+          <div className="asset-reservation-controls">
+            <label>
+              <span>Opérateur</span>
+              <select
+                value={operatorSelected}
+                onChange={(event) => setOperatorSelected(event.target.value)}
+                disabled={!canManage || busy}
+                aria-label={`Opérateur pour ${requirement.asset_type_label} ${requirement.demand_number}`}
               >
-                Enregistrer l’opérateur
-              </button>
-            </div>
-          )}
+                <option value="">Aucun opérateur</option>
+                {requirement.operator_resource_id
+                  && !operatorCandidates.some((row) => row.resource_id === requirement.operator_resource_id) && (
+                  <option value={requirement.operator_resource_id}>
+                    {requirement.operator_resource_name ?? requirement.operator_resource_id} — non admissible actuellement
+                  </option>
+                )}
+                {operatorCandidates.map((candidate) => (
+                  <option value={candidate.resource_id} key={candidate.resource_id}>
+                    {candidate.resource_name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={
+                !canManage
+                || busy
+                || operatorSelected === (requirement.operator_resource_id ?? "")
+              }
+              onClick={() => onOperator(requirement, operatorSelected || null)}
+            >
+              Enregistrer l’opérateur
+            </button>
+          </div>
           {candidateError && <small role="alert">{candidateError}</small>}
         </div>
       )}
@@ -242,13 +309,18 @@ export default function AssetPlanningPanel({
     return result;
   }, [snapshot.start, snapshot.end]);
 
-  async function reserve(requirement: AssetRequirementPlanningReadModel, assetId: string | null) {
+  async function reserve(
+    requirement: AssetRequirementPlanningReadModel,
+    assetId: string | null,
+    startDate: string | null,
+    endDate: string | null,
+  ) {
     if (busy) return;
     const fingerprint = [
       requirement.requirement_id,
       assetId ?? "release",
-      requirement.start_date,
-      requirement.end_date,
+      startDate ?? "none",
+      endDate ?? "none",
       snapshot.planning_version,
     ].join("|");
     const key = retryKeys.current.get(fingerprint) ?? mutationKey();
@@ -260,8 +332,8 @@ export default function AssetPlanningPanel({
         requirement.requirement_id,
         {
           asset_id: assetId,
-          start_date: assetId ? requirement.start_date : null,
-          end_date: assetId ? requirement.end_date : null,
+          start_date: assetId ? startDate : null,
+          end_date: assetId ? endDate : null,
           expected_planning_version: snapshot.planning_version,
         },
         key,
@@ -461,7 +533,7 @@ export default function AssetPlanningPanel({
                   busy === `reserve:${requirement.requirement_id}`
                   || busy === `operator:${requirement.requirement_id}`
                 }
-                onReserve={(row, assetId) => void reserve(row, assetId)}
+                onReserve={(row, assetId, startDate, endDate) => void reserve(row, assetId, startDate, endDate)}
                 onOperator={(row, resourceId) => void assignOperator(row, resourceId)}
               />
             ))}

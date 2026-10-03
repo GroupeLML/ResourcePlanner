@@ -231,6 +231,7 @@ class SqlDemandRepository(DemandRepositoryPort):
             )
             .where(
                 AssetRequirement.workforce_request_id == WorkforceRequest.id,
+                AssetRequirement.origin == AssetRequirementOrigin.REQUEST.value,
             )
             .correlate(WorkforceRequest)
             .scalar_subquery()
@@ -244,6 +245,7 @@ class SqlDemandRepository(DemandRepositoryPort):
             )
             .where(
                 AssetRequirement.workforce_request_id == WorkforceRequest.id,
+                AssetRequirement.origin == AssetRequirementOrigin.REQUEST.value,
                 AssetAllocation.locked == true(),
             )
             .correlate(WorkforceRequest)
@@ -303,6 +305,7 @@ class SqlDemandRepository(DemandRepositoryPort):
             select(func.count(AssetRequirement.id))
             .where(
                 AssetRequirement.workforce_request_id == WorkforceRequest.id,
+                AssetRequirement.origin == AssetRequirementOrigin.REQUEST.value,
                 AssetRequirement.status != "Annulé",
             )
             .correlate(WorkforceRequest)
@@ -312,8 +315,6 @@ class SqlDemandRepository(DemandRepositoryPort):
             select(func.count(AssetAllocation.id))
             .where(
                 AssetAllocation.asset_requirement_id == AssetRequirement.id,
-                AssetAllocation.start_date <= AssetRequirement.start_date,
-                AssetAllocation.end_date >= AssetRequirement.end_date,
             )
             .correlate(AssetRequirement)
             .scalar_subquery()
@@ -322,6 +323,7 @@ class SqlDemandRepository(DemandRepositoryPort):
             select(func.count(AssetRequirement.id))
             .where(
                 AssetRequirement.workforce_request_id == WorkforceRequest.id,
+                AssetRequirement.origin == AssetRequirementOrigin.REQUEST.value,
                 AssetRequirement.status != "Annulé",
                 covering_asset_allocation_count == 0,
             )
@@ -337,6 +339,7 @@ class SqlDemandRepository(DemandRepositoryPort):
             )
             .where(
                 AssetRequirement.workforce_request_id == WorkforceRequest.id,
+                AssetRequirement.origin == AssetRequirementOrigin.REQUEST.value,
                 AssetRequirement.status != "Annulé",
                 AssetAllocation.end_date >= date.today(),
             )

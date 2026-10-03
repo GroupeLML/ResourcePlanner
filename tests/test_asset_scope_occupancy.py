@@ -177,6 +177,8 @@ class AssetScopeOccupancyTests(unittest.TestCase):
             f"/api/v1/assets/requirements/{requirement_id}/reservation",
             json={
                 "asset_id": asset_id,
+                "start_date": DAY,
+                "end_date": DAY,
                 "expected_planning_version": state["planning_version"],
             },
             headers={"Idempotency-Key": f"reserve-561-{requirement_id}-{asset_id}"},
@@ -239,6 +241,8 @@ class AssetScopeOccupancyTests(unittest.TestCase):
             f"/api/v1/assets/requirements/{visible_requirement_id}/reservation",
             json={
                 "asset_id": self.asset_ids[0],
+                "start_date": DAY,
+                "end_date": DAY,
                 "expected_planning_version": state["planning_version"],
             },
             headers={"Idempotency-Key": "reserve-561-hidden-block"},

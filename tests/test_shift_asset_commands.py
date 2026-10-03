@@ -199,6 +199,8 @@ class ShiftAssetCommandTests(unittest.TestCase):
         version: int,
         key: str,
         requirement_id: str | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
         client: TestClient | None = None,
     ):
         payload: dict[str, object] = {
@@ -207,6 +209,10 @@ class ShiftAssetCommandTests(unittest.TestCase):
         }
         if requirement_id is not None:
             payload["asset_requirement_id"] = requirement_id
+        if start_date is not None:
+            payload["start_date"] = start_date.isoformat()
+        if end_date is not None:
+            payload["end_date"] = end_date.isoformat()
         return (client or self.client).put(
             f"/api/v1/assets/shifts/{shift_id}/assignment",
             headers={"Idempotency-Key": key},
@@ -486,8 +492,8 @@ class ShiftAssetCommandTests(unittest.TestCase):
                         {
                             "kind": "ASSET",
                             "asset_type_id": "TYPE-560B",
-                            "desired_start": DAY.isoformat(),
-                            "desired_end": DAY.isoformat(),
+                            "desired_start": (DAY - timedelta(days=2)).isoformat(),
+                            "desired_end": (DAY + timedelta(days=2)).isoformat(),
                         },
                         {
                             "kind": "WORKFORCE",
@@ -549,12 +555,28 @@ class ShiftAssetCommandTests(unittest.TestCase):
             approved_entry_key = request_asset_requirement.approved_entry_key
         engine.dispose()
 
+        request_version = self._version()
+        missing_dates = self._set_asset(
+            shift_id="SHIFT-REQUEST-560B",
+            asset_id="ASSET-A",
+            version=request_version,
+            key="request-missing-dates-575b",
+            requirement_id=asset_requirement_id,
+        )
+        self.assertEqual(missing_dates.status_code, 422, missing_dates.text)
+        self.assertEqual(
+            missing_dates.json()["error"]["code"],
+            "asset_reservation_dates_required",
+        )
+
         assigned = self._set_asset(
             shift_id="SHIFT-REQUEST-560B",
             asset_id="ASSET-A",
-            version=self._version(),
+            version=request_version,
             key="request-assign-560b",
             requirement_id=asset_requirement_id,
+            start_date=DAY,
+            end_date=DAY,
         )
         self.assertEqual(assigned.status_code, 200, assigned.text)
         payload = assigned.json()
@@ -572,6 +594,19 @@ class ShiftAssetCommandTests(unittest.TestCase):
         self.assertEqual(changed.status_code, 200, changed.text)
         self.assertEqual(changed.json()["requirement_id"], asset_requirement_id)
         self.assertEqual(changed.json()["allocation_id"], payload["allocation_id"])
+        self.assertEqual(changed.json()["operator_resource_id"], "RESOURCE-SKILLED")
+
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory() as session:
+                preserved = session.get(AssetAllocation, payload["allocation_id"])
+                self.assertIsNotNone(preserved)
+                self.assertEqual(preserved.start_date, DAY)
+                self.assertEqual(preserved.end_date, DAY)
+                self.assertEqual(preserved.operator_resource_id, "RESOURCE-SKILLED")
+        finally:
+            engine.dispose()
 
         projected = self.client.get(
             "/api/v1/shifts",
