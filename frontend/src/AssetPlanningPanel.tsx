@@ -102,6 +102,8 @@ function AssetRequirementCard({
     requirement.allocation_start_date,
     requirement.allocation_end_date,
     requirement.start_date,
+    requirement.end_date,
+    requirement.origin,
   ]);
 
   useEffect(() => {
