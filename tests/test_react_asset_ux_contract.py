@@ -89,6 +89,25 @@ class ReactAssetUxContractTests(unittest.TestCase):
         self.assertIn("Occupé hors périmètre", panel)
         self.assertNotIn("snapshot.asset_allocations.filter", panel)
 
+    def test_request_asset_dates_are_explicit_and_distinct_from_window(self) -> None:
+        panel = (ROOT / "frontend" / "src" / "AssetPlanningPanel.tsx").read_text(encoding="utf-8")
+        dialog = (ROOT / "frontend" / "src" / "ShiftAssetAssignmentDialog.tsx").read_text(encoding="utf-8")
+
+        self.assertIn("Fenêtre autorisée", panel)
+        self.assertIn("Budget d’usage", panel)
+        self.assertIn("Dates réservées", panel)
+        self.assertIn("Date début réelle", panel)
+        self.assertIn("Date fin réelle", panel)
+        self.assertIn("allocation_start_date ?? requirement.start_date", panel)
+        self.assertIn("allocation_end_date ?? requirement.start_date", panel)
+        self.assertIn('startDate ?? "none"', panel)
+        self.assertIn('endDate ?? "none"', panel)
+        self.assertNotIn("start_date: assetId ? requirement.start_date : null", panel)
+        self.assertIn("Date début réelle", dialog)
+        self.assertIn("Date fin réelle", dialog)
+        self.assertIn("start_date: mode === \"release\" ? null : reservationStart", dialog)
+        self.assertIn("end_date: mode === \"release\" ? null : reservationEnd", dialog)
+
     def test_asset_api_preserves_backend_authority_and_planning_cas(self) -> None:
         api = (ROOT / "frontend" / "src" / "assetApi.ts").read_text(encoding="utf-8")
         panel = (ROOT / "frontend" / "src" / "AssetCatalogPanel.tsx").read_text(encoding="utf-8")

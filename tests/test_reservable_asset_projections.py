@@ -160,6 +160,8 @@ class ReservableAssetProjectionTests(unittest.TestCase):
             f"/api/v1/assets/requirements/{requirement['id']}/reservation",
             json={
                 "asset_id": self.asset_ids[0],
+                "start_date": "2026-09-24",
+                "end_date": "2026-09-24",
                 "expected_planning_version": state["planning_version"],
             },
             headers={"Idempotency-Key": "projection-preserve"},
@@ -235,6 +237,8 @@ class ReservableAssetProjectionTests(unittest.TestCase):
             f"/api/v1/assets/requirements/{requirement['id']}/reservation",
             json={
                 "asset_id": self.asset_ids[0],
+                "start_date": "2026-09-26",
+                "end_date": "2026-09-26",
                 "expected_planning_version": state["planning_version"],
             },
             headers={"Idempotency-Key": "projection-block"},

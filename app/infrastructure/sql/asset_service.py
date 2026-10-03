@@ -343,6 +343,7 @@ class SqlAssetService:
             action=lambda: self._set_operator(**payload),
         )
 
+
     def _set_operator(
         self,
         *,
@@ -369,35 +370,23 @@ class SqlAssetService:
                 code="asset_operator_requires_reservation",
             )
 
-        before = {"operator_resource_id": allocation.operator_resource_id}
-        previous = allocation.operator_resource_id
-        allocation.operator_resource_id = (
-            str(operator_resource_id or "").strip() or None
-        )
-        qualification = evaluate_asset_qualification(
-            self.session,
+        proposed_operator_id = str(operator_resource_id or "").strip() or None
+        before = {
+            "asset_id": allocation.asset_id,
+            "start_date": allocation.start_date,
+            "end_date": allocation.end_date,
+            "operator_resource_id": allocation.operator_resource_id,
+        }
+        qualification_state = self._validate_request_allocation_state(
             requirement=requirement,
-            allocation=allocation,
+            asset_id=allocation.asset_id,
+            start_date=allocation.start_date,
+            end_date=allocation.end_date,
+            operator_resource_id=proposed_operator_id,
+            allocation_id=allocation.id,
+            source=allocation.source,
         )
-        if allocation.operator_resource_id is not None:
-            if qualification.state == QUALIFICATION_SKILL_MISMATCH:
-                allocation.operator_resource_id = previous
-                raise ApplicationValidationError(
-                    "La ressource choisie n'est pas active ou ne possède pas les compétences requises.",
-                    code="asset_operator_skill_mismatch",
-                )
-            if qualification.state == QUALIFICATION_NO_OVERLAP:
-                allocation.operator_resource_id = previous
-                raise ApplicationValidationError(
-                    "La ressource choisie n'a aucune affectation compatible sur cette réservation.",
-                    code="asset_operator_no_overlap",
-                )
-            if qualification.state != QUALIFICATION_SATISFIED:
-                allocation.operator_resource_id = previous
-                raise ApplicationValidationError(
-                    "La ressource choisie ne satisfait pas la qualification d'actif.",
-                    code="asset_operator_invalid",
-                )
+        allocation.operator_resource_id = proposed_operator_id
 
         self.audit.append(
             entity_type="ASSET_ALLOCATION",
@@ -406,22 +395,21 @@ class SqlAssetService:
             parent_reference=requirement.workforce_request_id,
             action="Opérateur qualifiant",
             before=before,
-            after={"operator_resource_id": allocation.operator_resource_id},
+            after={
+                "asset_id": allocation.asset_id,
+                "start_date": allocation.start_date,
+                "end_date": allocation.end_date,
+                "operator_resource_id": allocation.operator_resource_id,
+            },
         )
         self.session.flush()
-        qualification = evaluate_asset_qualification(
-            self.session,
-            requirement=requirement,
-            allocation=allocation,
-        )
         return {
             "allocation_id": allocation.id,
             "requirement_id": requirement.id,
             "operator_resource_id": allocation.operator_resource_id,
-            "qualification_state": qualification.state,
+            "qualification_state": qualification_state,
             "planning_version": self.version.current_version(),
         }
-
     def _shift_context(
         self,
         identifier: str,
@@ -621,6 +609,128 @@ class SqlAssetService:
                 code="asset_unavailable",
             )
 
+
+    @staticmethod
+    def _resolve_request_reservation_dates(
+        *,
+        requirement: AssetRequirement,
+        previous: AssetAllocation | None,
+        start_date: str | date | None,
+        end_date: str | date | None,
+    ) -> tuple[date, date]:
+        if (start_date is None) != (end_date is None):
+            raise ApplicationValidationError(
+                "Les dates réelles de réservation doivent être fournies ensemble.",
+                code="asset_reservation_dates_required",
+            )
+        if start_date is None:
+            if previous is None:
+                raise ApplicationValidationError(
+                    "Les dates réelles de réservation sont requises.",
+                    code="asset_reservation_dates_required",
+                )
+            return previous.start_date, previous.end_date
+
+        begin = (
+            date.fromisoformat(start_date)
+            if isinstance(start_date, str)
+            else start_date
+        )
+        end = (
+            date.fromisoformat(end_date)
+            if isinstance(end_date, str)
+            else end_date
+        )
+        if begin > end:
+            raise ApplicationValidationError(
+                "La date de début doit précéder ou égaler la date de fin.",
+                code="asset_reservation_window_invalid",
+            )
+        if not (
+            requirement.start_date
+            <= begin
+            <= end
+            <= requirement.end_date
+        ):
+            raise ApplicationValidationError(
+                "Réservation hors fenêtre approuvée.",
+                code="asset_outside_approved_window",
+            )
+        return begin, end
+
+    @staticmethod
+    def _request_operator_error(state: str) -> ApplicationValidationError:
+        if state == QUALIFICATION_SKILL_MISMATCH:
+            return ApplicationValidationError(
+                "La ressource choisie n'est pas active ou ne possède pas les compétences requises.",
+                code="asset_operator_skill_mismatch",
+            )
+        if state == QUALIFICATION_NO_OVERLAP:
+            return ApplicationValidationError(
+                "La ressource choisie n'a aucune affectation compatible sur cette réservation.",
+                code="asset_operator_no_overlap",
+            )
+        return ApplicationValidationError(
+            "La ressource choisie ne satisfait pas la qualification d'actif.",
+            code="asset_operator_invalid",
+        )
+
+    def _validate_request_allocation_state(
+        self,
+        *,
+        requirement: AssetRequirement,
+        asset_id: str,
+        start_date: date,
+        end_date: date,
+        operator_resource_id: str | None,
+        allocation_id: str,
+        source: str = "MANUAL",
+    ) -> str:
+        self._validate_request_authority(requirement)
+        asset, _asset_type = self._active_asset(asset_id)
+        if asset.asset_type_id != requirement.asset_type_id:
+            raise ApplicationValidationError(
+                "Actif inactif ou incompatible.",
+                code="asset_incompatible",
+            )
+        if not (
+            requirement.start_date
+            <= start_date
+            <= end_date
+            <= requirement.end_date
+        ):
+            raise ApplicationValidationError(
+                "Réservation hors fenêtre approuvée.",
+                code="asset_outside_approved_window",
+            )
+        self._assert_asset_available(
+            asset_id=asset.id,
+            start_date=start_date,
+            end_date=end_date,
+            allocation_id=allocation_id,
+        )
+        candidate = AssetAllocation(
+            id=allocation_id,
+            asset_requirement_id=requirement.id,
+            asset_id=asset.id,
+            operator_resource_id=operator_resource_id,
+            start_date=start_date,
+            end_date=end_date,
+            locked=True,
+            source=source,
+        )
+        qualification = evaluate_asset_qualification(
+            self.session,
+            requirement=requirement,
+            allocation=candidate,
+        )
+        if (
+            operator_resource_id is not None
+            and qualification.state != QUALIFICATION_SATISFIED
+        ):
+            raise self._request_operator_error(qualification.state)
+        return qualification.state
+
     def _request_requirements_for_shift(
         self,
         *,
@@ -817,12 +927,15 @@ class SqlAssetService:
             code="asset_operator_invalid",
         )
 
+
     def set_shift_asset(
         self,
         *,
         shift_id: str,
         asset_id: str | None,
         requirement_id: str | None,
+        start_date: date | None,
+        end_date: date | None,
         expected_version: int,
         idempotency_key: str,
     ) -> dict:
@@ -830,6 +943,8 @@ class SqlAssetService:
             "shift_id": str(shift_id or "").strip(),
             "asset_id": str(asset_id or "").strip() or None,
             "requirement_id": str(requirement_id or "").strip() or None,
+            "start_date": start_date.isoformat() if start_date else None,
+            "end_date": end_date.isoformat() if end_date else None,
             "expected_version": expected_version,
         }
         fingerprint = hashlib.sha256(
@@ -851,6 +966,8 @@ class SqlAssetService:
         shift_id: str,
         asset_id: str | None,
         requirement_id: str | None,
+        start_date: str | None,
+        end_date: str | None,
         expected_version: int,
     ) -> dict:
         self.version.acquire(expected_version)
@@ -916,6 +1033,11 @@ class SqlAssetService:
                 code="shift_asset_requirement_origin_invalid",
             )
 
+        if (start_date is None) != (end_date is None):
+            raise ApplicationValidationError(
+                "Les dates réelles de réservation doivent être fournies ensemble.",
+                code="asset_reservation_dates_required",
+            )
         previous = self._allocation_for_requirement(requirement.id)
         requirement_id_value = requirement.id
         before = (
@@ -995,25 +1117,34 @@ class SqlAssetService:
                 "planning_version": self.version.current_version(),
             }
 
+        allocation_id = previous.id if previous is not None else new_id()
         if origin == AssetRequirementOrigin.REQUEST.value:
-            if asset.asset_type_id != requirement.asset_type_id:
-                raise ApplicationValidationError(
-                    "Actif inactif ou incompatible.",
-                    code="asset_incompatible",
-                )
-            begin = requirement.start_date
-            end = requirement.end_date
+            begin, end = self._resolve_request_reservation_dates(
+                requirement=requirement,
+                previous=previous,
+                start_date=start_date,
+                end_date=end_date,
+            )
             operator_resource_id = (
-                shift.resource_id
-                if required_competencies(
-                    self.session,
-                    requirement.asset_type_id,
-                )
+                previous.operator_resource_id
+                if previous is not None
                 else (
-                    previous.operator_resource_id
-                    if previous is not None
+                    shift.resource_id
+                    if required_competencies(
+                        self.session,
+                        requirement.asset_type_id,
+                    )
                     else None
                 )
+            )
+            qualification_state = self._validate_request_allocation_state(
+                requirement=requirement,
+                asset_id=asset.id,
+                start_date=begin,
+                end_date=end,
+                operator_resource_id=operator_resource_id,
+                allocation_id=allocation_id,
+                source=previous.source if previous is not None else "MANUAL",
             )
         else:
             requirement.asset_type_id = asset.asset_type_id
@@ -1022,14 +1153,31 @@ class SqlAssetService:
             begin = shift.work_date
             end = shift.work_date
             operator_resource_id = shift.resource_id
+            self._assert_asset_available(
+                asset_id=asset.id,
+                start_date=begin,
+                end_date=end,
+                allocation_id=allocation_id,
+            )
+            ad_hoc_candidate = AssetAllocation(
+                id=allocation_id,
+                asset_requirement_id=requirement.id,
+                asset_id=asset.id,
+                operator_resource_id=operator_resource_id,
+                start_date=begin,
+                end_date=end,
+                locked=True,
+                source=previous.source if previous is not None else "MANUAL",
+            )
+            qualification = evaluate_asset_qualification(
+                self.session,
+                requirement=requirement,
+                allocation=ad_hoc_candidate,
+            )
+            if qualification.state != QUALIFICATION_SATISFIED:
+                raise self._qualification_error(qualification.state)
+            qualification_state = qualification.state
 
-        allocation_id = previous.id if previous is not None else new_id()
-        self._assert_asset_available(
-            asset_id=asset.id,
-            start_date=begin,
-            end_date=end,
-            allocation_id=allocation_id,
-        )
         candidate = AssetAllocation(
             id=allocation_id,
             asset_requirement_id=requirement.id,
@@ -1040,14 +1188,6 @@ class SqlAssetService:
             locked=True,
             source=previous.source if previous is not None else "MANUAL",
         )
-        qualification = evaluate_asset_qualification(
-            self.session,
-            requirement=requirement,
-            allocation=candidate,
-        )
-        if qualification.state != QUALIFICATION_SATISFIED:
-            raise self._qualification_error(qualification.state)
-
         if previous is None:
             self.session.add(candidate)
             allocation = candidate
@@ -1111,12 +1251,11 @@ class SqlAssetService:
             "allocation_id": allocation.id,
             "asset_id": allocation.asset_id,
             "operator_resource_id": allocation.operator_resource_id,
-            "qualification_state": qualification.state,
+            "qualification_state": qualification_state,
             "shift_source": shift.source,
             "shift_locked": bool(shift.locked),
             "planning_version": self.version.current_version(),
         }
-
     def shift_ad_hoc_attachment(
         self,
         shift_id: str,
@@ -1388,6 +1527,7 @@ class SqlAssetService:
             action=lambda: self._reserve(**payload),
         )
 
+
     def _reserve(self, *, requirement_id: str, asset_id: str | None, start_date: str | None,
                  end_date: str | None, expected_version: int) -> dict:
         self.version.acquire(expected_version)
@@ -1395,9 +1535,22 @@ class SqlAssetService:
         if requirement is None or requirement.status == "Annulé":
             raise ApplicationNotFoundError("Besoin d'actif introuvable.", code="asset_requirement_not_found")
         self._validate_request_authority(requirement)
+        if (start_date is None) != (end_date is None):
+            raise ApplicationValidationError(
+                "Les dates réelles de réservation doivent être fournies ensemble.",
+                code="asset_reservation_dates_required",
+            )
         previous = self._allocation_for_requirement(requirement.id)
-        before = ({"asset_id": previous.asset_id, "start_date": previous.start_date, "end_date": previous.end_date}
-                  if previous else None)
+        before = (
+            {
+                "asset_id": previous.asset_id,
+                "start_date": previous.start_date,
+                "end_date": previous.end_date,
+                "operator_resource_id": previous.operator_resource_id,
+            }
+            if previous
+            else None
+        )
         if asset_id is None:
             if previous is not None:
                 self.session.delete(previous)
@@ -1405,30 +1558,55 @@ class SqlAssetService:
             result_id = None
             after = None
         else:
-            asset, _asset_type = self._active_asset(asset_id)
-            if asset.asset_type_id != requirement.asset_type_id:
-                raise ApplicationValidationError("Actif inactif ou incompatible.", code="asset_incompatible")
-            begin = date.fromisoformat(start_date) if start_date else requirement.start_date
-            end = date.fromisoformat(end_date) if end_date else requirement.end_date
-            if not (requirement.start_date <= begin <= end <= requirement.end_date):
-                raise ApplicationValidationError("Réservation hors fenêtre approuvée.", code="asset_outside_approved_window")
+            begin, end = self._resolve_request_reservation_dates(
+                requirement=requirement,
+                previous=previous,
+                start_date=start_date,
+                end_date=end_date,
+            )
             allocation_id = previous.id if previous else new_id()
-            self._assert_asset_available(
+            operator_resource_id = (
+                previous.operator_resource_id if previous is not None else None
+            )
+            self._validate_request_allocation_state(
+                requirement=requirement,
                 asset_id=asset_id,
                 start_date=begin,
                 end_date=end,
+                operator_resource_id=operator_resource_id,
                 allocation_id=allocation_id,
+                source=previous.source if previous is not None else "MANUAL",
             )
-            row = previous or AssetAllocation(id=allocation_id, asset_requirement_id=requirement.id)
-            row.asset_id, row.start_date, row.end_date = asset_id, begin, end
-            row.locked = True  # An explicit coordinator decision survives rebuild/reapproval.
+            row = previous or AssetAllocation(
+                id=allocation_id,
+                asset_requirement_id=requirement.id,
+            )
+            row.asset_id = asset_id
+            row.start_date = begin
+            row.end_date = end
+            row.operator_resource_id = operator_resource_id
+            row.locked = True
             self.session.add(row)
             requirement.status = "Planifié"
             result_id = row.id
-            after = {"asset_id": asset_id, "start_date": begin, "end_date": end}
-        self.audit.append(entity_type="ASSET_ALLOCATION", entity_id=result_id or (previous.id if previous else requirement.id),
-                          entity_reference=requirement.id, parent_reference=requirement.workforce_request_id,
-                          action="Réservation d'actif", before=before, after=after)
+            after = {
+                "asset_id": asset_id,
+                "start_date": begin,
+                "end_date": end,
+                "operator_resource_id": operator_resource_id,
+            }
+        self.audit.append(
+            entity_type="ASSET_ALLOCATION",
+            entity_id=result_id or (previous.id if previous else requirement.id),
+            entity_reference=requirement.id,
+            parent_reference=requirement.workforce_request_id,
+            action="Réservation d'actif",
+            before=before,
+            after=after,
+        )
         self.session.flush()
-        return {"allocation_id": result_id, "requirement_id": requirement.id,
-                "planning_version": self.version.current_version()}
+        return {
+            "allocation_id": result_id,
+            "requirement_id": requirement.id,
+            "planning_version": self.version.current_version(),
+        }

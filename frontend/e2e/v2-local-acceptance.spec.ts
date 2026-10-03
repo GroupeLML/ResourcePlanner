@@ -1836,13 +1836,18 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   );
   await expect(extendedRequirement).toBeVisible();
   await extendedRequirement.getByRole("combobox").first().selectOption(lift63Id);
-  await extendedRequirement.getByRole("button", { name: "Réserver cette unité" }).click();
+  await expect(extendedRequirement).toContainText("Fenêtre autorisée");
+  await extendedRequirement.getByLabel(/Date début réelle/).fill(d1);
+  await extendedRequirement.getByLabel(/Date fin réelle/).fill(d1);
+  await extendedRequirement.getByRole("button", { name: "Enregistrer la réservation" }).click();
   await expect(assetPanel.locator(".asset-planning-feedback")).toContainText("Réservation enregistrée");
 
   extendedRequirement = assetPanel.locator(
     `.asset-requirement-card[data-requirement-id="${extendedRequirementId}"]`,
   );
-  const extendedOperator = extendedRequirement.getByLabel(/Opérateur qualifiant/);
+  await expect(extendedRequirement.getByText("Dates réservées")).toBeVisible();
+  await expect(extendedRequirement).toContainText(`${d1} → ${d1}`);
+  const extendedOperator = extendedRequirement.getByLabel("Opérateur");
   await expect(extendedOperator.locator('option[value="R-ALICE"]')).toBeAttached();
   await extendedOperator.selectOption("R-ALICE");
   await extendedRequirement.getByRole("button", { name: "Enregistrer l’opérateur" }).click();
@@ -1851,13 +1856,15 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   demandRequirements = assetPanel.locator(".asset-requirement-card").filter({ hasText: demandNumber });
   const secondRequirement = demandRequirements.filter({ hasText: "À réserver" }).first();
   await secondRequirement.getByRole("combobox").first().selectOption(lift64Id);
-  await secondRequirement.getByRole("button", { name: "Réserver cette unité" }).click();
+  await secondRequirement.getByLabel(/Date début réelle/).fill(d1);
+  await secondRequirement.getByLabel(/Date fin réelle/).fill(d1);
+  await secondRequirement.getByRole("button", { name: "Enregistrer la réservation" }).click();
   await expect(assetPanel.locator(".asset-planning-feedback")).toContainText("Réservation enregistrée");
 
   const secondAllocated = assetPanel.locator(".asset-requirement-card").filter({
     has: coordinator.page.locator(".asset-current-allocation strong").filter({ hasText: "Nacelle #64" }),
   }).first();
-  const operatorSelect = secondAllocated.getByLabel(/Opérateur qualifiant/);
+  const operatorSelect = secondAllocated.getByLabel("Opérateur");
   await expect(operatorSelect.locator('option[value="R-ALICE"]')).toBeAttached();
   await operatorSelect.selectOption("R-ALICE");
   await secondAllocated.getByRole("button", { name: "Enregistrer l’opérateur" }).click();
@@ -1938,13 +1945,13 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   let conflictCard = refreshedAssetPanel.locator(".asset-requirement-card").filter({ hasText: conflictNumber }).first();
   await expect(conflictCard).toBeVisible();
   await conflictCard.getByRole("combobox").first().selectOption(lift63Id);
-  await conflictCard.getByRole("button", { name: "Réserver cette unité" }).click();
+  await conflictCard.getByRole("button", { name: "Enregistrer la réservation" }).click();
   await expect(refreshedAssetPanel.locator(".asset-planning-feedback")).toContainText("Actif déjà réservé");
   await expect(refreshedAssetPanel.locator(".asset-planning-feedback")).toContainText("asset_double_booking");
 
   conflictCard = refreshedAssetPanel.locator(".asset-requirement-card").filter({ hasText: conflictNumber }).first();
   await conflictCard.getByRole("combobox").first().selectOption(lift65Id);
-  await conflictCard.getByRole("button", { name: "Réserver cette unité" }).click();
+  await conflictCard.getByRole("button", { name: "Enregistrer la réservation" }).click();
   await expect(refreshedAssetPanel.locator(".asset-planning-feedback")).toContainText("Réservation enregistrée");
   await expect(
     refreshedAssetPanel.locator(".asset-requirement-card").filter({ hasText: conflictNumber }).first(),

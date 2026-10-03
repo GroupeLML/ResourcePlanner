@@ -281,6 +281,8 @@ export function setShiftAssetAssignment(
   payload: {
     asset_id: string | null;
     asset_requirement_id: string | null;
+    start_date?: string | null;
+    end_date?: string | null;
     expected_planning_version: number;
   },
   idempotencyKey: string,

@@ -28,8 +28,9 @@ class ReactAssetQualificationContractTests(unittest.TestCase):
         )
 
         self.assertIn("Qualification manquante", source)
-        self.assertIn("Opérateur qualifiant", source)
+        self.assertIn("Opérateur", source)
         self.assertIn("Prérequis :", source)
+        self.assertIn("Aucune compétence obligatoire", source)
         self.assertIn("getAssetOperatorCandidates", source)
         self.assertIn("setAssetRequirementOperator", source)
 
