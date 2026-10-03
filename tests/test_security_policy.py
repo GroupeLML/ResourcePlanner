@@ -165,6 +165,20 @@ class SecurityPolicyTests(unittest.TestCase):
         )
         self.assertEqual(
             required_permission(
+                "POST",
+                "/api/v1/assets/project-reservations",
+            ),
+            PERMISSION_MANAGE_PLANNING,
+        )
+        self.assertEqual(
+            required_permission(
+                "DELETE",
+                "/api/v1/assets/resource-period-reservations/AR-2",
+            ),
+            PERMISSION_MANAGE_PLANNING,
+        )
+        self.assertEqual(
+            required_permission(
                 "PUT",
                 "/api/v1/assets/types/AT-1/qualification",
             ),

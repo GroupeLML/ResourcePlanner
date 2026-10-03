@@ -93,9 +93,19 @@ def has_compatible_assignment(
             ResourceRequirement.workforce_request_id
             == requirement.workforce_request_id
         )
+    elif requirement.origin == AssetRequirementOrigin.PROJECT_DIRECT.value:
+        # The direct-project command is itself the explicit designation of the
+        # operator in the project context. No synthetic Shift is required.
+        return bool(requirement.project_id)
+    elif requirement.origin == AssetRequirementOrigin.RESOURCE_PERIOD.value:
+        # The beneficiary is explicit and must remain the physical operator for
+        # the complete direct period.
+        return bool(
+            requirement.context_resource_id
+            and requirement.context_resource_id == resource_id
+        )
     else:
-        # 575A makes the new origins readable but does not implement their
-        # qualification policy. Fail closed instead of treating them as REQUEST.
+        # SEGMENT is implemented by 575D. Keep it fail-closed here.
         return False
     return session.scalar(statement.limit(1)) is not None
 

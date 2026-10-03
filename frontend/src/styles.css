@@ -875,19 +875,23 @@ h1 { font-size: 1.6rem; }
   align-items: end;
 }
 .asset-reservation-controls label,
-.asset-unavailability-form label {
+.asset-unavailability-form label,
+.asset-direct-reservation-form label {
   display: grid;
   gap: .22rem;
 }
 .asset-reservation-controls label span,
-.asset-unavailability-form label span {
+.asset-unavailability-form label span,
+.asset-direct-reservation-form label span {
   color: var(--muted);
   font-size: .61rem;
   font-weight: 700;
 }
 .asset-reservation-controls select,
 .asset-unavailability-form select,
-.asset-unavailability-form input {
+.asset-unavailability-form input,
+.asset-direct-reservation-form select,
+.asset-direct-reservation-form input {
   width: 100%;
   min-height: 36px;
   border: 1px solid var(--border);
@@ -902,7 +906,8 @@ h1 { font-size: 1.6rem; }
   border-radius: 7px;
   background: #f2f6fb;
 }
-.asset-unavailability-form {
+.asset-unavailability-form,
+.asset-direct-reservation-form {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: .45rem;

@@ -36,7 +36,7 @@ from .asset_qualification import (
     required_competencies,
 )
 from .identity_models import AppUser
-from .models import Competency, Resource, ResourceCompetency, ResourceRequirement, Shift
+from .models import Competency, Project, Resource, ResourceCompetency, ResourceRequirement, Shift
 from .approval_revision_models import RequestApprovalReference, RequestApprovalRevision
 from .base import new_id
 from .idempotency import SqlCommandIdempotencyAdapter
@@ -281,7 +281,13 @@ class SqlAssetService:
                 "Besoin d'actif introuvable.",
                 code="asset_requirement_not_found",
             )
-        self._validate_request_authority(requirement)
+        if requirement.origin == AssetRequirementOrigin.REQUEST.value:
+            self._validate_request_authority(requirement)
+        elif requirement.origin != AssetRequirementOrigin.PROJECT_DIRECT.value:
+            raise ApplicationConflictError(
+                "Le contexte de réservation ne permet pas de choisir un opérateur.",
+                code="asset_operator_context_unsupported",
+            )
         allocation = self.session.scalar(
             select(AssetAllocation).where(
                 AssetAllocation.asset_requirement_id == requirement.id
@@ -373,8 +379,8 @@ class SqlAssetService:
         proposed_operator_id = str(operator_resource_id or "").strip() or None
         before = {
             "asset_id": allocation.asset_id,
-            "start_date": allocation.start_date,
-            "end_date": allocation.end_date,
+            "start_date": allocation.start_date.isoformat(),
+            "end_date": allocation.end_date.isoformat(),
             "operator_resource_id": allocation.operator_resource_id,
         }
         qualification_state = self._validate_request_allocation_state(
@@ -1489,6 +1495,619 @@ class SqlAssetService:
             "candidates": candidates,
             "planning_version": self.version.current_version(),
         }
+
+    @staticmethod
+    def _validate_direct_window(start_date: date, end_date: date) -> None:
+        if start_date > end_date:
+            raise ApplicationValidationError(
+                "La date de début doit précéder ou égaler la date de fin.",
+                code="asset_reservation_window_invalid",
+            )
+
+    def _direct_project(self, project_id: str | None) -> Project | None:
+        if project_id is None:
+            return None
+        project = self.session.get(Project, project_id)
+        if project is None:
+            raise ApplicationNotFoundError(
+                "Projet introuvable.",
+                code="asset_project_not_found",
+            )
+        return project
+
+    def _direct_resource(self, resource_id: str) -> Resource:
+        resource = self.session.get(Resource, resource_id)
+        if resource is None or not resource.active:
+            raise ApplicationValidationError(
+                "Ressource absente ou inactive.",
+                code="asset_context_resource_unavailable",
+            )
+        return resource
+
+    def _validate_direct_allocation_state(
+        self,
+        *,
+        requirement: AssetRequirement,
+        asset_id: str,
+        start_date: date,
+        end_date: date,
+        operator_resource_id: str | None,
+        allocation_id: str,
+        source: str = "MANUAL",
+    ) -> str:
+        if requirement.origin not in {
+            AssetRequirementOrigin.PROJECT_DIRECT.value,
+            AssetRequirementOrigin.RESOURCE_PERIOD.value,
+        }:
+            raise ApplicationConflictError(
+                "Le besoin d'actif n'est pas une réservation directe.",
+                code="asset_direct_origin_conflict",
+            )
+        self._validate_direct_window(start_date, end_date)
+        if (
+            requirement.origin == AssetRequirementOrigin.PROJECT_DIRECT.value
+            and not requirement.project_id
+        ):
+            raise ApplicationConflictError(
+                "La réservation projet n'a plus de projet propriétaire.",
+                code="asset_direct_context_conflict",
+            )
+        if requirement.origin == AssetRequirementOrigin.RESOURCE_PERIOD.value:
+            if (
+                not requirement.context_resource_id
+                or operator_resource_id != requirement.context_resource_id
+            ):
+                raise ApplicationConflictError(
+                    "La ressource bénéficiaire doit rester l'opérateur de la période.",
+                    code="asset_resource_period_operator_conflict",
+                )
+        asset, _asset_type = self._active_asset(asset_id)
+        if asset.asset_type_id != requirement.asset_type_id:
+            raise ApplicationValidationError(
+                "Actif inactif ou incompatible.",
+                code="asset_incompatible",
+            )
+        self._assert_asset_available(
+            asset_id=asset.id,
+            start_date=start_date,
+            end_date=end_date,
+            allocation_id=allocation_id,
+        )
+        candidate = AssetAllocation(
+            id=allocation_id,
+            asset_requirement_id=requirement.id,
+            asset_id=asset.id,
+            operator_resource_id=operator_resource_id,
+            start_date=start_date,
+            end_date=end_date,
+            locked=True,
+            source=source,
+        )
+        qualification = evaluate_asset_qualification(
+            self.session,
+            requirement=requirement,
+            allocation=candidate,
+        )
+        if (
+            operator_resource_id is not None
+            and qualification.state != QUALIFICATION_SATISFIED
+        ):
+            raise self._request_operator_error(qualification.state)
+        if (
+            requirement.origin == AssetRequirementOrigin.RESOURCE_PERIOD.value
+            and qualification.state != QUALIFICATION_SATISFIED
+        ):
+            raise self._request_operator_error(qualification.state)
+        return qualification.state
+
+    def _direct_result(
+        self,
+        *,
+        requirement: AssetRequirement,
+        allocation: AssetAllocation,
+        qualification_state: str,
+        operation: str,
+    ) -> dict:
+        return {
+            "operation": operation,
+            "requirement_id": requirement.id,
+            "requirement_origin": requirement.origin,
+            "allocation_id": allocation.id,
+            "asset_id": allocation.asset_id,
+            "project_id": requirement.project_id,
+            "context_resource_id": requirement.context_resource_id,
+            "operator_resource_id": allocation.operator_resource_id,
+            "start_date": allocation.start_date.isoformat(),
+            "end_date": allocation.end_date.isoformat(),
+            "qualification_state": qualification_state,
+            "planning_version": self.version.current_version(),
+        }
+
+    def _create_direct_reservation(
+        self,
+        *,
+        origin: AssetRequirementOrigin,
+        project_id: str | None,
+        context_resource_id: str | None,
+        asset_type_id: str,
+        asset_id: str,
+        start_date: date,
+        end_date: date,
+        operator_resource_id: str | None,
+        expected_version: int,
+    ) -> dict:
+        self.version.acquire(expected_version)
+        self._validate_direct_window(start_date, end_date)
+        if origin == AssetRequirementOrigin.PROJECT_DIRECT:
+            if not project_id:
+                raise ApplicationValidationError(
+                    "Le projet est requis.",
+                    code="asset_project_required",
+                )
+            self._direct_project(project_id)
+            context_resource_id = None
+        elif origin == AssetRequirementOrigin.RESOURCE_PERIOD:
+            if not context_resource_id:
+                raise ApplicationValidationError(
+                    "La ressource est requise.",
+                    code="asset_context_resource_required",
+                )
+            self._direct_resource(context_resource_id)
+            if operator_resource_id != context_resource_id:
+                raise ApplicationConflictError(
+                    "La ressource bénéficiaire doit être l'opérateur de la période.",
+                    code="asset_resource_period_operator_conflict",
+                )
+            self._direct_project(project_id)
+        else:
+            raise ApplicationConflictError(
+                "Origine de réservation directe invalide.",
+                code="asset_direct_origin_conflict",
+            )
+
+        requirement = AssetRequirement(
+            id=new_id(),
+            project_id=project_id,
+            origin=origin.value,
+            context_resource_id=context_resource_id,
+            asset_type_id=asset_type_id,
+            start_date=start_date,
+            end_date=end_date,
+            status="Planifié",
+        )
+        allocation = AssetAllocation(
+            id=new_id(),
+            asset_requirement_id=requirement.id,
+            asset_id=asset_id,
+            operator_resource_id=operator_resource_id,
+            start_date=start_date,
+            end_date=end_date,
+            locked=True,
+            source="MANUAL",
+        )
+        qualification_state = self._validate_direct_allocation_state(
+            requirement=requirement,
+            asset_id=asset_id,
+            start_date=start_date,
+            end_date=end_date,
+            operator_resource_id=operator_resource_id,
+            allocation_id=allocation.id,
+            source=allocation.source,
+        )
+        self.session.add(requirement)
+        # AssetAllocation has an FK to AssetRequirement but no ORM relationship.
+        # Flush the parent first so SQLite/SQL Server never observe the child first.
+        self.session.flush()
+        self.session.add(allocation)
+        self.audit.append(
+            entity_type="ASSET_ALLOCATION",
+            entity_id=allocation.id,
+            entity_reference=requirement.id,
+            parent_reference=project_id or context_resource_id,
+            action="Réservation directe d'actif",
+            after={
+                "origin": origin.value,
+                "project_id": project_id,
+                "context_resource_id": context_resource_id,
+                "asset_type_id": asset_type_id,
+                "asset_id": asset_id,
+                "operator_resource_id": operator_resource_id,
+                "start_date": start_date,
+                "end_date": end_date,
+            },
+        )
+        self.session.flush()
+        return self._direct_result(
+            requirement=requirement,
+            allocation=allocation,
+            qualification_state=qualification_state,
+            operation="CREATE",
+        )
+
+    def create_project_direct_reservation(
+        self,
+        *,
+        project_id: str,
+        asset_type_id: str,
+        asset_id: str,
+        start_date: date,
+        end_date: date,
+        operator_resource_id: str | None,
+        expected_version: int,
+        idempotency_key: str,
+    ) -> dict:
+        payload = {
+            "project_id": project_id,
+            "asset_type_id": asset_type_id,
+            "asset_id": asset_id,
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "operator_resource_id": operator_resource_id,
+            "expected_version": expected_version,
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode()
+        ).hexdigest()
+        return SqlCommandIdempotencyAdapter(
+            self.session,
+            actor_name=self.actor,
+        ).replay_or_execute(
+            scope="asset_project_direct_create",
+            key=idempotency_key,
+            request_fingerprint=fingerprint,
+            action=lambda: self._create_direct_reservation(
+                origin=AssetRequirementOrigin.PROJECT_DIRECT,
+                project_id=project_id,
+                context_resource_id=None,
+                asset_type_id=asset_type_id,
+                asset_id=asset_id,
+                start_date=start_date,
+                end_date=end_date,
+                operator_resource_id=operator_resource_id,
+                expected_version=expected_version,
+            ),
+        )
+
+    def create_resource_period_reservation(
+        self,
+        *,
+        resource_id: str,
+        project_id: str | None,
+        asset_type_id: str,
+        asset_id: str,
+        start_date: date,
+        end_date: date,
+        expected_version: int,
+        idempotency_key: str,
+    ) -> dict:
+        payload = {
+            "resource_id": resource_id,
+            "project_id": project_id,
+            "asset_type_id": asset_type_id,
+            "asset_id": asset_id,
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "expected_version": expected_version,
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode()
+        ).hexdigest()
+        return SqlCommandIdempotencyAdapter(
+            self.session,
+            actor_name=self.actor,
+        ).replay_or_execute(
+            scope="asset_resource_period_create",
+            key=idempotency_key,
+            request_fingerprint=fingerprint,
+            action=lambda: self._create_direct_reservation(
+                origin=AssetRequirementOrigin.RESOURCE_PERIOD,
+                project_id=project_id,
+                context_resource_id=resource_id,
+                asset_type_id=asset_type_id,
+                asset_id=asset_id,
+                start_date=start_date,
+                end_date=end_date,
+                operator_resource_id=resource_id,
+                expected_version=expected_version,
+            ),
+        )
+
+    def _update_direct_reservation(
+        self,
+        *,
+        requirement_id: str,
+        expected_origin: AssetRequirementOrigin,
+        asset_id: str,
+        start_date: date,
+        end_date: date,
+        operator_resource_id: str | None,
+        project_id: str | None,
+        expected_version: int,
+    ) -> dict:
+        self.version.acquire(expected_version)
+        requirement = self.session.get(AssetRequirement, requirement_id)
+        if requirement is None or requirement.status == "Annulé":
+            raise ApplicationNotFoundError(
+                "Réservation directe introuvable.",
+                code="asset_direct_reservation_not_found",
+            )
+        if requirement.origin != expected_origin.value:
+            raise ApplicationConflictError(
+                "Origine de réservation directe incompatible.",
+                code="asset_direct_origin_conflict",
+            )
+        allocation = self._allocation_for_requirement(requirement.id)
+        if allocation is None:
+            raise ApplicationConflictError(
+                "La réservation directe n'a plus d'allocation physique.",
+                code="asset_direct_allocation_missing",
+            )
+
+        if expected_origin == AssetRequirementOrigin.PROJECT_DIRECT:
+            project_id = requirement.project_id
+        else:
+            self._direct_project(project_id)
+            operator_resource_id = requirement.context_resource_id
+            if not operator_resource_id:
+                raise ApplicationConflictError(
+                    "La réservation ressource-période n'a plus de bénéficiaire.",
+                    code="asset_direct_context_conflict",
+                )
+            self._direct_resource(operator_resource_id)
+
+        before = {
+            "origin": requirement.origin,
+            "project_id": requirement.project_id,
+            "context_resource_id": requirement.context_resource_id,
+            "asset_id": allocation.asset_id,
+            "operator_resource_id": allocation.operator_resource_id,
+            "start_date": allocation.start_date,
+            "end_date": allocation.end_date,
+        }
+        if expected_origin == AssetRequirementOrigin.RESOURCE_PERIOD:
+            requirement.project_id = project_id
+        qualification_state = self._validate_direct_allocation_state(
+            requirement=requirement,
+            asset_id=asset_id,
+            start_date=start_date,
+            end_date=end_date,
+            operator_resource_id=operator_resource_id,
+            allocation_id=allocation.id,
+            source=allocation.source,
+        )
+        requirement.start_date = start_date
+        requirement.end_date = end_date
+        requirement.status = "Planifié"
+        allocation.asset_id = asset_id
+        allocation.operator_resource_id = operator_resource_id
+        allocation.start_date = start_date
+        allocation.end_date = end_date
+        allocation.locked = True
+        self.audit.append(
+            entity_type="ASSET_ALLOCATION",
+            entity_id=allocation.id,
+            entity_reference=requirement.id,
+            parent_reference=requirement.project_id or requirement.context_resource_id,
+            action="Modification réservation directe",
+            before=before,
+            after={
+                "origin": requirement.origin,
+                "project_id": requirement.project_id,
+                "context_resource_id": requirement.context_resource_id,
+                "asset_id": allocation.asset_id,
+                "operator_resource_id": allocation.operator_resource_id,
+                "start_date": allocation.start_date,
+                "end_date": allocation.end_date,
+            },
+        )
+        self.session.flush()
+        return self._direct_result(
+            requirement=requirement,
+            allocation=allocation,
+            qualification_state=qualification_state,
+            operation="UPDATE",
+        )
+
+    def update_project_direct_reservation(
+        self,
+        *,
+        requirement_id: str,
+        asset_id: str,
+        start_date: date,
+        end_date: date,
+        operator_resource_id: str | None,
+        expected_version: int,
+        idempotency_key: str,
+    ) -> dict:
+        payload = {
+            "requirement_id": requirement_id,
+            "asset_id": asset_id,
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "operator_resource_id": operator_resource_id,
+            "expected_version": expected_version,
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode()
+        ).hexdigest()
+        return SqlCommandIdempotencyAdapter(
+            self.session,
+            actor_name=self.actor,
+        ).replay_or_execute(
+            scope="asset_project_direct_update",
+            key=idempotency_key,
+            request_fingerprint=fingerprint,
+            action=lambda: self._update_direct_reservation(
+                requirement_id=requirement_id,
+                expected_origin=AssetRequirementOrigin.PROJECT_DIRECT,
+                asset_id=asset_id,
+                start_date=start_date,
+                end_date=end_date,
+                operator_resource_id=operator_resource_id,
+                project_id=None,
+                expected_version=expected_version,
+            ),
+        )
+
+    def update_resource_period_reservation(
+        self,
+        *,
+        requirement_id: str,
+        project_id: str | None,
+        asset_id: str,
+        start_date: date,
+        end_date: date,
+        expected_version: int,
+        idempotency_key: str,
+    ) -> dict:
+        payload = {
+            "requirement_id": requirement_id,
+            "project_id": project_id,
+            "asset_id": asset_id,
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "expected_version": expected_version,
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode()
+        ).hexdigest()
+        return SqlCommandIdempotencyAdapter(
+            self.session,
+            actor_name=self.actor,
+        ).replay_or_execute(
+            scope="asset_resource_period_update",
+            key=idempotency_key,
+            request_fingerprint=fingerprint,
+            action=lambda: self._update_direct_reservation(
+                requirement_id=requirement_id,
+                expected_origin=AssetRequirementOrigin.RESOURCE_PERIOD,
+                asset_id=asset_id,
+                start_date=start_date,
+                end_date=end_date,
+                operator_resource_id=None,
+                project_id=project_id,
+                expected_version=expected_version,
+            ),
+        )
+
+    def _release_direct_reservation(
+        self,
+        *,
+        requirement_id: str,
+        expected_origin: AssetRequirementOrigin,
+        expected_version: int,
+    ) -> dict:
+        self.version.acquire(expected_version)
+        requirement = self.session.get(AssetRequirement, requirement_id)
+        if requirement is None or requirement.status == "Annulé":
+            raise ApplicationNotFoundError(
+                "Réservation directe introuvable.",
+                code="asset_direct_reservation_not_found",
+            )
+        if requirement.origin != expected_origin.value:
+            raise ApplicationConflictError(
+                "Origine de réservation directe incompatible.",
+                code="asset_direct_origin_conflict",
+            )
+        allocation = self._allocation_for_requirement(requirement.id)
+        allocation_id = allocation.id if allocation is not None else None
+        before = (
+            {
+                "origin": requirement.origin,
+                "project_id": requirement.project_id,
+                "context_resource_id": requirement.context_resource_id,
+                "asset_id": allocation.asset_id,
+                "operator_resource_id": allocation.operator_resource_id,
+                "start_date": allocation.start_date,
+                "end_date": allocation.end_date,
+            }
+            if allocation is not None
+            else {
+                "origin": requirement.origin,
+                "project_id": requirement.project_id,
+                "context_resource_id": requirement.context_resource_id,
+            }
+        )
+        self.audit.append(
+            entity_type="ASSET_ALLOCATION",
+            entity_id=allocation_id or requirement.id,
+            entity_reference=requirement.id,
+            parent_reference=requirement.project_id or requirement.context_resource_id,
+            action="Libération réservation directe",
+            before=before,
+        )
+        if allocation is not None:
+            self.session.delete(allocation)
+            self.session.flush()
+        self.session.delete(requirement)
+        self.session.flush()
+        return {
+            "operation": "RELEASE",
+            "requirement_id": requirement_id,
+            "requirement_origin": expected_origin.value,
+            "allocation_id": allocation_id,
+            "planning_version": self.version.current_version(),
+        }
+
+    def _release_direct(
+        self,
+        *,
+        requirement_id: str,
+        expected_origin: AssetRequirementOrigin,
+        expected_version: int,
+        idempotency_key: str,
+        scope: str,
+    ) -> dict:
+        payload = {
+            "requirement_id": requirement_id,
+            "expected_version": expected_version,
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode()
+        ).hexdigest()
+        return SqlCommandIdempotencyAdapter(
+            self.session,
+            actor_name=self.actor,
+        ).replay_or_execute(
+            scope=scope,
+            key=idempotency_key,
+            request_fingerprint=fingerprint,
+            action=lambda: self._release_direct_reservation(
+                requirement_id=requirement_id,
+                expected_origin=expected_origin,
+                expected_version=expected_version,
+            ),
+        )
+
+    def release_project_direct_reservation(
+        self,
+        *,
+        requirement_id: str,
+        expected_version: int,
+        idempotency_key: str,
+    ) -> dict:
+        return self._release_direct(
+            requirement_id=requirement_id,
+            expected_origin=AssetRequirementOrigin.PROJECT_DIRECT,
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+            scope="asset_project_direct_release",
+        )
+
+    def release_resource_period_reservation(
+        self,
+        *,
+        requirement_id: str,
+        expected_version: int,
+        idempotency_key: str,
+    ) -> dict:
+        return self._release_direct(
+            requirement_id=requirement_id,
+            expected_origin=AssetRequirementOrigin.RESOURCE_PERIOD,
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+            scope="asset_resource_period_release",
+        )
 
     def add_unavailability(self, *, asset_id: str, start_date: date, end_date: date,
                            reason: str | None, expected_version: int) -> dict:

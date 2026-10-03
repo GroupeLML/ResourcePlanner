@@ -86,6 +86,42 @@ class ReservationChange(StrictBody):
     expected_planning_version: int = Field(ge=1)
 
 
+class ProjectDirectReservationCreate(StrictBody):
+    project_id: str
+    asset_type_id: str
+    asset_id: str
+    start_date: date
+    end_date: date
+    operator_resource_id: str | None = None
+    expected_planning_version: int = Field(ge=1)
+
+
+class ProjectDirectReservationUpdate(StrictBody):
+    asset_id: str
+    start_date: date
+    end_date: date
+    operator_resource_id: str | None = None
+    expected_planning_version: int = Field(ge=1)
+
+
+class ResourcePeriodReservationCreate(StrictBody):
+    resource_id: str
+    project_id: str | None = None
+    asset_type_id: str
+    asset_id: str
+    start_date: date
+    end_date: date
+    expected_planning_version: int = Field(ge=1)
+
+
+class ResourcePeriodReservationUpdate(StrictBody):
+    project_id: str | None = None
+    asset_id: str
+    start_date: date
+    end_date: date
+    expected_planning_version: int = Field(ge=1)
+
+
 class ShiftAssetAssignmentChange(StrictBody):
     asset_id: str | None = None
     asset_requirement_id: str | None = None
@@ -305,6 +341,106 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
                                                  start_date=body.start_date, end_date=body.end_date,
                                                  expected_version=body.expected_planning_version,
                                                  idempotency_key=idempotency_key)
+
+    @router.post("/project-reservations", status_code=201)
+    def create_project_direct_reservation(
+        body: ProjectDirectReservationCreate,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key", min_length=1),
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        return service(session, request).create_project_direct_reservation(
+            project_id=body.project_id,
+            asset_type_id=body.asset_type_id,
+            asset_id=body.asset_id,
+            start_date=body.start_date,
+            end_date=body.end_date,
+            operator_resource_id=body.operator_resource_id,
+            expected_version=body.expected_planning_version,
+            idempotency_key=idempotency_key,
+        )
+
+    @router.put("/project-reservations/{identifier}")
+    def update_project_direct_reservation(
+        identifier: str,
+        body: ProjectDirectReservationUpdate,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key", min_length=1),
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        return service(session, request).update_project_direct_reservation(
+            requirement_id=identifier,
+            asset_id=body.asset_id,
+            start_date=body.start_date,
+            end_date=body.end_date,
+            operator_resource_id=body.operator_resource_id,
+            expected_version=body.expected_planning_version,
+            idempotency_key=idempotency_key,
+        )
+
+    @router.delete("/project-reservations/{identifier}")
+    def release_project_direct_reservation(
+        identifier: str,
+        expected_planning_version: int,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key", min_length=1),
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        return service(session, request).release_project_direct_reservation(
+            requirement_id=identifier,
+            expected_version=expected_planning_version,
+            idempotency_key=idempotency_key,
+        )
+
+    @router.post("/resource-period-reservations", status_code=201)
+    def create_resource_period_reservation(
+        body: ResourcePeriodReservationCreate,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key", min_length=1),
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        return service(session, request).create_resource_period_reservation(
+            resource_id=body.resource_id,
+            project_id=body.project_id,
+            asset_type_id=body.asset_type_id,
+            asset_id=body.asset_id,
+            start_date=body.start_date,
+            end_date=body.end_date,
+            expected_version=body.expected_planning_version,
+            idempotency_key=idempotency_key,
+        )
+
+    @router.put("/resource-period-reservations/{identifier}")
+    def update_resource_period_reservation(
+        identifier: str,
+        body: ResourcePeriodReservationUpdate,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key", min_length=1),
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        return service(session, request).update_resource_period_reservation(
+            requirement_id=identifier,
+            project_id=body.project_id,
+            asset_id=body.asset_id,
+            start_date=body.start_date,
+            end_date=body.end_date,
+            expected_version=body.expected_planning_version,
+            idempotency_key=idempotency_key,
+        )
+
+    @router.delete("/resource-period-reservations/{identifier}")
+    def release_resource_period_reservation(
+        identifier: str,
+        expected_planning_version: int,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key", min_length=1),
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        return service(session, request).release_resource_period_reservation(
+            requirement_id=identifier,
+            expected_version=expected_planning_version,
+            idempotency_key=idempotency_key,
+        )
 
     @router.get("/shifts/{identifier}/assignment/candidates")
     def shift_asset_candidates(
