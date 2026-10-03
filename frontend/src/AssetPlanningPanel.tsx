@@ -80,7 +80,9 @@ function AssetRequirementCard({
     requirement.allocation_start_date ?? requirement.start_date,
   );
   const [reservationEnd, setReservationEnd] = useState(
-    requirement.allocation_end_date ?? requirement.end_date,
+    requirement.origin === "REQUEST"
+      ? requirement.allocation_end_date ?? requirement.start_date
+      : requirement.allocation_end_date ?? requirement.end_date,
   );
   const [operatorSelected, setOperatorSelected] = useState(requirement.operator_resource_id ?? "");
   const [operatorCandidates, setOperatorCandidates] = useState<AssetOperatorCandidate[]>([]);
@@ -89,7 +91,11 @@ function AssetRequirementCard({
   useEffect(() => {
     setSelected(requirement.asset_id ?? "");
     setReservationStart(requirement.allocation_start_date ?? requirement.start_date);
-    setReservationEnd(requirement.allocation_end_date ?? requirement.end_date);
+    setReservationEnd(
+      requirement.origin === "REQUEST"
+        ? requirement.allocation_end_date ?? requirement.start_date
+        : requirement.allocation_end_date ?? requirement.end_date,
+    );
   }, [
     requirement.requirement_id,
     requirement.asset_id,
