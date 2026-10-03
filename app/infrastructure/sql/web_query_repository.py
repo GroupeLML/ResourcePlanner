@@ -30,6 +30,7 @@ from ...application.medium_term_budget import (
     MediumTermTaskOptionReadModel,
     MediumTermWeekReadModel,
     MediumTermWeeklyLoadReadModel,
+    WorkPackageLoadIntervalReadModel,
     actual_hours_diagnostic,
     erp_financial_budget_diagnostic,
     task_budget_diagnostic,
@@ -41,11 +42,16 @@ from ...application.query_models import (
     PlanningHistoryReadModel,
     work_package_resource_class_diagnostic,
 )
+from ...application.work_package_load import (
+    WorkPackageLoadIntervalValue,
+    WorkPackageLoadState,
+    legacy_weekly_as_intervals,
+    load_diagnostic,
+    projected_weekly_loads,
+    work_package_status,
+)
 from ...application.work_package_weekly_load import (
-    WorkPackageWeeklyLoadState,
     WeeklyLoadValue,
-    monday_of,
-    weekly_load_diagnostic,
 )
 from .models import (
     Project,
@@ -56,6 +62,7 @@ from .models import (
     TaskCatalogEntry,
     TaskCatalogProjectSyncState,
     WorkPackage,
+    WorkPackageLoadInterval,
     WorkPackageWeeklyLoad,
 )
 from .resource_class_models import ResourceClassConfig
@@ -126,7 +133,11 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
         rows = self._web_session.execute(statement).all()
         result: list[WorkPackageReadModel] = []
         for work_package, project, task, resource_class in rows:
-            status = _text(work_package.status) or "planned"
+            status, status_diagnostic = work_package_status(
+                start_date=work_package.start_date,
+                terminal_status=work_package.terminal_status,
+                legacy_status=work_package.status,
+            )
             if active_only and status.casefold() in INACTIVE_WORK_PACKAGE_STATUSES:
                 continue
             reference = _optional_text(work_package.legacy_effort_id) or work_package.id
@@ -146,6 +157,7 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                         else None
                     ),
                     status=status,
+                    status_diagnostic=status_diagnostic,
                     task_catalog_item_id=work_package.task_catalog_item_id,
                     task_code=_optional_text(task.task_code) if task is not None else None,
                     task_label=_optional_text(task.label) if task is not None else None,
@@ -181,7 +193,8 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
     @staticmethod
     def _medium_term_budget_work_package(
         work_package: WorkPackage,
-        loads: tuple[WeeklyLoadValue, ...],
+        legacy_loads: tuple[WeeklyLoadValue, ...],
+        intervals: tuple[WorkPackageLoadIntervalValue, ...],
         *,
         project_id: str = "",
         project_number: str = "",
@@ -189,8 +202,21 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
         resource_class: ResourceClassConfig | None = None,
         task_resource_class_code: str | None = None,
     ) -> MediumTermBudgetWorkPackageReadModel:
-        status = _text(work_package.status) or "planned"
-        state = WorkPackageWeeklyLoadState(
+        if not intervals and legacy_loads:
+            intervals = legacy_weekly_as_intervals(
+                work_package_start=work_package.start_date,
+                work_package_end=work_package.end_date,
+                weekly_loads=tuple(
+                    (item.week_start, item.hours) for item in legacy_loads
+                ),
+                origin=_optional_text(work_package.weekly_load_origin),
+            )
+        status, status_diagnostic = work_package_status(
+            start_date=work_package.start_date,
+            terminal_status=work_package.terminal_status,
+            legacy_status=work_package.status,
+        )
+        state = WorkPackageLoadState(
             reference=_optional_text(work_package.legacy_effort_id) or work_package.id,
             version=int(work_package.version or 1),
             start_date=work_package.start_date,
@@ -200,8 +226,25 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                 if work_package.planned_hours is not None
                 else None
             ),
-            origin=_optional_text(work_package.weekly_load_origin),
-            loads=loads,
+            legacy_status=_optional_text(work_package.status),
+            terminal_status=_optional_text(work_package.terminal_status),
+            intervals=intervals,
+        )
+        diagnostic = load_diagnostic(state)
+        projected_loads = (
+            projected_weekly_loads(state)
+            if diagnostic is None
+            else ()
+        )
+        explicit_hours = sum(
+            (item.hours for item in intervals),
+            Decimal("0.00"),
+        )
+        automatic_hours = (
+            state.planned_hours - explicit_hours
+            if state.planned_hours is not None
+            and explicit_hours <= state.planned_hours
+            else None
         )
         return MediumTermBudgetWorkPackageReadModel(
             id=work_package.id,
@@ -210,6 +253,7 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
             name=work_package.name,
             planned_hours=state.planned_hours,
             status=status,
+            status_diagnostic=status_diagnostic,
             budget_included=work_package_is_budget_included(status),
             project_id=project_id,
             project_number=project_number,
@@ -218,15 +262,29 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
             end_date=work_package.end_date,
             version=state.version,
             current_load_included=work_package_is_current_load_included(status),
-            weekly_load_origin=state.origin,
+            weekly_load_origin=_optional_text(work_package.weekly_load_origin),
             weekly_loads=tuple(
                 MediumTermWeeklyLoadReadModel(
                     week_start=item.week_start,
                     hours=item.hours,
+                    explicit_hours=item.explicit_hours,
+                    automatic_hours=item.automatic_hours,
                 )
-                for item in loads
+                for item in projected_loads
             ),
-            weekly_load_diagnostic=weekly_load_diagnostic(state),
+            weekly_load_diagnostic=diagnostic,
+            load_intervals=tuple(
+                WorkPackageLoadIntervalReadModel(
+                    id=item.id or "",
+                    start_date=item.start_date,
+                    end_date=item.end_date,
+                    hours=item.hours,
+                    origin=item.origin,
+                )
+                for item in intervals
+            ),
+            explicit_hours=explicit_hours,
+            automatic_hours=automatic_hours,
             resource_class_code=_optional_text(work_package.resource_class_code),
             resource_class_label=(
                 _optional_text(resource_class.label)
@@ -412,6 +470,34 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                 )
             )
 
+        interval_rows = (
+            tuple(
+                self._web_session.scalars(
+                    select(WorkPackageLoadInterval)
+                    .where(WorkPackageLoadInterval.work_package_id.in_(work_package_ids))
+                    .order_by(
+                        WorkPackageLoadInterval.work_package_id,
+                        WorkPackageLoadInterval.start_date,
+                        WorkPackageLoadInterval.end_date,
+                        WorkPackageLoadInterval.id,
+                    )
+                ).all()
+            )
+            if work_package_ids
+            else ()
+        )
+        intervals_by_package: defaultdict[str, list[WorkPackageLoadIntervalValue]] = defaultdict(list)
+        for row in interval_rows:
+            intervals_by_package[row.work_package_id].append(
+                WorkPackageLoadIntervalValue(
+                    id=row.id,
+                    start_date=row.start_date,
+                    end_date=row.end_date,
+                    hours=Decimal(row.hours),
+                    origin=row.origin,
+                )
+            )
+
         all_by_task: defaultdict[str, list[MediumTermBudgetWorkPackageReadModel]] = defaultdict(list)
         display_by_task: defaultdict[str, list[MediumTermBudgetWorkPackageReadModel]] = defaultdict(list)
         displayed_unclassified: list[MediumTermBudgetWorkPackageReadModel] = []
@@ -426,6 +512,7 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
             projected = self._medium_term_budget_work_package(
                 work_package,
                 tuple(loads_by_package.get(work_package.id, ())),
+                tuple(intervals_by_package.get(work_package.id, ())),
                 project_id=project.id,
                 project_number=project.number,
                 project_name=project.name,
