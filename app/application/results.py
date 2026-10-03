@@ -77,6 +77,7 @@ class DemandCancellationMutationResult(ApplicationResult):
     deleted_human_shifts: int = 0
     deleted_asset_allocations: int = 0
     deleted_ad_hoc_asset_requirements: int = 0
+    deleted_segment_asset_requirements: int = 0
     cancelled_workforce_requirements: int = 0
     cancelled_asset_requirements: int = 0
     released_locked_human_shifts: int = 0
