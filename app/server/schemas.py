@@ -108,7 +108,6 @@ class WorkPackageCreateRequest(StrictRequest):
     start_date: date | None = None
     end_date: date | None = None
     planned_hours: float | None = Field(default=None, ge=0)
-    status: str = Field(default="planned", min_length=1)
     resource_class_code: str | None = None
 
 
@@ -130,7 +129,6 @@ class WorkPackageUpdateRequest(StrictRequest):
     start_date: date | None = None
     end_date: date | None = None
     planned_hours: float | None = Field(default=None, ge=0)
-    status: str | None = None
     load_intervals: list[WorkPackageLoadIntervalRequest] = Field(default_factory=list)
 
 
