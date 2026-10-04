@@ -150,13 +150,14 @@ def _project_payload(project: ProjectCommunicationProject) -> tuple[object, ...]
                 for resource in task.resources
             )
             responsibility_assignments = tuple(
-                (
-                    assignment.shift_id,
-                    assignment.resource_id,
-                    assignment.resource_name,
-                    _responsible_payload(assignment.operational_responsible),
+                sorted(
+                    (
+                        assignment.resource_id,
+                        assignment.resource_name,
+                        _responsible_payload(assignment.operational_responsible),
+                    )
+                    for assignment in task.responsibility_assignments
                 )
-                for assignment in task.responsibility_assignments
             )
             tasks.append(
                 (
@@ -392,8 +393,9 @@ def _project_header(project: ProjectCommunicationProject) -> list[str]:
     if len(resolved) == 1:
         lines.append(f"Responsable : {_format_responsible(resolved[0])}")
     elif len(resolved) > 1:
-        lines.append("Responsables opérationnels :")
-        lines.extend(f"  • {_format_responsible(value)}" for value in resolved)
+        lines.append(
+            "Responsables opérationnels : voir chaque affectation ci-dessous"
+        )
     else:
         lines.append("Responsable : Non résolu")
     return lines
