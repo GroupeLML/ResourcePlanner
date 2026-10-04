@@ -341,6 +341,85 @@ def _reshape_source_as_0048(path: Path) -> None:
             DROP TABLE IF EXISTS asset_approvers;
             DROP TABLE IF EXISTS asset_type_approval_scope_mappings;
 
+
+            CREATE TABLE projects_0048 AS
+            SELECT
+                id,
+                erp_external_id,
+                number,
+                name,
+                client,
+                project_manager_external_id,
+                project_manager_name,
+                project_manager_contact_id,
+                co_managers_version,
+                status,
+                created_at,
+                updated_at
+            FROM projects;
+            DROP TABLE projects;
+            ALTER TABLE projects_0048 RENAME TO projects;
+
+            CREATE TABLE resource_requirements_0048 AS
+            SELECT
+                id,
+                legacy_segment_id,
+                project_id,
+                workforce_request_id,
+                source_request_line_id,
+                approved_task_catalog_item_id,
+                approved_operational_responsible_override_contact_id,
+                approved_request_version,
+                approved_contact_context_status,
+                approval_revision_id,
+                approved_entry_key,
+                approval_reference_status,
+                assigned_resource_id,
+                start_date,
+                end_date,
+                planned_hours,
+                desired_active_days,
+                load_profile,
+                status,
+                description,
+                source_effort_id,
+                required_resource_class,
+                required_competency,
+                required_competency_id,
+                planning_type,
+                priority,
+                outside_standard_hours_allowed,
+                confirmation,
+                confirmation_overridden,
+                origin,
+                created_by_external_id,
+                created_by_name,
+                created_at,
+                updated_at
+            FROM resource_requirements;
+            DROP TABLE resource_requirements;
+            ALTER TABLE resource_requirements_0048 RENAME TO resource_requirements;
+
+            CREATE TABLE shifts_0048 AS
+            SELECT
+                id,
+                legacy_allocation_id,
+                resource_requirement_id,
+                resource_id,
+                work_date,
+                hours,
+                allocation_type,
+                source,
+                locked,
+                outside_standard_hours,
+                confirmation,
+                note,
+                created_at,
+                updated_at
+            FROM shifts;
+            DROP TABLE shifts;
+            ALTER TABLE shifts_0048 RENAME TO shifts;
+
             CREATE TABLE approval_requirements_0048 (
                 id VARCHAR(36) NOT NULL PRIMARY KEY,
                 approval_cycle_id VARCHAR(36) NOT NULL,
