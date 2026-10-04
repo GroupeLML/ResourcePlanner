@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
+import { createClientId } from "./clientId";
 import { syncAcumaticaEmployees } from "./acumaticaIntegrationApi";
 import {
   ApiError,
@@ -35,10 +36,7 @@ const WEEKDAYS = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"] as const;
 const DEFAULT_WEEKDAYS = "Lun,Mar,Mer,Jeu,Ven";
 
 function mutationKey(prefix: string) {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return `${prefix}-${crypto.randomUUID()}`;
-  }
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `${prefix}-${createClientId()}`;
 }
 
 function apiMessage(reason: unknown, fallback: string) {

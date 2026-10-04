@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { createClientId } from "./clientId";
 import {
   ApiError,
   PlanningSnapshotReadModel,
@@ -16,10 +17,7 @@ import SearchableCombobox from "./SearchableCombobox";
 type DirectMode = "PROJECT_DIRECT" | "RESOURCE_PERIOD" | "SEGMENT";
 
 function newKey() {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `asset-direct-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return createClientId();
 }
 
 function errorMessage(reason: unknown) {

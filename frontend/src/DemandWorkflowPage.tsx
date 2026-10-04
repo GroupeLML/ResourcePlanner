@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { createClientId } from "./clientId";
 import {
   ApiError,
   type DemandDetailReadModel,
@@ -232,8 +233,7 @@ function actionLabel(action: WorkflowButtonAction): string {
 }
 
 function idempotencyKey(): string {
-  return globalThis.crypto?.randomUUID?.()
-    ?? `399d-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return createClientId();
 }
 
 function deltaLabel(change: DemandPlanDeltaItem["change"]): string {

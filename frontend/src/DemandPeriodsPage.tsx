@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
+import { createClientId } from "./clientId";
 import {
   ApiError,
   type DemandPeriodReadModel,
@@ -30,10 +31,7 @@ function errorMessage(reason: unknown): string {
 }
 
 function newPeriodId(): string {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return `PER-WEB-${crypto.randomUUID()}`;
-  }
-  return `PER-WEB-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `PER-WEB-${createClientId()}`;
 }
 
 function fromRead(row: DemandPeriodReadModel): PeriodDraft {

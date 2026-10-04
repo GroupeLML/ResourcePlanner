@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { createClientId } from "./clientId";
 import { ApiError, ShiftReadModel } from "./api";
 import {
   ShiftAssetCandidate,
@@ -17,10 +18,7 @@ const STALE_CODES = new Set([
 ]);
 
 function mutationKey() {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `shift-asset-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return createClientId();
 }
 
 function messageFromError(reason: unknown) {

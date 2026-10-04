@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { createClientId } from "./clientId";
 import {
   ApiError,
   PendingDemandLoadReadModel,
@@ -129,10 +130,7 @@ const STALE_DROP_CODES = new Set([
 ]);
 
 function newDropIdempotencyKey() {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `planning-drop-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return createClientId();
 }
 
 function dropActionKeys(evaluation: PlanningDropEvaluation) {

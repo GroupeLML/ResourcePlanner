@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 
+import { createClientId } from "./clientId";
 import {
   CompetencyReadModel,
   DemandLineReadModel,
@@ -36,10 +37,7 @@ export type DemandLineDraft = {
 export type DemandLineDefaults = Omit<DemandLineDraft, "key" | "id" | "estimated_hours_source">;
 
 function draftKey() {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `request-line-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return createClientId();
 }
 
 function optionalNumber(value: string) {

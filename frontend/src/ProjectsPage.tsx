@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { createClientId } from "./clientId";
 import { useAuth } from "./AuthContext";
 import { useViewScope } from "./ViewScopeContext";
 import ViewScopeSelector from "./ViewScopeSelector";
@@ -469,7 +470,7 @@ export default function ProjectsPage() {
   function idempotencyKeyFor(intent: string) {
     const existing = coManagerIntentKeys.current.get(intent);
     if (existing) return existing;
-    const created = crypto.randomUUID();
+    const created = createClientId();
     coManagerIntentKeys.current.set(intent, created);
     return created;
   }

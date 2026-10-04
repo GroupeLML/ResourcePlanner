@@ -56,7 +56,9 @@ class ReactProjectManagerAdminContractTests(unittest.TestCase):
         self.assertIn("coManagerIntentKeys = useRef(new Map<string, string>())", page)
         self.assertIn("const existing = coManagerIntentKeys.current.get(intent)", page)
         self.assertIn("if (existing) return existing", page)
-        self.assertIn("crypto.randomUUID()", page)
+        self.assertIn('import { createClientId } from "./clientId";', page)
+        self.assertIn("const created = createClientId()", page)
+        self.assertNotIn("crypto.randomUUID()", page)
         self.assertIn("Réponse réseau incertaine", page)
 
 
