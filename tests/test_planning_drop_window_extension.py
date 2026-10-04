@@ -12,6 +12,7 @@ from app.application import AllocationWindowExtensionProposalCommand
 from app.application.security import ROLE_PROJECT_MANAGER, permissions_for_roles
 from app.infrastructure.sql import (
     Base,
+    BusinessContact,
     ORIGIN_AD_HOC,
     PlanningChangeHistory,
     Project,
@@ -43,6 +44,13 @@ class PlanningDropWindowExtensionTests(unittest.TestCase):
         factory = create_session_factory(engine)
         with factory.begin() as session:
             session.add(Project(id="P1", number="P-1", name="Projet 333"))
+            session.add(
+                BusinessContact(
+                    id="C-MOVE-RESP",
+                    display_name="Responsable déplacement",
+                    active=True,
+                )
+            )
             session.add_all(
                 [
                     Resource(id="R1", name="Alice", active=True),
@@ -135,6 +143,14 @@ class PlanningDropWindowExtensionTests(unittest.TestCase):
     def test_extend_and_move_is_atomic_idempotent_and_audited(self) -> None:
         with TemporaryDirectory() as directory:
             url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            with factory.begin() as session:
+                shift = session.get(Shift, "SHIFT-1")
+                assert shift is not None
+                shift.operational_responsible_override_contact_id = "C-MOVE-RESP"
+            engine.dispose()
+
             app = create_api_app(url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
             body = {
                 "resource_id": "R2",
@@ -172,6 +188,10 @@ class PlanningDropWindowExtensionTests(unittest.TestCase):
                 self.assertEqual(shift.work_date, NEXT_DAY)
                 self.assertTrue(shift.locked)
                 self.assertEqual(shift.source, "MANUAL")
+                self.assertEqual(
+                    shift.operational_responsible_override_contact_id,
+                    "C-MOVE-RESP",
+                )
                 extension_audits = int(
                     session.scalar(
                         select(func.count())
