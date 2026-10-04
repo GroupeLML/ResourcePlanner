@@ -21,14 +21,11 @@ from .business_contact_models import BusinessContact
 from .command_adapters import SqlPlanningCommandAdapter
 from .idempotency import SqlCommandIdempotencyAdapter
 from .models import Project, ResourceRequirement, Shift
-from .planning_audit import ENTITY_SHIFT, SqlPlanningAuditJournal
+from .planning_audit import ENTITY_SEGMENT, ENTITY_SHIFT, SqlPlanningAuditJournal
 from .planning_version import SqlPlanningMutationVersionRepository
 
 
 ENTITY_PROJECT = "PROJECT"
-ENTITY_SEGMENT = "SEGMENT"
-
-
 def _text(value: object) -> str:
     return str(value or "").strip()
 
@@ -446,6 +443,15 @@ class SqlOperationalResponsibilityMutationRepository(
             "auto_source_converted": auto_source_converted,
         }
         reference = _text(persisted.legacy_allocation_id) or persisted.id
+        requirement = self._session.get(
+            ResourceRequirement,
+            persisted.resource_requirement_id,
+        )
+        parent_reference = (
+            _text(requirement.legacy_segment_id) or requirement.id
+            if requirement is not None
+            else persisted.resource_requirement_id
+        )
         SqlPlanningAuditJournal(
             self._session,
             actor_name=actor_user_id,
@@ -453,7 +459,7 @@ class SqlOperationalResponsibilityMutationRepository(
             entity_type=ENTITY_SHIFT,
             entity_id=persisted.id,
             entity_reference=reference,
-            parent_reference=persisted.resource_requirement_id,
+            parent_reference=parent_reference,
             action="Modification responsable opérationnel quart",
             before=before,
             after=after,
