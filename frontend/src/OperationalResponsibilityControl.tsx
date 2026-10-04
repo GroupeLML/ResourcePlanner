@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { useAuth } from "./AuthContext";
 import { ContactSelect } from "./BusinessContactUi";
@@ -84,10 +84,11 @@ export default function OperationalResponsibilityControl({
   const [error, setError] = useState<string | null>(null);
   const intentKeys = useRef(new Map<string, string>());
 
-  const targetKey = useMemo(
-    () => `${target.kind}:${target.reference}`,
-    [target.kind, target.reference],
-  );
+  const targetKey = target.kind === "project"
+    ? `project:${target.reference}`
+    : target.kind === "segment"
+      ? `segment:${target.reference}:${target.expectedPlanningVersion}`
+      : `allocation:${target.reference}:${target.expectedPlanningVersion}:${target.source}:${target.locked}`;
 
   async function reload(signal?: AbortSignal) {
     const [contactRows, responsibility] = await Promise.all([
