@@ -185,7 +185,11 @@ def resolve_contact_candidates(
     """Resolve first configured candidate without hiding broken explicit references."""
 
     for candidate in candidates:
-        if candidate.contact_id is None and candidate.external_id is None:
+        if (
+            candidate.contact_id is None
+            and candidate.external_id is None
+            and candidate.captured_status is None
+        ):
             continue
         return _candidate_resolution(candidate)
 
