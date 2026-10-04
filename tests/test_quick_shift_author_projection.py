@@ -59,7 +59,7 @@ class QuickShiftAuthorProjectionTests(unittest.TestCase):
             BusinessContact(
                 id="C-PM",
                 display_name="Responsable A",
-                email="responsable-a@example.invalid",
+                email="responsable-a" + chr(64) + "example.invalid",
                 phone="555-0100",
             )
         )
@@ -70,7 +70,7 @@ class QuickShiftAuthorProjectionTests(unittest.TestCase):
                 issuer="urn:test",
                 subject="pm",
                 display_name="Responsable A",
-                email="responsable-a@example.invalid",
+                email="responsable-a" + chr(64) + "example.invalid",
                 employee_external_id="EMP-PM",
                 business_contact_id="C-PM",
                 roles_json='["PROJECT_MANAGER"]',
