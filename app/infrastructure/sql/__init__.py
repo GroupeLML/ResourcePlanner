@@ -144,6 +144,9 @@ from .resource_identity_constraints import RESOURCE_EXTERNAL_ID_INDEX
 from .operational_choice_models import RequestOperationalState
 from .operational_choice_repository import SqlRequestOperationalChoiceRepository
 from .operational_contact_repository import SqlOperationalContactRepository
+from .operational_responsibility_mutation_repository import (
+    SqlOperationalResponsibilityMutationRepository,
+)
 from .project_communication_repository import SqlProjectCommunicationRepository
 from .project_manager_models import ProjectCoManager, ProjectManagerAudit
 from .project_co_manager_repository import SqlProjectCoManagerRepository
@@ -277,6 +280,7 @@ __all__ = [
     "SqlIdentityAdminAuditRepository",
     "SqlIdentityResourceLinkRepository",
     "SqlOperationalContactRepository",
+    "SqlOperationalResponsibilityMutationRepository",
     "SqlRequestOperationalChoiceRepository",
     "SqlProjectCommunicationRepository",
     "SqlProjectCoManagerRepository",
