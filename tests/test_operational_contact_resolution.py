@@ -13,8 +13,11 @@ from app.domain.operational_contacts import (
     DIAGNOSTIC_CONTACT_UNRESOLVED,
     DIAGNOSTIC_TASK_REFERENCE_LEGACY_CODE,
     SOURCE_PROJECT_MANAGER,
+    SOURCE_PROJECT_OVERRIDE,
     SOURCE_REQUEST_OVERRIDE,
+    SOURCE_REQUIREMENT_OVERRIDE,
     SOURCE_RESOURCE_COORDINATOR,
+    SOURCE_SHIFT_OVERRIDE,
     SOURCE_TASK_COORDINATOR,
     SOURCE_TASK_RESPONSIBLE,
     STATUS_INACTIVE,
@@ -108,6 +111,74 @@ class OperationalContactDomainTests(unittest.TestCase):
         )
         self.assertEqual(result.contact_id, "C-SOPHIE")
         self.assertEqual(result.source_type, SOURCE_REQUEST_OVERRIDE)
+
+    def test_responsible_supports_the_complete_six_level_hierarchy(self) -> None:
+        shift = candidate(SOURCE_SHIFT_OVERRIDE, contact("C-SHIFT", "Shift"))
+        requirement = candidate(
+            SOURCE_REQUIREMENT_OVERRIDE,
+            contact("C-REQ", "Requirement"),
+        )
+        request = candidate(SOURCE_REQUEST_OVERRIDE, contact("C-REQUEST", "Request"))
+        task = candidate(SOURCE_TASK_RESPONSIBLE, contact("C-TASK", "Task"))
+        project = candidate(SOURCE_PROJECT_OVERRIDE, contact("C-PROJECT", "Project"))
+        manager = candidate(SOURCE_PROJECT_MANAGER, contact("C-MANAGER", "Manager"))
+
+        levels = (
+            (shift, requirement, request, task, project, manager, SOURCE_SHIFT_OVERRIDE),
+            (None, requirement, request, task, project, manager, SOURCE_REQUIREMENT_OVERRIDE),
+            (None, None, request, task, project, manager, SOURCE_REQUEST_OVERRIDE),
+            (None, None, None, task, project, manager, SOURCE_TASK_RESPONSIBLE),
+            (None, None, None, None, project, manager, SOURCE_PROJECT_OVERRIDE),
+            (None, None, None, None, None, manager, SOURCE_PROJECT_MANAGER),
+        )
+        for (
+            shift_override,
+            requirement_override,
+            request_override,
+            task_responsible,
+            project_override,
+            project_manager,
+            expected_source,
+        ) in levels:
+            with self.subTest(source=expected_source):
+                result = resolve_operational_responsible(
+                    shift_override=shift_override,
+                    requirement_override=requirement_override,
+                    request_override=request_override,
+                    task_responsible=task_responsible,
+                    project_override=project_override,
+                    project_manager=project_manager,
+                )
+                self.assertEqual(result.status, STATUS_RESOLVED)
+                self.assertEqual(result.source_type, expected_source)
+
+    def test_materialized_hierarchy_layers_local_overrides_over_captured_inheritance(self) -> None:
+        captured = ContactCandidate(
+            source_type=SOURCE_TASK_RESPONSIBLE,
+            source_entity_id="T-APPROVED",
+            source_label="Tâche approuvée",
+            contact_id="C-CAPTURED",
+            contact=contact("C-CAPTURED", "Captured"),
+            captured_status=STATUS_RESOLVED,
+        )
+        inherited = resolve_operational_responsible(
+            captured_inherited=captured,
+        )
+        self.assertEqual(inherited.contact_id, "C-CAPTURED")
+        self.assertEqual(inherited.source_type, SOURCE_TASK_RESPONSIBLE)
+
+        overridden = resolve_operational_responsible(
+            requirement_override=candidate(
+                SOURCE_REQUIREMENT_OVERRIDE,
+                contact("C-REQ", "Requirement"),
+            ),
+            captured_inherited=captured,
+        )
+        self.assertEqual(overridden.contact_id, "C-REQ")
+        self.assertEqual(
+            overridden.source_type,
+            SOURCE_REQUIREMENT_OVERRIDE,
+        )
 
     def test_coordinator_follows_resource_then_task_hierarchy(self) -> None:
         julie = contact("C-JULIE", "Julie")
@@ -225,6 +296,12 @@ class SqlOperationalContactRepositoryTests(unittest.TestCase):
                         display_name="Sophie override",
                         email="configured-sophie",
                         phone="555-5000",
+                    ),
+                    BusinessContact(
+                        id="C-PROJECT",
+                        display_name="Responsable projet",
+                        email="configured-project",
+                        phone="555-5100",
                     ),
                 ]
             )
@@ -394,6 +471,21 @@ class SqlOperationalContactRepositoryTests(unittest.TestCase):
         self.assertIn(
             "ERP_PROJECT_MANAGER_APP_USER_NOT_LINKED",
             result.operational_responsible.diagnostics,
+        )
+
+    def test_sql_project_override_precedes_erp_principal(self) -> None:
+        with self.factory.begin() as session:
+            task = session.get(TaskCatalogEntry, "T1")
+            project = session.get(Project, "P1")
+            assert task is not None and project is not None
+            task.operational_responsible_contact_id = None
+            project.operational_responsible_override_contact_id = "C-PROJECT"
+
+        result = self.resolve()
+        self.assertEqual(result.operational_responsible.contact_id, "C-PROJECT")
+        self.assertEqual(
+            result.operational_responsible.source_type,
+            SOURCE_PROJECT_OVERRIDE,
         )
 
     def test_sql_request_override_takes_priority(self) -> None:
