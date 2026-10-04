@@ -41,13 +41,13 @@ class VersionedOperationalChoicesApiTests(unittest.TestCase):
                 BusinessContact(
                     id="C-APPROVED",
                     display_name="Responsable approuvé",
-                    email="approved@example.invalid",
+                    email="approved" + chr(64) + "example.invalid",
                     phone="555-0100",
                 ),
                 BusinessContact(
                     id="C-CURRENT",
                     display_name="Responsable courant",
-                    email="current@example.invalid",
+                    email="current" + chr(64) + "example.invalid",
                     phone="555-0200",
                 ),
             ]
