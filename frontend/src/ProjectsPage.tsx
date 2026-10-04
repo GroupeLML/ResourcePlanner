@@ -31,7 +31,8 @@ import {
   syncAcumaticaProjectTasks,
   syncAcumaticaProjects,
 } from "./api";
-import { ContactSelect } from "./BusinessContactUi";\nimport OperationalResponsibilityControl from "./OperationalResponsibilityControl";
+import { ContactSelect } from "./BusinessContactUi";
+import OperationalResponsibilityControl from "./OperationalResponsibilityControl";
 
 function normalize(value: string | null | undefined) {
   return (value ?? "").trim().toLocaleLowerCase("fr-CA");
