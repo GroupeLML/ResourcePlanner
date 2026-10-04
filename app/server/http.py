@@ -736,6 +736,7 @@ def create_api_app(
             session_dependency,
         )
     )
+    app.include_router(build_operational_responsibility_router(session_dependency))
     app.include_router(
         build_project_manager_admin_router(
             project_manager_admin_dependency,
