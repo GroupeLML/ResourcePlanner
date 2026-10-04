@@ -43,7 +43,22 @@ SOURCE_MISSING_TABLES = {
     "project_manager_audit",
 }
 SOURCE_MISSING_COLUMNS = {
-    "projects": {"co_managers_version"},
+    "projects": {
+        "co_managers_version",
+        "operational_responsible_override_contact_id",
+        "operational_responsible_override_version",
+    },
+    "resource_requirements": {
+        "operational_responsible_override_contact_id",
+        "captured_operational_responsible_contact_id",
+        "captured_operational_responsible_source_type",
+        "captured_operational_responsible_source_entity_id",
+        "captured_operational_responsible_status",
+        "captured_operational_responsible_diagnostics",
+        "operational_responsibility_context_provenance",
+        "operational_responsibility_context_version",
+    },
+    "shifts": {"operational_responsible_override_contact_id"},
     "auth_sessions": {"auth_mode"},
     "work_packages": {
         "task_catalog_item_id",
@@ -141,8 +156,8 @@ def _schema_errors(
                 for column in inspector.get_columns(table_name)
             }
             expected = set(Base.metadata.tables[table_name].c.keys())
-            expected -= allowed_columns.get(table_name, set())
-            missing_columns = sorted(expected - actual)
+            allowed_missing = allowed_columns.get(table_name, set())
+            missing_columns = sorted((expected - actual) - allowed_missing)
             extra_columns = sorted(actual - expected)
             if missing_columns:
                 errors.append(

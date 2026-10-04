@@ -42,6 +42,10 @@ class Project(TimestampMixin, Base):
             "co_managers_version >= 1",
             name="co_managers_version_positive",
         ),
+        CheckConstraint(
+            "operational_responsible_override_version >= 1",
+            name="operational_responsible_override_version_positive",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True, default=new_id)
@@ -53,6 +57,12 @@ class Project(TimestampMixin, Base):
     project_manager_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     project_manager_contact_id: Mapped[str | None] = mapped_column(
         String(ID_LENGTH), ForeignKey("business_contacts.id"), nullable=True, index=True
+    )
+    operational_responsible_override_contact_id: Mapped[str | None] = mapped_column(
+        String(ID_LENGTH), ForeignKey("business_contacts.id"), nullable=True, index=True
+    )
+    operational_responsible_override_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("1")
     )
     co_managers_version: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=text("1")
@@ -639,6 +649,22 @@ class ResourceRequirement(TimestampMixin, Base):
             name="resource_requirement_approved_contact_context_status",
         ),
         CheckConstraint(
+            "operational_responsibility_context_provenance IN "
+            "('APPROVAL_CAPTURE', 'OPERATIONAL_CAPTURE', 'MIGRATION_OBSERVED', 'LEGACY_UNKNOWN')",
+            name="operational_responsibility_context_provenance",
+        ),
+        CheckConstraint(
+            "captured_operational_responsible_status IS NULL OR "
+            "captured_operational_responsible_status IN "
+            "('RESOLVED', 'UNRESOLVED', 'INVALID_REFERENCE', 'INACTIVE')",
+            name="captured_operational_responsible_status",
+        ),
+        CheckConstraint(
+            "operational_responsibility_context_version IS NULL "
+            "OR operational_responsibility_context_version >= 1",
+            name="operational_responsibility_context_version_positive",
+        ),
+        CheckConstraint(
             "approval_reference_status IN ('CAPTURED', 'LEGACY_UNKNOWN', 'NOT_APPLICABLE')",
             name="resource_requirement_approval_reference_status",
         ),
@@ -663,6 +689,33 @@ class ResourceRequirement(TimestampMixin, Base):
     )
     approved_operational_responsible_override_contact_id: Mapped[str | None] = mapped_column(
         String(ID_LENGTH), ForeignKey("business_contacts.id"), nullable=True, index=True
+    )
+    operational_responsible_override_contact_id: Mapped[str | None] = mapped_column(
+        String(ID_LENGTH), ForeignKey("business_contacts.id"), nullable=True, index=True
+    )
+    captured_operational_responsible_contact_id: Mapped[str | None] = mapped_column(
+        String(ID_LENGTH), ForeignKey("business_contacts.id"), nullable=True, index=True
+    )
+    captured_operational_responsible_source_type: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    captured_operational_responsible_source_entity_id: Mapped[str | None] = mapped_column(
+        String(ID_LENGTH), nullable=True
+    )
+    captured_operational_responsible_status: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
+    captured_operational_responsible_diagnostics: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    operational_responsibility_context_provenance: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        server_default=text("'LEGACY_UNKNOWN'"),
+        index=True,
+    )
+    operational_responsibility_context_version: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
     )
     approved_request_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     approved_contact_context_status: Mapped[str] = mapped_column(
@@ -760,6 +813,9 @@ class Shift(TimestampMixin, Base):
     )
     resource_id: Mapped[str] = mapped_column(
         String(ID_LENGTH), ForeignKey("resources.id"), nullable=False, index=True
+    )
+    operational_responsible_override_contact_id: Mapped[str | None] = mapped_column(
+        String(ID_LENGTH), ForeignKey("business_contacts.id"), nullable=True, index=True
     )
     work_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     hours: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)

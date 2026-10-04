@@ -60,6 +60,21 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
             },
             "projects": {
                 "co_managers_version": 1,
+                "operational_responsible_override_contact_id": None,
+                "operational_responsible_override_version": 1,
+            },
+            "resource_requirements": {
+                "operational_responsible_override_contact_id": None,
+                "captured_operational_responsible_contact_id": None,
+                "captured_operational_responsible_source_type": None,
+                "captured_operational_responsible_source_entity_id": None,
+                "captured_operational_responsible_status": None,
+                "captured_operational_responsible_diagnostics": None,
+                "operational_responsibility_context_provenance": "LEGACY_UNKNOWN",
+                "operational_responsibility_context_version": None,
+            },
+            "shifts": {
+                "operational_responsible_override_contact_id": None,
             },
             "work_packages": {
                 "task_catalog_item_id": None,
