@@ -150,6 +150,7 @@ def build_read_router(
 
     context_dependency = user_view_context_dependency or no_context_repository
     approval_dependency = approval_progress_dependency or no_context_repository
+    operational_dependency = operational_contact_dependency or no_context_repository
 
     @router.get("/projects")
     def list_projects(
@@ -347,6 +348,9 @@ def build_read_router(
         queries: PlannerQueryPort = Depends(query_dependency),
         context_repository: Any = Depends(context_dependency),
         approvals: ApprovalProgressService | None = Depends(approval_dependency),
+        operational_contacts: OperationalContactService | None = Depends(
+            operational_dependency
+        ),
     ) -> CoordinatorDashboardReadModel:
         if context_repository is None:
             raise ApplicationOperationError(
@@ -358,6 +362,7 @@ def build_read_router(
             queries,
             UserViewContextService(context_repository),
             approvals,
+            operational_contacts,
         ).read(principal)
 
     @router.get("/demands/{number}")
