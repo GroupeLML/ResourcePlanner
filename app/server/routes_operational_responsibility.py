@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, Header, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
@@ -20,14 +20,26 @@ from ..infrastructure.sql.operational_responsibility_mutation_repository import 
 SessionProvider = Callable[..., Any]
 
 
-class ProjectOperationalResponsibilityWrite(BaseModel):
+class StrictResponsibilityWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     contact_id: str | None = None
-    expected_version: int
+
+    @model_validator(mode="after")
+    def require_explicit_contact_id(self) -> "StrictResponsibilityWrite":
+        if "contact_id" not in self.model_fields_set:
+            raise ValueError(
+                "contact_id doit être fourni explicitement; null retire l'override."
+            )
+        return self
 
 
-class PlanningOperationalResponsibilityWrite(BaseModel):
-    contact_id: str | None = None
-    expected_planning_version: int
+class ProjectOperationalResponsibilityWrite(StrictResponsibilityWrite):
+    expected_version: int = Field(ge=1)
+
+
+class PlanningOperationalResponsibilityWrite(StrictResponsibilityWrite):
+    expected_planning_version: int = Field(ge=1)
 
 
 def _resolution_payload(value: ContactResolution) -> dict[str, object]:
