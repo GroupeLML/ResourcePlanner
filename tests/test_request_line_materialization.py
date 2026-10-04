@@ -69,6 +69,11 @@ class RequestLineMaterializationHttpTests(unittest.TestCase):
                     display_name="Responsable révisé",
                     phone="555-0102",
                 ),
+                BusinessContact(
+                    id="BC-LOCAL",
+                    display_name="Responsable local segment",
+                    phone="555-0103",
+                ),
                 Competency(id="C1", name="Ignition", active=True),
                 Competency(id="C2", name="AVEVA", active=True),
                 TaskCatalogEntry(
@@ -521,6 +526,8 @@ class RequestLineMaterializationHttpTests(unittest.TestCase):
                     )
                     assert requirement is not None
                     requirement_id = requirement.id
+                    requirement.operational_responsible_override_contact_id = "BC-LOCAL"
+                    session.flush()
                     initial_shift = session.scalar(
                         select(Shift).where(
                             Shift.resource_requirement_id == requirement.id
@@ -603,6 +610,10 @@ class RequestLineMaterializationHttpTests(unittest.TestCase):
                         requirement.approved_contact_context_status,
                         "CAPTURED",
                     )
+                    self.assertEqual(
+                        requirement.operational_responsible_override_contact_id,
+                        "BC-LOCAL",
+                    )
                     self.assertEqual(shift.work_date, D1)
                 engine.dispose()
 
@@ -635,6 +646,10 @@ class RequestLineMaterializationHttpTests(unittest.TestCase):
                     self.assertEqual(
                         requirement.approved_contact_context_status,
                         "CAPTURED",
+                    )
+                    self.assertEqual(
+                        requirement.operational_responsible_override_contact_id,
+                        "BC-LOCAL",
                     )
                     shift = session.scalar(
                         select(Shift).where(
