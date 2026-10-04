@@ -7,6 +7,11 @@ import json
 from sqlalchemy import select, true
 from sqlalchemy.orm import Session
 
+from ...application.operational_contacts import OperationalContactService
+from ...domain.operational_contacts import (
+    PROVENANCE_APPROVAL_CAPTURE,
+    RESPONSIBILITY_CONTEXT_VERSION,
+)
 from ...domain.approval_envelope import (
     EnvelopeEntryIdentity,
     EnvelopeLineDefinition,
@@ -26,6 +31,7 @@ from .demand_period_models import (
     WorkforceRequestPeriodSelection,
 )
 from .operational_choice_repository import SqlRequestOperationalChoiceRepository
+from .operational_contact_repository import SqlOperationalContactRepository
 from .models import (
     ORIGIN_REQUEST,
     Project,
@@ -295,6 +301,80 @@ class SqlRequestApprovalRevisionRepository:
 
         return normalize_approval_envelope(self._envelope_lines(request))
 
+    def _operational_responsibility_context_payload(
+        self,
+        request: WorkforceRequest,
+        authorization: dict[str, object],
+    ) -> dict[str, object]:
+        entries = authorization.get("entries", [])
+        if not isinstance(entries, list):
+            raise ValueError("Le snapshot d'autorisation ne contient pas d'entrées valides.")
+
+        line_ids: list[str] = []
+        entry_line_ids: dict[str, str] = {}
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            identity = _text(entry.get("identity"))
+            if not identity:
+                continue
+            try:
+                identity_parts = json.loads(identity)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(identity_parts, list) or len(identity_parts) != 3:
+                continue
+            line_id = _text(identity_parts[1])
+            if not line_id:
+                continue
+            entry_line_ids[identity] = line_id
+            if line_id not in line_ids:
+                line_ids.append(line_id)
+
+        service = OperationalContactService(
+            SqlOperationalContactRepository(self._session)
+        )
+        line_resolutions = service.resolve_request_lines(line_ids)
+        by_line = {row.line_id: row for row in line_resolutions}
+        if request.id in line_ids and request.id not in by_line:
+            legacy = service.resolve_workforce_request(request.id)
+            by_line[request.id] = legacy
+
+        contexts: dict[str, object] = {}
+        for identity, line_id in entry_line_ids.items():
+            row = by_line.get(line_id)
+            if row is None:
+                raise ValueError(
+                    "Le contexte de responsabilité opérationnelle d'une entrée "
+                    f"approuvée est introuvable: {identity}"
+                )
+            responsible = row.operational_responsible
+            diagnostics = tuple(
+                dict.fromkeys(
+                    (
+                        *row.diagnostics,
+                        *responsible.diagnostics,
+                    )
+                )
+            )
+            contexts[identity] = {
+                "approved_task_catalog_item_id": row.task_id,
+                "approved_request_override_contact_id": (
+                    request.operational_responsible_override_contact_id
+                ),
+                "contact_id": responsible.contact_id,
+                "source_type": responsible.source_type,
+                "source_entity_id": responsible.source_entity_id,
+                "status": responsible.status,
+                "diagnostics": list(diagnostics),
+            }
+
+        return {
+            "mechanism_version": RESPONSIBILITY_CONTEXT_VERSION,
+            "provenance": PROVENANCE_APPROVAL_CAPTURE,
+            "entries": contexts,
+        }
+
     def create_revision(
         self,
         request: WorkforceRequest,
@@ -325,8 +405,9 @@ class SqlRequestApprovalRevisionRepository:
             and reference.status == APPROVAL_REFERENCE_CAPTURED
             else None
         )
+        authorization = envelope.to_snapshot_payload()
         payload = {
-            "format_version": envelope.to_snapshot_payload()["format_version"],
+            "format_version": authorization["format_version"],
             "request": {
                 "request_id": request.id,
                 "request_version": approved_request_version,
@@ -336,7 +417,13 @@ class SqlRequestApprovalRevisionRepository:
                 "location": _optional_text(request.location),
                 "line_mode": bool(request.line_mode),
             },
-            "authorization": envelope.to_snapshot_payload(),
+            "authorization": authorization,
+            "operational_responsibility_context": (
+                self._operational_responsibility_context_payload(
+                    request,
+                    authorization,
+                )
+            ),
         }
         revision = RequestApprovalRevision(
             workforce_request_id=request.id,
@@ -348,7 +435,7 @@ class SqlRequestApprovalRevisionRepository:
             approved_by_name=_optional_text(request.approved_by_name),
             approved_at=approved_at,
             provenance=_text(provenance) or APPROVAL_PROVENANCE_STANDARD,
-            payload_format_version=envelope.to_snapshot_payload()["format_version"],
+            payload_format_version=int(authorization["format_version"]),
             payload_text=json.dumps(
                 payload,
                 ensure_ascii=False,
