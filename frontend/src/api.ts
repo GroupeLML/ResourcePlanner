@@ -200,6 +200,43 @@ export type DemandOverrideMutationResult = {
   changed: boolean;
 };
 
+export type MaterializedContactResolutionReadModel = {
+  subject_type: "RESOURCE_REQUIREMENT" | "SHIFT";
+  subject_id: string;
+  requirement_id: string;
+  shift_id: string | null;
+  request_line_id: string | null;
+  demand_number: string | null;
+  project_number: string;
+  approved_request_version: number | null;
+  approved_contact_context_status: string;
+  task_id: string | null;
+  task_code: string | null;
+  task_label: string | null;
+  resource_id: string | null;
+  resource_name: string | null;
+  operational_responsible: ContactResolutionReadModel;
+  coordinator: ContactResolutionReadModel;
+  diagnostics: string[];
+};
+
+export type ProjectOperationalResponsibilityReadModel = {
+  project_id: string;
+  project_number: string;
+  override_contact_id: string | null;
+  override_version: number;
+  operational_responsible: ContactResolutionReadModel;
+};
+
+export type OperationalResponsibilityMutationResult = {
+  entity_type: "PROJECT" | "SEGMENT" | "SHIFT";
+  entity_id: string;
+  override_contact_id: string | null;
+  project_override_version: number | null;
+  planning_version: number | null;
+  auto_source_converted: boolean;
+};
+
 export type TaskCatalogItemReadModel = {
   id: string | null;
   project_number: string;
@@ -1743,6 +1780,69 @@ export function getRequestLineContactResolution(lineId: string, signal?: AbortSi
   return getJson<RequestLineContactResolutionReadModel>(
     `/api/v1/request-lines/${encodeURIComponent(lineId)}/contact-resolution`,
     signal,
+  );
+}
+
+export function getProjectOperationalResponsibility(projectNumber: string, signal?: AbortSignal) {
+  return getJson<ProjectOperationalResponsibilityReadModel>(
+    `/api/v1/projects/${encodeURIComponent(projectNumber)}/operational-responsibility`,
+    signal,
+  );
+}
+
+export function setProjectOperationalResponsible(
+  projectNumber: string,
+  contactId: string | null,
+  expectedVersion: number,
+  idempotencyKey: string,
+) {
+  return sendJson<OperationalResponsibilityMutationResult>(
+    `/api/v1/projects/${encodeURIComponent(projectNumber)}/operational-responsible`,
+    "PATCH",
+    { contact_id: contactId, expected_version: expectedVersion },
+    { "Idempotency-Key": idempotencyKey },
+  );
+}
+
+export function getSegmentOperationalResponsibility(segmentReference: string, signal?: AbortSignal) {
+  return getJson<MaterializedContactResolutionReadModel>(
+    `/api/v1/segments/${encodeURIComponent(segmentReference)}/operational-responsibility`,
+    signal,
+  );
+}
+
+export function setSegmentOperationalResponsible(
+  segmentReference: string,
+  contactId: string | null,
+  expectedPlanningVersion: number,
+  idempotencyKey: string,
+) {
+  return sendJson<OperationalResponsibilityMutationResult>(
+    `/api/v1/segments/${encodeURIComponent(segmentReference)}/operational-responsible`,
+    "PATCH",
+    { contact_id: contactId, expected_planning_version: expectedPlanningVersion },
+    { "Idempotency-Key": idempotencyKey },
+  );
+}
+
+export function getAllocationOperationalResponsibility(allocationReference: string, signal?: AbortSignal) {
+  return getJson<MaterializedContactResolutionReadModel>(
+    `/api/v1/allocations/${encodeURIComponent(allocationReference)}/operational-responsibility`,
+    signal,
+  );
+}
+
+export function setAllocationOperationalResponsible(
+  allocationReference: string,
+  contactId: string | null,
+  expectedPlanningVersion: number,
+  idempotencyKey: string,
+) {
+  return sendJson<OperationalResponsibilityMutationResult>(
+    `/api/v1/allocations/${encodeURIComponent(allocationReference)}/operational-responsible`,
+    "PATCH",
+    { contact_id: contactId, expected_planning_version: expectedPlanningVersion },
+    { "Idempotency-Key": idempotencyKey },
   );
 }
 
