@@ -15,7 +15,9 @@ from app.application.security import PERMISSION_APPROVE_DEMANDS
 from app.infrastructure.sql import (
     Base,
     Project,
+    RequestApprovalRevision,
     Resource,
+    ResourceRequirement,
     ResourceAvailabilityRule,
     Shift,
     WorkforceRequest,
@@ -292,6 +294,49 @@ class EmergencyOverrideHttpTests(unittest.TestCase):
                     duplicate.json()["error"]["code"],
                     "demand_emergency_override_already_active",
                 )
+
+                engine = create_sql_engine(database_url)
+                factory = create_session_factory(engine)
+                try:
+                    with factory() as session:
+                        request = session.scalar(
+                            select(WorkforceRequest).where(
+                                WorkforceRequest.legacy_demand_number == number
+                            )
+                        )
+                        assert request is not None
+                        requirements = session.scalars(
+                            select(ResourceRequirement).where(
+                                ResourceRequirement.workforce_request_id == request.id,
+                                ResourceRequirement.status != "Annulé",
+                            )
+                        ).all()
+                        self.assertGreaterEqual(len(requirements), 1)
+                        self.assertTrue(
+                            all(
+                                row.operational_responsibility_context_provenance
+                                == "OPERATIONAL_CAPTURE"
+                                for row in requirements
+                            )
+                        )
+                        self.assertTrue(
+                            all(
+                                row.operational_responsibility_context_version == 1
+                                for row in requirements
+                            )
+                        )
+                        self.assertTrue(
+                            all(row.approval_revision_id is None for row in requirements)
+                        )
+                        revisions = session.scalars(
+                            select(RequestApprovalRevision).where(
+                                RequestApprovalRevision.workforce_request_id
+                                == request.id
+                            )
+                        ).all()
+                        self.assertEqual(revisions, [])
+                finally:
+                    engine.dispose()
 
                 approved = client.post(
                     f"/api/v1/demands/{number}/approve",
