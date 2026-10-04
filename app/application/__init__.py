@@ -166,6 +166,10 @@ from .identity_resource_link import (
     IdentityResourceLinkRepositoryPort,
     IdentityResourceLinkService,
 )
+from .operational_responsibility_mutations import (
+    OperationalResponsibilityMutationPort,
+    OperationalResponsibilityOverrideMutationResult,
+)
 from .operational_contacts import (
     MaterializedContactContext,
     MaterializedContactResolution,
@@ -391,6 +395,8 @@ __all__ = [
     "MediumTermUnlinkedSegmentReadModel",
     "PendingDemandLoadReadModel",
     "OperationalContactRepositoryPort",
+    "OperationalResponsibilityMutationPort",
+    "OperationalResponsibilityOverrideMutationResult",
     "OperationalContactService",
     "PlanningActionReadModel",
     "PlanningCapacityGridReadModel",

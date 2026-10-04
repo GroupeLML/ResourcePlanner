@@ -1506,6 +1506,16 @@ class SqlDemandRepository(DemandRepositoryPort):
         )
         locked_human = sum(1 for row in human_shifts if bool(row.locked))
         locked_assets = sum(1 for row in asset_allocations if bool(row.locked))
+        deleted_shift_responsibility_overrides = [
+            {
+                "shift_id": row.id,
+                "operational_responsible_override_contact_id": (
+                    row.operational_responsible_override_contact_id
+                ),
+            }
+            for row in human_shifts
+            if row.operational_responsible_override_contact_id is not None
+        ]
 
         # ADR-009 explicitly authorizes deletion of locked decisions inside this
         # request-owned cancellation scope. ADR-016 adds SHIFT_AD_HOC ownership and
@@ -1575,6 +1585,9 @@ class SqlDemandRepository(DemandRepositoryPort):
                 "resolved_at": occurred_at.isoformat(),
                 "resolution_comment": request.cancellation_resolution_comment,
                 "deleted_human_shift_ids": list(human_shift_ids),
+                "deleted_human_shift_operational_responsibility_overrides": (
+                    deleted_shift_responsibility_overrides
+                ),
                 "deleted_asset_allocation_ids": list(asset_allocation_ids),
                 "deleted_ad_hoc_asset_requirement_ids": list(
                     ad_hoc_asset_requirement_ids

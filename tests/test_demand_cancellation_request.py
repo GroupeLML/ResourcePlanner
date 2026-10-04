@@ -20,6 +20,7 @@ from app.infrastructure.sql import (
     AssetRequirement,
     AssetType,
     Base,
+    BusinessContact,
     CommandIdempotencyReceipt,
     PlanningMutationState,
     Project,
@@ -74,6 +75,11 @@ class DemandCancellationRequestTests(unittest.TestCase):
                         active=True,
                     ),
                     Project(id="P1", number="P-1", name="Projet annulation"),
+                    BusinessContact(
+                        id="C-CANCEL-RESP",
+                        display_name="Responsable quart annulé",
+                        active=True,
+                    ),
                     Resource(id="R1", name="Alice", active=True),
                     AssetType(
                         id="AT1",
@@ -199,6 +205,7 @@ class DemandCancellationRequestTests(unittest.TestCase):
                         hours=8,
                         source="MANUAL",
                         locked=True,
+                        operational_responsible_override_contact_id="C-CANCEL-RESP",
                     ),
                     AssetAllocation(
                         id="ALLOC-ASSET",
@@ -563,6 +570,17 @@ class DemandCancellationRequestTests(unittest.TestCase):
                     self.assertEqual(details["planning_version"], 10)
                     self.assertEqual(details["resolution"], "ACCEPTED")
                     self.assertEqual(details["deleted_human_shift_ids"], ["SHIFT-HUMAN"])
+                    self.assertEqual(
+                        details[
+                            "deleted_human_shift_operational_responsibility_overrides"
+                        ],
+                        [
+                            {
+                                "shift_id": "SHIFT-HUMAN",
+                                "operational_responsible_override_contact_id": "C-CANCEL-RESP",
+                            }
+                        ],
+                    )
             finally:
                 engine.dispose()
 

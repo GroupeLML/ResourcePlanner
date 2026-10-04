@@ -15,6 +15,7 @@ from app.application.quick_shift_service import QuickShiftService
 from app.domain.planning_engine import MISSING_ALLOCATION_TYPE
 from app.infrastructure.sql import (
     Base,
+    BusinessContact,
     ORIGIN_QUICK_SHIFT,
     Project,
     Resource,
@@ -52,6 +53,13 @@ class SqlCommandAdapterTests(unittest.TestCase):
         self.factory = create_session_factory(self.engine)
         with transactional_session(self.factory) as session:
             session.add(Project(id="P1", number="P-1", name="Projet SQL"))
+            session.add(
+                BusinessContact(
+                    id="C-MOVE-RESP",
+                    display_name="Responsable move",
+                    active=True,
+                )
+            )
             session.add_all(
                 [
                     Resource(id="R1", name="Alice", active=True, sort_order=1),
@@ -218,6 +226,8 @@ class SqlCommandAdapterTests(unittest.TestCase):
             assert manual is not None
             self.assertEqual(manual.resource_id, "R2")
             self.assertTrue(manual.locked)
+            manual.operational_responsible_override_contact_id = "C-MOVE-RESP"
+            session.flush()
 
             auto = session.scalars(
                 select(Shift).where(
@@ -246,6 +256,10 @@ class SqlCommandAdapterTests(unittest.TestCase):
             assert manual is not None
             self.assertEqual(manual.resource_id, "R2")
             self.assertEqual(manual.work_date, D2)
+            self.assertEqual(
+                manual.operational_responsible_override_contact_id,
+                "C-MOVE-RESP",
+            )
 
             auto = session.scalars(
                 select(Shift).where(

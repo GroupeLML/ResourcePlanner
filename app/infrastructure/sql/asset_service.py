@@ -1342,7 +1342,19 @@ class SqlAssetService:
         }
 
     def assert_shift_can_return_auto(self, shift: Shift) -> None:
-        """Fail closed while a shift-owned ad-hoc asset is still attached."""
+        """Fail closed while a Shift-owned explicit decision is still attached."""
+
+        if shift.operational_responsible_override_contact_id is not None:
+            raise ApplicationConflictError(
+                "Retire le responsable opérationnel propre au quart avant de retourner vers l'automatique.",
+                code="shift_operational_responsibility_override_must_be_cleared",
+                context={
+                    "shift_id": shift.id,
+                    "business_contact_id": (
+                        shift.operational_responsible_override_contact_id
+                    ),
+                },
+            )
 
         requirement, _allocation = self.shift_ad_hoc_attachment(shift.id)
         if requirement is None:
