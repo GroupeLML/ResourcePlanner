@@ -282,17 +282,18 @@ class CoordinatorDashboardService:
                     if segment.requirement_id
                 )
             )
-            resolved_by_requirement = {
-                resolution.requirement_id: resolution.operational_responsible
-                for resolution in self._operational_contacts.resolve_resource_requirements(
-                    requirement_ids
-                )
-            }
-            responsibility_by_segment = {
-                segment.segment_id: resolved_by_requirement[segment.requirement_id]
-                for segment in personal_segments
-                if segment.requirement_id in resolved_by_requirement
-            }
+            if requirement_ids:
+                resolved_by_requirement = {
+                    resolution.requirement_id: resolution.operational_responsible
+                    for resolution in self._operational_contacts.resolve_resource_requirements(
+                        requirement_ids
+                    )
+                }
+                responsibility_by_segment = {
+                    segment.segment_id: resolved_by_requirement[segment.requirement_id]
+                    for segment in personal_segments
+                    if segment.requirement_id in resolved_by_requirement
+                }
         window_start, window_end = _planning_window(
             personal_demands,
             personal_segments,
