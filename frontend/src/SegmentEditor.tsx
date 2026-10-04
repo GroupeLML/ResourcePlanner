@@ -16,7 +16,7 @@ import {
   overallocationContext,
   updateSegmentWithOverallocation,
 } from "./manualOverallocationApi";
-import PlanningHistoryPanel from "./PlanningHistoryPanel";
+import PlanningHistoryPanel from "./PlanningHistoryPanel";\nimport OperationalResponsibilityControl from "./OperationalResponsibilityControl";
 import {
   LoadProfile,
   SegmentUpdateWrite,
@@ -462,6 +462,17 @@ export default function SegmentEditor({
               <div><span>Projet</span><strong>{effectiveProjectNumber || "—"}</strong></div>
               <div><span>Origine</span><strong>{segment?.origin || "Demande"}</strong></div>
             </div>
+
+            {segmentId && planningVersion != null && (
+              <OperationalResponsibilityControl
+                target={{
+                  kind: "segment",
+                  reference: segment?.requirement_id || segmentId,
+                  expectedPlanningVersion: planningVersion,
+                }}
+                onSaved={onSaved}
+              />
+            )}
 
             <div className="segment-form-grid">
               <label>
