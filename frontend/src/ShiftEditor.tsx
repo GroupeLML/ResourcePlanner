@@ -19,7 +19,8 @@ import {
   splitAllocationAtomic,
   updateAllocationWithOverallocation,
 } from "./manualOverallocationApi";
-import PlanningHistoryPanel from "./PlanningHistoryPanel";\nimport OperationalResponsibilityControl from "./OperationalResponsibilityControl";
+import PlanningHistoryPanel from "./PlanningHistoryPanel";
+import OperationalResponsibilityControl from "./OperationalResponsibilityControl";
 import SegmentEditor from "./SegmentEditor";
 
 type ConfirmationChoice = "inherit" | "Tentative" | "Confirmée";
