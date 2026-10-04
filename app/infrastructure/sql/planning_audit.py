@@ -131,6 +131,9 @@ class SqlPlanningAuditJournal:
             "confirmation": requirement.confirmation,
             "confirmation_overridden": bool(requirement.confirmation_overridden),
             "origin": requirement.origin,
+            "operational_responsible_override_contact_id": (
+                requirement.operational_responsible_override_contact_id
+            ),
         }
         return requirement.id, reference, snapshot
 
@@ -160,6 +163,9 @@ class SqlPlanningAuditJournal:
             "outside_standard_hours": bool(shift.outside_standard_hours),
             "confirmation": shift.confirmation,
             "note": shift.note,
+            "operational_responsible_override_contact_id": (
+                shift.operational_responsible_override_contact_id
+            ),
         }
         asset_row = self._session.execute(
             select(AssetRequirement, AssetAllocation, Asset)
