@@ -8,8 +8,11 @@ STATUS_UNRESOLVED = "UNRESOLVED"
 STATUS_INVALID_REFERENCE = "INVALID_REFERENCE"
 STATUS_INACTIVE = "INACTIVE"
 
+SOURCE_SHIFT_OVERRIDE = "SHIFT_OVERRIDE"
+SOURCE_REQUIREMENT_OVERRIDE = "RESOURCE_REQUIREMENT_OVERRIDE"
 SOURCE_REQUEST_OVERRIDE = "REQUEST_OVERRIDE"
 SOURCE_TASK_RESPONSIBLE = "TASK_RESPONSIBLE"
+SOURCE_PROJECT_OVERRIDE = "PROJECT_OVERRIDE"
 SOURCE_PROJECT_MANAGER = "PROJECT_MANAGER"
 SOURCE_RESOURCE_COORDINATOR = "RESOURCE_COORDINATOR"
 SOURCE_TASK_COORDINATOR = "TASK_COORDINATOR"
@@ -64,6 +67,7 @@ class ContactCandidate:
     diagnostics: tuple[str, ...] = ()
     external_id: str | None = None
     display_name_hint: str | None = None
+    captured_status: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,7 +92,28 @@ def _unique(values: tuple[str, ...]) -> tuple[str, ...]:
 
 
 def _candidate_resolution(candidate: ContactCandidate) -> ContactResolution:
+    captured_status = candidate.captured_status
+    if captured_status is not None and captured_status not in {
+        STATUS_RESOLVED,
+        STATUS_UNRESOLVED,
+        STATUS_INVALID_REFERENCE,
+        STATUS_INACTIVE,
+    }:
+        raise ValueError(f"Unsupported captured contact status: {captured_status}")
+
     if candidate.contact_id is None:
+        if captured_status is not None:
+            return ContactResolution(
+                status=captured_status,
+                contact_id=None,
+                display_name=candidate.display_name_hint,
+                email=None,
+                phone=None,
+                source_type=candidate.source_type,
+                source_entity_id=candidate.source_entity_id,
+                source_label=candidate.source_label,
+                diagnostics=_unique(candidate.diagnostics),
+            )
         if candidate.external_id is None:
             raise ValueError("An absent candidate cannot be materialized as a resolution.")
         return ContactResolution(
@@ -122,7 +147,9 @@ def _candidate_resolution(candidate: ContactCandidate) -> ContactResolution:
         )
 
     diagnostics = candidate.diagnostics
-    if not contact.active:
+    if captured_status is not None and captured_status != STATUS_RESOLVED:
+        status = captured_status
+    elif not contact.active:
         diagnostics += (DIAGNOSTIC_CONTACT_INACTIVE,)
         status = STATUS_INACTIVE
     else:
@@ -171,16 +198,48 @@ def resolve_contact_candidates(
 
 def resolve_operational_responsible(
     *,
-    request_override: ContactCandidate,
-    task_responsible: ContactCandidate,
-    project_manager: ContactCandidate,
+    shift_override: ContactCandidate | None = None,
+    requirement_override: ContactCandidate | None = None,
+    request_override: ContactCandidate | None = None,
+    task_responsible: ContactCandidate | None = None,
+    project_override: ContactCandidate | None = None,
+    project_manager: ContactCandidate | None = None,
+    captured_inherited: ContactCandidate | None = None,
 ) -> ContactResolution:
-    """Resolve request override > task responsible > project manager."""
+    """Resolve the single canonical operational-responsibility hierarchy.
 
-    return resolve_contact_candidates(
+    Materialized planning supplies captured_inherited instead of rereading the
+    lower request/task/project/ERP levels. Shift and requirement overrides remain
+    live explicit decisions layered above that immutable inherited context.
+    """
+
+    dynamic_inherited = (
         request_override,
         task_responsible,
+        project_override,
         project_manager,
+    )
+    if captured_inherited is not None and any(
+        candidate is not None for candidate in dynamic_inherited
+    ):
+        raise ValueError(
+            "Captured operational responsibility cannot be mixed with live inherited candidates."
+        )
+
+    candidates = (
+        shift_override,
+        requirement_override,
+        captured_inherited,
+    ) if captured_inherited is not None else (
+        shift_override,
+        requirement_override,
+        request_override,
+        task_responsible,
+        project_override,
+        project_manager,
+    )
+    return resolve_contact_candidates(
+        *(candidate for candidate in candidates if candidate is not None)
     )
 
 
