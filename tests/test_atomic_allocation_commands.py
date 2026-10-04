@@ -13,6 +13,7 @@ from app.application.security import AuthPrincipal, ROLE_ADMIN, ROLE_PROJECT_MAN
 from app.domain.planning_engine import MISSING_ALLOCATION_TYPE
 from app.infrastructure.sql import (
     Base,
+    BusinessContact,
     ORIGIN_AD_HOC,
     PlanningChangeHistory,
     Project,
@@ -62,6 +63,7 @@ class AtomicAllocationCommandHttpTests(unittest.TestCase):
         allocation_type: str = "Flexible",
         note: str | None = "note-source",
         confirmation: str | None = None,
+        operational_responsible_override_contact_id: str | None = None,
     ) -> str:
         path = Path(directory) / "atomic-allocation.db"
         url = f"sqlite:///{path.as_posix()}"
@@ -70,6 +72,13 @@ class AtomicAllocationCommandHttpTests(unittest.TestCase):
         factory = create_session_factory(engine)
         with factory.begin() as session:
             session.add(Project(id="P1", number="P-1", name="Projet atomique"))
+            session.add(
+                BusinessContact(
+                    id="C-RESP-594C",
+                    display_name="Responsable 594C",
+                    active=True,
+                )
+            )
             session.add_all(
                 [
                     Resource(id="R1", name="Alice", active=True),
@@ -121,6 +130,9 @@ class AtomicAllocationCommandHttpTests(unittest.TestCase):
                         outside_standard_hours=False,
                         confirmation=confirmation,
                         note=note,
+                        operational_responsible_override_contact_id=(
+                            operational_responsible_override_contact_id
+                        ),
                     )
                 )
             seed_test_approval_routing(session, map_existing_tasks=True)
@@ -231,6 +243,72 @@ class AtomicAllocationCommandHttpTests(unittest.TestCase):
                     or 0
                 )
                 self.assertEqual(audits, 1)
+            engine.dispose()
+
+    def test_split_copies_explicit_shift_responsibility_override(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(
+                directory,
+                planned_hours=8,
+                source_hours=8,
+                operational_responsible_override_contact_id="C-RESP-594C",
+            )
+            app = create_api_app(url, auth_resolver=_auth("Coordonnateur"))
+            with TestClient(app, raise_server_exceptions=False) as client:
+                response = client.post(
+                    "/api/v1/allocations/ALLOC-SOURCE/split",
+                    json=self._split_body(),
+                    headers={"Idempotency-Key": "split-responsibility-594c"},
+                )
+            self.assertEqual(response.status_code, 201, response.text)
+
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            with factory() as session:
+                rows = session.scalars(
+                    select(Shift).where(Shift.resource_requirement_id == "REQ1")
+                ).all()
+                self.assertEqual(len(rows), 2)
+                self.assertEqual(
+                    {
+                        row.operational_responsible_override_contact_id
+                        for row in rows
+                    },
+                    {"C-RESP-594C"},
+                )
+            engine.dispose()
+
+    def test_duplicate_copies_explicit_shift_responsibility_override(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(
+                directory,
+                planned_hours=8,
+                source_hours=4,
+                operational_responsible_override_contact_id="C-RESP-594C",
+            )
+            app = create_api_app(url, auth_resolver=_auth("Coordonnateur"))
+            with TestClient(app, raise_server_exceptions=False) as client:
+                response = client.post(
+                    "/api/v1/allocations/ALLOC-SOURCE/duplicate",
+                    json=self._duplicate_body(),
+                    headers={"Idempotency-Key": "duplicate-responsibility-594c"},
+                )
+            self.assertEqual(response.status_code, 201, response.text)
+
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            with factory() as session:
+                rows = session.scalars(
+                    select(Shift).where(Shift.resource_requirement_id == "REQ1")
+                ).all()
+                self.assertEqual(len(rows), 2)
+                self.assertEqual(
+                    {
+                        row.operational_responsible_override_contact_id
+                        for row in rows
+                    },
+                    {"C-RESP-594C"},
+                )
             engine.dispose()
 
     def test_duplicate_requires_explicit_choice_when_exception_increases(self) -> None:
