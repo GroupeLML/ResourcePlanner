@@ -12,8 +12,11 @@ from app.application.operational_contacts import OperationalContactService
 from app.domain.operational_contacts import (
     DIAGNOSTIC_APPROVED_CONTACT_CONTEXT_LEGACY_UNKNOWN,
     SOURCE_REQUEST_OVERRIDE,
+    SOURCE_REQUIREMENT_OVERRIDE,
     SOURCE_RESOURCE_COORDINATOR,
+    SOURCE_SHIFT_OVERRIDE,
     SOURCE_TASK_RESPONSIBLE,
+    STATUS_INACTIVE,
     STATUS_RESOLVED,
     STATUS_UNRESOLVED,
 )
@@ -84,6 +87,18 @@ class MaterializedOperationalContactProjectionTests(unittest.TestCase):
                         display_name="Coord quart",
                         email="configured-shift",
                         phone="555-0600",
+                    ),
+                    BusinessContact(
+                        id="C-REQ-OVERRIDE",
+                        display_name="Responsable besoin",
+                        email="configured-req-override",
+                        phone="555-0700",
+                    ),
+                    BusinessContact(
+                        id="C-SHIFT-OVERRIDE",
+                        display_name="Responsable quart",
+                        email="configured-shift-override",
+                        phone="555-0800",
                     ),
                     AppUser(
                         id="U-PM",
@@ -172,9 +187,36 @@ class MaterializedOperationalContactProjectionTests(unittest.TestCase):
                         approved_task_catalog_item_id="T-APPROVED",
                         approved_request_version=3,
                         approved_contact_context_status="CAPTURED",
+                        captured_operational_responsible_contact_id="C-TASK-APPROVED",
+                        captured_operational_responsible_source_type="TASK_RESPONSIBLE",
+                        captured_operational_responsible_source_entity_id="T-APPROVED",
+                        captured_operational_responsible_status="RESOLVED",
+                        captured_operational_responsible_diagnostics="[]",
+                        operational_responsibility_context_provenance="APPROVAL_CAPTURE",
+                        operational_responsibility_context_version=1,
                         assigned_resource_id="R-REQ",
                         start_date=date(2026, 9, 21),
                         end_date=date(2026, 9, 21),
+                        planned_hours=8,
+                        origin="REQUEST",
+                    ),
+                    ResourceRequirement(
+                        id="REQ-MIGRATED",
+                        project_id="P1",
+                        workforce_request_id="D1",
+                        source_request_line_id="L1",
+                        approved_task_catalog_item_id="T-APPROVED",
+                        approved_request_version=2,
+                        approved_contact_context_status="CAPTURED",
+                        captured_operational_responsible_contact_id="C-TASK-APPROVED",
+                        captured_operational_responsible_source_type="TASK_RESPONSIBLE",
+                        captured_operational_responsible_source_entity_id="T-APPROVED",
+                        captured_operational_responsible_status=None,
+                        operational_responsibility_context_provenance="MIGRATION_OBSERVED",
+                        operational_responsibility_context_version=1,
+                        assigned_resource_id="R-REQ",
+                        start_date=date(2026, 9, 20),
+                        end_date=date(2026, 9, 20),
                         planned_hours=8,
                         origin="REQUEST",
                     ),
@@ -261,6 +303,111 @@ class MaterializedOperationalContactProjectionTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_captured_responsibility_is_non_retroactive_after_lower_sources_change(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    task = session.get(TaskCatalogEntry, "T-APPROVED")
+                    project = session.get(Project, "P1")
+                    request = session.get(WorkforceRequest, "D1")
+                    assert task is not None and project is not None and request is not None
+                    task.operational_responsible_contact_id = "C-TASK-CURRENT"
+                    project.operational_responsible_override_contact_id = "C-CURRENT-OVERRIDE"
+                    project.project_manager_external_id = None
+                    project.project_manager_contact_id = None
+                    request.operational_responsible_override_contact_id = None
+
+                with factory() as session:
+                    result = OperationalContactService(
+                        SqlOperationalContactRepository(session)
+                    ).resolve_resource_requirement("REQ-CAPTURED")
+
+                self.assertEqual(result.operational_responsible.status, STATUS_RESOLVED)
+                self.assertEqual(
+                    result.operational_responsible.contact_id,
+                    "C-TASK-APPROVED",
+                )
+                self.assertEqual(
+                    result.operational_responsible.source_type,
+                    SOURCE_TASK_RESPONSIBLE,
+                )
+            finally:
+                engine.dispose()
+
+    def test_shift_and_requirement_overrides_layer_over_captured_inheritance(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    requirement = session.get(ResourceRequirement, "REQ-CAPTURED")
+                    shift = session.get(Shift, "SHIFT-1")
+                    assert requirement is not None and shift is not None
+                    requirement.operational_responsible_override_contact_id = "C-REQ-OVERRIDE"
+                    shift.operational_responsible_override_contact_id = "C-SHIFT-OVERRIDE"
+
+                with factory() as session:
+                    service = OperationalContactService(
+                        SqlOperationalContactRepository(session)
+                    )
+                    requirement_result = service.resolve_resource_requirement(
+                        "REQ-CAPTURED"
+                    )
+                    shift_result = service.resolve_shift("SHIFT-1")
+
+                self.assertEqual(
+                    requirement_result.operational_responsible.source_type,
+                    SOURCE_REQUIREMENT_OVERRIDE,
+                )
+                self.assertEqual(
+                    requirement_result.operational_responsible.contact_id,
+                    "C-REQ-OVERRIDE",
+                )
+                self.assertEqual(
+                    shift_result.operational_responsible.source_type,
+                    SOURCE_SHIFT_OVERRIDE,
+                )
+                self.assertEqual(
+                    shift_result.operational_responsible.contact_id,
+                    "C-SHIFT-OVERRIDE",
+                )
+            finally:
+                engine.dispose()
+
+    def test_inactive_explicit_requirement_override_is_fail_closed(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    requirement = session.get(ResourceRequirement, "REQ-CAPTURED")
+                    override = session.get(BusinessContact, "C-REQ-OVERRIDE")
+                    assert requirement is not None and override is not None
+                    requirement.operational_responsible_override_contact_id = "C-REQ-OVERRIDE"
+                    override.active = False
+
+                with factory() as session:
+                    result = OperationalContactService(
+                        SqlOperationalContactRepository(session)
+                    ).resolve_resource_requirement("REQ-CAPTURED")
+
+                self.assertEqual(result.operational_responsible.status, STATUS_INACTIVE)
+                self.assertEqual(
+                    result.operational_responsible.source_type,
+                    SOURCE_REQUIREMENT_OVERRIDE,
+                )
+                self.assertEqual(
+                    result.operational_responsible.contact_id,
+                    "C-REQ-OVERRIDE",
+                )
+            finally:
+                engine.dispose()
+
     def test_shift_resource_is_authoritative_over_requirement_assignment(self) -> None:
         with TemporaryDirectory() as directory:
             url = self._database(directory)
@@ -279,6 +426,29 @@ class MaterializedOperationalContactProjectionTests(unittest.TestCase):
                 self.assertNotIn(
                     "SHIFT_RESOURCE_DIFFERS_FROM_REQUIREMENT",
                     result.diagnostics,
+                )
+            finally:
+                engine.dispose()
+
+    def test_594a_migration_observed_snapshot_remains_readable_without_captured_status(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            try:
+                with factory() as session:
+                    result = OperationalContactService(
+                        SqlOperationalContactRepository(session)
+                    ).resolve_resource_requirement("REQ-MIGRATED")
+
+                self.assertEqual(result.operational_responsible.status, STATUS_RESOLVED)
+                self.assertEqual(
+                    result.operational_responsible.contact_id,
+                    "C-TASK-APPROVED",
+                )
+                self.assertEqual(
+                    result.operational_responsible.source_type,
+                    SOURCE_TASK_RESPONSIBLE,
                 )
             finally:
                 engine.dispose()
