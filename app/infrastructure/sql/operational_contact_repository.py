@@ -785,7 +785,8 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
                 elif task.project_number != project.number:
                     diagnostics.append(DIAGNOSTIC_TASK_PROJECT_MISMATCH)
                     task = None
-        elif request.erp_task_code:
+
+        if task is None and request.erp_task_code:
             task = self._session.scalar(
                 select(TaskCatalogEntry).where(
                     TaskCatalogEntry.project_number == project.number,
