@@ -403,6 +403,7 @@ export default function ShiftEditor({
         onClose={() => setSegmentOpen(false)}
         onSaved={onSaved}
         onOpenDemand={onOpenDemand}
+        planningVersion={planningVersion}
       />
     );
   }
