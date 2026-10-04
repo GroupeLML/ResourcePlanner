@@ -8,7 +8,7 @@ import {
   BusinessContactReadModel,
   ContactResolutionReadModel,
   getAllocationOperationalResponsibility,
-  getBusinessContacts,
+  getOperationalResponsibilityContacts,
   getProjectOperationalResponsibility,
   getSegmentOperationalResponsibility,
   setAllocationOperationalResponsible,
@@ -92,7 +92,7 @@ export default function OperationalResponsibilityControl({
 
   async function reload(signal?: AbortSignal) {
     const [contactRows, responsibility] = await Promise.all([
-      getBusinessContacts(true, signal),
+      getOperationalResponsibilityContacts(signal),
       target.kind === "project"
         ? getProjectOperationalResponsibility(target.reference, signal)
         : target.kind === "segment"
