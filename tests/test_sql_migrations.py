@@ -527,6 +527,7 @@ class SqlMigrationTests(unittest.TestCase):
                                     captured_operational_responsible_contact_id,
                                     captured_operational_responsible_source_type,
                                     captured_operational_responsible_source_entity_id,
+                                    captured_operational_responsible_status,
                                     operational_responsibility_context_provenance,
                                     operational_responsibility_context_version
                                 FROM resource_requirements
@@ -562,6 +563,9 @@ class SqlMigrationTests(unittest.TestCase):
                 self.assertEqual(
                     captured.captured_operational_responsible_source_entity_id,
                     "W-REQ-594",
+                )
+                self.assertIsNone(
+                    captured.captured_operational_responsible_status
                 )
                 self.assertEqual(
                     captured.operational_responsibility_context_provenance,
