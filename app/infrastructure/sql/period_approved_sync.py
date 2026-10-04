@@ -10,10 +10,20 @@ from sqlalchemy.orm import Session
 
 from ...application.command_ports import ApprovedDemandSyncPort
 from ...application.errors import ApplicationConflictError
+from ...application.operational_contacts import OperationalContactService
+from ...domain.operational_contacts import (
+    PROVENANCE_APPROVAL_CAPTURE,
+    PROVENANCE_LEGACY_UNKNOWN,
+    PROVENANCE_OPERATIONAL_CAPTURE,
+    RESPONSIBILITY_CONTEXT_VERSION,
+)
 from ...domain.active_days import split_total_workforce_hours
 from ...domain.confirmation import CONFIRMATION_CONFIRMED, normalize_confirmation
 from ...domain.demand_periods import PERIOD_KIND_CUMULATIVE
-from .approval_revision_models import APPROVAL_REFERENCE_CAPTURED
+from .approval_revision_models import (
+    APPROVAL_REFERENCE_CAPTURED,
+    RequestApprovalRevision,
+)
 from .approval_revision_repository import SqlRequestApprovalRevisionRepository
 from .base import utc_now
 from .demand_period_models import (
@@ -41,6 +51,7 @@ from .request_plan_preparation import (
     SqlRequestPlanPreparer,
 )
 from .planning_version import SqlPlanningMutationVersionRepository
+from .operational_contact_repository import SqlOperationalContactRepository
 from .segment_repository import SqlSegmentRepository
 from .segment_asset_guard import segment_asset_dependencies
 
@@ -77,6 +88,8 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
         self._approval_revisions = SqlRequestApprovalRevisionRepository(session)
         self._plan_preparer = SqlRequestPlanPreparer(session)
         self._approved_request_version_override: int | None = None
+        self._responsibility_revision_id: str | None = None
+        self._restore_approved_responsibility_only = False
 
     def _request(self, number: str) -> WorkforceRequest:
         wanted = _text(number)
@@ -174,12 +187,152 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             1,
         )
 
+    def _revision_responsibility_context(
+        self,
+        line_id: str,
+    ) -> tuple[RequestApprovalRevision, dict[str, object], str, int] | None:
+        if not self._responsibility_revision_id:
+            return None
+        revision = self._session.get(
+            RequestApprovalRevision,
+            self._responsibility_revision_id,
+        )
+        if revision is None:
+            raise ValueError("La révision approuvée de responsabilité est introuvable.")
+        payload = json.loads(revision.payload_text)
+        container = payload.get("operational_responsibility_context")
+        if not isinstance(container, dict):
+            return None
+        entries = container.get("entries")
+        if not isinstance(entries, dict):
+            return None
+
+        matches: list[dict[str, object]] = []
+        for identity, context in entries.items():
+            if not isinstance(context, dict):
+                continue
+            try:
+                parts = json.loads(str(identity))
+            except (TypeError, ValueError):
+                continue
+            if (
+                isinstance(parts, list)
+                and len(parts) == 3
+                and _text(parts[1]) == line_id
+            ):
+                matches.append(context)
+        if not matches:
+            return None
+        first = matches[0]
+        if any(context != first for context in matches[1:]):
+            raise ValueError(
+                "Les alternatives approuvées d'une même ligne portent des "
+                "contextes de responsabilité incohérents."
+            )
+        provenance = _text(container.get("provenance")) or PROVENANCE_APPROVAL_CAPTURE
+        version = int(
+            container.get("mechanism_version")
+            or RESPONSIBILITY_CONTEXT_VERSION
+        )
+        return revision, first, provenance, version
+
+    @staticmethod
+    def _store_responsibility_snapshot(
+        requirement: ResourceRequirement,
+        *,
+        contact_id: str | None,
+        source_type: str | None,
+        source_entity_id: str | None,
+        status: str | None,
+        diagnostics: tuple[str, ...],
+        provenance: str,
+        version: int,
+    ) -> None:
+        requirement.captured_operational_responsible_contact_id = contact_id
+        requirement.captured_operational_responsible_source_type = source_type
+        requirement.captured_operational_responsible_source_entity_id = source_entity_id
+        requirement.captured_operational_responsible_status = status
+        requirement.captured_operational_responsible_diagnostics = json.dumps(
+            list(diagnostics),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        requirement.operational_responsibility_context_provenance = provenance
+        requirement.operational_responsibility_context_version = version
+
+    def _capture_current_responsibility(
+        self,
+        request: WorkforceRequest,
+        requirement: ResourceRequirement,
+        line: RequestLine | None,
+        *,
+        provenance: str,
+    ) -> None:
+        service = OperationalContactService(
+            SqlOperationalContactRepository(self._session)
+        )
+        resolution = (
+            service.resolve_request_line(line.id)
+            if line is not None
+            else service.resolve_workforce_request(request.id)
+        ).operational_responsible
+        self._store_responsibility_snapshot(
+            requirement,
+            contact_id=resolution.contact_id,
+            source_type=resolution.source_type,
+            source_entity_id=resolution.source_entity_id,
+            status=resolution.status,
+            diagnostics=resolution.diagnostics,
+            provenance=provenance,
+            version=RESPONSIBILITY_CONTEXT_VERSION,
+        )
+
     def _capture_approved_contact_context(
         self,
         request: WorkforceRequest,
         requirement: ResourceRequirement,
         line: RequestLine | None,
     ) -> None:
+        line_id = line.id if line is not None else request.id
+        captured = self._revision_responsibility_context(line_id)
+        if captured is not None:
+            revision, context, provenance, version = captured
+            requirement.approved_task_catalog_item_id = _text(
+                context.get("approved_task_catalog_item_id")
+            ) or None
+            requirement.approved_operational_responsible_override_contact_id = _text(
+                context.get("approved_request_override_contact_id")
+            ) or None
+            requirement.approved_request_version = revision.request_version
+            requirement.approved_contact_context_status = "CAPTURED"
+            diagnostics = tuple(
+                str(item)
+                for item in (context.get("diagnostics") or [])
+                if str(item)
+            )
+            self._store_responsibility_snapshot(
+                requirement,
+                contact_id=_text(context.get("contact_id")) or None,
+                source_type=_text(context.get("source_type")) or None,
+                source_entity_id=_text(context.get("source_entity_id")) or None,
+                status=_text(context.get("status")) or None,
+                diagnostics=diagnostics,
+                provenance=provenance,
+                version=version,
+            )
+            return
+
+        if self._restore_approved_responsibility_only:
+            if (
+                requirement.operational_responsibility_context_provenance
+                != PROVENANCE_LEGACY_UNKNOWN
+                or requirement.operational_responsibility_context_version is not None
+            ):
+                return
+            requirement.approved_request_version = self._approved_request_version(request)
+            requirement.approved_contact_context_status = "LEGACY_UNKNOWN"
+            return
+
         requirement.approved_task_catalog_item_id = self._approved_task_id(
             request,
             line,
@@ -189,6 +342,16 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
         )
         requirement.approved_request_version = self._approved_request_version(request)
         requirement.approved_contact_context_status = "CAPTURED"
+        self._capture_current_responsibility(
+            request,
+            requirement,
+            line,
+            provenance=(
+                PROVENANCE_OPERATIONAL_CAPTURE
+                if self._emergency_materialization(request)
+                else PROVENANCE_APPROVAL_CAPTURE
+            ),
+        )
 
     def _approved_context_details(
         self,
@@ -205,6 +368,24 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                     "approved_task_catalog_item_id": row.approved_task_catalog_item_id,
                     "approved_operational_responsible_override_contact_id": (
                         row.approved_operational_responsible_override_contact_id
+                    ),
+                    "captured_operational_responsible_contact_id": (
+                        row.captured_operational_responsible_contact_id
+                    ),
+                    "captured_operational_responsible_source_type": (
+                        row.captured_operational_responsible_source_type
+                    ),
+                    "captured_operational_responsible_source_entity_id": (
+                        row.captured_operational_responsible_source_entity_id
+                    ),
+                    "captured_operational_responsible_status": (
+                        row.captured_operational_responsible_status
+                    ),
+                    "operational_responsibility_context_provenance": (
+                        row.operational_responsibility_context_provenance
+                    ),
+                    "operational_responsibility_context_version": (
+                        row.operational_responsibility_context_version
                     ),
                 }
                 for row in requirements
@@ -1010,6 +1191,9 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
         if project is None:
             raise KeyError(f"Projet {approved_project_id} introuvable")
 
+        self._responsibility_revision_id = prepared.approval_revision_id
+        self._restore_approved_responsibility_only = True
+
         for requirement in obsolete:
             requirement.status = "Annulé"
 
@@ -1116,6 +1300,8 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                 request_version=self._approved_request_version(request),
             )
         )
+        self._responsibility_revision_id = revision.id if revision is not None else None
+        self._restore_approved_responsibility_only = False
 
         if bool(request.line_mode):
             self._sync_request_lines(request, periods)
