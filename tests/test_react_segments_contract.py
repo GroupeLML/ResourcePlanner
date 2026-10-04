@@ -29,9 +29,10 @@ class ReactSegmentsContractTests(unittest.TestCase):
 
         self.assertIn('import SegmentEditor from "./SegmentEditor"', shift)
         self.assertIn("Modifier le segment parent", shift)
-        self.assertIn("segmentId={shift.segment_id}", shift)
+        self.assertIn("segmentId={shift.requirement_id || shift.segment_id}", shift)
         self.assertIn("setSegmentOpen(true)", shift)
         self.assertIn("onSaved={onSaved}", shift)
+        self.assertIn("onOpenDemand={onOpenDemand}", shift)
 
     def test_segment_api_uses_existing_fastapi_contract(self) -> None:
         api = (ROOT / "frontend" / "src" / "segments-api.ts").read_text(encoding="utf-8")

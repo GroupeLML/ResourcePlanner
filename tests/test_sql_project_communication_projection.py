@@ -32,7 +32,8 @@ from app.infrastructure.sql.operational_contact_repository import (
     SqlOperationalContactRepository,
 )
 from app.infrastructure.sql.project_communication_repository import (
-    DIAGNOSTIC_RESOURCE_USER_LINK_MISSING,
+    DIAGNOSTIC_RESOURCE_EMAIL_MISSING,
+    DIAGNOSTIC_RESOURCE_ERP_INACTIVE,
     SqlProjectCommunicationRepository,
 )
 from app.server import create_api_app
@@ -123,7 +124,8 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
     def _seed(session) -> None:
         pm_email = "pm" + chr(64) + TEST_DOMAIN
         tech_email = "tech" + chr(64) + TEST_DOMAIN
-        legacy_email = "legacy" + chr(64) + TEST_DOMAIN
+        resource_one_email = "resource-one" + chr(64) + TEST_DOMAIN
+        resource_two_email = "resource-two" + chr(64) + TEST_DOMAIN
         session.add_all(
             [
                 BusinessContact(
@@ -233,14 +235,14 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     id="R1",
                     external_id="EMP-1",
                     name="Technicien ressource",
-                    email=legacy_email,
+                    email=resource_one_email,
                     active=True,
                 ),
                 Resource(
                     id="R2",
                     external_id="EMP-2",
                     name="Ressource sans utilisateur",
-                    email=legacy_email,
+                    email=resource_two_email,
                     active=True,
                 ),
             ]
@@ -489,7 +491,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
             before_payload["drafts"][0]["cc_recipients"],
         )
 
-    def test_projection_uses_approved_context_and_user_backed_contacts(self) -> None:
+    def test_projection_uses_approved_context_and_resource_recipients(self) -> None:
         with TemporaryDirectory() as directory:
             url = self._database(directory)
             engine = create_sql_engine(url)
@@ -513,10 +515,15 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
             "Responsable approuvé",
         )
         tech = next(row for row in task.resources if row.resource_id == "R1")
-        self.assertEqual(tech.contact.email, "tech" + chr(64) + TEST_DOMAIN)
-        self.assertNotEqual(tech.contact.email, "legacy" + chr(64) + TEST_DOMAIN)
+        self.assertEqual(
+            tech.contact.email,
+            "resource-one" + chr(64) + TEST_DOMAIN,
+        )
+        self.assertIsNone(tech.contact.user_id)
+        self.assertIsNone(tech.contact.contact_id)
+        self.assertNotEqual(tech.contact.email, "tech" + chr(64) + TEST_DOMAIN)
 
-    def test_unlinked_resource_is_explicitly_diagnosed(self) -> None:
+    def test_resource_without_app_user_uses_resource_email(self) -> None:
         with TemporaryDirectory() as directory:
             url = self._database(directory)
             engine = create_sql_engine(url)
@@ -530,9 +537,58 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 engine.dispose()
 
         resources = projection.projects[0].days[0].tasks[0].resources
+        unlinked = next(row for row in resources if row.resource_id == "R2")
+        self.assertEqual(
+            unlinked.contact.email,
+            "resource-two" + chr(64) + TEST_DOMAIN,
+        )
+        self.assertTrue(unlinked.contact.active)
+        self.assertIsNone(unlinked.contact.user_id)
+        self.assertIsNone(unlinked.contact.contact_id)
+
+    def test_resource_without_email_is_explicitly_diagnosed(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    resource = session.get(Resource, "R2")
+                    assert resource is not None
+                    resource.email = None
+                with factory() as session:
+                    projection = self._service(session).project_projection(
+                        week_start=WEEK
+                    )
+            finally:
+                engine.dispose()
+
+        resources = projection.projects[0].days[0].tasks[0].resources
         missing = next(row for row in resources if row.resource_id == "R2")
         self.assertIsNone(missing.contact.email)
-        self.assertIn(DIAGNOSTIC_RESOURCE_USER_LINK_MISSING, missing.diagnostics)
+        self.assertIn(DIAGNOSTIC_RESOURCE_EMAIL_MISSING, missing.diagnostics)
+
+    def test_erp_inactive_resource_is_explicitly_diagnosed(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    resource = session.get(Resource, "R2")
+                    assert resource is not None
+                    resource.erp_active = False
+                with factory() as session:
+                    projection = self._service(session).project_projection(
+                        week_start=WEEK
+                    )
+            finally:
+                engine.dispose()
+
+        resources = projection.projects[0].days[0].tasks[0].resources
+        inactive = next(row for row in resources if row.resource_id == "R2")
+        self.assertFalse(inactive.contact.active)
+        self.assertIn(DIAGNOSTIC_RESOURCE_ERP_INACTIVE, inactive.diagnostics)
 
     def test_http_preview_exposes_one_project_message_with_to_cc_and_diagnostics(self) -> None:
         with TemporaryDirectory() as directory:
@@ -558,15 +614,17 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
         )
         self.assertEqual(
             [row["email"] for row in draft["cc_recipients"]],
-            ["tech" + chr(64) + TEST_DOMAIN],
+            [
+                "resource-two" + chr(64) + TEST_DOMAIN,
+                "resource-one" + chr(64) + TEST_DOMAIN,
+            ],
         )
         self.assertTrue(draft["approvable"])
         self.assertIn("Responsable approuvé", draft["body"])
         self.assertIn("555" + "-" + "0100", draft["body"])
-        self.assertTrue(
+        self.assertFalse(
             any(
                 row["code"] == "PROJECT_CC_EMAIL_MISSING"
-                and row["entity_id"] == "R2"
                 for row in draft["diagnostics"]
             )
         )
@@ -612,9 +670,12 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     message["cc_emails"],
-                    ["tech" + chr(64) + TEST_DOMAIN],
+                    [
+                        "resource-two" + chr(64) + TEST_DOMAIN,
+                        "resource-one" + chr(64) + TEST_DOMAIN,
+                    ],
                 )
-                self.assertIn(
+                self.assertNotIn(
                     "PROJECT_CC_EMAIL_MISSING",
                     message["diagnostics_json"],
                 )
@@ -699,7 +760,10 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
         )
         self.assertEqual(
             transport.messages[0].cc_emails,
-            ("tech" + chr(64) + TEST_DOMAIN,),
+            (
+                "resource-two" + chr(64) + TEST_DOMAIN,
+                "resource-one" + chr(64) + TEST_DOMAIN,
+            ),
         )
 
     def test_smtp_partial_failure_retries_only_unsent_message(self) -> None:

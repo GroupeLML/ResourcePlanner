@@ -126,6 +126,7 @@ export default function SegmentEditor({
   resources,
   onClose,
   onSaved,
+  onOpenDemand,
 }: {
   open: boolean;
   segmentId: string | null;
@@ -133,6 +134,7 @@ export default function SegmentEditor({
   resources: ResourceReadModel[];
   onClose: () => void;
   onSaved: () => void;
+  onOpenDemand?: (demandNumber: string) => void;
 }) {
   const [segment, setSegment] = useState<SegmentReadModel | null>(null);
   const [competencies, setCompetencies] = useState<CompetencyReadModel[]>([]);
@@ -381,6 +383,31 @@ export default function SegmentEditor({
         {loading && !form ? <div className="segment-loading">Chargement du segment…</div> : form ? (
           <form className="segment-form" onSubmit={submit}>
             {error && <div className="dialog-error">{error}</div>}
+
+            {segmentId && (
+              <div className="segment-help">
+                {effectiveDemandNumber ? (
+                  onOpenDemand ? (
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => onOpenDemand(effectiveDemandNumber)}
+                      disabled={busy}
+                    >
+                      Ouvrir la demande parente
+                    </button>
+                  ) : (
+                    <span>Demande parente : {effectiveDemandNumber}</span>
+                  )
+                ) : (
+                  <span>
+                    {editingCanonicalAdHoc
+                      ? "Aucune demande parente — besoin ad hoc."
+                      : "Aucune demande parente disponible pour ce segment."}
+                  </span>
+                )}
+              </div>
+            )}
 
             {currentExcess > 0 && (
               <div className="overallocation-warning" role="status">
