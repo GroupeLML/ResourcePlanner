@@ -19,6 +19,8 @@ class ReactIssue594DContractTests(unittest.TestCase):
         self.assertIn("expected_version: expectedVersion", api)
         self.assertIn("expected_planning_version: expectedPlanningVersion", api)
         self.assertIn('"Idempotency-Key": idempotencyKey', api)
+        self.assertIn("getOperationalResponsibilityContacts", api)
+        self.assertIn('user_backed_only: "false"', api)
 
     def test_project_segment_and_shift_editors_use_one_responsibility_control(self) -> None:
         control = (FRONTEND / "OperationalResponsibilityControl.tsx").read_text(
@@ -32,6 +34,7 @@ class ReactIssue594DContractTests(unittest.TestCase):
         self.assertIn('can("manage_resources")', control)
         self.assertIn('can("manage_planning")', control)
         self.assertIn("createClientId()", control)
+        self.assertIn("getOperationalResponsibilityContacts", control)
         self.assertIn("AUTO → MANUAL", control)
         self.assertIn("Aucun override — utiliser l’héritage canonique", control)
         self.assertIn('kind: "project"', projects)
