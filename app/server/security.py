@@ -100,6 +100,7 @@ def required_permission(method: str, path: str) -> str | None:
             path.startswith("/api/v1/projects/")
             and (
                 path.endswith("/project-manager-contact")
+                or path.endswith("/operational-responsible")
                 or "/co-managers/" in path
             )
         )
