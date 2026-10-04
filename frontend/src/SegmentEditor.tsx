@@ -128,6 +128,7 @@ export default function SegmentEditor({
   onClose,
   onSaved,
   onOpenDemand,
+  planningVersion,
 }: {
   open: boolean;
   segmentId: string | null;
@@ -136,6 +137,7 @@ export default function SegmentEditor({
   onClose: () => void;
   onSaved: () => void;
   onOpenDemand?: (demandNumber: string) => void;
+  planningVersion?: number | null;
 }) {
   const [segment, setSegment] = useState<SegmentReadModel | null>(null);
   const [competencies, setCompetencies] = useState<CompetencyReadModel[]>([]);
