@@ -511,7 +511,7 @@ class RequestLineMaterializationHttpTests(unittest.TestCase):
 
                 engine = create_sql_engine(database_url)
                 factory = create_session_factory(engine)
-                with factory() as session:
+                with factory.begin() as session:
                     request = session.scalar(
                         select(WorkforceRequest).where(
                             WorkforceRequest.legacy_demand_number == number
