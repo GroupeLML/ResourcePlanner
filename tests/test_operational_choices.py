@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from app.infrastructure.sql import (
+    BusinessContact,
     Project,
     RequestApprovalRevision,
     RequestOperationalState,
@@ -35,7 +36,31 @@ D4 = date(2026, 9, 24)
 class VersionedOperationalChoicesApiTests(unittest.TestCase):
     @staticmethod
     def _seed_database(session) -> None:
-        session.add(Project(id="P1", number="P-1", name="Projet 13D"))
+        session.add_all(
+            [
+                BusinessContact(
+                    id="C-APPROVED",
+                    display_name="Responsable approuvé",
+                    email="approved" + chr(64) + "example.invalid",
+                    phone="555-0100",
+                ),
+                BusinessContact(
+                    id="C-CURRENT",
+                    display_name="Responsable courant",
+                    email="current" + chr(64) + "example.invalid",
+                    phone="555-0200",
+                ),
+            ]
+        )
+        session.flush()
+        session.add(
+            Project(
+                id="P1",
+                number="P-1",
+                name="Projet 13D",
+                operational_responsible_override_contact_id="C-APPROVED",
+            )
+        )
         seed_test_approval_routing(session, map_existing_tasks=True)
 
     @classmethod
@@ -219,6 +244,41 @@ class VersionedOperationalChoicesApiTests(unittest.TestCase):
                         )
                     )
                     self.assertEqual(revision_count, 1)
+                    revision = session.scalar(
+                        select(RequestApprovalRevision).where(
+                            RequestApprovalRevision.workforce_request_id == request.id
+                        )
+                    )
+                    assert revision is not None
+                    revision_payload = json.loads(revision.payload_text)
+                    responsibility = revision_payload[
+                        "operational_responsibility_context"
+                    ]
+                    self.assertEqual(
+                        responsibility["provenance"],
+                        "APPROVAL_CAPTURE",
+                    )
+                    self.assertEqual(responsibility["mechanism_version"], 1)
+                    contexts = tuple(responsibility["entries"].values())
+                    self.assertEqual(len(contexts), 2)
+                    self.assertEqual(
+                        {row["contact_id"] for row in contexts},
+                        {"C-APPROVED"},
+                    )
+                    self.assertEqual(
+                        {row["source_type"] for row in contexts},
+                        {"PROJECT_OVERRIDE"},
+                    )
+            finally:
+                engine.dispose()
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    project = session.get(Project, "P1")
+                    assert project is not None
+                    project.operational_responsible_override_contact_id = "C-CURRENT"
             finally:
                 engine.dispose()
 
@@ -278,6 +338,22 @@ class VersionedOperationalChoicesApiTests(unittest.TestCase):
                     self.assertEqual(active[0].start_date, D2)
                     self.assertEqual(active[0].end_date, D2)
                     self.assertEqual(active[0].priority, "Normale")
+                    self.assertEqual(
+                        active[0].captured_operational_responsible_contact_id,
+                        "C-APPROVED",
+                    )
+                    self.assertEqual(
+                        active[0].captured_operational_responsible_source_type,
+                        "PROJECT_OVERRIDE",
+                    )
+                    self.assertEqual(
+                        active[0].operational_responsibility_context_provenance,
+                        "APPROVAL_CAPTURE",
+                    )
+                    self.assertEqual(
+                        active[0].operational_responsibility_context_version,
+                        1,
+                    )
                     revision_count = session.scalar(
                         select(func.count(RequestApprovalRevision.id)).where(
                             RequestApprovalRevision.workforce_request_id == request.id

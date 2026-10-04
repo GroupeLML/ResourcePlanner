@@ -13,6 +13,12 @@ from app.application.communications import CommunicationTransportResult
 from app.domain.planning_engine import MISSING_ALLOCATION_TYPE
 from app.application.operational_contacts import OperationalContactService
 from app.application.project_communications import ProjectCommunicationService
+from app.domain.operational_contacts import (
+    PROVENANCE_MIGRATION_OBSERVED,
+    RESPONSIBILITY_CONTEXT_VERSION,
+    SOURCE_TASK_RESPONSIBLE,
+    STATUS_RESOLVED,
+)
 from app.infrastructure.sql import (
     AppUser,
     Base,
@@ -280,6 +286,16 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     approved_task_catalog_item_id="T-APPROVED",
                     approved_request_version=3,
                     approved_contact_context_status="CAPTURED",
+                    captured_operational_responsible_contact_id="C-RESP",
+                    captured_operational_responsible_source_type=SOURCE_TASK_RESPONSIBLE,
+                    captured_operational_responsible_source_entity_id="T-APPROVED",
+                    captured_operational_responsible_status=STATUS_RESOLVED,
+                    operational_responsibility_context_provenance=(
+                        PROVENANCE_MIGRATION_OBSERVED
+                    ),
+                    operational_responsibility_context_version=(
+                        RESPONSIBILITY_CONTEXT_VERSION
+                    ),
                     assigned_resource_id="R1",
                     start_date=WEEK,
                     end_date=WEEK,
@@ -296,6 +312,16 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     approved_task_catalog_item_id="T-APPROVED",
                     approved_request_version=3,
                     approved_contact_context_status="CAPTURED",
+                    captured_operational_responsible_contact_id="C-RESP",
+                    captured_operational_responsible_source_type=SOURCE_TASK_RESPONSIBLE,
+                    captured_operational_responsible_source_entity_id="T-APPROVED",
+                    captured_operational_responsible_status=STATUS_RESOLVED,
+                    operational_responsibility_context_provenance=(
+                        PROVENANCE_MIGRATION_OBSERVED
+                    ),
+                    operational_responsibility_context_version=(
+                        RESPONSIBILITY_CONTEXT_VERSION
+                    ),
                     assigned_resource_id="R2",
                     start_date=WEEK,
                     end_date=WEEK,

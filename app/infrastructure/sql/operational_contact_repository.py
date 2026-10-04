@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+import json
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -27,11 +28,16 @@ from ...domain.operational_contacts import (
     DIAGNOSTIC_TASK_REFERENCE_INVALID,
     DIAGNOSTIC_TASK_REFERENCE_LEGACY_CODE,
     DIAGNOSTIC_TASK_REFERENCE_UNRESOLVED,
+    SOURCE_NONE,
     SOURCE_PROJECT_MANAGER,
+    SOURCE_PROJECT_OVERRIDE,
     SOURCE_REQUEST_OVERRIDE,
+    SOURCE_REQUIREMENT_OVERRIDE,
     SOURCE_RESOURCE_COORDINATOR,
+    SOURCE_SHIFT_OVERRIDE,
     SOURCE_TASK_COORDINATOR,
     SOURCE_TASK_RESPONSIBLE,
+    STATUS_UNRESOLVED,
 )
 from .business_contact_models import BusinessContact
 from .project_manager_resolution_repository import (
@@ -45,6 +51,7 @@ from .models import (
     Shift,
     TaskCatalogEntry,
     WorkforceRequest,
+    WorkPackage,
 )
 
 
@@ -112,6 +119,7 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
         diagnostics: tuple[str, ...] = (),
         external_id: str | None = None,
         display_name_hint: str | None = None,
+        captured_status: str | None = None,
     ) -> ContactCandidate:
         return ContactCandidate(
             source_type=source_type,
@@ -122,6 +130,7 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
             diagnostics=diagnostics,
             external_id=external_id,
             display_name_hint=display_name_hint,
+            captured_status=captured_status,
         )
 
     def _project_manager_primaries(
@@ -284,12 +293,83 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
             diagnostics.append(DIAGNOSTIC_RESOURCE_INACTIVE)
         return resource, True, ()
 
+    def get_project_operational_candidates(
+        self,
+        project_id: str,
+        *,
+        task_id: str | None = None,
+    ) -> tuple[ContactCandidate, ContactCandidate, ContactCandidate]:
+        project = self._session.get(Project, str(project_id or "").strip())
+        if project is None:
+            raise KeyError(f"Projet {project_id} introuvable")
+
+        task = (
+            self._session.get(TaskCatalogEntry, task_id)
+            if task_id
+            else None
+        )
+        diagnostics: tuple[str, ...] = ()
+        if task_id and task is None:
+            diagnostics = (DIAGNOSTIC_TASK_REFERENCE_INVALID,)
+        elif task is not None and task.project_number != project.number:
+            diagnostics = (DIAGNOSTIC_TASK_PROJECT_MISMATCH,)
+            task = None
+        elif task is not None and not bool(task.active):
+            diagnostics = (DIAGNOSTIC_TASK_INACTIVE,)
+
+        manager = self._project_manager_primaries((project.id,)).get(project.id)
+        contact_ids = (
+            task.operational_responsible_contact_id if task is not None else None,
+            project.operational_responsible_override_contact_id,
+            manager.business_contact_id if manager is not None else None,
+        )
+        contacts = self._contacts(contact_ids)
+        return (
+            self._candidate(
+                source_type=SOURCE_TASK_RESPONSIBLE,
+                source_entity_id=task.id if task is not None else task_id,
+                source_label=(
+                    f"Tâche {task.task_code}" if task is not None else None
+                ),
+                contact_id=(
+                    task.operational_responsible_contact_id
+                    if task is not None
+                    else None
+                ),
+                contacts=contacts,
+                diagnostics=diagnostics,
+            ),
+            self._candidate(
+                source_type=SOURCE_PROJECT_OVERRIDE,
+                source_entity_id=project.id,
+                source_label=f"Override projet · {project.number}",
+                contact_id=project.operational_responsible_override_contact_id,
+                contacts=contacts,
+            ),
+            self._project_manager_candidate(
+                project=project,
+                manager=manager,
+                contacts=contacts,
+            ),
+        )
+
+    @staticmethod
+    def _captured_diagnostics(value: str | None) -> tuple[str, ...]:
+        if not value:
+            return ()
+        try:
+            payload = json.loads(value)
+        except (TypeError, ValueError):
+            return (str(value),)
+        if not isinstance(payload, list):
+            return (str(value),)
+        return _unique([str(item) for item in payload if str(item)])
+
     def _materialized_context(
         self,
         *,
         requirement: ResourceRequirement,
         shift: Shift | None = None,
-        project_managers: dict[str, EffectiveProjectManager | None] | None = None,
     ) -> MaterializedContactContext | None:
         project = self._session.get(Project, requirement.project_id)
         if project is None:
@@ -321,15 +401,37 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
             )
         )
 
-        manager = (
-            self._project_manager_primaries((project.id,)).get(project.id)
-            if project_managers is None
-            else project_managers.get(project.id)
+        provenance = str(
+            requirement.operational_responsibility_context_provenance
+            or "LEGACY_UNKNOWN"
         )
+        captured_diagnostics = self._captured_diagnostics(
+            requirement.captured_operational_responsible_diagnostics
+        )
+        captured_source = (
+            requirement.captured_operational_responsible_source_type
+            or SOURCE_NONE
+        )
+        captured_status = requirement.captured_operational_responsible_status
+        if provenance == "LEGACY_UNKNOWN":
+            captured_source = SOURCE_NONE
+            captured_status = STATUS_UNRESOLVED
+            captured_diagnostics = _unique(
+                list(captured_diagnostics)
+                + [DIAGNOSTIC_APPROVED_CONTACT_CONTEXT_LEGACY_UNKNOWN]
+            )
+        elif (
+            captured_status is None
+            and requirement.captured_operational_responsible_contact_id is None
+        ):
+            captured_status = STATUS_UNRESOLVED
+
         contact_ids = (
-            requirement.approved_operational_responsible_override_contact_id,
-            task.operational_responsible_contact_id if task is not None else None,
-            manager.business_contact_id if manager is not None else None,
+            shift.operational_responsible_override_contact_id
+            if shift is not None
+            else None,
+            requirement.operational_responsible_override_contact_id,
+            requirement.captured_operational_responsible_contact_id,
             resource.coordinator_contact_id if resource is not None else None,
             task.coordinator_contact_id if task is not None else None,
         )
@@ -357,36 +459,39 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
             task_label=task.label if task is not None else None,
             resource_id=resource.id if resource is not None else resource_id,
             resource_name=resource.name if resource is not None else None,
-            request_override=self._candidate(
-                source_type=SOURCE_REQUEST_OVERRIDE,
-                source_entity_id=(
-                    request.id if request is not None else requirement.workforce_request_id
-                ),
-                source_label=(
-                    f"Demande approuvée {demand_number}"
-                    if demand_number
-                    else "Demande approuvée"
-                ),
+            shift_override=self._candidate(
+                source_type=SOURCE_SHIFT_OVERRIDE,
+                source_entity_id=shift.id if shift is not None else None,
+                source_label="Override du quart" if shift is not None else None,
                 contact_id=(
-                    requirement.approved_operational_responsible_override_contact_id
-                ),
-                contacts=contacts,
-            ),
-            task_responsible=self._candidate(
-                source_type=SOURCE_TASK_RESPONSIBLE,
-                source_entity_id=task.id if task is not None else None,
-                source_label=task_label,
-                contact_id=(
-                    task.operational_responsible_contact_id
-                    if task is not None
+                    shift.operational_responsible_override_contact_id
+                    if shift is not None
                     else None
                 ),
                 contacts=contacts,
             ),
-            project_manager=self._project_manager_candidate(
-                project=project,
-                manager=manager,
+            requirement_override=self._candidate(
+                source_type=SOURCE_REQUIREMENT_OVERRIDE,
+                source_entity_id=requirement.id,
+                source_label="Override du besoin",
+                contact_id=requirement.operational_responsible_override_contact_id,
                 contacts=contacts,
+            ),
+            captured_inherited=self._candidate(
+                source_type=captured_source,
+                source_entity_id=(
+                    requirement.captured_operational_responsible_source_entity_id
+                    or requirement.id
+                ),
+                source_label="Contexte de responsabilité capturé",
+                contact_id=requirement.captured_operational_responsible_contact_id,
+                contacts=contacts,
+                diagnostics=captured_diagnostics,
+                captured_status=captured_status,
+            ),
+            operational_responsibility_context_provenance=provenance,
+            operational_responsibility_context_version=(
+                requirement.operational_responsibility_context_version
             ),
             resource_coordinator=self._candidate(
                 source_type=SOURCE_RESOURCE_COORDINATOR,
@@ -427,7 +532,6 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
         tuple[WorkforceRequest, ...],
         tuple[TaskCatalogEntry, ...],
         tuple[Resource, ...],
-        dict[str, EffectiveProjectManager | None],
     ]:
         """Prime the SQLAlchemy identity map for fixed-cost materialized resolution."""
 
@@ -494,13 +598,10 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
             else ()
         )
 
-        project_by_id = {row.id: row for row in projects}
-        project_managers = self._project_manager_primaries(tuple(project_by_id))
         task_by_id = {row.id: row for row in tasks}
         resource_by_id = {row.id: row for row in resources}
         contact_ids: list[str | None] = []
         for requirement in requirements:
-            project = project_by_id.get(requirement.project_id)
             task = (
                 task_by_id.get(requirement.approved_task_catalog_item_id)
                 if requirement.approved_task_catalog_item_id
@@ -508,20 +609,8 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
             )
             contact_ids.extend(
                 (
-                    requirement.approved_operational_responsible_override_contact_id,
-                    (
-                        task.operational_responsible_contact_id
-                        if task is not None
-                        else None
-                    ),
-                    (
-                        project_managers[project.id].business_contact_id
-                        if (
-                            project is not None
-                            and project_managers.get(project.id) is not None
-                        )
-                        else None
-                    ),
+                    requirement.operational_responsible_override_contact_id,
+                    requirement.captured_operational_responsible_contact_id,
                     (
                         task.coordinator_contact_id
                         if task is not None
@@ -532,7 +621,7 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
         for resource in resources:
             contact_ids.append(resource.coordinator_contact_id)
         self._contacts(tuple(contact_ids))
-        return projects, requests, tasks, resources, project_managers
+        return projects, requests, tasks, resources
 
     def get_resource_requirement_contact_contexts(
         self,
@@ -556,7 +645,6 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
         )
         by_id = {row.id: row for row in requirements}
         primed = self._prime_materialized_context_rows(requirements)
-        project_managers = primed[4]
         result = tuple(
             context
             for requirement_id in wanted
@@ -564,7 +652,6 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
             and (
                 context := self._materialized_context(
                     requirement=requirement,
-                    project_managers=project_managers,
                 )
             )
             is not None
@@ -612,7 +699,6 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
             requirements,
             shifts=shifts,
         )
-        project_managers = primed[4]
         result: list[MaterializedContactContext] = []
         for shift_id in wanted:
             shift = shift_by_id.get(shift_id)
@@ -624,7 +710,6 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
             context = self._materialized_context(
                 requirement=requirement,
                 shift=shift,
-                project_managers=project_managers,
             )
             if context is not None:
                 result.append(context)
@@ -659,6 +744,155 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
         return self._materialized_context(
             requirement=requirement,
             shift=shift,
+        )
+
+    def get_workforce_request_contact_context(
+        self,
+        request_id: str,
+    ) -> RequestLineContactContext | None:
+        request = self._session.get(
+            WorkforceRequest,
+            str(request_id or "").strip(),
+        )
+        if request is None:
+            return None
+        project = self._session.get(Project, request.project_id)
+        if project is None:
+            return None
+
+        diagnostics: list[str] = []
+        task: TaskCatalogEntry | None = None
+        if request.work_package_id:
+            work_package = self._session.get(WorkPackage, request.work_package_id)
+            task_id = (
+                work_package.task_catalog_item_id
+                if work_package is not None
+                else None
+            )
+            if task_id:
+                task = self._session.get(TaskCatalogEntry, task_id)
+                if task is None:
+                    diagnostics.append(DIAGNOSTIC_TASK_REFERENCE_INVALID)
+                elif task.project_number != project.number:
+                    diagnostics.append(DIAGNOSTIC_TASK_PROJECT_MISMATCH)
+                    task = None
+
+        if task is None and request.erp_task_code:
+            task = self._session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == project.number,
+                    TaskCatalogEntry.task_code == request.erp_task_code,
+                )
+            )
+            if task is None:
+                diagnostics.append(DIAGNOSTIC_TASK_REFERENCE_UNRESOLVED)
+            else:
+                diagnostics.append(DIAGNOSTIC_TASK_REFERENCE_LEGACY_CODE)
+
+        if task is not None and not bool(task.active):
+            diagnostics.append(DIAGNOSTIC_TASK_INACTIVE)
+
+        resource = None
+        if request.proposed_resource_id:
+            resource = self._session.get(Resource, request.proposed_resource_id)
+            if resource is None:
+                diagnostics.append(DIAGNOSTIC_RESOURCE_REFERENCE_INVALID)
+            elif not bool(resource.active):
+                diagnostics.append(DIAGNOSTIC_RESOURCE_INACTIVE)
+
+        manager = self._project_manager_primaries((project.id,)).get(project.id)
+        contact_ids = (
+            request.operational_responsible_override_contact_id,
+            task.operational_responsible_contact_id if task is not None else None,
+            project.operational_responsible_override_contact_id,
+            manager.business_contact_id if manager is not None else None,
+            resource.coordinator_contact_id if resource is not None else None,
+            task.coordinator_contact_id if task is not None else None,
+        )
+        contacts = self._contacts(contact_ids)
+        task_label = f"Tâche {task.task_code}" if task is not None else None
+
+        return RequestLineContactContext(
+            line_id=request.id,
+            demand_number=request.legacy_demand_number,
+            project_id=project.id,
+            project_number=project.number,
+            task_id=task.id if task is not None else None,
+            task_code=(
+                task.task_code
+                if task is not None
+                else request.erp_task_code
+            ),
+            task_label=(
+                task.label
+                if task is not None
+                else request.erp_task_label
+            ),
+            proposed_resource_id=(
+                resource.id if resource is not None else request.proposed_resource_id
+            ),
+            proposed_resource_name=resource.name if resource is not None else None,
+            request_override=self._candidate(
+                source_type=SOURCE_REQUEST_OVERRIDE,
+                source_entity_id=request.id,
+                source_label=(
+                    f"Demande {request.legacy_demand_number}"
+                    if request.legacy_demand_number
+                    else "Demande"
+                ),
+                contact_id=request.operational_responsible_override_contact_id,
+                contacts=contacts,
+            ),
+            task_responsible=self._candidate(
+                source_type=SOURCE_TASK_RESPONSIBLE,
+                source_entity_id=task.id if task is not None else None,
+                source_label=task_label,
+                contact_id=(
+                    task.operational_responsible_contact_id
+                    if task is not None
+                    else None
+                ),
+                contacts=contacts,
+            ),
+            project_override=self._candidate(
+                source_type=SOURCE_PROJECT_OVERRIDE,
+                source_entity_id=project.id,
+                source_label=f"Override projet · {project.number}",
+                contact_id=project.operational_responsible_override_contact_id,
+                contacts=contacts,
+            ),
+            project_manager=self._project_manager_candidate(
+                project=project,
+                manager=manager,
+                contacts=contacts,
+            ),
+            resource_coordinator=self._candidate(
+                source_type=SOURCE_RESOURCE_COORDINATOR,
+                source_entity_id=(
+                    resource.id
+                    if resource is not None
+                    else request.proposed_resource_id
+                ),
+                source_label=(
+                    f"Ressource {resource.name}"
+                    if resource is not None
+                    else None
+                ),
+                contact_id=(
+                    resource.coordinator_contact_id
+                    if resource is not None
+                    else None
+                ),
+                contacts=contacts,
+            ),
+            task_coordinator=self._candidate(
+                source_type=SOURCE_TASK_COORDINATOR,
+                source_entity_id=task.id if task is not None else None,
+                source_label=task_label,
+                contact_id=task.coordinator_contact_id if task is not None else None,
+                contacts=contacts,
+            ),
+            diagnostics=_unique(diagnostics),
         )
 
     def get_request_line_contact_contexts(
@@ -829,6 +1063,7 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
                         if task is not None
                         else None
                     ),
+                    project.operational_responsible_override_contact_id,
                     manager.business_contact_id if manager is not None else None,
                     (
                         resource.coordinator_contact_id
@@ -913,6 +1148,13 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
                             if task is not None
                             else None
                         ),
+                        contacts=contacts,
+                    ),
+                    project_override=self._candidate(
+                        source_type=SOURCE_PROJECT_OVERRIDE,
+                        source_entity_id=project.id,
+                        source_label=f"Override projet · {project.number}",
+                        contact_id=project.operational_responsible_override_contact_id,
                         contacts=contacts,
                     ),
                     project_manager=self._project_manager_candidate(

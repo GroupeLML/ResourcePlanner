@@ -7,15 +7,11 @@ from typing import Protocol
 from ..domain.operational_contacts import (
     ContactCandidate,
     ContactResolution,
-    DIAGNOSTIC_APPROVED_CONTACT_CONTEXT_LEGACY_UNKNOWN,
     resolve_contact_candidates,
     resolve_coordinator,
     resolve_operational_responsible,
 )
 from .errors import ApplicationNotFoundError, call_application_port
-
-
-APPROVED_CONTACT_CONTEXT_LEGACY_UNKNOWN = "LEGACY_UNKNOWN"
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +27,7 @@ class RequestLineContactContext:
     proposed_resource_name: str | None
     request_override: ContactCandidate
     task_responsible: ContactCandidate
+    project_override: ContactCandidate
     project_manager: ContactCandidate
     resource_coordinator: ContactCandidate
     task_coordinator: ContactCandidate
@@ -67,9 +64,11 @@ class MaterializedContactContext:
     task_label: str | None
     resource_id: str | None
     resource_name: str | None
-    request_override: ContactCandidate
-    task_responsible: ContactCandidate
-    project_manager: ContactCandidate
+    shift_override: ContactCandidate
+    requirement_override: ContactCandidate
+    captured_inherited: ContactCandidate
+    operational_responsibility_context_provenance: str
+    operational_responsibility_context_version: int | None
     resource_coordinator: ContactCandidate
     task_coordinator: ContactCandidate
     task_context_known: bool = True
@@ -101,6 +100,11 @@ class MaterializedContactResolution:
 
 
 class OperationalContactRepositoryPort(Protocol):
+    def get_workforce_request_contact_context(
+        self,
+        request_id: str,
+    ) -> RequestLineContactContext | None: ...
+
     def get_request_line_contact_context(
         self,
         line_id: str,
@@ -145,6 +149,7 @@ class OperationalContactService:
         responsible = resolve_operational_responsible(
             request_override=context.request_override,
             task_responsible=context.task_responsible,
+            project_override=context.project_override,
             project_manager=context.project_manager,
         )
         coordinator = resolve_coordinator(
@@ -164,6 +169,24 @@ class OperationalContactService:
             coordinator=coordinator,
             diagnostics=context.diagnostics,
         )
+
+    def resolve_workforce_request(
+        self,
+        request_id: str,
+    ) -> RequestLineContactResolution:
+        wanted = str(request_id or "").strip()
+        context = call_application_port(
+            lambda: self._repository.get_workforce_request_contact_context(wanted),
+            code_prefix="operational_contact_read",
+            context={"request_id": wanted},
+        )
+        if context is None:
+            raise ApplicationNotFoundError(
+                "La demande est introuvable.",
+                code="workforce_request_not_found",
+                context={"request_id": wanted},
+            )
+        return self._resolve_request_line_context(context)
 
     def resolve_request_lines(
         self,
@@ -375,33 +398,11 @@ class OperationalContactService:
         subject_type: str,
         subject_id: str,
     ) -> MaterializedContactResolution:
-        legacy_unknown = (
-            context.approved_contact_context_status
-            == APPROVED_CONTACT_CONTEXT_LEGACY_UNKNOWN
+        responsible = resolve_operational_responsible(
+            shift_override=context.shift_override,
+            requirement_override=context.requirement_override,
+            captured_inherited=context.captured_inherited,
         )
-
-        if legacy_unknown:
-            responsible = resolve_contact_candidates(
-                unresolved_diagnostics=(
-                    DIAGNOSTIC_APPROVED_CONTACT_CONTEXT_LEGACY_UNKNOWN,
-                )
-            )
-        elif context.request_override.contact_id is not None:
-            responsible = resolve_operational_responsible(
-                request_override=context.request_override,
-                task_responsible=context.task_responsible,
-                project_manager=context.project_manager,
-            )
-        elif not context.task_context_known:
-            responsible = resolve_contact_candidates(
-                unresolved_diagnostics=context.task_context_diagnostics
-            )
-        else:
-            responsible = resolve_operational_responsible(
-                request_override=context.request_override,
-                task_responsible=context.task_responsible,
-                project_manager=context.project_manager,
-            )
 
         if context.resource_coordinator.contact_id is not None:
             coordinator = resolve_coordinator(
