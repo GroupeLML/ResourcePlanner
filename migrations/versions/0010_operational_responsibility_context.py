@@ -22,6 +22,9 @@ PROJECT_VERSION_CHECK = (
 PROVENANCE_CHECK = (
     "ck_resource_requirements_operational_responsibility_context_provenance"
 )
+CAPTURED_STATUS_CHECK = (
+    "ck_resource_requirements_captured_operational_responsible_status"
+)
 CONTEXT_VERSION_CHECK = (
     "ck_resource_requirements_operational_responsibility_context_version_positive"
 )
@@ -143,6 +146,15 @@ def _add_context_columns() -> None:
     if bind.dialect.name == "sqlite":
         op.execute(
             "ALTER TABLE resource_requirements ADD COLUMN "
+            "captured_operational_responsible_status VARCHAR(32) "
+            f"CONSTRAINT {CAPTURED_STATUS_CHECK} CHECK ("
+            "captured_operational_responsible_status IS NULL OR "
+            "captured_operational_responsible_status IN "
+            "('RESOLVED','UNRESOLVED','INVALID_REFERENCE','INACTIVE')"
+            ")"
+        )
+        op.execute(
+            "ALTER TABLE resource_requirements ADD COLUMN "
             "operational_responsibility_context_provenance VARCHAR(32) "
             "NOT NULL DEFAULT 'LEGACY_UNKNOWN' "
             f"CONSTRAINT {PROVENANCE_CHECK} CHECK ("
@@ -160,6 +172,21 @@ def _add_context_columns() -> None:
         )
         return
 
+    op.add_column(
+        "resource_requirements",
+        sa.Column(
+            "captured_operational_responsible_status",
+            sa.String(length=32),
+            nullable=True,
+        ),
+    )
+    op.create_check_constraint(
+        CAPTURED_STATUS_CHECK,
+        "resource_requirements",
+        "captured_operational_responsible_status IS NULL OR "
+        "captured_operational_responsible_status IN "
+        "('RESOLVED','UNRESOLVED','INVALID_REFERENCE','INACTIVE')",
+    )
     op.add_column(
         "resource_requirements",
         sa.Column(
@@ -398,6 +425,11 @@ def downgrade() -> None:
             type_="check",
         )
         op.drop_constraint(
+            CAPTURED_STATUS_CHECK,
+            "resource_requirements",
+            type_="check",
+        )
+        op.drop_constraint(
             PROVENANCE_CHECK,
             "resource_requirements",
             type_="check",
@@ -420,6 +452,10 @@ def downgrade() -> None:
     op.drop_column(
         "resource_requirements",
         "captured_operational_responsible_diagnostics",
+    )
+    op.drop_column(
+        "resource_requirements",
+        "captured_operational_responsible_status",
     )
     op.drop_column(
         "resource_requirements",
