@@ -104,6 +104,11 @@ class MaterializedContactResolution:
 
 
 class OperationalContactRepositoryPort(Protocol):
+    def get_workforce_request_contact_context(
+        self,
+        request_id: str,
+    ) -> RequestLineContactContext | None: ...
+
     def get_request_line_contact_context(
         self,
         line_id: str,
@@ -168,6 +173,24 @@ class OperationalContactService:
             coordinator=coordinator,
             diagnostics=context.diagnostics,
         )
+
+    def resolve_workforce_request(
+        self,
+        request_id: str,
+    ) -> RequestLineContactResolution:
+        wanted = str(request_id or "").strip()
+        context = call_application_port(
+            lambda: self._repository.get_workforce_request_contact_context(wanted),
+            code_prefix="operational_contact_read",
+            context={"request_id": wanted},
+        )
+        if context is None:
+            raise ApplicationNotFoundError(
+                "La demande est introuvable.",
+                code="workforce_request_not_found",
+                context={"request_id": wanted},
+            )
+        return self._resolve_request_line_context(context)
 
     def resolve_request_lines(
         self,
