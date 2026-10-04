@@ -51,6 +51,7 @@ from .models import (
     Shift,
     TaskCatalogEntry,
     WorkforceRequest,
+    WorkPackage,
 )
 
 
@@ -692,6 +693,154 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
         return self._materialized_context(
             requirement=requirement,
             shift=shift,
+        )
+
+    def get_workforce_request_contact_context(
+        self,
+        request_id: str,
+    ) -> RequestLineContactContext | None:
+        request = self._session.get(
+            WorkforceRequest,
+            str(request_id or "").strip(),
+        )
+        if request is None:
+            return None
+        project = self._session.get(Project, request.project_id)
+        if project is None:
+            return None
+
+        diagnostics: list[str] = []
+        task: TaskCatalogEntry | None = None
+        if request.work_package_id:
+            work_package = self._session.get(WorkPackage, request.work_package_id)
+            task_id = (
+                work_package.task_catalog_item_id
+                if work_package is not None
+                else None
+            )
+            if task_id:
+                task = self._session.get(TaskCatalogEntry, task_id)
+                if task is None:
+                    diagnostics.append(DIAGNOSTIC_TASK_REFERENCE_INVALID)
+                elif task.project_number != project.number:
+                    diagnostics.append(DIAGNOSTIC_TASK_PROJECT_MISMATCH)
+                    task = None
+        elif request.erp_task_code:
+            task = self._session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == project.number,
+                    TaskCatalogEntry.task_code == request.erp_task_code,
+                )
+            )
+            if task is None:
+                diagnostics.append(DIAGNOSTIC_TASK_REFERENCE_UNRESOLVED)
+            else:
+                diagnostics.append(DIAGNOSTIC_TASK_REFERENCE_LEGACY_CODE)
+
+        if task is not None and not bool(task.active):
+            diagnostics.append(DIAGNOSTIC_TASK_INACTIVE)
+
+        resource = None
+        if request.proposed_resource_id:
+            resource = self._session.get(Resource, request.proposed_resource_id)
+            if resource is None:
+                diagnostics.append(DIAGNOSTIC_RESOURCE_REFERENCE_INVALID)
+            elif not bool(resource.active):
+                diagnostics.append(DIAGNOSTIC_RESOURCE_INACTIVE)
+
+        manager = self._project_manager_primaries((project.id,)).get(project.id)
+        contact_ids = (
+            request.operational_responsible_override_contact_id,
+            task.operational_responsible_contact_id if task is not None else None,
+            project.operational_responsible_override_contact_id,
+            manager.business_contact_id if manager is not None else None,
+            resource.coordinator_contact_id if resource is not None else None,
+            task.coordinator_contact_id if task is not None else None,
+        )
+        contacts = self._contacts(contact_ids)
+        task_label = f"Tâche {task.task_code}" if task is not None else None
+
+        return RequestLineContactContext(
+            line_id=request.id,
+            demand_number=request.legacy_demand_number,
+            project_id=project.id,
+            project_number=project.number,
+            task_id=task.id if task is not None else None,
+            task_code=(
+                task.task_code
+                if task is not None
+                else request.erp_task_code
+            ),
+            task_label=(
+                task.label
+                if task is not None
+                else request.erp_task_label
+            ),
+            proposed_resource_id=(
+                resource.id if resource is not None else request.proposed_resource_id
+            ),
+            proposed_resource_name=resource.name if resource is not None else None,
+            request_override=self._candidate(
+                source_type=SOURCE_REQUEST_OVERRIDE,
+                source_entity_id=request.id,
+                source_label=(
+                    f"Demande {request.legacy_demand_number}"
+                    if request.legacy_demand_number
+                    else "Demande"
+                ),
+                contact_id=request.operational_responsible_override_contact_id,
+                contacts=contacts,
+            ),
+            task_responsible=self._candidate(
+                source_type=SOURCE_TASK_RESPONSIBLE,
+                source_entity_id=task.id if task is not None else None,
+                source_label=task_label,
+                contact_id=(
+                    task.operational_responsible_contact_id
+                    if task is not None
+                    else None
+                ),
+                contacts=contacts,
+            ),
+            project_override=self._candidate(
+                source_type=SOURCE_PROJECT_OVERRIDE,
+                source_entity_id=project.id,
+                source_label=f"Override projet · {project.number}",
+                contact_id=project.operational_responsible_override_contact_id,
+                contacts=contacts,
+            ),
+            project_manager=self._project_manager_candidate(
+                project=project,
+                manager=manager,
+                contacts=contacts,
+            ),
+            resource_coordinator=self._candidate(
+                source_type=SOURCE_RESOURCE_COORDINATOR,
+                source_entity_id=(
+                    resource.id
+                    if resource is not None
+                    else request.proposed_resource_id
+                ),
+                source_label=(
+                    f"Ressource {resource.name}"
+                    if resource is not None
+                    else None
+                ),
+                contact_id=(
+                    resource.coordinator_contact_id
+                    if resource is not None
+                    else None
+                ),
+                contacts=contacts,
+            ),
+            task_coordinator=self._candidate(
+                source_type=SOURCE_TASK_COORDINATOR,
+                source_entity_id=task.id if task is not None else None,
+                source_label=task_label,
+                contact_id=task.coordinator_contact_id if task is not None else None,
+                contacts=contacts,
+            ),
+            diagnostics=_unique(diagnostics),
         )
 
     def get_request_line_contact_contexts(
