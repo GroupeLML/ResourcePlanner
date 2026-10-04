@@ -1651,6 +1651,17 @@ export function getBusinessContacts(activeOnly = false, signal?: AbortSignal) {
   );
 }
 
+export function getOperationalResponsibilityContacts(signal?: AbortSignal) {
+  const params = new URLSearchParams({
+    active_only: "true",
+    user_backed_only: "false",
+  });
+  return getJson<BusinessContactReadModel[]>(
+    `/api/v1/business-contacts?${params.toString()}`,
+    signal,
+  );
+}
+
 export function createBusinessContact(payload: {
   display_name: string;
   email?: string | null;
