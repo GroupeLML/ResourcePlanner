@@ -112,6 +112,7 @@ export default function ShiftEditor({
   onClose,
   onSaved,
   onStale,
+  onOpenDemand,
   onAssetAction,
 }: {
   shift: ShiftReadModel;
@@ -120,6 +121,7 @@ export default function ShiftEditor({
   onClose: () => void;
   onSaved: () => void;
   onStale: () => void;
+  onOpenDemand: (demandNumber: string) => void;
   onAssetAction: (mode: "assign" | "change" | "release") => void;
 }) {
   const { can } = useAuth();
@@ -394,11 +396,12 @@ export default function ShiftEditor({
     return (
       <SegmentEditor
         open
-        segmentId={shift.segment_id}
+        segmentId={shift.requirement_id || shift.segment_id}
         demand={null}
         resources={resources}
         onClose={() => setSegmentOpen(false)}
         onSaved={onSaved}
+        onOpenDemand={onOpenDemand}
       />
     );
   }

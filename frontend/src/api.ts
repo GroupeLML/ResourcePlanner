@@ -885,6 +885,7 @@ export type ShiftAssetActionsReadModel = {
 export type ShiftReadModel = {
   allocation_id: string;
   segment_id: string;
+  requirement_id: string | null;
   resource_id: string;
   resource_name: string;
   work_date: string;

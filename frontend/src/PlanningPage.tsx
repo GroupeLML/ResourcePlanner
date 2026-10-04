@@ -1418,6 +1418,10 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
             });
             setRefreshKey((value) => value + 1);
           }}
+          onOpenDemand={(demandNumber) => {
+            setEditingShift(null);
+            setDetailDemandNumber(demandNumber);
+          }}
           onAssetAction={(mode) => {
             setAssetAssignment({ shift: editingShift, mode });
             setEditingShift(null);
@@ -1435,6 +1439,10 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
           onSaved={() => {
             setEditingSegmentId(null);
             setRefreshKey((value) => value + 1);
+          }}
+          onOpenDemand={(demandNumber) => {
+            setEditingSegmentId(null);
+            setDetailDemandNumber(demandNumber);
           }}
         />
       )}

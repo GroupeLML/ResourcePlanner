@@ -201,6 +201,8 @@ class SqlPlannerQueryRepositoryTests(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0].allocation_id, "MAN-1")
             self.assertEqual(rows[0].segment_id, "SEG-1")
+            self.assertEqual(rows[0].requirement_id, "REQ1")
+            self.assertEqual(rows[0].demand_number, self.demand_number)
             self.assertEqual(rows[0].resource_name, "Alice")
             self.assertTrue(rows[0].locked)
             self.assertEqual(rows[0].hours, 4.0)

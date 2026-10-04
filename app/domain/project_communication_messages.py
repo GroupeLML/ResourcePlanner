@@ -248,8 +248,8 @@ def _recipient_diagnostics(
                     entity_type="resource",
                     entity_id=resource_id,
                     message=(
-                        f"La ressource {participant.display_name} n'est pas liée "
-                        "à un profil métier actif."
+                        f"La ressource {participant.display_name} est inactive "
+                        "ou incohérente dans le référentiel de ressources."
                     ),
                 )
             )

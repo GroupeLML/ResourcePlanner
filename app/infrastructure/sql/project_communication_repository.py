@@ -36,9 +36,8 @@ DIAGNOSTIC_PROJECT_MANAGER_CONTACT_INVALID = "PROJECT_MANAGER_CONTACT_INVALID"
 DIAGNOSTIC_PROJECT_MANAGER_USER_MISSING = "PROJECT_MANAGER_USER_MISSING"
 DIAGNOSTIC_PROJECT_MANAGER_INACTIVE = "PROJECT_MANAGER_INACTIVE"
 DIAGNOSTIC_PROJECT_MANAGER_EMAIL_MISSING = "PROJECT_MANAGER_EMAIL_MISSING"
-DIAGNOSTIC_RESOURCE_USER_LINK_MISSING = "RESOURCE_USER_LINK_MISSING"
-DIAGNOSTIC_RESOURCE_CONTACT_MISSING = "RESOURCE_CONTACT_MISSING"
-DIAGNOSTIC_RESOURCE_CONTACT_INACTIVE = "RESOURCE_CONTACT_INACTIVE"
+DIAGNOSTIC_RESOURCE_INACTIVE = "RESOURCE_INACTIVE"
+DIAGNOSTIC_RESOURCE_ERP_INACTIVE = "RESOURCE_ERP_INACTIVE"
 DIAGNOSTIC_RESOURCE_EMAIL_MISSING = "RESOURCE_EMAIL_MISSING"
 DIAGNOSTIC_OPERATIONAL_RESPONSIBLE_USER_MISSING = (
     "OPERATIONAL_RESPONSIBLE_USER_MISSING"
@@ -123,41 +122,24 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
         self,
         *,
         resource: Resource,
-        users_by_employee: dict[str, AppUser],
-        contacts: dict[str, BusinessContact],
     ) -> ProjectCommunicationParticipant:
         diagnostics: list[str] = []
-        external_id = _text(resource.external_id)
-        user = users_by_employee.get(external_id) if external_id else None
-        if user is None:
-            diagnostics.append(DIAGNOSTIC_RESOURCE_USER_LINK_MISSING)
+        if not bool(resource.active):
+            diagnostics.append(DIAGNOSTIC_RESOURCE_INACTIVE)
+        if not bool(resource.erp_active):
+            diagnostics.append(DIAGNOSTIC_RESOURCE_ERP_INACTIVE)
 
-        contact_id = _text(user.business_contact_id) if user is not None else ""
-        contact = contacts.get(contact_id) if contact_id else None
-        if user is not None and contact is None:
-            diagnostics.append(DIAGNOSTIC_RESOURCE_CONTACT_MISSING)
-        if (
-            (contact is not None and not bool(contact.active))
-            or (user is not None and not bool(user.active))
-        ):
-            diagnostics.append(DIAGNOSTIC_RESOURCE_CONTACT_INACTIVE)
-
-        email = _text(contact.email) if contact is not None else ""
+        email = _text(resource.email)
         if not email:
             diagnostics.append(DIAGNOSTIC_RESOURCE_EMAIL_MISSING)
 
         return ProjectCommunicationParticipant(
-            contact_id=contact_id or None,
-            user_id=user.id if user is not None else None,
-            display_name=contact.display_name if contact is not None else resource.name,
+            contact_id=None,
+            user_id=None,
+            display_name=resource.name,
             email=email or None,
-            phone=(_text(contact.phone) or None) if contact is not None else None,
-            active=bool(
-                contact is not None
-                and contact.active
-                and user is not None
-                and user.active
-            ),
+            phone=_text(resource.erp_phone) or None,
+            active=bool(resource.active and resource.erp_active),
             diagnostics=_unique(diagnostics),
         )
 
@@ -303,26 +285,6 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                     [],
                 ).append(diagnostic)
 
-        resource_external_ids = {
-            _text(resource.external_id)
-            for _shift, _requirement, resource, _project in rows
-            if _text(resource.external_id)
-        }
-        resource_users = (
-            self._session.scalars(
-                select(AppUser).where(
-                    AppUser.employee_external_id.in_(resource_external_ids)
-                )
-            ).all()
-            if resource_external_ids
-            else []
-        )
-        users_by_employee = {
-            _text(row.employee_external_id): row
-            for row in resource_users
-            if _text(row.employee_external_id)
-        }
-
         resolutions = {
             resolution.shift_id: resolution
             for resolution in self._operational_contacts.resolve_shifts(shift_ids)
@@ -340,11 +302,6 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
             for manager in project_managers.values()
             if manager is not None and _text(manager.business_contact_id)
         }
-        relevant_contact_ids.update(
-            _text(user.business_contact_id)
-            for user in resource_users
-            if _text(user.business_contact_id)
-        )
         relevant_contact_ids.update(
             _text(resolution.operational_responsible.contact_id)
             for resolution in resolutions.values()
@@ -396,8 +353,6 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
             )
             resource_contact = self._resource_contact(
                 resource=resource,
-                users_by_employee=users_by_employee,
-                contacts=contacts_by_id,
             )
             operational_diagnostics: list[str] = []
             responsible_contact_id = _text(

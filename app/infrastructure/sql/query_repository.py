@@ -1904,6 +1904,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                     allocation_id=_text(shift.legacy_allocation_id) or shift.id,
                     segment_id=_text(requirement.legacy_segment_id) or requirement.id,
                     resource_id=resource.id,
+                    requirement_id=requirement.id,
                     resource_name=resource.name,
                     work_date=shift.work_date,
                     hours=float(shift.hours),
