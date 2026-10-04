@@ -6,6 +6,8 @@ import unittest
 from sqlalchemy import select
 
 from app.application.commands import QuickShiftCreateCommand
+from app.application.operational_contacts import OperationalContactService
+from app.domain.operational_contacts import SOURCE_PROJECT_MANAGER, STATUS_RESOLVED
 from app.infrastructure.migration import (
     CutoverDataset,
     CutoverExtractionReport,
@@ -13,11 +15,14 @@ from app.infrastructure.migration import (
     import_cutover_dataset,
 )
 from app.infrastructure.sql import (
+    AppUser,
     Base,
+    BusinessContact,
     Project,
     Resource,
     ResourceAvailabilityRule,
     ResourceRequirement,
+    SqlOperationalContactRepository,
     SqlPlannerQueryRepository,
     SqlSegmentRepository,
     create_session_factory,
@@ -51,11 +56,35 @@ class QuickShiftAuthorProjectionTests(unittest.TestCase):
 
     def _seed(self, session) -> None:
         session.add(
+            BusinessContact(
+                id="C-PM",
+                display_name="Responsable A",
+                email="responsable-a@example.invalid",
+                phone="555-0100",
+            )
+        )
+        session.flush()
+        session.add(
+            AppUser(
+                id="U-PM",
+                issuer="urn:test",
+                subject="pm",
+                display_name="Responsable A",
+                email="responsable-a@example.invalid",
+                employee_external_id="EMP-PM",
+                business_contact_id="C-PM",
+                roles_json='["PROJECT_MANAGER"]',
+                active=True,
+            )
+        )
+        session.add(
             Project(
                 id="P1",
                 number="P-1",
                 name="Projet A",
+                project_manager_external_id="EMP-PM",
                 project_manager_name="Responsable A",
+                project_manager_contact_id="C-PM",
                 status="Actif",
             )
         )
@@ -98,6 +127,43 @@ class QuickShiftAuthorProjectionTests(unittest.TestCase):
             self.assertIsNone(requirement.workforce_request_id)
             self.assertEqual(requirement.origin, "QUICK_SHIFT")
             self.assertEqual(requirement.created_by_name, "Coordonnateur")
+            self.assertEqual(
+                requirement.operational_responsibility_context_provenance,
+                "OPERATIONAL_CAPTURE",
+            )
+            self.assertEqual(
+                requirement.operational_responsibility_context_version,
+                1,
+            )
+            self.assertEqual(
+                requirement.captured_operational_responsible_source_type,
+                SOURCE_PROJECT_MANAGER,
+            )
+            self.assertEqual(
+                requirement.captured_operational_responsible_contact_id,
+                "C-PM",
+            )
+            self.assertEqual(
+                requirement.captured_operational_responsible_status,
+                STATUS_RESOLVED,
+            )
+            self.assertEqual(
+                requirement.approved_contact_context_status,
+                "NOT_APPLICABLE",
+            )
+            self.assertIsNone(requirement.approval_revision_id)
+
+            operational = OperationalContactService(
+                SqlOperationalContactRepository(session)
+            ).resolve_resource_requirement(requirement.id)
+            self.assertEqual(
+                operational.operational_responsible.source_type,
+                SOURCE_PROJECT_MANAGER,
+            )
+            self.assertEqual(
+                operational.operational_responsible.contact_id,
+                "C-PM",
+            )
 
             segment = SqlSegmentRepository(session).get(result.segment_id)
             assert segment is not None
