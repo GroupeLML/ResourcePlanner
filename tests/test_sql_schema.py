@@ -96,6 +96,7 @@ class SqlSchemaTests(unittest.TestCase):
         self.assertEqual(set(Base.metadata.tables), EXPECTED_TABLES)
 
         requirements = Base.metadata.tables["resource_requirements"].c
+        shifts = Base.metadata.tables["shifts"].c
         requests = Base.metadata.tables["workforce_requests"].c
         request_history = Base.metadata.tables["workforce_request_history"].c
         projects = Base.metadata.tables["projects"].c
@@ -177,6 +178,8 @@ class SqlSchemaTests(unittest.TestCase):
         self.assertFalse(work_package_audit.actor_user_id.nullable)
         self.assertFalse(work_package_audit.resulting_version.nullable)
         self.assertFalse(projects.co_managers_version.nullable)
+        self.assertTrue(projects.operational_responsible_override_contact_id.nullable)
+        self.assertFalse(projects.operational_responsible_override_version.nullable)
         self.assertFalse(project_co_managers.project_id.nullable)
         self.assertFalse(project_co_managers.business_contact_id.nullable)
         self.assertFalse(project_co_managers.created_at.nullable)
@@ -209,6 +212,22 @@ class SqlSchemaTests(unittest.TestCase):
         )
         self.assertTrue(requirements.approved_request_version.nullable)
         self.assertFalse(requirements.approved_contact_context_status.nullable)
+        self.assertTrue(requirements.operational_responsible_override_contact_id.nullable)
+        self.assertTrue(requirements.captured_operational_responsible_contact_id.nullable)
+        self.assertTrue(requirements.captured_operational_responsible_source_type.nullable)
+        self.assertTrue(
+            requirements.captured_operational_responsible_source_entity_id.nullable
+        )
+        self.assertTrue(
+            requirements.captured_operational_responsible_diagnostics.nullable
+        )
+        self.assertFalse(
+            requirements.operational_responsibility_context_provenance.nullable
+        )
+        self.assertTrue(
+            requirements.operational_responsibility_context_version.nullable
+        )
+        self.assertTrue(shifts.operational_responsible_override_contact_id.nullable)
         self.assertTrue(requirements.approval_revision_id.nullable)
         self.assertTrue(requirements.approved_entry_key.nullable)
         self.assertFalse(requirements.approval_reference_status.nullable)
