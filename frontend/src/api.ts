@@ -1085,6 +1085,11 @@ export type CoordinatorDashboardActionReadModel = {
   target: "DEMANDS" | "PLANNING";
   resource_kind: "WORKFORCE" | "ASSET" | null;
   related_ids: string[];
+  operational_responsible_contact_id: string | null;
+  operational_responsible_display_name: string | null;
+  operational_responsible_status: string | null;
+  operational_responsible_source_type: string | null;
+  operational_responsible_source_label: string | null;
 };
 
 export type CoordinatorDashboardReadModel = {
