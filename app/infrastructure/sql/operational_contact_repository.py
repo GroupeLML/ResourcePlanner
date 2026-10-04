@@ -370,7 +370,6 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
         *,
         requirement: ResourceRequirement,
         shift: Shift | None = None,
-        project_managers: dict[str, EffectiveProjectManager | None] | None = None,
     ) -> MaterializedContactContext | None:
         project = self._session.get(Project, requirement.project_id)
         if project is None:
@@ -533,7 +532,6 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
         tuple[WorkforceRequest, ...],
         tuple[TaskCatalogEntry, ...],
         tuple[Resource, ...],
-        dict[str, EffectiveProjectManager | None],
     ]:
         """Prime the SQLAlchemy identity map for fixed-cost materialized resolution."""
 
@@ -600,8 +598,6 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
             else ()
         )
 
-        project_by_id = {row.id: row for row in projects}
-        project_managers = self._project_manager_primaries(tuple(project_by_id))
         task_by_id = {row.id: row for row in tasks}
         resource_by_id = {row.id: row for row in resources}
         contact_ids: list[str | None] = []
@@ -626,7 +622,7 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
         for resource in resources:
             contact_ids.append(resource.coordinator_contact_id)
         self._contacts(tuple(contact_ids))
-        return projects, requests, tasks, resources, project_managers
+        return projects, requests, tasks, resources
 
     def get_resource_requirement_contact_contexts(
         self,
@@ -650,7 +646,6 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
         )
         by_id = {row.id: row for row in requirements}
         primed = self._prime_materialized_context_rows(requirements)
-        project_managers = primed[4]
         result = tuple(
             context
             for requirement_id in wanted
@@ -658,7 +653,6 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
             and (
                 context := self._materialized_context(
                     requirement=requirement,
-                    project_managers=project_managers,
                 )
             )
             is not None
@@ -706,7 +700,6 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
             requirements,
             shifts=shifts,
         )
-        project_managers = primed[4]
         result: list[MaterializedContactContext] = []
         for shift_id in wanted:
             shift = shift_by_id.get(shift_id)
@@ -718,7 +711,6 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
             context = self._materialized_context(
                 requirement=requirement,
                 shift=shift,
-                project_managers=project_managers,
             )
             if context is not None:
                 result.append(context)
