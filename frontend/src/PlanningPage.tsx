@@ -1444,6 +1444,7 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
             setEditingSegmentId(null);
             setDetailDemandNumber(demandNumber);
           }}
+          planningVersion={snapshot.planning_version}
         />
       )}
 
