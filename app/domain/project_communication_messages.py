@@ -157,7 +157,7 @@ def _project_payload(project: ProjectCommunicationProject) -> tuple[object, ...]
                         _responsible_payload(assignment.operational_responsible),
                     )
                     for assignment in task.responsibility_assignments
-                )
+                , key=repr)
             )
             tasks.append(
                 (
