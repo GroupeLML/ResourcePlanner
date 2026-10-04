@@ -31,6 +31,16 @@ async function chooseCombobox(scope: Locator, label: string, query: string, opti
   await listbox.getByRole("option", { name: optionName, exact: false }).click();
 }
 
+async function reserveAndWaitForPlanningRefresh(page: Page, form: Locator) {
+  const snapshotRefresh = page.waitForResponse((response) => (
+    response.request().method() === "GET"
+    && response.url().includes("/api/v1/planning/snapshot?")
+  ));
+  await form.getByRole("button", { name: "Réserver l’actif" }).click();
+  await snapshotRefresh;
+  await expect(form).toBeVisible();
+}
+
 test("575E relie navigation REQUEST et trois contextes de réservation directe", async ({ browser }) => {
   test.setTimeout(120_000);
   const { context, page } = await openCoordinator(browser);
@@ -212,7 +222,7 @@ test("575E relie navigation REQUEST et trois contextes de réservation directe",
     await form.getByLabel("Type d’actif").selectOption("TYPE-575E");
     await expect(unitSelect.locator('option[value="ASSET-575E"]')).toBeAttached();
     await unitSelect.selectOption("ASSET-575E");
-    await form.getByRole("button", { name: "Réserver l’actif" }).click();
+    await reserveAndWaitForPlanningRefresh(page, form);
     expect(captured.PROJECT_DIRECT.project_id).toBe("P-575E");
     expect(captured.PROJECT_DIRECT.operator_resource_id).toBeNull();
 
@@ -221,7 +231,7 @@ test("575E relie navigation REQUEST et trois contextes de réservation directe",
     await form.getByLabel("Type d’actif").selectOption("TYPE-575E");
     await expect(unitSelect.locator('option[value="ASSET-575E"]')).toBeAttached();
     await unitSelect.selectOption("ASSET-575E");
-    await form.getByRole("button", { name: "Réserver l’actif" }).click();
+    await reserveAndWaitForPlanningRefresh(page, form);
     expect(captured.RESOURCE_PERIOD.resource_id).toBe("R-575E");
     expect(captured.RESOURCE_PERIOD.project_id).toBeNull();
 
@@ -231,7 +241,7 @@ test("575E relie navigation REQUEST et trois contextes de réservation directe",
     await expect(unitSelect.locator('option[value="ASSET-575E"]')).toBeAttached();
     await unitSelect.selectOption("ASSET-575E");
     await chooseCombobox(form, "Opérateur", "575E", "Ressource 575E");
-    await form.getByRole("button", { name: "Réserver l’actif" }).click();
+    await reserveAndWaitForPlanningRefresh(page, form);
     expect(captured.SEGMENT.segment_id).toBe("SEG-575E");
     expect(captured.SEGMENT.operator_resource_id).toBe("R-575E");
   } finally {
