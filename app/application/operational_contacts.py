@@ -7,15 +7,11 @@ from typing import Protocol
 from ..domain.operational_contacts import (
     ContactCandidate,
     ContactResolution,
-    DIAGNOSTIC_APPROVED_CONTACT_CONTEXT_LEGACY_UNKNOWN,
     resolve_contact_candidates,
     resolve_coordinator,
     resolve_operational_responsible,
 )
 from .errors import ApplicationNotFoundError, call_application_port
-
-
-APPROVED_CONTACT_CONTEXT_LEGACY_UNKNOWN = "LEGACY_UNKNOWN"
 
 
 @dataclass(frozen=True, slots=True)
