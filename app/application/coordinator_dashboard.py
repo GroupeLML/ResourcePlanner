@@ -6,11 +6,13 @@ from typing import Protocol, Sequence
 
 from .approval_progress import ApprovalCycleProgressReadModel
 from .demand_cancellation import demand_cancellation_policy
+from .operational_contacts import OperationalContactService
 from .query_models import DemandCancellationMaterializationReadModel, PlanningActionReadModel
 from .query_ports import PlannerQueryPort
 from .read_models import DemandReadModel, SegmentReadModel
 from .security import AuthPrincipal
 from .user_view_context import DemandScopeResolution, SCOPE_MINE
+from ..domain.operational_contacts import ContactResolution
 
 
 ATTENTION_HORIZON_DAYS = 7
@@ -104,6 +106,11 @@ class CoordinatorDashboardActionReadModel:
     target: str
     resource_kind: str | None = None
     related_ids: tuple[str, ...] = ()
+    operational_responsible_contact_id: str | None = None
+    operational_responsible_display_name: str | None = None
+    operational_responsible_status: str | None = None
+    operational_responsible_source_type: str | None = None
+    operational_responsible_source_label: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,10 +236,12 @@ class CoordinatorDashboardService:
         queries: PlannerQueryPort,
         scope_resolver: DemandScopeResolverPort,
         approval_progress: ApprovalProgressReaderPort | None,
+        operational_contacts: OperationalContactService | None = None,
     ) -> None:
         self._queries = queries
         self._scope_resolver = scope_resolver
         self._approval_progress = approval_progress
+        self._operational_contacts = operational_contacts
 
     def read(
         self,
@@ -264,6 +273,26 @@ class CoordinatorDashboardService:
             for segment in self._queries.list_segments(include_cancelled=False)
             if segment.demand_number in personal_numbers
         )
+        responsibility_by_segment: dict[str, ContactResolution] = {}
+        if self._operational_contacts is not None:
+            requirement_ids = tuple(
+                dict.fromkeys(
+                    segment.requirement_id
+                    for segment in personal_segments
+                    if segment.requirement_id
+                )
+            )
+            resolved_by_requirement = {
+                resolution.requirement_id: resolution.operational_responsible
+                for resolution in self._operational_contacts.resolve_resource_requirements(
+                    requirement_ids
+                )
+            }
+            responsibility_by_segment = {
+                segment.segment_id: resolved_by_requirement[segment.requirement_id]
+                for segment in personal_segments
+                if segment.requirement_id in resolved_by_requirement
+            }
         window_start, window_end = _planning_window(
             personal_demands,
             personal_segments,
@@ -286,6 +315,9 @@ class CoordinatorDashboardService:
                     planning_action,
                     today=as_of,
                     horizon_days=horizon_days,
+                    operational_responsible=responsibility_by_segment.get(
+                        planning_action.segment_id or ""
+                    ),
                 )
             )
 
@@ -295,6 +327,9 @@ class CoordinatorDashboardService:
                     segment,
                     today=as_of,
                     horizon_days=horizon_days,
+                    operational_responsible=responsibility_by_segment.get(
+                        segment.segment_id
+                    ),
                 )
             )
 
@@ -411,6 +446,7 @@ class CoordinatorDashboardService:
         *,
         today: date,
         horizon_days: int,
+        operational_responsible: ContactResolution | None = None,
     ) -> CoordinatorDashboardActionReadModel:
         attention, days_until_start = _attention(
             priority=row.priority,
@@ -445,6 +481,31 @@ class CoordinatorDashboardService:
             days_until_start=days_until_start,
             target=TARGET_PLANNING,
             resource_kind="WORKFORCE",
+            operational_responsible_contact_id=(
+                operational_responsible.contact_id
+                if operational_responsible is not None
+                else None
+            ),
+            operational_responsible_display_name=(
+                operational_responsible.display_name
+                if operational_responsible is not None
+                else None
+            ),
+            operational_responsible_status=(
+                operational_responsible.status
+                if operational_responsible is not None
+                else None
+            ),
+            operational_responsible_source_type=(
+                operational_responsible.source_type
+                if operational_responsible is not None
+                else None
+            ),
+            operational_responsible_source_label=(
+                operational_responsible.source_label
+                if operational_responsible is not None
+                else None
+            ),
         )
 
     def _coverage_actions(
@@ -453,6 +514,7 @@ class CoordinatorDashboardService:
         *,
         today: date,
         horizon_days: int,
+        operational_responsible: ContactResolution | None = None,
     ) -> tuple[CoordinatorDashboardActionReadModel, ...]:
         if not segment.demand_number:
             return ()
@@ -490,6 +552,31 @@ class CoordinatorDashboardService:
                     days_until_start=days_until_start,
                     target=TARGET_PLANNING,
                     resource_kind="WORKFORCE",
+                    operational_responsible_contact_id=(
+                        operational_responsible.contact_id
+                        if operational_responsible is not None
+                        else None
+                    ),
+                    operational_responsible_display_name=(
+                        operational_responsible.display_name
+                        if operational_responsible is not None
+                        else None
+                    ),
+                    operational_responsible_status=(
+                        operational_responsible.status
+                        if operational_responsible is not None
+                        else None
+                    ),
+                    operational_responsible_source_type=(
+                        operational_responsible.source_type
+                        if operational_responsible is not None
+                        else None
+                    ),
+                    operational_responsible_source_label=(
+                        operational_responsible.source_label
+                        if operational_responsible is not None
+                        else None
+                    ),
                 )
             )
 
@@ -526,6 +613,31 @@ class CoordinatorDashboardService:
                     days_until_start=days_until_start,
                     target=TARGET_PLANNING,
                     resource_kind="WORKFORCE",
+                    operational_responsible_contact_id=(
+                        operational_responsible.contact_id
+                        if operational_responsible is not None
+                        else None
+                    ),
+                    operational_responsible_display_name=(
+                        operational_responsible.display_name
+                        if operational_responsible is not None
+                        else None
+                    ),
+                    operational_responsible_status=(
+                        operational_responsible.status
+                        if operational_responsible is not None
+                        else None
+                    ),
+                    operational_responsible_source_type=(
+                        operational_responsible.source_type
+                        if operational_responsible is not None
+                        else None
+                    ),
+                    operational_responsible_source_label=(
+                        operational_responsible.source_label
+                        if operational_responsible is not None
+                        else None
+                    ),
                 )
             )
         return tuple(result)
