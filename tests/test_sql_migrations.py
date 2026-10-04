@@ -19,7 +19,7 @@ MIGRATIONS = ROOT / "migrations"
 VERSIONS = MIGRATIONS / "versions"
 BASELINE_FILE = VERSIONS / "0001_v2_production_baseline.py"
 BASELINE_REVISION = "v2_production_baseline"
-HEAD_REVISION = "0009_work_package_load_intervals"
+HEAD_REVISION = "0010_operational_responsibility_context"
 
 
 def alembic_config(database_path: Path) -> Config:
@@ -76,6 +76,7 @@ class SqlMigrationTests(unittest.TestCase):
                 "0007_project_co_managers.py",
                 "0008_asset_requirement_contexts.py",
                 "0009_work_package_load_intervals.py",
+                "0010_operational_responsibility_context.py",
             ],
         )
 
@@ -94,6 +95,7 @@ class SqlMigrationTests(unittest.TestCase):
             [revision.revision for revision in script.walk_revisions()],
             [
                 HEAD_REVISION,
+                "0009_work_package_load_intervals",
                 "0008_asset_requirement_contexts",
                 "0007_project_co_managers",
                 "0006_asset_requirement_origins",
@@ -361,6 +363,265 @@ class SqlMigrationTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "SHIFT_AD_HOC"):
                 command.downgrade(config, "0005_task_sync_runs")
 
+    def test_operational_responsibility_context_migration_preserves_historical_provenance(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_path = Path(directory) / "operational-responsibility-context.db"
+            config = alembic_config(database_path)
+            command.upgrade(config, "0009_work_package_load_intervals")
+
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO business_contacts (id, display_name)
+                        VALUES
+                            ('C-REQ-594', 'Responsable demande'),
+                            ('C-TASK-594', 'Responsable tâche'),
+                            ('C-PM-594', 'Chargé ERP')
+                        """
+                    )
+                )
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO projects (
+                            id, number, name, project_manager_external_id
+                        ) VALUES (
+                            'P-594', 'P-594', 'Projet 594', 'EMP-PM-594'
+                        )
+                        """
+                    )
+                )
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO app_users (
+                            id, display_name, employee_external_id,
+                            business_contact_id, roles_json
+                        ) VALUES (
+                            'U-PM-594', 'Chargé ERP', 'EMP-PM-594',
+                            'C-PM-594', '[]'
+                        )
+                        """
+                    )
+                )
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO task_catalog_items (
+                            id, project_number, task_code, label,
+                            operational_responsible_contact_id
+                        ) VALUES (
+                            'T-594', 'P-594', '100', 'Tâche 100',
+                            'C-TASK-594'
+                        )
+                        """
+                    )
+                )
+                for request_id in (
+                    "W-REQ-594",
+                    "W-TASK-594",
+                    "W-PM-594",
+                    "W-UNKNOWN-594",
+                ):
+                    connection.execute(
+                        text(
+                            """
+                            INSERT INTO workforce_requests (id, project_id)
+                            VALUES (:request_id, 'P-594')
+                            """
+                        ),
+                        {"request_id": request_id},
+                    )
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO resource_requirements (
+                            id, project_id, workforce_request_id,
+                            approved_operational_responsible_override_contact_id,
+                            approved_contact_context_status,
+                            start_date, end_date, planned_hours, origin
+                        ) VALUES (
+                            'R-CAPTURED-594', 'P-594', 'W-REQ-594',
+                            'C-REQ-594', 'CAPTURED',
+                            '2026-10-01', '2026-10-01', 8.00, 'REQUEST'
+                        )
+                        """
+                    )
+                )
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO resource_requirements (
+                            id, project_id, workforce_request_id,
+                            approved_task_catalog_item_id,
+                            approved_contact_context_status,
+                            start_date, end_date, planned_hours, origin
+                        ) VALUES (
+                            'R-TASK-594', 'P-594', 'W-TASK-594',
+                            'T-594', 'CAPTURED',
+                            '2026-10-01', '2026-10-01', 8.00, 'REQUEST'
+                        )
+                        """
+                    )
+                )
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO resource_requirements (
+                            id, project_id, workforce_request_id,
+                            approved_contact_context_status,
+                            start_date, end_date, planned_hours, origin
+                        ) VALUES
+                            (
+                                'R-PM-594', 'P-594', 'W-PM-594',
+                                'CAPTURED',
+                                '2026-10-01', '2026-10-01', 8.00, 'REQUEST'
+                            ),
+                            (
+                                'R-UNKNOWN-594', 'P-594', 'W-UNKNOWN-594',
+                                'LEGACY_UNKNOWN',
+                                '2026-10-01', '2026-10-01', 8.00, 'REQUEST'
+                            )
+                        """
+                    )
+                )
+            engine.dispose()
+
+            command.upgrade(config, "head")
+
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            try:
+                with engine.connect() as connection:
+                    rows = {
+                        row.id: row
+                        for row in connection.execute(
+                            text(
+                                """
+                                SELECT
+                                    id,
+                                    operational_responsible_override_contact_id,
+                                    captured_operational_responsible_contact_id,
+                                    captured_operational_responsible_source_type,
+                                    captured_operational_responsible_source_entity_id,
+                                    operational_responsibility_context_provenance,
+                                    operational_responsibility_context_version
+                                FROM resource_requirements
+                                WHERE id LIKE 'R-%-594'
+                                """
+                            )
+                        )
+                    }
+                    project = connection.execute(
+                        text(
+                            """
+                            SELECT
+                                operational_responsible_override_contact_id,
+                                operational_responsible_override_version
+                            FROM projects
+                            WHERE id = 'P-594'
+                            """
+                        )
+                    ).one()
+
+                captured = rows["R-CAPTURED-594"]
+                self.assertIsNone(
+                    captured.operational_responsible_override_contact_id
+                )
+                self.assertEqual(
+                    captured.captured_operational_responsible_contact_id,
+                    "C-REQ-594",
+                )
+                self.assertEqual(
+                    captured.captured_operational_responsible_source_type,
+                    "REQUEST_OVERRIDE",
+                )
+                self.assertEqual(
+                    captured.captured_operational_responsible_source_entity_id,
+                    "W-REQ-594",
+                )
+                self.assertEqual(
+                    captured.operational_responsibility_context_provenance,
+                    "APPROVAL_CAPTURE",
+                )
+                self.assertEqual(
+                    captured.operational_responsibility_context_version,
+                    1,
+                )
+
+                observed_task = rows["R-TASK-594"]
+                self.assertEqual(
+                    observed_task.captured_operational_responsible_contact_id,
+                    "C-TASK-594",
+                )
+                self.assertEqual(
+                    observed_task.captured_operational_responsible_source_type,
+                    "TASK_RESPONSIBLE",
+                )
+                self.assertEqual(
+                    observed_task.captured_operational_responsible_source_entity_id,
+                    "T-594",
+                )
+                self.assertEqual(
+                    observed_task.operational_responsibility_context_provenance,
+                    "MIGRATION_OBSERVED",
+                )
+                self.assertEqual(
+                    observed_task.operational_responsibility_context_version,
+                    1,
+                )
+
+                observed_manager = rows["R-PM-594"]
+                self.assertEqual(
+                    observed_manager.captured_operational_responsible_contact_id,
+                    "C-PM-594",
+                )
+                self.assertEqual(
+                    observed_manager.captured_operational_responsible_source_type,
+                    "PROJECT_MANAGER",
+                )
+                self.assertEqual(
+                    observed_manager.captured_operational_responsible_source_entity_id,
+                    "P-594",
+                )
+                self.assertEqual(
+                    observed_manager.operational_responsibility_context_provenance,
+                    "MIGRATION_OBSERVED",
+                )
+                self.assertEqual(
+                    observed_manager.operational_responsibility_context_version,
+                    1,
+                )
+
+                unknown = rows["R-UNKNOWN-594"]
+                self.assertIsNone(
+                    unknown.captured_operational_responsible_contact_id
+                )
+                self.assertIsNone(
+                    unknown.captured_operational_responsible_source_type
+                )
+                self.assertIsNone(
+                    unknown.captured_operational_responsible_source_entity_id
+                )
+                self.assertEqual(
+                    unknown.operational_responsibility_context_provenance,
+                    "LEGACY_UNKNOWN",
+                )
+                self.assertIsNone(
+                    unknown.operational_responsibility_context_version
+                )
+
+                self.assertIsNone(
+                    project.operational_responsible_override_contact_id
+                )
+                self.assertEqual(
+                    project.operational_responsible_override_version,
+                    1,
+                )
+            finally:
+                engine.dispose()
+
     def test_fresh_sqlite_upgrade_reaches_baseline_with_only_technical_seed(self) -> None:
         with TemporaryDirectory() as directory:
             database_path = Path(directory) / "fresh-baseline.db"
@@ -521,6 +782,9 @@ class SqlMigrationTests(unittest.TestCase):
             "CREATE TABLE PROJECT_CO_MANAGERS",
             "CREATE TABLE PROJECT_MANAGER_AUDIT",
             "CO_MANAGERS_VERSION",
+            "OPERATIONAL_RESPONSIBLE_OVERRIDE_VERSION",
+            "OPERATIONAL_RESPONSIBILITY_CONTEXT_PROVENANCE",
+            "CAPTURED_OPERATIONAL_RESPONSIBLE_CONTACT_ID",
             "RESOURCE_CLASS_CODE",
             "CREATE TABLE AUTH_SESSIONS",
             "CREATE TABLE ASSET_TYPE_APPROVAL_SCOPE_MAPPINGS",
