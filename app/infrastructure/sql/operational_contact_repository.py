@@ -293,6 +293,66 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
             diagnostics.append(DIAGNOSTIC_RESOURCE_INACTIVE)
         return resource, True, ()
 
+    def get_project_operational_candidates(
+        self,
+        project_id: str,
+        *,
+        task_id: str | None = None,
+    ) -> tuple[ContactCandidate, ContactCandidate, ContactCandidate]:
+        project = self._session.get(Project, str(project_id or "").strip())
+        if project is None:
+            raise KeyError(f"Projet {project_id} introuvable")
+
+        task = (
+            self._session.get(TaskCatalogEntry, task_id)
+            if task_id
+            else None
+        )
+        diagnostics: tuple[str, ...] = ()
+        if task_id and task is None:
+            diagnostics = (DIAGNOSTIC_TASK_REFERENCE_INVALID,)
+        elif task is not None and task.project_number != project.number:
+            diagnostics = (DIAGNOSTIC_TASK_PROJECT_MISMATCH,)
+            task = None
+        elif task is not None and not bool(task.active):
+            diagnostics = (DIAGNOSTIC_TASK_INACTIVE,)
+
+        manager = self._project_manager_primaries((project.id,)).get(project.id)
+        contact_ids = (
+            task.operational_responsible_contact_id if task is not None else None,
+            project.operational_responsible_override_contact_id,
+            manager.business_contact_id if manager is not None else None,
+        )
+        contacts = self._contacts(contact_ids)
+        return (
+            self._candidate(
+                source_type=SOURCE_TASK_RESPONSIBLE,
+                source_entity_id=task.id if task is not None else task_id,
+                source_label=(
+                    f"Tâche {task.task_code}" if task is not None else None
+                ),
+                contact_id=(
+                    task.operational_responsible_contact_id
+                    if task is not None
+                    else None
+                ),
+                contacts=contacts,
+                diagnostics=diagnostics,
+            ),
+            self._candidate(
+                source_type=SOURCE_PROJECT_OVERRIDE,
+                source_entity_id=project.id,
+                source_label=f"Override projet · {project.number}",
+                contact_id=project.operational_responsible_override_contact_id,
+                contacts=contacts,
+            ),
+            self._project_manager_candidate(
+                project=project,
+                manager=manager,
+                contacts=contacts,
+            ),
+        )
+
     @staticmethod
     def _captured_diagnostics(value: str | None) -> tuple[str, ...]:
         if not value:
