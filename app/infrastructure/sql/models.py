@@ -654,6 +654,12 @@ class ResourceRequirement(TimestampMixin, Base):
             name="operational_responsibility_context_provenance",
         ),
         CheckConstraint(
+            "captured_operational_responsible_status IS NULL OR "
+            "captured_operational_responsible_status IN "
+            "('RESOLVED', 'UNRESOLVED', 'INVALID_REFERENCE', 'INACTIVE')",
+            name="captured_operational_responsible_status",
+        ),
+        CheckConstraint(
             "operational_responsibility_context_version IS NULL "
             "OR operational_responsibility_context_version >= 1",
             name="operational_responsibility_context_version_positive",
@@ -695,6 +701,9 @@ class ResourceRequirement(TimestampMixin, Base):
     )
     captured_operational_responsible_source_entity_id: Mapped[str | None] = mapped_column(
         String(ID_LENGTH), nullable=True
+    )
+    captured_operational_responsible_status: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
     )
     captured_operational_responsible_diagnostics: Mapped[str | None] = mapped_column(
         Text, nullable=True
