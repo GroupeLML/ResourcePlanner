@@ -4,6 +4,7 @@ from datetime import date, datetime
 import unittest
 
 from app.application.approval_progress import ApprovalCycleProgressReadModel
+from app.application.operational_contacts import MaterializedContactResolution
 from app.application.coordinator_dashboard import (
     ACTION_APPROVAL,
     ACTION_CANCELLATION,
@@ -19,6 +20,11 @@ from app.application.query_models import (
 from app.application.read_models import DemandReadModel, SegmentReadModel
 from app.application.security import AuthPrincipal, ROLE_COORDINATOR
 from app.application.user_view_context import DemandScopeResolution
+from app.domain.operational_contacts import (
+    ContactResolution,
+    SOURCE_TASK_RESPONSIBLE,
+    STATUS_RESOLVED,
+)
 
 
 DAY = date(2026, 9, 25)
@@ -115,6 +121,7 @@ class FakeQueries:
                 project_number="P-278",
                 project_name="Projet dashboard",
                 resource_name=None,
+                requirement_id="REQ-A",
                 start_date=date(2026, 9, 24),
                 end_date=date(2026, 9, 26),
                 planned_hours=16,
@@ -131,6 +138,7 @@ class FakeQueries:
                 project_number="P-278",
                 project_name="Projet dashboard",
                 resource_name=None,
+                requirement_id="REQ-B",
                 start_date=date(2026, 9, 25),
                 end_date=date(2026, 9, 25),
                 planned_hours=8,
@@ -194,6 +202,49 @@ class FakeQueries:
         return ()
 
 
+class FakeOperationalContacts:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, ...]] = []
+
+    def resolve_resource_requirements(self, requirement_ids):
+        requested = tuple(requirement_ids)
+        self.calls.append(requested)
+        result = []
+        for requirement_id in requested:
+            suffix = requirement_id.removeprefix("REQ-")
+            responsible = ContactResolution(
+                status=STATUS_RESOLVED,
+                contact_id=f"C-RESP-{suffix}",
+                display_name=f"Responsable {suffix}",
+                email=None,
+                phone=None,
+                source_type=SOURCE_TASK_RESPONSIBLE,
+                source_entity_id=f"TASK-{suffix}",
+                source_label=f"Tâche {suffix}",
+            )
+            result.append(
+                MaterializedContactResolution(
+                    subject_type="RESOURCE_REQUIREMENT",
+                    subject_id=requirement_id,
+                    requirement_id=requirement_id,
+                    shift_id=None,
+                    request_line_id=None,
+                    demand_number=f"DMO-{suffix}-WORK",
+                    project_number="P-278",
+                    approved_request_version=1,
+                    approved_contact_context_status="CURRENT",
+                    task_id=f"TASK-{suffix}",
+                    task_code="210",
+                    task_label="Automatisation",
+                    resource_id=None,
+                    resource_name=None,
+                    operational_responsible=responsible,
+                    coordinator=responsible,
+                )
+            )
+        return tuple(result)
+
+
 class FakeScopeResolver:
     def resolve_demand_scope(self, principal, requested_scope=None):
         demand_ids = {
@@ -243,10 +294,12 @@ def principal(user_id: str) -> AuthPrincipal:
 
 class CoordinatorDashboardServiceTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.operational_contacts = FakeOperationalContacts()
         self.service = CoordinatorDashboardService(
             FakeQueries(),
             FakeScopeResolver(),
             FakeApprovalProgress(),
+            self.operational_contacts,
         )
 
     def test_dashboard_composes_existing_policies_for_current_coordinator(self) -> None:
@@ -288,6 +341,34 @@ class CoordinatorDashboardServiceTests(unittest.TestCase):
         self.assertEqual(result.kpis.approvals, 1)
         self.assertEqual(result.kpis.partial_coverages, 1)
         self.assertEqual(result.kpis.conflicts, 1)
+
+    def test_responsibility_batch_is_limited_to_existing_personal_scope(self) -> None:
+        result = self.service.read(principal("U-A"), today=DAY)
+
+        self.assertEqual(self.operational_contacts.calls, [("REQ-A",)])
+        assignment = next(
+            row for row in result.actions
+            if row.kind == ACTION_WORKFORCE_ASSIGNMENT
+        )
+        self.assertEqual(
+            assignment.operational_responsible_display_name,
+            "Responsable A",
+        )
+        self.assertEqual(
+            assignment.operational_responsible_source_type,
+            SOURCE_TASK_RESPONSIBLE,
+        )
+        coverage = [
+            row for row in result.actions
+            if row.kind in {ACTION_PARTIAL_COVERAGE, ACTION_CONFLICT}
+        ]
+        self.assertTrue(coverage)
+        self.assertTrue(
+            all(
+                row.operational_responsible_contact_id == "C-RESP-A"
+                for row in coverage
+            )
+        )
 
     def test_two_coordinators_are_isolated_by_stable_demand_scope_ids(self) -> None:
         alpha = self.service.read(principal("U-A"), today=DAY)
