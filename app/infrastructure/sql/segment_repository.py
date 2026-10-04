@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from datetime import date
 from decimal import Decimal
+import json
 import re
 from typing import Any
 
@@ -13,8 +14,14 @@ from ...application.read_models import SegmentReadModel
 from ...application.repository_ports import SegmentRepositoryPort
 from ...domain.confirmation import CONFIRMATION_CONFIRMED, normalize_confirmation
 from ...domain.load_profiles import normalize_load_profile
+from ...domain.operational_contacts import (
+    PROVENANCE_OPERATIONAL_CAPTURE,
+    RESPONSIBILITY_CONTEXT_VERSION,
+    resolve_operational_responsible,
+)
 from .demand_period_models import WorkforceRequestPeriod, WorkforceRequestPeriodRequirement
 from .segment_asset_guard import assert_segment_asset_mutation_compatible
+from .operational_contact_repository import SqlOperationalContactRepository
 from .models import (
     ORIGIN_REQUEST,
     Project,
@@ -371,7 +378,7 @@ class SqlSegmentRepository(SegmentRepositoryPort):
         source_effort_ref = _optional_text(
             values.get("SourceEffortID") or values.get("SourceEffortRow")
         )
-        self._guard_work_package_dependency(
+        work_package = self._guard_work_package_dependency(
             source_effort_ref,
             project_id=project.id,
         )
@@ -433,6 +440,47 @@ class SqlSegmentRepository(SegmentRepositoryPort):
             self._replace_requirement_competencies(requirement, competency_ids)
         else:
             self._attach_legacy_request_line(requirement, request)
+
+        if request is None:
+            task_id = (
+                work_package.task_catalog_item_id
+                if work_package is not None
+                else None
+            )
+            task_candidate, project_candidate, manager_candidate = (
+                SqlOperationalContactRepository(
+                    self._session
+                ).get_project_operational_candidates(
+                    project.id,
+                    task_id=task_id,
+                )
+            )
+            resolution = resolve_operational_responsible(
+                task_responsible=task_candidate,
+                project_override=project_candidate,
+                project_manager=manager_candidate,
+            )
+            requirement.captured_operational_responsible_contact_id = (
+                resolution.contact_id
+            )
+            requirement.captured_operational_responsible_source_type = (
+                resolution.source_type
+            )
+            requirement.captured_operational_responsible_source_entity_id = (
+                resolution.source_entity_id
+            )
+            requirement.captured_operational_responsible_status = resolution.status
+            requirement.captured_operational_responsible_diagnostics = json.dumps(
+                list(resolution.diagnostics),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            requirement.operational_responsibility_context_provenance = (
+                PROVENANCE_OPERATIONAL_CAPTURE
+            )
+            requirement.operational_responsibility_context_version = (
+                RESPONSIBILITY_CONTEXT_VERSION
+            )
 
         self._session.flush()
         return identifier
