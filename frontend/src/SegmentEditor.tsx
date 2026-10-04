@@ -16,7 +16,8 @@ import {
   overallocationContext,
   updateSegmentWithOverallocation,
 } from "./manualOverallocationApi";
-import PlanningHistoryPanel from "./PlanningHistoryPanel";\nimport OperationalResponsibilityControl from "./OperationalResponsibilityControl";
+import PlanningHistoryPanel from "./PlanningHistoryPanel";
+import OperationalResponsibilityControl from "./OperationalResponsibilityControl";
 import {
   LoadProfile,
   SegmentUpdateWrite,
