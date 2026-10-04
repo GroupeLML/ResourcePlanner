@@ -602,7 +602,6 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
         resource_by_id = {row.id: row for row in resources}
         contact_ids: list[str | None] = []
         for requirement in requirements:
-            project = project_by_id.get(requirement.project_id)
             task = (
                 task_by_id.get(requirement.approved_task_catalog_item_id)
                 if requirement.approved_task_catalog_item_id
