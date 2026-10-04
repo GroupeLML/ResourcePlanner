@@ -210,16 +210,20 @@ Un co-chargé local peut avoir un projet géré sans `employee_external_id` et s
 
 La relation chargé/co-chargé est un fait métier, pas une permission. Elle n’accorde automatiquement aucun rôle ni aucune permission comme `manage_demands`.
 
-### 7. Le responsable opérationnel #289 hérite uniquement du principal ERP
+### 7. Le responsable opérationnel réutilise uniquement le principal ERP comme fallback final
 
-La hiérarchie de résolution conserve son ordre métier :
+**Remplacement partiel — ADR-020 (2026-10-04).** La hiérarchie limitée documentée lors de l'acceptation d'ADR-017 (`Demande → Tâche → Principal ERP`) est remplacée par la hiérarchie complète d'ADR-020 :
 
 ```text
-override demande
-→ responsable tâche
-→ principal ERP canonique
-→ non résolu
+Shift override
+→ Segment / ResourceRequirement override
+→ WorkforceRequest override
+→ TaskCatalogEntry override
+→ Project override local
+→ Principal ERP canonique
 ```
+
+ADR-020 est autoritaire pour l'ordre de résolution, le contexte approuvé figé et le cycle de vie des overrides opérationnels. ADR-017 reste autoritaire pour définir et résoudre le **principal ERP canonique** et les co-chargés.
 
 Les co-chargés RP ne sont jamais choisis automatiquement comme fallback opérationnel.
 
