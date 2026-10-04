@@ -152,12 +152,17 @@ def _project_payload(project: ProjectCommunicationProject) -> tuple[object, ...]
             responsibility_assignments = tuple(
                 sorted(
                     (
-                        assignment.resource_id,
-                        assignment.resource_name,
-                        _responsible_payload(assignment.operational_responsible),
-                    )
-                    for assignment in task.responsibility_assignments
-                , key=repr)
+                        (
+                            assignment.resource_id,
+                            assignment.resource_name,
+                            _responsible_payload(
+                                assignment.operational_responsible
+                            ),
+                        )
+                        for assignment in task.responsibility_assignments
+                    ),
+                    key=repr,
+                )
             )
             tasks.append(
                 (
