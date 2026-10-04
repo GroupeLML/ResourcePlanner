@@ -1,5 +1,6 @@
 import { FormEvent, MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 
+import { createClientId } from "./clientId";
 import { useAuth } from "./AuthContext";
 import SearchableCombobox from "./SearchableCombobox";
 import {
@@ -29,10 +30,7 @@ type RetryReceipt = {
 };
 
 function newIdempotencyKey() {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `web-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return createClientId();
 }
 
 function errorMessage(reason: unknown) {

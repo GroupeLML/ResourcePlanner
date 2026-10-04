@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
+import { createClientId } from "./clientId";
 import {
   ManualAllocationUpdate,
   ResourceReadModel,
@@ -17,10 +18,7 @@ import {
 type ConfirmationChoice = "inherit" | "Tentative" | "Confirmée";
 
 function newIdempotencyKey() {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `manual-allocation-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return createClientId();
 }
 
 function maxIso(left: string, right: string) {

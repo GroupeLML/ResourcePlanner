@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
+import { createClientId } from "./clientId";
 import {
   ApiError,
   CompetencyReadModel,
@@ -58,10 +59,7 @@ type FormState = {
 type RetryReceipt = { fingerprint: string; key: string };
 
 function newIdempotencyKey() {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `web-segment-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return createClientId();
 }
 
 function messageFromError(reason: unknown) {

@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
+import { createClientId } from "./clientId";
 import { useAuth } from "./AuthContext";
 import {
   ApiError,
@@ -101,10 +102,7 @@ function assetQualificationLabel(state: string | null | undefined) {
 }
 
 function newAtomicIdempotencyKey() {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `atomic-allocation-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return createClientId();
 }
 
 export default function ShiftEditor({
