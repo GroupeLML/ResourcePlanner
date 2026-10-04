@@ -156,8 +156,8 @@ def _schema_errors(
                 for column in inspector.get_columns(table_name)
             }
             expected = set(Base.metadata.tables[table_name].c.keys())
-            expected -= allowed_columns.get(table_name, set())
-            missing_columns = sorted(expected - actual)
+            allowed_missing = allowed_columns.get(table_name, set())
+            missing_columns = sorted((expected - actual) - allowed_missing)
             extra_columns = sorted(actual - expected)
             if missing_columns:
                 errors.append(
