@@ -206,6 +206,41 @@ class OperationalResponsibilityApiTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_mutation_contract_requires_explicit_override_value_and_positive_version(self) -> None:
+        with TemporaryDirectory() as directory:
+            app = create_api_app(
+                self._database(directory),
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app) as client:
+                missing_contact = client.patch(
+                    "/api/v1/projects/P-594D/operational-responsible",
+                    headers={"Idempotency-Key": "594d-missing-contact"},
+                    json={"expected_version": 1},
+                )
+                invalid_version = client.patch(
+                    "/api/v1/segments/SEG-594D/operational-responsible",
+                    headers={"Idempotency-Key": "594d-invalid-version"},
+                    json={
+                        "contact_id": None,
+                        "expected_planning_version": 0,
+                    },
+                )
+                unexpected_field = client.patch(
+                    "/api/v1/allocations/ALLOC-594D/operational-responsible",
+                    headers={"Idempotency-Key": "594d-extra-field"},
+                    json={
+                        "contact_id": None,
+                        "expected_planning_version": 1,
+                        "implicit_fallback": True,
+                    },
+                )
+
+            self.assertEqual(missing_contact.status_code, 422, missing_contact.text)
+            self.assertEqual(invalid_version.status_code, 422, invalid_version.text)
+            self.assertEqual(unexpected_field.status_code, 422, unexpected_field.text)
+
+
     def test_stale_project_cas_is_reported_by_http_contract(self) -> None:
         with TemporaryDirectory() as directory:
             url = self._database(directory)
