@@ -218,6 +218,7 @@ class SqlSchemaTests(unittest.TestCase):
         self.assertTrue(
             requirements.captured_operational_responsible_source_entity_id.nullable
         )
+        self.assertTrue(requirements.captured_operational_responsible_status.nullable)
         self.assertTrue(
             requirements.captured_operational_responsible_diagnostics.nullable
         )
