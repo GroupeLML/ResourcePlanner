@@ -222,8 +222,12 @@ def _backfill_legacy_context() -> None:
                 rr.approved_contact_context_status,
                 rr.approved_operational_responsible_override_contact_id,
                 rr.approved_task_catalog_item_id,
+                p.number AS project_number,
+                task.project_number AS task_project_number,
                 task.operational_responsible_contact_id AS task_contact_id
             FROM resource_requirements AS rr
+            JOIN projects AS p
+              ON p.id = rr.project_id
             LEFT JOIN task_catalog_items AS task
               ON task.id = rr.approved_task_catalog_item_id
             """
@@ -266,6 +270,17 @@ def _backfill_legacy_context() -> None:
             )
             continue
 
+        approved_task_id = row["approved_task_catalog_item_id"]
+        task_reference_valid = (
+            approved_task_id is None
+            or (
+                row["task_project_number"] is not None
+                and str(row["task_project_number"]) == str(row["project_number"])
+            )
+        )
+        if not task_reference_valid:
+            continue
+
         task_contact_id = row["task_contact_id"]
         if task_contact_id is not None:
             bind.execute(
@@ -274,11 +289,7 @@ def _backfill_legacy_context() -> None:
                     "requirement_id": str(row["id"]),
                     "contact_id": str(task_contact_id),
                     "source_type": SOURCE_TASK_RESPONSIBLE,
-                    "source_entity_id": (
-                        str(row["approved_task_catalog_item_id"])
-                        if row["approved_task_catalog_item_id"] is not None
-                        else None
-                    ),
+                    "source_entity_id": str(approved_task_id),
                     "provenance": MIGRATION_OBSERVED,
                 },
             )
