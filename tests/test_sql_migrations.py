@@ -387,9 +387,9 @@ class SqlMigrationTests(unittest.TestCase):
                         """
                         INSERT INTO projects (
                             id, number, name, project_manager_external_id
-                        ) VALUES (
-                            'P-594', 'P-594', 'Projet 594', 'EMP-PM-594'
-                        )
+                        ) VALUES
+                            ('P-594', 'P-594', 'Projet 594', 'EMP-PM-594'),
+                            ('P-OTHER-594', 'P-OTHER-594', 'Autre projet', NULL)
                         """
                     )
                 )
@@ -412,10 +412,15 @@ class SqlMigrationTests(unittest.TestCase):
                         INSERT INTO task_catalog_items (
                             id, project_number, task_code, label,
                             operational_responsible_contact_id
-                        ) VALUES (
-                            'T-594', 'P-594', '100', 'Tâche 100',
-                            'C-TASK-594'
-                        )
+                        ) VALUES
+                            (
+                                'T-594', 'P-594', '100', 'Tâche 100',
+                                'C-TASK-594'
+                            ),
+                            (
+                                'T-WRONG-594', 'P-OTHER-594', '101', 'Tâche autre projet',
+                                'C-TASK-594'
+                            )
                         """
                     )
                 )
@@ -423,6 +428,7 @@ class SqlMigrationTests(unittest.TestCase):
                     "W-REQ-594",
                     "W-TASK-594",
                     "W-PM-594",
+                    "W-BROKEN-594",
                     "W-UNKNOWN-594",
                 ):
                     connection.execute(
@@ -484,6 +490,22 @@ class SqlMigrationTests(unittest.TestCase):
                                 'LEGACY_UNKNOWN',
                                 '2026-10-01', '2026-10-01', 8.00, 'REQUEST'
                             )
+                        """
+                    )
+                )
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO resource_requirements (
+                            id, project_id, workforce_request_id,
+                            approved_task_catalog_item_id,
+                            approved_contact_context_status,
+                            start_date, end_date, planned_hours, origin
+                        ) VALUES (
+                            'R-BROKEN-594', 'P-594', 'W-BROKEN-594',
+                            'T-WRONG-594', 'CAPTURED',
+                            '2026-10-01', '2026-10-01', 8.00, 'REQUEST'
+                        )
                         """
                     )
                 )
@@ -592,6 +614,21 @@ class SqlMigrationTests(unittest.TestCase):
                 self.assertEqual(
                     observed_manager.operational_responsibility_context_version,
                     1,
+                )
+
+                broken = rows["R-BROKEN-594"]
+                self.assertIsNone(
+                    broken.captured_operational_responsible_contact_id
+                )
+                self.assertIsNone(
+                    broken.captured_operational_responsible_source_type
+                )
+                self.assertEqual(
+                    broken.operational_responsibility_context_provenance,
+                    "LEGACY_UNKNOWN",
+                )
+                self.assertIsNone(
+                    broken.operational_responsibility_context_version
                 )
 
                 unknown = rows["R-UNKNOWN-594"]
