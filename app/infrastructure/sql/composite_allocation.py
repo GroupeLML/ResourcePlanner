@@ -832,6 +832,9 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
             outside_standard_hours=availability.override_applied,
             confirmation=source.confirmation,
             note=source.note,
+            operational_responsible_override_contact_id=(
+                source.operational_responsible_override_contact_id
+            ),
         )
         self._session.add(target)
         self._session.flush()
@@ -848,6 +851,8 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
             or not persisted_target.locked
             or _text(persisted_source.source).upper() != "MANUAL"
             or _text(persisted_target.source).upper() != "MANUAL"
+            or persisted_target.operational_responsible_override_contact_id
+            != persisted_source.operational_responsible_override_contact_id
             or _hours(persisted_source.hours) + _hours(persisted_target.hours) != source_hours
         ):
             raise RuntimeError("Les invariants du partage atomique ne sont pas respectés.")
@@ -950,6 +955,9 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
             outside_standard_hours=availability.override_applied,
             confirmation=source.confirmation,
             note=source.note,
+            operational_responsible_override_contact_id=(
+                source.operational_responsible_override_contact_id
+            ),
         )
         self._session.add(target)
         self._session.flush()
@@ -966,6 +974,8 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
             or not persisted_target.locked
             or _text(persisted_source.source).upper() != "MANUAL"
             or _text(persisted_target.source).upper() != "MANUAL"
+            or persisted_target.operational_responsible_override_contact_id
+            != persisted_source.operational_responsible_override_contact_id
             or _hours(persisted_source.hours) != source_hours
             or _hours(persisted_target.hours) != source_hours
         ):
