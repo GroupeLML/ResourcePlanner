@@ -12,6 +12,10 @@ from sqlalchemy import select
 
 from app.application import DemandLineReadModel, DemandPeriodReadModel, DemandReadModel, emergency_override_eligibility
 from app.application.security import PERMISSION_APPROVE_DEMANDS
+from app.domain.operational_contacts import (
+    PROVENANCE_APPROVAL_CAPTURE,
+    RESPONSIBILITY_CONTEXT_VERSION,
+)
 from app.infrastructure.sql import (
     Base,
     Project,
@@ -311,23 +315,10 @@ class EmergencyOverrideHttpTests(unittest.TestCase):
                                 ResourceRequirement.status != "Annulé",
                             )
                         ).all()
-                        self.assertGreaterEqual(len(requirements), 1)
-                        self.assertTrue(
-                            all(
-                                row.operational_responsibility_context_provenance
-                                == "OPERATIONAL_CAPTURE"
-                                for row in requirements
-                            )
-                        )
-                        self.assertTrue(
-                            all(
-                                row.operational_responsibility_context_version == 1
-                                for row in requirements
-                            )
-                        )
-                        self.assertTrue(
-                            all(row.approval_revision_id is None for row in requirements)
-                        )
+                        # 276C is authoritative: urgency never materializes a new plan
+                        # before quorum, so there is no operational responsibility
+                        # snapshot to persist yet and no fake approval revision.
+                        self.assertEqual(requirements, [])
                         revisions = session.scalars(
                             select(RequestApprovalRevision).where(
                                 RequestApprovalRevision.workforce_request_id
@@ -369,6 +360,30 @@ class EmergencyOverrideHttpTests(unittest.TestCase):
                         )
                     ).all()
                     self.assertEqual(len(events), 1)
+                    requirements = session.scalars(
+                        select(ResourceRequirement).where(
+                            ResourceRequirement.workforce_request_id == request.id,
+                            ResourceRequirement.status != "Annulé",
+                        )
+                    ).all()
+                    self.assertGreaterEqual(len(requirements), 1)
+                    self.assertTrue(
+                        all(
+                            row.operational_responsibility_context_provenance
+                            == PROVENANCE_APPROVAL_CAPTURE
+                            for row in requirements
+                        )
+                    )
+                    self.assertTrue(
+                        all(
+                            row.operational_responsibility_context_version
+                            == RESPONSIBILITY_CONTEXT_VERSION
+                            for row in requirements
+                        )
+                    )
+                    self.assertTrue(
+                        all(row.approval_revision_id is not None for row in requirements)
+                    )
                     shifts = session.scalars(select(Shift)).all()
                     self.assertGreaterEqual(len(shifts), 1)
             finally:
