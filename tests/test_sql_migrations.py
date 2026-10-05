@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import importlib.util
 from io import StringIO
 from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from alembic import command
 from alembic.config import Config
@@ -362,6 +364,109 @@ class SqlMigrationTests(unittest.TestCase):
 
             with self.assertRaisesRegex(RuntimeError, "SHIFT_AD_HOC"):
                 command.downgrade(config, "0005_task_sync_runs")
+
+    def test_operational_responsibility_backfill_materializes_reads_before_writes(self) -> None:
+        migration_path = VERSIONS / "0010_operational_responsibility_context.py"
+        spec = importlib.util.spec_from_file_location(
+            "migration_0010_operational_responsibility_context_test",
+            migration_path,
+        )
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        class GuardedMappingResult:
+            def __init__(self, bind, rows):
+                self.bind = bind
+                self.rows = list(rows)
+                self.all_called = False
+
+            def mappings(self):
+                return self
+
+            def all(self):
+                self.all_called = True
+                if self.bind.active_result is self:
+                    self.bind.active_result = None
+                return list(self.rows)
+
+            def __iter__(self):
+                try:
+                    yield from self.rows
+                finally:
+                    if self.bind.active_result is self:
+                        self.bind.active_result = None
+
+        class NoMarsBind:
+            def __init__(self):
+                self.active_result = None
+                self.results = []
+                self.updates = []
+
+            def execute(self, statement, parameters=None):
+                sql = " ".join(str(statement).split()).upper()
+                if sql.startswith("SELECT"):
+                    if self.active_result is not None:
+                        raise RuntimeError(
+                            "Connection is busy with results for another command"
+                        )
+                    if "FROM PROJECTS AS P" in sql:
+                        rows = [
+                            {
+                                "project_id": "P-594",
+                                "business_contact_id": "C-PM-594",
+                            }
+                        ]
+                    elif "FROM RESOURCE_REQUIREMENTS AS RR" in sql:
+                        rows = [
+                            {
+                                "id": "R-609",
+                                "workforce_request_id": "W-609",
+                                "project_id": "P-594",
+                                "approved_contact_context_status": "CAPTURED",
+                                "approved_operational_responsible_override_contact_id": "C-REQ-609",
+                                "approved_task_catalog_item_id": None,
+                                "project_number": "P-594",
+                                "task_project_number": None,
+                                "task_contact_id": None,
+                            }
+                        ]
+                    else:
+                        raise AssertionError(f"Unexpected SELECT: {sql}")
+                    result = GuardedMappingResult(self, rows)
+                    self.active_result = result
+                    self.results.append(result)
+                    return result
+
+                if sql.startswith("UPDATE RESOURCE_REQUIREMENTS"):
+                    if self.active_result is not None:
+                        raise RuntimeError(
+                            "Connection is busy with results for another command"
+                        )
+                    self.updates.append(dict(parameters or {}))
+                    return None
+
+                raise AssertionError(f"Unexpected statement: {sql}")
+
+        bind = NoMarsBind()
+        with patch.object(module.op, "get_bind", return_value=bind):
+            module._backfill_legacy_context()
+
+        self.assertEqual([result.all_called for result in bind.results], [True, True])
+        self.assertIsNone(bind.active_result)
+        self.assertEqual(
+            bind.updates,
+            [
+                {
+                    "requirement_id": "R-609",
+                    "contact_id": "C-REQ-609",
+                    "source_type": "REQUEST_OVERRIDE",
+                    "source_entity_id": "W-609",
+                    "provenance": "APPROVAL_CAPTURE",
+                }
+            ],
+        )
 
     def test_operational_responsibility_context_migration_preserves_historical_provenance(self) -> None:
         with TemporaryDirectory() as directory:
