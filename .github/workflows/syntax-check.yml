@@ -285,9 +285,9 @@ jobs:
         run: docker compose down -v --remove-orphans
 
   sqlserver-live-573e:
-    name: SQL Server live 573E
+    name: SQL Server live 573E / 594D
     needs: changes
-    if: ${{ startsWith(github.event.pull_request.title, '573E') }}
+    if: ${{ startsWith(github.event.pull_request.title, '573E') || startsWith(github.event.pull_request.title, '594D') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -380,7 +380,8 @@ jobs:
               python -m alembic upgrade head &&
               python -m unittest -v \
                 tests.test_project_co_managers_sqlserver_concurrency \
-                tests.test_project_manager_legacy_diagnostic &&
+                tests.test_project_manager_legacy_diagnostic \
+                tests.test_operational_responsibility_sqlserver_concurrency &&
               python tools/diagnose_project_manager_legacy_links.py --json
             '
 

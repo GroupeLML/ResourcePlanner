@@ -10,6 +10,7 @@ from app.domain.project_communication import (
     ProjectCommunicationProject,
     ProjectCommunicationProjection,
     ProjectCommunicationResource,
+    ProjectCommunicationResponsibilityAssignment,
     ProjectCommunicationTask,
 )
 from app.domain.project_communication_messages import (
@@ -248,6 +249,117 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         self.assertIn("  • Alice — 8 h", draft.body)
         self.assertNotIn("U-R1", draft.body)
         self.assertNotIn("C-R1", draft.body)
+
+    def test_multiple_responsibles_remain_associated_with_each_assignment(self) -> None:
+        alice = resource("R1", "Alice", address=email("alice"))
+        bob = resource("R2", "Bob", address=email("bob"))
+        first = responsible("Responsable Alice", contact_id="C-A")
+        second = responsible("Responsable Bob", contact_id="C-B")
+        task = ProjectCommunicationTask(
+            task_description="Installation de poteaux",
+            task_ids=("TASK-1",),
+            task_codes=("210",),
+            operational_responsibles=(first, second),
+            resources=(alice, bob),
+            responsibility_assignments=(
+                ProjectCommunicationResponsibilityAssignment(
+                    shift_id="S-R1",
+                    resource_id="R1",
+                    resource_name="Alice",
+                    operational_responsible=first,
+                ),
+                ProjectCommunicationResponsibilityAssignment(
+                    shift_id="S-R2",
+                    resource_id="R2",
+                    resource_name="Bob",
+                    operational_responsible=second,
+                ),
+            ),
+        )
+        source = project(resources=(alice, bob))
+        source = ProjectCommunicationProject(
+            project_id=source.project_id,
+            project_number=source.project_number,
+            project_name=source.project_name,
+            project_manager=source.project_manager,
+            days=(ProjectCommunicationDay(day=WEEK, tasks=(task,)),),
+        )
+
+        draft = build_project_confirmation_batch(projection(source)).drafts[0]
+
+        self.assertIn(
+            "Alice — 8 h · Responsable : Responsable Alice",
+            draft.body,
+        )
+        self.assertIn(
+            "Bob — 8 h · Responsable : Responsable Bob",
+            draft.body,
+        )
+        self.assertNotIn("Responsable Alice / Responsable Bob", draft.body)
+        self.assertEqual(
+            {row.email for row in draft.cc_recipients},
+            {email("alice"), email("bob")},
+        )
+
+        restored = deserialize_project_projection(
+            serialize_project_projection(projection(source))
+        )
+        assignments = restored.projects[0].days[0].tasks[0].responsibility_assignments
+        self.assertEqual(
+            {
+                (row.shift_id, row.resource_id, row.operational_responsible.contact_id)
+                for row in assignments
+            },
+            {("S-R1", "R1", "C-A"), ("S-R2", "R2", "C-B")},
+        )
+
+    def test_responsibility_reassignment_changes_fingerprint_without_recipient_change(self) -> None:
+        alice = resource("R1", "Alice", address=email("alice"))
+        bob = resource("R2", "Bob", address=email("bob"))
+        first = responsible("Responsable Alice", contact_id="C-A")
+        second = responsible("Responsable Bob", contact_id="C-B")
+
+        def with_assignments(
+            pairs: tuple[tuple[ProjectCommunicationResource, ContactResolution], ...],
+        ) -> ProjectCommunicationProject:
+            base = project(resources=(alice, bob))
+            task = ProjectCommunicationTask(
+                task_description="Installation de poteaux",
+                task_ids=("TASK-1",),
+                task_codes=("210",),
+                operational_responsibles=(first, second),
+                resources=(alice, bob),
+                responsibility_assignments=tuple(
+                    ProjectCommunicationResponsibilityAssignment(
+                        shift_id=row.shift_ids[0],
+                        resource_id=row.resource_id,
+                        resource_name=row.resource_name,
+                        operational_responsible=contact,
+                    )
+                    for row, contact in pairs
+                ),
+            )
+            return ProjectCommunicationProject(
+                project_id=base.project_id,
+                project_number=base.project_number,
+                project_name=base.project_name,
+                project_manager=base.project_manager,
+                days=(ProjectCommunicationDay(day=WEEK, tasks=(task,)),),
+            )
+
+        before = projection(with_assignments(((alice, first), (bob, second))))
+        after = projection(with_assignments(((alice, second), (bob, first))))
+        batch = build_project_delta_batch(before, after)
+
+        self.assertEqual(len(batch.drafts), 1)
+        self.assertEqual(
+            {row.email for row in batch.drafts[0].cc_recipients},
+            {email("alice"), email("bob")},
+        )
+        self.assertNotEqual(
+            project_projection_fingerprint(before),
+            project_projection_fingerprint(after),
+        )
 
     def test_tentative_and_outside_schedule_are_preserved_in_body(self) -> None:
         row = resource(

@@ -20,6 +20,7 @@ import {
   updateAllocationWithOverallocation,
 } from "./manualOverallocationApi";
 import PlanningHistoryPanel from "./PlanningHistoryPanel";
+import OperationalResponsibilityControl from "./OperationalResponsibilityControl";
 import SegmentEditor from "./SegmentEditor";
 
 type ConfirmationChoice = "inherit" | "Tentative" | "Confirmée";
@@ -402,6 +403,7 @@ export default function ShiftEditor({
         onClose={() => setSegmentOpen(false)}
         onSaved={onSaved}
         onOpenDemand={onOpenDemand}
+        planningVersion={planningVersion}
       />
     );
   }
@@ -488,6 +490,17 @@ export default function ShiftEditor({
             <div><span>Demandeur</span><strong>{shift.requester || "—"}</strong></div>
             <div><span>État</span><strong>{shift.locked ? "Verrouillé" : "Automatique"}</strong></div>
           </div>
+
+          <OperationalResponsibilityControl
+            target={{
+              kind: "allocation",
+              reference: shift.allocation_id,
+              expectedPlanningVersion: planningVersion,
+              source: shift.source,
+              locked: shift.locked,
+            }}
+            onSaved={onSaved}
+          />
 
           <section className="shift-asset-section" aria-label="Actif">
             <div className="shift-asset-section-heading">

@@ -55,12 +55,23 @@ class ProjectCommunicationResource:
 
 
 @dataclass(frozen=True, slots=True)
+class ProjectCommunicationResponsibilityAssignment:
+    shift_id: str
+    resource_id: str
+    resource_name: str
+    operational_responsible: ContactResolution
+
+
+@dataclass(frozen=True, slots=True)
 class ProjectCommunicationTask:
     task_description: str
     task_ids: tuple[str, ...]
     task_codes: tuple[str, ...]
     operational_responsibles: tuple[ContactResolution, ...]
     resources: tuple[ProjectCommunicationResource, ...]
+    responsibility_assignments: tuple[
+        ProjectCommunicationResponsibilityAssignment, ...
+    ] = ()
     diagnostics: tuple[str, ...] = ()
 
 
@@ -155,6 +166,7 @@ def build_project_communication_projection(
                 "task_codes": set(),
                 "responsibles": {},
                 "resources": {},
+                "responsibility_assignments": [],
                 "diagnostics": [],
             },
         )
@@ -163,6 +175,14 @@ def build_project_communication_projection(
         if row.task_code:
             task["task_codes"].add(row.task_code)
         task["responsibles"][_resolution_key(row.operational_responsible)] = row.operational_responsible
+        task["responsibility_assignments"].append(
+            ProjectCommunicationResponsibilityAssignment(
+                shift_id=row.shift_id,
+                resource_id=row.resource_id,
+                resource_name=row.resource_name,
+                operational_responsible=row.operational_responsible,
+            )
+        )
         task["diagnostics"].extend(row.operational_responsible.diagnostics)
         task["diagnostics"].extend(row.diagnostics)
 
@@ -228,6 +248,16 @@ def build_project_communication_projection(
                             )
                         ),
                         resources=tuple(projected_resources),
+                        responsibility_assignments=tuple(
+                            sorted(
+                                task["responsibility_assignments"],
+                                key=lambda value: (
+                                    value.resource_name.casefold(),
+                                    value.resource_id,
+                                    value.shift_id,
+                                ),
+                            )
+                        ),
                         diagnostics=_unique(task["diagnostics"]),
                     )
                 )

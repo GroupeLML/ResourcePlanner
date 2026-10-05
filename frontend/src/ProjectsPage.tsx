@@ -32,6 +32,7 @@ import {
   syncAcumaticaProjects,
 } from "./api";
 import { ContactSelect } from "./BusinessContactUi";
+import OperationalResponsibilityControl from "./OperationalResponsibilityControl";
 
 function normalize(value: string | null | undefined) {
   return (value ?? "").trim().toLocaleLowerCase("fr-CA");
@@ -1114,6 +1115,13 @@ export default function ProjectsPage() {
                     ? ` · ${projectManagers.diagnostics.map(projectManagerDiagnosticLabel).join(" · ")}`
                     : ""}
                 </div>
+
+                {selectedProject && (
+                  <OperationalResponsibilityControl
+                    target={{ kind: "project", reference: selectedProject.number }}
+                    onSaved={() => setRefreshKey((value) => value + 1)}
+                  />
+                )}
 
                 <div className="projects-table-header">
                   <strong>Co-chargés RessourcePlanner</strong>

@@ -208,6 +208,27 @@ class SecurityPolicyTests(unittest.TestCase):
         self.assertEqual(
             required_permission(
                 "PATCH",
+                "/api/v1/projects/P-1/operational-responsible",
+            ),
+            PERMISSION_MANAGE_RESOURCES,
+        )
+        self.assertEqual(
+            required_permission(
+                "PATCH",
+                "/api/v1/segments/SEG-1/operational-responsible",
+            ),
+            PERMISSION_MANAGE_PLANNING,
+        )
+        self.assertEqual(
+            required_permission(
+                "PATCH",
+                "/api/v1/allocations/SHIFT-1/operational-responsible",
+            ),
+            PERMISSION_MANAGE_PLANNING,
+        )
+        self.assertEqual(
+            required_permission(
+                "PATCH",
                 "/api/v1/demands/DMO-1/operational-responsible",
             ),
             PERMISSION_MANAGE_DEMANDS,

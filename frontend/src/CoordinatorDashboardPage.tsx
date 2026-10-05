@@ -45,6 +45,18 @@ function attentionLabel(value: string) {
   return "À suivre";
 }
 
+function responsibilitySourceLabel(value: string | null | undefined) {
+  switch ((value ?? "").toUpperCase()) {
+    case "SHIFT_OVERRIDE": return "quart";
+    case "RESOURCE_REQUIREMENT_OVERRIDE": return "besoin";
+    case "REQUEST_OVERRIDE": return "demande";
+    case "TASK_RESPONSIBLE": return "tâche";
+    case "PROJECT_OVERRIDE": return "projet";
+    case "PROJECT_MANAGER": return "chargé ERP";
+    default: return value || "non résolu";
+  }
+}
+
 function actionSearchText(action: CoordinatorDashboardActionReadModel) {
   return normalize(
     [
@@ -55,6 +67,8 @@ function actionSearchText(action: CoordinatorDashboardActionReadModel) {
       action.project_name,
       action.status,
       action.priority,
+      action.operational_responsible_display_name,
+      action.operational_responsible_source_type,
     ]
       .filter(Boolean)
       .join(" "),
@@ -241,6 +255,13 @@ export default function CoordinatorDashboardPage({
                     {action.detail && <small>{action.detail}</small>}
                     {action.remaining_hours != null && (
                       <small>{action.remaining_hours} h restantes</small>
+                    )}
+                    {action.operational_responsible_status && (
+                      <small>
+                        Responsable : {action.operational_responsible_display_name || "Non résolu"}
+                        {" · source "}
+                        {responsibilitySourceLabel(action.operational_responsible_source_type)}
+                      </small>
                     )}
                   </td>
                   <td>

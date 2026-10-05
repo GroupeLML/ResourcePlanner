@@ -13,6 +13,7 @@ from .project_communication import (
     ProjectCommunicationProject,
     ProjectCommunicationProjection,
     ProjectCommunicationResource,
+    ProjectCommunicationResponsibilityAssignment,
     ProjectCommunicationTask,
 )
 
@@ -148,6 +149,21 @@ def _project_payload(project: ProjectCommunicationProject) -> tuple[object, ...]
                 )
                 for resource in task.resources
             )
+            responsibility_assignments = tuple(
+                sorted(
+                    (
+                        (
+                            assignment.resource_id,
+                            assignment.resource_name,
+                            _responsible_payload(
+                                assignment.operational_responsible
+                            ),
+                        )
+                        for assignment in task.responsibility_assignments
+                    ),
+                    key=repr,
+                )
+            )
             tasks.append(
                 (
                     task.task_description,
@@ -157,6 +173,7 @@ def _project_payload(project: ProjectCommunicationProject) -> tuple[object, ...]
                         _responsible_payload(responsible)
                         for responsible in task.operational_responsibles
                     ),
+                    responsibility_assignments,
                     resources,
                     tuple(task.diagnostics),
                 )
@@ -381,8 +398,9 @@ def _project_header(project: ProjectCommunicationProject) -> list[str]:
     if len(resolved) == 1:
         lines.append(f"Responsable : {_format_responsible(resolved[0])}")
     elif len(resolved) > 1:
-        lines.append("Responsables opérationnels :")
-        lines.extend(f"  • {_format_responsible(value)}" for value in resolved)
+        lines.append(
+            "Responsables opérationnels : voir chaque affectation ci-dessous"
+        )
     else:
         lines.append("Responsable : Non résolu")
     return lines
@@ -425,21 +443,42 @@ def _project_body(
     for day in project.days:
         for task in day.tasks:
             lines.extend(("", f"{french_long_date(day.day)} — {task.task_description}"))
-            if multiple_responsibles:
-                resolved = tuple(
-                    value
-                    for value in task.operational_responsibles
-                    if value.status == STATUS_RESOLVED
-                )
-                if resolved:
-                    lines.append(
-                        "  Responsable : "
-                        + " / ".join(_format_responsible(value) for value in resolved)
-                    )
+            assignments_by_resource: dict[str, list[ContactResolution]] = {}
+            for assignment in task.responsibility_assignments:
+                assignments_by_resource.setdefault(
+                    assignment.resource_id,
+                    [],
+                ).append(assignment.operational_responsible)
             for resource in task.resources:
+                responsible_suffix = ""
+                if multiple_responsibles:
+                    associated: dict[tuple[object, ...], ContactResolution] = {}
+                    for value in assignments_by_resource.get(resource.resource_id, ()):
+                        associated.setdefault(_responsible_payload(value), value)
+                    resolved = tuple(
+                        value
+                        for value in associated.values()
+                        if value.status == STATUS_RESOLVED
+                    )
+                    if resolved:
+                        responsible_suffix = (
+                            " · Responsable : "
+                            + " / ".join(
+                                _format_responsible(value)
+                                for value in sorted(
+                                    resolved,
+                                    key=lambda value: (
+                                        (value.display_name or "").casefold(),
+                                        value.contact_id or "",
+                                    ),
+                                )
+                            )
+                        )
+                    elif assignments_by_resource.get(resource.resource_id):
+                        responsible_suffix = " · Responsable : Non résolu"
                 lines.append(
                     f"  • {resource.resource_name} — {resource.hours:g} h"
-                    f"{_resource_suffix(resource)}"
+                    f"{_resource_suffix(resource)}{responsible_suffix}"
                 )
     return "\n".join(lines)
 
@@ -720,6 +759,17 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
                     )
                     for resource_row in task_row.get("resources") or ()
                 )
+                responsibility_assignments = tuple(
+                    ProjectCommunicationResponsibilityAssignment(
+                        shift_id=str(value.get("shift_id") or ""),
+                        resource_id=str(value.get("resource_id") or ""),
+                        resource_name=str(value.get("resource_name") or ""),
+                        operational_responsible=resolution(
+                            value.get("operational_responsible") or {}
+                        ),
+                    )
+                    for value in task_row.get("responsibility_assignments") or ()
+                )
                 tasks.append(
                     ProjectCommunicationTask(
                         task_description=str(
@@ -734,6 +784,7 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
                             ) or ()
                         ),
                         resources=resources,
+                        responsibility_assignments=responsibility_assignments,
                         diagnostics=tuple(task_row.get("diagnostics") or ()),
                     )
                 )

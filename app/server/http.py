@@ -92,6 +92,7 @@ from .routes_delivery import build_delivery_router
 from .routes_erp_users import build_erp_user_admin_router
 from .routes_integrations import build_integration_router
 from .routes_me import build_me_router
+from .routes_operational_responsibility import build_operational_responsibility_router
 from .routes_reads import build_read_router
 from .routes_resource_classes import (
     build_operational_resource_class_router,
@@ -735,6 +736,7 @@ def create_api_app(
             session_dependency,
         )
     )
+    app.include_router(build_operational_responsibility_router(session_dependency))
     app.include_router(
         build_project_manager_admin_router(
             project_manager_admin_dependency,
