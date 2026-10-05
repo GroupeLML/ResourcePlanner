@@ -38,6 +38,10 @@ class MicrosoftGraphCommunicationTransportTests(unittest.TestCase):
             cc_emails=(
                 "cc-" + local_part + chr(64) + TEST_DOMAIN,
             ),
+            to_emails=(
+                address,
+                "co-" + local_part + chr(64) + TEST_DOMAIN,
+            ),
         )
 
     def test_create_drafts_uses_app_only_token_and_never_calls_send(self) -> None:
@@ -56,7 +60,13 @@ class MicrosoftGraphCommunicationTransportTests(unittest.TestCase):
                 draft_number += 1
                 payload = json.loads(request.content)
                 self.assertEqual(payload["body"]["contentType"], "Text")
-                self.assertTrue(payload["toRecipients"][0]["emailAddress"]["address"].endswith(TEST_DOMAIN))
+                self.assertEqual(len(payload["toRecipients"]), 2)
+                self.assertTrue(
+                    all(
+                        row["emailAddress"]["address"].endswith(TEST_DOMAIN)
+                        for row in payload["toRecipients"]
+                    )
+                )
                 self.assertEqual(len(payload["ccRecipients"]), 1)
                 self.assertTrue(
                     payload["ccRecipients"][0]["emailAddress"]["address"].endswith(TEST_DOMAIN)
