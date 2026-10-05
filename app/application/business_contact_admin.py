@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Mapping, Protocol
 
+from .approval_cycles import ApprovalCycleService
 from .errors import (
     ApplicationConflictError,
     ApplicationNotFoundError,
@@ -104,8 +105,14 @@ def _optional_text(value: object) -> str | None:
 
 
 class BusinessContactAdminService:
-    def __init__(self, repository: BusinessContactAdminRepositoryPort) -> None:
+    def __init__(
+        self,
+        repository: BusinessContactAdminRepositoryPort,
+        *,
+        approval_cycles: ApprovalCycleService | None = None,
+    ) -> None:
         self._repository = repository
+        self._approval_cycles = approval_cycles
 
     def list_contacts(
         self,
@@ -323,7 +330,7 @@ class BusinessContactAdminService:
                 "expected_version doit être supérieur ou égal à 1.",
                 code="demand_version_invalid",
             )
-        return call_application_port(
+        result = call_application_port(
             lambda: self._repository.set_demand_override(
                 number,
                 _optional_text(contact_id),
@@ -332,4 +339,33 @@ class BusinessContactAdminService:
             ),
             code_prefix="demand_contact_override_update",
             context={"demand_number": number},
+        )
+        if not result.reapproval_required or self._approval_cycles is None:
+            return result
+
+        request = self._approval_cycles.get_request(number)
+        if request is None:
+            return result
+        if self._approval_cycles.get_active_cycle(request.id) is not None:
+            return result
+
+        # Legacy requests may predate the per-line approval-cycle model. Keep their
+        # existing compatibility path instead of inventing an approval snapshot.
+        if self._approval_cycles.get_latest_cycle(request.id) is None:
+            return result
+
+        # 612A: a request sent back to Soumise must expose a fresh OPEN quorum.
+        # Historical completed cycles and the active approved revision stay immutable;
+        # only the current voting snapshot is renewed.
+        self._approval_cycles.initialize_cycle(
+            request.id,
+            expected_version=request.aggregate_version,
+        )
+        refreshed = self._approval_cycles.get_request(request.id)
+        if refreshed is None:
+            return result
+        return replace(
+            result,
+            version=refreshed.aggregate_version,
+            status=refreshed.status,
         )
