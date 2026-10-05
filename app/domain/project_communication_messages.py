@@ -23,6 +23,8 @@ MESSAGE_KIND_PLANNING_CHANGE = "project_planning_change"
 
 DIAGNOSTIC_TO_EMAIL_MISSING = "PROJECT_TO_EMAIL_MISSING"
 DIAGNOSTIC_TO_INACTIVE = "PROJECT_TO_INACTIVE"
+DIAGNOSTIC_CO_MANAGER_TO_EMAIL_MISSING = "PROJECT_CO_MANAGER_TO_EMAIL_MISSING"
+DIAGNOSTIC_CO_MANAGER_TO_INACTIVE = "PROJECT_CO_MANAGER_TO_INACTIVE"
 DIAGNOSTIC_CC_EMAIL_MISSING = "PROJECT_CC_EMAIL_MISSING"
 DIAGNOSTIC_CC_INACTIVE = "PROJECT_CC_INACTIVE"
 DIAGNOSTIC_SOURCE = "PROJECT_SOURCE_DIAGNOSTIC"
@@ -73,6 +75,7 @@ class ProjectCommunicationDraft:
     project_id: str
     project_number: str
     to_recipient: ProjectCommunicationParticipant
+    to_recipients: tuple[ProjectCommunicationParticipant, ...]
     cc_recipients: tuple[ProjectCommunicationParticipant, ...]
     subject: str
     body: str
@@ -184,6 +187,10 @@ def _project_payload(project: ProjectCommunicationProject) -> tuple[object, ...]
         project.project_number,
         project.project_name,
         _participant_payload(project.project_manager),
+        tuple(
+            _participant_payload(manager)
+            for manager in project.project_co_managers
+        ),
         tuple(days),
         tuple(project.diagnostics),
     )
@@ -254,6 +261,39 @@ def _recipient_diagnostics(
                 message="Le chargé de projet n'a pas de courriel explicite.",
             )
         )
+
+    for co_manager in project.project_co_managers:
+        entity_id = (
+            co_manager.contact_id
+            or co_manager.user_id
+            or project.project_id
+        )
+        if not co_manager.active:
+            diagnostics.append(
+                _diagnostic(
+                    code=DIAGNOSTIC_CO_MANAGER_TO_INACTIVE,
+                    severity=SEVERITY_BLOCKING,
+                    entity_type="project_co_manager",
+                    entity_id=entity_id,
+                    message=(
+                        f"Le co-chargé {co_manager.display_name} n'est pas "
+                        "un contact métier actif et ne peut pas être destinataire To."
+                    ),
+                )
+            )
+        if not (co_manager.email or "").strip():
+            diagnostics.append(
+                _diagnostic(
+                    code=DIAGNOSTIC_CO_MANAGER_TO_EMAIL_MISSING,
+                    severity=SEVERITY_BLOCKING,
+                    entity_type="project_co_manager",
+                    entity_id=entity_id,
+                    message=(
+                        f"Le co-chargé {co_manager.display_name} n'a pas de "
+                        "courriel explicite et ne peut pas être destinataire To."
+                    ),
+                )
+            )
 
     resources = _resource_participants(cc_sources)
     for resource_id, participant in sorted(resources.items()):
@@ -329,17 +369,47 @@ def _resource_participants(
     return resources
 
 
+def _to_recipients(
+    project: ProjectCommunicationProject,
+) -> tuple[ProjectCommunicationParticipant, ...]:
+    recipients: list[ProjectCommunicationParticipant] = []
+    seen_identities: set[tuple[str, str]] = set()
+    seen_emails: set[str] = set()
+    for participant in (project.project_manager, *project.project_co_managers):
+        identity = None
+        if participant.contact_id:
+            identity = ("contact", participant.contact_id)
+        elif participant.user_id:
+            identity = ("user", participant.user_id)
+        email = (participant.email or "").strip().casefold()
+        if identity is not None and identity in seen_identities:
+            continue
+        if email and email in seen_emails:
+            continue
+        if identity is not None:
+            seen_identities.add(identity)
+        if email:
+            seen_emails.add(email)
+        recipients.append(participant)
+    return tuple(recipients)
+
+
 def _cc_recipients(
     projects: Sequence[ProjectCommunicationProject],
     *,
-    exclude_email: str | None = None,
+    exclude_emails: Sequence[str] = (),
 ) -> tuple[ProjectCommunicationParticipant, ...]:
+    excluded = {
+        str(email or "").strip().casefold()
+        for email in exclude_emails
+        if str(email or "").strip()
+    }
     by_email: dict[str, ProjectCommunicationParticipant] = {}
     for participant in _resource_participants(projects).values():
         email = (participant.email or "").strip()
         if not participant.active or not email:
             continue
-        if exclude_email and email.casefold() == exclude_email.casefold():
+        if email.casefold() in excluded:
             continue
         by_email.setdefault(email.casefold(), participant)
     return tuple(
@@ -499,7 +569,7 @@ def _subject(
 def _draft_fingerprint_payload(
     *,
     message_key: str,
-    to_recipient: ProjectCommunicationParticipant,
+    to_recipients: Sequence[ProjectCommunicationParticipant],
     cc_recipients: Sequence[ProjectCommunicationParticipant],
     subject: str,
     body: str,
@@ -509,7 +579,7 @@ def _draft_fingerprint_payload(
 ) -> tuple[object, ...]:
     return (
         message_key,
-        _participant_payload(to_recipient),
+        tuple(_participant_payload(value) for value in to_recipients),
         tuple(_participant_payload(value) for value in cc_recipients),
         subject,
         body,
@@ -537,9 +607,13 @@ def _build_draft(
     change_kind: str | None = None,
 ) -> ProjectCommunicationDraft:
     message_key = f"project:{project.project_id}"
+    to_recipients = _to_recipients(project)
     cc_recipients = _cc_recipients(
         cc_sources,
-        exclude_email=project.project_manager.email,
+        exclude_emails=tuple(
+            participant.email or ""
+            for participant in to_recipients
+        ),
     )
     diagnostics = _recipient_diagnostics(project, cc_sources)
     subject = _subject(
@@ -551,7 +625,7 @@ def _build_draft(
     fingerprint = _fingerprint_payload(
         _draft_fingerprint_payload(
             message_key=message_key,
-            to_recipient=project.project_manager,
+            to_recipients=to_recipients,
             cc_recipients=cc_recipients,
             subject=subject,
             body=body,
@@ -569,6 +643,7 @@ def _build_draft(
         project_id=project.project_id,
         project_number=project.project_number,
         to_recipient=project.project_manager,
+        to_recipients=to_recipients,
         cc_recipients=cc_recipients,
         subject=subject,
         body=body,
@@ -803,6 +878,10 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
                     project_row.get("project_manager") or {}
                 ),
                 days=tuple(days),
+                project_co_managers=tuple(
+                    participant(value)
+                    for value in project_row.get("project_co_managers") or ()
+                ),
                 diagnostics=tuple(project_row.get("diagnostics") or ()),
             )
         )
