@@ -54,6 +54,7 @@ class DemandLineReadModel:
     kind: str
     slot_count: int = 1
     required_resource_class: str | None = None
+    required_resource_class_label: str | None = None
     required_competencies: str | None = None
     required_competency_ids: tuple[str, ...] = ()
     desired_start: date | None = None
