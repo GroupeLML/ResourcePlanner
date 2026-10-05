@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, time
+import unicodedata
 from typing import Any, Protocol
 
 from .commands.common import UNSET, UnsetType, required_text, validate_date_window
@@ -24,6 +25,23 @@ AVAILABILITY_TYPES = (
     AVAILABILITY_HOLIDAY,
 )
 AVAILABILITY_WEEKDAYS = ("Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim")
+RESOURCE_ORDER_UP = "up"
+RESOURCE_ORDER_DOWN = "down"
+RESOURCE_ORDER_DIRECTIONS = (RESOURCE_ORDER_UP, RESOURCE_ORDER_DOWN)
+
+
+def _resource_alpha_key(value: object) -> str:
+    text = unicodedata.normalize("NFKD", str(value or "").casefold())
+    return "".join(char for char in text if not unicodedata.combining(char))
+
+
+def _resource_manual_order_key(resource: ResourceReadModel) -> tuple[object, ...]:
+    return (
+        int(resource.sort_order),
+        _resource_alpha_key(resource.name),
+        resource.name.casefold(),
+        resource.id,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +108,25 @@ class ResourceUpdateCommand:
             if value is not UNSET:
                 result[field] = value
         return result
+
+
+@dataclass(frozen=True, slots=True)
+class ResourceReorderCommand:
+    resource_id: str
+    direction: str
+
+    def __post_init__(self) -> None:
+        required_text(
+            self.resource_id,
+            field="resource_id",
+            message="L'identifiant de la ressource est requis.",
+        )
+        if self.direction not in RESOURCE_ORDER_DIRECTIONS:
+            raise ApplicationValidationError(
+                "La direction de réordonnancement doit être up ou down.",
+                code="resource_reorder_direction_invalid",
+                context={"direction": self.direction},
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +211,8 @@ class AvailabilityRuleMutationResult:
 
 
 class ResourceAdminRepositoryPort(Protocol):
+    def list_resources(self, *, active_only: bool = False) -> tuple[ResourceReadModel, ...]: ...
+
     def get_resource(self, resource_id: str) -> ResourceReadModel | None: ...
 
     def find_resource_by_name(self, name: str) -> ResourceReadModel | None: ...
@@ -181,6 +220,8 @@ class ResourceAdminRepositoryPort(Protocol):
     def create_resource(self, values: Mapping[str, Any]) -> str: ...
 
     def update_resource(self, resource_id: str, values: Mapping[str, Any]) -> str: ...
+
+    def replace_resource_sort_order(self, ordered_resource_ids: Sequence[str]) -> None: ...
 
     def get_availability_rule(self, rule_id: str) -> ResourceAvailabilityRuleReadModel | None: ...
 
@@ -314,6 +355,68 @@ class ResourceAdminService:
             context={"resource_id": command.resource_id},
         )
         return ResourceMutationResult(str(identifier), "updated")
+
+    def reorder_resource(self, command: ResourceReorderCommand) -> ResourceMutationResult:
+        current = call_application_port(
+            lambda: self._repository.get_resource(command.resource_id),
+            code_prefix="resource_read",
+            context={"resource_id": command.resource_id},
+        )
+        if current is None:
+            raise ApplicationNotFoundError(
+                f"Ressource {command.resource_id} introuvable.",
+                code="resource_not_found",
+                context={"resource_id": command.resource_id},
+            )
+        if not current.active or not current.erp_active:
+            raise ApplicationValidationError(
+                "Une ressource inactive ne peut pas être réordonnée depuis le planning.",
+                code="resource_reorder_inactive",
+                context={"resource_id": command.resource_id},
+            )
+
+        resources = call_application_port(
+            lambda: self._repository.list_resources(active_only=True),
+            code_prefix="resource_read",
+            context={"resource_id": command.resource_id},
+        )
+        class_key = current.resource_class or ""
+        group = sorted(
+            (
+                resource
+                for resource in resources
+                if (resource.resource_class or "") == class_key
+            ),
+            key=_resource_manual_order_key,
+        )
+        current_index = next(
+            (index for index, resource in enumerate(group) if resource.id == current.id),
+            None,
+        )
+        if current_index is None:
+            raise ApplicationValidationError(
+                "La ressource n'est pas disponible dans le planning courant.",
+                code="resource_reorder_unavailable",
+                context={"resource_id": command.resource_id},
+            )
+
+        offset = -1 if command.direction == RESOURCE_ORDER_UP else 1
+        target_index = current_index + offset
+        if target_index < 0 or target_index >= len(group):
+            return ResourceMutationResult(current.id, "unchanged")
+
+        group[current_index], group[target_index] = group[target_index], group[current_index]
+        ordered_ids = tuple(resource.id for resource in group)
+        call_application_port(
+            lambda: self._repository.replace_resource_sort_order(ordered_ids),
+            code_prefix="resource_reorder",
+            context={
+                "resource_id": command.resource_id,
+                "direction": command.direction,
+                "resource_class": current.resource_class,
+            },
+        )
+        return ResourceMutationResult(current.id, "reordered")
 
     def create_availability_rule(
         self,
