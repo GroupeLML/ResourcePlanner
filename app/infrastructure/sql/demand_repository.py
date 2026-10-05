@@ -493,6 +493,27 @@ class SqlDemandRepository(DemandRepositoryPort):
                 row[1].id,
             ),
         )
+        resource_class_codes = tuple(
+            sorted(
+                {
+                    code
+                    for _, line, _, _ in ordered_line_rows
+                    if (code := _optional_text(line.required_resource_class)) is not None
+                }
+            )
+        )
+        resource_class_labels = (
+            {
+                resource_class.code: _optional_text(resource_class.label)
+                for resource_class in self._session.scalars(
+                    select(ResourceClassConfig).where(
+                        ResourceClassConfig.code.in_(resource_class_codes)
+                    )
+                )
+            }
+            if resource_class_codes
+            else {}
+        )
         for request_id, line, work_package, resource in ordered_line_rows:
             grouped_lines.setdefault(request_id, []).append(
                 DemandLineReadModel(
@@ -501,6 +522,9 @@ class SqlDemandRepository(DemandRepositoryPort):
                     kind=_text(line.kind) or "WORKFORCE",
                     slot_count=max(int(line.slot_count or 1), 1),
                     required_resource_class=_optional_text(line.required_resource_class),
+                    required_resource_class_label=resource_class_labels.get(
+                        _optional_text(line.required_resource_class) or ""
+                    ),
                     required_competencies=_optional_text(
                         line.required_competencies_snapshot
                     ),

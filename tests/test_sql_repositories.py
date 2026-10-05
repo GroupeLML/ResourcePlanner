@@ -16,6 +16,7 @@ from app.infrastructure.sql import (
     Project,
     RequestLine,
     Resource,
+    ResourceClassConfig,
     ResourceRequirement,
     SqlDemandRepository,
     SqlSegmentRepository,
@@ -59,6 +60,11 @@ class SqlRepositoryTests(unittest.TestCase):
                     Project(id="P1", number="P-1", name="Projet 1", client="Client 1"),
                     Project(id="P2", number="P-2", name="Projet 2", client="Client 2"),
                     Resource(id="R1", name="Alice", resource_class="Programmation"),
+                    ResourceClassConfig(
+                        code="PROGRAMMEUR",
+                        label="Programmeur",
+                        active=True,
+                    ),
                 ]
             )
 
@@ -98,6 +104,7 @@ class SqlRepositoryTests(unittest.TestCase):
                     "NombreRessources": 1,
                     "TempsEstimeHeures": 8,
                     "TechnicienPropose": "Alice",
+                    "RequiredResourceClass": "PROGRAMMEUR",
                 },
                 submit=True,
             )
@@ -111,6 +118,11 @@ class SqlRepositoryTests(unittest.TestCase):
             self.assertEqual(created.project_name, "Projet 1")
             self.assertEqual(created.client, "Client 1")
             self.assertEqual(created.requester, "Jean")
+            self.assertEqual(created.lines[0].required_resource_class, "PROGRAMMEUR")
+            self.assertEqual(
+                created.lines[0].required_resource_class_label,
+                "Programmeur",
+            )
 
             request = session.scalar(
                 select(WorkforceRequest).where(

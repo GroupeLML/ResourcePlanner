@@ -562,6 +562,7 @@ export type DemandLineReadModel = {
   kind: "WORKFORCE" | "ASSET";
   slot_count: number;
   required_resource_class: string | null;
+  required_resource_class_label: string | null;
   required_competencies: string | null;
   required_competency_ids: string[];
   desired_start: string | null;
