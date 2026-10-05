@@ -1116,10 +1116,12 @@ export default function ProjectsPage() {
                     : ""}
                 </div>
 
-                <OperationalResponsibilityControl
-                  target={{ kind: "project", reference: selectedProject.number }}
-                  onSaved={() => setRefreshKey((value) => value + 1)}
-                />
+                {selectedProject && (
+                  <OperationalResponsibilityControl
+                    target={{ kind: "project", reference: selectedProject.number }}
+                    onSaved={() => setRefreshKey((value) => value + 1)}
+                  />
+                )}
 
                 <div className="projects-table-header">
                   <strong>Co-chargés RessourcePlanner</strong>
