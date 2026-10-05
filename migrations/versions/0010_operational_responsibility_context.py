@@ -232,7 +232,7 @@ def _backfill_legacy_context() -> None:
             WHERE au.business_contact_id IS NOT NULL
             """
         )
-    ).mappings()
+    ).mappings().all()
     managers_by_project = {
         str(row["project_id"]): str(row["business_contact_id"])
         for row in manager_rows
@@ -259,7 +259,7 @@ def _backfill_legacy_context() -> None:
               ON task.id = rr.approved_task_catalog_item_id
             """
         )
-    ).mappings()
+    ).mappings().all()
 
     update = sa.text(
         """
