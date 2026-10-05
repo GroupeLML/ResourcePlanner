@@ -59,12 +59,18 @@ class FrontendCommunicationsContractTests(unittest.TestCase):
     def test_project_contract_exposes_recipients_diagnostics_and_model_version(self) -> None:
         api = API.read_text(encoding="utf-8")
         self.assertIn("to_recipient", api)
+        self.assertIn("to_recipients", api)
         self.assertIn("cc_recipients", api)
         self.assertIn("ProjectMessageDiagnostic", api)
         self.assertIn("approvable", api)
         self.assertIn("message_key", api)
         self.assertIn("cc_emails", api)
+        self.assertIn("to_emails", api)
         self.assertIn("model_version", api)
+        page = PAGE.read_text(encoding="utf-8")
+        self.assertIn("source.to_recipients", page)
+        self.assertIn("message.to_emails", page)
+        self.assertIn("co-chargés RP", page)
 
     def test_stylesheet_is_loaded(self) -> None:
         main = MAIN.read_text(encoding="utf-8")
