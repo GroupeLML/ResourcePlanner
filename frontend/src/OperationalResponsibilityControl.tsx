@@ -91,28 +91,34 @@ export default function OperationalResponsibilityControl({
       : `allocation:${target.reference}:${target.expectedPlanningVersion}:${target.source}:${target.locked}`;
 
   async function reload(signal?: AbortSignal) {
+    const contactsPromise = getOperationalResponsibilityContacts(signal);
+    if (target.kind === "project") {
+      const [contactRows, responsibility] = await Promise.all([
+        contactsPromise,
+        getProjectOperationalResponsibility(target.reference, signal),
+      ]);
+      setContacts(contactRows);
+      setResolution(responsibility.operational_responsible);
+      setOverrideContactId(responsibility.override_contact_id);
+      setProjectVersion(responsibility.override_version);
+      return;
+    }
+
     const [contactRows, responsibility] = await Promise.all([
-      getOperationalResponsibilityContacts(signal),
-      target.kind === "project"
-        ? getProjectOperationalResponsibility(target.reference, signal)
-        : target.kind === "segment"
-          ? getSegmentOperationalResponsibility(target.reference, signal)
-          : getAllocationOperationalResponsibility(target.reference, signal),
+      contactsPromise,
+      target.kind === "segment"
+        ? getSegmentOperationalResponsibility(target.reference, signal)
+        : getAllocationOperationalResponsibility(target.reference, signal),
     ]);
     setContacts(contactRows);
     setResolution(responsibility.operational_responsible);
-    if (target.kind === "project") {
-      setOverrideContactId(responsibility.override_contact_id);
-      setProjectVersion(responsibility.override_version);
-    } else {
-      const ownSource = ownOverrideSource(target.kind);
-      setOverrideContactId(
-        responsibility.operational_responsible.source_type === ownSource
-          ? responsibility.operational_responsible.contact_id
-          : null,
-      );
-      setProjectVersion(null);
-    }
+    const ownSource = ownOverrideSource(target.kind);
+    setOverrideContactId(
+      responsibility.operational_responsible.source_type === ownSource
+        ? responsibility.operational_responsible.contact_id
+        : null,
+    );
+    setProjectVersion(null);
   }
 
   useEffect(() => {
