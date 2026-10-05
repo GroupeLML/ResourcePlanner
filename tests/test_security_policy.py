@@ -221,6 +221,13 @@ class SecurityPolicyTests(unittest.TestCase):
         )
         self.assertEqual(
             required_permission(
+                "POST",
+                "/api/v1/planning/resources/R-1/reorder",
+            ),
+            PERMISSION_MANAGE_PLANNING,
+        )
+        self.assertEqual(
+            required_permission(
                 "PATCH",
                 "/api/v1/allocations/SHIFT-1/operational-responsible",
             ),
