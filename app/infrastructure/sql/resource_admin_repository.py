@@ -168,6 +168,23 @@ class SqlResourceAdminRepository(ResourceAdminRepositoryPort):
         self._session.flush()
         return row.id
 
+    def replace_resource_sort_order(self, ordered_resource_ids: Sequence[str]) -> None:
+        identifiers = tuple(_text(value) for value in ordered_resource_ids if _text(value))
+        if not identifiers:
+            return
+        rows = {
+            row.id: row
+            for row in self._session.scalars(
+                select(Resource).where(Resource.id.in_(identifiers))
+            ).all()
+        }
+        missing = tuple(identifier for identifier in identifiers if identifier not in rows)
+        if missing:
+            raise KeyError(f"Ressources introuvables pour réordonnancement: {', '.join(missing)}")
+        for position, identifier in enumerate(identifiers, start=1):
+            rows[identifier].sort_order = position * 10
+        self._session.flush()
+
     def list_availability_rules(
         self,
         *,
