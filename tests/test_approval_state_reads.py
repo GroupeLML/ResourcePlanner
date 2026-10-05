@@ -189,6 +189,100 @@ class ApprovalStateReadApiTests(unittest.TestCase):
                     "REAPPROVAL_REQUIRED",
                 )
 
+    def test_operational_responsible_reapproval_opens_fresh_line_quorum(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            admin_app = create_api_app(
+                database_url,
+                actor_name="admin-612a",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(admin_app, raise_server_exceptions=False) as client:
+                number = self._create_and_approve(client)
+
+                before = client.get(
+                    f"/api/v1/demands/{number}/approval-state"
+                )
+                self.assertEqual(before.status_code, 200, before.text)
+                previous_revision_id = before.json()["active_revision_id"]
+                self.assertTrue(previous_revision_id)
+
+                contact = client.post(
+                    "/api/v1/business-contacts",
+                    json={"display_name": "Responsable 612A"},
+                )
+                self.assertEqual(contact.status_code, 201, contact.text)
+
+                link = client.get(
+                    f"/api/v1/demands/{number}/business-contacts"
+                )
+                self.assertEqual(link.status_code, 200, link.text)
+                previous_version = link.json()["aggregate_version"]
+
+                changed = client.patch(
+                    f"/api/v1/demands/{number}/operational-responsible",
+                    json={
+                        "contact_id": contact.json()["id"],
+                        "expected_version": previous_version,
+                    },
+                )
+                self.assertEqual(changed.status_code, 200, changed.text)
+                self.assertTrue(changed.json()["reapproval_required"])
+                self.assertEqual(changed.json()["status"], "Soumise")
+                self.assertGreater(changed.json()["version"], previous_version)
+
+                detail = client.get(
+                    f"/api/v1/demands/{number}/detail"
+                )
+                self.assertEqual(detail.status_code, 200, detail.text)
+                cycle = detail.json()["approval_cycle"]
+                self.assertIsNotNone(cycle)
+                assert cycle is not None
+                self.assertEqual(cycle["state"], "OPEN")
+                self.assertFalse(cycle["quorum_complete"])
+                self.assertEqual(cycle["satisfied_requirements"], 0)
+                self.assertGreater(cycle["total_requirements"], 0)
+                self.assertTrue(cycle["actor_approvable_requirement_ids"])
+                for requirement in cycle["requirements"]:
+                    self.assertFalse(requirement["satisfied"])
+                    self.assertEqual(requirement["decisions"], [])
+
+                pending_state = client.get(
+                    f"/api/v1/demands/{number}/approval-state"
+                )
+                self.assertEqual(
+                    pending_state.status_code,
+                    200,
+                    pending_state.text,
+                )
+                self.assertEqual(
+                    pending_state.json()["active_revision_id"],
+                    previous_revision_id,
+                )
+
+                reapproved = client.post(
+                    f"/api/v1/demands/{number}/approve",
+                    json={"comment": "Réapprobation 612A"},
+                )
+                self.assertEqual(
+                    reapproved.status_code,
+                    200,
+                    reapproved.text,
+                )
+                self.assertEqual(
+                    reapproved.json()["status"],
+                    "En planification",
+                )
+
+                final_state = client.get(
+                    f"/api/v1/demands/{number}/approval-state"
+                )
+                self.assertEqual(final_state.status_code, 200, final_state.text)
+                self.assertNotEqual(
+                    final_state.json()["active_revision_id"],
+                    previous_revision_id,
+                )
+
     def test_plan_delta_exposes_structured_locked_blocker(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
