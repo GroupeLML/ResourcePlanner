@@ -41,7 +41,7 @@ test("595 — le mode Manuel réordonne, persiste et reste cohérent sous filtre
 
     await page.getByRole("button", { name: "Monter Bob", exact: true }).click();
     await expect.poll(() => resourceNames(programmeurGroup)).toEqual(["Bob", "Alice"]);
-    await expect(page.getByRole("status")).toContainText("Ordre manuel mis à jour pour Bob");
+    await expect(page.locator(".planning-drag-feedback")).toContainText("Ordre manuel mis à jour pour Bob");
 
     await page.reload();
     await expect(page.locator(".sidebar-footer")).toContainText("Coordonnateur E2E");
@@ -52,6 +52,9 @@ test("595 — le mode Manuel réordonne, persiste et reste cohérent sous filtre
 
     await page.getByLabel("Ordre des ressources").selectOption("alphabetical");
     await expect.poll(() => resourceNames(restoredGroup)).toEqual(["Alice", "Bob"]);
+    await page.getByLabel("Ordre des ressources").selectOption("manual");
+    await expect.poll(() => resourceNames(restoredGroup)).toEqual(["Bob", "Alice"]);
+    await page.getByLabel("Ordre des ressources").selectOption("availability");
     await page.getByLabel("Ordre des ressources").selectOption("manual");
     await expect.poll(() => resourceNames(restoredGroup)).toEqual(["Bob", "Alice"]);
 
