@@ -92,7 +92,7 @@ test("594D affiche le responsable effectif du périmètre coordonnateur sans él
     await expect(page.getByRole("heading", { name: "Tableau de bord coordonnateur" })).toBeVisible();
     await expect(page.getByText("Responsable : Responsable 594D · source tâche")).toBeVisible();
     await expect(page.getByText("DMO-594D", { exact: true })).toHaveCount(2);
-    await expect(page.getByText("demandes actives")).toBeVisible();
+    await expect(page.getByText("demandes actives", { exact: true })).toBeVisible();
     await expect(page.locator(".coordinator-kpi-grid").getByText("1", { exact: true }).first()).toBeVisible();
   } finally {
     await context.close();
