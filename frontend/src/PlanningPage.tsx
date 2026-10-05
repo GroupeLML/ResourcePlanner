@@ -16,6 +16,7 @@ import {
   getPlanningSnapshot,
   getResources,
   moveAllocation,
+  reorderPlanningResource,
 } from "./api";
 import {
   addDays,
@@ -78,14 +79,30 @@ type ResourceGroupEntry = {
   pendingLoads: PendingDemandLoadReadModel[];
 };
 
+type ManualResourceOrderControls = {
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  busy: boolean;
+  onMove: (direction: "up" | "down") => void;
+};
+
+function compareManualResources(left: ResourceReadModel, right: ResourceReadModel) {
+  const manualOrder = left.sort_order - right.sort_order;
+  if (manualOrder !== 0) return manualOrder;
+  const nameOrder = left.name.localeCompare(right.name, "fr-CA", { sensitivity: "base" });
+  if (nameOrder !== 0) return nameOrder;
+  const exactNameOrder = left.name.localeCompare(right.name, "fr-CA");
+  if (exactNameOrder !== 0) return exactNameOrder;
+  return left.id.localeCompare(right.id, "fr-CA");
+}
+
 function compareResourceGroupEntries(
   left: ResourceGroupEntry,
   right: ResourceGroupEntry,
   mode: ResourceSortMode,
 ) {
   if (mode === "manual") {
-    const manualOrder = left.resource.sort_order - right.resource.sort_order;
-    if (manualOrder !== 0) return manualOrder;
+    return compareManualResources(left.resource, right.resource);
   }
 
   if (mode === "availability") {
@@ -424,6 +441,7 @@ function ResourceRow({
   onCreateQuickShift,
   onOpenDemand,
   dragEnabled,
+  manualOrder,
   onDropShift,
   onDropSegment,
 }: {
@@ -438,6 +456,7 @@ function ResourceRow({
   onCreateQuickShift?: (resource: ResourceReadModel, day: string) => void;
   onOpenDemand?: (demandNumber: string) => void;
   dragEnabled: boolean;
+  manualOrder?: ManualResourceOrderControls;
   onDropShift: (payload: ShiftDragPayload, resource: ResourceReadModel, day: string) => void;
   onDropSegment: (payload: SegmentDragPayload, resource: ResourceReadModel) => void;
 }) {
@@ -480,6 +499,28 @@ function ResourceRow({
           </>
         ) : (
           <small>{hours(total)} h affichées</small>
+        )}
+        {manualOrder && (
+          <div className="resource-reorder-controls" role="group" aria-label={`Ordre manuel de ${resource.name}`}>
+            <button
+              type="button"
+              onClick={() => manualOrder.onMove("up")}
+              disabled={manualOrder.busy || !manualOrder.canMoveUp}
+              aria-label={`Monter ${resource.name}`}
+              title="Monter cette ressource"
+            >
+              ↑
+            </button>
+            <button
+              type="button"
+              onClick={() => manualOrder.onMove("down")}
+              disabled={manualOrder.busy || !manualOrder.canMoveDown}
+              aria-label={`Descendre ${resource.name}`}
+              title="Descendre cette ressource"
+            >
+              ↓
+            </button>
+          </div>
         )}
       </div>
 
@@ -611,6 +652,7 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
   const [detailDemandNumber, setDetailDemandNumber] = useState<string | null>(null);
   const [detailContextDirty, setDetailContextDirty] = useState(false);
   const [dropBusy, setDropBusy] = useState<string | null>(null);
+  const [resourceReorderBusy, setResourceReorderBusy] = useState<string | null>(null);
   const [dropDialog, setDropDialog] = useState<DropDialogState | null>(null);
   const [dragFeedback, setDragFeedback] = useState<{
     tone: "success" | "error" | "info";
@@ -723,9 +765,30 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
 
   const resourceOptions = useMemo(() => {
     if (!snapshot) return [];
-    return [...snapshot.resources]
-      .sort((left, right) => left.sort_order - right.sort_order || left.name.localeCompare(right.name, "fr-CA"));
+    return [...snapshot.resources].sort(compareManualResources);
   }, [snapshot]);
+
+  const manualOrderAvailability = useMemo(() => {
+    const groups = new Map<string, ResourceReadModel[]>();
+    catalogResources.forEach((resource) => {
+      const className = resource.resource_class || "Non classé";
+      const rows = groups.get(className) ?? [];
+      rows.push(resource);
+      groups.set(className, rows);
+    });
+
+    const result = new Map<string, { canMoveUp: boolean; canMoveDown: boolean }>();
+    groups.forEach((rows) => {
+      const ordered = [...rows].sort(compareManualResources);
+      ordered.forEach((resource, index) => {
+        result.set(resource.id, {
+          canMoveUp: index > 0,
+          canMoveDown: index < ordered.length - 1,
+        });
+      });
+    });
+    return result;
+  }, [catalogResources]);
 
   const capacityByResource = useMemo(
     () => new Map((capacityGrid?.resources ?? []).map((row) => [row.resource_id, row])),
@@ -843,6 +906,46 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
   }, [snapshot, capacityGrid, project, resourceFilter, classFilter, query]);
 
   const visibleResourceCount = visibleResourceGroups.reduce((sum, [, rows]) => sum + rows.length, 0);
+
+  async function moveResourceInManualOrder(
+    resource: ResourceReadModel,
+    direction: "up" | "down",
+  ) {
+    if (!canManagePlanning || resourceSortMode !== "manual" || resourceReorderBusy || dropBusy) return;
+    setResourceReorderBusy(resource.id);
+    setDragFeedback(null);
+    try {
+      const result = await reorderPlanningResource(resource.id, direction, createClientId());
+      if (result.action === "unchanged") {
+        setDragFeedback({
+          tone: "info",
+          message: direction === "up"
+            ? `${resource.name} est déjà en première position de sa classe.`
+            : `${resource.name} est déjà en dernière position de sa classe.`,
+        });
+      } else {
+        setDragFeedback({
+          tone: "success",
+          message: `Ordre manuel mis à jour pour ${resource.name}.`,
+        });
+        setRefreshKey((value) => value + 1);
+      }
+    } catch (reason: unknown) {
+      if (reason instanceof ApiError) {
+        setDragFeedback({
+          tone: "error",
+          message: `${reason.message}${reason.code ? ` (${reason.code})` : ""}`,
+        });
+      } else {
+        setDragFeedback({
+          tone: "error",
+          message: reason instanceof Error ? reason.message : "Impossible de réordonner cette ressource.",
+        });
+      }
+    } finally {
+      setResourceReorderBusy(null);
+    }
+  }
 
   async function moveShiftFromDrop(
     payload: ShiftDragPayload,
@@ -1326,6 +1429,12 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
                         } : undefined}
                         onOpenDemand={setDetailDemandNumber}
                         dragEnabled={canManagePlanning && !dropBusy}
+                        manualOrder={resourceSortMode === "manual" && canManagePlanning ? {
+                          canMoveUp: manualOrderAvailability.get(resource.id)?.canMoveUp ?? false,
+                          canMoveDown: manualOrderAvailability.get(resource.id)?.canMoveDown ?? false,
+                          busy: Boolean(resourceReorderBusy || dropBusy),
+                          onMove: (direction) => void moveResourceInManualOrder(resource, direction),
+                        } : undefined}
                         onDropShift={(payload, target, day) => void moveShiftFromDrop(payload, target, day)}
                         onDropSegment={(payload, target) => void assignSegmentFromDrop(payload, target)}
                         key={resource.id}

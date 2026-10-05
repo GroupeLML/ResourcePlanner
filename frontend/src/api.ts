@@ -2015,6 +2015,19 @@ export function updateResource(resourceId: string, payload: ResourceWrite) {
   );
 }
 
+export function reorderPlanningResource(
+  resourceId: string,
+  direction: "up" | "down",
+  idempotencyKey: string,
+) {
+  return sendJson<ResourceMutationResult>(
+    `/api/v1/planning/resources/${encodeURIComponent(resourceId)}/reorder`,
+    "POST",
+    { direction },
+    { "Idempotency-Key": idempotencyKey },
+  );
+}
+
 export function deactivateResource(resourceId: string) {
   return postJson<ResourceMutationResult>(
     `/api/v1/resources/${encodeURIComponent(resourceId)}/deactivate`,

@@ -68,6 +68,10 @@ class ResourceUpdateRequest(StrictRequest):
         return value
 
 
+class ResourceReorderRequest(StrictRequest):
+    direction: Literal["up", "down"]
+
+
 class AvailabilityRuleCreateRequest(StrictRequest):
     availability_type: AvailabilityType
     resource_id: str | None = None

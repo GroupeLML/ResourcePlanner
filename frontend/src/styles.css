@@ -660,6 +660,11 @@ h1 { font-size: 1.6rem; }
 .resource-identity strong { font-size: .76rem; }
 .resource-identity span { margin-top: .12rem; color: var(--muted); font-size: .62rem; line-height: 1.25; }
 .resource-identity small { margin-top: .35rem; color: #44536b; font-size: .6rem; font-weight: 700; }
+.resource-reorder-controls { display: flex; align-items: center; gap: .24rem; margin-top: .38rem; }
+.resource-reorder-controls button { width: 27px; min-height: 25px; padding: 0; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; color: #44536b; font-size: .72rem; font-weight: 800; cursor: pointer; }
+.resource-reorder-controls button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.resource-reorder-controls button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.resource-reorder-controls button:disabled { opacity: .4; cursor: not-allowed; }
 .planning-day-cell { display: grid; gap: .35rem; align-content: start; }
 .empty-day { color: #c2c8d1; text-align: center; padding-top: .8rem; font-size: .7rem; }
 .shift-card { padding: .48rem .52rem; border: 1px solid #bfdcc8; border-left: 4px solid #4f9a68; border-radius: 8px; background: var(--good-soft); min-width: 0; }

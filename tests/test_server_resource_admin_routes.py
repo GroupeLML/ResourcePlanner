@@ -212,5 +212,69 @@ class ServerResourceAdminRouteTests(unittest.TestCase):
                 self.assertEqual(inactive_resources[0]["sort_order"], 10)
 
 
+    def test_manual_planning_reorder_persists_normalizes_duplicates_and_is_idempotent(self) -> None:
+        with TemporaryDirectory() as directory:
+            app = create_api_app(self._database(directory))
+            with TestClient(app) as client:
+                def create_resource(name: str, resource_class: str, sort_order: int) -> str:
+                    response = client.post(
+                        "/api/v1/resources",
+                        json={
+                            "name": name,
+                            "resource_class": resource_class,
+                            "sort_order": sort_order,
+                        },
+                    )
+                    self.assertEqual(response.status_code, 201, response.text)
+                    return response.json()["resource_id"]
+
+                alice_id = create_resource("Alice", "PROGRAMMEUR", 0)
+                bob_id = create_resource("Bob", "PROGRAMMEUR", 0)
+                electrician_id = create_resource("Émile", "ÉLECTRICIEN", 7)
+
+                headers = {"Idempotency-Key": "issue-595-bob-up"}
+                moved = client.post(
+                    f"/api/v1/planning/resources/{bob_id}/reorder",
+                    json={"direction": "up"},
+                    headers=headers,
+                )
+                self.assertEqual(moved.status_code, 200, moved.text)
+                self.assertEqual(moved.json()["action"], "reordered")
+
+                replay = client.post(
+                    f"/api/v1/planning/resources/{bob_id}/reorder",
+                    json={"direction": "up"},
+                    headers=headers,
+                )
+                self.assertEqual(replay.status_code, 200, replay.text)
+                self.assertEqual(replay.json(), moved.json())
+
+                resources = client.get("/api/v1/resources?active_only=false")
+                self.assertEqual(resources.status_code, 200, resources.text)
+                programmers = sorted(
+                    (
+                        row for row in resources.json()
+                        if row["resource_class"] == "PROGRAMMEUR"
+                    ),
+                    key=lambda row: row["sort_order"],
+                )
+                self.assertEqual(
+                    [(row["id"], row["sort_order"]) for row in programmers],
+                    [(bob_id, 10), (alice_id, 20)],
+                )
+                electrician = next(
+                    row for row in resources.json()
+                    if row["id"] == electrician_id
+                )
+                self.assertEqual(electrician["sort_order"], 7)
+
+                invalid = client.post(
+                    f"/api/v1/planning/resources/{alice_id}/reorder",
+                    json={"direction": "sideways"},
+                    headers={"Idempotency-Key": "issue-595-invalid"},
+                )
+                self.assertEqual(invalid.status_code, 422, invalid.text)
+
+
 if __name__ == "__main__":
     unittest.main()

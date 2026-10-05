@@ -39,6 +39,7 @@ from ..application import (
     PlanningRebuildCommand,
     QuickShiftCreateCommand,
     ResourceCreateCommand,
+    ResourceReorderCommand,
     ResourceUpdateCommand,
     SegmentAssignCommand,
     SegmentCancelCommand,
@@ -81,6 +82,7 @@ from .schemas import (
     QuickShiftRequest,
     RequiredCommentRequest,
     ResourceCreateRequest,
+    ResourceReorderRequest,
     ResourceUpdateRequest,
     SegmentAssignRequest,
     SegmentCreateRequest,
@@ -201,6 +203,34 @@ def build_command_router(
         if selection_supplied:
             competencies.assign_resource(resource_id, competency_ids)
         return _payload(result)
+
+    @router.post("/planning/resources/{resource_id}/reorder")
+    def reorder_planning_resource(
+        resource_id: str,
+        body: ResourceReorderRequest,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        facade: ApplicationFacade = Depends(facade_dependency),
+        idempotency: IdempotentCommandExecutor = Depends(idempotency_dependency),
+    ) -> dict[str, Any]:
+        def action() -> dict[str, Any]:
+            return _payload(
+                facade.reorder_resource(
+                    ResourceReorderCommand(
+                        resource_id=resource_id,
+                        direction=body.direction,
+                    )
+                )
+            )
+
+        return idempotency.execute(
+            scope="planning.resource.reorder",
+            key=idempotency_key,
+            request_payload={
+                "resource_id": resource_id,
+                **_json_body(body),
+            },
+            action=action,
+        )
 
     @router.post("/resources/{resource_id}/deactivate")
     def deactivate_resource(

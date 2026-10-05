@@ -48,6 +48,7 @@ from .resource_admin import (
     ResourceAdminService,
     ResourceCreateCommand,
     ResourceMutationResult,
+    ResourceReorderCommand,
     ResourceUpdateCommand,
 )
 from .results import (
@@ -184,6 +185,10 @@ class ApplicationFacade:
     def update_resource(self, command: ResourceUpdateCommand) -> ResourceMutationResult:
         self._acquire_planning_version()
         return self._resource_admin_service().update_resource(command)
+
+    def reorder_resource(self, command: ResourceReorderCommand) -> ResourceMutationResult:
+        # Manual display order does not change shifts, capacity or planning decisions.
+        return self._resource_admin_service().reorder_resource(command)
 
     def create_availability_rule(
         self,
