@@ -383,14 +383,20 @@ def make_competency_dependency(
 def make_business_contact_dependency(
     factory: SqlSessionFactory,
     *,
+    actor_name: str = "api",
     session_dependency: SessionDependency | None = None,
 ) -> BusinessContactDependency:
     request_session = session_dependency or make_session_dependency(factory)
 
     def dependency(
+        request: Request,
         session: Session = Depends(request_session),
     ) -> Iterator[BusinessContactAdminService]:
-        yield build_business_contact_admin_service(session)
+        yield build_business_contact_admin_service(
+            session,
+            actor_name=_request_actor(request, actor_name),
+            actor_user_id=_request_actor_user_id(request),
+        )
 
     return dependency
 
@@ -569,6 +575,7 @@ def create_api_app(
     )
     business_contact_dependency = make_business_contact_dependency(
         factory,
+        actor_name=actor_name,
         session_dependency=session_dependency,
     )
     project_manager_admin_dependency = make_project_manager_admin_dependency(
