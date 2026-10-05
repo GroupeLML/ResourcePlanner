@@ -331,10 +331,26 @@ def build_project_communication_service(
 
 def build_business_contact_admin_service(
     session: Session,
+    *,
+    actor_name: str = "api",
+    actor_user_id: str | None = None,
 ) -> BusinessContactAdminService:
     """Compose business-contact administration inside the request transaction."""
 
-    return BusinessContactAdminService(SqlBusinessContactAdminRepository(session))
+    actor = str(actor_name or "api").strip() or "api"
+    approval_cycle_repository = SqlApprovalCycleRepository(
+        session,
+        actor_user_id=actor_user_id,
+        actor_name=actor,
+    )
+    approval_cycles = ApprovalCycleService(
+        approval_cycle_repository,
+        ApprovalScopeService(SqlApprovalScopeRepository(session)),
+    )
+    return BusinessContactAdminService(
+        SqlBusinessContactAdminRepository(session),
+        approval_cycles=approval_cycles,
+    )
 
 
 def build_project_manager_admin_service(
