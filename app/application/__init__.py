@@ -260,6 +260,7 @@ from .resource_admin import (
     ResourceAdminService,
     ResourceCreateCommand,
     ResourceMutationResult,
+    ResourceReorderCommand,
     ResourceUpdateCommand,
 )
 from .results import (
@@ -427,6 +428,7 @@ __all__ = [
     "ResourceAvailabilityRuleReadModel",
     "ResourceCreateCommand",
     "ResourceMutationResult",
+    "ResourceReorderCommand",
     "ResourceReadModel",
     "ResourceRecommendationReadModel",
     "ResourceUpdateCommand",
