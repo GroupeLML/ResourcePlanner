@@ -65,6 +65,8 @@ Voir :
 - `ADR-018-asset-reservation-contexts-and-physical-occupation.md`
 - `ADR-019-work-package-load-intervals-and-derived-lifecycle.md`
 - `ADR-020-operational-responsibility-hierarchy-and-approved-context.md`
+- `ADR-021-class-scoped-holiday-availability-rules.md`
+- `ADR-022-operational-planning-window-overrides.md`
 
 Chaîne métier actuelle :
 
@@ -88,6 +90,15 @@ Voir :
 
 Tant que `rebuild()` reste global, les mutations concurrentes pertinentes du planning participent à une révision persistante globale acquise par CAS SQL **avant** leurs lectures décisionnelles. Cette garde protège la cohérence transactionnelle des opérations composites comme #332; elle ne remplace pas les versions métier plus locales lorsqu'elles portent une sémantique distincte.
 
+
+### Disponibilité et dérogation de fenêtre Planning
+
+Voir :
+
+- `ADR-021-class-scoped-holiday-availability-rules.md`
+- `ADR-022-operational-planning-window-overrides.md`
+
+ADR-021 fixe la sémantique des fériés ciblés par classes sans modifier les fériés globaux ou individuels historiques. ADR-022 introduit une dérogation opérationnelle persistante de fenêtre, distincte de l'approbation de demande et du consentement hors horaire, tout en conservant les contrats de concurrence et de quorum existants.
 
 ### Ressources réservables non humaines
 
