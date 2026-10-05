@@ -265,7 +265,9 @@ class SmtpClient:
             if configuration.from_name
             else configuration.from_email
         )
-        email["To"] = message.recipient_email
+        email["To"] = ", ".join(
+            message.to_emails or (message.recipient_email,)
+        )
         if message.cc_emails:
             email["Cc"] = ", ".join(message.cc_emails)
         if configuration.reply_to:
