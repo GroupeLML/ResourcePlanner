@@ -144,7 +144,11 @@ class MicrosoftGraphCommunicationTransport(CommunicationTransportPort):
                 "content": message.body,
             },
             "toRecipients": [
-                {"emailAddress": {"address": message.recipient_email}}
+                {"emailAddress": {"address": address}}
+                for address in (
+                    message.to_emails
+                    or (message.recipient_email,)
+                )
             ],
             "ccRecipients": [
                 {"emailAddress": {"address": address}}
