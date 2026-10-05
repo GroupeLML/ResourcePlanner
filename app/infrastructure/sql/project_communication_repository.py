@@ -297,11 +297,21 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
             project_id: projection.primary
             for project_id, projection in project_manager_projections.items()
         }
+        project_co_managers = {
+            project_id: projection.co_managers
+            for project_id, projection in project_manager_projections.items()
+        }
         relevant_contact_ids = {
             _text(manager.business_contact_id)
             for manager in project_managers.values()
             if manager is not None and _text(manager.business_contact_id)
         }
+        for managers in project_co_managers.values():
+            relevant_contact_ids.update(
+                _text(manager.business_contact_id)
+                for manager in managers
+                if _text(manager.business_contact_id)
+            )
         relevant_contact_ids.update(
             _text(resolution.operational_responsible.contact_id)
             for resolution in resolutions.values()
@@ -351,6 +361,13 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                 manager=project_managers.get(project.id),
                 contacts=contacts_by_id,
             )
+            co_managers = tuple(
+                self._project_manager(
+                    manager=co_manager,
+                    contacts=contacts_by_id,
+                )
+                for co_manager in project_co_managers.get(project.id, ())
+            )
             resource_contact = self._resource_contact(
                 resource=resource,
             )
@@ -369,6 +386,11 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                 list(resolution.diagnostics)
                 + list(description_diagnostics)
                 + list(manager.diagnostics)
+                + [
+                    diagnostic
+                    for co_manager in co_managers
+                    for diagnostic in co_manager.diagnostics
+                ]
                 + list(resource_contact.diagnostics)
                 + operational_diagnostics
                 + list(
@@ -417,6 +439,7 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                     resource_contact=resource_contact,
                     project_manager=manager,
                     operational_responsible=resolution.operational_responsible,
+                    project_co_managers=co_managers,
                     diagnostics=diagnostics,
                 )
             )
