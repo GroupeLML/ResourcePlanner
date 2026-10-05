@@ -1428,7 +1428,7 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
                           setQuickShiftOpen(true);
                         } : undefined}
                         onOpenDemand={setDetailDemandNumber}
-                        dragEnabled={canManagePlanning && !dropBusy && !resourceReorderBusy}
+                        dragEnabled={canManagePlanning && !dropBusy}
                         manualOrder={resourceSortMode === "manual" && canManagePlanning ? {
                           canMoveUp: manualOrderAvailability.get(resource.id)?.canMoveUp ?? false,
                           canMoveDown: manualOrderAvailability.get(resource.id)?.canMoveDown ?? false,
