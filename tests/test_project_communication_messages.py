@@ -15,6 +15,7 @@ from app.domain.project_communication import (
 )
 from app.domain.project_communication_messages import (
     DIAGNOSTIC_CC_EMAIL_MISSING,
+    DIAGNOSTIC_CO_MANAGER_TO_EMAIL_MISSING,
     DIAGNOSTIC_TO_EMAIL_MISSING,
     MESSAGE_KIND_PLANNING_CHANGE,
     MESSAGE_KIND_WEEKLY_CONFIRMATION,
@@ -109,6 +110,7 @@ def project(
     second_day: bool = False,
     task_description: str = "Installation de poteaux",
     responsible_contact: ContactResolution | None = None,
+    co_managers: tuple[ProjectCommunicationParticipant, ...] = (),
 ) -> ProjectCommunicationProject:
     pm = participant(
         "Chargé Démo",
@@ -152,6 +154,7 @@ def project(
         project_name=f"Projet {number}",
         project_manager=pm,
         days=tuple(days),
+        project_co_managers=co_managers,
     )
 
 
@@ -180,10 +183,100 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         self.assertEqual(draft.message_kind, MESSAGE_KIND_WEEKLY_CONFIRMATION)
         self.assertEqual(draft.to_recipient.email, email("pm"))
         self.assertEqual(
+            [row.email for row in draft.to_recipients],
+            [email("pm")],
+        )
+        self.assertEqual(
             {row.email for row in draft.cc_recipients},
             {email("alice"), email("bob")},
         )
         self.assertTrue(draft.approvable)
+
+    def test_co_managers_are_added_to_to_and_excluded_from_resource_cc(self) -> None:
+        co_a = participant(
+            "Co chargé A",
+            contact_id="C-CO-A",
+            user_id="U-CO-A",
+            address=email("co-a"),
+        )
+        co_b = participant(
+            "Co chargé B",
+            contact_id="C-CO-B",
+            user_id="U-CO-B",
+            address=email("co-b"),
+        )
+        rows = (
+            resource("R1", "Co chargé aussi ressource", address=email("co-a")),
+            resource("R2", "Bob", address=email("bob")),
+        )
+
+        draft = build_project_confirmation_batch(
+            projection(
+                project(
+                    resources=rows,
+                    co_managers=(co_a, co_b),
+                )
+            )
+        ).drafts[0]
+
+        self.assertEqual(
+            [row.email for row in draft.to_recipients],
+            [email("pm"), email("co-a"), email("co-b")],
+        )
+        self.assertEqual(
+            [row.email for row in draft.cc_recipients],
+            [email("bob")],
+        )
+        self.assertTrue(draft.approvable)
+
+    def test_to_recipients_are_deduplicated_by_explicit_address(self) -> None:
+        duplicate = participant(
+            "Autre identité",
+            contact_id="C-CO-DUP",
+            user_id="U-CO-DUP",
+            address=email("pm"),
+        )
+
+        draft = build_project_confirmation_batch(
+            projection(project(co_managers=(duplicate,)))
+        ).drafts[0]
+
+        self.assertEqual(
+            [row.email for row in draft.to_recipients],
+            [email("pm")],
+        )
+
+    def test_missing_co_manager_email_is_explicit_blocking_diagnostic(self) -> None:
+        missing = participant(
+            "Co chargé sans courriel",
+            contact_id="C-CO-NO-MAIL",
+            user_id="U-CO-NO-MAIL",
+            address=None,
+        )
+
+        draft = build_project_confirmation_batch(
+            projection(project(co_managers=(missing,)))
+        ).drafts[0]
+
+        diagnostic = next(
+            row
+            for row in draft.diagnostics
+            if row.code == DIAGNOSTIC_CO_MANAGER_TO_EMAIL_MISSING
+        )
+        self.assertEqual(diagnostic.entity_type, "project_co_manager")
+        self.assertEqual(diagnostic.entity_id, "C-CO-NO-MAIL")
+        self.assertEqual(diagnostic.severity, SEVERITY_BLOCKING)
+        self.assertFalse(draft.approvable)
+
+        restored = deserialize_project_projection(
+            serialize_project_projection(
+                projection(project(co_managers=(missing,)))
+            )
+        )
+        self.assertEqual(
+            restored.projects[0].project_co_managers[0].contact_id,
+            "C-CO-NO-MAIL",
+        )
 
     def test_cc_is_deduplicated_by_explicit_email_and_excludes_to(self) -> None:
         shared = email("shared")
