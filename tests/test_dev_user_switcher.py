@@ -18,6 +18,7 @@ from app.application.security import (
 )
 from app.infrastructure.sql import (
     Base,
+    BusinessContact,
     Project,
     Resource,
     ResourceRequirement,
@@ -30,6 +31,7 @@ from app.server import create_api_app
 from app.server.dev_user_switcher import (
     DevUserSwitcherRuntime,
     dev_user_switcher_auth_resolver,
+    local_dev_auth_resolver,
 )
 from app.server.security import static_auth_resolver
 from tests.sqlite_test_template import SqliteDatabaseTemplate
@@ -89,14 +91,26 @@ class DevUserSwitcherTests(unittest.TestCase):
             "inactive": inactive.user_id,
         }
 
-        session.add(
-            Project(
-                id="P-DEV",
-                number="P-DEV",
-                name="Projet identités dev",
-                project_manager_external_id="EMP-PM",
-                status="Actif",
-            )
+        session.add_all(
+            [
+                BusinessContact(
+                    id="C-CO",
+                    display_name="Co-chargé Dev",
+                    active=True,
+                ),
+                BusinessContact(
+                    id="C-RESP",
+                    display_name="Responsable Dev",
+                    active=True,
+                ),
+                Project(
+                    id="P-DEV",
+                    number="P-DEV",
+                    name="Projet identités dev",
+                    project_manager_external_id="EMP-PM",
+                    status="Actif",
+                ),
+            ]
         )
         session.add_all(
             [
@@ -211,7 +225,7 @@ class DevUserSwitcherTests(unittest.TestCase):
             switcher = client.get("/api/v1/dev/user-switcher")
 
         self.assertEqual(current.status_code, 200)
-        self.assertIsNone(current.json()["local_user_id"])
+        self.assertIsNotNone(current.json()["local_user_id"])
         self.assertEqual(current.json()["roles"], [ROLE_ADMIN])
         self.assertEqual(switcher.status_code, 200)
         payload = switcher.json()
@@ -221,6 +235,63 @@ class DevUserSwitcherTests(unittest.TestCase):
         self.assertIn(self.user_ids["admin"], user_ids)
         self.assertIn(self.user_ids["tech_a"], user_ids)
         self.assertNotIn(self.user_ids["inactive"], user_ids)
+
+    def test_static_local_actor_covers_project_and_responsibility_mutations(self) -> None:
+        runtime = DevUserSwitcherRuntime(bootstrap_principal=self.bootstrap)
+        app = create_api_app(
+            self.database_url,
+            auth_resolver=local_dev_auth_resolver(runtime),
+        )
+        with TestClient(app) as client:
+            current = client.get("/api/v1/auth/me")
+            actor_user_id = current.json()["local_user_id"]
+
+            co_manager = client.put(
+                "/api/v1/projects/P-DEV/co-managers/C-CO",
+                headers={"Idempotency-Key": "616a-co-manager"},
+                json={"expected_version": 1},
+            )
+            project_responsible = client.patch(
+                "/api/v1/projects/P-DEV/operational-responsible",
+                headers={"Idempotency-Key": "616a-project-responsible"},
+                json={"contact_id": "C-RESP", "expected_version": 1},
+            )
+            segment_responsible = client.patch(
+                "/api/v1/segments/DEV-SEG-A/operational-responsible",
+                headers={"Idempotency-Key": "616a-segment-responsible"},
+                json={
+                    "contact_id": "C-RESP",
+                    "expected_planning_version": 1,
+                },
+            )
+            shift_responsible = client.patch(
+                "/api/v1/allocations/DEV-ALLOC-A/operational-responsible",
+                headers={"Idempotency-Key": "616a-shift-responsible"},
+                json={
+                    "contact_id": "C-RESP",
+                    "expected_planning_version": 2,
+                },
+            )
+
+        self.assertIsNotNone(actor_user_id)
+        self.assertEqual(co_manager.status_code, 200, co_manager.text)
+        self.assertEqual(project_responsible.status_code, 200, project_responsible.text)
+        self.assertEqual(segment_responsible.status_code, 200, segment_responsible.text)
+        self.assertEqual(shift_responsible.status_code, 200, shift_responsible.text)
+
+        engine = create_sql_engine(self.database_url)
+        factory = create_session_factory(engine)
+        try:
+            with factory() as session:
+                record = SqlUserIdentityRepository(session).get_by_external_identity(
+                    "urn:resourceplanner:local",
+                    "bootstrap",
+                )
+                assert record is not None
+                self.assertEqual(record.user_id, actor_user_id)
+                self.assertTrue(record.active)
+        finally:
+            engine.dispose()
 
     def test_switching_changes_canonical_principal_and_rbac_without_restart(self) -> None:
         with TestClient(self.app) as client:
@@ -315,7 +386,7 @@ class DevUserSwitcherTests(unittest.TestCase):
             current = client.get("/api/v1/auth/me")
 
         self.assertEqual(reset.status_code, 200)
-        self.assertIsNone(current.json()["local_user_id"])
+        self.assertIsNotNone(current.json()["local_user_id"])
         self.assertEqual(current.json()["display_name"], "Administrateur bootstrap")
         self.assertEqual(current.json()["roles"], [ROLE_ADMIN])
 
