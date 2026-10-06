@@ -11,6 +11,7 @@ import {
   cancelWorkPackage,
   closeWorkPackage,
   createWorkPackage,
+  reopenWorkPackage,
   getTaskCatalog,
   updateWorkPackage,
 } from "./api";
@@ -148,7 +149,11 @@ function apiMessage(reason: ApiError) {
     case "work_package_load_interval_duplicate_id":
       return "Un même intervalle ne peut apparaître qu’une fois.";
     case "work_package_already_terminal":
-      return "Ce WorkPackage est déjà fermé ou annulé.";
+      return "Ce WorkPackage est déjà dans cet état terminal.";
+    case "work_package_not_terminal":
+      return "Ce WorkPackage est déjà ouvert.";
+    case "work_package_lifecycle_transition_invalid":
+      return "Cette transition de cycle de vie n’est pas autorisée.";
     default:
       return `${reason.message}${reason.code ? ` (${reason.code})` : ""}`;
   }
@@ -348,7 +353,11 @@ export default function WorkPackageEditor({
   }, [form.plannedHours]);
   const automaticHours = plannedHours == null ? null : plannedHours - explicitHours;
   const expectedVersion = mediumTermWorkPackage?.version ?? workPackage?.version ?? 1;
-  const terminal = workPackage?.status === "closed" || workPackage?.status === "cancelled";
+  const workPackageStatus = workPackage?.status ?? null;
+  const terminal = workPackageStatus === "closed" || workPackageStatus === "cancelled";
+  const canClose = Boolean(workPackage) && !terminal;
+  const canCancel = Boolean(workPackage) && workPackageStatus !== "cancelled";
+  const canReopen = Boolean(workPackage) && terminal;
 
   function field<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -450,10 +459,18 @@ export default function WorkPackageEditor({
     }
   }
 
-  async function applyLifecycle(action: "close" | "cancel") {
-    if (!workPackage || lifecycleBusy || terminal) return;
-    const verb = action === "close" ? "clôturer" : "annuler";
-    if (!window.confirm(`Confirmer : ${verb} ce WorkPackage ?`)) return;
+  async function applyLifecycle(action: "close" | "cancel" | "reopen") {
+    if (!workPackage || lifecycleBusy) return;
+    if (action === "close" && !canClose) return;
+    if (action === "cancel" && !canCancel) return;
+    if (action === "reopen" && !canReopen) return;
+
+    const confirmation = action === "reopen"
+      ? "Réouvrir ce WorkPackage ? Les demandes, besoins, quarts, Delivery et Verification liés ne seront pas modifiés."
+      : action === "cancel" && workPackageStatus === "closed"
+        ? "Annuler ce WorkPackage clôturé ? Il sera retiré de la structuration budgétaire sans modifier les engagements liés."
+        : `Confirmer : ${action === "close" ? "clôturer" : "annuler"} ce WorkPackage ?`;
+    if (!window.confirm(confirmation)) return;
 
     setLifecycleBusy(true);
     setError(null);
@@ -465,8 +482,10 @@ export default function WorkPackageEditor({
       lifecycleRetry.current = { fingerprint, key };
       if (action === "close") {
         await closeWorkPackage(workPackage.reference, expectedVersion, key);
-      } else {
+      } else if (action === "cancel") {
         await cancelWorkPackage(workPackage.reference, expectedVersion, key);
+      } else {
+        await reopenWorkPackage(workPackage.reference, expectedVersion, key);
       }
       onSaved(workPackage.project_number);
     } catch (reason: unknown) {
@@ -510,24 +529,38 @@ export default function WorkPackageEditor({
             {workPackage.status_diagnostic && (
               <small> Diagnostic historique : {workPackage.status_diagnostic}</small>
             )}
-            {!terminal && (
+            {(canClose || canCancel || canReopen) && (
               <span className="wp-weekly-actions">
-                <button
-                  type="button"
-                  className="wp-secondary"
-                  disabled={lifecycleBusy || saving}
-                  onClick={() => applyLifecycle("close")}
-                >
-                  Clôturer
-                </button>
-                <button
-                  type="button"
-                  className="wp-secondary"
-                  disabled={lifecycleBusy || saving}
-                  onClick={() => applyLifecycle("cancel")}
-                >
-                  Annuler le WorkPackage
-                </button>
+                {canClose && (
+                  <button
+                    type="button"
+                    className="wp-secondary"
+                    disabled={lifecycleBusy || saving}
+                    onClick={() => applyLifecycle("close")}
+                  >
+                    Clôturer
+                  </button>
+                )}
+                {canCancel && (
+                  <button
+                    type="button"
+                    className="wp-secondary"
+                    disabled={lifecycleBusy || saving}
+                    onClick={() => applyLifecycle("cancel")}
+                  >
+                    Annuler le WorkPackage
+                  </button>
+                )}
+                {canReopen && (
+                  <button
+                    type="button"
+                    className="wp-secondary"
+                    disabled={lifecycleBusy || saving}
+                    onClick={() => applyLifecycle("reopen")}
+                  >
+                    Réouvrir
+                  </button>
+                )}
               </span>
             )}
           </div>
