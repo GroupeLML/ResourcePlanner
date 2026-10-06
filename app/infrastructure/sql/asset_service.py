@@ -1252,9 +1252,9 @@ class SqlAssetService:
         shift_id: str,
         asset_id: str | None,
         requirement_id: str | None,
-        allocation_id: str | None,
-        start_date: date | None,
-        end_date: date | None,
+        allocation_id: str | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
         expected_version: int,
         idempotency_key: str,
     ) -> dict:
