@@ -545,7 +545,7 @@ export default function ResourcesPage() {
       <div className="metric-grid resource-metrics">
         <article><span>Ressources actives</span><strong>{activeResources}</strong><small>Planifiables selon leur horaire</small></article>
         <article><span>Ressources inactives</span><strong>{resources.length - activeResources}</strong><small>Historique conservé</small></article>
-        <article><span>Jours fériés actifs</span><strong>{holidays.filter((rule) => rule.active).length}</strong><small>Règles globales de capacité</small></article>
+        <article><span>Jours fériés actifs</span><strong>{holidays.filter((rule) => rule.active).length}</strong><small>Règles de capacité</small></article>
       </div>
 
       {error && <div className="error-panel">{error}</div>}
