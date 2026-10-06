@@ -63,6 +63,7 @@ import {
 } from "./manualOverallocationApi";
 import AssetPlanningPanel from "./AssetPlanningPanel";
 import DemandDetail from "./DemandDetail";
+import DemandWorkflowPage from "./DemandWorkflowPage";
 import ManualAllocationEditor from "./ManualAllocationEditor";
 import PlanningActionPanel from "./PlanningActionPanel";
 import PlanningDropDialog, { PlanningDropExecutionRequest } from "./PlanningDropDialog";
@@ -1598,10 +1599,16 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
               </button>
             </header>
             <div className="demand-detail-modal-body">
+              <DemandWorkflowPage
+                demandNumber={detailDemandNumber}
+                embedded
+                actionsOnly
+                hasUnsavedChanges={detailContextDirty}
+                onChanged={() => setRefreshKey((value) => value + 1)}
+              />
               <DemandDetail
                 demandNumber={detailDemandNumber}
                 compact
-                showWorkflowActions
                 onDirtyChange={setDetailContextDirty}
                 onChanged={() => setRefreshKey((value) => value + 1)}
               />
