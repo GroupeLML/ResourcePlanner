@@ -1006,7 +1006,7 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
         );
         setDragFeedback({
           tone: "success",
-          message: `Fenêtre Quick Shift étendue automatiquement et quart déplacé vers ${targetResource.name} le ${targetDay}.`,
+          message: `Fenêtre du besoin étendue automatiquement et quart déplacé vers ${targetResource.name} le ${targetDay}.`,
         });
         setRefreshKey((value) => value + 1);
         return;
