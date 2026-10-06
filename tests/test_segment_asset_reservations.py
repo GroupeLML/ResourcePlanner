@@ -156,7 +156,7 @@ class SegmentAssetReservationTests(unittest.TestCase):
         self,
         *,
         asset_id: str = "ASSET-A",
-        operator_resource_id: str = "OP-1",
+        operator_resource_id: str | None = "OP-1",
         start_date: date = DAY + timedelta(days=1),
         end_date: date = DAY + timedelta(days=1),
         version: int | None = None,
@@ -243,6 +243,60 @@ class SegmentAssetReservationTests(unittest.TestCase):
                 # The segment target is OP-2, but the reservation explicitly
                 # keeps OP-1. No operator is inferred from assigned_resource_id.
                 self.assertEqual(allocation.operator_resource_id, "OP-1")
+        finally:
+            engine.dispose()
+
+    def test_segment_reservation_allows_missing_operator_with_canonical_qualification(self) -> None:
+        version = self._version()
+        created = self._create(
+            operator_resource_id=None,
+            version=version,
+            key="segment-no-operator-615c",
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        body = created.json()
+        self.assertEqual(body["project_id"], "P1")
+        self.assertIsNone(body["operator_resource_id"])
+        self.assertEqual(body["qualification_state"], "MISSING_OPERATOR")
+        self.assertEqual(body["planning_version"], version + 1)
+
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory() as session:
+                allocation = session.get(AssetAllocation, body["allocation_id"])
+                self.assertIsNotNone(allocation)
+                assert allocation is not None
+                self.assertIsNone(allocation.operator_resource_id)
+
+            qualified = self.client.put(
+                f"/api/v1/assets/segment-reservations/{body['requirement_id']}",
+                headers={"Idempotency-Key": "segment-operator-add-615c"},
+                json={
+                    "asset_id": "ASSET-A",
+                    "start_date": (DAY + timedelta(days=1)).isoformat(),
+                    "end_date": (DAY + timedelta(days=1)).isoformat(),
+                    "operator_resource_id": "OP-1",
+                    "expected_planning_version": body["planning_version"],
+                },
+            )
+            self.assertEqual(qualified.status_code, 200, qualified.text)
+            self.assertEqual(qualified.json()["qualification_state"], "SATISFIED")
+
+            cleared = self.client.put(
+                f"/api/v1/assets/segment-reservations/{body['requirement_id']}",
+                headers={"Idempotency-Key": "segment-operator-clear-615c"},
+                json={
+                    "asset_id": "ASSET-A",
+                    "start_date": (DAY + timedelta(days=1)).isoformat(),
+                    "end_date": (DAY + timedelta(days=1)).isoformat(),
+                    "operator_resource_id": None,
+                    "expected_planning_version": qualified.json()["planning_version"],
+                },
+            )
+            self.assertEqual(cleared.status_code, 200, cleared.text)
+            self.assertIsNone(cleared.json()["operator_resource_id"])
+            self.assertEqual(cleared.json()["qualification_state"], "MISSING_OPERATOR")
         finally:
             engine.dispose()
 
