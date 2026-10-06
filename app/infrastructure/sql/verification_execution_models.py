@@ -25,7 +25,7 @@ class VerificationExecutorAssignmentRow(TimestampMixin, Base):
     __tablename__ = "verification_executor_assignments"
     __table_args__ = (
         Index(
-            "ix_verification_executor_assignments_requirement_executor_active",
+            "ix_verification_executor_req_user_active",
             "requirement_id",
             "executor_user_id",
             "active",
