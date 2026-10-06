@@ -73,6 +73,10 @@ class Project(TimestampMixin, Base):
 class TaskCatalogEntry(TimestampMixin, Base):
     __tablename__ = "task_catalog_items"
     __table_args__ = (
+        CheckConstraint(
+            "preferred_resource_version >= 1",
+            name="preferred_resource_version_positive",
+        ),
         UniqueConstraint(
             "project_number",
             "task_code",
@@ -142,6 +146,52 @@ class TaskCatalogEntry(TimestampMixin, Base):
         Numeric(38, 18), nullable=True
     )
     workforce_diagnostics: Mapped[str | None] = mapped_column(Text, nullable=True)
+    preferred_resource_id: Mapped[str | None] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("resources.id"),
+        nullable=True,
+        index=True,
+    )
+    preferred_resource_version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=text("1"),
+    )
+
+
+class TaskCatalogPreferredResourceAudit(TimestampMixin, Base):
+    __tablename__ = "task_catalog_preferred_resource_audit"
+    __table_args__ = (
+        CheckConstraint(
+            "resulting_version >= 1",
+            name="resulting_version_positive",
+        ),
+        Index(
+            "ix_task_catalog_preferred_resource_audit_task_created",
+            "task_catalog_item_id",
+            "created_at",
+        ),
+        Index(
+            "ix_task_catalog_preferred_resource_audit_actor",
+            "actor_user_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True, default=new_id)
+    task_catalog_item_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("task_catalog_items.id"),
+        nullable=False,
+    )
+    actor_user_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("app_users.id"),
+        nullable=False,
+    )
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    old_resource_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), nullable=True)
+    new_resource_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), nullable=True)
+    resulting_version: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
 class TaskCatalogProjectSyncState(TimestampMixin, Base):
