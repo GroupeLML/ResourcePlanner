@@ -9,6 +9,12 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from app.application.medium_term_budget import (
+    DEMAND_HOURS_DIAGNOSTIC_ALTERNATIVE_UNRESOLVED,
+    DEMAND_HOURS_DIAGNOSTIC_UNAVAILABLE,
+    MediumTermDemandPeriodReadModel,
+    requested_workforce_hours,
+)
 from app.application.security import AuthPrincipal, ROLE_PROJECT_MANAGER
 from app.infrastructure.sql import (
     AppUser,
@@ -37,6 +43,88 @@ create_api_app = partial(create_api_app, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
 
 
 class MediumTermBudgetReadModelTests(unittest.TestCase):
+    def test_requested_hours_follow_workforce_period_non_double_counting_rules(self) -> None:
+        def period(
+            period_id: str,
+            *,
+            line_id: str = "LINE-614E-A",
+            line_kind: str = "WORKFORCE",
+            period_kind: str = "BASE",
+            hours: Decimal | None = Decimal("0"),
+            alternative_group: str | None = None,
+            selected: bool = False,
+        ) -> MediumTermDemandPeriodReadModel:
+            return MediumTermDemandPeriodReadModel(
+                demand_number="DMO-614E",
+                line_id=line_id,
+                period_id=period_id,
+                work_package_ref="EFF-614E",
+                start_date=date(2026, 10, 5),
+                end_date=date(2026, 10, 5),
+                hours=hours,
+                status="Soumise",
+                provenance="CANDIDATE",
+                line_kind=line_kind,
+                period_kind=period_kind,
+                alternative_group=alternative_group,
+                selected=selected,
+            )
+
+        requested, diagnostics = requested_workforce_hours(
+            demand_periods=(
+                period("BASE-IGNORED", hours=Decimal("999")),
+                period("CUM-A", period_kind="CUMULATIVE", hours=Decimal("20")),
+                period(
+                    "ALT-A-SELECTED",
+                    period_kind="ALTERNATIVE",
+                    hours=Decimal("10"),
+                    alternative_group="ALT-A",
+                    selected=True,
+                ),
+                period(
+                    "ALT-A-OTHER",
+                    period_kind="ALTERNATIVE",
+                    hours=Decimal("30"),
+                    alternative_group="ALT-A",
+                ),
+                period(
+                    "ALT-B-LOW",
+                    line_id="LINE-614E-B",
+                    period_kind="ALTERNATIVE",
+                    hours=Decimal("15"),
+                    alternative_group="ALT-B",
+                ),
+                period(
+                    "ALT-B-HIGH",
+                    line_id="LINE-614E-B",
+                    period_kind="ALTERNATIVE",
+                    hours=Decimal("25"),
+                    alternative_group="ALT-B",
+                ),
+                period(
+                    "ASSET-IGNORED",
+                    line_id="LINE-614E-ASSET",
+                    line_kind="ASSET",
+                    hours=Decimal("500"),
+                ),
+            )
+        )
+
+        self.assertEqual(requested, Decimal("55"))
+        self.assertEqual(
+            diagnostics,
+            (DEMAND_HOURS_DIAGNOSTIC_ALTERNATIVE_UNRESOLVED,),
+        )
+
+        unavailable, unavailable_diagnostics = requested_workforce_hours(
+            demand_periods=(period("UNKNOWN", hours=None),)
+        )
+        self.assertIsNone(unavailable)
+        self.assertEqual(
+            unavailable_diagnostics,
+            (DEMAND_HOURS_DIAGNOSTIC_UNAVAILABLE,),
+        )
+
     @staticmethod
     def _seed_database(session) -> None:
         session.add_all(
@@ -1030,6 +1118,8 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
         self.assertTrue(periods["PER-614D-BOTH"]["selected"])
         self.assertEqual(periods["PER-614D-BOTH"]["alternative_group"], "ALT-614D")
         self.assertEqual(periods["PER-614D-BOTH"]["provenance"], "CANDIDATE")
+        self.assertEqual(Decimal(str(lot_a["requested_hours"])), Decimal("32"))
+        self.assertEqual(lot_a["requested_hours_diagnostics"], [])
 
         task_221 = self._task(payload, "221")
         no_dates = next(
@@ -1043,6 +1133,7 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
             no_dates[0]["diagnostics"],
             ["WORK_PACKAGE_WINDOW_UNAVAILABLE"],
         )
+        self.assertEqual(Decimal(str(task_221["work_packages"][0]["requested_hours"])), Decimal("8"))
 
     def test_projection_is_isolated_between_projects(self) -> None:
         with TemporaryDirectory() as directory:
