@@ -295,6 +295,10 @@ class SqlVerificationRepository:
                 withdrawal_reason=requirement.withdrawal_reason,
             )
         )
+        # Persist the parent row before the immutable initial revision. These
+        # models intentionally do not expose an ORM relationship, so relying on
+        # unit-of-work dependency sorting can insert the FK child first.
+        self._session.flush()
         self._session.add(
             VerificationRequirementRevisionRow(
                 id=initial_revision.id,
