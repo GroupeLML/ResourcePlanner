@@ -38,7 +38,7 @@ export type AtomicAllocationSplitWrite = AtomicAllocationWrite & {
 };
 
 export type PlanningDropAction = {
-  code: "MOVE" | "SPLIT" | "DUPLICATE" | "EXTEND_AND_MOVE" | "PROPOSE_WINDOW_EXTENSION" | "CANCEL" | string;
+  code: "MOVE" | "SPLIT" | "DUPLICATE" | "EXTEND_AND_MOVE" | "OVERRIDE_WINDOW_AND_MOVE" | "PROPOSE_WINDOW_EXTENSION" | "CANCEL" | string;
   label: string;
   enabled: boolean;
   required_parameters: string[];
@@ -64,6 +64,7 @@ export type PlanningDropEvaluation = {
   target_day: string;
   current_window: { start: string; end: string };
   proposed_window: { start: string; end: string };
+  requested_window: { start: string; end: string } | null;
   planning_version: number;
   approval_revision_id: string | null;
   approved_entry_key: string | null;
@@ -87,6 +88,44 @@ export type AllocationDropEvaluateWrite = {
   resource_id: string;
   day: string;
   outside_standard_hours: boolean;
+  include_planning_window_override_options?: boolean;
+};
+
+export type PlanningWindowOverrideResult = {
+  operation: "OVERRIDE_WINDOW" | "OVERRIDE_WINDOW_AND_MOVE" | string;
+  segment_id: string;
+  requirement_id: string;
+  override_id: string;
+  approved_window: { start: string; end: string };
+  effective_window: { start: string; end: string };
+  planning_version: number;
+  approval_revision_id: string;
+  operational_version: number | null;
+  allocation_id: string | null;
+  shift_id: string | null;
+  resource_id: string | null;
+  work_date: string | null;
+  auto_source_converted: boolean;
+};
+
+export type PlanningWindowOverrideExtendWrite = {
+  start_date: string;
+  end_date: string;
+  reason: string;
+  expected_planning_version: number;
+  expected_approval_revision_id: string;
+  expected_operational_version: number | null;
+};
+
+export type AllocationWindowOverrideMoveWrite = {
+  resource_id: string;
+  day: string;
+  reason: string;
+  expected_planning_version: number;
+  expected_approval_revision_id: string;
+  expected_operational_version: number | null;
+  outside_standard_hours: boolean;
+  overallocation_policy: OverallocationPolicy | null;
 };
 
 export type AllocationExtendMoveWrite = Omit<AtomicAllocationWrite, "outside_standard_hours"> & {
@@ -230,6 +269,32 @@ export function evaluateAllocationDrop(
     `/api/v1/allocations/${encodeURIComponent(allocationId)}/evaluate-drop`,
     "POST",
     payload,
+  );
+}
+
+export function extendPlanningWindowOverride(
+  segmentId: string,
+  payload: PlanningWindowOverrideExtendWrite,
+  idempotencyKey: string,
+) {
+  return sendJson<PlanningWindowOverrideResult>(
+    `/api/v1/segments/${encodeURIComponent(segmentId)}/planning-window-override`,
+    "POST",
+    payload,
+    { "Idempotency-Key": idempotencyKey },
+  );
+}
+
+export function overrideAndMovePlanningWindow(
+  allocationId: string,
+  payload: AllocationWindowOverrideMoveWrite,
+  idempotencyKey: string,
+) {
+  return sendJson<PlanningWindowOverrideResult>(
+    `/api/v1/allocations/${encodeURIComponent(allocationId)}/planning-window-override-move`,
+    "POST",
+    payload,
+    { "Idempotency-Key": idempotencyKey },
   );
 }
 

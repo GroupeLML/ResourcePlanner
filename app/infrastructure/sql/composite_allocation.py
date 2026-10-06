@@ -569,6 +569,17 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
             window_end=proposed_end,
         )
         demand_number, request_version = self._drop_request_context(requirement)
+        requested_window: dict[str, str] | None = None
+        if requirement.workforce_request_id:
+            request = self._session.get(
+                WorkforceRequest,
+                requirement.workforce_request_id,
+            )
+            if request is not None and request.desired_start and request.desired_end:
+                requested_window = {
+                    "start": request.desired_start.isoformat(),
+                    "end": request.desired_end.isoformat(),
+                }
 
         approval_revision_id: str | None = None
         approved_entry_key: str | None = None
@@ -744,6 +755,7 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
                 "start": proposed_start.isoformat(),
                 "end": proposed_end.isoformat(),
             },
+            "requested_window": requested_window,
             "planning_version": self._versioning.current_version(),
             "approval_revision_id": approval_revision_id,
             "approved_entry_key": approved_entry_key,

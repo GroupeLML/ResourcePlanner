@@ -530,6 +530,7 @@ h1 { font-size: 1.6rem; }
   font-weight: 700;
 }
 .planning-drop-actions button[data-drop-action="EXTEND_AND_MOVE"],
+.planning-drop-actions button[data-drop-action="OVERRIDE_WINDOW_AND_MOVE"],
 .planning-drop-actions button[data-drop-action="PROPOSE_WINDOW_EXTENSION"] {
   border-color: #9fb4da;
   background: var(--accent-soft);

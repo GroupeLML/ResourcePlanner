@@ -142,6 +142,7 @@ class PlanningDropEvaluationResult(ApplicationResult):
     current_window: Mapping[str, Any]
     proposed_window: Mapping[str, Any]
     planning_version: int
+    requested_window: Mapping[str, Any] | None = None
     approval_revision_id: str | None = None
     approved_entry_key: str | None = None
     request_line_id: str | None = None
@@ -173,6 +174,11 @@ class PlanningDropEvaluationResult(ApplicationResult):
             target_day=str(source.get("target_day") or ""),
             current_window=dict(source.get("current_window") or {}),
             proposed_window=dict(source.get("proposed_window") or {}),
+            requested_window=(
+                dict(source.get("requested_window") or {})
+                if source.get("requested_window") is not None
+                else None
+            ),
             planning_version=_integer(source.get("planning_version")),
             approval_revision_id=(
                 str(source.get("approval_revision_id"))

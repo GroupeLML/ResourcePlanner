@@ -970,6 +970,7 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
       resource_id: "R-BOB",
       day: d3,
       outside_standard_hours: false,
+      include_planning_window_override_options: true,
     });
     expect((await evaluated.json()).actions.map((row: { code: string }) => row.code)).toEqual([
       "EXTEND_AND_MOVE",
@@ -1110,7 +1111,7 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
 });
 
 
-test("REQUEST window proposal never replays the original drag after direct approval", async ({ browser }) => {
+test("COORDINATOR applies a REQUEST window override without contaminating the candidate", async ({ browser }) => {
   test.setTimeout(120_000);
   const { d1 } = acceptanceDates();
   const cleanWeek = new Date(`${d1}T12:00:00`);
@@ -1127,7 +1128,7 @@ test("REQUEST window proposal never replays the original drag after direct appro
       estimated_hours: 2,
       task_code: "210",
       proposed_technician: "Alice",
-      description: "Proposition fenêtre DnD #333C",
+      description: "Dérogation fenêtre DnD #613D",
       submit: true,
     },
   });
@@ -1144,7 +1145,7 @@ test("REQUEST window proposal never replays the original drag after direct appro
     `/api/v1/demands/${encodeURIComponent(demandNumber)}/approve`,
     {
       data: {
-        comment: "Approbation initiale DnD #333C",
+        comment: "Approbation initiale DnD #613D",
         expected_planning_version: planningVersion,
       },
     },
@@ -1166,9 +1167,7 @@ test("REQUEST window proposal never replays the original drag after direct appro
     row.demand_number === demandNumber
     && row.allocation_type !== "Hors horaire requis"
   ));
-  expect(shift, "Quart REQUEST #333C introuvable après approbation").toBeDefined();
-  expect(shift!.resource_name).toBe("Alice");
-  expect(shift!.work_date).toBe(sourceDay);
+  expect(shift, "Quart REQUEST #613D introuvable après approbation").toBeDefined();
 
   await navigateMain(page, "Planning opérationnel");
   await page.getByRole("button", { name: /Suivante/ }).click();
@@ -1191,86 +1190,100 @@ test("REQUEST window proposal never replays the original drag after direct appro
   await dragWithDataTransfer(page, source, target);
   const evaluated = await evaluatePromise;
   expect(evaluated.status(), await evaluated.text()).toBe(200);
-  expect((await evaluated.json()).authorization_decision).toBe(
-    "WINDOW_EXTENSION_REAPPROVAL_REQUIRED",
-  );
-  let dialog = page.getByRole("dialog", { name: "Choisir l’action du déplacement" });
-  await expect(dialog).toContainText("Extension hors enveloppe approuvée");
-  await expect(
-    dialog.getByRole("button", { name: "Soumettre l'extension de période", exact: true }),
-  ).toBeVisible();
+  expect(evaluated.request().postDataJSON().include_planning_window_override_options).toBe(true);
+  const evaluation = await evaluated.json() as {
+    authorization_decision: string;
+    requested_window: { start: string; end: string } | null;
+    approved_window: { start: string; end: string } | null;
+  };
+  expect(evaluation.authorization_decision).toBe("PLANNING_WINDOW_OVERRIDE_AVAILABLE");
+  expect(evaluation.requested_window).toEqual({ start: sourceDay, end: sourceDay });
+  expect(evaluation.approved_window).toEqual({ start: sourceDay, end: sourceDay });
 
-  const proposalPromise = page.waitForResponse((response) => (
+  let dialog = page.getByRole("dialog", { name: "Choisir l’action du déplacement" });
+  await expect(dialog).toContainText("Demandé (candidate)");
+  await expect(dialog).toContainText("Approuvé (preuve immuable)");
+  await expect(dialog).toContainText("Opérationnel actuel");
+  await expect(dialog).toContainText("Opérationnel projeté");
+  await expect(dialog.getByRole("button", { name: "Déroger à la fenêtre et déplacer", exact: true })).toBeDisabled();
+
+  await dialog.getByRole("button", { name: "Annuler", exact: true }).click();
+  await expect(dialog).toBeHidden();
+
+  const unchangedSegment = await page.request.get(
+    `/api/v1/segments/${encodeURIComponent(shift!.segment_id)}`,
+  );
+  expect(unchangedSegment.ok()).toBeTruthy();
+  expect((await unchangedSegment.json()).end_date).toBe(sourceDay);
+  const unchangedShifts = await page.request.get(
+    `/api/v1/shifts?start=${sourceDay}&end=${weekEnd}`,
+  );
+  const unchanged = (await unchangedShifts.json() as Array<{
+    allocation_id: string;
+    resource_name: string;
+    work_date: string;
+  }>).find((row) => row.allocation_id === shift!.allocation_id);
+  expect(unchanged?.resource_name).toBe("Alice");
+  expect(unchanged?.work_date).toBe(sourceDay);
+
+  await dragWithDataTransfer(
+    page,
+    aliceRow
+      .locator(`.planning-drop-day[data-day="${sourceDay}"]`)
+      .locator(`.shift-card[data-allocation-id="${shift!.allocation_id}"]`),
+    target,
+  );
+  dialog = page.getByRole("dialog", { name: "Choisir l’action du déplacement" });
+  await dialog.locator('[data-testid="planning-window-override-confirmation"] textarea').fill(
+    "Intervention urgente confirmée par le coordonnateur",
+  );
+  await dialog.getByRole("checkbox", { name: /Je confirme explicitement la dérogation/ }).check();
+
+  const overridePromise = page.waitForResponse((response) => (
     response.request().method() === "POST"
     && response.url().includes(
-      `/api/v1/allocations/${encodeURIComponent(shift!.allocation_id)}/propose-window-extension`,
+      `/api/v1/allocations/${encodeURIComponent(shift!.allocation_id)}/planning-window-override-move`,
     )
   ));
-  await dialog.getByRole("button", { name: "Soumettre l'extension de période", exact: true }).click();
-  const proposal = await proposalPromise;
-  expect(proposal.status(), await proposal.text()).toBe(200);
-  expect(proposal.request().headers()["idempotency-key"]).toBeTruthy();
-  const proposalResult = await proposal.json() as {
-    status: string | null;
-    reapproval_required: boolean;
+  await dialog.getByRole("button", { name: "Déroger à la fenêtre et déplacer", exact: true }).click();
+  const overridden = await overridePromise;
+  expect(overridden.status(), await overridden.text()).toBe(200);
+  expect(overridden.request().headers()["idempotency-key"]).toBeTruthy();
+  const overrideBody = overridden.request().postDataJSON() as Record<string, unknown>;
+  expect(overrideBody.reason).toBe("Intervention urgente confirmée par le coordonnateur");
+  expect(typeof overrideBody.expected_planning_version).toBe("number");
+  expect(typeof overrideBody.expected_approval_revision_id).toBe("string");
+  await expect(page.locator(".planning-drag-feedback")).toContainText("Dérogation opérationnelle enregistrée");
+
+  const candidateResponse = await page.request.get(
+    `/api/v1/demands/${encodeURIComponent(demandNumber)}`,
+  );
+  expect(candidateResponse.ok()).toBeTruthy();
+  const candidate = await candidateResponse.json() as {
+    desired_start: string | null;
+    desired_end: string | null;
+    estimated_hours: number | null;
   };
-  expect(proposalResult.reapproval_required).toBeFalsy();
-  expect(proposalResult.status).toBe("En planification");
-  await expect(page.locator(".planning-drag-feedback")).toContainText("Extension approuvée");
-  await expect(page.locator(".planning-drag-feedback")).toContainText("Aucun quart n’a été déplacé");
+  expect(candidate.desired_start).toBe(sourceDay);
+  expect(candidate.desired_end).toBe(sourceDay);
+  expect(candidate.estimated_hours).toBeCloseTo(2, 2);
 
-  const afterProposalResponse = await page.request.get(
+  const segmentAfterOverride = await page.request.get(
+    `/api/v1/segments/${encodeURIComponent(shift!.segment_id)}`,
+  );
+  expect(segmentAfterOverride.ok()).toBeTruthy();
+  expect((await segmentAfterOverride.json()).end_date).toBe(targetDay);
+
+  const afterOverrideResponse = await page.request.get(
     `/api/v1/shifts?start=${sourceDay}&end=${weekEnd}`,
   );
-  const unchangedShift = (await afterProposalResponse.json() as Array<{
+  const moved = (await afterOverrideResponse.json() as Array<{
     allocation_id: string;
-    segment_id: string;
-    demand_number: string | null;
     resource_name: string;
     work_date: string;
-    allocation_type: string | null;
-  }>).find((row) => (
-    row.demand_number === demandNumber
-    && row.allocation_type !== "Hors horaire requis"
-  ));
-  expect(unchangedShift, "Quart REQUEST frais introuvable après approbation de l’extension").toBeDefined();
-  expect(unchangedShift!.resource_name).toBe("Alice");
-  expect(unchangedShift!.work_date).toBe(sourceDay);
-
-  const segmentAfterProposal = await page.request.get(
-    `/api/v1/segments/${encodeURIComponent(unchangedShift!.segment_id)}`,
-  );
-  expect(segmentAfterProposal.ok()).toBeTruthy();
-  expect((await segmentAfterProposal.json()).end_date).toBe(targetDay);
-
-  const refreshedSource = aliceRow
-    .locator(`.planning-drop-day[data-day="${sourceDay}"]`)
-    .locator(`.shift-card[data-allocation-id="${unchangedShift!.allocation_id}"]`);
-  await expect(refreshedSource).toBeVisible();
-  await dragWithDataTransfer(page, refreshedSource, target);
-  dialog = page.getByRole("dialog", { name: "Choisir l’action du déplacement" });
-  await expect(dialog.getByRole("button", { name: "Déplacer", exact: true })).toBeVisible();
-  await expect(
-    dialog.getByRole("button", { name: "Soumettre l'extension de période", exact: true }),
-  ).toHaveCount(0);
-  await dialog.getByRole("button", { name: "Annuler", exact: true }).click();
-
-  const afterCancelResponse = await page.request.get(
-    `/api/v1/shifts?start=${sourceDay}&end=${weekEnd}`,
-  );
-  const afterCancel = (await afterCancelResponse.json() as Array<{
-    allocation_id: string;
-    demand_number: string | null;
-    resource_name: string;
-    work_date: string;
-    allocation_type: string | null;
-  }>).find((row) => (
-    row.demand_number === demandNumber
-    && row.allocation_type !== "Hors horaire requis"
-  ));
-  expect(afterCancel, "Le nouveau DnD annulé ne doit supprimer aucun quart REQUEST comptabilisé").toBeDefined();
-  expect(afterCancel!.resource_name).toBe("Alice");
-  expect(afterCancel!.work_date).toBe(sourceDay);
+  }>).find((row) => row.allocation_id === shift!.allocation_id);
+  expect(moved?.resource_name).toBe("Bob");
+  expect(moved?.work_date).toBe(targetDay);
 
   await closeContext(context);
 });

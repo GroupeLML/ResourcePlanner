@@ -12,9 +12,12 @@ import {
   OverallocationApiError,
   OverallocationContext,
   OverallocationPolicy,
+  PlanningDropEvaluation,
   duplicateAllocationAtomic,
   deleteManualAllocation,
+  evaluateAllocationDrop,
   overallocationContext,
+  overrideAndMovePlanningWindow,
   releaseManualAllocation,
   splitAllocationAtomic,
   updateAllocationWithOverallocation,
@@ -25,7 +28,7 @@ import SegmentEditor from "./SegmentEditor";
 
 type ConfirmationChoice = "inherit" | "Tentative" | "Confirmée";
 type AtomicMode = "split" | "duplicate";
-type OverallocationSource = "edit" | "atomic";
+type OverallocationSource = "edit" | "atomic" | "window_override";
 type AtomicAction = {
   mode: AtomicMode;
   idempotencyKey: string;
@@ -140,6 +143,10 @@ export default function ShiftEditor({
   const [overallocationSource, setOverallocationSource] = useState<OverallocationSource | null>(null);
   const [atomicAction, setAtomicAction] = useState<AtomicAction | null>(null);
   const [atomicPreparing, setAtomicPreparing] = useState(false);
+  const [windowOverrideEvaluation, setWindowOverrideEvaluation] = useState<PlanningDropEvaluation | null>(null);
+  const [windowOverrideReason, setWindowOverrideReason] = useState("");
+  const [windowOverrideConfirmed, setWindowOverrideConfirmed] = useState(false);
+  const [windowOverrideKey, setWindowOverrideKey] = useState<string | null>(null);
   const overallocationShift = shift as OverallocationShift;
   const currentExcess = Number(overallocationShift.segment_overallocated_hours ?? 0);
 
@@ -173,6 +180,35 @@ export default function ShiftEditor({
     setSaving(true);
     setError(null);
     try {
+      const positionChanged = resourceId !== shift.resource_id || day !== shift.work_date;
+      if (positionChanged && shift.demand_number) {
+        const evaluation = await evaluateAllocationDrop(
+          shift.allocation_id,
+          {
+            resource_id: resourceId,
+            day,
+            outside_standard_hours: outsideStandardHours,
+            include_planning_window_override_options: true,
+          },
+        );
+        const overrideAvailable = evaluation.actions.some(
+          (action) => action.code === "OVERRIDE_WINDOW_AND_MOVE" && action.enabled,
+        );
+        if (overrideAvailable) {
+          setWindowOverrideEvaluation(evaluation);
+          setWindowOverrideReason("");
+          setWindowOverrideConfirmed(false);
+          setWindowOverrideKey(newAtomicIdempotencyKey());
+          return;
+        }
+        const directMoveAllowed = evaluation.actions.some(
+          (action) => action.code === "MOVE" || action.code === "EXTEND_AND_MOVE",
+        );
+        if (!directMoveAllowed) {
+          setError("Ce déplacement sort de la fenêtre opérationnelle. Utilise le parcours de proposition/réapprobation depuis le planning.");
+          return;
+        }
+      }
       await updateAllocationWithOverallocation(
         shift.allocation_id,
         {
@@ -215,6 +251,74 @@ export default function ShiftEditor({
   async function submit(event: FormEvent) {
     event.preventDefault();
     await save(null);
+  }
+
+  async function executeWindowOverride(policy: OverallocationPolicy | null = null) {
+    if (
+      !windowOverrideEvaluation
+      || !windowOverrideReason.trim()
+      || !windowOverrideConfirmed
+      || !windowOverrideKey
+      || saving
+    ) return;
+    if (!windowOverrideEvaluation.approval_revision_id) {
+      setError("La référence approuvée active n’est plus disponible. Rafraîchis le planning.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await overrideAndMovePlanningWindow(
+        shift.allocation_id,
+        {
+          resource_id: resourceId,
+          day,
+          reason: windowOverrideReason.trim(),
+          expected_planning_version: windowOverrideEvaluation.planning_version,
+          expected_approval_revision_id: windowOverrideEvaluation.approval_revision_id,
+          expected_operational_version: windowOverrideEvaluation.operational_version,
+          outside_standard_hours: outsideStandardHours,
+          overallocation_policy: policy,
+        },
+        windowOverrideKey,
+      );
+      setOverallocationChoice(null);
+      setOverallocationSource(null);
+      setWindowOverrideEvaluation(null);
+      setWindowOverrideKey(null);
+      onSaved();
+    } catch (reason: unknown) {
+      const context = overallocationContext(reason);
+      if (
+        reason instanceof OverallocationApiError
+        && reason.code === "allocation_overallocation_choice_required"
+        && context
+      ) {
+        setOverallocationChoice(context);
+        setOverallocationSource("window_override");
+        setError(null);
+      } else if (
+        reason instanceof ApiError
+        && (
+          reason.code === "planning_version_conflict"
+          || reason.code === "operational_choice_version_conflict"
+          || reason.code === "planning_authorization_revision_conflict"
+          || reason.code === "planning_authorization_unknown"
+        )
+      ) {
+        setWindowOverrideEvaluation(null);
+        setWindowOverrideKey(null);
+        onStale();
+      } else if (reason instanceof TypeError) {
+        setError("La réponse est incertaine. Réessaie la même dérogation : la clé idempotente capturée sera réutilisée.");
+      } else if (reason instanceof ApiError) {
+        setError(`${reason.message}${reason.code ? ` (${reason.code})` : ""}`);
+      } else {
+        setError(reason instanceof Error ? reason.message : "Impossible d’appliquer la dérogation de fenêtre.");
+      }
+    } finally {
+      setSaving(false);
+    }
   }
 
 
@@ -404,6 +508,7 @@ export default function ShiftEditor({
         onSaved={onSaved}
         onOpenDemand={onOpenDemand}
         planningVersion={planningVersion}
+        onStale={onStale}
       />
     );
   }
@@ -459,6 +564,81 @@ export default function ShiftEditor({
 
           {error && <div className="dialog-error">{error}</div>}
 
+          {windowOverrideEvaluation && (
+            <div className="atomic-action-section" data-testid="shift-window-override">
+              <div className="atomic-action-heading">
+                <div>
+                  <strong>Dérogation opérationnelle requise pour ce déplacement</strong>
+                  <span>Le backend conservera la candidate et la preuve approuvée inchangées.</span>
+                </div>
+              </div>
+              <div className="planning-drop-summary">
+                {windowOverrideEvaluation.requested_window && (
+                  <article>
+                    <span>Demandé (candidate)</span>
+                    <strong>{windowOverrideEvaluation.requested_window.start} → {windowOverrideEvaluation.requested_window.end}</strong>
+                  </article>
+                )}
+                {windowOverrideEvaluation.approved_window && (
+                  <article>
+                    <span>Approuvé</span>
+                    <strong>{windowOverrideEvaluation.approved_window.start} → {windowOverrideEvaluation.approved_window.end}</strong>
+                  </article>
+                )}
+                <article>
+                  <span>Opérationnel actuel</span>
+                  <strong>{windowOverrideEvaluation.current_window.start} → {windowOverrideEvaluation.current_window.end}</strong>
+                </article>
+                <article>
+                  <span>Opérationnel projeté</span>
+                  <strong>{windowOverrideEvaluation.proposed_window.start} → {windowOverrideEvaluation.proposed_window.end}</strong>
+                </article>
+              </div>
+              <label className="span-2">
+                <span>Motif obligatoire</span>
+                <textarea
+                  rows={3}
+                  value={windowOverrideReason}
+                  disabled={saving}
+                  onChange={(event) => setWindowOverrideReason(event.target.value)}
+                />
+              </label>
+              <label className="checkbox-field">
+                <input
+                  type="checkbox"
+                  checked={windowOverrideConfirmed}
+                  disabled={saving}
+                  onChange={(event) => setWindowOverrideConfirmed(event.target.checked)}
+                />
+                <span>Je confirme explicitement la dérogation de fenêtre. Le consentement hors horaire ci-dessous reste une décision distincte.</span>
+              </label>
+              <div className="dialog-actions">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={saving}
+                  onClick={() => {
+                    setWindowOverrideEvaluation(null);
+                    setWindowOverrideReason("");
+                    setWindowOverrideConfirmed(false);
+                    setWindowOverrideKey(null);
+                  }}
+                >
+                  Annuler
+                </button>
+                <button
+                  type="button"
+                  className="primary-button"
+                  disabled={saving || !windowOverrideConfirmed || !windowOverrideReason.trim()}
+                  onClick={() => void executeWindowOverride(null)}
+                >
+                  Confirmer et déplacer
+                </button>
+              </div>
+              <small>Cette commande déplace le quart atomiquement. Les autres champs de l’éditeur pourront être ajustés séparément après actualisation.</small>
+            </div>
+          )}
+
           {overallocationChoice && (
             <div className="overallocation-choice" role="alert">
               <strong>Ce changement dépasse les heures prévues du segment.</strong>
@@ -473,7 +653,9 @@ export default function ShiftEditor({
                   onClick={() => void (
                     overallocationSource === "atomic"
                       ? executeAtomic("INCREASE_PLANNED")
-                      : save("INCREASE_PLANNED")
+                      : overallocationSource === "window_override"
+                        ? executeWindowOverride("INCREASE_PLANNED")
+                        : save("INCREASE_PLANNED")
                   )}
                 >
                   Augmenter les heures prévues à {hoursLabel(overallocationChoice.projected_locked_hours)} h
@@ -485,7 +667,9 @@ export default function ShiftEditor({
                   onClick={() => void (
                     overallocationSource === "atomic"
                       ? executeAtomic("KEEP_EXCEPTION")
-                      : save("KEEP_EXCEPTION")
+                      : overallocationSource === "window_override"
+                        ? executeWindowOverride("KEEP_EXCEPTION")
+                        : save("KEEP_EXCEPTION")
                   )}
                 >
                   Conserver la dérogation (+{hoursLabel(overallocationChoice.excess_hours)} h)
