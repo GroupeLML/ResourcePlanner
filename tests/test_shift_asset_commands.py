@@ -877,6 +877,153 @@ class ShiftAssetCommandTests(unittest.TestCase):
         finally:
             engine.dispose()
 
+    def test_project_direct_reserved_for_other_operator_is_not_reassigned_implicitly(self) -> None:
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        with factory.begin() as session:
+            session.add(
+                Resource(
+                    id="RESOURCE-OTHER-615B",
+                    name="Technicien autre",
+                    active=True,
+                )
+            )
+            session.flush()
+            session.add(
+                ResourceCompetency(
+                    resource_id="RESOURCE-OTHER-615B",
+                    competency_id="COMP-560B",
+                )
+            )
+        engine.dispose()
+
+        created = self.client.post(
+            "/api/v1/assets/project-reservations",
+            headers={"Idempotency-Key": "project-other-operator-615b"},
+            json={
+                "project_id": "PROJECT-560B",
+                "asset_type_id": "TYPE-560B",
+                "asset_id": "ASSET-C",
+                "start_date": DAY.isoformat(),
+                "end_date": DAY.isoformat(),
+                "operator_resource_id": "RESOURCE-OTHER-615B",
+                "expected_planning_version": self._version(),
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+
+        candidates = self.client.get(
+            "/api/v1/assets/shifts/SHIFT-SKILLED/assignment/candidates"
+        )
+        self.assertEqual(candidates.status_code, 200, candidates.text)
+        candidate = next(
+            row
+            for row in candidates.json()["candidates"]
+            if row["id"] == "ASSET-C"
+        )
+        self.assertFalse(candidate["allowed"])
+        self.assertEqual(
+            candidate["selection_mode"],
+            "RESERVED_OTHER_OPERATOR",
+        )
+        self.assertEqual(
+            candidate["reason"],
+            "asset_reserved_other_operator",
+        )
+
+        forced = self._set_asset(
+            asset_id="ASSET-C",
+            allocation_id=created.json()["allocation_id"],
+            version=candidates.json()["planning_version"],
+            key="project-other-operator-force-615b",
+        )
+        self.assertEqual(forced.status_code, 409, forced.text)
+        self.assertEqual(
+            forced.json()["error"]["code"],
+            "asset_project_reservation_operator_conflict",
+        )
+
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory() as session:
+                allocation = session.get(
+                    AssetAllocation,
+                    created.json()["allocation_id"],
+                )
+                self.assertIsNotNone(allocation)
+                self.assertEqual(
+                    allocation.operator_resource_id,
+                    "RESOURCE-OTHER-615B",
+                )
+        finally:
+            engine.dispose()
+
+    def test_segment_reservation_is_projected_to_its_owner_shift(self) -> None:
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        with factory.begin() as session:
+            session.add(
+                AssetRequirement(
+                    id="AREQ-SEGMENT-615B",
+                    project_id="PROJECT-560B",
+                    origin=AssetRequirementOrigin.SEGMENT.value,
+                    resource_requirement_id="HUMAN-SKILLED",
+                    asset_type_id="TYPE-560B",
+                    start_date=DAY,
+                    end_date=DAY,
+                    status="Planifié",
+                )
+            )
+            session.flush()
+            session.add(
+                AssetAllocation(
+                    id="AALLOC-SEGMENT-615B",
+                    asset_requirement_id="AREQ-SEGMENT-615B",
+                    asset_id="ASSET-C",
+                    operator_resource_id="RESOURCE-SKILLED",
+                    start_date=DAY,
+                    end_date=DAY,
+                    locked=True,
+                    source="MANUAL",
+                )
+            )
+        engine.dispose()
+
+        projected = self.client.get(
+            "/api/v1/shifts",
+            params={"start": DAY.isoformat(), "end": DAY.isoformat()},
+        )
+        self.assertEqual(projected.status_code, 200, projected.text)
+        owner = next(
+            row
+            for row in projected.json()
+            if row["allocation_id"] == "ALLOC-SKILLED"
+        )
+        inherited = [
+            row
+            for row in owner["related_asset_reservations"]
+            if row["allocation_id"] == "AALLOC-SEGMENT-615B"
+        ]
+        self.assertEqual(len(inherited), 1)
+        self.assertEqual(inherited[0]["origin"], "SEGMENT")
+        self.assertEqual(
+            inherited[0]["association_kind"],
+            "INHERITED_SEGMENT",
+        )
+        other = next(
+            row
+            for row in projected.json()
+            if row["allocation_id"] == "ALLOC-UNSKILLED"
+        )
+        self.assertNotIn(
+            "AALLOC-SEGMENT-615B",
+            {
+                row["allocation_id"]
+                for row in other["related_asset_reservations"]
+            },
+        )
+
     def test_resource_period_created_before_shift_is_inherited_without_new_allocation(self) -> None:
         next_day = DAY + timedelta(days=1)
         created = self.client.post(
