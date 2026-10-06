@@ -525,7 +525,7 @@ export default function AssetPlanningPanel({
           || !requirement.allocation_start_date
           || !requirement.allocation_end_date
         ) {
-          throw new Error("La réservation de segment exige un opérateur explicite.");
+          throw new Error("La réservation de segment doit être matérialisée avant de modifier l’opérateur.");
         }
         await updateSegmentReservation(
           requirement.requirement_id,
