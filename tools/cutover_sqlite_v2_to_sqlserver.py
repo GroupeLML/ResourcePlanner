@@ -55,6 +55,13 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
             "project_manager_audit",
             "availability_rule_resource_classes",
             "planning_window_overrides",
+            "verification_scopes",
+            "verification_requirements",
+            "verification_requirement_revisions",
+            "story_verification_decisions",
+            "story_verification_decision_requirements",
+            "verification_retest_requests",
+            "verification_change_history",
         },
         "missing_columns": {
             "auth_sessions": {
@@ -159,6 +166,13 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
     "delivery_plans": _keep("Plans Delivery réellement utilisés."),
     "delivery_items": _keep("Epics/Stories Delivery."),
     "delivery_change_history": _keep("Historique Delivery durable."),
+    "verification_scopes": _keep("Racines Verification par WorkPackage et version CAS locale."),
+    "verification_requirements": _keep("Exigences Verification métier et état de retrait."),
+    "verification_requirement_revisions": _keep("Définitions Verification immuables historisées."),
+    "story_verification_decisions": _keep("Décisions explicites de fermeture/reconfirmation Story."),
+    "story_verification_decision_requirements": _keep("Liens durables décision Verification vers exigences."),
+    "verification_retest_requests": _keep("Intentions métier explicites de retest."),
+    "verification_change_history": _keep("Audit métier Verification et versions résultantes."),
     "planning_change_history": _keep("Audit métier Planning V2."),
     "planning_mutation_state": _rebuild(
         "Singleton technique de version globale créé par la baseline."
@@ -266,6 +280,23 @@ RELATIONSHIP_CONTROLS: dict[str, tuple[str, ...]] = {
     "shifts": ("id", "resource_requirement_id", "resource_id"),
     "delivery_plans": ("id", "work_package_id"),
     "delivery_items": ("id", "delivery_plan_id", "parent_id"),
+    "verification_scopes": ("id", "work_package_id", "lead_user_id"),
+    "verification_requirements": (
+        "id",
+        "verification_scope_id",
+        "story_id",
+        "current_revision_id",
+    ),
+    "verification_requirement_revisions": ("id", "requirement_id"),
+    "story_verification_decisions": ("id", "verification_scope_id", "story_id"),
+    "story_verification_decision_requirements": ("decision_id", "requirement_id"),
+    "verification_retest_requests": ("id", "requirement_id", "revision_id"),
+    "verification_change_history": (
+        "id",
+        "verification_scope_id",
+        "story_id",
+        "actor_user_id",
+    ),
     "asset_requirements": (
         "id",
         "project_id",
