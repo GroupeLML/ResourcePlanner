@@ -207,7 +207,7 @@ test("362F Delivery et 363E Verification traversent PM, Team Lead et technicien"
   await labelled(leadStory, "Statut", "select").selectOption("IN_PROGRESS");
   await leadStory.getByRole("button", { name: "Enregistrer" }).click();
   await expect(leadA.page.locator(".error-panel")).toContainText("delivery_version_conflict");
-  await expect(leadA.page.locator(".error-panel")).toContainText("rechargé avec la version courante");
+  await expect(leadA.page.locator(".error-panel")).toContainText("Delivery et Verification ont été rechargés avec les versions courantes");
   await expect(leadA.page.locator(".delivery-plan-toolbar")).toContainText("Version Delivery 7");
   leadStory = storyCard(leadA.page, storyTitle);
   await expect(labelled(leadStory, "Statut", "select")).toHaveValue("TODO");
