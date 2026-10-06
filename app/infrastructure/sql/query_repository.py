@@ -53,7 +53,6 @@ from .asset_models import (
     AssetAllocation,
     AssetRequirement,
     AssetType,
-    AssetTypeCompetency,
 )
 from .asset_qualification import (
     QUALIFICATION_SATISFIED,
