@@ -458,11 +458,12 @@ class StoryVerificationClosureService:
             next_verification_version = 1
         else:
             if expected_verification_version is None:
-                raise ApplicationValidationError(
-                    "expected_verification_version est requis pour ce périmètre.",
-                    code="verification_version_required",
+                raise ApplicationConflictError(
+                    "Le périmètre Verification existe alors que la commande attendait son absence.",
+                    code="verification_version_conflict",
                     context={
                         "verification_scope_id": scope.id,
+                        "expected_verification_version": None,
                         "current_verification_version": scope.verification_version,
                     },
                 )
