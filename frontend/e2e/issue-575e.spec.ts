@@ -2,15 +2,13 @@ import { Browser, BrowserContext, Locator, Page, expect, test } from "@playwrigh
 
 const BASE_URL = process.env.RESOURCEPLANNER_E2E_BASE_URL || "http://127.0.0.1:8765";
 
-async function openCoordinator(browser: Browser) {
+async function createCoordinator(browser: Browser) {
   const context = await browser.newContext({
     baseURL: BASE_URL,
     locale: "fr-CA",
     extraHTTPHeaders: { "X-E2E-Role": "COORDINATOR" },
   });
   const page = await context.newPage();
-  await page.goto("/");
-  await expect(page.locator(".sidebar-footer")).toContainText("Coordonnateur E2E");
   return { context, page };
 }
 
@@ -43,7 +41,7 @@ async function reserveAndWaitForPlanningRefresh(page: Page, form: Locator) {
 
 test("575E relie navigation REQUEST et trois contextes de réservation directe", async ({ browser }) => {
   test.setTimeout(120_000);
-  const { context, page } = await openCoordinator(browser);
+  const { context, page } = await createCoordinator(browser);
   const captured: Record<string, Record<string, unknown>> = {};
 
   try {
@@ -201,6 +199,9 @@ test("575E relie navigation REQUEST et trois contextes de réservation directe",
         });
       });
     }
+
+    await page.goto("/");
+    await expect(page.locator(".sidebar-footer")).toContainText("Coordonnateur E2E");
 
     await navigateMain(page, "Planning opérationnel");
     const panel = page.locator(".asset-planning-panel");

@@ -25,6 +25,7 @@ from ...application.medium_term_budget import (
     MediumTermBudgetReadModel,
     MediumTermBudgetTaskReadModel,
     MediumTermBudgetWorkPackageReadModel,
+    MediumTermDemandPeriodReadModel,
     MediumTermClassWeekReadModel,
     MediumTermResourceClassOptionReadModel,
     MediumTermTaskOptionReadModel,
@@ -36,6 +37,7 @@ from ...application.medium_term_budget import (
     task_budget_diagnostic,
     work_package_is_budget_included,
     work_package_is_current_load_included,
+    demand_window_diagnostic,
 )
 from ...application.project_managers import ProjectManagerResolutionService
 from ...application.query_models import (
@@ -66,6 +68,10 @@ from .models import (
     WorkPackage,
     WorkPackageLoadInterval,
     WorkPackageWeeklyLoad,
+)
+from .demand_period_models import (
+    WorkforceRequestPeriod,
+    WorkforceRequestPeriodSelection,
 )
 from .resource_class_models import ResourceClassConfig
 from .project_manager_resolution_repository import (
@@ -192,6 +198,247 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
             )
         return tuple(result)
 
+    def _medium_term_demand_periods_by_package(
+        self,
+        *,
+        project_ids: tuple[str, ...],
+        work_packages: tuple[WorkPackage, ...],
+    ) -> dict[str, tuple[MediumTermDemandPeriodReadModel, ...]]:
+        """Project current requested windows in batches for the Medium-term Gantt."""
+        if not project_ids or not work_packages:
+            return {}
+
+        work_package_by_reference = {
+            _optional_text(row.legacy_effort_id) or row.id: row
+            for row in work_packages
+        }
+        demands = tuple(self._demands.list(project_ids=project_ids))
+        active_demands = tuple(
+            demand
+            for demand in demands
+            if not any(
+                token in _text(demand.effective_status or demand.status).casefold()
+                for token in ("annul", "cancel")
+            )
+        )
+        if not active_demands:
+            return {}
+
+        request_rows = tuple(
+            self._web_session.scalars(
+                select(WorkforceRequest).where(
+                    WorkforceRequest.project_id.in_(project_ids)
+                )
+            ).all()
+        )
+        request_by_number = {
+            _optional_text(row.legacy_demand_number) or row.id: row
+            for row in request_rows
+        }
+        request_ids = tuple(
+            request_by_number[demand.number].id
+            for demand in active_demands
+            if demand.number in request_by_number
+        )
+        if not request_ids:
+            return {}
+
+        period_rows = tuple(
+            self._web_session.scalars(
+                select(WorkforceRequestPeriod)
+                .where(
+                    WorkforceRequestPeriod.workforce_request_id.in_(request_ids),
+                    WorkforceRequestPeriod.active == true(),
+                )
+                .order_by(
+                    WorkforceRequestPeriod.workforce_request_id,
+                    WorkforceRequestPeriod.request_line_id,
+                    WorkforceRequestPeriod.sequence,
+                    WorkforceRequestPeriod.created_at,
+                    WorkforceRequestPeriod.id,
+                )
+            ).all()
+        )
+        selection_rows = tuple(
+            self._web_session.scalars(
+                select(WorkforceRequestPeriodSelection).where(
+                    WorkforceRequestPeriodSelection.workforce_request_id.in_(request_ids)
+                )
+            ).all()
+        )
+        selected_period_row_ids = {row.period_id for row in selection_rows}
+        periods_by_request: defaultdict[str, list[WorkforceRequestPeriod]] = defaultdict(list)
+        periods_by_line: defaultdict[str, list[WorkforceRequestPeriod]] = defaultdict(list)
+        for row in period_rows:
+            periods_by_request[row.workforce_request_id].append(row)
+            if row.request_line_id:
+                periods_by_line[row.request_line_id].append(row)
+
+        result: defaultdict[str, list[MediumTermDemandPeriodReadModel]] = defaultdict(list)
+
+        def append_projection(
+            *,
+            demand_number: str,
+            status: str,
+            approved_at: object,
+            line_id: str,
+            line_kind: str,
+            work_package_ref: str | None,
+            period_id: str,
+            period_kind: str,
+            start_date: date | None,
+            end_date: date | None,
+            hours: Decimal | None,
+            alternative_group: str | None = None,
+            selected: bool = False,
+            confirmation: str | None = None,
+        ) -> None:
+            if work_package_ref is None:
+                return
+            package = work_package_by_reference.get(work_package_ref)
+            if package is None:
+                return
+            outside, position, diagnostics = demand_window_diagnostic(
+                demand_start=start_date,
+                demand_end=end_date,
+                work_package_start=package.start_date,
+                work_package_end=package.end_date,
+            )
+            normalized_status = _text(status).casefold()
+            provenance = (
+                "CANDIDATE"
+                if any(
+                    token in normalized_status
+                    for token in ("brouillon", "soumise", "correction", "corriger")
+                )
+                else ("APPROVED" if approved_at is not None else "CANDIDATE")
+            )
+            result[package.id].append(
+                MediumTermDemandPeriodReadModel(
+                    demand_number=demand_number,
+                    line_id=line_id,
+                    period_id=period_id,
+                    work_package_ref=work_package_ref,
+                    start_date=start_date,
+                    end_date=end_date,
+                    hours=hours,
+                    status=status,
+                    provenance=provenance,
+                    line_kind=line_kind,
+                    period_kind=period_kind,
+                    alternative_group=alternative_group,
+                    selected=selected,
+                    confirmation=confirmation,
+                    outside_work_package=outside,
+                    outside_position=position,
+                    diagnostics=diagnostics,
+                )
+            )
+
+        for demand in active_demands:
+            request = request_by_number.get(demand.number)
+            if request is None:
+                continue
+            request_periods = periods_by_request.get(request.id, [])
+            active_lines = tuple(line for line in demand.lines if line.active)
+            if active_lines:
+                for line in active_lines:
+                    work_package_ref = line.work_package_ref
+                    if work_package_ref is None and not demand.line_mode:
+                        work_package_ref = demand.work_package_ref
+                    line_periods = list(periods_by_line.get(line.line_id, ()))
+                    if not line_periods and len(active_lines) == 1:
+                        line_periods = [
+                            row
+                            for row in request_periods
+                            if row.request_line_id in (None, line.line_id)
+                        ]
+                    if line_periods:
+                        for period in line_periods:
+                            append_projection(
+                                demand_number=demand.number,
+                                status=demand.status,
+                                approved_at=demand.approved_at,
+                                line_id=line.line_id,
+                                line_kind=line.kind,
+                                work_package_ref=work_package_ref,
+                                period_id=period.period_key,
+                                period_kind=period.kind,
+                                start_date=period.start_date,
+                                end_date=period.end_date,
+                                hours=(Decimal(period.hours) if period.hours is not None else None),
+                                alternative_group=_optional_text(period.alternative_group),
+                                selected=period.id in selected_period_row_ids,
+                                confirmation=_optional_text(period.confirmation),
+                            )
+                    else:
+                        append_projection(
+                            demand_number=demand.number,
+                            status=demand.status,
+                            approved_at=demand.approved_at,
+                            line_id=line.line_id,
+                            line_kind=line.kind,
+                            work_package_ref=work_package_ref,
+                            period_id=f"{line.line_id}:base",
+                            period_kind="BASE",
+                            start_date=line.desired_start,
+                            end_date=line.desired_end or line.desired_start,
+                            hours=(Decimal(str(line.estimated_hours)) if line.estimated_hours is not None else None),
+                            confirmation=_optional_text(line.confirmation),
+                        )
+                continue
+
+            work_package_ref = demand.work_package_ref
+            if request_periods:
+                for period in request_periods:
+                    append_projection(
+                        demand_number=demand.number,
+                        status=demand.status,
+                        approved_at=demand.approved_at,
+                        line_id=period.request_line_id or request.id,
+                        line_kind="WORKFORCE",
+                        work_package_ref=work_package_ref,
+                        period_id=period.period_key,
+                        period_kind=period.kind,
+                        start_date=period.start_date,
+                        end_date=period.end_date,
+                        hours=(Decimal(period.hours) if period.hours is not None else None),
+                        alternative_group=_optional_text(period.alternative_group),
+                        selected=period.id in selected_period_row_ids,
+                        confirmation=_optional_text(period.confirmation),
+                    )
+            else:
+                append_projection(
+                    demand_number=demand.number,
+                    status=demand.status,
+                    approved_at=demand.approved_at,
+                    line_id=request.id,
+                    line_kind="WORKFORCE",
+                    work_package_ref=work_package_ref,
+                    period_id=f"{request.id}:base",
+                    period_kind="BASE",
+                    start_date=demand.desired_start,
+                    end_date=demand.desired_end or demand.desired_start,
+                    hours=(Decimal(str(demand.estimated_hours)) if demand.estimated_hours is not None else None),
+                    confirmation=_optional_text(demand.confirmation),
+                )
+
+        return {
+            package_id: tuple(
+                sorted(
+                    rows,
+                    key=lambda row: (
+                        row.demand_number,
+                        row.line_id,
+                        row.start_date or date.min,
+                        row.end_date or date.min,
+                        row.period_id,
+                    ),
+                )
+            )
+            for package_id, rows in result.items()
+        }
+
     @staticmethod
     def _medium_term_budget_work_package(
         work_package: WorkPackage,
@@ -203,6 +450,7 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
         project_name: str = "",
         resource_class: ResourceClassConfig | None = None,
         task_resource_class_code: str | None = None,
+        demand_periods: tuple[MediumTermDemandPeriodReadModel, ...] = (),
     ) -> MediumTermBudgetWorkPackageReadModel:
         if not intervals and legacy_loads:
             intervals = legacy_weekly_as_intervals(
@@ -303,6 +551,7 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                 _optional_text(work_package.resource_class_code),
                 _optional_text(task_resource_class_code),
             ),
+            demand_periods=demand_periods,
         )
 
     def medium_term_budget_projection(
@@ -504,6 +753,11 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                 )
             )
 
+        demand_periods_by_package = self._medium_term_demand_periods_by_package(
+            project_ids=selected_project_ids,
+            work_packages=work_packages,
+        )
+
         all_by_task: defaultdict[str, list[MediumTermBudgetWorkPackageReadModel]] = defaultdict(list)
         display_by_task: defaultdict[str, list[MediumTermBudgetWorkPackageReadModel]] = defaultdict(list)
         displayed_unclassified: list[MediumTermBudgetWorkPackageReadModel] = []
@@ -532,6 +786,7 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                     if task is not None
                     else None
                 ),
+                demand_periods=tuple(demand_periods_by_package.get(work_package.id, ())),
             )
             task_id = work_package.task_catalog_item_id
             if task_id in tasks_by_id:

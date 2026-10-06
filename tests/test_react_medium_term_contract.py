@@ -139,6 +139,49 @@ class ReactMediumTermContractTests(unittest.TestCase):
         self.assertIn('className="mt-yellow-flag"', page)
         self.assertNotIn('"PARTIALLY_COVERED",\n]);', page)
 
+    def test_issue_614d_renders_backend_demand_periods_as_distinct_gantt_rows(self) -> None:
+        page = (ROOT / "frontend" / "src" / "MediumTermPage.tsx").read_text(
+            encoding="utf-8"
+        )
+        api = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
+        css = (ROOT / "frontend" / "src" / "medium-term.css").read_text(
+            encoding="utf-8"
+        )
+        backend = (
+            ROOT / "app" / "infrastructure" / "sql" / "web_query_repository.py"
+        ).read_text(encoding="utf-8")
+        projection = (
+            ROOT / "app" / "application" / "medium_term_budget.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("MediumTermDemandPeriodReadModel", api)
+        self.assertIn("demand_periods: MediumTermDemandPeriodReadModel[]", api)
+        self.assertIn("workPackage.demand_periods.map", page)
+        self.assertIn("demandPeriod.start_date", page)
+        self.assertIn("demandPeriod.end_date", page)
+        self.assertIn("demandPeriod.outside_work_package", page)
+        self.assertIn("demandPeriod.outside_position", page)
+        self.assertIn("demandPeriod.diagnostics", page)
+        self.assertIn('className="mt-demand-link"', page)
+        self.assertIn("mt-demand-gantt-bar", page)
+        self.assertIn("onOpenDemand(demandPeriod.demand_number)", page)
+        self.assertIn(".mt-demand-timeline-row", css)
+        self.assertIn(".mt-demand-gantt-bar", css)
+        self.assertIn(".mt-demand-gantt-bar.has-warning", css)
+        self.assertNotIn("mt-demand-chip", page)
+        self.assertNotIn("demandByPackage", page)
+        self.assertNotIn("getPlanningSnapshot(", page)
+
+        self.assertIn("demand_window_diagnostic(", backend)
+        self.assertIn("_medium_term_demand_periods_by_package(", backend)
+        self.assertIn("WorkforceRequestPeriod.active == true()", backend)
+        self.assertIn("WorkforceRequestPeriodSelection", backend)
+        self.assertIn("DEMAND_OUTSIDE_BEFORE", projection)
+        self.assertIn("DEMAND_OUTSIDE_AFTER", projection)
+        self.assertIn("DEMAND_OUTSIDE_BOTH", projection)
+        self.assertIn("DEMAND_OUTSIDE_UNAVAILABLE", projection)
+        self.assertNotIn("outside_work_package =", page)
+
     def test_capacity_band_is_one_compact_backend_driven_row_per_class(self) -> None:
         panel = (ROOT / "frontend" / "src" / "MediumTermCapacityPanel.tsx").read_text(
             encoding="utf-8"

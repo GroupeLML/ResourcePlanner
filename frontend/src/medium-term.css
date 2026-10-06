@@ -83,18 +83,29 @@
 .mt-package-bar-heading strong { min-width: 0; font-size: .64rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mt-package-bar-heading span { flex: 0 0 auto; font-size: .58rem; font-weight: 800; color: #44536b; }
 .mt-package-bar > small { display: block; margin-top: .12rem; color: #647084; font-size: .52rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mt-demand-chips { display: flex; align-items: center; gap: .22rem; margin-top: .34rem; overflow-x: auto; padding-bottom: .05rem; }
-.mt-demand-chip { flex: 0 0 auto; display: grid; grid-template-columns: auto auto; align-items: center; gap: .08rem .22rem; border: 1px solid #d6dde8; border-radius: 12px; background: rgba(255,255,255,.84); color: #556173; padding: .18rem .34rem; text-align: left; }
-.mt-demand-chip strong, .mt-demand-chip span { font-size: .49rem; }
-.mt-demand-chip strong { color: #344258; }
-.mt-demand-chip small { grid-column: 1 / -1; color: #657187; font-size: .46rem; white-space: nowrap; }
-.mt-demand-chip.planned { border-color: #abd1b8; background: #eaf6ee; }
-.mt-demand-chip.tentative { border-color: #a9bfe9; background: #eef3ff; }
-.mt-demand-chip.pending { border-color: #e8cc85; background: #fff4d5; }
-.mt-demand-chip.correction { border-color: #efbbbb; background: #fdecec; }
-.mt-demand-chip.draft { background: #f2f4f7; }
-.mt-demand-chip:hover { filter: brightness(.98); }
-.mt-demand-empty { color: #748094; font-size: .5rem; font-style: italic; }
+.mt-demand-empty { display: block; margin-top: .3rem; color: #748094; font-size: .5rem; font-style: italic; }
+.mt-demand-timeline-row { min-width: 1040px; min-height: 58px; display: grid; position: relative; align-items: stretch; border-bottom: 1px solid #edf0f4; background: #fbfcfe; }
+.mt-demand-timeline-row .mt-week-cell { min-height: 58px; background: #fbfcfe; }
+.mt-demand-timeline-row .mt-week-cell:nth-of-type(even) { background: #f8fafc; }
+.mt-demand-timeline-row.has-warning { background: #fffdf7; }
+.mt-demand-identity { grid-column: 1; grid-row: 1; z-index: 8; min-width: 0; padding: .34rem .55rem .34rem 1.1rem; border-right: 1px solid #e5eaf1; background: rgba(248,250,252,.98); }
+.mt-demand-link { display: flex; align-items: center; gap: .3rem; max-width: 100%; border: 0; padding: 0; background: transparent; color: #3f5068; text-align: left; }
+.mt-demand-link strong { font-size: .56rem; }
+.mt-demand-link span { min-width: 0; overflow: hidden; color: #68768b; font-size: .49rem; text-overflow: ellipsis; white-space: nowrap; }
+.mt-demand-link:hover strong { text-decoration: underline; }
+.mt-demand-identity > small { display: block; margin-top: .1rem; color: #748094; font-size: .47rem; line-height: 1.25; }
+.mt-demand-identity > small.mt-demand-warning { color: #80600f; font-weight: 800; }
+.mt-demand-gantt-bar { grid-row: 1; align-self: center; z-index: 6; display: flex; align-items: center; justify-content: space-between; gap: .35rem; min-width: 0; margin: .3rem .35rem; padding: .28rem .42rem; border: 1px dashed #aeb9c9; border-left: 3px solid #7c8798; border-radius: 7px; background: #f3f5f8; color: #46556b; text-align: left; overflow: hidden; }
+.mt-demand-gantt-bar strong, .mt-demand-gantt-bar span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mt-demand-gantt-bar strong { flex: 0 0 auto; font-size: .52rem; }
+.mt-demand-gantt-bar span { font-size: .47rem; }
+.mt-demand-gantt-bar.planned { border-color: #9fc9ae; border-left-color: #4f9a68; background: #edf7f0; }
+.mt-demand-gantt-bar.tentative { border-color: #a9bfe9; border-left-color: #6d8fcf; background: #f0f4ff; }
+.mt-demand-gantt-bar.pending { border-color: #e4c87f; border-left-color: #c59220; background: #fff7df; }
+.mt-demand-gantt-bar.correction { border-color: rgb(232, 176, 176); border-left-color: #c75f5f; background: #fdf0f0; }
+.mt-demand-gantt-bar.draft { border-color: #cfd5de; border-left-color: #98a2b3; background: #f4f5f7; }
+.mt-demand-gantt-bar.has-warning { box-shadow: inset 0 0 0 1px #d7a338; }
+.mt-demand-gantt-bar:hover { filter: brightness(.98); }
 .mt-no-package { min-width: 1040px; min-height: 62px; padding: 1.35rem 1rem; color: var(--muted); font-size: .68rem; background: white; }
 .mt-empty { padding: 2.5rem 1rem; color: var(--muted); text-align: center; font-size: .78rem; }
 
