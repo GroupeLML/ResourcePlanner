@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useId, useMemo, useState } from "react";
 
 import { ApiError } from "./api";
 import { useAuth } from "./AuthContext";
@@ -73,6 +73,7 @@ export function VerificationDecisionEditor({
     () => existingRequirements.filter((requirement) => requirement.state === "ACTIVE"),
     [existingRequirements],
   );
+  const radioName = useId();
   const [kind, setKind] = useState<"NO_TEST_REQUIRED" | "TESTS_DEFINED">("TESTS_DEFINED");
   const [justification, setJustification] = useState("");
   const [selectedExisting, setSelectedExisting] = useState<string[]>(
@@ -165,7 +166,7 @@ export function VerificationDecisionEditor({
         <label>
           <input
             type="radio"
-            name="verification-kind"
+            name={radioName}
             checked={kind === "TESTS_DEFINED"}
             disabled={disabled || submitting}
             onChange={() => setKind("TESTS_DEFINED")}
@@ -175,7 +176,7 @@ export function VerificationDecisionEditor({
         <label>
           <input
             type="radio"
-            name="verification-kind"
+            name={radioName}
             checked={kind === "NO_TEST_REQUIRED"}
             disabled={disabled || submitting}
             onChange={() => setKind("NO_TEST_REQUIRED")}
