@@ -83,10 +83,27 @@ function assetDiagnosticLabel(code: string) {
       return "Actif inactif";
     case "operator_not_qualified":
       return "Opérateur non qualifié";
-    case "related_request_reservation_ambiguous":
-      return "Plusieurs réservations REQUEST sont liées à ce travail";
+    case "related_asset_reservations_multiple":
+      return "Plusieurs réservations d’actifs sont liées à ce travail";
     default:
       return code;
+  }
+}
+
+function assetAssociationLabel(kind: string) {
+  switch (kind) {
+    case "RELATED_REQUEST":
+      return "Réservation de la demande";
+    case "INHERITED_RESOURCE_PERIOD":
+      return "Héritée de la période ressource";
+    case "INHERITED_PROJECT_DIRECT":
+      return "Héritée de la réservation projet";
+    case "INHERITED_SEGMENT":
+      return "Héritée du segment";
+    case "SEGMENT_CONTEXT":
+      return "Réservation du segment";
+    default:
+      return kind;
   }
 }
 
@@ -780,12 +797,14 @@ export default function ShiftEditor({
 
             {(shift.related_asset_reservations ?? []).length > 0 && (
               <div className="shift-related-assets">
-                <strong>Réservations liées à la demande</strong>
+                <strong>Réservations liées ou héritées</strong>
                 {(shift.related_asset_reservations ?? []).map((reservation) => (
                   <div key={reservation.allocation_id}>
                     <span>{reservation.asset_code} — {reservation.asset_label}</span>
                     <small>
-                      REQUEST · Qualification : {assetQualificationLabel(reservation.qualification_state)}
+                      {assetAssociationLabel(reservation.association_kind)}
+                      {" · "}{reservation.start_date} → {reservation.end_date}
+                      {" · "}Qualification : {assetQualificationLabel(reservation.qualification_state)}
                       {!reservation.asset_active ? " · Inactif" : ""}
                     </small>
                   </div>
