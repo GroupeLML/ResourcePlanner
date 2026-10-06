@@ -192,7 +192,6 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         )
         self.assertTrue(draft.approvable)
 
-    def test_co_managers_are_added_to_to_and_excluded_from_resource_cc(self) -> None:
         co_a = participant(
             "Co chargé A",
             contact_id="C-CO-A",
@@ -209,7 +208,6 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
             resource("R1", "Co chargé aussi ressource", address=email("co-a")),
             resource("R2", "Bob", address=email("bob")),
         )
-
         draft = build_project_confirmation_batch(
             projection(
                 project(
@@ -218,7 +216,6 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
                 )
             )
         ).drafts[0]
-
         self.assertEqual(
             [row.email for row in draft.to_recipients],
             [email("pm"), email("co-a"), email("co-b")],
@@ -228,55 +225,6 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
             [email("bob")],
         )
         self.assertTrue(draft.approvable)
-
-    def test_to_recipients_are_deduplicated_by_explicit_address(self) -> None:
-        duplicate = participant(
-            "Autre identité",
-            contact_id="C-CO-DUP",
-            user_id="U-CO-DUP",
-            address=email("pm"),
-        )
-
-        draft = build_project_confirmation_batch(
-            projection(project(co_managers=(duplicate,)))
-        ).drafts[0]
-
-        self.assertEqual(
-            [row.email for row in draft.to_recipients],
-            [email("pm")],
-        )
-
-    def test_missing_co_manager_email_is_explicit_blocking_diagnostic(self) -> None:
-        missing = participant(
-            "Co chargé sans courriel",
-            contact_id="C-CO-NO-MAIL",
-            user_id="U-CO-NO-MAIL",
-            address=None,
-        )
-
-        draft = build_project_confirmation_batch(
-            projection(project(co_managers=(missing,)))
-        ).drafts[0]
-
-        diagnostic = next(
-            row
-            for row in draft.diagnostics
-            if row.code == DIAGNOSTIC_CO_MANAGER_TO_EMAIL_MISSING
-        )
-        self.assertEqual(diagnostic.entity_type, "project_co_manager")
-        self.assertEqual(diagnostic.entity_id, "C-CO-NO-MAIL")
-        self.assertEqual(diagnostic.severity, SEVERITY_BLOCKING)
-        self.assertFalse(draft.approvable)
-
-        restored = deserialize_project_projection(
-            serialize_project_projection(
-                projection(project(co_managers=(missing,)))
-            )
-        )
-        self.assertEqual(
-            restored.projects[0].project_co_managers[0].contact_id,
-            "C-CO-NO-MAIL",
-        )
 
     def test_cc_is_deduplicated_by_explicit_email_and_excludes_to(self) -> None:
         shared = email("shared")
@@ -290,6 +238,20 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         ).drafts[0]
 
         self.assertEqual([row.email for row in draft.cc_recipients], [shared])
+
+        duplicate = participant(
+            "Autre identité",
+            contact_id="C-CO-DUP",
+            user_id="U-CO-DUP",
+            address=email("pm"),
+        )
+        duplicate_to_draft = build_project_confirmation_batch(
+            projection(project(co_managers=(duplicate,)))
+        ).drafts[0]
+        self.assertEqual(
+            [row.email for row in duplicate_to_draft.to_recipients],
+            [email("pm")],
+        )
 
     def test_same_manager_two_projects_still_creates_two_isolated_drafts(self) -> None:
         batch = build_project_confirmation_batch(
@@ -329,6 +291,35 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         )
         self.assertEqual(diagnostic.severity, SEVERITY_BLOCKING)
         self.assertFalse(draft.approvable)
+
+        missing_co_manager = participant(
+            "Co chargé sans courriel",
+            contact_id="C-CO-NO-MAIL",
+            user_id="U-CO-NO-MAIL",
+            address=None,
+        )
+        co_manager_draft = build_project_confirmation_batch(
+            projection(project(co_managers=(missing_co_manager,)))
+        ).drafts[0]
+        co_manager_diagnostic = next(
+            row
+            for row in co_manager_draft.diagnostics
+            if row.code == DIAGNOSTIC_CO_MANAGER_TO_EMAIL_MISSING
+        )
+        self.assertEqual(co_manager_diagnostic.entity_type, "project_co_manager")
+        self.assertEqual(co_manager_diagnostic.entity_id, "C-CO-NO-MAIL")
+        self.assertEqual(co_manager_diagnostic.severity, SEVERITY_BLOCKING)
+        self.assertFalse(co_manager_draft.approvable)
+
+        restored = deserialize_project_projection(
+            serialize_project_projection(
+                projection(project(co_managers=(missing_co_manager,)))
+            )
+        )
+        self.assertEqual(
+            restored.projects[0].project_co_managers[0].contact_id,
+            "C-CO-NO-MAIL",
+        )
 
     def test_body_groups_multiple_days_tasks_and_includes_responsible_phone(self) -> None:
         draft = build_project_confirmation_batch(
