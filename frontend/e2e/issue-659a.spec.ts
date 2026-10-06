@@ -123,7 +123,7 @@ test("659A — le DnD Quick Shift étend automatiquement la fenêtre sans dialog
     expect(mutation.request().postDataJSON().confirm_window_extension).toBe(false);
 
     await expect(page.getByRole("dialog", { name: "Choisir l’action du déplacement" })).toHaveCount(0);
-    await expect(page.locator(".planning-drag-feedback")).toContainText("Fenêtre Quick Shift étendue automatiquement");
+    await expect(page.locator(".planning-drag-feedback")).toContainText("Fenêtre du besoin étendue automatiquement");
     await expect(targetCell.locator(`.shift-card-main[title*="${note}"]`)).toHaveCount(1);
 
     const segmentResponse = await page.request.get(`/api/v1/segments/${created.segmentId}`);
