@@ -466,6 +466,7 @@ export type MediumTermBudgetReadModel = {
 
 export type MediumTermBudgetFilters = {
   taskCatalogItemId?: string;
+  taskCode?: string;
   resourceClassCode?: string;
   includeInactiveProjects?: boolean;
 };
@@ -1487,6 +1488,9 @@ export function getMediumTermBudget(
   if (project) params.set("project_number", project);
   if (filters.taskCatalogItemId) {
     params.set("task_catalog_item_id", filters.taskCatalogItemId);
+  }
+  if (filters.taskCode) {
+    params.set("task_code", filters.taskCode);
   }
   if (filters.resourceClassCode) {
     params.set("resource_class_code", filters.resourceClassCode);
