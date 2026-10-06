@@ -51,6 +51,7 @@ from .request_plan_preparation import (
     SqlRequestPlanPreparer,
 )
 from .planning_version import SqlPlanningMutationVersionRepository
+from .planning_window_override_repository import SqlPlanningWindowOverrideRepository
 from .operational_contact_repository import SqlOperationalContactRepository
 from .segment_repository import SqlSegmentRepository
 from .segment_asset_guard import segment_asset_dependencies
@@ -1181,6 +1182,25 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             request,
             current,
             prepared.specs,
+        )
+        if not prepared.approval_revision_id:
+            raise ValueError("La révision approuvée active est requise pour la resynchronisation.")
+        changed_entry_requirement_ids = {
+            match.requirement.id
+            for match in matches
+            if match.requirement is not None
+            and _text(match.requirement.approved_entry_key)
+            and _text(match.requirement.approved_entry_key)
+            != match.spec.approved_entry_key
+        }
+        changed_entry_requirement_ids.update(row.id for row in obsolete)
+        SqlPlanningWindowOverrideRepository(
+            self._session
+        ).supersede_for_requirements(
+            changed_entry_requirement_ids,
+            approval_revision_id=prepared.approval_revision_id,
+            resolution_reason="OPERATIONAL_ENTRY_CHANGED",
+            resolved_by_revision_id=prepared.approval_revision_id,
         )
         approved_project_id = _text(prepared.project_id)
         if not approved_project_id:
