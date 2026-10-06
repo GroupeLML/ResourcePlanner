@@ -81,6 +81,12 @@ class DirectAssetReservationTests(unittest.TestCase):
                         label="Véhicule 575C",
                         category="VEHICLE",
                     ),
+                    AssetType(
+                        id="TYPE-615A-OTHER",
+                        code="VEH-615A-OTHER",
+                        label="Autre type 615A",
+                        category="VEHICLE",
+                    ),
                 ]
             )
             session.flush()
@@ -290,6 +296,21 @@ class DirectAssetReservationTests(unittest.TestCase):
                 f"/api/v1/assets/ASSET-A/approvers/{TEST_COORDINATOR_USER_ID}"
             )
             self.assertEqual(self_add.status_code, 403, self_add.text)
+
+            type_change = coordinator.patch(
+                "/api/v1/assets/ASSET-A",
+                json={
+                    "asset_type_id": "TYPE-615A-OTHER",
+                    "expected_planning_version": coordinator.get(
+                        "/api/v1/assets/requirements"
+                    ).json()["planning_version"],
+                },
+            )
+            self.assertEqual(type_change.status_code, 422, type_change.text)
+            self.assertEqual(
+                type_change.json()["error"]["code"],
+                "asset_authority_admin_required",
+            )
 
             granted = self.client.put(
                 f"/api/v1/assets/ASSET-A/approvers/{TEST_COORDINATOR_USER_ID}"
