@@ -114,6 +114,99 @@ class SqlPlanningWindowOverrideRepository:
             override_end=override.effective_end_date,
         )
 
+    def apply_widening(
+        self,
+        requirement: ResourceRequirement,
+        *,
+        approval_revision_id: str,
+        approved_entry_key: str,
+        approved_start_date: date,
+        approved_end_date: date,
+        effective_start_date: date,
+        effective_end_date: date,
+        actor_user_id: str,
+        reason: str,
+        correlation_id: str,
+    ) -> PlanningWindowOverride:
+        """Create or widen the active operational exception for one REQUEST segment."""
+
+        if (
+            requirement.origin != ORIGIN_REQUEST
+            or not requirement.workforce_request_id
+            or requirement.approval_reference_status != APPROVAL_REFERENCE_CAPTURED
+            or requirement.approval_revision_id != approval_revision_id
+            or _text(requirement.approved_entry_key) != _text(approved_entry_key)
+        ):
+            raise ValueError(
+                "La dérogation de fenêtre exige un segment REQUEST relié "
+                "à l'entrée approuvée active."
+            )
+
+        actor_id = _text(actor_user_id)
+        reason_value = _text(reason)
+        correlation = _text(correlation_id)
+        if not actor_id or not reason_value or not correlation:
+            raise ValueError(
+                "Auteur, motif et corrélation sont requis pour une dérogation Planning."
+            )
+
+        requested = resolve_effective_planning_window(
+            approved_start=approved_start_date,
+            approved_end=approved_end_date,
+            override_start=effective_start_date,
+            override_end=effective_end_date,
+        )
+        active = self.active_by_requirement_ids(
+            (requirement.id,),
+            approval_revision_id=approval_revision_id,
+        ).get(requirement.id)
+
+        if active is not None:
+            current = self.effective_window_for_requirement(
+                requirement,
+                active,
+                approval_revision_id=approval_revision_id,
+                approved_entry_key=approved_entry_key,
+                approved_start_date=approved_start_date,
+                approved_end_date=approved_end_date,
+            )
+            if (
+                requested.start_date > current.start_date
+                or requested.end_date < current.end_date
+            ):
+                raise ValueError(
+                    "Une dérogation active ne peut pas être réduite par une nouvelle commande."
+                )
+            if requested == current:
+                raise ValueError(
+                    "La nouvelle dérogation doit élargir la fenêtre opérationnelle active."
+                )
+            active.effective_start_date = requested.start_date
+            active.effective_end_date = requested.end_date
+            active.actor_user_id = actor_id
+            active.reason = reason_value
+            active.correlation_id = correlation
+            self._session.flush()
+            return active
+
+        row = PlanningWindowOverride(
+            workforce_request_id=requirement.workforce_request_id,
+            resource_requirement_id=requirement.id,
+            approval_revision_id=approval_revision_id,
+            approved_entry_key=_text(approved_entry_key),
+            approved_start_date=approved_start_date,
+            approved_end_date=approved_end_date,
+            effective_start_date=requested.start_date,
+            effective_end_date=requested.end_date,
+            actor_user_id=actor_id,
+            reason=reason_value,
+            correlation_id=correlation,
+            status=PLANNING_WINDOW_OVERRIDE_ACTIVE,
+        )
+        self._session.add(row)
+        self._session.flush()
+        return row
+
     def supersede_for_requirements(
         self,
         requirement_ids: Iterable[str],
