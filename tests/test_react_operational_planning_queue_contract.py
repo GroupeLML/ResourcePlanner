@@ -42,10 +42,8 @@ class ReactOperationalPlanningQueueContractTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn(
-            '<PlanningPage onOpenDemands={() => setView("demands")} />',
-            app,
-        )
+        self.assertIn("function openDemands()", app)
+        self.assertIn("<PlanningPage onOpenDemands={openDemands} />", app)
         self.assertIn("Voir la demande", panel)
 
 
