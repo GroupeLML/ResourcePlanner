@@ -381,7 +381,8 @@ jobs:
               python -m unittest -v \
                 tests.test_project_co_managers_sqlserver_concurrency \
                 tests.test_project_manager_legacy_diagnostic \
-                tests.test_operational_responsibility_sqlserver_concurrency &&
+                tests.test_operational_responsibility_sqlserver_concurrency \
+                tests.test_planning_window_override_sqlserver_concurrency &&
               python tools/diagnose_project_manager_legacy_links.py --json
             '
 
