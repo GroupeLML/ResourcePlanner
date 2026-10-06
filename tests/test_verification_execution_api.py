@@ -306,6 +306,22 @@ class VerificationExecutionApiTests(unittest.TestCase):
                 2,
             )
 
+        with TestClient(lead_app) as client:
+            replay_after_later_execution = client.post(
+                "/api/v1/verification/requirements/REQ-1/retests",
+                headers={"Idempotency-Key": "363d-retest"},
+                json={
+                    "reason": "Valider après correction",
+                    "expected_verification_version": 4,
+                },
+            )
+            self.assertEqual(
+                replay_after_later_execution.status_code,
+                200,
+                replay_after_later_execution.text,
+            )
+            self.assertEqual(replay_after_later_execution.json(), retest.json())
+
 
 if __name__ == "__main__":
     unittest.main()

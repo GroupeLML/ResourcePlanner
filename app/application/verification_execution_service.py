@@ -509,8 +509,6 @@ class VerificationExecutionService:
             )
         payload = {
             "requirement_id": requirement.id,
-            "revision_id": requirement.current_revision_id,
-            "after_execution_sequence": latest,
             "reason": normalized_reason,
             "expected_verification_version": expected_verification_version,
         }
