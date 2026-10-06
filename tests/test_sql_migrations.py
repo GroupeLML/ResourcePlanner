@@ -975,6 +975,7 @@ class SqlMigrationTests(unittest.TestCase):
             "CREATE TABLE BREAK_GLASS_CREDENTIALS",
             "CREATE TABLE AUTH_SECURITY_AUDIT",
             "CREATE TABLE PLANNING_MUTATION_STATE",
+            "CREATE TABLE PLANNING_WINDOW_OVERRIDES",
             "SHIFT_AD_HOC",
             "UX_ASSET_REQUIREMENTS_SHIFT_AD_HOC",
         ):
