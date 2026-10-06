@@ -10,6 +10,7 @@ from ..application import (
     AllocationExtendMoveCommand,
     AllocationSplitCommand,
     AllocationWindowExtensionProposalCommand,
+    AllocationWindowOverrideMoveCommand,
     ApprovalVoteCommand,
     ApplicationFacade,
     AvailabilityRuleCreateCommand,
@@ -37,6 +38,7 @@ from ..application import (
     ManualAllocationReleaseCommand,
     ManualAllocationUpdateCommand,
     PlanningRebuildCommand,
+    PlanningWindowOverrideExtendCommand,
     QuickShiftCreateCommand,
     ResourceCreateCommand,
     ResourceReorderCommand,
@@ -60,6 +62,7 @@ from .schemas import (
     AllocationMoveRequest,
     AllocationSplitRequest,
     AllocationWindowExtensionProposalRequest,
+    AllocationWindowOverrideMoveRequest,
     AtomicAllocationBaseRequest,
     AvailabilityRuleCreateRequest,
     AvailabilityRuleUpdateRequest,
@@ -79,6 +82,7 @@ from .schemas import (
     DemandWorkflowVersionRequest,
     ManualAllocationRequest,
     OptionalCommentRequest,
+    PlanningWindowOverrideExtendRequest,
     QuickShiftRequest,
     RequiredCommentRequest,
     ResourceCreateRequest,
@@ -971,6 +975,48 @@ def build_command_router(
         )
 
     @router.post(
+        "/segments/{segment_id}/planning-window-override",
+        status_code=status.HTTP_200_OK,
+    )
+    def extend_planning_window_override(
+        segment_id: str,
+        body: PlanningWindowOverrideExtendRequest,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        facade: ApplicationFacade = Depends(facade_dependency),
+    ) -> dict[str, Any]:
+        return _payload(
+            facade.extend_planning_window_override(
+                PlanningWindowOverrideExtendCommand(
+                    segment_id=segment_id,
+                    idempotency_key=idempotency_key,
+                    correlation_id=idempotency_key,
+                    **body.model_dump(),
+                )
+            )
+        )
+
+    @router.post(
+        "/allocations/{allocation_id}/planning-window-override-move",
+        status_code=status.HTTP_200_OK,
+    )
+    def override_and_move_allocation(
+        allocation_id: str,
+        body: AllocationWindowOverrideMoveRequest,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        facade: ApplicationFacade = Depends(facade_dependency),
+    ) -> dict[str, Any]:
+        return _payload(
+            facade.override_and_move_allocation(
+                AllocationWindowOverrideMoveCommand(
+                    allocation_id=allocation_id,
+                    idempotency_key=idempotency_key,
+                    correlation_id=idempotency_key,
+                    **body.model_dump(),
+                )
+            )
+        )
+
+    @router.post(
         "/allocations/{allocation_id}/propose-window-extension",
         status_code=status.HTTP_200_OK,
     )
@@ -995,7 +1041,9 @@ def build_command_router(
                     AllocationWindowExtensionProposalCommand(
                         allocation_id=allocation_id,
                         correlation_id=idempotency_key,
-                        **body.model_dump(),
+                        **body.model_dump(
+                            exclude={"include_planning_window_override_options"}
+                        ),
                     )
                 )
             ),

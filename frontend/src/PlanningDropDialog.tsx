@@ -13,6 +13,7 @@ export type PlanningDropExecutionRequest = {
   transferHours: number | null;
   outsideStandardHours: boolean;
   overallocationPolicy: OverallocationPolicy | null;
+  reason: string;
 };
 
 function hours(value: number | null | undefined) {
@@ -22,6 +23,8 @@ function hours(value: number | null | undefined) {
 function authorizationLabel(value: string) {
   if (value === "WITHIN_APPROVED_ENTRY") return "Dans l’entrée approuvée active";
   if (value === "WINDOW_EXTENSION_REAPPROVAL_REQUIRED") return "Extension hors enveloppe approuvée";
+  if (value === "PLANNING_WINDOW_OVERRIDE_AVAILABLE") return "Dérogation opérationnelle disponible";
+  if (value === "WITHIN_ACTIVE_PLANNING_WINDOW_OVERRIDE") return "Dans la dérogation opérationnelle active";
   if (value === "NOT_APPLICABLE") return "Besoin autonome — approbation non applicable";
   if (value === "APPROVAL_REFERENCE_UNKNOWN") return "Référence d’approbation inconnue";
   return value || "Décision backend non précisée";
@@ -63,6 +66,8 @@ export default function PlanningDropDialog({
   const [outsideStandardHours, setOutsideStandardHours] = useState(false);
   const [outsideOptionPresented, setOutsideOptionPresented] = useState(Boolean(outsideWarning));
   const [overallocationPolicy, setOverallocationPolicy] = useState<OverallocationPolicy | null>(null);
+  const [overrideReason, setOverrideReason] = useState("");
+  const [overrideConfirmed, setOverrideConfirmed] = useState(false);
   const [transferHours, setTransferHours] = useState(() => (
     Math.max(Number(shift.hours || 0) / 2, 0.01).toFixed(2)
   ));
@@ -71,6 +76,8 @@ export default function PlanningDropDialog({
     setOutsideStandardHours(false);
     setOutsideOptionPresented(false);
     setOverallocationPolicy(null);
+    setOverrideReason("");
+    setOverrideConfirmed(false);
     setTransferHours(Math.max(Number(shift.hours || 0) / 2, 0.01).toFixed(2));
   }, [targetKey, shift.hours]);
 
@@ -88,6 +95,9 @@ export default function PlanningDropDialog({
   const overallocationChoiceRequired = Boolean(
     overallocationPrompt || evaluationOverallocationWarning,
   );
+  const overrideActionAvailable = executionActions.some(
+    (action) => action.code === "OVERRIDE_WINDOW_AND_MOVE",
+  );
   const parsedTransferHours = Number(transferHours.replace(",", "."));
   const validTransfer = (
     Number.isFinite(parsedTransferHours)
@@ -103,6 +113,10 @@ export default function PlanningDropDialog({
   function canExecute(action: PlanningDropAction) {
     if (!action.enabled || busy) return false;
     if (action.code === "SPLIT" && !validTransfer) return false;
+    if (
+      action.code === "OVERRIDE_WINDOW_AND_MOVE"
+      && (!overrideConfirmed || !overrideReason.trim())
+    ) return false;
     if (
       actionNeedsOverallocationChoice(action, overallocationChoiceRequired)
       && !overallocationPolicy
@@ -139,12 +153,24 @@ export default function PlanningDropDialog({
 
         <div className="planning-drop-dialog-body">
           <div className="planning-drop-summary">
+            {evaluation.requested_window && (
+              <article>
+                <span>Demandé (candidate)</span>
+                <strong>{evaluation.requested_window.start} → {evaluation.requested_window.end}</strong>
+              </article>
+            )}
+            {evaluation.approved_window && (
+              <article>
+                <span>Approuvé (preuve immuable)</span>
+                <strong>{evaluation.approved_window.start} → {evaluation.approved_window.end}</strong>
+              </article>
+            )}
             <article>
-              <span>Fenêtre actuelle</span>
+              <span>Opérationnel actuel</span>
               <strong>{evaluation.current_window.start} → {evaluation.current_window.end}</strong>
             </article>
             <article>
-              <span>Fenêtre proposée</span>
+              <span>Opérationnel projeté (Fenêtre proposée)</span>
               <strong>{evaluation.proposed_window.start} → {evaluation.proposed_window.end}</strong>
             </article>
             <article>
@@ -164,11 +190,39 @@ export default function PlanningDropDialog({
             <span>Excédent projeté : <strong>{hours(evaluation.projected_excess_hours)} h</strong></span>
           </div>
 
-          {evaluation.approved_window && (
+          {evaluation.approved_window && evaluation.period_key && (
             <p className="planning-drop-approved-window">
-              Entrée approuvée : {evaluation.approved_window.start} → {evaluation.approved_window.end}
-              {evaluation.period_key ? ` · période ${evaluation.period_key}` : ""}
+              Entrée approuvée · période {evaluation.period_key}
             </p>
+          )}
+
+          {overrideActionAvailable && (
+            <fieldset className="planning-drop-policy" data-testid="planning-window-override-confirmation">
+              <legend>Dérogation opérationnelle de fenêtre</legend>
+              <p>
+                Cette décision élargit seulement la fenêtre opérationnelle. Elle ne modifie ni la candidate,
+                ni la révision approuvée, ni le quorum.
+              </p>
+              <label>
+                <span>Motif obligatoire</span>
+                <textarea
+                  value={overrideReason}
+                  disabled={busy}
+                  rows={3}
+                  onChange={(event) => setOverrideReason(event.target.value)}
+                  placeholder="Pourquoi cette extension opérationnelle est-elle nécessaire?"
+                />
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={overrideConfirmed}
+                  disabled={busy}
+                  onChange={(event) => setOverrideConfirmed(event.target.checked)}
+                />
+                <span>Je confirme explicitement la dérogation de fenêtre et son motif.</span>
+              </label>
+            </fieldset>
           )}
 
           {evaluation.warnings.length > 0 && (
@@ -190,7 +244,7 @@ export default function PlanningDropDialog({
                 disabled={busy}
                 onChange={(event) => void setOutside(event.target.checked)}
               />
-              <span>Autoriser explicitement le quart hors horaire standard pour cette action</span>
+              <span>Consentement hors horaire — décision distincte. Autoriser explicitement le quart hors horaire standard pour cette action</span>
             </label>
           )}
 
@@ -253,6 +307,7 @@ export default function PlanningDropDialog({
                     transferHours: action.code === "SPLIT" ? parsedTransferHours : null,
                     outsideStandardHours,
                     overallocationPolicy,
+                    reason: overrideReason.trim(),
                   })}
                 >
                   {busy ? "Traitement…" : action.label}

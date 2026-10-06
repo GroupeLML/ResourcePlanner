@@ -58,6 +58,7 @@ import {
   evaluateAllocationDrop,
   extendAndMoveAllocationAtomic,
   overallocationContext,
+  overrideAndMovePlanningWindow,
   proposeAllocationWindowExtension,
   splitAllocationAtomic,
 } from "./manualOverallocationApi";
@@ -966,6 +967,7 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
         resource_id: targetResource.id,
         day: targetDay,
         outside_standard_hours: false,
+        include_planning_window_override_options: true,
       });
       setDropDialog({
         payload,
@@ -1001,6 +1003,7 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
         resource_id: dropDialog.targetResource.id,
         day: dropDialog.targetDay,
         outside_standard_hours: outsideStandardHours,
+        include_planning_window_override_options: true,
       });
       setDropDialog((current) => current ? {
         ...current,
@@ -1083,6 +1086,28 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
         setDragFeedback({
           tone: "success",
           message: `Période étendue et quart déplacé vers ${current.targetResource.name} le ${current.targetDay}.`,
+        });
+      } else if (actionCode === "OVERRIDE_WINDOW_AND_MOVE") {
+        if (!idempotencyKey || !current.evaluation.approval_revision_id || !request.reason.trim()) {
+          throw new Error("La dérogation requiert un motif et une référence approuvée active.");
+        }
+        await overrideAndMovePlanningWindow(
+          current.payload.allocation_id,
+          {
+            resource_id: current.targetResource.id,
+            day: current.targetDay,
+            reason: request.reason.trim(),
+            expected_planning_version: current.evaluation.planning_version,
+            expected_approval_revision_id: current.evaluation.approval_revision_id,
+            expected_operational_version: current.evaluation.operational_version,
+            outside_standard_hours: request.outsideStandardHours,
+            overallocation_policy: request.overallocationPolicy,
+          },
+          idempotencyKey,
+        );
+        setDragFeedback({
+          tone: "success",
+          message: `Dérogation opérationnelle enregistrée et quart déplacé vers ${current.targetResource.name} le ${current.targetDay}. La demande approuvée reste inchangée.`,
         });
       } else if (actionCode === "PROPOSE_WINDOW_EXTENSION") {
         if (
@@ -1555,6 +1580,14 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
             setDetailDemandNumber(demandNumber);
           }}
           planningVersion={snapshot.planning_version}
+          onStale={() => {
+            setEditingSegmentId(null);
+            setDragFeedback({
+              tone: "info",
+              message: "Le planning ou l’approbation a changé. Le snapshot a été rafraîchi; rouvre le segment pour réessayer.",
+            });
+            setRefreshKey((value) => value + 1);
+          }}
         />
       )}
 
