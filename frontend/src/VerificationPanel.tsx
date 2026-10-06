@@ -15,6 +15,9 @@ import {
   recordVerificationExecution,
   requestVerificationRetest,
   unassignVerificationExecutor,
+  verificationPhaseReportUrl,
+  verificationTestPlanUrl,
+  verificationTraceabilityUrl,
 } from "./verificationApi";
 
 const PHASES: Array<{ value: VerificationPhase; label: string }> = [
@@ -772,6 +775,35 @@ export default function VerificationPanel({
             </article>
           );
         })}
+      </div>
+
+      <div className="verification-documents" aria-label="Documents Verification">
+        <div>
+          <strong>Documents</strong>
+          <span>Projections du snapshot courant, imprimables ou exportables.</span>
+        </div>
+        <div className="verification-document-links">
+          <a
+            href={verificationTestPlanUrl(workPackageId)}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Plan de test
+          </a>
+          {PHASES.map((phase) => (
+            <a
+              key={phase.value}
+              href={verificationPhaseReportUrl(workPackageId, phase.value)}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Rapport {phase.label}
+            </a>
+          ))}
+          <a href={verificationTraceabilityUrl(workPackageId)}>
+            Traçabilité CSV
+          </a>
+        </div>
       </div>
 
       {undocumented.length > 0 && (

@@ -25,6 +25,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.infrastructure.sql import Base  # noqa: E402
+from app.infrastructure.sql.delivery_models import DeliveryPlanRow  # noqa: E402
 from app.infrastructure.sql.verification_models import VerificationScopeRow  # noqa: E402
 from app.infrastructure.sql.asset_models import (  # noqa: E402
     Asset,
@@ -537,6 +538,40 @@ def _critical_statements():
         .values(
             version=WorkPackage.version,
             updated_at=WorkPackage.updated_at,
+        )
+    )
+    yield "verification_document_work_package_guard", (
+        select(WorkPackage.id)
+        .where(WorkPackage.id == bindparam("document_work_package_id"))
+        .with_hint(
+            WorkPackage,
+            "WITH (UPDLOCK, HOLDLOCK)",
+            dialect_name="mssql",
+        )
+    )
+    yield "verification_document_delivery_guard", (
+        select(DeliveryPlanRow.id)
+        .where(
+            DeliveryPlanRow.work_package_id
+            == bindparam("document_delivery_work_package_id")
+        )
+        .order_by(DeliveryPlanRow.id)
+        .with_hint(
+            DeliveryPlanRow,
+            "WITH (UPDLOCK, HOLDLOCK)",
+            dialect_name="mssql",
+        )
+    )
+    yield "verification_document_scope_guard", (
+        select(VerificationScopeRow.id)
+        .where(
+            VerificationScopeRow.work_package_id
+            == bindparam("document_verification_work_package_id")
+        )
+        .with_hint(
+            VerificationScopeRow,
+            "WITH (UPDLOCK, HOLDLOCK)",
+            dialect_name="mssql",
         )
     )
     yield "work_package_version_cas", (

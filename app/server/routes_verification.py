@@ -5,12 +5,18 @@ from datetime import datetime
 from typing import Callable
 
 from fastapi import APIRouter, Depends, Header, Request
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from ..application.security import AuthPrincipal
+from ..application.verification_documents import (
+    render_phase_report_html,
+    render_test_plan_html,
+    render_traceability_csv,
+)
 from ..application.verification_execution_service import VerificationExecutionService
-from ..domain.verification import VerificationExecutionResult
+from ..domain.verification import VerificationExecutionResult, VerificationPhase
 from ..domain.verification_execution import VerificationMeasure
 from ..infrastructure.sql import SqlVerificationExecutionRepository
 
@@ -72,6 +78,84 @@ def build_verification_router(
     ) -> dict[str, object]:
         return service(session).package(
             work_package_id, principal=principal(request)
+        )
+
+    def document_headers(filename: str, *, inline: bool) -> dict[str, str]:
+        disposition = "inline" if inline else "attachment"
+        return {
+            "Cache-Control": "no-store",
+            "Content-Disposition": f'{disposition}; filename="{filename}"',
+        }
+
+    def filename_token(value: str) -> str:
+        normalized = "".join(
+            char if char.isascii() and (char.isalnum() or char in "-_.") else "-"
+            for char in str(value).strip()
+        ).strip("-")
+        return normalized or "work-package"
+
+    @router.get(
+        "/work-packages/{work_package_id}/documents/test-plan",
+        response_class=HTMLResponse,
+    )
+    def get_test_plan_document(
+        work_package_id: str,
+        request: Request,
+        phase: VerificationPhase | None = None,
+        session: Session = Depends(session_dependency),
+    ) -> HTMLResponse:
+        snapshot = service(session).document_snapshot(
+            work_package_id,
+            principal=principal(request),
+        )
+        suffix = f"-{phase.value.lower()}" if phase is not None else ""
+        filename = f"verification-test-plan-{filename_token(work_package_id)}{suffix}.html"
+        return HTMLResponse(
+            render_test_plan_html(
+                snapshot,
+                phase=phase.value if phase is not None else None,
+            ),
+            headers=document_headers(filename, inline=True),
+        )
+
+    @router.get(
+        "/work-packages/{work_package_id}/documents/reports/{phase}",
+        response_class=HTMLResponse,
+    )
+    def get_phase_report_document(
+        work_package_id: str,
+        phase: VerificationPhase,
+        request: Request,
+        session: Session = Depends(session_dependency),
+    ) -> HTMLResponse:
+        snapshot = service(session).document_snapshot(
+            work_package_id,
+            principal=principal(request),
+        )
+        filename = (
+            f"verification-report-{phase.value.lower()}-"
+            f"{filename_token(work_package_id)}.html"
+        )
+        return HTMLResponse(
+            render_phase_report_html(snapshot, phase.value),
+            headers=document_headers(filename, inline=True),
+        )
+
+    @router.get("/work-packages/{work_package_id}/documents/traceability.csv")
+    def get_traceability_document(
+        work_package_id: str,
+        request: Request,
+        session: Session = Depends(session_dependency),
+    ) -> Response:
+        snapshot = service(session).document_snapshot(
+            work_package_id,
+            principal=principal(request),
+        )
+        filename = f"verification-traceability-{filename_token(work_package_id)}.csv"
+        return Response(
+            render_traceability_csv(snapshot),
+            media_type="text/csv",
+            headers=document_headers(filename, inline=False),
         )
 
     @router.post("/requirements/{requirement_id}/assignments")

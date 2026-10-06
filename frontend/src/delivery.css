@@ -373,6 +373,44 @@
 .verification-summary strong { margin-top: .12rem; font-size: .88rem; }
 .verification-summary small { margin-top: .14rem; color: var(--muted); font-size: .54rem; line-height: 1.4; }
 
+.verification-documents {
+  display: flex;
+  justify-content: space-between;
+  gap: .7rem;
+  align-items: center;
+  margin: 0 .7rem;
+  padding: .62rem;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #f8fafc;
+}
+.verification-documents > div:first-child {
+  display: grid;
+  gap: .1rem;
+}
+.verification-documents strong { font-size: .68rem; }
+.verification-documents span { color: var(--muted); font-size: .56rem; }
+.verification-document-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: .35rem;
+}
+.verification-document-links a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: .34rem .48rem;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: white;
+  color: var(--accent);
+  font-size: .58rem;
+  font-weight: 800;
+  text-decoration: none;
+}
+.verification-document-links a:hover { border-color: var(--accent); }
+
 .verification-history-recovery {
   display: grid;
   gap: .5rem;
@@ -667,5 +705,7 @@
   .verification-evidence-form,
   .verification-inline-form,
   .verification-assignments form { grid-template-columns: 1fr; }
+  .verification-documents { align-items: flex-start; flex-direction: column; }
+  .verification-document-links { justify-content: flex-start; }
   .verification-wide-field { grid-column: auto; }
 }

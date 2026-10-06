@@ -540,16 +540,21 @@ export default function DeliveryPage() {
 
   async function handleMutationFailure(reason: unknown, fallback: string) {
     const message = errorMessage(reason, fallback);
-    const versionConflict = reason instanceof ApiError
-      && (reason.code === "delivery_version_conflict" || reason.code === "verification_version_conflict");
-    if (!versionConflict) {
+    if (
+      !(reason instanceof ApiError)
+      || (
+        reason.code !== "delivery_version_conflict"
+        && reason.code !== "verification_version_conflict"
+      )
+    ) {
       setError(message);
       return;
     }
     try {
-      await reloadWorkspace();
+      await reloadDelivery();
+      await reloadVerification();
       setError(
-        `${message} Delivery et Verification ont été rechargés avec les versions courantes. Réessayez l'action.`,
+        `${message} Delivery et Verification ont été rechargés avec les versions courantes. Chaque périmètre utilise sa version courante. Réessayez l'action.`,
       );
     } catch (reloadReason) {
       setError(
