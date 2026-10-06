@@ -286,7 +286,7 @@ class DirectAssetReservationTests(unittest.TestCase):
                     ).json()["planning_version"],
                 },
             )
-            self.assertEqual(denied.status_code, 422, denied.text)
+            self.assertEqual(denied.status_code, 403, denied.text)
             self.assertEqual(
                 denied.json()["error"]["code"],
                 "asset_assignment_authority_required",
@@ -306,7 +306,7 @@ class DirectAssetReservationTests(unittest.TestCase):
                     ).json()["planning_version"],
                 },
             )
-            self.assertEqual(type_change.status_code, 422, type_change.text)
+            self.assertEqual(type_change.status_code, 403, type_change.text)
             self.assertEqual(
                 type_change.json()["error"]["code"],
                 "asset_authority_admin_required",
@@ -346,7 +346,7 @@ class DirectAssetReservationTests(unittest.TestCase):
                     "expected_planning_version": created.json()["planning_version"],
                 },
             )
-            self.assertEqual(replace_denied.status_code, 422, replace_denied.text)
+            self.assertEqual(replace_denied.status_code, 403, replace_denied.text)
             self.assertEqual(
                 replace_denied.json()["error"]["code"],
                 "asset_assignment_authority_required",
@@ -385,7 +385,7 @@ class DirectAssetReservationTests(unittest.TestCase):
                     ).json()["planning_version"],
                 },
             )
-            self.assertEqual(release_denied.status_code, 422, release_denied.text)
+            self.assertEqual(release_denied.status_code, 403, release_denied.text)
             self.assertEqual(
                 release_denied.json()["error"]["code"],
                 "asset_assignment_authority_required",
