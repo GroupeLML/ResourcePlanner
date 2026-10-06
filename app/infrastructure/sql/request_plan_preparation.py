@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 import json
 from decimal import Decimal
@@ -22,6 +22,7 @@ from .demand_period_models import (
 from .operational_choice_repository import SqlRequestOperationalChoiceRepository
 from .segment_asset_guard import segment_asset_dependencies
 from .approval_revision_models import RequestApprovalRevision
+from .planning_window_override_repository import SqlPlanningWindowOverrideRepository
 from .models import (
     Competency,
     RequestLine,
@@ -733,8 +734,53 @@ class SqlRequestPlanPreparer:
                 )
 
         unresolved_groups = len(groups_seen - groups_selected)
+        effective_specs = tuple(specs)
+        if current and effective_specs:
+            matches, _obsolete = self.match_current(request, current, effective_specs)
+            applicable_matches = tuple(
+                match
+                for match in matches
+                if match.requirement is not None
+                and _text(match.requirement.approved_entry_key)
+                == match.spec.approved_entry_key
+            )
+            overrides = SqlPlanningWindowOverrideRepository(
+                self._session
+            ).active_by_requirement_ids(
+                (match.requirement.id for match in applicable_matches),
+                approval_revision_id=revision.id,
+            )
+            effective_windows = {}
+            resolver = SqlPlanningWindowOverrideRepository(self._session)
+            for match in applicable_matches:
+                requirement = match.requirement
+                if requirement is None:
+                    continue
+                override = overrides.get(requirement.id)
+                if override is None:
+                    continue
+                effective_windows[match.spec.key] = resolver.effective_window_for_requirement(
+                    requirement,
+                    override,
+                    approval_revision_id=revision.id,
+                    approved_entry_key=match.spec.approved_entry_key,
+                    approved_start_date=match.spec.start_date,
+                    approved_end_date=match.spec.end_date,
+                )
+            if effective_windows:
+                effective_specs = tuple(
+                    replace(
+                        spec,
+                        start_date=effective_windows[spec.key].start_date,
+                        end_date=effective_windows[spec.key].end_date,
+                    )
+                    if spec.key in effective_windows
+                    else spec
+                    for spec in effective_specs
+                )
+
         return PreparedRequestPlan(
-            specs=tuple(specs),
+            specs=effective_specs,
             unresolved_groups=unresolved_groups,
             approval_revision_id=revision.id,
             operational_version=choices.version,
