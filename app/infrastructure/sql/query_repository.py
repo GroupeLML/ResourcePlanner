@@ -58,11 +58,11 @@ from .asset_qualification import (
     QUALIFICATION_SATISFIED,
     evaluate_asset_qualifications,
 )
+from .asset_query import SqlAssetPlanningQuery
 from .asset_shift_projection import (
     ASSOCIATION_OWNED_SHIFT,
     asset_shift_association,
 )
-from .asset_query import SqlAssetPlanningQuery
 from .demand_period_repository import SqlDemandPeriodRepository
 from .demand_repository import SqlDemandRepository
 from .models import (
