@@ -21,7 +21,7 @@ MIGRATIONS = ROOT / "migrations"
 VERSIONS = MIGRATIONS / "versions"
 BASELINE_FILE = VERSIONS / "0001_v2_production_baseline.py"
 BASELINE_REVISION = "v2_production_baseline"
-HEAD_REVISION = "0011_communication_to_recipients"
+HEAD_REVISION = "0012_holiday_resource_classes"
 
 
 def alembic_config(database_path: Path) -> Config:
@@ -80,6 +80,7 @@ class SqlMigrationTests(unittest.TestCase):
                 "0009_work_package_load_intervals.py",
                 "0010_operational_responsibility_context.py",
                 "0011_communication_to_recipients.py",
+                "0012_holiday_resource_classes.py",
             ],
         )
 
@@ -98,6 +99,7 @@ class SqlMigrationTests(unittest.TestCase):
             [revision.revision for revision in script.walk_revisions()],
             [
                 HEAD_REVISION,
+                "0011_communication_to_recipients",
                 "0010_operational_responsibility_context",
                 "0009_work_package_load_intervals",
                 "0008_asset_requirement_contexts",

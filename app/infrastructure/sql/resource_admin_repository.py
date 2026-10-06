@@ -3,13 +3,19 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from sqlalchemy import select, true
+from sqlalchemy import delete, select, true
 from sqlalchemy.orm import Session
 
 from ...application.query_models import ResourceAvailabilityRuleReadModel, ResourceReadModel
 from ...application.resource_admin import ResourceAdminRepositoryPort
 from .base import new_id
-from .models import Resource, ResourceAvailabilityRule, ResourceCompetency
+from .models import (
+    AvailabilityRuleResourceClass,
+    Resource,
+    ResourceAvailabilityRule,
+    ResourceCompetency,
+)
+from .resource_class_models import ResourceClassConfig
 
 
 def _text(value: object) -> str:
@@ -48,12 +54,14 @@ def _resource_model(row: Resource, competency_ids: tuple[str, ...] = ()) -> Reso
 def _rule_model(
     row: ResourceAvailabilityRule,
     resource: Resource | None = None,
+    resource_class_codes: tuple[str, ...] = (),
 ) -> ResourceAvailabilityRuleReadModel:
     return ResourceAvailabilityRuleReadModel(
         id=row.id,
         availability_type=row.availability_type,
         resource_id=row.resource_id,
         resource_name=resource.name if resource is not None else None,
+        resource_class_codes=resource_class_codes,
         start_date=row.start_date,
         end_date=row.end_date,
         weekdays=_optional_text(row.weekdays),
@@ -67,6 +75,58 @@ def _rule_model(
 class SqlResourceAdminRepository(ResourceAdminRepositoryPort):
     def __init__(self, session: Session) -> None:
         self._session = session
+
+    def _resource_class_codes_by_rule(
+        self,
+        rule_ids: Sequence[str],
+    ) -> dict[str, tuple[str, ...]]:
+        identifiers = tuple(str(value) for value in rule_ids if str(value))
+        if not identifiers:
+            return {}
+        grouped: dict[str, list[str]] = {identifier: [] for identifier in identifiers}
+        rows = self._session.execute(
+            select(
+                AvailabilityRuleResourceClass.availability_rule_id,
+                AvailabilityRuleResourceClass.resource_class_code,
+            )
+            .where(AvailabilityRuleResourceClass.availability_rule_id.in_(identifiers))
+            .order_by(
+                AvailabilityRuleResourceClass.availability_rule_id,
+                AvailabilityRuleResourceClass.resource_class_code,
+            )
+        ).all()
+        for rule_id, code in rows:
+            grouped.setdefault(rule_id, []).append(code)
+        return {rule_id: tuple(codes) for rule_id, codes in grouped.items()}
+
+    def _replace_resource_class_codes(
+        self,
+        rule_id: str,
+        codes: Sequence[str],
+    ) -> None:
+        self._session.execute(
+            delete(AvailabilityRuleResourceClass).where(
+                AvailabilityRuleResourceClass.availability_rule_id == rule_id
+            )
+        )
+        self._session.add_all(
+            AvailabilityRuleResourceClass(
+                availability_rule_id=rule_id,
+                resource_class_code=str(code),
+            )
+            for code in codes
+        )
+
+    def resource_class_states(self, codes: Sequence[str]) -> Mapping[str, bool]:
+        identifiers = tuple(dict.fromkeys(_text(value) for value in codes if _text(value)))
+        if not identifiers:
+            return {}
+        rows = self._session.execute(
+            select(ResourceClassConfig.code, ResourceClassConfig.active).where(
+                ResourceClassConfig.code.in_(identifiers)
+            )
+        ).all()
+        return {str(code): bool(active) for code, active in rows}
 
     def _competency_ids_by_resource(
         self,
@@ -215,7 +275,11 @@ class SqlResourceAdminRepository(ResourceAdminRepositoryPort):
         elif not include_global:
             statement = statement.where(ResourceAvailabilityRule.resource_id.is_not(None))
         rows = self._session.execute(statement).all()
-        return tuple(_rule_model(rule, resource) for rule, resource in rows)
+        class_codes = self._resource_class_codes_by_rule(tuple(rule.id for rule, _ in rows))
+        return tuple(
+            _rule_model(rule, resource, class_codes.get(rule.id, ()))
+            for rule, resource in rows
+        )
 
     def get_availability_rule(self, rule_id: str) -> ResourceAvailabilityRuleReadModel | None:
         row = self._session.execute(
@@ -226,7 +290,8 @@ class SqlResourceAdminRepository(ResourceAdminRepositoryPort):
         if row is None:
             return None
         rule, resource = row
-        return _rule_model(rule, resource)
+        class_codes = self._resource_class_codes_by_rule((rule.id,))
+        return _rule_model(rule, resource, class_codes.get(rule.id, ()))
 
     def create_availability_rule(self, values: Mapping[str, Any]) -> str:
         row = ResourceAvailabilityRule(
@@ -242,6 +307,11 @@ class SqlResourceAdminRepository(ResourceAdminRepositoryPort):
             active=bool(values.get("active", True)),
         )
         self._session.add(row)
+        self._session.flush()
+        self._replace_resource_class_codes(
+            row.id,
+            tuple(values.get("resource_class_codes") or ()),
+        )
         self._session.flush()
         return row.id
 
@@ -272,5 +342,10 @@ class SqlResourceAdminRepository(ResourceAdminRepositoryPort):
             elif field == "active":
                 value = bool(value)
             setattr(row, field, value)
+        if "resource_class_codes" in values:
+            self._replace_resource_class_codes(
+                row.id,
+                tuple(values.get("resource_class_codes") or ()),
+            )
         self._session.flush()
         return row.id

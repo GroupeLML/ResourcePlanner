@@ -53,6 +53,7 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
             "acumatica_project_task_sync_project_results",
             "project_co_managers",
             "project_manager_audit",
+            "availability_rule_resource_classes",
         },
         "missing_columns": {
             "auth_sessions": {
@@ -199,6 +200,9 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
     "workforce_request_period_selections": _keep("Sélections de périodes."),
     "workforce_request_period_requirements": _keep("Liens période → besoin matérialisé."),
     "resource_availability_rules": _keep("Disponibilités et horaires locaux."),
+    "availability_rule_resource_classes": _keep(
+        "Ciblage local des jours fériés par classes de ressources."
+    ),
     "resource_competencies": _keep("Compétences locales des ressources."),
     "resource_requirements": _keep("Besoins/budgets matérialisés."),
     "smtp_configuration": _drop(

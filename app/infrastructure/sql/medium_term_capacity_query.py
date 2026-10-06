@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from ...application.query_models import MediumTermCapacityBucketReadModel
 from ...domain.availability_rules import availability_hours_for_day
 from ...domain.workload import LOAD_FIRM, PENDING_LOAD_ADDITIVE
+from .availability_class_scope import availability_class_codes_by_rule
 from .models import ResourceAvailabilityRule
 
 
@@ -19,11 +20,15 @@ UNCLASSIFIED = "Non classé"
 UNASSIGNED = "Non assigné"
 
 
-def _availability_record(rule: ResourceAvailabilityRule) -> dict[str, Any]:
+def _availability_record(
+    rule: ResourceAvailabilityRule,
+    resource_class_codes: tuple[str, ...] = (),
+) -> dict[str, Any]:
     return {
         "Type": rule.availability_type,
         "Actif": bool(rule.active),
         "Technicien": rule.resource_id or "",
+        "ClassesRessources": resource_class_codes,
         "DateDebut": rule.start_date,
         "DateFin": rule.end_date,
         "JoursSemaine": rule.weekdays,
@@ -50,6 +55,7 @@ def _capacity_slice(
                 availability_records,
                 resource.id,
                 day,
+                resource_class=resource.resource_class,
             )
             total_capacity += hours
             resource_class = resource.resource_class or UNCLASSIFIED
@@ -79,7 +85,14 @@ def build_workforce_weekly_capacity_by_class(
     rules = session.scalars(
         select(ResourceAvailabilityRule).where(ResourceAvailabilityRule.active == true())
     ).all()
-    availability_records = tuple(_availability_record(rule) for rule in rules)
+    class_codes = availability_class_codes_by_rule(
+        session,
+        tuple(rule.id for rule in rules),
+    )
+    availability_records = tuple(
+        _availability_record(rule, class_codes.get(rule.id, ()))
+        for rule in rules
+    )
 
     result: dict[date, tuple[Decimal, dict[str, Decimal]]] = {}
     cursor = first
@@ -200,7 +213,14 @@ def build_medium_term_capacity_buckets(
     rules = session.scalars(
         select(ResourceAvailabilityRule).where(ResourceAvailabilityRule.active == true())
     ).all()
-    availability_records = tuple(_availability_record(rule) for rule in rules)
+    class_codes = availability_class_codes_by_rule(
+        session,
+        tuple(rule.id for rule in rules),
+    )
+    availability_records = tuple(
+        _availability_record(rule, class_codes.get(rule.id, ()))
+        for rule in rules
+    )
     all_resources = queries.list_resources(active_only=True)
     resource_by_id = {resource.id: resource for resource in all_resources}
     resource_by_name = {resource.name: resource for resource in all_resources}

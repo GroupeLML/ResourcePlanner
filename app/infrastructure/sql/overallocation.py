@@ -310,6 +310,7 @@ def evaluate_projected_manual_state(
         resource.name,
         day,
         outside_standard_hours=outside_standard_hours,
+        resource_class=resource.resource_class,
     )
     if not availability.allowed and not availability.override_required:
         raise ValueError(
@@ -402,6 +403,7 @@ def validate_projected_manual_state(
         resource.name,
         day,
         outside_standard_hours=outside_standard_hours,
+        resource_class=resource.resource_class,
     )
     if not availability.allowed:
         if availability.override_required:

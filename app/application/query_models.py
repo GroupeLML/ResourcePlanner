@@ -133,6 +133,7 @@ class ResourceAvailabilityRuleReadModel:
     availability_type: str
     resource_id: str | None = None
     resource_name: str | None = None
+    resource_class_codes: tuple[str, ...] = ()
     start_date: date | None = None
     end_date: date | None = None
     weekdays: str | None = None

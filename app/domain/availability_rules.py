@@ -54,6 +54,36 @@ def _weekday_matches(record: dict[str, Any], day: date) -> bool:
     return WEEKDAY_LABELS[day.weekday()].lower() in tokens
 
 
+def _record_resource_class_codes(record: dict[str, Any]) -> tuple[str, ...]:
+    raw = record.get("ClassesRessources")
+    if raw in (None, ""):
+        return ()
+    if isinstance(raw, str):
+        values = raw.replace(";", ",").split(",")
+    else:
+        try:
+            values = tuple(raw)
+        except TypeError:
+            return ()
+    return tuple(dict.fromkeys(str(value or "").strip() for value in values if str(value or "").strip()))
+
+
+def _effective_resource_class(
+    records: Iterable[dict[str, Any]],
+    resource_id: str,
+    explicit: str | None,
+) -> str | None:
+    if explicit is not None:
+        return str(explicit).strip() or None
+    for row in records:
+        if str(row.get("Technicien") or "").strip() != resource_id:
+            continue
+        if "ClasseRessource" not in row:
+            continue
+        return str(row.get("ClasseRessource") or "").strip() or None
+    return None
+
+
 def _fraction_to_hours(value: float) -> float:
     minutes = int(round((float(value) % 1.0) * 24 * 60)) % (24 * 60)
     return minutes / 60.0
@@ -146,11 +176,14 @@ def availability_state_for_day(
     records: Iterable[dict[str, Any]],
     resource_id: str,
     day: date,
+    *,
+    resource_class: str | None = None,
 ) -> AvailabilityDayState:
     """Explain a resource's standard capacity for one day from the canonical rules."""
 
     rows = [row for row in records if is_active(row.get("Actif"))]
     resource_id = str(resource_id or "").strip()
+    effective_resource_class = _effective_resource_class(rows, resource_id, resource_class)
     if not has_standard_schedule_in_window(rows, resource_id, day, day):
         return AvailabilityDayState(False, 0.0, "Aucun horaire standard")
 
@@ -187,6 +220,9 @@ def availability_state_for_day(
         target = str(row.get("Technicien") or "").strip()
         if target and target != resource_id:
             continue
+        class_codes = _record_resource_class_codes(row)
+        if not target and class_codes and effective_resource_class not in class_codes:
+            continue
         if _record_applies(row, day):
             return AvailabilityDayState(False, 0.0, "Jour férié")
 
@@ -207,10 +243,16 @@ def outside_standard_hours_decision_for_day(
     day: date,
     *,
     outside_standard_hours: bool,
+    resource_class: str | None = None,
 ) -> OutsideStandardHoursDecision:
     """Apply the canonical #536 override policy while preserving the root cause."""
 
-    state = availability_state_for_day(records, resource_id, day)
+    state = availability_state_for_day(
+        records,
+        resource_id,
+        day,
+        resource_class=resource_class,
+    )
     if state.available:
         return OutsideStandardHoursDecision(
             state=state,
@@ -235,9 +277,16 @@ def availability_hours_for_day(
     records: Iterable[dict[str, Any]],
     resource_id: str,
     day: date,
+    *,
+    resource_class: str | None = None,
 ) -> float:
     """Return historical schedulable hours using the canonical classified state."""
-    return availability_state_for_day(records, resource_id, day).hours
+    return availability_state_for_day(
+        records,
+        resource_id,
+        day,
+        resource_class=resource_class,
+    ).hours
 
 
 def outside_schedule_eligible_for_day(

@@ -282,6 +282,7 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             resource.name,
             day,
             outside_standard_hours=outside_standard_hours,
+            resource_class=resource.resource_class,
         )
         if not availability.allowed:
             if availability.override_required:

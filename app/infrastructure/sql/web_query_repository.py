@@ -54,6 +54,7 @@ from ...application.work_package_load import (
 from ...application.work_package_weekly_load import (
     WeeklyLoadValue,
 )
+from .availability_class_scope import availability_class_codes_by_rule
 from .models import (
     Project,
     Resource,
@@ -1030,12 +1031,17 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
             statement = statement.where(ResourceAvailabilityRule.resource_id.is_not(None))
 
         rows = self._web_session.execute(statement).all()
+        class_codes = availability_class_codes_by_rule(
+            self._web_session,
+            tuple(rule.id for rule, _resource in rows),
+        )
         return tuple(
             ResourceAvailabilityRuleReadModel(
                 id=rule.id,
                 availability_type=rule.availability_type,
                 resource_id=rule.resource_id,
                 resource_name=resource.name if resource is not None else None,
+                resource_class_codes=class_codes.get(rule.id, ()),
                 start_date=rule.start_date,
                 end_date=rule.end_date,
                 weekdays=_optional_text(rule.weekdays),

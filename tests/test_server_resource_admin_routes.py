@@ -212,6 +212,148 @@ class ServerResourceAdminRouteTests(unittest.TestCase):
                 self.assertEqual(inactive_resources[0]["sort_order"], 10)
 
 
+    def test_class_scoped_holiday_create_patch_and_validation_contract(self) -> None:
+        with TemporaryDirectory() as directory:
+            app = create_api_app(self._database(directory))
+            with TestClient(app) as client:
+                for code, label in (
+                    ("PROGRAMMEUR", "Programmeur"),
+                    ("INSTALLATION", "Installation"),
+                ):
+                    response = client.post(
+                        "/api/v1/admin/resource-classes",
+                        json={
+                            "code": code,
+                            "label": label,
+                            "average_hourly_cost_cad": "100.00",
+                            "active": True,
+                        },
+                    )
+                    self.assertEqual(response.status_code, 201, response.text)
+
+                resource = client.post(
+                    "/api/v1/resources",
+                    json={
+                        "name": "Alice",
+                        "resource_class": "PROGRAMMEUR",
+                    },
+                )
+                self.assertEqual(resource.status_code, 201, resource.text)
+                resource_id = resource.json()["resource_id"]
+
+                targeted = client.post(
+                    "/api/v1/availability-rules",
+                    json={
+                        "availability_type": "Jour férié",
+                        "start_date": "2026-12-25",
+                        "end_date": "2026-12-25",
+                        "resource_class_codes": ["PROGRAMMEUR"],
+                    },
+                )
+                self.assertEqual(targeted.status_code, 201, targeted.text)
+                rule_id = targeted.json()["rule_id"]
+
+                rows = client.get(
+                    "/api/v1/availability-rules",
+                    params={"active_only": "false"},
+                )
+                self.assertEqual(rows.status_code, 200, rows.text)
+                holiday = next(row for row in rows.json() if row["id"] == rule_id)
+                self.assertEqual(holiday["resource_class_codes"], ["PROGRAMMEUR"])
+
+                unknown = client.post(
+                    "/api/v1/availability-rules",
+                    json={
+                        "availability_type": "Jour férié",
+                        "start_date": "2026-12-26",
+                        "resource_class_codes": ["INCONNUE"],
+                    },
+                )
+                self.assertEqual(unknown.status_code, 422, unknown.text)
+                self.assertEqual(
+                    unknown.json()["error"]["code"],
+                    "availability_resource_class_unknown",
+                )
+
+                ambiguous = client.post(
+                    "/api/v1/availability-rules",
+                    json={
+                        "availability_type": "Jour férié",
+                        "resource_id": resource_id,
+                        "start_date": "2026-12-26",
+                        "resource_class_codes": ["PROGRAMMEUR"],
+                    },
+                )
+                self.assertEqual(ambiguous.status_code, 422, ambiguous.text)
+                self.assertEqual(
+                    ambiguous.json()["error"]["code"],
+                    "availability_resource_class_scope_ambiguous",
+                )
+
+                non_holiday = client.post(
+                    "/api/v1/availability-rules",
+                    json={
+                        "availability_type": "Vacances",
+                        "resource_id": resource_id,
+                        "start_date": "2026-12-26",
+                        "resource_class_codes": ["PROGRAMMEUR"],
+                    },
+                )
+                self.assertEqual(non_holiday.status_code, 422, non_holiday.text)
+                self.assertEqual(
+                    non_holiday.json()["error"]["code"],
+                    "availability_resource_classes_holiday_only",
+                )
+
+                deactivate_class = client.patch(
+                    "/api/v1/admin/resource-classes/PROGRAMMEUR",
+                    json={"expected_version": 1, "active": False},
+                )
+                self.assertEqual(deactivate_class.status_code, 200, deactivate_class.text)
+
+                patch_without_scope = client.patch(
+                    f"/api/v1/availability-rules/{rule_id}",
+                    json={"note": "Conserver la classe inactive référencée"},
+                )
+                self.assertEqual(patch_without_scope.status_code, 200, patch_without_scope.text)
+                preserved = client.get(
+                    "/api/v1/availability-rules",
+                    params={"active_only": "false"},
+                )
+                preserved_holiday = next(
+                    row for row in preserved.json() if row["id"] == rule_id
+                )
+                self.assertEqual(
+                    preserved_holiday["resource_class_codes"],
+                    ["PROGRAMMEUR"],
+                )
+
+                inactive_new = client.post(
+                    "/api/v1/availability-rules",
+                    json={
+                        "availability_type": "Jour férié",
+                        "start_date": "2026-12-27",
+                        "resource_class_codes": ["PROGRAMMEUR"],
+                    },
+                )
+                self.assertEqual(inactive_new.status_code, 422, inactive_new.text)
+                self.assertEqual(
+                    inactive_new.json()["error"]["code"],
+                    "availability_resource_class_inactive",
+                )
+
+                globalized = client.patch(
+                    f"/api/v1/availability-rules/{rule_id}",
+                    json={"resource_class_codes": []},
+                )
+                self.assertEqual(globalized.status_code, 200, globalized.text)
+                after = client.get(
+                    "/api/v1/availability-rules",
+                    params={"active_only": "false"},
+                )
+                global_holiday = next(row for row in after.json() if row["id"] == rule_id)
+                self.assertEqual(global_holiday["resource_class_codes"], [])
+
     def test_manual_planning_reorder_persists_normalizes_duplicates_and_is_idempotent(self) -> None:
         with TemporaryDirectory() as directory:
             app = create_api_app(self._database(directory))

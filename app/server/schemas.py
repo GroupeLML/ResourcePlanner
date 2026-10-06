@@ -82,6 +82,7 @@ class AvailabilityRuleCreateRequest(StrictRequest):
     end_time: time | None = None
     note: str | None = None
     active: bool = True
+    resource_class_codes: list[str] = Field(default_factory=list)
 
 
 class AvailabilityRuleUpdateRequest(StrictRequest):
@@ -94,8 +95,9 @@ class AvailabilityRuleUpdateRequest(StrictRequest):
     end_time: time | None = None
     note: str | None = None
     active: bool | None = None
+    resource_class_codes: list[str] | None = None
 
-    @field_validator("availability_type", "active", mode="before")
+    @field_validator("availability_type", "active", "resource_class_codes", mode="before")
     @classmethod
     def reject_null_required_patch_fields(cls, value: object) -> object:
         if value is None:

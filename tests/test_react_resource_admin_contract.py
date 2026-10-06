@@ -22,6 +22,8 @@ class ReactResourceAdminContractTests(unittest.TestCase):
 
         self.assertIn("email: string | null", api)
         self.assertIn("ResourceAvailabilityRuleReadModel", api)
+        self.assertIn("resource_class_codes: string[]", api)
+        self.assertIn("resource_class_codes?: string[]", api)
         self.assertIn('"Horaire standard" | "Vacances" | "Jour férié"', api)
         self.assertIn('"/api/v1/resources"', api)
         self.assertIn("/api/v1/resources/${encodeURIComponent(resourceId)}", api)
@@ -76,6 +78,9 @@ class ReactResourceAdminContractTests(unittest.TestCase):
         self.assertIn("Vacances", page)
         self.assertIn("Jour férié", page)
         self.assertIn("Jours fériés", page)
+        self.assertIn("Classes visées", page)
+        self.assertIn("resource_class_codes: resourceClassCodes", page)
+        self.assertIn("Aucune classe sélectionnée = jour férié global", page)
         self.assertIn("Compétences", page)
         self.assertNotIn("capacity_hours", page)
         self.assertNotIn("utilization_pct", page)

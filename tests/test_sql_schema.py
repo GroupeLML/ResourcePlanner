@@ -80,6 +80,7 @@ EXPECTED_TABLES = {
     "workforce_request_period_selections",
     "workforce_request_period_requirements",
     "resource_availability_rules",
+    "availability_rule_resource_classes",
     "resource_competencies",
     "resource_requirements",
     "smtp_configuration",
