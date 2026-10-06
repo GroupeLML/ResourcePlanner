@@ -11,6 +11,7 @@ from app.application.security import (
     PERMISSION_MANAGE_COMMUNICATIONS,
     PERMISSION_MANAGE_DEMANDS,
     PERMISSION_MANAGE_PLANNING,
+    PERMISSION_OVERRIDE_PLANNING_WINDOW,
     PERMISSION_MANAGE_RESOURCES,
     PERMISSION_MANAGE_WORK_PACKAGES,
     PERMISSION_READ,
@@ -37,6 +38,7 @@ class SecurityPolicyTests(unittest.TestCase):
                 PERMISSION_MANAGE_DEMANDS,
                 PERMISSION_APPROVE_DEMANDS,
                 PERMISSION_MANAGE_PLANNING,
+                PERMISSION_OVERRIDE_PLANNING_WINDOW,
                 PERMISSION_MANAGE_WORK_PACKAGES,
                 PERMISSION_MANAGE_DELIVERY,
                 PERMISSION_CONTRIBUTE_DELIVERY,
@@ -62,14 +64,17 @@ class SecurityPolicyTests(unittest.TestCase):
         self.assertIn(PERMISSION_MANAGE_DELIVERY, project_manager)
         self.assertIn(PERMISSION_CONTRIBUTE_DELIVERY, project_manager)
         self.assertNotIn(PERMISSION_MANAGE_PLANNING, project_manager)
+        self.assertNotIn(PERMISSION_OVERRIDE_PLANNING_WINDOW, project_manager)
         self.assertNotIn(PERMISSION_MANAGE_COMMUNICATIONS, project_manager)
         self.assertIn(PERMISSION_MANAGE_PLANNING, coordinator)
+        self.assertIn(PERMISSION_OVERRIDE_PLANNING_WINDOW, coordinator)
         self.assertIn(PERMISSION_MANAGE_RESOURCES, coordinator)
         self.assertIn(PERMISSION_MANAGE_COMMUNICATIONS, coordinator)
         self.assertNotIn(PERMISSION_SYNC_PROJECTS, coordinator)
         self.assertNotIn(PERMISSION_ADMIN_SETTINGS, coordinator)
         self.assertNotIn(PERMISSION_CONTRIBUTE_DELIVERY, manager)
         self.assertNotIn(PERMISSION_MANAGE_DELIVERY, manager)
+        self.assertNotIn(PERMISSION_OVERRIDE_PLANNING_WINDOW, manager)
         delivery_contributor = set(
             permissions_for_roles((ROLE_DELIVERY_CONTRIBUTOR,))
         )
