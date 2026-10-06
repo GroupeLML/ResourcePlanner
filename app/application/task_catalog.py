@@ -49,6 +49,8 @@ class TaskCatalogItem:
     id: str | None = None
     operational_responsible_contact_id: str | None = None
     coordinator_contact_id: str | None = None
+    preferred_resource_id: str | None = None
+    preferred_resource_version: int = 1
 
     @property
     def external_key(self) -> tuple[str, str]:
@@ -68,6 +70,14 @@ class TaskCatalogItem:
             str(self.project_number or "").strip(),
             str(self.code or "").strip(),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class TaskPreferredResourceMutationResult:
+    task_catalog_item_id: str
+    preferred_resource_id: str | None
+    version: int
+    action: str
 
 
 class TaskCatalogSourcePort(Protocol):
