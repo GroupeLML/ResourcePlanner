@@ -92,6 +92,7 @@ async function openDelivery(page: Page, workPackageCode: string, useGlobalScope 
     workPackageCode,
   );
   await expect(selectors.locator(".delivery-selected-reference")).toContainText(selectedWorkPackageId);
+  return selectedWorkPackageId;
 }
 
 function storyCard(page: Page, title: string) {
@@ -102,7 +103,7 @@ function storyFact(card: Locator, name: string) {
   return card.locator(".delivery-story-facts > div").filter({ hasText: name }).first();
 }
 
-test("362F Delivery et 363E Verification traversent PM, Team Lead et technicien", async ({ browser }) => {
+test("362F Delivery et 363E/363F Verification traversent PM, Team Lead et technicien", async ({ browser }) => {
   test.setTimeout(240_000);
   const workPackageLabel = "WP-DELIVERY-362F — Lot Delivery acceptation";
   const epicTitle = "Epic acceptation 362F";
@@ -139,7 +140,7 @@ test("362F Delivery et 363E Verification traversent PM, Team Lead et technicien"
   await dialog.getByRole("button", { name: "Créer le WorkPackage" }).click();
   await expect(dialog).toBeHidden();
 
-  await openDelivery(projectManager.page, workPackageLabel);
+  const workPackageId = await openDelivery(projectManager.page, workPackageLabel);
   await expect(projectManager.page.locator(".delivery-selected-reference")).toContainText(
     "Classe de ressource",
   );
@@ -327,6 +328,34 @@ test("362F Delivery et 363E Verification traversent PM, Team Lead et technicien"
   await expect(technicianRequirement.locator(".verification-history")).toContainText(
     "Retest conforme 363E",
   );
+
+  const documentLinks = technicianVerification.locator(".verification-document-links");
+  await expect(documentLinks.getByRole("link", { name: "Plan de test" })).toHaveAttribute(
+    "href",
+    new RegExp(`/verification/work-packages/${workPackageId}/documents/test-plan$`),
+  );
+  await expect(documentLinks.getByRole("link", { name: "Rapport FAT" })).toHaveAttribute(
+    "href",
+    new RegExp(`/verification/work-packages/${workPackageId}/documents/reports/FAT$`),
+  );
+  await expect(documentLinks.getByRole("link", { name: "Traçabilité CSV" })).toHaveAttribute(
+    "href",
+    new RegExp(`/verification/work-packages/${workPackageId}/documents/traceability\\.csv$`),
+  );
+
+  const fatDocument = await technician.page.request.get(
+    `/api/v1/verification/work-packages/${workPackageId}/documents/reports/FAT`,
+  );
+  const fatDocumentText = await fatDocument.text();
+  expect(fatDocument.ok(), fatDocumentText).toBeTruthy();
+  expect(fatDocumentText).toContain("Retest conforme 363E");
+
+  const traceability = await technician.page.request.get(
+    `/api/v1/verification/work-packages/${workPackageId}/documents/traceability.csv`,
+  );
+  const traceabilityText = await traceability.text();
+  expect(traceability.ok(), traceabilityText).toBeTruthy();
+  expect(traceabilityText).toContain("Valider démarrage 363E");
 
   await closeContext(technician.context);
   await closeContext(leadB.context);

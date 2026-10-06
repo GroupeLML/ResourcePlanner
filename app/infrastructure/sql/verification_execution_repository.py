@@ -23,7 +23,7 @@ from app.domain.verification_execution import (
 
 from .delivery_models import DeliveryItemRow, DeliveryPlanRow
 from .identity_models import AppUser
-from .models import WorkPackage
+from .models import Project, WorkPackage
 from .project_manager_resolution_repository import SqlProjectManagerResolutionRepository
 from .verification_execution_models import (
     VerificationEvidenceLinkRow,
@@ -31,9 +31,11 @@ from .verification_execution_models import (
     VerificationTestExecutionRow,
 )
 from .verification_models import (
+    StoryVerificationDecisionRequirementRow,
     StoryVerificationDecisionRow,
     VerificationRequirementRow,
     VerificationRetestRequestRow,
+    VerificationScopeRow,
 )
 from .verification_repository import SqlVerificationRepository
 
@@ -52,6 +54,174 @@ class SqlVerificationExecutionRepository:
         self, work_package_id: str
     ) -> VerificationScope | None:
         return self._verification.get_scope_for_work_package(work_package_id)
+
+    def acquire_document_read_guards(self, work_package_id: str) -> bool:
+        """Hold a coherent document snapshot in ADR-023 lock order.
+
+        SQL Server gets update/serializable row locks. Other dialects ignore the
+        MSSQL hints while retaining the same read ordering for local tests.
+        """
+
+        normalized = str(work_package_id).strip()
+        work_package = self._session.scalar(
+            select(WorkPackage.id)
+            .where(WorkPackage.id == normalized)
+            .with_hint(
+                WorkPackage,
+                "WITH (UPDLOCK, HOLDLOCK)",
+                dialect_name="mssql",
+            )
+        )
+        if work_package is None:
+            return False
+        tuple(
+            self._session.scalars(
+                select(DeliveryPlanRow.id)
+                .where(DeliveryPlanRow.work_package_id == normalized)
+                .order_by(DeliveryPlanRow.id)
+                .with_hint(
+                    DeliveryPlanRow,
+                    "WITH (UPDLOCK, HOLDLOCK)",
+                    dialect_name="mssql",
+                )
+            ).all()
+        )
+        tuple(
+            self._session.scalars(
+                select(VerificationScopeRow.id)
+                .where(VerificationScopeRow.work_package_id == normalized)
+                .with_hint(
+                    VerificationScopeRow,
+                    "WITH (UPDLOCK, HOLDLOCK)",
+                    dialect_name="mssql",
+                )
+            ).all()
+        )
+        return True
+
+    @staticmethod
+    def _serialized_dt(value: object | None) -> str | None:
+        return value.isoformat() if hasattr(value, "isoformat") else None
+
+    def document_context(self, work_package_id: str) -> dict[str, object]:
+        normalized = str(work_package_id).strip()
+        work_package = self._session.get(WorkPackage, normalized)
+        if work_package is None:
+            raise KeyError(f"WorkPackage not found: {normalized}")
+        project = self._session.get(Project, work_package.project_id)
+
+        plan_ids = tuple(
+            self._session.scalars(
+                select(DeliveryPlanRow.id)
+                .where(DeliveryPlanRow.work_package_id == normalized)
+                .order_by(DeliveryPlanRow.created_at, DeliveryPlanRow.id)
+            ).all()
+        )
+        stories: dict[str, dict[str, object]] = {}
+        if plan_ids:
+            story_rows = tuple(
+                self._session.scalars(
+                    select(DeliveryItemRow)
+                    .where(
+                        DeliveryItemRow.delivery_plan_id.in_(plan_ids),
+                        DeliveryItemRow.item_type == "STORY",
+                    )
+                    .order_by(DeliveryItemRow.created_at, DeliveryItemRow.id)
+                ).all()
+            )
+            epic_ids = tuple(
+                sorted({row.parent_id for row in story_rows if row.parent_id})
+            )
+            epic_rows = (
+                {
+                    row.id: row
+                    for row in self._session.scalars(
+                        select(DeliveryItemRow).where(
+                            DeliveryItemRow.id.in_(epic_ids),
+                            DeliveryItemRow.item_type == "EPIC",
+                        )
+                    ).all()
+                }
+                if epic_ids
+                else {}
+            )
+            for row in story_rows:
+                epic = epic_rows.get(row.parent_id) if row.parent_id else None
+                stories[row.id] = {
+                    "id": row.id,
+                    "title": row.title,
+                    "epic_id": epic.id if epic is not None else None,
+                    "epic_title": epic.title if epic is not None else None,
+                }
+
+        scope = self._verification.get_scope_for_work_package(normalized)
+        decisions: list[dict[str, object]] = []
+        if scope is not None:
+            decision_rows = tuple(
+                self._session.scalars(
+                    select(StoryVerificationDecisionRow)
+                    .where(
+                        StoryVerificationDecisionRow.verification_scope_id
+                        == scope.id
+                    )
+                    .order_by(
+                        StoryVerificationDecisionRow.story_id,
+                        StoryVerificationDecisionRow.created_at,
+                        StoryVerificationDecisionRow.id,
+                    )
+                ).all()
+            )
+            decision_ids = tuple(row.id for row in decision_rows)
+            requirement_ids_by_decision: dict[str, list[str]] = {
+                decision_id: [] for decision_id in decision_ids
+            }
+            if decision_ids:
+                links = self._session.execute(
+                    select(
+                        StoryVerificationDecisionRequirementRow.decision_id,
+                        StoryVerificationDecisionRequirementRow.requirement_id,
+                    )
+                    .where(
+                        StoryVerificationDecisionRequirementRow.decision_id.in_(
+                            decision_ids
+                        )
+                    )
+                    .order_by(
+                        StoryVerificationDecisionRequirementRow.decision_id,
+                        StoryVerificationDecisionRequirementRow.requirement_id,
+                    )
+                ).all()
+                for decision_id, requirement_id in links:
+                    requirement_ids_by_decision[str(decision_id)].append(
+                        str(requirement_id)
+                    )
+            decisions = [
+                {
+                    "id": row.id,
+                    "story_id": row.story_id,
+                    "kind": row.kind,
+                    "justification": row.justification,
+                    "created_at": self._serialized_dt(row.created_at),
+                    "requirement_ids": requirement_ids_by_decision.get(row.id, []),
+                }
+                for row in decision_rows
+            ]
+
+        return {
+            "project": {
+                "id": project.id if project is not None else work_package.project_id,
+                "number": project.number if project is not None else None,
+                "name": project.name if project is not None else None,
+                "client": project.client if project is not None else None,
+            },
+            "work_package": {
+                "id": work_package.id,
+                "code": work_package.code,
+                "name": work_package.name,
+            },
+            "stories": stories,
+            "story_decisions": decisions,
+        }
 
     def get_requirement(
         self, requirement_id: str
