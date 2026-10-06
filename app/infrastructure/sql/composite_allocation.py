@@ -608,7 +608,8 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
 
         inside_current = current_start <= target_day <= current_end
         if (
-            inside_current
+            command.include_planning_window_override_options
+            and inside_current
             and requirement.origin == ORIGIN_REQUEST
             and not within_authorization
             and approval_revision_id
@@ -668,7 +669,8 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
             )
         else:
             if (
-                requirement.origin == ORIGIN_REQUEST
+                command.include_planning_window_override_options
+                and requirement.origin == ORIGIN_REQUEST
                 and self._can_override_planning_window()
             ):
                 authorization_reason = "PLANNING_WINDOW_OVERRIDE_AVAILABLE"
