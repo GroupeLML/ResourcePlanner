@@ -78,6 +78,11 @@ const WEEKLY_LOAD_DIAGNOSTIC_LABELS: Record<string, string> = {
 
 const RESOURCE_CLASS_DIVERGENCE = "WORK_PACKAGE_TASK_RESOURCE_CLASS_DIVERGENCE";
 
+const DEMAND_HOURS_DIAGNOSTIC_LABELS: Record<string, string> = {
+  DEMAND_HOURS_UNAVAILABLE: "Heures demandées incomplètes",
+  DEMAND_ALTERNATIVE_UNRESOLVED: "Alternative non sélectionnée : maximum des options retenu",
+};
+
 const PROJECTION_DIAGNOSTIC_LABELS: Record<string, string> = {
   UNCLASSIFIED_WORK_PACKAGES: "Des WorkPackages historiques ne sont liés à aucune tâche ERP.",
   UNCLASSIFIED_WORK_PACKAGE_LOAD: "Une charge WorkPackage sans classe canonique est conservée dans « Non classé ».",
@@ -97,6 +102,17 @@ function normalize(value: string | null | undefined) {
 function hours(value: number | null | undefined) {
   if (value == null) return "—";
   return `${new Intl.NumberFormat("fr-CA", { maximumFractionDigits: 2 }).format(value)} h`;
+}
+
+function requestedHoursRatio(workPackage: MediumTermBudgetWorkPackageReadModel) {
+  const formatter = new Intl.NumberFormat("fr-CA", { maximumFractionDigits: 2 });
+  const requested = workPackage.requested_hours == null
+    ? "—"
+    : formatter.format(workPackage.requested_hours);
+  const planned = workPackage.planned_hours == null
+    ? "—"
+    : formatter.format(workPackage.planned_hours);
+  return `${requested} / ${planned} h`;
 }
 
 function cad(value: number | null | undefined) {
@@ -241,6 +257,9 @@ function WorkPackageRow({
     : null;
   const resourceClassLabel = workPackageResourceClassLabel(workPackage);
   const classDivergesFromTask = workPackage.resource_class_diagnostic === RESOURCE_CLASS_DIVERGENCE;
+  const requestedHoursDiagnostics = workPackage.requested_hours_diagnostics
+    .map((code) => DEMAND_HOURS_DIAGNOSTIC_LABELS[code] || code)
+    .join(" · ");
   const canCreateDemand = Boolean(
     baseWorkPackage
     && ["planned", "active"].includes(normalize(baseWorkPackage.status)),
@@ -323,7 +342,14 @@ function WorkPackageRow({
       >
         <div className="mt-package-bar-heading">
           <strong>{workPackage.name}</strong>
-          <span>{hours(workPackage.planned_hours)}</span>
+          <span
+            className={requestedHoursDiagnostics ? "is-attention" : undefined}
+            title={requestedHoursDiagnostics
+              ? `Heures demandées / heures prévues · ${requestedHoursDiagnostics}`
+              : "Heures demandées / heures prévues"}
+          >
+            {requestedHoursRatio(workPackage)}{requestedHoursDiagnostics ? " ⚑" : ""}
+          </span>
         </div>
         <small>Classe de ressource : {resourceClassLabel}</small>
         {baseWorkPackage?.description && <small>{baseWorkPackage.description}</small>}

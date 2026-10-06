@@ -38,6 +38,7 @@ from ...application.medium_term_budget import (
     work_package_is_budget_included,
     work_package_is_current_load_included,
     demand_window_diagnostic,
+    requested_workforce_hours,
 )
 from ...application.project_managers import ProjectManagerResolutionService
 from ...application.query_models import (
@@ -496,6 +497,9 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
             and explicit_hours <= state.planned_hours
             else None
         )
+        requested_hours, requested_hours_diagnostics = requested_workforce_hours(
+            demand_periods=demand_periods
+        )
         return MediumTermBudgetWorkPackageReadModel(
             id=work_package.id,
             reference=state.reference,
@@ -551,6 +555,8 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                 _optional_text(work_package.resource_class_code),
                 _optional_text(task_resource_class_code),
             ),
+            requested_hours=requested_hours,
+            requested_hours_diagnostics=requested_hours_diagnostics,
             demand_periods=demand_periods,
         )
 
