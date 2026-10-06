@@ -250,8 +250,13 @@ class ReactMediumTermContractTests(unittest.TestCase):
         self.assertIn("FastAPI reste autoritaire", editor)
         self.assertIn("closeWorkPackage(", editor)
         self.assertIn("cancelWorkPackage(", editor)
+        self.assertIn("reopenWorkPackage(", editor)
+        self.assertIn('applyLifecycle("reopen")', editor)
+        self.assertIn("Les demandes, besoins, quarts, Delivery et Verification liés ne seront pas modifiés.", editor)
+        self.assertIn("retiré de la structuration budgétaire", editor)
         self.assertIn("/close", api)
         self.assertIn("/cancel", api)
+        self.assertIn("/reopen", api)
         self.assertNotIn("proposeWorkPackageWeeklyLoads", editor)
         self.assertNotIn("replaceWorkPackageWeeklyLoads", editor)
 
