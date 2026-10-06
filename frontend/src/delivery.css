@@ -705,5 +705,7 @@
   .verification-evidence-form,
   .verification-inline-form,
   .verification-assignments form { grid-template-columns: 1fr; }
+  .verification-documents { align-items: flex-start; flex-direction: column; }
+  .verification-document-links { justify-content: flex-start; }
   .verification-wide-field { grid-column: auto; }
 }
