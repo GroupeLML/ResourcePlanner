@@ -24,6 +24,9 @@ from app.infrastructure.sql import (
     create_session_factory,
     create_sql_engine,
 )
+from app.infrastructure.sql.approval_revision_repository import (
+    SqlRequestApprovalRevisionRepository,
+)
 from app.infrastructure.sql.base import utc_now
 from app.infrastructure.sql.request_plan_preparation import SqlRequestPlanPreparer
 from app.server import create_api_app
@@ -269,14 +272,12 @@ class PlanningWindowOverrideTests(unittest.TestCase):
                         entries=entries,
                     )
 
-                    count = SqlPlanningWindowOverrideRepository(
+                    SqlRequestApprovalRevisionRepository(
                         session
-                    ).reconcile_for_new_revision(
-                        request.id,
-                        previous_revision_id=revision.id,
-                        new_revision=new_revision,
+                    ).activate_revision(
+                        request,
+                        new_revision,
                     )
-                    self.assertEqual(count, 1)
                     self.assertEqual(
                         override.status,
                         PLANNING_WINDOW_OVERRIDE_ABSORBED,
@@ -321,12 +322,11 @@ class PlanningWindowOverrideTests(unittest.TestCase):
                         entries=[],
                     )
 
-                    SqlPlanningWindowOverrideRepository(
+                    SqlRequestApprovalRevisionRepository(
                         session
-                    ).reconcile_for_new_revision(
-                        request.id,
-                        previous_revision_id=revision.id,
-                        new_revision=new_revision,
+                    ).activate_revision(
+                        request,
+                        new_revision,
                     )
                     self.assertEqual(
                         override.status,
