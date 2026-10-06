@@ -2,19 +2,16 @@ import { CSSProperties, useEffect, useMemo, useState } from "react";
 
 import {
   ApiError,
-  DemandReadModel,
   MediumTermBudgetReadModel,
+  MediumTermDemandPeriodReadModel,
   MediumTermBudgetTaskReadModel,
   MediumTermBudgetWorkPackageReadModel,
   MediumTermUnlinkedSegmentReadModel,
-  PendingDemandLoadReadModel,
-  PlanningSnapshotReadModel,
   ProjectReadModel,
   ResourceReadModel,
   WorkPackageReadModel,
   getMediumTermBudget,
   getMediumTermUnlinkedSegments,
-  getPlanningSnapshot,
   getProjects,
   getResources,
   getWorkPackages,
@@ -150,34 +147,68 @@ function placement(
   return { column: firstWeek + 2, span: Math.max(1, lastWeek - firstWeek + 1) };
 }
 
-function isTentative(demand: DemandReadModel) {
-  return normalize(demand.confirmation).includes("tentative");
+function demandPeriodPlacement(
+  demandPeriod: MediumTermDemandPeriodReadModel,
+  horizonStart: Date,
+  horizonWeeks: number,
+) {
+  if (!demandPeriod.start_date) return null;
+  const horizonEnd = addDays(horizonStart, horizonWeeks * 7 - 1);
+  const rawStart = parseIsoDate(demandPeriod.start_date);
+  const rawEnd = demandPeriod.end_date ? parseIsoDate(demandPeriod.end_date) : rawStart;
+  if (rawEnd < horizonStart || rawStart > horizonEnd) return null;
+
+  const clampedStart = rawStart < horizonStart ? horizonStart : rawStart;
+  const clampedEnd = rawEnd > horizonEnd ? horizonEnd : rawEnd;
+  const firstWeek = Math.max(0, Math.floor(dayDistance(horizonStart, clampedStart) / 7));
+  const lastWeek = Math.min(
+    horizonWeeks - 1,
+    Math.floor(dayDistance(horizonStart, clampedEnd) / 7),
+  );
+  return { column: firstWeek + 2, span: Math.max(1, lastWeek - firstWeek + 1) };
 }
 
-function demandTone(demand: DemandReadModel, pending: boolean, hasApprovedPlan: boolean) {
-  if (pending) return "pending";
-  if (hasApprovedPlan && isTentative(demand)) return "tentative";
-  if (hasApprovedPlan) return "planned";
-  const status = normalize(demand.status);
+function demandPeriodTone(demandPeriod: MediumTermDemandPeriodReadModel) {
+  if (demandPeriod.provenance === "APPROVED") {
+    return normalize(demandPeriod.confirmation).includes("tentative") ? "tentative" : "planned";
+  }
+  const status = normalize(demandPeriod.status);
   if (status.includes("correction")) return "correction";
   if (status.includes("brouillon")) return "draft";
-  return "neutral";
+  return "pending";
 }
 
-function demandDetails(demand: DemandReadModel, label: string) {
-  const window = `${demand.desired_start || "Date à préciser"} → ${demand.desired_end || demand.desired_start || "Date à préciser"}`;
-  const estimate = demand.estimated_hours == null ? "Heures à préciser" : hours(demand.estimated_hours);
-  const resources = `${demand.resource_count} ressource${demand.resource_count > 1 ? "s" : ""}`;
-  const competencies = demand.required_competencies || "Compétence à préciser";
+function demandPeriodKindLabel(demandPeriod: MediumTermDemandPeriodReadModel) {
+  if (demandPeriod.period_kind === "ALTERNATIVE") {
+    const group = demandPeriod.alternative_group ? ` · ${demandPeriod.alternative_group}` : "";
+    return `Alternative${group}${demandPeriod.selected ? " · retenue" : ""}`;
+  }
+  if (demandPeriod.period_kind === "CUMULATIVE") return "Période cumulative";
+  return "Fenêtre demandée";
+}
+
+function demandOutsideLabel(demandPeriod: MediumTermDemandPeriodReadModel) {
+  switch (demandPeriod.outside_position) {
+    case "BEFORE": return "Dépasse avant le WorkPackage";
+    case "AFTER": return "Dépasse après le WorkPackage";
+    case "BOTH": return "Dépasse avant et après le WorkPackage";
+    case "UNAVAILABLE": return "Comparaison WorkPackage indisponible";
+    default: return null;
+  }
+}
+
+function demandPeriodDetails(demandPeriod: MediumTermDemandPeriodReadModel) {
+  const window = `${demandPeriod.start_date || "Date à préciser"} → ${demandPeriod.end_date || demandPeriod.start_date || "Date à préciser"}`;
+  const estimate = demandPeriod.hours == null ? "Heures à préciser" : hours(demandPeriod.hours);
+  const outside = demandOutsideLabel(demandPeriod);
   return [
-    demand.project_number || "Projet non précisé",
-    demand.number,
-    label,
+    demandPeriod.demand_number,
+    demandPeriodKindLabel(demandPeriod),
     window,
     estimate,
-    resources,
-    competencies,
-  ].join(" · ");
+    demandPeriod.provenance === "APPROVED" ? "Proposition approuvée" : "Proposition courante",
+    outside,
+  ].filter(Boolean).join(" · ");
 }
 
 function diagnosticLabel(code: string) {
@@ -188,9 +219,6 @@ function WorkPackageRow({
   project,
   workPackage,
   baseWorkPackage,
-  demands,
-  pendingLoads,
-  plannedDemandNumbers,
   horizonStart,
   horizonWeeks,
   onOpenDemand,
@@ -200,9 +228,6 @@ function WorkPackageRow({
   project: ProjectReadModel;
   workPackage: MediumTermBudgetWorkPackageReadModel;
   baseWorkPackage: WorkPackageReadModel | null;
-  demands: DemandReadModel[];
-  pendingLoads: PendingDemandLoadReadModel[];
-  plannedDemandNumbers: Set<string>;
   horizonStart: Date;
   horizonWeeks: number;
   onOpenDemand: (demandNumber: string) => void;
@@ -211,7 +236,6 @@ function WorkPackageRow({
 }) {
   const grid = placement(workPackage, horizonStart, horizonWeeks);
   const template = `300px repeat(${horizonWeeks}, minmax(96px, 1fr))`;
-  const pendingByDemand = new Map(pendingLoads.map((load) => [load.demand_number, load]));
   const loadDiagnostic = workPackage.weekly_load_diagnostic
     ? WEEKLY_LOAD_DIAGNOSTIC_LABELS[workPackage.weekly_load_diagnostic] || workPackage.weekly_load_diagnostic
     : null;
@@ -223,6 +247,7 @@ function WorkPackageRow({
   );
 
   return (
+    <>
     <div className="mt-timeline-row" style={{ gridTemplateColumns: template }}>
       <div className="mt-package-identity">
         <div className="mt-package-title">
@@ -302,40 +327,64 @@ function WorkPackageRow({
         </div>
         <small>Classe de ressource : {resourceClassLabel}</small>
         {baseWorkPackage?.description && <small>{baseWorkPackage.description}</small>}
-        <div className="mt-demand-chips">
-          {demands.length === 0 ? (
-            <span className="mt-demand-empty">Aucune demande dans l’horizon</span>
-          ) : demands.map((demand) => {
-            const pendingLoad = pendingByDemand.get(demand.number);
-            const planned = plannedDemandNumbers.has(demand.number);
-            const replacement = normalize(pendingLoad?.mode) === "replacement";
-            const tentative = isTentative(demand);
-            const tone = demandTone(demand, Boolean(pendingLoad), planned);
-            const label = pendingLoad
-              ? replacement ? "Soumise · modification en attente" : "Soumise · charge potentielle"
-              : planned
-                ? tentative ? "Plan approuvé · tentative" : "Plan approuvé · confirmée"
-                : demand.status;
-            return (
-              <button
-                type="button"
-                className={`mt-demand-chip ${tone}`}
-                key={demand.number}
-                onClick={() => onOpenDemand(demand.number)}
-                title={demandDetails(demand, label)}
-                aria-label={demandDetails(demand, label)}
-              >
-                <strong>{demand.number}</strong>
-                <span>{label}</span>
-                <small>
-                  {hours(demand.estimated_hours)} · {demand.resource_count} res. · {demand.required_competencies || "Comp. à préciser"}
-                </small>
-              </button>
-            );
-          })}
-        </div>
+        {workPackage.demand_periods.length === 0 && (
+          <small className="mt-demand-empty">Aucune demande liée</small>
+        )}
       </article>
     </div>
+    {workPackage.demand_periods.map((demandPeriod) => {
+      const demandGrid = demandPeriodPlacement(demandPeriod, horizonStart, horizonWeeks);
+      const tone = demandPeriodTone(demandPeriod);
+      const outsideLabel = demandOutsideLabel(demandPeriod);
+      const details = demandPeriodDetails(demandPeriod);
+      return (
+        <div
+          className={`mt-demand-timeline-row ${demandPeriod.outside_work_package ? "has-warning" : ""}`}
+          style={{ gridTemplateColumns: template }}
+          key={`${demandPeriod.demand_number}:${demandPeriod.line_id}:${demandPeriod.period_id}`}
+        >
+          <div className="mt-demand-identity">
+            <button
+              type="button"
+              className="mt-demand-link"
+              onClick={() => onOpenDemand(demandPeriod.demand_number)}
+              title={details}
+            >
+              <strong>{demandPeriod.demand_number}</strong>
+              <span>{demandPeriodKindLabel(demandPeriod)}</span>
+            </button>
+            <small>
+              {demandPeriod.start_date || "Date à préciser"} → {demandPeriod.end_date || demandPeriod.start_date || "Date à préciser"}
+              {demandPeriod.hours != null ? ` · ${hours(demandPeriod.hours)}` : ""}
+            </small>
+            {outsideLabel && (
+              <small className="mt-demand-warning" title={demandPeriod.diagnostics.join(" · ")}>
+                ⚑ {outsideLabel}
+              </small>
+            )}
+          </div>
+
+          {Array.from({ length: horizonWeeks }, (_, index) => (
+            <div className="mt-week-cell" style={{ gridColumn: index + 2 }} key={index} />
+          ))}
+
+          {demandGrid && (
+            <button
+              type="button"
+              className={`mt-demand-gantt-bar ${tone} ${demandPeriod.outside_work_package ? "has-warning" : ""}`}
+              style={{ gridColumn: `${demandGrid.column} / span ${demandGrid.span}` }}
+              onClick={() => onOpenDemand(demandPeriod.demand_number)}
+              title={details}
+              aria-label={details}
+            >
+              <strong>{demandPeriod.demand_number}</strong>
+              <span>{demandPeriodKindLabel(demandPeriod)}</span>
+            </button>
+          )}
+        </div>
+      );
+    })}
+    </>
   );
 }
 
@@ -393,7 +442,6 @@ export default function MediumTermPage({
   const [workPackages, setWorkPackages] = useState<WorkPackageReadModel[]>([]);
   const [resources, setResources] = useState<ResourceReadModel[]>([]);
   const [unlinkedSegments, setUnlinkedSegments] = useState<MediumTermUnlinkedSegmentReadModel[]>([]);
-  const [snapshot, setSnapshot] = useState<PlanningSnapshotReadModel | null>(null);
   const [projection, setProjection] = useState<MediumTermBudgetReadModel | null>(null);
   const [loading, setLoading] = useState(true);
   const [projectionLoading, setProjectionLoading] = useState(false);
@@ -427,7 +475,6 @@ export default function MediumTermPage({
       setError(scopeError);
       setProjects([]);
       setWorkPackages([]);
-      setSnapshot(null);
       setUnlinkedSegments([]);
       return;
     }
@@ -439,15 +486,13 @@ export default function MediumTermPage({
       getProjects(true, controller.signal, "global"),
       getWorkPackages("", false, controller.signal, scope),
       getResources(true, controller.signal),
-      getPlanningSnapshot(start, end, controller.signal, scope),
       getMediumTermUnlinkedSegments(start, end, controller.signal, scope),
     ])
-      .then(([projectRows, projectCatalogRows, packageRows, resourceRows, planning, unlinkedRows]) => {
+      .then(([projectRows, projectCatalogRows, packageRows, resourceRows, unlinkedRows]) => {
         setProjects(projectRows);
         setCatalogProjects(projectCatalogRows);
         setWorkPackages(packageRows);
         setResources(resourceRows);
-        setSnapshot(planning);
         setUnlinkedSegments(unlinkedRows);
         setProjectFilter((current) => (
           current && projectRows.some((project) => project.number === current)
@@ -578,37 +623,6 @@ export default function MediumTermPage({
     [workPackages],
   );
 
-  const demandByPackage = useMemo(() => {
-    const result = new Map<string, DemandReadModel[]>();
-    (snapshot?.demands ?? []).forEach((demand) => {
-      if (!demand.work_package_ref) return;
-      const rows = result.get(demand.work_package_ref) ?? [];
-      rows.push(demand);
-      result.set(demand.work_package_ref, rows);
-    });
-    return result;
-  }, [snapshot]);
-
-  const pendingByPackage = useMemo(() => {
-    const result = new Map<string, PendingDemandLoadReadModel[]>();
-    (snapshot?.pending_loads ?? []).forEach((load) => {
-      if (!load.work_package_ref) return;
-      const rows = result.get(load.work_package_ref) ?? [];
-      rows.push(load);
-      result.set(load.work_package_ref, rows);
-    });
-    return result;
-  }, [snapshot]);
-
-  const plannedDemandNumbers = useMemo(
-    () => new Set(
-      (snapshot?.segments ?? [])
-        .map((segment) => segment.demand_number)
-        .filter((number): number is string => Boolean(number)),
-    ),
-    [snapshot],
-  );
-
   const query = normalize(search);
   const visibleTasks = useMemo(
     () => (projection?.tasks ?? []).filter((task) => {
@@ -625,6 +639,11 @@ export default function MediumTermPage({
           workPackage.name,
           workPackage.resource_class_code,
           workPackage.resource_class_label,
+          ...workPackage.demand_periods.flatMap((demandPeriod) => [
+            demandPeriod.demand_number,
+            demandPeriod.status,
+            demandPeriod.alternative_group,
+          ]),
         ]),
       ].filter(Boolean).join(" ")).includes(query);
     }),
@@ -725,9 +744,6 @@ export default function MediumTermPage({
         project={project}
         workPackage={workPackage}
         baseWorkPackage={workPackagesByReference.get(workPackage.reference) ?? null}
-        demands={demandByPackage.get(workPackage.reference) ?? []}
-        pendingLoads={pendingByPackage.get(workPackage.reference) ?? []}
-        plannedDemandNumbers={plannedDemandNumbers}
         horizonStart={horizonStart}
         horizonWeeks={horizonWeeks}
         onOpenDemand={setDetailDemandNumber}
