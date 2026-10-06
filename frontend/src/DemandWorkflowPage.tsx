@@ -931,9 +931,13 @@ export default function DemandWorkflowPage({
                       const line = currentDetail?.lines.find(
                         (row) => row.line.line_id === requirement.request_line_id,
                       )?.line;
+                      const resourceClassLabel = line?.required_resource_class_label?.trim() || null;
+                      const fallbackLineLabel = resourceClassLabel
+                        || line?.description
+                        || (line ? `Ligne ${line.position + 1}` : "Ligne");
                       const lineLabel = line?.task_code
-                        ? `${line.task_code} — ${line.task_label || line.description || requirement.request_line_id}`
-                        : line?.description || requirement.request_line_id;
+                        ? `${line.task_code} — ${line.task_label || line.description || resourceClassLabel || `Ligne ${line.position + 1}`}`
+                        : fallbackLineLabel;
                       return (
                         <article
                           className={`approval-progress-line ${requirement.satisfied ? "is-satisfied" : ""}`}
@@ -947,6 +951,9 @@ export default function DemandWorkflowPage({
                           <small>
                             Approbateur(s) admissible(s) : {requirement.approvers.map((item) => item.display_name).join(", ") || "aucun"}
                           </small>
+                          {resourceClassLabel && (
+                            <small>Classe : {resourceClassLabel}</small>
+                          )}
                           {requirement.actor_can_approve && (
                             <small className="approval-progress-mine">À approuver par vous</small>
                           )}

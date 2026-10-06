@@ -112,6 +112,21 @@ class ReactDemandWorkflowContractTests(unittest.TestCase):
         self.assertIn("context.asset_type_code", page)
         self.assertIn("context.proposed_asset_code", page)
 
+    def test_approval_progress_uses_business_resource_class_label(self) -> None:
+        api = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
+        page = (ROOT / "frontend" / "src" / "DemandWorkflowPage.tsx").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("required_resource_class_label: string | null", api)
+        self.assertIn("line?.required_resource_class_label?.trim()", page)
+        self.assertIn("Classe : {resourceClassLabel}", page)
+        self.assertIn("`Ligne ${line.position + 1}`", page)
+        self.assertNotIn(
+            "line?.description || requirement.request_line_id",
+            page,
+        )
+
     def test_workflow_separates_approval_from_confirmation(self) -> None:
         source = (ROOT / "frontend" / "src" / "DemandWorkflowPage.tsx").read_text(
             encoding="utf-8"
