@@ -5,7 +5,7 @@ from datetime import date, timedelta
 import unicodedata
 
 from sqlalchemy import or_, select, true
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from ...application.query_models import (
     AssetPlanningWindowReadModel,
@@ -53,10 +53,13 @@ from .asset_models import (
     AssetAllocation,
     AssetRequirement,
     AssetType,
+    AssetTypeCompetency,
 )
 from .asset_qualification import (
+    QUALIFICATION_MISSING_OPERATOR,
+    QUALIFICATION_NO_OVERLAP,
     QUALIFICATION_SATISFIED,
-    evaluate_asset_qualifications,
+    QUALIFICATION_SKILL_MISMATCH,
 )
 from .asset_query import SqlAssetPlanningQuery
 from .asset_shift_projection import (
@@ -1649,73 +1652,214 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                 )
             )
         has_asset_context = any(marker is not None for *_row, marker in rows)
-        asset_requirements = (
-            tuple(
-                self._session.scalars(
-                    select(AssetRequirement)
-                    .where(
-                        AssetRequirement.status != "Annulé",
-                        or_(*asset_scope),
-                    )
-                    .order_by(AssetRequirement.id)
-                ).all()
+        asset_requirements_by_id: dict[str, AssetRequirement] = {}
+        allocation_by_requirement: dict[str, AssetAllocation] = {}
+        assets_by_id: dict[str, Asset] = {}
+        asset_types_by_id: dict[str, AssetType] = {}
+        required_competencies_by_type: dict[str, set[str]] = {}
+        held_required_competencies_by_allocation: dict[str, set[str]] = {}
+        operator_resources_by_id: dict[str, Resource] = {}
+        human_compatibility_by_allocation: dict[str, bool] = {}
+
+        if has_asset_context:
+            qualification_shift = aliased(Shift)
+            qualification_requirement = aliased(ResourceRequirement)
+            qualification_exists = (
+                select(qualification_shift.id)
+                .join(
+                    qualification_requirement,
+                    qualification_shift.resource_requirement_id
+                    == qualification_requirement.id,
+                )
+                .where(
+                    qualification_shift.resource_id
+                    == AssetAllocation.operator_resource_id,
+                    qualification_shift.work_date >= AssetAllocation.start_date,
+                    qualification_shift.work_date <= AssetAllocation.end_date,
+                    qualification_requirement.project_id
+                    == AssetRequirement.project_id,
+                    qualification_requirement.status != "Annulé",
+                    or_(
+                        (
+                            AssetRequirement.origin
+                            == AssetRequirementOrigin.SHIFT_AD_HOC.value
+                        )
+                        & (qualification_shift.id == AssetRequirement.shift_id),
+                        (
+                            AssetRequirement.origin
+                            == AssetRequirementOrigin.REQUEST.value
+                        )
+                        & (
+                            qualification_requirement.workforce_request_id
+                            == AssetRequirement.workforce_request_id
+                        ),
+                    ),
+                )
+                .limit(1)
+                .correlate(AssetRequirement, AssetAllocation)
+                .exists()
             )
-            if has_asset_context
-            else ()
-        )
-        requirement_ids = tuple(row.id for row in asset_requirements)
-        allocations = (
-            tuple(
-                self._session.scalars(
-                    select(AssetAllocation)
-                    .where(
-                        AssetAllocation.asset_requirement_id.in_(requirement_ids)
+            operator_resource = aliased(Resource)
+            asset_projection_rows = self._session.execute(
+                select(
+                    AssetRequirement,
+                    AssetAllocation,
+                    Asset,
+                    AssetType,
+                    operator_resource,
+                    AssetTypeCompetency.competency_id.label(
+                        "required_competency_id"
+                    ),
+                    ResourceCompetency.competency_id.label(
+                        "held_required_competency_id"
+                    ),
+                    qualification_exists.label("human_compatible"),
+                )
+                .outerjoin(
+                    AssetAllocation,
+                    AssetAllocation.asset_requirement_id
+                    == AssetRequirement.id,
+                )
+                .outerjoin(Asset, Asset.id == AssetAllocation.asset_id)
+                .outerjoin(
+                    AssetType,
+                    AssetType.id == AssetRequirement.asset_type_id,
+                )
+                .outerjoin(
+                    operator_resource,
+                    operator_resource.id
+                    == AssetAllocation.operator_resource_id,
+                )
+                .outerjoin(
+                    AssetTypeCompetency,
+                    AssetTypeCompetency.asset_type_id
+                    == AssetRequirement.asset_type_id,
+                )
+                .outerjoin(
+                    ResourceCompetency,
+                    (
+                        ResourceCompetency.resource_id
+                        == AssetAllocation.operator_resource_id
                     )
-                    .order_by(AssetAllocation.id)
-                ).all()
-            )
-            if requirement_ids
-            else ()
+                    & (
+                        ResourceCompetency.competency_id
+                        == AssetTypeCompetency.competency_id
+                    ),
+                )
+                .where(
+                    AssetRequirement.status != "Annulé",
+                    or_(*asset_scope),
+                )
+                .order_by(
+                    AssetRequirement.id,
+                    AssetAllocation.id,
+                    AssetTypeCompetency.competency_id,
+                )
+            ).all()
+
+            for (
+                asset_requirement,
+                allocation,
+                asset,
+                asset_type,
+                operator,
+                required_competency_id,
+                held_required_competency_id,
+                human_compatible,
+            ) in asset_projection_rows:
+                asset_requirements_by_id[asset_requirement.id] = asset_requirement
+                if allocation is not None:
+                    allocation_by_requirement[asset_requirement.id] = allocation
+                    human_compatibility_by_allocation[allocation.id] = bool(
+                        human_compatible
+                    )
+                if asset is not None:
+                    assets_by_id[asset.id] = asset
+                if asset_type is not None:
+                    asset_types_by_id[asset_type.id] = asset_type
+                if operator is not None:
+                    operator_resources_by_id[operator.id] = operator
+                if required_competency_id is not None:
+                    required_competencies_by_type.setdefault(
+                        asset_requirement.asset_type_id,
+                        set(),
+                    ).add(required_competency_id)
+                if (
+                    allocation is not None
+                    and held_required_competency_id is not None
+                ):
+                    held_required_competencies_by_allocation.setdefault(
+                        allocation.id,
+                        set(),
+                    ).add(held_required_competency_id)
+
+        asset_requirements = tuple(
+            asset_requirements_by_id[key]
+            for key in sorted(asset_requirements_by_id)
         )
-        allocation_by_requirement = {
-            row.asset_requirement_id: row for row in allocations
+        visible_human_requirements = {
+            requirement.id: requirement
+            for _shift, requirement, _resource, _project, _request, _marker in rows
         }
 
-        asset_ids = tuple(dict.fromkeys(row.asset_id for row in allocations))
-        assets = (
-            tuple(
-                self._session.scalars(
-                    select(Asset).where(Asset.id.in_(asset_ids))
-                ).all()
+        def qualification_state(
+            requirement: AssetRequirement,
+            allocation: AssetAllocation,
+        ) -> str:
+            required = required_competencies_by_type.get(
+                requirement.asset_type_id,
+                set(),
             )
-            if asset_ids
-            else ()
-        )
-        assets_by_id = {row.id: row for row in assets}
-        type_ids = tuple(
-            dict.fromkeys(row.asset_type_id for row in asset_requirements)
-        )
-        asset_types = (
-            tuple(
-                self._session.scalars(
-                    select(AssetType).where(AssetType.id.in_(type_ids))
-                ).all()
-            )
-            if type_ids
-            else ()
-        )
-        asset_types_by_id = {row.id: row for row in asset_types}
-
-        qualification_by_pair = evaluate_asset_qualifications(
-            self._session,
-            pairs=tuple(
-                (
-                    requirement,
-                    allocation_by_requirement.get(requirement.id),
+            operator_id = allocation.operator_resource_id
+            if not operator_id:
+                return (
+                    QUALIFICATION_SATISFIED
+                    if not required
+                    else QUALIFICATION_MISSING_OPERATOR
                 )
-                for requirement in asset_requirements
-            ),
-        )
+            operator = operator_resources_by_id.get(operator_id)
+            if (
+                operator is None
+                or not operator.active
+                or not required.issubset(
+                    held_required_competencies_by_allocation.get(
+                        allocation.id,
+                        set(),
+                    )
+                )
+            ):
+                return QUALIFICATION_SKILL_MISMATCH
+
+            if requirement.origin == AssetRequirementOrigin.PROJECT_DIRECT.value:
+                compatible = bool(requirement.project_id)
+            elif (
+                requirement.origin
+                == AssetRequirementOrigin.RESOURCE_PERIOD.value
+            ):
+                compatible = bool(
+                    requirement.context_resource_id
+                    and requirement.context_resource_id == operator_id
+                )
+            elif requirement.origin == AssetRequirementOrigin.SEGMENT.value:
+                segment = visible_human_requirements.get(
+                    requirement.resource_requirement_id or ""
+                )
+                compatible = bool(
+                    segment is not None
+                    and segment.status != "Annulé"
+                    and segment.project_id == requirement.project_id
+                )
+            else:
+                compatible = human_compatibility_by_allocation.get(
+                    allocation.id,
+                    False,
+                )
+            return (
+                QUALIFICATION_SATISFIED
+                if compatible
+                else QUALIFICATION_NO_OVERLAP
+            )
+
         ad_hoc_by_shift = {
             row.shift_id: row
             for row in asset_requirements
@@ -1731,9 +1875,10 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             if allocation is None:
                 return None
             asset = assets_by_id.get(allocation.asset_id)
-            qualification = qualification_by_pair[
-                (requirement.id, allocation.id)
-            ]
+            qualification = qualification_state(
+                requirement,
+                allocation,
+            )
             return ShiftAssetReservationReadModel(
                 requirement_id=requirement.id,
                 allocation_id=allocation.id,
@@ -1744,7 +1889,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                 asset_label=asset.label if asset is not None else allocation.asset_id,
                 asset_active=bool(asset is not None and asset.active),
                 operator_resource_id=allocation.operator_resource_id,
-                qualification_state=qualification.state,
+                qualification_state=qualification,
                 project_id=requirement.project_id,
                 resource_requirement_id=requirement.resource_requirement_id,
                 context_resource_id=requirement.context_resource_id,
@@ -1888,6 +2033,10 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                         _optional_text(request.requester_name)
                         if request is not None
                         else _optional_text(requirement.created_by_name)
+                    ),
+                    emergency_override_active=bool(
+                        request is not None
+                        and request.emergency_override_active
                     ),
                     asset_assignment=asset_assignment,
                     related_asset_reservations=tuple(related),
