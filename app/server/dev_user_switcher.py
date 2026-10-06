@@ -6,6 +6,7 @@ import secrets
 from threading import Lock
 
 from fastapi import Request
+from sqlalchemy import inspect as inspect_database
 
 from ..application.security import AuthPrincipal
 from ..infrastructure.sql import (
@@ -49,6 +50,8 @@ class DevUserSwitcherRuntime:
 
             factory: SqlSessionFactory = request.app.state.session_factory
             with factory.begin() as session:
+                if not inspect_database(session.get_bind()).has_table("app_users"):
+                    return principal
                 record = SqlUserIdentityRepository(session).upsert(
                     issuer=principal.issuer,
                     subject=principal.subject,
