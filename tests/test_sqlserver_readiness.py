@@ -45,6 +45,7 @@ class SqlServerReadinessTests(unittest.TestCase):
         self.assertIn("medium_term_weekly_loads", queries.details)
         self.assertIn("medium_term_weekly_load_delete", queries.details)
         self.assertIn("work_package_weekly_load_cas", queries.details)
+        self.assertIn("verification_version_cas", queries.details)
         self.assertIn("asset_planning_scoped_requirements", queries.details)
         self.assertIn("asset_global_occupancy", queries.details)
 
