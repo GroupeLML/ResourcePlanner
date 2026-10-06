@@ -431,7 +431,6 @@ export function updateProjectDirectReservation(
 export function createResourcePeriodReservation(
   payload: {
     resource_id: string;
-    project_id: string | null;
     asset_type_id: string;
     asset_id: string;
     start_date: string;
@@ -451,7 +450,6 @@ export function createResourcePeriodReservation(
 export function updateResourcePeriodReservation(
   requirementId: string,
   payload: {
-    project_id: string | null;
     asset_id: string;
     start_date: string;
     end_date: string;
@@ -514,7 +512,7 @@ export function createSegmentReservation(
     asset_id: string;
     start_date: string;
     end_date: string;
-    operator_resource_id: string;
+    operator_resource_id: string | null;
     expected_planning_version: number;
   },
   idempotencyKey: string,
@@ -533,7 +531,7 @@ export function updateSegmentReservation(
     asset_id: string;
     start_date: string;
     end_date: string;
-    operator_resource_id: string;
+    operator_resource_id: string | null;
     expected_planning_version: number;
   },
   idempotencyKey: string,
