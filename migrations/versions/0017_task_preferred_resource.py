@@ -116,13 +116,6 @@ def upgrade() -> None:
                 "fk_task_catalog_preferred_resource_audit_task_catalog_item_id_task_catalog_items"
             ),
         ),
-        sa.ForeignKeyConstraint(
-            ["actor_user_id"],
-            ["app_users.id"],
-            name=op.f(
-                "fk_task_catalog_preferred_resource_audit_actor_user_id_app_users"
-            ),
-        ),
         sa.PrimaryKeyConstraint(
             "id",
             name=op.f("pk_task_catalog_preferred_resource_audit"),
