@@ -181,13 +181,11 @@ class SqlPlanningWindowOverrideRepository:
                 raise ValueError(
                     "La nouvelle dérogation doit élargir la fenêtre opérationnelle active."
                 )
-            active.effective_start_date = requested.start_date
-            active.effective_end_date = requested.end_date
-            active.actor_user_id = actor_id
-            active.reason = reason_value
-            active.correlation_id = correlation
+            active.status = PLANNING_WINDOW_OVERRIDE_SUPERSEDED
+            active.resolution_reason = "WIDENED_BY_OVERRIDE_COMMAND"
+            active.resolved_by_revision_id = None
+            active.resolved_at = utc_now()
             self._session.flush()
-            return active
 
         row = PlanningWindowOverride(
             workforce_request_id=requirement.workforce_request_id,
