@@ -139,6 +139,8 @@ def build_sql_facade(
         authorization=planning_authorization,
         versioning=planning_versions,
         journal=journal,
+        actor_user_id=actor_user_id,
+        permissions=permissions,
     )
     query_port = SqlPlannerQueryRepositoryWithLoadProfiles(session)
     approved_sync = EmergencyAwareApprovedDemandSyncAdapter(
