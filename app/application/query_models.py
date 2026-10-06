@@ -307,6 +307,12 @@ class ResourceRecommendationReadModel:
     score: float
     rank: int
     recommended: bool
+    preferred: bool = False
+    recommendation_category: int = 7
+    competency_state: str = "NOT_REQUIRED"
+    missing_competency_ids: tuple[str, ...] = ()
+    capacity_state: str = "NONE"
+    fallback_requires_confirmation: bool = False
 
 
 @dataclass(frozen=True, slots=True)
