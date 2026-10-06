@@ -27,11 +27,10 @@ from app.infrastructure.sql import (
     create_session_factory,
     create_sql_engine,
 )
-from app.server import create_api_app
+from app.server import ServerSettings, create_api_app, create_configured_app
 from app.server.dev_user_switcher import (
     DevUserSwitcherRuntime,
     dev_user_switcher_auth_resolver,
-    local_dev_auth_resolver,
 )
 from app.server.security import static_auth_resolver
 from tests.sqlite_test_template import SqliteDatabaseTemplate
@@ -237,10 +236,11 @@ class DevUserSwitcherTests(unittest.TestCase):
         self.assertNotIn(self.user_ids["inactive"], user_ids)
 
     def test_static_local_actor_covers_project_and_responsibility_mutations(self) -> None:
-        runtime = DevUserSwitcherRuntime(bootstrap_principal=self.bootstrap)
-        app = create_api_app(
-            self.database_url,
-            auth_resolver=local_dev_auth_resolver(runtime),
+        app = create_configured_app(
+            ServerSettings(
+                database_url=self.database_url,
+                auth_principal=self.bootstrap,
+            )
         )
         with TestClient(app) as client:
             current = client.get("/api/v1/auth/me")
