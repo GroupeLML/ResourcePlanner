@@ -71,6 +71,7 @@
 .mt-package-identity > small { margin-top: .15rem; color: var(--muted); font-size: .52rem; line-height: 1.3; }
 .mt-package-identity > small.mt-package-resource-class { color: #44536b; font-weight: 800; }
 .mt-package-identity > small.mt-package-resource-class.is-inactive { color: var(--warn); }
+.mt-package-actions { display: flex; align-items: center; flex-wrap: wrap; gap: .65rem; }
 .mt-edit-package { margin-top: .3rem; border: 0; background: transparent; color: var(--accent); padding: 0; font-size: .55rem; font-weight: 800; }
 .mt-edit-package:hover { text-decoration: underline; }
 .mt-week-cell { grid-row: 1; min-height: 94px; border-right: 1px solid #edf0f4; background: white; }

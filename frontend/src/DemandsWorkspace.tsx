@@ -2,14 +2,20 @@ import { useEffect, useState } from "react";
 
 import { useAuth } from "./AuthContext";
 import DemandSegmentsPage from "./DemandSegmentsPage";
-import DemandsPage from "./DemandsPage";
+import DemandsPage, { type DemandCreateContext } from "./DemandsPage";
 import EmergencyOverridePage from "./EmergencyOverridePage";
 
 type DemandWorkspaceView = "requests" | "segments" | "emergency";
 
-type DemandsWorkspaceProps = { initialDemandNumber?: string | null };
+type DemandsWorkspaceProps = {
+  initialDemandNumber?: string | null;
+  initialCreateContext?: DemandCreateContext | null;
+};
 
-export default function DemandsWorkspace({ initialDemandNumber = null }: DemandsWorkspaceProps) {
+export default function DemandsWorkspace({
+  initialDemandNumber = null,
+  initialCreateContext = null,
+}: DemandsWorkspaceProps) {
   const { can } = useAuth();
   const canManagePlanning = can("manage_planning");
   const canApprove = can("approve_demands");
@@ -53,6 +59,8 @@ export default function DemandsWorkspace({ initialDemandNumber = null }: Demands
       {view === "requests" ? (
         initialDemandNumber ? (
           <DemandsPage initialDemandNumber={initialDemandNumber} />
+        ) : initialCreateContext ? (
+          <DemandsPage initialCreateContext={initialCreateContext} />
         ) : (
           <DemandsPage />
         )

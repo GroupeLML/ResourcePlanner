@@ -14,7 +14,9 @@ class ReactMediumTermContractTests(unittest.TestCase):
 
         self.assertIn('import MediumTermPage from "./MediumTermPage"', app)
         self.assertIn('view === "medium-term"', app)
-        self.assertIn('<MediumTermPage onOpenDemands={() => setView("demands")} />', app)
+        self.assertIn("function openDemands()", app)
+        self.assertIn("onOpenDemands={openDemands}", app)
+        self.assertIn("onCreateDemand={createDemandFromWorkPackage}", app)
         self.assertIn('import "./medium-term.css"', main)
 
     def test_page_consumes_dedicated_medium_term_projection_for_selected_window(self) -> None:
