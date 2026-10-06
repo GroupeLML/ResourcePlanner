@@ -24,6 +24,9 @@ class ReactDirectAssetReservationContractTests(unittest.TestCase):
         self.assertIn("<SearchableCombobox", form)
         self.assertIn("operator_resource_id: operatorId", form)
         self.assertIn("resource_id: resourceId!", form)
+        self.assertNotIn("project_id: projectId,", form)
+        self.assertNotIn("segmentId && operatorId", form)
+        self.assertIn('aria-label="Projet dérivé du segment"', form)
 
         self.assertIn('"/api/v1/assets/project-reservations"', api)
         self.assertIn('"/api/v1/assets/resource-period-reservations"', api)
@@ -36,7 +39,7 @@ class ReactDirectAssetReservationContractTests(unittest.TestCase):
         self.assertIn('requirement.origin === "PROJECT_DIRECT"', panel)
         self.assertIn('requirement.origin === "RESOURCE_PERIOD"', panel)
         self.assertIn('requirement.origin === "SEGMENT"', panel)
-        self.assertIn("un opérateur explicite reste requis pour le segment", panel)
+        self.assertIn("l’opérateur reste facultatif dans le contexte segment", panel)
         self.assertIn("La ressource de contexte reste obligatoirement", panel)
         self.assertIn("Ouvrir la demande source", panel)
 
