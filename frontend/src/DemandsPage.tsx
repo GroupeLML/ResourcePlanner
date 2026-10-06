@@ -52,6 +52,12 @@ import {
 import ViewScopeSelector from "./ViewScopeSelector";
 import { ResourceClassOptionReadModel, getResourceClassOptions } from "./resourceClassesApi";
 
+export type DemandCreateContext = {
+  project_number: string;
+  work_package_ref: string;
+  task_code: string | null;
+};
+
 type FormState = {
   project_number: string;
   requester_user_id: string;
@@ -275,9 +281,15 @@ function DemandCard({
   );
 }
 
-type DemandsPageProps = { initialDemandNumber?: string | null };
+type DemandsPageProps = {
+  initialDemandNumber?: string | null;
+  initialCreateContext?: DemandCreateContext | null;
+};
 
-export default function DemandsPage({ initialDemandNumber = null }: DemandsPageProps) {
+export default function DemandsPage({
+  initialDemandNumber = null,
+  initialCreateContext = null,
+}: DemandsPageProps) {
   const { can, principal } = useAuth();
   const { scope, loading: scopeLoading } = useViewScope();
   const canManageDemands = can("manage_demands");
@@ -322,6 +334,7 @@ export default function DemandsPage({ initialDemandNumber = null }: DemandsPageP
   const createRetry = useRef<RetryReceipt | null>(null);
 
   const initialSelectionApplied = useRef(false);
+  const initialCreateApplied = useRef(false);
 
   useEffect(() => {
     if (
@@ -337,6 +350,20 @@ export default function DemandsPage({ initialDemandNumber = null }: DemandsPageP
     setDemandContactLink(null);
     setLineContactResolutions({});
   }, [initialDemandNumber, demands]);
+
+  useEffect(() => {
+    if (
+      initialCreateApplied.current
+      || !initialCreateContext
+      || projects.length === 0
+    ) return;
+    initialCreateApplied.current = true;
+    if (!projects.some((row) => row.number === initialCreateContext.project_number)) {
+      setError(`Projet ${initialCreateContext.project_number} introuvable dans le périmètre courant.`);
+      return;
+    }
+    beginCreate(initialCreateContext);
+  }, [initialCreateContext, projects, principal?.local_user_id]);
 
   useEffect(() => {
     if (scopeLoading) return;
@@ -533,9 +560,9 @@ export default function DemandsPage({ initialDemandNumber = null }: DemandsPageP
     return window.confirm("Des modifications non enregistrées seront perdues. Continuer?");
   }
 
-  function beginCreate() {
+  function beginCreate(context: DemandCreateContext | null = null) {
     if (!confirmDiscardChanges()) return;
-    const firstProject = projects[0]?.number ?? "";
+    const firstProject = context?.project_number ?? projects[0]?.number ?? "";
     setDetailLoading(false);
     setCreating(true);
     setSelectedNumber(null);
@@ -543,7 +570,11 @@ export default function DemandsPage({ initialDemandNumber = null }: DemandsPageP
     setSelectedDetail(null);
     setDemandContactLink(null);
     setLineContactResolutions({});
-    setForm(emptyForm(firstProject, principal?.local_user_id ?? ""));
+    setForm({
+      ...emptyForm(firstProject, principal?.local_user_id ?? ""),
+      work_package_ref: context?.work_package_ref ?? "",
+      task_code: context?.task_code ?? "",
+    });
     setLineMode(false);
     setLines([]);
     setGenerationCount("2");
@@ -794,7 +825,7 @@ export default function DemandsPage({ initialDemandNumber = null }: DemandsPageP
         </div>
         <div className="page-heading-actions">
           <ViewScopeSelector />
-          <button type="button" className="primary-button demand-new-button" onClick={beginCreate} disabled={saving}>
+          <button type="button" className="primary-button demand-new-button" onClick={() => beginCreate()} disabled={saving}>
             + Nouvelle demande
           </button>
         </div>
