@@ -342,6 +342,26 @@ export type WorkPackageLoadIntervalWrite = {
   hours: number;
 };
 
+export type MediumTermDemandPeriodReadModel = {
+  demand_number: string;
+  line_id: string;
+  period_id: string;
+  work_package_ref: string;
+  start_date: string | null;
+  end_date: string | null;
+  hours: number | null;
+  status: string;
+  provenance: "CANDIDATE" | "APPROVED";
+  line_kind: string;
+  period_kind: "BASE" | "CUMULATIVE" | "ALTERNATIVE" | string;
+  alternative_group: string | null;
+  selected: boolean;
+  confirmation: string | null;
+  outside_work_package: boolean;
+  outside_position: "NONE" | "BEFORE" | "AFTER" | "BOTH" | "UNAVAILABLE";
+  diagnostics: string[];
+};
+
 export type MediumTermBudgetWorkPackageReadModel = {
   id: string;
   reference: string;
@@ -369,6 +389,7 @@ export type MediumTermBudgetWorkPackageReadModel = {
   resource_class_active: boolean | null;
   task_resource_class_code: string | null;
   resource_class_diagnostic: string | null;
+  demand_periods: MediumTermDemandPeriodReadModel[];
 };
 
 export type MediumTermBudgetTaskReadModel = {
