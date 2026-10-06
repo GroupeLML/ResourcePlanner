@@ -5,10 +5,16 @@ from .commands import (
     AllocationDropEvaluateCommand,
     AllocationDuplicateCommand,
     AllocationExtendMoveCommand,
+    AllocationWindowOverrideMoveCommand,
     AllocationSplitCommand,
+    PlanningWindowOverrideExtendCommand,
 )
 from .errors import ApplicationOperationError, call_application_port
-from .results import CompositeAllocationMutationResult, PlanningDropEvaluationResult
+from .results import (
+    CompositeAllocationMutationResult,
+    PlanningDropEvaluationResult,
+    PlanningWindowOverrideMutationResult,
+)
 
 
 class CompositeAllocationService:
@@ -70,3 +76,26 @@ class CompositeAllocationService:
             context={"allocation_id": command.allocation_id},
         )
         return CompositeAllocationMutationResult.from_mapping(result)
+
+
+    def extend_planning_window_command(
+        self,
+        command: PlanningWindowOverrideExtendCommand,
+    ) -> PlanningWindowOverrideMutationResult:
+        result = call_application_port(
+            lambda: self._commands.extend_planning_window(command),
+            code_prefix="planning_window_override_extend",
+            context={"segment_id": command.segment_id},
+        )
+        return PlanningWindowOverrideMutationResult.from_mapping(result)
+
+    def override_and_move_command(
+        self,
+        command: AllocationWindowOverrideMoveCommand,
+    ) -> PlanningWindowOverrideMutationResult:
+        result = call_application_port(
+            lambda: self._commands.override_and_move(command),
+            code_prefix="planning_window_override_move",
+            context={"allocation_id": command.allocation_id},
+        )
+        return PlanningWindowOverrideMutationResult.from_mapping(result)
