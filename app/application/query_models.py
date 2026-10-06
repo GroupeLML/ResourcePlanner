@@ -313,6 +313,9 @@ class ResourceRecommendationReadModel:
     missing_competency_ids: tuple[str, ...] = ()
     capacity_state: str = "NONE"
     fallback_requires_confirmation: bool = False
+    preferred_resource_id: str | None = None
+    preferred_resource_name: str | None = None
+    preferred_resource_status: str = "NONE"
 
 
 @dataclass(frozen=True, slots=True)
