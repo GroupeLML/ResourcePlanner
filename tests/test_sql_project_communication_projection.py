@@ -443,7 +443,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
         bulk.assert_called_once()
         self.assertEqual(set(bulk.call_args.args[0]), {"S1", "S2"})
 
-    def test_co_manager_only_change_does_not_change_project_message_fingerprint(self) -> None:
+    def test_co_manager_change_updates_fingerprint_and_persists_to_recipients(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
             app = create_api_app(
@@ -501,10 +501,19 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     "?week_start=2026-09-23"
                 )
                 self.assertEqual(after.status_code, 200, after.text)
+                after_payload = after.json()
+                prepared = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": after_payload["snapshot_fingerprint"],
+                        "reviews": [],
+                    },
+                )
+                self.assertEqual(prepared.status_code, 201, prepared.text)
 
         before_payload = before.json()
-        after_payload = after.json()
-        self.assertEqual(
+        self.assertNotEqual(
             after_payload["snapshot_fingerprint"],
             before_payload["snapshot_fingerprint"],
         )
@@ -513,8 +522,26 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
             before_payload["drafts"][0]["to_recipient"],
         )
         self.assertEqual(
+            [row["email"] for row in before_payload["drafts"][0]["to_recipients"]],
+            ["pm" + chr(64) + TEST_DOMAIN],
+        )
+        self.assertEqual(
+            [row["email"] for row in after_payload["drafts"][0]["to_recipients"]],
+            [
+                "pm" + chr(64) + TEST_DOMAIN,
+                "co" + chr(64) + TEST_DOMAIN,
+            ],
+        )
+        self.assertEqual(
             after_payload["drafts"][0]["cc_recipients"],
             before_payload["drafts"][0]["cc_recipients"],
+        )
+        self.assertEqual(
+            prepared.json()["messages"][0]["to_emails"],
+            [
+                "pm" + chr(64) + TEST_DOMAIN,
+                "co" + chr(64) + TEST_DOMAIN,
+            ],
         )
 
     def test_projection_uses_approved_context_and_resource_recipients(self) -> None:

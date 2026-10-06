@@ -83,6 +83,10 @@ class SmtpClientTests(unittest.TestCase):
                 "tech-a" + chr(64) + TEST_DOMAIN,
                 "tech-b" + chr(64) + TEST_DOMAIN,
             ),
+            to_emails=(
+                "pm" + chr(64) + TEST_DOMAIN,
+                "co-manager" + chr(64) + TEST_DOMAIN,
+            ),
         )
 
     def test_starttls_send_builds_expected_headers_and_authenticates(self) -> None:
@@ -103,7 +107,8 @@ class SmtpClientTests(unittest.TestCase):
         )
         self.assertEqual(len(connection.sent_messages), 1)
         sent = connection.sent_messages[0]
-        self.assertEqual(sent["To"], "pm" + chr(64) + TEST_DOMAIN)
+        self.assertIn("pm" + chr(64) + TEST_DOMAIN, sent["To"])
+        self.assertIn("co-manager" + chr(64) + TEST_DOMAIN, sent["To"])
         self.assertIn("tech-a" + chr(64) + TEST_DOMAIN, sent["Cc"])
         self.assertIn("tech-b" + chr(64) + TEST_DOMAIN, sent["Cc"])
         self.assertEqual(sent["Reply-To"], "reply" + chr(64) + TEST_DOMAIN)

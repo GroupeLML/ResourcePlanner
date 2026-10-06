@@ -750,7 +750,36 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await closeContext(context);
   });
 
-  await test.step("communications use project To/CC, manual review and only create fake local drafts", async () => {
+  await test.step("communications use principal plus co-managers in To and resources in CC", async () => {
+    const admin = await openAs(browser, "ADMIN");
+    const contactsResponse = await admin.context.request.get(
+      "/api/v1/business-contacts?active_only=true&user_backed_only=false",
+    );
+    expect(contactsResponse.ok()).toBeTruthy();
+    const contacts = await contactsResponse.json() as Array<{
+      id: string;
+      display_name: string;
+      email: string | null;
+    }>;
+    const coManager = contacts.find((row) => row.display_name === "Coordonnateur Démo");
+    expect(coManager).toBeDefined();
+    expect(coManager?.email).toBe(testEmail("coord"));
+
+    const managersResponse = await admin.context.request.get(
+      "/api/v1/projects/P-251/managers?scope=global",
+    );
+    expect(managersResponse.ok()).toBeTruthy();
+    const managers = await managersResponse.json() as { co_managers_version: number };
+    const addResponse = await admin.context.request.put(
+      `/api/v1/projects/P-251/co-managers/${encodeURIComponent(coManager!.id)}`,
+      {
+        headers: { "Idempotency-Key": "e2e-611-co-manager" },
+        data: { expected_version: managers.co_managers_version },
+      },
+    );
+    expect(addResponse.ok()).toBeTruthy();
+    await closeContext(admin.context);
+
     const { context, page } = await openAs(browser, "COORDINATOR");
     await navigateMain(page, "Communications");
     await expect(page.getByRole("heading", { name: "Communications de planification" })).toBeVisible();
@@ -763,6 +792,7 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     const draft = page.locator(".draft-card").filter({ hasText: "Projet P-251" }).first();
     await expect(draft).toBeVisible();
     await expect(draft.locator(".draft-recipients")).toContainText(testEmail("pm"));
+    await expect(draft.locator(".draft-recipients")).toContainText(testEmail("coord"));
     await expect(draft.locator(".draft-recipients")).toContainText(testEmail("alice"));
     await expect(draft.locator(".draft-recipients")).toContainText(testEmail("bob"));
     await expect(draft.getByText("Courriel manquant")).toHaveCount(0);
@@ -775,7 +805,9 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
 
     const batch = page.locator(".batch-row").first();
     await expect(batch).toContainText("Sujet : Confirmation E2E — P-251");
-    await expect(batch).toContainText(`To : ${testEmail("pm")}`);
+    await expect(batch).toContainText(
+      `To : ${testEmail("pm")}, ${testEmail("coord")}`,
+    );
     await expect(batch).toContainText(testEmail("alice"));
     await expect(batch).toContainText(testEmail("bob"));
 

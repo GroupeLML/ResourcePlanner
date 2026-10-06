@@ -60,6 +60,7 @@ SOURCE_MISSING_COLUMNS = {
     },
     "shifts": {"operational_responsible_override_contact_id"},
     "auth_sessions": {"auth_mode"},
+    "communication_messages": {"to_recipients_json"},
     "work_packages": {
         "task_catalog_item_id",
         "version",

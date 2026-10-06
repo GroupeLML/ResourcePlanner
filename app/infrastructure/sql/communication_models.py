@@ -76,6 +76,7 @@ class CommunicationMessageRow(Base):
     audience: Mapped[str] = mapped_column(String(32), nullable=False)
     recipient_id: Mapped[str] = mapped_column(String(180), nullable=False)
     recipient_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    to_recipients_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     message_key: Mapped[str | None] = mapped_column(String(180), nullable=True)
     project_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), nullable=True)
     cc_recipients_json: Mapped[str | None] = mapped_column(Text, nullable=True)

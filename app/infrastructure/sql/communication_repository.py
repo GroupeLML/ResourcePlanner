@@ -259,6 +259,18 @@ class SqlCommunicationRepository(CommunicationRepositoryPort):
         ).all()
         result: list[CommunicationMessageRecord] = []
         for row in rows:
+            to_emails: tuple[str, ...] = ()
+            if row.to_recipients_json:
+                payload = json.loads(row.to_recipients_json)
+                to_emails = tuple(
+                    str(item.get("email") or "").strip()
+                    for item in payload
+                    if isinstance(item, dict)
+                    and str(item.get("email") or "").strip()
+                )
+            if not to_emails and _optional_text(row.recipient_email):
+                to_emails = (_optional_text(row.recipient_email) or "",)
+
             cc_emails: tuple[str, ...] = ()
             if row.cc_recipients_json:
                 payload = json.loads(row.cc_recipients_json)
@@ -280,6 +292,7 @@ class SqlCommunicationRepository(CommunicationRepositoryPort):
                     message_key=_optional_text(row.message_key),
                     project_id=_optional_text(row.project_id),
                     cc_emails=cc_emails,
+                    to_emails=to_emails,
                     content_fingerprint=_optional_text(row.content_fingerprint),
                     approvable=bool(row.approvable),
                     diagnostics_json=_optional_text(row.diagnostics_json),
@@ -407,6 +420,15 @@ class SqlCommunicationRepository(CommunicationRepositoryPort):
         self._session.flush()
 
         for draft, included in messages:
+            to_payload = [
+                {
+                    "contact_id": participant.contact_id,
+                    "user_id": participant.user_id,
+                    "display_name": participant.display_name,
+                    "email": participant.email,
+                }
+                for participant in draft.to_recipients
+            ]
             cc_payload = [
                 {
                     "contact_id": participant.contact_id,
@@ -436,6 +458,11 @@ class SqlCommunicationRepository(CommunicationRepositoryPort):
                 audience=draft.audience,
                 recipient_id=recipient_id,
                 recipient_email=_optional_text(draft.to_recipient.email),
+                to_recipients_json=json.dumps(
+                    to_payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
                 message_key=draft.message_key,
                 project_id=draft.project_id,
                 cc_recipients_json=json.dumps(
