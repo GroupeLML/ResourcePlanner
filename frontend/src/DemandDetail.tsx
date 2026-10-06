@@ -31,7 +31,6 @@ export default function DemandDetail({
   canonicalDetail,
   hasUnsavedChanges = false,
   compact = false,
-  showWorkflowActions = false,
 }: {
   demandNumber: string;
   onChanged?: () => void | Promise<void>;
@@ -39,7 +38,6 @@ export default function DemandDetail({
   canonicalDetail?: DemandDetailReadModel | null;
   hasUnsavedChanges?: boolean;
   compact?: boolean;
-  showWorkflowActions?: boolean;
 }) {
   const [loadedDetail, setLoadedDetail] = useState<DemandDetailReadModel | null>(null);
   const [loading, setLoading] = useState(true);
@@ -125,7 +123,7 @@ export default function DemandDetail({
           canonicalDetail={detail}
           hasUnsavedChanges={hasUnsavedChanges}
           embedded
-          showActions={showWorkflowActions}
+          showActions={false}
           onChanged={changed}
           refreshToken={refreshKey}
         />
