@@ -117,10 +117,44 @@ def _reshape_as_0048(path: Path) -> None:
             DROP TABLE IF EXISTS verification_scopes;
             DROP TABLE IF EXISTS project_manager_audit;
             DROP TABLE IF EXISTS project_co_managers;
+            DROP TABLE IF EXISTS task_catalog_preferred_resource_audit;
 
-            DROP INDEX IF EXISTS ix_task_catalog_items_erp_budget_last_success_at;
-            ALTER TABLE task_catalog_items
-                DROP COLUMN erp_budget_last_success_at;
+            CREATE TABLE task_catalog_items_0048 AS
+            SELECT
+                id,
+                project_number,
+                task_code,
+                label,
+                status,
+                active,
+                billing_rule,
+                allocation_rule,
+                completion_percent,
+                erp_created_at,
+                branch,
+                approver_name,
+                operational_responsible_contact_id,
+                coordinator_contact_id,
+                cv_enabled,
+                time_entry_enabled,
+                expenses_enabled,
+                erp_task_id,
+                account_group,
+                cost_code,
+                inventory_id,
+                budget_amount_cad,
+                budget_actual_cad,
+                budget_diagnostic,
+                workforce_eligible,
+                resource_class_code,
+                average_hourly_cost_cad,
+                budget_hours,
+                workforce_diagnostics,
+                created_at,
+                updated_at
+            FROM task_catalog_items;
+            DROP TABLE task_catalog_items;
+            ALTER TABLE task_catalog_items_0048 RENAME TO task_catalog_items;
 
             ALTER TABLE communication_messages
                 DROP COLUMN to_recipients_json;
