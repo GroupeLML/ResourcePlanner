@@ -112,7 +112,7 @@ class SqlVerificationRepository:
     The caller owns the outer transaction. Keyed mutations reuse the shared durable
     command receipt; unkeyed mutations use a SAVEPOINT so a caught failure cannot
     accidentally commit a Verification CAS without its business rows and audit.
-    Story closure remains outside this repository until #363C.
+    Story closure orchestration remains in the application layer.
     """
 
     def __init__(self, session: Session) -> None:
