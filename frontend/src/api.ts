@@ -1975,6 +1975,19 @@ export function cancelWorkPackage(
   );
 }
 
+export function reopenWorkPackage(
+  reference: string,
+  expectedVersion: number,
+  idempotencyKey: string,
+) {
+  return sendJson<WorkPackageMutationResult>(
+    `/api/v1/work-packages/${encodeURIComponent(reference)}/reopen`,
+    "POST",
+    { expected_version: expectedVersion },
+    { "Idempotency-Key": idempotencyKey },
+  );
+}
+
 export function proposeWorkPackageWeeklyLoads(reference: string) {
   return postJson<WorkPackageWeeklyLoadProposalReadModel>(
     `/api/v1/work-packages/${encodeURIComponent(reference)}/weekly-loads/proposal`,

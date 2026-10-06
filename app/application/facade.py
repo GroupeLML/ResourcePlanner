@@ -169,6 +169,17 @@ class ApplicationFacade:
             expected_version=expected_version,
         )
 
+    def reopen_work_package(
+        self,
+        reference: str,
+        *,
+        expected_version: int,
+    ) -> WorkPackageMutationResult:
+        return self._work_package_service().reopen(
+            reference,
+            expected_version=expected_version,
+        )
+
     def propose_work_package_weekly_loads(
         self,
         reference: str,

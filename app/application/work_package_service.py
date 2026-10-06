@@ -152,4 +152,20 @@ class WorkPackageService:
             version=row.version,
         )
 
+    def reopen(self, reference: str, *, expected_version: int) -> WorkPackageMutationResult:
+        row = call_application_port(
+            lambda: self._repository.set_terminal_status(
+                reference,
+                terminal_status=None,
+                expected_version=expected_version,
+            ),
+            code_prefix="work_package_reopen",
+            context={"reference": reference},
+        )
+        return WorkPackageMutationResult(
+            reference=row.reference,
+            action="reopened",
+            version=row.version,
+        )
+
 

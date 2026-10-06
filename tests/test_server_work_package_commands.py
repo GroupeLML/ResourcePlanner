@@ -341,6 +341,113 @@ class ServerWorkPackageCommandTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_issue_614b_terminal_cycle_is_reversible_and_non_propagating(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url)
+
+            with TestClient(app, raise_server_exceptions=False) as client:
+                closed = client.post(
+                    "/api/v1/work-packages/EFF-FREE/close",
+                    headers={"Idempotency-Key": "wp-614b-shared"},
+                    json={"expected_version": 1},
+                )
+                cancelled_after_close = client.post(
+                    "/api/v1/work-packages/EFF-FREE/cancel",
+                    headers={"Idempotency-Key": "wp-614b-cancel-closed"},
+                    json={"expected_version": 2},
+                )
+                reopened_after_cancel = client.post(
+                    "/api/v1/work-packages/EFF-FREE/reopen",
+                    headers={"Idempotency-Key": "wp-614b-reopen-cancelled"},
+                    json={"expected_version": 3},
+                )
+
+                cancelled = client.post(
+                    "/api/v1/work-packages/EFF-LINEONLY/cancel",
+                    headers={"Idempotency-Key": "wp-614b-cancel-lineonly"},
+                    json={"expected_version": 1},
+                )
+                close_cancelled = client.post(
+                    "/api/v1/work-packages/EFF-LINEONLY/close",
+                    headers={"Idempotency-Key": "wp-614b-close-cancelled"},
+                    json={"expected_version": 2},
+                )
+                reopened_cancelled = client.post(
+                    "/api/v1/work-packages/EFF-LINEONLY/reopen",
+                    headers={"Idempotency-Key": "wp-614b-reopen-lineonly"},
+                    json={"expected_version": 2},
+                )
+
+                linked_closed = client.post(
+                    "/api/v1/work-packages/EFF-LINKED/close",
+                    headers={"Idempotency-Key": "wp-614b-shared"},
+                    json={"expected_version": 1},
+                )
+                linked_reopened = client.post(
+                    "/api/v1/work-packages/EFF-LINKED/reopen",
+                    headers={"Idempotency-Key": "wp-614b-reopen-linked"},
+                    json={"expected_version": 2},
+                )
+                rows = client.get(
+                    "/api/v1/work-packages?project_number=P-1&active_only=false"
+                )
+
+            self.assertEqual(closed.status_code, 200, closed.text)
+            self.assertEqual(cancelled_after_close.status_code, 200, cancelled_after_close.text)
+            self.assertEqual(
+                cancelled_after_close.json(),
+                {"reference": "EFF-FREE", "action": "cancelled", "version": 3},
+            )
+            self.assertEqual(reopened_after_cancel.status_code, 200, reopened_after_cancel.text)
+            self.assertEqual(
+                reopened_after_cancel.json(),
+                {"reference": "EFF-FREE", "action": "reopened", "version": 4},
+            )
+
+            self.assertEqual(cancelled.status_code, 200, cancelled.text)
+            self.assertEqual(close_cancelled.status_code, 409, close_cancelled.text)
+            self.assertEqual(
+                close_cancelled.json()["error"]["code"],
+                "work_package_lifecycle_transition_invalid",
+            )
+            self.assertEqual(reopened_cancelled.status_code, 200, reopened_cancelled.text)
+
+            self.assertEqual(linked_closed.status_code, 200, linked_closed.text)
+            self.assertEqual(linked_reopened.status_code, 200, linked_reopened.text)
+            items = {row["reference"]: row for row in rows.json()}
+            self.assertEqual(items["EFF-FREE"]["status"], "planned")
+            self.assertEqual(items["EFF-LINEONLY"]["status"], "planned")
+            self.assertEqual(items["EFF-LINKED"]["status"], "active")
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory() as session:
+                    free = session.get(WorkPackage, "WP-FREE")
+                    self.assertIsNone(free.terminal_status)
+                    self.assertEqual(free.status, "planned")
+                    free_audits = tuple(
+                        session.scalars(
+                            select(WorkPackageAudit)
+                            .where(WorkPackageAudit.work_package_id == "WP-FREE")
+                            .order_by(WorkPackageAudit.resulting_version)
+                        ).all()
+                    )
+                    self.assertEqual(
+                        [audit.action for audit in free_audits],
+                        ["CLOSE", "CANCEL", "REOPEN"],
+                    )
+
+                    linked = session.get(WorkPackage, "WP-LINKED")
+                    self.assertIsNone(linked.terminal_status)
+                    self.assertEqual(linked.status, "active")
+                    request = session.get(WorkforceRequest, "REQ-1")
+                    self.assertEqual(request.status, "Brouillon")
+                    self.assertEqual(request.work_package_id, "WP-LINKED")
+            finally:
+                engine.dispose()
+
     def test_date_window_is_validated_by_application_layer(self) -> None:
         with TemporaryDirectory() as directory:
             app = create_api_app(self._database(directory))
