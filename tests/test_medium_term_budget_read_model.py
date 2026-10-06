@@ -925,11 +925,39 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
                                 active=True,
                             ),
                             WorkforceRequestPeriod(
+                                id="PER-614D-BEFORE-ROW",
+                                period_key="PER-614D-BEFORE",
+                                workforce_request_id="REQ-614D",
+                                request_line_id="LINE-614D-A",
+                                sequence=1,
+                                kind="CUMULATIVE",
+                                start_date=date(2026, 9, 20),
+                                end_date=date(2026, 9, 20),
+                                hours=Decimal("4"),
+                                confirmation="Confirmée",
+                                resource_count=1,
+                                active=True,
+                            ),
+                            WorkforceRequestPeriod(
+                                id="PER-614D-AFTER-ROW",
+                                period_key="PER-614D-AFTER",
+                                workforce_request_id="REQ-614D",
+                                request_line_id="LINE-614D-A",
+                                sequence=2,
+                                kind="CUMULATIVE",
+                                start_date=date(2026, 10, 6),
+                                end_date=date(2026, 10, 6),
+                                hours=Decimal("4"),
+                                confirmation="Confirmée",
+                                resource_count=1,
+                                active=True,
+                            ),
+                            WorkforceRequestPeriod(
                                 id="PER-614D-BOTH-ROW",
                                 period_key="PER-614D-BOTH",
                                 workforce_request_id="REQ-614D",
                                 request_line_id="LINE-614D-A",
-                                sequence=1,
+                                sequence=3,
                                 kind="ALTERNATIVE",
                                 alternative_group="ALT-614D",
                                 start_date=date(2026, 9, 20),
@@ -972,9 +1000,27 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
             row for row in programming["work_packages"] if row["id"] == "WP-216-A"
         )
         periods = {row["period_id"]: row for row in lot_a["demand_periods"]}
-        self.assertEqual(set(periods), {"PER-614D-IN", "PER-614D-BOTH"})
+        self.assertEqual(
+            set(periods),
+            {
+                "PER-614D-IN",
+                "PER-614D-BEFORE",
+                "PER-614D-AFTER",
+                "PER-614D-BOTH",
+            },
+        )
         self.assertFalse(periods["PER-614D-IN"]["outside_work_package"])
         self.assertEqual(periods["PER-614D-IN"]["outside_position"], "NONE")
+        self.assertEqual(periods["PER-614D-BEFORE"]["outside_position"], "BEFORE")
+        self.assertEqual(
+            periods["PER-614D-BEFORE"]["diagnostics"],
+            ["DEMAND_BEFORE_WORK_PACKAGE"],
+        )
+        self.assertEqual(periods["PER-614D-AFTER"]["outside_position"], "AFTER")
+        self.assertEqual(
+            periods["PER-614D-AFTER"]["diagnostics"],
+            ["DEMAND_AFTER_WORK_PACKAGE"],
+        )
         self.assertTrue(periods["PER-614D-BOTH"]["outside_work_package"])
         self.assertEqual(periods["PER-614D-BOTH"]["outside_position"], "BOTH")
         self.assertEqual(
