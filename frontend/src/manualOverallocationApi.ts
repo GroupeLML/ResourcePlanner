@@ -42,6 +42,7 @@ export type PlanningDropAction = {
   label: string;
   enabled: boolean;
   required_parameters: string[];
+  auto_execute?: boolean;
   required_permission?: string | null;
   reason_code?: string | null;
   reason?: string | null;
