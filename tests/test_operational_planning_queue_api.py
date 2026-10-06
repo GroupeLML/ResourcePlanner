@@ -321,6 +321,64 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
             self.assertEqual(bob["prudent_free"], 32.0)
             self.assertGreater(alice["score"], bob["score"])
 
+    def test_recommendations_do_not_infer_class_and_keep_canonical_skill_ids(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            with factory.begin() as session:
+                target = session.get(ResourceRequirement, "REQ-TARGET")
+                assert target is not None
+                target.required_resource_class = None
+                target.required_competency = "Texte historique non canonique"
+            engine.dispose()
+
+            app = create_api_app(url)
+            with TestClient(app) as client:
+                response = client.get(
+                    "/api/v1/segments/SEG-2026-0273/resource-recommendations"
+                )
+
+            self.assertEqual(response.status_code, 200, response.text)
+            rows = response.json()
+            alice, bob = rows
+            self.assertIsNone(alice["required_class"])
+            self.assertTrue(alice["class_match"])
+            self.assertTrue(bob["class_match"])
+            self.assertEqual(alice["required_competency"], "PLC")
+            self.assertEqual(alice["competency_state"], "SATISFIED")
+            self.assertEqual(bob["competency_state"], "MISSING")
+            self.assertEqual(bob["recommendation_category"], 3)
+
+    def test_preferred_resource_never_bypasses_real_qualification(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            with factory.begin() as session:
+                task = session.get(TaskCatalogEntry, "T-APPROVED")
+                assert task is not None
+                task.preferred_resource_id = "R-BOB"
+            engine.dispose()
+
+            app = create_api_app(url)
+            with TestClient(app) as client:
+                response = client.get(
+                    "/api/v1/segments/SEG-2026-0273/resource-recommendations"
+                )
+
+            self.assertEqual(response.status_code, 200, response.text)
+            rows = response.json()
+            alice, bob = rows
+            self.assertEqual(alice["resource_id"], "R-ALICE")
+            self.assertEqual(alice["recommendation_category"], 2)
+            self.assertTrue(alice["recommended"])
+            self.assertFalse(alice["preferred"])
+            self.assertEqual(bob["resource_id"], "R-BOB")
+            self.assertTrue(bob["preferred"])
+            self.assertEqual(bob["recommendation_category"], 7)
+            self.assertFalse(bob["recommended"])
+
 
 if __name__ == "__main__":
     unittest.main()
