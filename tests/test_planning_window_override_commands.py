@@ -13,6 +13,7 @@ from app.application import (
     AllocationDropEvaluateCommand,
     AllocationWindowOverrideMoveCommand,
     ApplicationAuthorizationError,
+    ApplicationConflictError,
     PlanningWindowOverrideExtendCommand,
 )
 from app.application.security import (
@@ -21,7 +22,13 @@ from app.application.security import (
     permissions_for_roles,
 )
 from app.domain.approval_envelope import EnvelopeEntryIdentity
+from app.domain.reservable_assets import AssetRequirementOrigin
 from app.infrastructure.sql import (
+    ORIGIN_AD_HOC,
+    Asset,
+    AssetAllocation,
+    AssetRequirement,
+    AssetType,
     Base,
     PLANNING_WINDOW_OVERRIDE_ACTIVE,
     PLANNING_WINDOW_OVERRIDE_SUPERSEDED,
@@ -326,6 +333,49 @@ class PlanningWindowOverrideCommandTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_existing_override_is_classified_as_current_effective_authority(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            command = PlanningWindowOverrideExtendCommand(
+                segment_id=SEGMENT_ID,
+                start_date=DAY,
+                end_date=NEXT_DAY,
+                reason="Dérogation existante",
+                expected_planning_version=1,
+                expected_approval_revision_id=REVISION_ID,
+                idempotency_key="613c-existing",
+            )
+            try:
+                with factory.begin() as session:
+                    self._adapter(
+                        session,
+                        _PlanningStub(),
+                    ).extend_planning_window(command)
+
+                with factory() as session:
+                    evaluated = self._adapter(
+                        session,
+                        _PlanningStub(),
+                    ).evaluate_drop(
+                        AllocationDropEvaluateCommand(
+                            allocation_id=ALLOCATION_ID,
+                            resource_id=RESOURCE_B,
+                            day=NEXT_DAY,
+                        )
+                    )
+                    self.assertEqual(
+                        evaluated["authorization_decision"],
+                        "WITHIN_ACTIVE_PLANNING_WINDOW_OVERRIDE",
+                    )
+                    self.assertEqual(
+                        [row["code"] for row in evaluated["actions"]],
+                        ["MOVE", "SPLIT", "DUPLICATE", "CANCEL"],
+                    )
+            finally:
+                engine.dispose()
+
     def test_segment_extension_is_atomic_idempotent_and_keeps_approval_immutable(self) -> None:
         with TemporaryDirectory() as directory:
             url = self._database(directory)
@@ -530,6 +580,164 @@ class PlanningWindowOverrideCommandTests(unittest.TestCase):
                     self.assertEqual(
                         inactive.exception.code,
                         "planning_window_override_actor_required",
+                    )
+                    self.assertEqual(self._version(session), 1)
+            finally:
+                engine.dispose()
+
+    def test_shift_ad_hoc_asset_conflict_rolls_back_override_and_move(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    session.add(
+                        AssetType(
+                            id="AT-613C",
+                            code="AT-613C",
+                            label="Actif 613C",
+                            category="EQUIPMENT",
+                        )
+                    )
+                    session.flush()
+                    session.add(
+                        Asset(
+                            id="ASSET-613C",
+                            code="ASSET-613C",
+                            label="Actif 613C",
+                            asset_type_id="AT-613C",
+                        )
+                    )
+                    session.add(
+                        ResourceRequirement(
+                            id="REQ-OCCUPY-613C",
+                            project_id=PROJECT_ID,
+                            workforce_request_id=None,
+                            origin=ORIGIN_AD_HOC,
+                            start_date=NEXT_DAY,
+                            end_date=NEXT_DAY,
+                            planned_hours=Decimal("8.00"),
+                            status="Planifié",
+                        )
+                    )
+                    session.flush()
+                    session.add(
+                        Shift(
+                            id="SHIFT-OCCUPY-613C",
+                            resource_requirement_id="REQ-OCCUPY-613C",
+                            resource_id=RESOURCE_A,
+                            work_date=NEXT_DAY,
+                            hours=Decimal("8.00"),
+                            source="MANUAL",
+                            locked=True,
+                        )
+                    )
+                    session.flush()
+                    session.add_all(
+                        [
+                            AssetRequirement(
+                                id="AR-SOURCE-613C",
+                                project_id=PROJECT_ID,
+                                origin=AssetRequirementOrigin.SHIFT_AD_HOC.value,
+                                shift_id=SHIFT_ID,
+                                asset_type_id="AT-613C",
+                                start_date=DAY,
+                                end_date=DAY,
+                                status="Planifié",
+                            ),
+                            AssetRequirement(
+                                id="AR-OCCUPY-613C",
+                                project_id=PROJECT_ID,
+                                origin=AssetRequirementOrigin.SHIFT_AD_HOC.value,
+                                shift_id="SHIFT-OCCUPY-613C",
+                                asset_type_id="AT-613C",
+                                start_date=NEXT_DAY,
+                                end_date=NEXT_DAY,
+                                status="Planifié",
+                            ),
+                        ]
+                    )
+                    session.flush()
+                    session.add_all(
+                        [
+                            AssetAllocation(
+                                id="AA-SOURCE-613C",
+                                asset_requirement_id="AR-SOURCE-613C",
+                                asset_id="ASSET-613C",
+                                operator_resource_id=RESOURCE_A,
+                                start_date=DAY,
+                                end_date=DAY,
+                                locked=True,
+                                source="MANUAL",
+                            ),
+                            AssetAllocation(
+                                id="AA-OCCUPY-613C",
+                                asset_requirement_id="AR-OCCUPY-613C",
+                                asset_id="ASSET-613C",
+                                operator_resource_id=RESOURCE_A,
+                                start_date=NEXT_DAY,
+                                end_date=NEXT_DAY,
+                                locked=True,
+                                source="MANUAL",
+                            ),
+                        ]
+                    )
+
+                command = AllocationWindowOverrideMoveCommand(
+                    allocation_id=ALLOCATION_ID,
+                    resource_id=RESOURCE_B,
+                    day=NEXT_DAY,
+                    reason="Conflit actif 613C",
+                    expected_planning_version=1,
+                    expected_approval_revision_id=REVISION_ID,
+                    idempotency_key="613c-asset-conflict",
+                )
+                planning = _PlanningStub()
+                with self.assertRaises(ApplicationConflictError) as conflict:
+                    with factory.begin() as session:
+                        self._adapter(
+                            session,
+                            planning,
+                        ).override_and_move(command)
+                self.assertEqual(conflict.exception.code, "asset_double_booking")
+                self.assertEqual(planning.calls, 0)
+
+                with factory() as session:
+                    requirement = session.get(ResourceRequirement, REQUIREMENT_ID)
+                    shift = session.get(Shift, SHIFT_ID)
+                    asset_requirement = session.get(
+                        AssetRequirement,
+                        "AR-SOURCE-613C",
+                    )
+                    allocation = session.get(
+                        AssetAllocation,
+                        "AA-SOURCE-613C",
+                    )
+                    assert requirement is not None
+                    assert shift is not None
+                    assert asset_requirement is not None
+                    assert allocation is not None
+                    self.assertEqual(requirement.end_date, DAY)
+                    self.assertEqual(shift.resource_id, RESOURCE_A)
+                    self.assertEqual(shift.work_date, DAY)
+                    self.assertEqual(shift.source, "AUTO")
+                    self.assertFalse(shift.locked)
+                    self.assertEqual(asset_requirement.start_date, DAY)
+                    self.assertEqual(asset_requirement.end_date, DAY)
+                    self.assertEqual(allocation.start_date, DAY)
+                    self.assertEqual(allocation.end_date, DAY)
+                    self.assertEqual(allocation.operator_resource_id, RESOURCE_A)
+                    self.assertEqual(
+                        int(
+                            session.scalar(
+                                select(func.count()).select_from(
+                                    PlanningWindowOverride
+                                )
+                            )
+                            or 0
+                        ),
+                        0,
                     )
                     self.assertEqual(self._version(session), 1)
             finally:
