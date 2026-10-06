@@ -267,6 +267,9 @@ function ShiftCard({
   const unplaced = Number(diagnostic?.unplaced_hours ?? 0);
   const asset = shift.asset_assignment;
   const relatedAssets = shift.related_asset_reservations ?? [];
+  const inheritedAssets = relatedAssets.filter((reservation) =>
+    reservation.association_kind.startsWith("INHERITED_"),
+  );
   const assetDiagnostics = shift.asset_diagnostics ?? [];
   const meta = [
     shift.allocation_type,
@@ -335,15 +338,15 @@ function ShiftCard({
           aria-label={
             asset
               ? "Actif affecté au quart"
-              : relatedAssets.length > 0
+              : inheritedAssets.length > 0
                 ? "Actif lié ou hérité par le quart"
                 : "Aucun actif affecté au quart"
           }
         >
           {asset
             ? `Actif : ${asset.asset_code}${asset.asset_active ? "" : " · inactif"}`
-            : relatedAssets.length > 0
-              ? `Actif lié : ${relatedAssets.map((reservation) => reservation.asset_code).join(", ")}`
+            : inheritedAssets.length > 0
+              ? `Actif lié : ${inheritedAssets.map((reservation) => reservation.asset_code).join(", ")}`
               : "Aucun actif"}
           {assetDiagnostics.length > 0 && (
             <span
