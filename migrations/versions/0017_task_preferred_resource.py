@@ -18,18 +18,24 @@ depends_on: str | None = None
 def _upgrade_task_catalog() -> None:
     bind = op.get_bind()
     if bind.dialect.name == "sqlite":
+        # Add the columns before the batch rebuild. Adding freshly introduced
+        # columns inside recreate="always" can make Alembic infer a cyclic
+        # partial column ordering when the source database has accumulated
+        # additive columns from prior revisions (notably the 0048 bridge path).
+        op.add_column(
+            "task_catalog_items",
+            sa.Column("preferred_resource_id", sa.String(length=36), nullable=True),
+        )
+        op.add_column(
+            "task_catalog_items",
+            sa.Column(
+                "preferred_resource_version",
+                sa.Integer(),
+                nullable=False,
+                server_default=sa.text("1"),
+            ),
+        )
         with op.batch_alter_table("task_catalog_items", recreate="always") as batch_op:
-            batch_op.add_column(
-                sa.Column("preferred_resource_id", sa.String(length=36), nullable=True)
-            )
-            batch_op.add_column(
-                sa.Column(
-                    "preferred_resource_version",
-                    sa.Integer(),
-                    nullable=False,
-                    server_default=sa.text("1"),
-                )
-            )
             batch_op.create_foreign_key(
                 op.f("fk_task_catalog_items_preferred_resource_id_resources"),
                 "resources",
@@ -40,11 +46,12 @@ def _upgrade_task_catalog() -> None:
                 op.f("ck_task_catalog_items_preferred_resource_version_positive"),
                 "preferred_resource_version >= 1",
             )
-            batch_op.create_index(
-                op.f("ix_task_catalog_items_preferred_resource_id"),
-                ["preferred_resource_id"],
-                unique=False,
-            )
+        op.create_index(
+            op.f("ix_task_catalog_items_preferred_resource_id"),
+            "task_catalog_items",
+            ["preferred_resource_id"],
+            unique=False,
+        )
         return
 
     op.add_column(
