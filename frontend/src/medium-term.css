@@ -102,7 +102,7 @@
 .mt-demand-gantt-bar.planned { border-color: #9fc9ae; border-left-color: #4f9a68; background: #edf7f0; }
 .mt-demand-gantt-bar.tentative { border-color: #a9bfe9; border-left-color: #6d8fcf; background: #f0f4ff; }
 .mt-demand-gantt-bar.pending { border-color: #e4c87f; border-left-color: #c59220; background: #fff7df; }
-.mt-demand-gantt-bar.correction { border-color: #e8b0b0; border-left-color: #c75f5f; background: #fdf0f0; }
+.mt-demand-gantt-bar.correction { border-color: rgb(232, 176, 176); border-left-color: #c75f5f; background: #fdf0f0; }
 .mt-demand-gantt-bar.draft { border-color: #cfd5de; border-left-color: #98a2b3; background: #f4f5f7; }
 .mt-demand-gantt-bar.has-warning { box-shadow: inset 0 0 0 1px #d7a338; }
 .mt-demand-gantt-bar:hover { filter: brightness(.98); }
