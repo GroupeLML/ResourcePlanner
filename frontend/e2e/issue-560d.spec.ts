@@ -137,7 +137,7 @@ test("560D gère assign/change/release depuis le Shift sans état optimiste mens
         change: { allowed: false, reason: "asset_assignment_missing" },
         release: { allowed: false, reason: "asset_assignment_missing" },
       },
-      asset_diagnostics: ["related_asset_reservations_multiple"],
+      asset_diagnostics: [],
     };
 
     await route.fulfill({
