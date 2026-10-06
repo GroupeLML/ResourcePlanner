@@ -338,7 +338,7 @@ def build_command_router(
         idempotency: IdempotentCommandExecutor = Depends(stable_idempotency),
     ) -> dict[str, Any]:
         return idempotency.execute(
-            scope="work_package.close",
+            scope=f"work_package.close:{reference}",
             key=idempotency_key,
             request_payload=_json_body(body),
             action=lambda: _payload(
@@ -358,11 +358,31 @@ def build_command_router(
         idempotency: IdempotentCommandExecutor = Depends(stable_idempotency),
     ) -> dict[str, Any]:
         return idempotency.execute(
-            scope="work_package.cancel",
+            scope=f"work_package.cancel:{reference}",
             key=idempotency_key,
             request_payload=_json_body(body),
             action=lambda: _payload(
                 facade.cancel_work_package(
+                    reference,
+                    expected_version=body.expected_version,
+                )
+            ),
+        )
+
+    @router.post("/work-packages/{reference}/reopen")
+    def reopen_work_package(
+        reference: str,
+        body: WorkPackageLifecycleRequest,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        facade: ApplicationFacade = Depends(facade_dependency),
+        idempotency: IdempotentCommandExecutor = Depends(stable_idempotency),
+    ) -> dict[str, Any]:
+        return idempotency.execute(
+            scope=f"work_package.reopen:{reference}",
+            key=idempotency_key,
+            request_payload=_json_body(body),
+            action=lambda: _payload(
+                facade.reopen_work_package(
                     reference,
                     expected_version=body.expected_version,
                 )
