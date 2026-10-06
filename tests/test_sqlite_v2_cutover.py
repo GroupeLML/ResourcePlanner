@@ -336,6 +336,13 @@ def _reshape_source_as_0048(path: Path) -> None:
             DROP TABLE IF EXISTS work_package_load_intervals;
             DROP TABLE IF EXISTS availability_rule_resource_classes;
             DROP TABLE IF EXISTS planning_window_overrides;
+            DROP TABLE IF EXISTS verification_change_history;
+            DROP TABLE IF EXISTS verification_retest_requests;
+            DROP TABLE IF EXISTS story_verification_decision_requirements;
+            DROP TABLE IF EXISTS story_verification_decisions;
+            DROP TABLE IF EXISTS verification_requirement_revisions;
+            DROP TABLE IF EXISTS verification_requirements;
+            DROP TABLE IF EXISTS verification_scopes;
 
 
             DROP TABLE IF EXISTS acumatica_project_task_sync_project_results;
@@ -641,6 +648,10 @@ class SqliteV2CutoverTests(unittest.TestCase):
             )
             self.assertIn(
                 ("missing_table_as_empty", "availability_rule_resource_classes"),
+                adaptations,
+            )
+            self.assertIn(
+                ("missing_table_as_empty", "verification_scopes"),
                 adaptations,
             )
             self.assertIn(

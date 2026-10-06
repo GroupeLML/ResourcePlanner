@@ -252,8 +252,11 @@ test("362F Delivery traverse PM, Team Lead et technicien sans élargir Planning"
   await labelled(techStory, "Statut", "select").selectOption("DONE");
   await labelled(techStory, "Restant (h)", "input").fill("0");
   await techStory.getByRole("button", { name: "Enregistrer" }).click();
-  await expect(technician.page.locator(".delivery-summary").locator("article").filter({ hasText: "Progression" }).locator("strong")).toHaveText("100 %");
-  await expect(technician.page.locator(".delivery-summary").locator("article").filter({ hasText: "Travail restant" }).locator("strong")).toHaveText("0 h");
+  await expect(technician.page.locator(".error-panel")).toContainText(
+    "story_verification_decision_required",
+  );
+  await expect(technician.page.locator(".delivery-summary").locator("article").filter({ hasText: "Progression" }).locator("strong")).toHaveText("0 %");
+  await expect(technician.page.locator(".delivery-summary").locator("article").filter({ hasText: "Travail restant" }).locator("strong")).toHaveText("3 h");
   await expect(storyFact(storyCard(technician.page, storyTitle), "Référence")).toContainText("8 h");
 
   await closeContext(technician.context);
@@ -264,10 +267,10 @@ test("362F Delivery traverse PM, Team Lead et technicien sans élargir Planning"
   await projectManager.page.locator(".delivery-plan-toolbar").getByRole("button", { name: "Archiver" }).click();
   await expect(projectManager.page.locator(".error-panel")).toContainText("delivery_version_conflict");
   await expect(projectManager.page.locator(".error-panel")).toContainText("rechargé avec la version courante");
-  await expect(projectManager.page.locator(".delivery-plan-toolbar")).toContainText("Version Delivery 11");
+  await expect(projectManager.page.locator(".delivery-plan-toolbar")).toContainText("Version Delivery 10");
   await projectManager.page.locator(".delivery-plan-toolbar").getByRole("button", { name: "Archiver" }).click();
   await expect(projectManager.page.locator(".delivery-plan-toolbar")).toContainText("ARCHIVED");
-  await expect(projectManager.page.locator(".delivery-plan-toolbar")).toContainText("Version Delivery 12");
+  await expect(projectManager.page.locator(".delivery-plan-toolbar")).toContainText("Version Delivery 11");
   await expect(storyCard(projectManager.page, storyTitle)).toBeVisible();
 
   await closeContext(projectManager.context);

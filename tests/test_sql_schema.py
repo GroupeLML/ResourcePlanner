@@ -54,6 +54,13 @@ EXPECTED_TABLES = {
     "delivery_plans",
     "delivery_items",
     "delivery_change_history",
+    "verification_scopes",
+    "verification_requirements",
+    "verification_requirement_revisions",
+    "story_verification_decisions",
+    "story_verification_decision_requirements",
+    "verification_retest_requests",
+    "verification_change_history",
     "planning_change_history",
     "planning_mutation_state",
     "planning_window_overrides",
@@ -126,6 +133,13 @@ class SqlSchemaTests(unittest.TestCase):
         planning_history = Base.metadata.tables["planning_change_history"].c
         planning_state = Base.metadata.tables["planning_mutation_state"].c
         planning_window_overrides = Base.metadata.tables["planning_window_overrides"].c
+        verification_scopes = Base.metadata.tables["verification_scopes"].c
+        verification_requirements = Base.metadata.tables["verification_requirements"].c
+        verification_revisions = Base.metadata.tables["verification_requirement_revisions"].c
+        verification_decisions = Base.metadata.tables["story_verification_decisions"].c
+        verification_decision_requirements = Base.metadata.tables["story_verification_decision_requirements"].c
+        verification_retests = Base.metadata.tables["verification_retest_requests"].c
+        verification_history = Base.metadata.tables["verification_change_history"].c
         self.assertFalse(planning_window_overrides.workforce_request_id.nullable)
         self.assertFalse(planning_window_overrides.resource_requirement_id.nullable)
         self.assertFalse(planning_window_overrides.approval_revision_id.nullable)
@@ -134,6 +148,35 @@ class SqlSchemaTests(unittest.TestCase):
         self.assertFalse(planning_window_overrides.reason.nullable)
         self.assertFalse(planning_window_overrides.correlation_id.nullable)
         self.assertFalse(planning_window_overrides.status.nullable)
+        self.assertFalse(verification_scopes.work_package_id.nullable)
+        self.assertTrue(verification_scopes.lead_user_id.nullable)
+        self.assertFalse(verification_scopes.verification_version.nullable)
+        self.assertFalse(verification_requirements.verification_scope_id.nullable)
+        self.assertFalse(verification_requirements.story_id.nullable)
+        self.assertFalse(verification_requirements.phase.nullable)
+        self.assertFalse(verification_requirements.current_revision_id.nullable)
+        self.assertFalse(verification_requirements.state.nullable)
+        self.assertTrue(verification_requirements.withdrawal_reason.nullable)
+        self.assertFalse(verification_revisions.requirement_id.nullable)
+        self.assertFalse(verification_revisions.revision_number.nullable)
+        self.assertFalse(verification_revisions.prerequisites_json.nullable)
+        self.assertFalse(verification_decisions.verification_scope_id.nullable)
+        self.assertFalse(verification_decisions.story_id.nullable)
+        self.assertFalse(verification_decisions.kind.nullable)
+        self.assertFalse(verification_decision_requirements.decision_id.nullable)
+        self.assertFalse(verification_decision_requirements.requirement_id.nullable)
+        self.assertFalse(verification_retests.requirement_id.nullable)
+        self.assertFalse(verification_retests.revision_id.nullable)
+        self.assertFalse(verification_retests.after_execution_sequence.nullable)
+        self.assertFalse(verification_retests.reason.nullable)
+        self.assertFalse(verification_history.verification_scope_id.nullable)
+        self.assertFalse(verification_history.entity_type.nullable)
+        self.assertFalse(verification_history.entity_id.nullable)
+        self.assertTrue(verification_history.story_id.nullable)
+        self.assertFalse(verification_history.actor_user_id.nullable)
+        self.assertFalse(verification_history.action.nullable)
+        self.assertFalse(verification_history.verification_version.nullable)
+        self.assertFalse(verification_history.details_json.nullable)
         task_catalog = Base.metadata.tables["task_catalog_items"].c
         work_packages = Base.metadata.tables["work_packages"].c
         work_package_audit = Base.metadata.tables["work_package_audit"].c

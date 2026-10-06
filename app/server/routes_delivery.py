@@ -4,17 +4,25 @@ from collections.abc import Iterator
 from datetime import date
 from typing import Callable
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Header, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from ..application.delivery_projection import DeliveryProjectionService
 from ..application.delivery_service import DeliveryService
+from ..application.errors import ApplicationValidationError
 from ..application.security import AuthPrincipal
+from ..application.verification_story_closure import (
+    StoryRequirementDefinition,
+    StoryVerificationClosureService,
+    StoryVerificationDecisionInput,
+)
 from ..domain.delivery import DeliveryItemStatus, DeliveryItemType, DeliveryPlanStatus
+from ..domain.verification import VerificationDecisionKind, VerificationPhase
 from ..infrastructure.sql import (
     SqlDeliveryPlanningReadRepository,
     SqlDeliveryRepository,
+    SqlVerificationRepository,
 )
 
 
@@ -68,6 +76,56 @@ class BlockageNoteRequest(VersionRequest):
     note: str = Field(min_length=1, max_length=4000)
 
 
+class VerificationRequirementDefinitionRequest(StrictBody):
+    phase: VerificationPhase
+    objective: str = Field(min_length=1)
+    method: str = Field(min_length=1)
+    expected_result: str = Field(min_length=1)
+    prerequisites: list[str] = Field(default_factory=list)
+    criticality: str | None = None
+
+
+class StoryVerificationDecisionRequest(StrictBody):
+    kind: VerificationDecisionKind
+    justification: str | None = None
+    existing_requirement_ids: list[str] = Field(default_factory=list)
+    new_requirements: list[VerificationRequirementDefinitionRequest] = Field(
+        default_factory=list
+    )
+
+
+class StoryVerificationCommandRequest(VersionRequest):
+    expected_verification_version: int | None = Field(default=None, ge=1)
+    decision: StoryVerificationDecisionRequest
+
+
+def _story_verification_decision_input(
+    body: StoryVerificationDecisionRequest,
+) -> StoryVerificationDecisionInput:
+    try:
+        return StoryVerificationDecisionInput(
+            kind=body.kind,
+            justification=body.justification,
+            existing_requirement_ids=tuple(body.existing_requirement_ids),
+            new_requirements=tuple(
+                StoryRequirementDefinition(
+                    phase=requirement.phase,
+                    objective=requirement.objective,
+                    method=requirement.method,
+                    expected_result=requirement.expected_result,
+                    prerequisites=tuple(requirement.prerequisites),
+                    criticality=requirement.criticality,
+                )
+                for requirement in body.new_requirements
+            ),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ApplicationValidationError(
+            str(exc),
+            code="verification_story_decision_invalid",
+        ) from exc
+
+
 def build_delivery_router(
     session_dependency: Callable[[], Iterator[Session]],
 ) -> APIRouter:
@@ -80,6 +138,14 @@ def build_delivery_router(
         repository = SqlDeliveryRepository(session)
         planning = SqlDeliveryPlanningReadRepository(session)
         return DeliveryProjectionService(repository, planning, planning)
+
+    def verification_closure_service(
+        session: Session,
+    ) -> StoryVerificationClosureService:
+        return StoryVerificationClosureService(
+            SqlDeliveryRepository(session),
+            SqlVerificationRepository(session),
+        )
 
     def principal(request: Request) -> AuthPrincipal:
         return request.state.auth_principal
@@ -193,6 +259,50 @@ def build_delivery_router(
             item_id,
             changes=changes,
             expected_delivery_version=body.expected_delivery_version,
+            principal=principal(request),
+        )
+
+    @router.post("/items/{item_id}/complete-with-verification")
+    def complete_story_with_verification(
+        item_id: str,
+        body: StoryVerificationCommandRequest,
+        request: Request,
+        idempotency_key: str = Header(
+            alias="Idempotency-Key",
+            min_length=1,
+            max_length=128,
+        ),
+        session: Session = Depends(session_dependency),
+    ) -> dict[str, object]:
+        decision = _story_verification_decision_input(body.decision)
+        return verification_closure_service(session).complete_story(
+            item_id,
+            expected_delivery_version=body.expected_delivery_version,
+            expected_verification_version=body.expected_verification_version,
+            decision=decision,
+            idempotency_key=idempotency_key,
+            principal=principal(request),
+        )
+
+    @router.post("/items/{item_id}/historical-verification-decision")
+    def record_historical_story_verification_decision(
+        item_id: str,
+        body: StoryVerificationCommandRequest,
+        request: Request,
+        idempotency_key: str = Header(
+            alias="Idempotency-Key",
+            min_length=1,
+            max_length=128,
+        ),
+        session: Session = Depends(session_dependency),
+    ) -> dict[str, object]:
+        decision = _story_verification_decision_input(body.decision)
+        return verification_closure_service(session).record_historical_decision(
+            item_id,
+            expected_delivery_version=body.expected_delivery_version,
+            expected_verification_version=body.expected_verification_version,
+            decision=decision,
+            idempotency_key=idempotency_key,
             principal=principal(request),
         )
 

@@ -43,6 +43,13 @@ SOURCE_MISSING_TABLES = {
     "project_manager_audit",
     "availability_rule_resource_classes",
     "planning_window_overrides",
+    "verification_scopes",
+    "verification_requirements",
+    "verification_requirement_revisions",
+    "story_verification_decisions",
+    "story_verification_decision_requirements",
+    "verification_retest_requests",
+    "verification_change_history",
 }
 SOURCE_MISSING_COLUMNS = {
     "projects": {
