@@ -42,6 +42,7 @@ SOURCE_MISSING_TABLES = {
     "project_co_managers",
     "project_manager_audit",
     "availability_rule_resource_classes",
+    "planning_window_overrides",
 }
 SOURCE_MISSING_COLUMNS = {
     "projects": {

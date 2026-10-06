@@ -54,6 +54,7 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
             "project_co_managers",
             "project_manager_audit",
             "availability_rule_resource_classes",
+            "planning_window_overrides",
         },
         "missing_columns": {
             "auth_sessions": {
@@ -162,6 +163,9 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
     "planning_mutation_state": _rebuild(
         "Singleton technique de version globale créé par la baseline."
     ),
+    "planning_window_overrides": _keep(
+        "Dérogations opérationnelles durables de fenêtre Planning liées aux autorisations approuvées."
+    ),
     "projects": _keep(
         "Préserve les UUID/FK et champs locaux; les attributs ERP sont réconciliés après.",
         post_action="RESYNC_ACUMATICA_PROJECTS",
@@ -251,6 +255,13 @@ RELATIONSHIP_CONTROLS: dict[str, tuple[str, ...]] = {
         "project_id",
         "workforce_request_id",
         "source_request_line_id",
+    ),
+    "planning_window_overrides": (
+        "id",
+        "workforce_request_id",
+        "resource_requirement_id",
+        "approval_revision_id",
+        "actor_user_id",
     ),
     "shifts": ("id", "resource_requirement_id", "resource_id"),
     "delivery_plans": ("id", "work_package_id"),

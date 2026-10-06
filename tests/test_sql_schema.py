@@ -56,6 +56,7 @@ EXPECTED_TABLES = {
     "delivery_change_history",
     "planning_change_history",
     "planning_mutation_state",
+    "planning_window_overrides",
     "projects",
     "project_co_managers",
     "project_manager_audit",
@@ -124,6 +125,15 @@ class SqlSchemaTests(unittest.TestCase):
         communication_snapshots = Base.metadata.tables["communication_snapshot_lines"].c
         planning_history = Base.metadata.tables["planning_change_history"].c
         planning_state = Base.metadata.tables["planning_mutation_state"].c
+        planning_window_overrides = Base.metadata.tables["planning_window_overrides"].c
+        self.assertFalse(planning_window_overrides.workforce_request_id.nullable)
+        self.assertFalse(planning_window_overrides.resource_requirement_id.nullable)
+        self.assertFalse(planning_window_overrides.approval_revision_id.nullable)
+        self.assertFalse(planning_window_overrides.approved_entry_key.nullable)
+        self.assertFalse(planning_window_overrides.actor_user_id.nullable)
+        self.assertFalse(planning_window_overrides.reason.nullable)
+        self.assertFalse(planning_window_overrides.correlation_id.nullable)
+        self.assertFalse(planning_window_overrides.status.nullable)
         task_catalog = Base.metadata.tables["task_catalog_items"].c
         work_packages = Base.metadata.tables["work_packages"].c
         work_package_audit = Base.metadata.tables["work_package_audit"].c

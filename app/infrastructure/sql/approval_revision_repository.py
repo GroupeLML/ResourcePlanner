@@ -536,6 +536,12 @@ class SqlRequestApprovalRevisionRepository:
         revision: RequestApprovalRevision,
     ) -> None:
         reference = self._session.get(RequestApprovalReference, request.id)
+        previous_revision_id = (
+            reference.active_revision_id
+            if reference is not None
+            and reference.status == APPROVAL_REFERENCE_CAPTURED
+            else None
+        )
         if reference is None:
             reference = RequestApprovalReference(
                 workforce_request_id=request.id,
@@ -547,6 +553,18 @@ class SqlRequestApprovalRevisionRepository:
             reference.active_revision_id = revision.id
             reference.status = APPROVAL_REFERENCE_CAPTURED
         self._session.flush()
+        if previous_revision_id and previous_revision_id != revision.id:
+            from .planning_window_override_repository import (
+                SqlPlanningWindowOverrideRepository,
+            )
+
+            SqlPlanningWindowOverrideRepository(
+                self._session
+            ).reconcile_for_new_revision(
+                request.id,
+                previous_revision_id=previous_revision_id,
+                new_revision=revision,
+            )
         SqlRequestOperationalChoiceRepository(
             self._session,
             actor_name=_text(request.approved_by_name),

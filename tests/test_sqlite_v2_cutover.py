@@ -335,6 +335,7 @@ def _reshape_source_as_0048(path: Path) -> None:
             DROP TABLE IF EXISTS work_package_weekly_loads;
             DROP TABLE IF EXISTS work_package_load_intervals;
             DROP TABLE IF EXISTS availability_rule_resource_classes;
+            DROP TABLE IF EXISTS planning_window_overrides;
 
 
             DROP TABLE IF EXISTS acumatica_project_task_sync_project_results;
