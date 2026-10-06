@@ -315,6 +315,7 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                 and asset_requirement.origin
                 == AssetRequirementOrigin.PROJECT_DIRECT.value
                 and asset_requirement.project_id
+                and allocation.operator_resource_id is None
             ):
                 for shift, human_requirement, _resource, _project in rows:
                     if (
