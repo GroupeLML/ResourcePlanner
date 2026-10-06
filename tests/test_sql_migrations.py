@@ -21,7 +21,7 @@ MIGRATIONS = ROOT / "migrations"
 VERSIONS = MIGRATIONS / "versions"
 BASELINE_FILE = VERSIONS / "0001_v2_production_baseline.py"
 BASELINE_REVISION = "v2_production_baseline"
-HEAD_REVISION = "0014_verification_persistence"
+HEAD_REVISION = "0015_verification_executions"
 
 
 def alembic_config(database_path: Path) -> Config:
@@ -83,6 +83,7 @@ class SqlMigrationTests(unittest.TestCase):
                 "0012_holiday_resource_classes.py",
                 "0013_planning_window_overrides.py",
                 "0014_verification_persistence.py",
+                "0015_verification_executions.py",
             ],
         )
 
@@ -101,6 +102,7 @@ class SqlMigrationTests(unittest.TestCase):
             [revision.revision for revision in script.walk_revisions()],
             [
                 HEAD_REVISION,
+                "0014_verification_persistence",
                 "0013_planning_window_overrides",
                 "0012_holiday_resource_classes",
                 "0011_communication_to_recipients",
@@ -153,6 +155,9 @@ class SqlMigrationTests(unittest.TestCase):
                     "story_verification_decision_requirements",
                     "verification_retest_requests",
                     "verification_change_history",
+                    "verification_executor_assignments",
+                    "verification_test_executions",
+                    "verification_evidence_links",
                 }
                 self.assertTrue(expected.issubset(tables))
                 with engine.connect() as connection:

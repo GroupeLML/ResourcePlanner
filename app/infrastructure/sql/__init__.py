@@ -103,6 +103,12 @@ from .verification_models import (
     VerificationScopeRow,
 )
 from .verification_repository import VerificationVersionConflict, SqlVerificationRepository
+from .verification_execution_models import (
+    VerificationEvidenceLinkRow,
+    VerificationExecutorAssignmentRow,
+    VerificationTestExecutionRow,
+)
+from .verification_execution_repository import SqlVerificationExecutionRepository
 from .emergency_demand_repository import SqlEmergencyDemandRepository
 from .emergency_query_repository import SqlPlannerQueryRepositoryWithEmergencyOverride
 from .employee_sync_repository import SqlEmployeeSyncRepository
@@ -331,6 +337,12 @@ __all__ = [
     "SqlSessionFactory",
     "SqlUserIdentityRepository",
     "SqlWorkPackageRepository",
+    "SqlVerificationRepository",
+    "SqlVerificationExecutionRepository",
+    "VerificationVersionConflict",
+    "VerificationEvidenceLinkRow",
+    "VerificationExecutorAssignmentRow",
+    "VerificationTestExecutionRow",
     "WORKFORCE_REQUEST_NUMBER_INDEX",
     "WorkPackage",
     "WorkPackageAudit",

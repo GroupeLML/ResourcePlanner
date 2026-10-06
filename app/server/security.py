@@ -13,6 +13,8 @@ from ..application.security import (
     PERMISSION_ADMIN_USERS,
     PERMISSION_APPROVE_DEMANDS,
     PERMISSION_CONTRIBUTE_DELIVERY,
+    PERMISSION_EXECUTE_VERIFICATION,
+    PERMISSION_MANAGE_VERIFICATION,
     PERMISSION_MANAGE_COMMUNICATIONS,
     PERMISSION_MANAGE_DEMANDS,
     PERMISSION_MANAGE_PLANNING,
@@ -110,6 +112,10 @@ def required_permission(method: str, path: str) -> str | None:
         return PERMISSION_MANAGE_WORK_PACKAGES
     if path.startswith("/api/v1/delivery"):
         return PERMISSION_CONTRIBUTE_DELIVERY
+    if path.startswith("/api/v1/verification"):
+        if "/executions" in path:
+            return PERMISSION_EXECUTE_VERIFICATION
+        return PERMISSION_MANAGE_VERIFICATION
     if path.startswith("/api/v1/demands"):
         if (
             path.endswith("/approve")

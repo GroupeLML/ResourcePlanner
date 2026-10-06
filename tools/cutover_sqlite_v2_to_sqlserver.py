@@ -62,6 +62,9 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
             "story_verification_decision_requirements",
             "verification_retest_requests",
             "verification_change_history",
+            "verification_executor_assignments",
+            "verification_test_executions",
+            "verification_evidence_links",
         },
         "missing_columns": {
             "auth_sessions": {
@@ -173,6 +176,9 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
     "story_verification_decision_requirements": _keep("Liens durables décision Verification vers exigences."),
     "verification_retest_requests": _keep("Intentions métier explicites de retest."),
     "verification_change_history": _keep("Audit métier Verification et versions résultantes."),
+    "verification_executor_assignments": _keep("Affectations explicites des exécutants Verification."),
+    "verification_test_executions": _keep("Résultats Verification append-only liés aux révisions testées."),
+    "verification_evidence_links": _keep("Preuves Verification par références HTTPS externes."),
     "planning_change_history": _keep("Audit métier Planning V2."),
     "planning_mutation_state": _rebuild(
         "Singleton technique de version globale créé par la baseline."
