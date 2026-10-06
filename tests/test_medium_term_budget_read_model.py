@@ -13,6 +13,7 @@ from app.application.medium_term_budget import (
     DEMAND_HOURS_DIAGNOSTIC_ALTERNATIVE_UNRESOLVED,
     DEMAND_HOURS_DIAGNOSTIC_UNAVAILABLE,
     MediumTermDemandPeriodReadModel,
+    erp_budget_cutoff_date,
     requested_workforce_hours,
 )
 from app.application.security import AuthPrincipal, ROLE_PROJECT_MANAGER
@@ -43,6 +44,20 @@ create_api_app = partial(create_api_app, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
 
 
 class MediumTermBudgetReadModelTests(unittest.TestCase):
+    def test_erp_budget_cutoff_uses_toronto_business_date(self) -> None:
+        self.assertEqual(
+            erp_budget_cutoff_date(
+                datetime(2026, 10, 1, 2, 30, tzinfo=timezone.utc)
+            ),
+            date(2026, 9, 30),
+        )
+        self.assertEqual(
+            erp_budget_cutoff_date(
+                datetime(2026, 10, 1, 13, 42, tzinfo=timezone.utc)
+            ),
+            date(2026, 10, 1),
+        )
+
     def test_requested_hours_follow_workforce_period_non_double_counting_rules(self) -> None:
         def period(
             period_id: str,
