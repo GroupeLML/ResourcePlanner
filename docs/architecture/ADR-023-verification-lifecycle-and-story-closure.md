@@ -222,6 +222,8 @@ Le découpage accepté de #363 est :
 
 L'ordre est séquentiel sur la lane MAIN. Après acceptation d'ASTRA-363, `363A` est la première tranche DEV autorisable; `363B` à `363F` restent bloquées jusqu'à leur prédécesseur.
 
+La matérialisation de cette ADR est documentaire et ne constitue pas le démarrage d'une tranche DEV.
+
 ## References
 
 - #55 — roadmap maître
