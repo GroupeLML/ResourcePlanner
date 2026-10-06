@@ -554,7 +554,7 @@ export default function DeliveryPage() {
       await reloadDelivery();
       await reloadVerification();
       setError(
-        `${message} Delivery et Verification ont été rechargés avec les versions courantes. Réessayez l'action.`,
+        `${message} Delivery et Verification ont été rechargés avec la version courante de chaque périmètre. Réessayez l'action.`,
       );
     } catch (reloadReason) {
       setError(
