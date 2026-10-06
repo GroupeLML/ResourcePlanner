@@ -1316,6 +1316,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         preferred_resource_id: str | None = None
         if (
             _normalized_text(requirement.origin) == "request"
+            and requirement.approval_reference_status == "CAPTURED"
             and requirement.approved_task_catalog_item_id
         ):
             preferred_resource_id = self._session.scalar(
