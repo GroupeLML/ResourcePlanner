@@ -89,7 +89,7 @@ def build_verification_router(
 
     def filename_token(value: str) -> str:
         normalized = "".join(
-            char if char.isalnum() or char in "-_." else "-"
+            char if char.isascii() and (char.isalnum() or char in "-_.") else "-"
             for char in str(value).strip()
         ).strip("-")
         return normalized or "work-package"
