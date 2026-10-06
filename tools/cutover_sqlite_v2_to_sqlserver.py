@@ -65,6 +65,7 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
             "verification_executor_assignments",
             "verification_test_executions",
             "verification_evidence_links",
+            "task_catalog_preferred_resource_audit",
         },
         "missing_columns": {
             "auth_sessions": {
@@ -98,6 +99,10 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
             "approval_requirements": {
                 "asset_type_id": None,
                 "proposed_asset_id": None,
+            },
+            "task_catalog_items": {
+                "preferred_resource_id": None,
+                "preferred_resource_version": 1,
             },
         },
     },
@@ -237,8 +242,11 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
     ),
     "shifts": _keep("Affectations réelles et décisions Planning."),
     "task_catalog_items": _keep(
-        "Préserve les UUID référencés; valeurs ERP/budgets resynchronisées ensuite.",
+        "Préserve les UUID référencés, la ressource attitrée locale et sa version; valeurs ERP/budgets resynchronisées ensuite.",
         post_action="RESYNC_ACUMATICA_PROJECT_TASKS",
+    ),
+    "task_catalog_preferred_resource_audit": _keep(
+        "Audit durable des nominations locales de ressource attitrée et de leur version CAS."
     ),
     "task_catalog_project_sync_state": _rebuild(
         "Télémétrie/curseur de synchronisation reconstructible."
@@ -263,6 +271,15 @@ RELATIONSHIP_CONTROLS: dict[str, tuple[str, ...]] = {
     "project_manager_audit": (
         "id",
         "project_id",
+        "actor_user_id",
+    ),
+    "task_catalog_items": (
+        "id",
+        "preferred_resource_id",
+    ),
+    "task_catalog_preferred_resource_audit": (
+        "id",
+        "task_catalog_item_id",
         "actor_user_id",
     ),
     "work_packages": ("id", "project_id"),
