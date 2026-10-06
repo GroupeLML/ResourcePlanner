@@ -240,6 +240,16 @@ export type ShiftAssetCandidate = {
   reason: string | null;
   diagnostics: string[];
   currently_assigned: boolean;
+  selection_mode:
+    | "ASSIGN"
+    | "DESIGNATE_PROJECT_OPERATOR"
+    | "ALREADY_INHERITED"
+    | "RESERVED_OTHER_OPERATOR";
+  existing_allocation_id: string | null;
+  existing_requirement_id: string | null;
+  existing_operator_resource_id: string | null;
+  existing_start_date: string | null;
+  existing_end_date: string | null;
 };
 
 export type ShiftAssetCandidates = {
@@ -253,7 +263,7 @@ export type ShiftAssetCandidates = {
 };
 
 export type ShiftAssetAssignmentResult = {
-  operation: "ASSIGN" | "CHANGE" | "RELEASE";
+  operation: "ASSIGN" | "CHANGE" | "RELEASE" | "DESIGNATE_PROJECT_OPERATOR";
   shift_id: string;
   requirement_id: string;
   requirement_origin: string;
@@ -281,6 +291,7 @@ export function setShiftAssetAssignment(
   payload: {
     asset_id: string | null;
     asset_requirement_id: string | null;
+    asset_allocation_id?: string | null;
     start_date?: string | null;
     end_date?: string | null;
     expected_planning_version: number;

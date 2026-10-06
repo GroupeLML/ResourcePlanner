@@ -240,8 +240,8 @@ function shiftAssetDiagnosticLabel(code: string) {
       return "Actif inactif";
     case "operator_not_qualified":
       return "Opérateur non qualifié";
-    case "related_request_reservation_ambiguous":
-      return "Plusieurs réservations liées à la demande";
+    case "related_asset_reservations_multiple":
+      return "Plusieurs réservations d’actifs liées ou héritées";
     default:
       return code;
   }
@@ -266,6 +266,10 @@ function ShiftCard({
   const excess = Number(overallocationShift.segment_overallocated_hours ?? 0);
   const unplaced = Number(diagnostic?.unplaced_hours ?? 0);
   const asset = shift.asset_assignment;
+  const relatedAssets = shift.related_asset_reservations ?? [];
+  const inheritedAssets = relatedAssets.filter((reservation) =>
+    reservation.association_kind.startsWith("INHERITED_"),
+  );
   const assetDiagnostics = shift.asset_diagnostics ?? [];
   const meta = [
     shift.allocation_type,
@@ -329,8 +333,21 @@ function ShiftCard({
           {shift.demand_number && <span>#{shift.demand_number}</span>}
         </div>
         {meta.length > 0 && <small>{meta.join(" · ")}</small>}
-        <small className="shift-assets" aria-label={asset ? "Actif affecté au quart" : "Aucun actif affecté au quart"}>
-          {asset ? `Actif : ${asset.asset_code}${asset.asset_active ? "" : " · inactif"}` : "Aucun actif"}
+        <small
+          className="shift-assets"
+          aria-label={
+            asset
+              ? "Actif affecté au quart"
+              : inheritedAssets.length > 0
+                ? "Actif lié ou hérité par le quart"
+                : "Aucun actif affecté au quart"
+          }
+        >
+          {asset
+            ? `Actif : ${asset.asset_code}${asset.asset_active ? "" : " · inactif"}`
+            : inheritedAssets.length > 0
+              ? `Actif lié : ${inheritedAssets.map((reservation) => reservation.asset_code).join(", ")}`
+              : "Aucun actif"}
           {assetDiagnostics.length > 0 && (
             <span
               className="shift-asset-diagnostic"

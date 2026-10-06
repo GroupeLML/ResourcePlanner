@@ -172,12 +172,18 @@ class ShiftAssetReservationReadModel:
     requirement_id: str
     allocation_id: str
     origin: str
+    association_kind: str
     asset_id: str
     asset_code: str
     asset_label: str
     asset_active: bool
     operator_resource_id: str | None
     qualification_state: str
+    project_id: str | None
+    resource_requirement_id: str | None
+    context_resource_id: str | None
+    start_date: date
+    end_date: date
 
 
 @dataclass(frozen=True, slots=True)

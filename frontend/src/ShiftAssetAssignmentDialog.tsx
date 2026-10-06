@@ -40,6 +40,10 @@ function reasonLabel(reason: string | null | undefined) {
       return "La ressource du quart n’est pas qualifiée pour cet actif.";
     case "asset_unavailable":
       return "Actif indisponible pour la date du quart.";
+    case "asset_already_inherited":
+      return "Cette réservation projet est déjà associée à la ressource du quart.";
+    case "asset_reserved_other_operator":
+      return "Cette réservation projet est déjà désignée à une autre ressource.";
     case "permission_denied":
       return "Permission de planification requise.";
     case "shift_state_invalid":
@@ -149,18 +153,28 @@ export default function ShiftAssetAssignmentDialog({
   );
 
   const options = useMemo<ComboboxOption[]>(
-    () => (candidateState?.candidates ?? []).map((candidate) => ({
-      value: candidate.id,
-      label: `${candidate.code} — ${candidate.label} · ${candidate.asset_type_label} · ${candidate.available ? "Disponible" : "Indisponible"} · ${qualificationLabel(candidate.qualification_state)}`,
-      searchText: [
-        candidate.code,
-        candidate.label,
-        candidate.asset_type_code,
-        candidate.asset_type_label,
-        reasonLabel(candidate.reason),
-      ].join(" "),
-      disabled: !candidate.allowed,
-    })),
+    () => (candidateState?.candidates ?? []).map((candidate) => {
+      const availability = candidate.selection_mode === "DESIGNATE_PROJECT_OPERATOR"
+        ? "Réservation projet à réutiliser"
+        : candidate.selection_mode === "ALREADY_INHERITED"
+          ? "Déjà associé"
+          : candidate.available
+            ? "Disponible"
+            : "Indisponible";
+      return {
+        value: candidate.id,
+        label: `${candidate.code} — ${candidate.label} · ${candidate.asset_type_label} · ${availability} · ${qualificationLabel(candidate.qualification_state)}`,
+        searchText: [
+          candidate.code,
+          candidate.label,
+          candidate.asset_type_code,
+          candidate.asset_type_label,
+          availability,
+          reasonLabel(candidate.reason),
+        ].join(" "),
+        disabled: !candidate.allowed,
+      };
+    }),
     [candidateState],
   );
 
@@ -183,14 +197,22 @@ export default function ShiftAssetAssignmentDialog({
 
     const assetId = mode === "release" ? null : selectedAssetId;
     const requirementId = shift.asset_assignment?.requirement_id ?? null;
+    const projectReuse = (
+      mode !== "release"
+      && selectedCandidate?.selection_mode === "DESIGNATE_PROJECT_OPERATOR"
+    );
+    const allocationId = projectReuse
+      ? selectedCandidate.existing_allocation_id
+      : null;
     const fingerprint = [
       "shift-asset",
       shift.allocation_id,
       mode,
       assetId || "release",
       requirementId || "auto",
-      mode === "release" ? "none" : reservationStart,
-      mode === "release" ? "none" : reservationEnd,
+      allocationId || "new",
+      mode === "release" || projectReuse ? "none" : reservationStart,
+      mode === "release" || projectReuse ? "none" : reservationEnd,
       expectedVersion,
     ].join("|");
 
@@ -202,8 +224,9 @@ export default function ShiftAssetAssignmentDialog({
         {
           asset_id: assetId,
           asset_requirement_id: requirementId,
-          start_date: mode === "release" ? null : reservationStart,
-          end_date: mode === "release" ? null : reservationEnd,
+          asset_allocation_id: allocationId,
+          start_date: mode === "release" || projectReuse ? null : reservationStart,
+          end_date: mode === "release" || projectReuse ? null : reservationEnd,
           expected_planning_version: expectedVersion,
         },
         keyFor(fingerprint),
@@ -237,6 +260,7 @@ export default function ShiftAssetAssignmentDialog({
   }
 
   const current = shift.asset_assignment;
+  const projectReuse = selectedCandidate?.selection_mode === "DESIGNATE_PROJECT_OPERATOR";
   const noChange = mode === "change" && selectedAssetId === current?.asset_id;
   const saveDisabled = busy
     || (
@@ -246,8 +270,10 @@ export default function ShiftAssetAssignmentDialog({
         || !selectedAssetId
         || !selectedCandidate?.allowed
         || noChange
-        || !reservationStart
-        || !reservationEnd
+        || (
+          !projectReuse
+          && (!reservationStart || !reservationEnd)
+        )
       )
     );
 
@@ -333,36 +359,44 @@ export default function ShiftAssetAssignmentDialog({
                 autoFocus
               />
 
-              <div className="dialog-form-grid">
-                <label>
-                  <span>Date début réelle</span>
-                  <input
-                    type="date"
-                    value={reservationStart}
-                    onChange={(event) => {
-                      setReservationStart(event.target.value);
-                      setFeedback(null);
-                    }}
-                    disabled={busy}
-                  />
-                </label>
-                <label>
-                  <span>Date fin réelle</span>
-                  <input
-                    type="date"
-                    value={reservationEnd}
-                    onChange={(event) => {
-                      setReservationEnd(event.target.value);
-                      setFeedback(null);
-                    }}
-                    disabled={busy}
-                  />
-                </label>
-                <small className="span-2">
-                  Ces dates sont envoyées explicitement lorsqu’un besoin REQUEST est utilisé.
-                  Pour une affectation SHIFT_AD_HOC, le backend conserve la date canonique du quart.
-                </small>
-              </div>
+              {projectReuse && selectedCandidate ? (
+                <div className="info-banner" role="status">
+                  Réservation projet existante du {selectedCandidate.existing_start_date} au {selectedCandidate.existing_end_date}.
+                  En choisissant cet actif, {shift.resource_name} devient l’opérateur de toute cette période.
+                  Aucune nouvelle réservation physique n’est créée.
+                </div>
+              ) : (
+                <div className="dialog-form-grid">
+                  <label>
+                    <span>Date début réelle</span>
+                    <input
+                      type="date"
+                      value={reservationStart}
+                      onChange={(event) => {
+                        setReservationStart(event.target.value);
+                        setFeedback(null);
+                      }}
+                      disabled={busy}
+                    />
+                  </label>
+                  <label>
+                    <span>Date fin réelle</span>
+                    <input
+                      type="date"
+                      value={reservationEnd}
+                      onChange={(event) => {
+                        setReservationEnd(event.target.value);
+                        setFeedback(null);
+                      }}
+                      disabled={busy}
+                    />
+                  </label>
+                  <small className="span-2">
+                    Ces dates sont envoyées explicitement lorsqu’un besoin REQUEST est utilisé.
+                    Pour une affectation SHIFT_AD_HOC, le backend conserve la date canonique du quart.
+                  </small>
+                </div>
+              )}
 
               {selectedCandidate && (
                 <div className="shift-asset-candidate-detail" data-testid="shift-asset-candidate-detail">
@@ -372,7 +406,13 @@ export default function ShiftAssetAssignmentDialog({
                   </div>
                   <div>
                     <span>Disponibilité</span>
-                    <strong>{selectedCandidate.available ? "Disponible" : "Indisponible"}</strong>
+                    <strong>
+                      {selectedCandidate.selection_mode === "DESIGNATE_PROJECT_OPERATOR"
+                        ? "Réservation projet réutilisable"
+                        : selectedCandidate.selection_mode === "ALREADY_INHERITED"
+                          ? "Déjà associée"
+                          : selectedCandidate.available ? "Disponible" : "Indisponible"}
+                    </strong>
                   </div>
                   <div>
                     <span>Qualification</span>

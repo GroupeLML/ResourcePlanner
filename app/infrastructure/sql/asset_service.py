@@ -1132,14 +1132,129 @@ class SqlAssetService:
         )
 
 
+    def _designate_project_reservation_for_shift(
+        self,
+        *,
+        shift: Shift,
+        human_requirement: ResourceRequirement,
+        asset: Asset,
+        allocation_id: str,
+    ) -> dict:
+        allocation = self.session.get(AssetAllocation, allocation_id)
+        if allocation is None:
+            raise ApplicationNotFoundError(
+                "Réservation projet introuvable.",
+                code="asset_project_reservation_not_found",
+            )
+        requirement = self.session.get(
+            AssetRequirement,
+            allocation.asset_requirement_id,
+        )
+        if (
+            requirement is None
+            or requirement.status == "Annulé"
+            or requirement.origin
+            != AssetRequirementOrigin.PROJECT_DIRECT.value
+        ):
+            raise ApplicationConflictError(
+                "La réservation sélectionnée n'est pas une réservation projet active.",
+                code="asset_project_reservation_invalid",
+            )
+        if allocation.asset_id != asset.id:
+            raise ApplicationConflictError(
+                "L'allocation projet ne correspond pas à l'actif sélectionné.",
+                code="asset_project_reservation_asset_conflict",
+            )
+        if requirement.project_id != human_requirement.project_id:
+            raise ApplicationConflictError(
+                "La réservation projet appartient à un autre projet.",
+                code="asset_project_reservation_scope_conflict",
+            )
+        if not allocation.start_date <= shift.work_date <= allocation.end_date:
+            raise ApplicationConflictError(
+                "La réservation projet ne couvre pas la date du quart.",
+                code="asset_project_reservation_date_conflict",
+            )
+        owned_requirement, owned_allocation = self.shift_ad_hoc_attachment(
+            shift.id
+        )
+        if owned_requirement is not None or owned_allocation is not None:
+            raise ApplicationConflictError(
+                "Le quart possède déjà une affectation d'actif.",
+                code="asset_assignment_attached",
+            )
+        if allocation.operator_resource_id == shift.resource_id:
+            raise ApplicationConflictError(
+                "Cette réservation projet est déjà héritée par la ressource du quart.",
+                code="asset_project_reservation_already_inherited",
+            )
+        if allocation.operator_resource_id is not None:
+            raise ApplicationConflictError(
+                "Cette réservation projet possède déjà un autre opérateur.",
+                code="asset_project_reservation_operator_conflict",
+            )
+
+        authority_proof = self._require_assignment_authorities(
+            allocation.asset_id
+        )
+        before = {
+            "asset_id": allocation.asset_id,
+            "start_date": allocation.start_date,
+            "end_date": allocation.end_date,
+            "operator_resource_id": allocation.operator_resource_id,
+            "origin": requirement.origin,
+        }
+        qualification_state = self._validate_direct_allocation_state(
+            requirement=requirement,
+            asset_id=allocation.asset_id,
+            start_date=allocation.start_date,
+            end_date=allocation.end_date,
+            operator_resource_id=shift.resource_id,
+            allocation_id=allocation.id,
+            source=allocation.source,
+        )
+        allocation.operator_resource_id = shift.resource_id
+        self.audit.append(
+            entity_type="ASSET_ALLOCATION",
+            entity_id=allocation.id,
+            entity_reference=requirement.id,
+            parent_reference=requirement.project_id,
+            action="Désignation opérateur réservation projet",
+            before=before,
+            after={
+                "asset_id": allocation.asset_id,
+                "start_date": allocation.start_date,
+                "end_date": allocation.end_date,
+                "operator_resource_id": allocation.operator_resource_id,
+                "origin": requirement.origin,
+                "assignment_authority": authority_proof,
+                "shift_id": shift.id,
+            },
+        )
+        self.session.flush()
+        return {
+            "operation": "DESIGNATE_PROJECT_OPERATOR",
+            "shift_id": shift.id,
+            "requirement_id": requirement.id,
+            "requirement_origin": requirement.origin,
+            "allocation_id": allocation.id,
+            "asset_id": allocation.asset_id,
+            "operator_resource_id": allocation.operator_resource_id,
+            "qualification_state": qualification_state,
+            "shift_source": shift.source,
+            "shift_locked": bool(shift.locked),
+            "planning_version": self.version.current_version(),
+        }
+
     def set_shift_asset(
         self,
         *,
         shift_id: str,
         asset_id: str | None,
         requirement_id: str | None,
-        start_date: date | None,
-        end_date: date | None,
+        allocation_id: str | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
         expected_version: int,
         idempotency_key: str,
     ) -> dict:
@@ -1147,6 +1262,7 @@ class SqlAssetService:
             "shift_id": str(shift_id or "").strip(),
             "asset_id": str(asset_id or "").strip() or None,
             "requirement_id": str(requirement_id or "").strip() or None,
+            "allocation_id": str(allocation_id or "").strip() or None,
             "start_date": start_date.isoformat() if start_date else None,
             "end_date": end_date.isoformat() if end_date else None,
             "expected_version": expected_version,
@@ -1170,6 +1286,7 @@ class SqlAssetService:
         shift_id: str,
         asset_id: str | None,
         requirement_id: str | None,
+        allocation_id: str | None,
         start_date: str | None,
         end_date: str | None,
         expected_version: int,
@@ -1179,6 +1296,29 @@ class SqlAssetService:
         asset: Asset | None = None
         if asset_id is not None:
             asset, _asset_type = self._active_asset(asset_id)
+
+        if allocation_id is not None:
+            if asset is None:
+                raise ApplicationValidationError(
+                    "Un actif est requis pour réutiliser une réservation projet.",
+                    code="asset_project_reservation_asset_required",
+                )
+            if requirement_id is not None:
+                raise ApplicationValidationError(
+                    "La réutilisation projet cible uniquement l'allocation existante.",
+                    code="asset_project_reservation_target_ambiguous",
+                )
+            if start_date is not None or end_date is not None:
+                raise ApplicationValidationError(
+                    "Les dates de la réservation projet existante ne sont pas modifiées depuis un quart.",
+                    code="asset_project_reservation_dates_immutable",
+                )
+            return self._designate_project_reservation_for_shift(
+                shift=shift,
+                human_requirement=human_requirement,
+                asset=asset,
+                allocation_id=allocation_id,
+            )
 
         requirement = self._resolve_shift_asset_requirement(
             shift=shift,
@@ -1599,7 +1739,7 @@ class SqlAssetService:
     def shift_asset_candidates(self, shift_id: str) -> dict:
         """Read candidate assets for one Shift without exposing hidden occupancies."""
 
-        shift, _human_requirement = self._shift_context(shift_id)
+        shift, human_requirement = self._shift_context(shift_id)
         current_requirement, current_allocation = self.shift_ad_hoc_attachment(
             shift.id
         )
@@ -1639,11 +1779,29 @@ class SqlAssetService:
                 )
             ).all()
         )
-        occupied_asset_ids = {
-            row.asset_id
-            for row in overlapping_allocations
-            if current_allocation is None or row.id != current_allocation.id
-        }
+        overlapping_requirement_ids = tuple(
+            dict.fromkeys(
+                row.asset_requirement_id for row in overlapping_allocations
+            )
+        )
+        overlapping_requirements = (
+            {
+                row.id: row
+                for row in self.session.scalars(
+                    select(AssetRequirement).where(
+                        AssetRequirement.id.in_(overlapping_requirement_ids)
+                    )
+                ).all()
+            }
+            if overlapping_requirement_ids
+            else {}
+        )
+        overlapping_by_asset: dict[str, list[AssetAllocation]] = {}
+        for row in overlapping_allocations:
+            if current_allocation is not None and row.id == current_allocation.id:
+                continue
+            overlapping_by_asset.setdefault(row.asset_id, []).append(row)
+        occupied_asset_ids = set(overlapping_by_asset)
         unavailable_asset_ids = set(
             self.session.scalars(
                 select(AssetUnavailability.asset_id).where(
@@ -1665,17 +1823,66 @@ class SqlAssetService:
                 qualification_state = QUALIFICATION_SKILL_MISMATCH
 
             compatible = bool(asset.active and asset_type.active)
-            available = bool(
-                asset.id not in occupied_asset_ids
-                and asset.id not in unavailable_asset_ids
+            project_allocations = [
+                allocation
+                for allocation in overlapping_by_asset.get(asset.id, ())
+                if (
+                    (project_requirement := overlapping_requirements.get(
+                        allocation.asset_requirement_id
+                    ))
+                    is not None
+                    and project_requirement.origin
+                    == AssetRequirementOrigin.PROJECT_DIRECT.value
+                    and project_requirement.status != "Annulé"
+                    and project_requirement.project_id
+                    == human_requirement.project_id
+                )
+            ]
+            reusable = (
+                project_allocations[0]
+                if len(project_allocations) == 1
+                else None
             )
+            selection_mode = "ASSIGN"
+            existing_allocation_id: str | None = None
+            existing_requirement_id: str | None = None
+            existing_operator_resource_id: str | None = None
+            existing_start_date: date | None = None
+            existing_end_date: date | None = None
             reasons: list[str] = []
             if not compatible:
                 reasons.append("asset_inactive")
             if qualification_state != QUALIFICATION_SATISFIED:
                 reasons.append("operator_not_qualified")
-            if not available:
-                reasons.append("asset_unavailable")
+
+            if reusable is not None and current_allocation is None:
+                existing_requirement = overlapping_requirements[
+                    reusable.asset_requirement_id
+                ]
+                existing_allocation_id = reusable.id
+                existing_requirement_id = existing_requirement.id
+                existing_operator_resource_id = reusable.operator_resource_id
+                existing_start_date = reusable.start_date
+                existing_end_date = reusable.end_date
+                if reusable.operator_resource_id is None:
+                    selection_mode = "DESIGNATE_PROJECT_OPERATOR"
+                    if asset.id in unavailable_asset_ids:
+                        reasons.append("asset_unavailable")
+                elif reusable.operator_resource_id == shift.resource_id:
+                    selection_mode = "ALREADY_INHERITED"
+                    reasons.append("asset_already_inherited")
+                else:
+                    selection_mode = "RESERVED_OTHER_OPERATOR"
+                    reasons.append("asset_reserved_other_operator")
+            else:
+                if asset.id in occupied_asset_ids or asset.id in unavailable_asset_ids:
+                    reasons.append("asset_unavailable")
+
+            available = bool(
+                asset.id not in occupied_asset_ids
+                and asset.id not in unavailable_asset_ids
+            )
+            allowed = not reasons
 
             candidates.append(
                 {
@@ -1689,13 +1896,19 @@ class SqlAssetService:
                     "compatible": compatible,
                     "available": available,
                     "qualification_state": qualification_state,
-                    "allowed": not reasons,
+                    "allowed": allowed,
                     "reason": reasons[0] if reasons else None,
                     "diagnostics": reasons,
                     "currently_assigned": bool(
                         current_allocation is not None
                         and current_allocation.asset_id == asset.id
                     ),
+                    "selection_mode": selection_mode,
+                    "existing_allocation_id": existing_allocation_id,
+                    "existing_requirement_id": existing_requirement_id,
+                    "existing_operator_resource_id": existing_operator_resource_id,
+                    "existing_start_date": existing_start_date,
+                    "existing_end_date": existing_end_date,
                 }
             )
         return {
