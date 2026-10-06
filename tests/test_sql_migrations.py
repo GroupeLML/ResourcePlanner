@@ -21,7 +21,7 @@ MIGRATIONS = ROOT / "migrations"
 VERSIONS = MIGRATIONS / "versions"
 BASELINE_FILE = VERSIONS / "0001_v2_production_baseline.py"
 BASELINE_REVISION = "v2_production_baseline"
-HEAD_REVISION = "0011_holiday_resource_classes"
+HEAD_REVISION = "0012_holiday_resource_classes"
 
 
 def alembic_config(database_path: Path) -> Config:
@@ -79,7 +79,8 @@ class SqlMigrationTests(unittest.TestCase):
                 "0008_asset_requirement_contexts.py",
                 "0009_work_package_load_intervals.py",
                 "0010_operational_responsibility_context.py",
-                "0011_holiday_resource_classes.py",
+                "0011_communication_to_recipients.py",
+                "0012_holiday_resource_classes.py",
             ],
         )
 
@@ -98,6 +99,7 @@ class SqlMigrationTests(unittest.TestCase):
             [revision.revision for revision in script.walk_revisions()],
             [
                 HEAD_REVISION,
+                "0011_communication_to_recipients",
                 "0010_operational_responsibility_context",
                 "0009_work_package_load_intervals",
                 "0008_asset_requirement_contexts",
@@ -110,6 +112,32 @@ class SqlMigrationTests(unittest.TestCase):
                 BASELINE_REVISION,
             ],
         )
+
+    def test_communication_to_recipients_migration_is_additive_and_reversible(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_path = Path(directory) / "communication-to-recipients.db"
+            config = alembic_config(database_path)
+            command.upgrade(config, "0010_operational_responsibility_context")
+
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            before = {column["name"] for column in inspect(engine).get_columns("communication_messages")}
+            engine.dispose()
+            self.assertNotIn("to_recipients_json", before)
+
+            command.upgrade(config, "head")
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            after = {column["name"] for column in inspect(engine).get_columns("communication_messages")}
+            engine.dispose()
+            self.assertIn("to_recipients_json", after)
+
+            command.downgrade(config, "0010_operational_responsibility_context")
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            downgraded = {
+                column["name"]
+                for column in inspect(engine).get_columns("communication_messages")
+            }
+            engine.dispose()
+            self.assertNotIn("to_recipients_json", downgraded)
 
     def test_work_package_load_interval_migration_preserves_weekly_intent(self) -> None:
         with TemporaryDirectory() as directory:

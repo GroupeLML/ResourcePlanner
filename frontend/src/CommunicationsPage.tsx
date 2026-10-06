@@ -168,8 +168,8 @@ export default function CommunicationsPage() {
           <span className="eyebrow">Communication par projet</span>
           <h2>Communications de planification</h2>
           <p>
-            Un message est préparé par projet : le chargé de projet est en To et les ressources
-            réellement affectées sont en CC. Les coordonnées proviennent des profils Utilisateurs.
+            Un message est préparé par projet : le chargé principal ERP et les co-chargés RP
+            effectifs sont en To; les ressources réellement affectées restent en CC.
           </p>
         </div>
         <label>
@@ -231,6 +231,9 @@ export default function CommunicationsPage() {
                   const source = draft.source;
                   const blocking = source.diagnostics.filter((row) => row.severity === "BLOCKING");
                   const warnings = source.diagnostics.filter((row) => row.severity === "WARNING");
+                  const toRecipients = source.to_recipients.length > 0
+                    ? source.to_recipients
+                    : [source.to_recipient];
                   return (
                     <article
                       className={`draft-card ${source.approvable ? "" : "is-blocked"}`}
@@ -250,10 +253,21 @@ export default function CommunicationsPage() {
                       <div className="draft-recipients">
                         <div>
                           <span>To</span>
-                          <strong>{source.to_recipient.display_name}</strong>
-                          <small className={source.to_recipient.email ? "" : "recipient-missing"}>
-                            {source.to_recipient.email ?? "Courriel manquant"}
-                          </small>
+                          <div className="recipient-chips">
+                            {toRecipients.map((recipient) => (
+                              <span
+                                key={
+                                  recipient.contact_id
+                                  ?? recipient.user_id
+                                  ?? recipient.email
+                                  ?? recipient.display_name
+                                }
+                                className={recipient.email ? "" : "recipient-missing"}
+                              >
+                                {recipient.display_name} · {recipient.email ?? "Courriel manquant"}
+                              </span>
+                            ))}
+                          </div>
                         </div>
                         <div>
                           <span>CC</span>
@@ -367,7 +381,13 @@ export default function CommunicationsPage() {
                         <div key={message.id}>
                           <strong>{message.message_key ?? message.project_id ?? message.id}</strong>
                           <span>Sujet : {message.subject}</span>
-                          <span>To : {message.recipient_email ?? "courriel manquant"}</span>
+                          <span>
+                            To : {
+                              message.to_emails.length > 0
+                                ? message.to_emails.join(", ")
+                                : message.recipient_email ?? "courriel manquant"
+                            }
+                          </span>
                           <span>
                             CC : {message.cc_emails.length > 0 ? message.cc_emails.join(", ") : "—"}
                           </span>

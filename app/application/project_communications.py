@@ -422,7 +422,11 @@ class ProjectCommunicationService:
             if message.included
             and (
                 not message.approvable
-                or not str(message.recipient_email or "").strip()
+                or not message.to_emails
+                or any(
+                    not str(email or "").strip()
+                    for email in message.to_emails
+                )
             )
         ]
         if invalid:
@@ -479,6 +483,7 @@ class ProjectCommunicationService:
                 subject=message.subject,
                 body=message.body,
                 cc_emails=message.cc_emails,
+                to_emails=message.to_emails,
             )
             for message in row.messages
             if message.included
@@ -562,6 +567,7 @@ class ProjectCommunicationService:
                 subject=message.subject,
                 body=message.body,
                 cc_emails=message.cc_emails,
+                to_emails=message.to_emails,
             )
             message_id = (
                 "<resourceplanner-"

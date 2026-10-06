@@ -1,7 +1,7 @@
 """Add class scopes to holiday availability rules.
 
-Revision ID: 0011_holiday_resource_classes
-Revises: 0010_operational_responsibility_context
+Revision ID: 0012_holiday_resource_classes
+Revises: 0011_communication_to_recipients
 """
 
 from __future__ import annotations
@@ -10,8 +10,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "0011_holiday_resource_classes"
-down_revision: str | None = "0010_operational_responsibility_context"
+revision: str = "0012_holiday_resource_classes"
+down_revision: str | None = "0011_communication_to_recipients"
 branch_labels: str | None = None
 depends_on: str | None = None
 

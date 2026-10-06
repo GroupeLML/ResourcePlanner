@@ -24,6 +24,7 @@ export type ProjectCommunicationDraft = {
   project_id: string;
   project_number: string;
   to_recipient: CommunicationParticipant;
+  to_recipients: CommunicationParticipant[];
   cc_recipients: CommunicationParticipant[];
   subject: string;
   body: string;
@@ -69,6 +70,7 @@ export type CommunicationMessage = {
   message_key: string | null;
   project_id: string | null;
   cc_emails: string[];
+  to_emails: string[];
   content_fingerprint: string | null;
   approvable: boolean;
   diagnostics_json: string | null;

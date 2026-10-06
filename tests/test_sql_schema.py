@@ -368,6 +368,7 @@ class SqlSchemaTests(unittest.TestCase):
         self.assertFalse(communication_batches.snapshot_fingerprint.nullable)
         self.assertFalse(communication_batches.status.nullable)
         self.assertFalse(communication_messages.batch_id.nullable)
+        self.assertTrue(communication_messages.to_recipients_json.nullable)
         self.assertFalse(communication_messages.included.nullable)
         self.assertFalse(communication_snapshots.batch_id.nullable)
         self.assertFalse(communication_snapshots.resource_id.nullable)

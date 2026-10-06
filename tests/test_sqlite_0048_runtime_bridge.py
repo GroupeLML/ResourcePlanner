@@ -107,6 +107,8 @@ def _reshape_as_0048(path: Path) -> None:
             DROP TABLE IF EXISTS project_manager_audit;
             DROP TABLE IF EXISTS project_co_managers;
 
+            ALTER TABLE communication_messages
+                DROP COLUMN to_recipients_json;
 
             DROP TABLE IF EXISTS acumatica_project_task_sync_project_results;
             DROP TABLE IF EXISTS acumatica_project_task_sync_runs;

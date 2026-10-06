@@ -241,20 +241,20 @@ diagnostic explicite
 
 Les contextes approuvés existants, les valeurs `LEGACY_UNKNOWN` et les historiques ne sont pas réécrits par cette évolution.
 
-### 8. Les communications #290 utilisent uniquement le principal ERP comme destinataire principal
+### 8. Les communications #290 utilisent les chargés effectifs comme destinataires To
+
+> Amendement ciblé #611 (2026-10-05) : cette section remplace la règle initiale
+> qui limitait `To` au seul principal ERP. Les autres décisions d’ADR-017 restent inchangées.
 
 Pour les communications projet :
 
-- `To` = principal ERP canonique résolu et communicable;
-- `CC` = ressources réellement affectées selon les règles existantes;
-- le corps peut inclure les responsables opérationnels issus de #289;
-- les co-chargés ne sont pas ajoutés automatiquement comme destinataires.
+- `To` = principal ERP canonique résolu et communicable, puis co-chargés RP effectifs et communicables;
+- les destinataires `To` sont dédupliqués par identité canonique et adresse explicite, jamais par nom;
+- un co-chargé inactif ou sans courriel explicite produit un diagnostic bloquant;
+- `CC` = ressources réellement affectées selon les règles existantes, hors adresses déjà présentes en `To`;
+- le corps peut inclure les responsables opérationnels issus de #289, sans en faire des destinataires implicites.
 
-Un co-chargé qui est aussi une ressource réellement affectée peut apparaître en CC uniquement à ce titre.
-
-Les snapshots, empreintes et contrôles d’obsolescence existants sont conservés.
-
-Un changement réel du principal ou de ses coordonnées peut rendre un snapshot obsolète. Un ajout ou retrait de co-chargé seul ne doit pas modifier l’empreinte de communication.
+Les snapshots, empreintes et contrôles d’obsolescence existants sont conservés. Un changement réel du principal, de ses coordonnées ou de la collection effective des co-chargés modifie l’empreinte de communication et peut rendre un snapshot obsolète.
 
 ### 9. Le regroupement Moyen terme reste unique par principal ERP
 
