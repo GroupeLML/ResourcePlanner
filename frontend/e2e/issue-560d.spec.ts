@@ -338,7 +338,7 @@ test("560D gère assign/change/release depuis le Shift sans état optimiste mens
     await card.locator(".shift-card-main").click();
     let shiftDialog = page.getByRole("dialog", { name: "Modifier le quart" });
     await expect(shiftDialog.getByRole("region", { name: "Actif" })).toContainText("TRUCK-560D-A");
-    await expect(shiftDialog.getByRole("region", { name: "Actif" })).toContainText("Réservations liées ou héritées");
+    await expect(shiftDialog.getByRole("region", { name: "Actif" })).toContainText("Réservations liées à la demande");
     await expect(shiftDialog.getByRole("region", { name: "Actif" })).toContainText("LIFT-REQUEST-560D");
     await shiftDialog.getByRole("button", { name: "Changer", exact: true }).click();
 
