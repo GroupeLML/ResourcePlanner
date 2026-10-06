@@ -424,7 +424,18 @@ export default function ShiftEditor({
             <p>
               {shift.project_number || "Projet"}
               {shift.project_name ? ` — ${shift.project_name}` : ""}
-              {shift.demand_number ? ` · demande ${shift.demand_number}` : ""}
+              {shift.demand_number ? (
+                <>
+                  {" · "}
+                  <button
+                    type="button"
+                    className="text-button"
+                    onClick={() => onOpenDemand(shift.demand_number!)}
+                  >
+                    demande {shift.demand_number}
+                  </button>
+                </>
+              ) : ""}
             </p>
           </div>
           <button type="button" className="icon-button" onClick={onClose} disabled={saving} aria-label="Fermer">×</button>
