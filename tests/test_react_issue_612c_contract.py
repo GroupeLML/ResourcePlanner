@@ -29,10 +29,11 @@ class ReactIssue612CContractTests(unittest.TestCase):
         self.assertIn("demande {shift.demand_number}", shift)
         self.assertIn("setDetailDemandNumber(demandNumber)", planning)
 
-    def test_medium_term_demand_chip_opens_unified_detail_with_canonical_actions(self) -> None:
+    def test_medium_term_demand_gantt_opens_unified_detail_with_canonical_actions(self) -> None:
         medium = (FRONTEND / "MediumTermPage.tsx").read_text(encoding="utf-8")
 
-        self.assertIn("onClick={() => onOpenDemand(demand.number)}", medium)
+        self.assertIn("mt-demand-gantt-bar", medium)
+        self.assertIn("onClick={() => onOpenDemand(demandPeriod.demand_number)}", medium)
         self.assertIn("onOpenDemand={setDetailDemandNumber}", medium)
         self.assertIn('import DemandWorkflowPage from "./DemandWorkflowPage"', medium)
         self.assertIn("demandNumber={detailDemandNumber}", medium)

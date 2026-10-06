@@ -16,8 +16,12 @@ from app.infrastructure.sql import (
     Project,
     ProjectCoManager,
     ResourceClassConfig,
+    RequestLine,
     TaskCatalogEntry,
     TaskCatalogProjectSyncState,
+    WorkforceRequest,
+    WorkforceRequestPeriod,
+    WorkforceRequestPeriodSelection,
     WorkPackage,
     WorkPackageWeeklyLoad,
     create_session_factory,
@@ -851,6 +855,194 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
 
         self.assertEqual(intersection.status_code, 200, intersection.text)
         self.assertEqual(intersection.json()["tasks"], [])
+
+    def test_linked_demand_periods_are_projected_with_backend_work_package_window_warning(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    session.add(
+                        WorkforceRequest(
+                            id="REQ-614D",
+                            legacy_demand_number="DMO-614D",
+                            project_id="P1",
+                            work_package_id="WP-216-A",
+                            status="Soumise",
+                            desired_start=date(2026, 9, 20),
+                            desired_end=date(2026, 10, 6),
+                            estimated_hours=Decimal("32"),
+                            line_mode=True,
+                        )
+                    )
+                    session.flush()
+                    session.add_all(
+                        [
+                            RequestLine(
+                                id="LINE-614D-A",
+                                workforce_request_id="REQ-614D",
+                                position=0,
+                                kind="WORKFORCE",
+                                slot_count=1,
+                                desired_start=date(2026, 9, 20),
+                                desired_end=date(2026, 10, 6),
+                                estimated_hours=Decimal("24"),
+                                confirmation="Tentative",
+                                work_package_id="WP-216-A",
+                                active=True,
+                            ),
+                            RequestLine(
+                                id="LINE-614D-B",
+                                workforce_request_id="REQ-614D",
+                                position=1,
+                                kind="WORKFORCE",
+                                slot_count=1,
+                                desired_start=date(2026, 9, 30),
+                                desired_end=date(2026, 10, 1),
+                                estimated_hours=Decimal("8"),
+                                confirmation="Confirmée",
+                                work_package_id="WP-221",
+                                active=True,
+                            ),
+                        ]
+                    )
+                    session.flush()
+                    session.add_all(
+                        [
+                            WorkforceRequestPeriod(
+                                id="PER-614D-IN-ROW",
+                                period_key="PER-614D-IN",
+                                workforce_request_id="REQ-614D",
+                                request_line_id="LINE-614D-A",
+                                sequence=0,
+                                kind="CUMULATIVE",
+                                start_date=date(2026, 9, 22),
+                                end_date=date(2026, 9, 23),
+                                hours=Decimal("8"),
+                                confirmation="Tentative",
+                                resource_count=1,
+                                active=True,
+                            ),
+                            WorkforceRequestPeriod(
+                                id="PER-614D-BEFORE-ROW",
+                                period_key="PER-614D-BEFORE",
+                                workforce_request_id="REQ-614D",
+                                request_line_id="LINE-614D-A",
+                                sequence=1,
+                                kind="CUMULATIVE",
+                                start_date=date(2026, 9, 20),
+                                end_date=date(2026, 9, 20),
+                                hours=Decimal("4"),
+                                confirmation="Confirmée",
+                                resource_count=1,
+                                active=True,
+                            ),
+                            WorkforceRequestPeriod(
+                                id="PER-614D-AFTER-ROW",
+                                period_key="PER-614D-AFTER",
+                                workforce_request_id="REQ-614D",
+                                request_line_id="LINE-614D-A",
+                                sequence=2,
+                                kind="CUMULATIVE",
+                                start_date=date(2026, 10, 6),
+                                end_date=date(2026, 10, 6),
+                                hours=Decimal("4"),
+                                confirmation="Confirmée",
+                                resource_count=1,
+                                active=True,
+                            ),
+                            WorkforceRequestPeriod(
+                                id="PER-614D-BOTH-ROW",
+                                period_key="PER-614D-BOTH",
+                                workforce_request_id="REQ-614D",
+                                request_line_id="LINE-614D-A",
+                                sequence=3,
+                                kind="ALTERNATIVE",
+                                alternative_group="ALT-614D",
+                                start_date=date(2026, 9, 20),
+                                end_date=date(2026, 10, 6),
+                                hours=Decimal("16"),
+                                confirmation="Confirmée",
+                                resource_count=1,
+                                active=True,
+                            ),
+                        ]
+                    )
+                    session.flush()
+                    session.add(
+                        WorkforceRequestPeriodSelection(
+                            workforce_request_id="REQ-614D",
+                            request_line_id="LINE-614D-A",
+                            alternative_group="ALT-614D",
+                            period_id="PER-614D-BOTH-ROW",
+                            selected_at=datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc),
+                        )
+                    )
+            finally:
+                engine.dispose()
+
+            app = create_api_app(database_url)
+            with TestClient(app) as client:
+                response = client.get(
+                    "/api/v1/medium-term/budget",
+                    params={
+                        "project_number": "P-1",
+                        "start": "2026-09-22",
+                        "end": "2026-10-04",
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        programming = self._task(payload, "216")
+        lot_a = next(
+            row for row in programming["work_packages"] if row["id"] == "WP-216-A"
+        )
+        periods = {row["period_id"]: row for row in lot_a["demand_periods"]}
+        self.assertEqual(
+            set(periods),
+            {
+                "PER-614D-IN",
+                "PER-614D-BEFORE",
+                "PER-614D-AFTER",
+                "PER-614D-BOTH",
+            },
+        )
+        self.assertFalse(periods["PER-614D-IN"]["outside_work_package"])
+        self.assertEqual(periods["PER-614D-IN"]["outside_position"], "NONE")
+        self.assertEqual(periods["PER-614D-BEFORE"]["outside_position"], "BEFORE")
+        self.assertEqual(
+            periods["PER-614D-BEFORE"]["diagnostics"],
+            ["DEMAND_BEFORE_WORK_PACKAGE"],
+        )
+        self.assertEqual(periods["PER-614D-AFTER"]["outside_position"], "AFTER")
+        self.assertEqual(
+            periods["PER-614D-AFTER"]["diagnostics"],
+            ["DEMAND_AFTER_WORK_PACKAGE"],
+        )
+        self.assertTrue(periods["PER-614D-BOTH"]["outside_work_package"])
+        self.assertEqual(periods["PER-614D-BOTH"]["outside_position"], "BOTH")
+        self.assertEqual(
+            periods["PER-614D-BOTH"]["diagnostics"],
+            ["DEMAND_BEFORE_WORK_PACKAGE", "DEMAND_AFTER_WORK_PACKAGE"],
+        )
+        self.assertTrue(periods["PER-614D-BOTH"]["selected"])
+        self.assertEqual(periods["PER-614D-BOTH"]["alternative_group"], "ALT-614D")
+        self.assertEqual(periods["PER-614D-BOTH"]["provenance"], "CANDIDATE")
+
+        task_221 = self._task(payload, "221")
+        no_dates = next(
+            row for row in task_221["work_packages"] if row["id"] == "WP-221"
+        )["demand_periods"]
+        self.assertEqual(len(no_dates), 1)
+        self.assertEqual(no_dates[0]["period_kind"], "BASE")
+        self.assertTrue(no_dates[0]["outside_work_package"])
+        self.assertEqual(no_dates[0]["outside_position"], "UNAVAILABLE")
+        self.assertEqual(
+            no_dates[0]["diagnostics"],
+            ["WORK_PACKAGE_WINDOW_UNAVAILABLE"],
+        )
 
     def test_projection_is_isolated_between_projects(self) -> None:
         with TemporaryDirectory() as directory:

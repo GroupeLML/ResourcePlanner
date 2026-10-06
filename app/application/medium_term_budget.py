@@ -27,6 +27,16 @@ ACTUAL_HOURS_DIAGNOSTIC_COST_MISSING = "resource_class_cost_missing"
 ACTUAL_HOURS_DIAGNOSTIC_COST_ZERO = "resource_class_cost_zero"
 ACTUAL_HOURS_DIAGNOSTIC_COST_NEGATIVE = "resource_class_cost_negative"
 
+DEMAND_WINDOW_DIAGNOSTIC_BEFORE_WORK_PACKAGE = "DEMAND_BEFORE_WORK_PACKAGE"
+DEMAND_WINDOW_DIAGNOSTIC_AFTER_WORK_PACKAGE = "DEMAND_AFTER_WORK_PACKAGE"
+DEMAND_WINDOW_DIAGNOSTIC_WORK_PACKAGE_UNAVAILABLE = "WORK_PACKAGE_WINDOW_UNAVAILABLE"
+DEMAND_WINDOW_DIAGNOSTIC_DEMAND_UNAVAILABLE = "DEMAND_WINDOW_UNAVAILABLE"
+DEMAND_OUTSIDE_NONE = "NONE"
+DEMAND_OUTSIDE_BEFORE = "BEFORE"
+DEMAND_OUTSIDE_AFTER = "AFTER"
+DEMAND_OUTSIDE_BOTH = "BOTH"
+DEMAND_OUTSIDE_UNAVAILABLE = "UNAVAILABLE"
+
 CANCELLED_WORK_PACKAGE_STATUSES = frozenset(
     {
         "annulé",
@@ -111,6 +121,46 @@ def task_budget_diagnostic(
     return BUDGET_DIAGNOSTIC_PARTIALLY_COVERED
 
 
+def demand_window_diagnostic(
+    *,
+    demand_start: date | None,
+    demand_end: date | None,
+    work_package_start: date | None,
+    work_package_end: date | None,
+) -> tuple[bool, str, tuple[str, ...]]:
+    """Compare full requested dates to the WorkPackage before any horizon clipping."""
+    if demand_start is None:
+        return (
+            True,
+            DEMAND_OUTSIDE_UNAVAILABLE,
+            (DEMAND_WINDOW_DIAGNOSTIC_DEMAND_UNAVAILABLE,),
+        )
+    effective_demand_end = demand_end or demand_start
+    if work_package_start is None or work_package_end is None:
+        return (
+            True,
+            DEMAND_OUTSIDE_UNAVAILABLE,
+            (DEMAND_WINDOW_DIAGNOSTIC_WORK_PACKAGE_UNAVAILABLE,),
+        )
+
+    before = demand_start < work_package_start
+    after = effective_demand_end > work_package_end
+    diagnostics: list[str] = []
+    if before:
+        diagnostics.append(DEMAND_WINDOW_DIAGNOSTIC_BEFORE_WORK_PACKAGE)
+    if after:
+        diagnostics.append(DEMAND_WINDOW_DIAGNOSTIC_AFTER_WORK_PACKAGE)
+    if before and after:
+        position = DEMAND_OUTSIDE_BOTH
+    elif before:
+        position = DEMAND_OUTSIDE_BEFORE
+    elif after:
+        position = DEMAND_OUTSIDE_AFTER
+    else:
+        position = DEMAND_OUTSIDE_NONE
+    return bool(diagnostics), position, tuple(diagnostics)
+
+
 @dataclass(frozen=True, slots=True)
 class MediumTermWeeklyLoadReadModel:
     week_start: date
@@ -126,6 +176,27 @@ class WorkPackageLoadIntervalReadModel:
     end_date: date
     hours: Decimal
     origin: str
+
+
+@dataclass(frozen=True, slots=True)
+class MediumTermDemandPeriodReadModel:
+    demand_number: str
+    line_id: str
+    period_id: str
+    work_package_ref: str
+    start_date: date | None
+    end_date: date | None
+    hours: Decimal | None
+    status: str
+    provenance: str
+    line_kind: str
+    period_kind: str
+    alternative_group: str | None = None
+    selected: bool = False
+    confirmation: str | None = None
+    outside_work_package: bool = False
+    outside_position: str = DEMAND_OUTSIDE_NONE
+    diagnostics: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +227,7 @@ class MediumTermBudgetWorkPackageReadModel:
     resource_class_active: bool | None = None
     task_resource_class_code: str | None = None
     resource_class_diagnostic: str | None = None
+    demand_periods: tuple[MediumTermDemandPeriodReadModel, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -30,7 +30,9 @@ class ReactContextualPlanningContractTests(unittest.TestCase):
             self.assertIn("if (scopeError)", source)
             self.assertIn("new AbortController()", source)
             self.assertIn("return () => controller.abort()", source)
-            self.assertIn("setSnapshot(null)", source)
+
+        self.assertIn("setSnapshot(null)", planning)
+        self.assertIn("setProjection(null)", medium)
 
     def test_scope_refresh_does_not_close_mutation_editors(self) -> None:
         planning = (FRONTEND / "PlanningPage.tsx").read_text(encoding="utf-8")
