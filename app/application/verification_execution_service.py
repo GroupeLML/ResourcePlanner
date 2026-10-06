@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Protocol
 from uuid import uuid4
 
@@ -34,6 +34,8 @@ from .verification_security import authorized_verification_actions_for
 
 class VerificationExecutionRepositoryPort(Protocol):
     def work_package_exists(self, work_package_id: str) -> bool: ...
+    def acquire_document_read_guards(self, work_package_id: str) -> bool: ...
+    def document_context(self, work_package_id: str) -> dict[str, object]: ...
     def get_scope_for_work_package(self, work_package_id: str) -> VerificationScope | None: ...
     def get_requirement(self, requirement_id: str) -> VerificationRequirement | None: ...
     def get_scope_for_requirement(
@@ -558,6 +560,21 @@ class VerificationExecutionService:
     @staticmethod
     def _dt(value: datetime | None) -> str | None:
         return value.isoformat() if value is not None else None
+
+    def document_snapshot(
+        self, work_package_id: str, *, principal: AuthPrincipal
+    ) -> dict[str, Any]:
+        # ADR-023: documents must read one coherent set. The repository keeps
+        # WorkPackage -> Delivery -> Verification guards until the request
+        # transaction closes.
+        self._repository.acquire_document_read_guards(work_package_id)
+        package = self.package(work_package_id, principal=principal)
+        context = self._repository.document_context(work_package_id)
+        return {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "context": context,
+            "package": package,
+        }
 
     def package(
         self, work_package_id: str, *, principal: AuthPrincipal
