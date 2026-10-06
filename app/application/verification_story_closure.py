@@ -517,7 +517,8 @@ class StoryVerificationClosureService:
                 )
             if current_story.status is DeliveryItemStatus.DONE:
                 raise ApplicationConflictError(
-                    "La Story est déjà terminée; utilisez la reprise historique seulement si sa décision manque.",
+                    "La Story est déjà terminée; utilisez la reprise historique "
+                    "seulement si sa décision manque.",
                     code="story_already_done",
                     context={"story_id": story_id},
                 )
