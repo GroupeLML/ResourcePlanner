@@ -20,7 +20,6 @@ from ...application.task_catalog import (
     TaskCatalogRepositoryPort,
     TaskPreferredResourceMutationResult,
 )
-from .identity_models import AppUser
 from .models import (
     Resource,
     TaskCatalogEntry,
@@ -284,14 +283,6 @@ class SqlTaskCatalogRepository(
 
         preferred_id = _optional_text(resource_id)
         with self._session.begin_nested():
-            actor = self._session.get(AppUser, actor_id)
-            if actor is None:
-                raise ApplicationNotFoundError(
-                    "Utilisateur acteur introuvable.",
-                    code="task_preferred_resource_actor_not_found",
-                    context={"actor_user_id": actor_id},
-                )
-
             task = self._session.get(TaskCatalogEntry, task_id)
             if task is None:
                 raise ApplicationNotFoundError(
