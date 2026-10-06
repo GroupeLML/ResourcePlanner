@@ -225,11 +225,6 @@ class SqlResourceAdminRepository(ResourceAdminRepositoryPort):
             elif field == "sort_order":
                 value = int(value or 0)
             setattr(row, field, value)
-        if "resource_class_codes" in values:
-            self._replace_resource_class_codes(
-                row.id,
-                tuple(values.get("resource_class_codes") or ()),
-            )
         self._session.flush()
         return row.id
 
@@ -347,5 +342,10 @@ class SqlResourceAdminRepository(ResourceAdminRepositoryPort):
             elif field == "active":
                 value = bool(value)
             setattr(row, field, value)
+        if "resource_class_codes" in values:
+            self._replace_resource_class_codes(
+                row.id,
+                tuple(values.get("resource_class_codes") or ()),
+            )
         self._session.flush()
         return row.id
