@@ -25,9 +25,11 @@ def standard(
     *,
     date_start: object = None,
     date_end: object = None,
+    resource_class: str | None = None,
 ) -> dict[str, object]:
     return {
         "Technicien": resource,
+        "ClasseRessource": resource_class,
         "Type": "Horaire standard",
         "DateDebut": date_start,
         "DateFin": date_end,
@@ -99,6 +101,51 @@ class AvailabilityRulesTests(unittest.TestCase):
         ]
         self.assertEqual(availability_hours_for_day(rows, "R1", TUESDAY), 0)
         self.assertTrue(outside_schedule_eligible_for_day(rows, "R1", TUESDAY))
+
+    def test_class_scoped_holiday_blocks_only_matching_resource_class(self) -> None:
+        rows = [
+            standard("R1", resource_class="PROGRAMMEUR"),
+            standard("R2", resource_class="INSTALLATION"),
+            {
+                "Type": "Jour férié",
+                "DateDebut": TUESDAY,
+                "DateFin": TUESDAY,
+                "ClassesRessources": ("PROGRAMMEUR",),
+                "Actif": "Oui",
+            },
+        ]
+        self.assertEqual(availability_hours_for_day(rows, "R1", TUESDAY), 0)
+        self.assertEqual(availability_hours_for_day(rows, "R2", TUESDAY), 8)
+
+        matching = outside_standard_hours_decision_for_day(
+            rows,
+            "R1",
+            TUESDAY,
+            outside_standard_hours=False,
+        )
+        non_matching = outside_standard_hours_decision_for_day(
+            rows,
+            "R2",
+            TUESDAY,
+            outside_standard_hours=False,
+        )
+        self.assertEqual(matching.state.reason, "Jour férié")
+        self.assertTrue(matching.override_required)
+        self.assertTrue(non_matching.allowed)
+        self.assertFalse(non_matching.override_required)
+
+    def test_class_scoped_holiday_does_not_block_unclassified_resource(self) -> None:
+        rows = [
+            standard("R1"),
+            {
+                "Type": "Jour férié",
+                "DateDebut": TUESDAY,
+                "DateFin": TUESDAY,
+                "ClassesRessources": ("PROGRAMMEUR",),
+                "Actif": "Oui",
+            },
+        ]
+        self.assertEqual(availability_hours_for_day(rows, "R1", TUESDAY), 8)
 
     def test_weekend_without_standard_capacity_allows_overtime_slot(self) -> None:
         rows = [standard()]
