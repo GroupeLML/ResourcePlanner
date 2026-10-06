@@ -1435,8 +1435,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
 
             class_match = (
                 required_class is None
-                or _normalized_text(resource.resource_class)
-                == _normalized_text(required_class)
+                or _text(resource.resource_class) == required_class
             )
             enough_prudent = prudent_free + 0.01 >= required_hours
             enough_after_confirmed = free_after_confirmed + 0.01 >= required_hours
