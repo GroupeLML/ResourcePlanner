@@ -41,7 +41,7 @@ class ReactAssetUxContractTests(unittest.TestCase):
 
         self.assertIn("Approbateurs spécifiques", panel)
         self.assertIn("additifs au périmètre", panel)
-        self.assertIn('can("manage_resources")', panel)
+        self.assertIn('can("admin_settings")', panel)
         self.assertIn("setAssetApprover", panel)
         self.assertIn("approver_user_ids", api)
         self.assertIn("approver_candidates", api)
