@@ -116,6 +116,7 @@ class ResourceRecommendationPerformanceTests(unittest.TestCase):
                 project_id="P-617B",
                 workforce_request_id=request.id,
                 approved_task_catalog_item_id="T-617B",
+                approval_reference_status="CAPTURED",
                 start_date=date(2026, 10, 5),
                 end_date=date(2026, 10, 9),
                 planned_hours=Decimal("8"),
