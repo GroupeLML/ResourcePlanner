@@ -931,13 +931,26 @@ export type SegmentReadModel = {
 export type ShiftAssetReservationReadModel = {
   requirement_id: string;
   allocation_id: string;
-  origin: "REQUEST" | "SHIFT_AD_HOC" | string;
+  origin: "REQUEST" | "SHIFT_AD_HOC" | "PROJECT_DIRECT" | "RESOURCE_PERIOD" | "SEGMENT" | string;
+  association_kind:
+    | "OWNED_SHIFT"
+    | "RELATED_REQUEST"
+    | "INHERITED_RESOURCE_PERIOD"
+    | "INHERITED_PROJECT_DIRECT"
+    | "INHERITED_SEGMENT"
+    | "SEGMENT_CONTEXT"
+    | string;
   asset_id: string;
   asset_code: string;
   asset_label: string;
   asset_active: boolean;
   operator_resource_id: string | null;
   qualification_state: "SATISFIED" | "MISSING_OPERATOR" | "SKILL_MISMATCH" | "NO_OVERLAP" | string;
+  project_id: string | null;
+  resource_requirement_id: string | null;
+  context_resource_id: string | null;
+  start_date: string;
+  end_date: string;
 };
 
 export type ShiftAssetActionReadModel = {
