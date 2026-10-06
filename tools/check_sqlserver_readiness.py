@@ -25,6 +25,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.infrastructure.sql import Base  # noqa: E402
+from app.infrastructure.sql.verification_models import VerificationScopeRow  # noqa: E402
 from app.infrastructure.sql.asset_models import (  # noqa: E402
     Asset,
     AssetAllocation,
@@ -554,6 +555,17 @@ def _critical_statements():
             == bindparam("project_co_manager_expected_version"),
         )
         .values(co_managers_version=Project.co_managers_version + 1)
+    )
+    yield "verification_version_cas", (
+        update(VerificationScopeRow)
+        .where(
+            VerificationScopeRow.id == bindparam("verification_scope_id"),
+            VerificationScopeRow.verification_version
+            == bindparam("verification_expected_version"),
+        )
+        .values(
+            verification_version=VerificationScopeRow.verification_version + 1
+        )
     )
     # Prevent accidental removal of timestamp compilation coverage.
     yield "timestamp_bind", select(Project.id).where(Project.created_at >= start)
