@@ -1833,6 +1833,7 @@ class SqlAssetService:
                     is not None
                     and project_requirement.origin
                     == AssetRequirementOrigin.PROJECT_DIRECT.value
+                    and project_requirement.status != "Annulé"
                     and project_requirement.project_id
                     == human_requirement.project_id
                 )
