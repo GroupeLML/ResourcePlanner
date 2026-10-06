@@ -36,6 +36,8 @@ DEMAND_OUTSIDE_BEFORE = "BEFORE"
 DEMAND_OUTSIDE_AFTER = "AFTER"
 DEMAND_OUTSIDE_BOTH = "BOTH"
 DEMAND_OUTSIDE_UNAVAILABLE = "UNAVAILABLE"
+DEMAND_HOURS_DIAGNOSTIC_UNAVAILABLE = "DEMAND_HOURS_UNAVAILABLE"
+DEMAND_HOURS_DIAGNOSTIC_ALTERNATIVE_UNRESOLVED = "DEMAND_ALTERNATIVE_UNRESOLVED"
 
 CANCELLED_WORK_PACKAGE_STATUSES = frozenset(
     {
@@ -161,6 +163,73 @@ def demand_window_diagnostic(
     return bool(diagnostics), position, tuple(diagnostics)
 
 
+def requested_workforce_hours(
+    *,
+    demand_periods: tuple[MediumTermDemandPeriodReadModel, ...],
+) -> tuple[Decimal | None, tuple[str, ...]]:
+    """Aggregate current workforce demand hours without double-counting alternatives."""
+    workforce_periods = tuple(
+        row
+        for row in demand_periods
+        if str(row.line_kind or "").strip().upper() == "WORKFORCE"
+    )
+    if not workforce_periods:
+        return Decimal("0.00"), ()
+
+    periods_by_line: dict[tuple[str, str], list[MediumTermDemandPeriodReadModel]] = {}
+    for row in workforce_periods:
+        periods_by_line.setdefault((row.demand_number, row.line_id), []).append(row)
+
+    total = Decimal("0.00")
+    diagnostics: list[str] = []
+    unavailable = False
+
+    def add_diagnostic(code: str) -> None:
+        if code not in diagnostics:
+            diagnostics.append(code)
+
+    for line_periods in periods_by_line.values():
+        detailed_periods = [
+            row
+            for row in line_periods
+            if str(row.period_kind or "").strip().upper() != "BASE"
+        ]
+        effective_periods = detailed_periods or line_periods
+        alternative_groups: dict[str, list[MediumTermDemandPeriodReadModel]] = {}
+
+        for row in effective_periods:
+            period_kind = str(row.period_kind or "").strip().upper()
+            if period_kind == "ALTERNATIVE":
+                group_key = row.alternative_group or row.period_id
+                alternative_groups.setdefault(group_key, []).append(row)
+                continue
+            if row.hours is None:
+                unavailable = True
+                add_diagnostic(DEMAND_HOURS_DIAGNOSTIC_UNAVAILABLE)
+                continue
+            total += row.hours
+
+        for options in alternative_groups.values():
+            selected = [row for row in options if row.selected]
+            candidates = selected or options
+            if not selected:
+                add_diagnostic(DEMAND_HOURS_DIAGNOSTIC_ALTERNATIVE_UNRESOLVED)
+            if any(row.hours is None for row in candidates):
+                unavailable = True
+                add_diagnostic(DEMAND_HOURS_DIAGNOSTIC_UNAVAILABLE)
+                continue
+            if candidates:
+                total += max(
+                    row.hours
+                    for row in candidates
+                    if row.hours is not None
+                )
+
+    if unavailable:
+        return None, tuple(diagnostics)
+    return total, tuple(diagnostics)
+
+
 @dataclass(frozen=True, slots=True)
 class MediumTermWeeklyLoadReadModel:
     week_start: date
@@ -227,6 +296,8 @@ class MediumTermBudgetWorkPackageReadModel:
     resource_class_active: bool | None = None
     task_resource_class_code: str | None = None
     resource_class_diagnostic: str | None = None
+    requested_hours: Decimal | None = Decimal("0.00")
+    requested_hours_diagnostics: tuple[str, ...] = ()
     demand_periods: tuple[MediumTermDemandPeriodReadModel, ...] = ()
 
 

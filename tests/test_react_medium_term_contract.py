@@ -182,6 +182,26 @@ class ReactMediumTermContractTests(unittest.TestCase):
         self.assertIn("DEMAND_OUTSIDE_UNAVAILABLE", projection)
         self.assertNotIn("outside_work_package =", page)
 
+    def test_issue_614e_displays_backend_requested_over_planned_hours(self) -> None:
+        page = (ROOT / "frontend" / "src" / "MediumTermPage.tsx").read_text(
+            encoding="utf-8"
+        )
+        api = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
+        backend = (
+            ROOT / "app" / "application" / "medium_term_budget.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("requested_hours: number | null;", api)
+        self.assertIn("requested_hours_diagnostics: string[];", api)
+        self.assertIn("requestedHoursRatio(workPackage)", page)
+        self.assertIn("Heures demandées / heures prévues", page)
+        self.assertIn("DEMAND_HOURS_UNAVAILABLE", page)
+        self.assertIn("DEMAND_ALTERNATIVE_UNRESOLVED", page)
+        self.assertIn("requested_workforce_hours(", backend)
+        self.assertIn('str(row.line_kind or "").strip().upper() == "WORKFORCE"', backend)
+        self.assertIn('period_kind == "ALTERNATIVE"', backend)
+        self.assertNotIn("workPackage.demand_periods.reduce", page)
+
     def test_capacity_band_is_one_compact_backend_driven_row_per_class(self) -> None:
         panel = (ROOT / "frontend" / "src" / "MediumTermCapacityPanel.tsx").read_text(
             encoding="utf-8"

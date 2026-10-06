@@ -389,6 +389,8 @@ export type MediumTermBudgetWorkPackageReadModel = {
   resource_class_active: boolean | null;
   task_resource_class_code: string | null;
   resource_class_diagnostic: string | null;
+  requested_hours: number | null;
+  requested_hours_diagnostics: string[];
   demand_periods: MediumTermDemandPeriodReadModel[];
 };
 
