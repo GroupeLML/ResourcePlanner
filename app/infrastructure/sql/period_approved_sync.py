@@ -1280,6 +1280,12 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                 "La demande contient des quarts verrouillés. Libère ou supprime ces "
                 "décisions manuelles avant d'annuler la demande."
             )
+        SqlPlanningWindowOverrideRepository(
+            self._session
+        ).supersede_for_request(
+            request.id,
+            resolution_reason="REQUEST_CANCELLED",
+        )
         for requirement in current:
             if requirement.status != "Terminé":
                 requirement.status = "Annulé"

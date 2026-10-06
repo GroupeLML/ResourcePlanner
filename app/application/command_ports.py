@@ -7,7 +7,9 @@ from .commands import (
     AllocationDropEvaluateCommand,
     AllocationDuplicateCommand,
     AllocationExtendMoveCommand,
+    AllocationWindowOverrideMoveCommand,
     AllocationSplitCommand,
+    PlanningWindowOverrideExtendCommand,
 )
 
 
@@ -69,6 +71,16 @@ class CompositeAllocationCommandPort(Protocol):
     def evaluate_drop(self, command: AllocationDropEvaluateCommand) -> Mapping[str, Any]: ...
 
     def extend_and_move(self, command: AllocationExtendMoveCommand) -> Mapping[str, Any]: ...
+
+    def extend_planning_window(
+        self,
+        command: PlanningWindowOverrideExtendCommand,
+    ) -> Mapping[str, Any]: ...
+
+    def override_and_move(
+        self,
+        command: AllocationWindowOverrideMoveCommand,
+    ) -> Mapping[str, Any]: ...
 
 
 class ApprovedDemandSyncPort(Protocol):

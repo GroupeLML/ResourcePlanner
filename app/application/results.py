@@ -226,6 +226,66 @@ class PlanningDropEvaluationResult(ApplicationResult):
 
 
 @dataclass(frozen=True, slots=True)
+class PlanningWindowOverrideMutationResult(ApplicationResult):
+    operation: str
+    segment_id: str
+    requirement_id: str
+    override_id: str
+    approved_window: Mapping[str, Any]
+    effective_window: Mapping[str, Any]
+    planning_version: int
+    approval_revision_id: str
+    operational_version: int | None = None
+    allocation_id: str | None = None
+    shift_id: str | None = None
+    resource_id: str | None = None
+    work_date: str | None = None
+    auto_source_converted: bool = False
+
+    @classmethod
+    def from_mapping(
+        cls,
+        values: Mapping[str, Any],
+    ) -> "PlanningWindowOverrideMutationResult":
+        source = dict(values)
+        operational = source.get("operational_version")
+        return cls(
+            operation=str(source.get("operation") or ""),
+            segment_id=str(source.get("segment_id") or ""),
+            requirement_id=str(source.get("requirement_id") or ""),
+            override_id=str(source.get("override_id") or ""),
+            approved_window=dict(source.get("approved_window") or {}),
+            effective_window=dict(source.get("effective_window") or {}),
+            planning_version=_integer(source.get("planning_version")),
+            approval_revision_id=str(source.get("approval_revision_id") or ""),
+            operational_version=(
+                int(operational) if operational is not None else None
+            ),
+            allocation_id=(
+                str(source.get("allocation_id"))
+                if source.get("allocation_id") is not None
+                else None
+            ),
+            shift_id=(
+                str(source.get("shift_id"))
+                if source.get("shift_id") is not None
+                else None
+            ),
+            resource_id=(
+                str(source.get("resource_id"))
+                if source.get("resource_id") is not None
+                else None
+            ),
+            work_date=(
+                str(source.get("work_date"))
+                if source.get("work_date") is not None
+                else None
+            ),
+            auto_source_converted=bool(source.get("auto_source_converted")),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class CompositeAllocationMutationResult(ApplicationResult):
     operation: str
     source_allocation_id: str

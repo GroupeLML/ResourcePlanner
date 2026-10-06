@@ -6,7 +6,9 @@ from .commands import (
     AllocationDropEvaluateCommand,
     AllocationDuplicateCommand,
     AllocationExtendMoveCommand,
+    AllocationWindowOverrideMoveCommand,
     AllocationSplitCommand,
+    PlanningWindowOverrideExtendCommand,
     AllocationWindowExtensionProposalCommand,
     DemandAlternativeSelectCommand,
     DemandOperationalConfirmationCommand,
@@ -60,6 +62,7 @@ from .results import (
     DemandOperationalConfirmationResult,
     DemandPeriodsMutationResult,
     PlanningDropEvaluationResult,
+    PlanningWindowOverrideMutationResult,
     PlanningResult,
     QuickShiftCreatedResult,
     SegmentMutationResult,
@@ -475,6 +478,19 @@ class ApplicationFacade:
         command: AllocationExtendMoveCommand,
     ) -> CompositeAllocationMutationResult:
         return self._composite_allocation_service().extend_and_move_command(command)
+
+
+    def extend_planning_window_override(
+        self,
+        command: PlanningWindowOverrideExtendCommand,
+    ) -> PlanningWindowOverrideMutationResult:
+        return self._composite_allocation_service().extend_planning_window_command(command)
+
+    def override_and_move_allocation(
+        self,
+        command: AllocationWindowOverrideMoveCommand,
+    ) -> PlanningWindowOverrideMutationResult:
+        return self._composite_allocation_service().override_and_move_command(command)
 
     def propose_allocation_window_extension(
         self,

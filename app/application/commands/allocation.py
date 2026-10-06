@@ -6,6 +6,7 @@ from datetime import date
 from ...domain.confirmation import normalize_confirmation
 from ...domain.manual_overallocation import normalize_overallocation_policy
 from ..errors import ApplicationValidationError
+from ..idempotency import normalize_idempotency_key
 from .common import date_value, float_value, required_text
 
 
@@ -250,6 +251,7 @@ class AllocationDropEvaluateCommand:
     resource_id: str
     day: date
     outside_standard_hours: bool = False
+    include_planning_window_override_options: bool = False
 
     def __post_init__(self) -> None:
         required_text(
@@ -298,6 +300,120 @@ class AllocationExtendMoveCommand:
                 "La version attendue du planning doit être au moins 1.",
                 code="planning_version_invalid",
                 context={"expected_planning_version": self.expected_planning_version},
+            )
+        if (
+            self.expected_operational_version is not None
+            and int(self.expected_operational_version) < 1
+        ):
+            raise ApplicationValidationError(
+                "La version opérationnelle attendue doit être au moins 1.",
+                code="operational_choice_version_invalid",
+            )
+        if self.overallocation_policy is not None:
+            _overallocation_policy(self.overallocation_policy)
+
+
+@dataclass(frozen=True, slots=True)
+class PlanningWindowOverrideExtendCommand:
+    segment_id: str
+    start_date: date
+    end_date: date
+    reason: str
+    expected_planning_version: int
+    expected_approval_revision_id: str
+    idempotency_key: str
+    expected_operational_version: int | None = None
+    correlation_id: str | None = None
+
+    def __post_init__(self) -> None:
+        required_text(
+            self.segment_id,
+            field="segment_id",
+            message="Un segment REQUEST est requis pour la dérogation de fenêtre.",
+        )
+        required_text(
+            self.reason,
+            field="planning_window_override_reason",
+            message="Un motif est requis pour la dérogation de fenêtre Planning.",
+        )
+        required_text(
+            self.expected_approval_revision_id,
+            field="allocation_approval_revision",
+            message="La révision approuvée attendue est requise.",
+        )
+        normalized_key = normalize_idempotency_key(self.idempotency_key)
+        if normalized_key is None:
+            raise ApplicationValidationError(
+                "Une clé d'idempotence est requise.",
+                code="idempotency_key_invalid",
+            )
+        object.__setattr__(self, "idempotency_key", normalized_key)
+        if self.end_date < self.start_date:
+            raise ApplicationValidationError(
+                "La fin de la fenêtre effective doit être postérieure ou égale au début.",
+                code="planning_window_override_invalid",
+            )
+        if int(self.expected_planning_version) < 1:
+            raise ApplicationValidationError(
+                "La version attendue du planning doit être au moins 1.",
+                code="planning_version_invalid",
+            )
+        if (
+            self.expected_operational_version is not None
+            and int(self.expected_operational_version) < 1
+        ):
+            raise ApplicationValidationError(
+                "La version opérationnelle attendue doit être au moins 1.",
+                code="operational_choice_version_invalid",
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class AllocationWindowOverrideMoveCommand:
+    allocation_id: str
+    resource_id: str
+    day: date
+    reason: str
+    expected_planning_version: int
+    expected_approval_revision_id: str
+    idempotency_key: str
+    outside_standard_hours: bool = False
+    overallocation_policy: str | None = None
+    expected_operational_version: int | None = None
+    correlation_id: str | None = None
+
+    def __post_init__(self) -> None:
+        required_text(
+            self.allocation_id,
+            field="allocation_id",
+            message="Un identifiant d'allocation est requis.",
+        )
+        required_text(
+            self.resource_id,
+            field="allocation_resource",
+            message="Une ressource cible est requise.",
+        )
+        required_text(
+            self.reason,
+            field="planning_window_override_reason",
+            message="Un motif est requis pour la dérogation de fenêtre Planning.",
+        )
+        required_text(
+            self.expected_approval_revision_id,
+            field="allocation_approval_revision",
+            message="La révision approuvée attendue est requise.",
+        )
+        normalized_key = normalize_idempotency_key(self.idempotency_key)
+        if normalized_key is None:
+            raise ApplicationValidationError(
+                "Une clé d'idempotence est requise.",
+                code="idempotency_key_invalid",
+            )
+        object.__setattr__(self, "idempotency_key", normalized_key)
+        if int(self.expected_planning_version) < 1:
+            raise ApplicationValidationError(
+                "La version attendue du planning doit être au moins 1.",
+                code="planning_version_invalid",
             )
         if (
             self.expected_operational_version is not None
