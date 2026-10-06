@@ -18,7 +18,9 @@ from app.infrastructure.sql import (
     ResourceAvailabilityRule,
     ResourceCompetency,
     ResourceRequirement,
+    ResourceRequirementCompetency,
     Shift,
+    TaskCatalogEntry,
     WorkforceRequest,
     WorkforceRequestCompetency,
     create_session_factory,
@@ -79,6 +81,17 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
                 ]
             )
             session.flush()
+            session.add(
+                TaskCatalogEntry(
+                    id="T-APPROVED",
+                    project_number="P-273",
+                    task_code="310",
+                    label="Programmation",
+                    active=True,
+                    workforce_eligible=True,
+                    preferred_resource_id="R-ALICE",
+                )
+            )
             session.add(
                 ResourceCompetency(resource_id="R-ALICE", competency_id="C-PLC")
             )
@@ -150,11 +163,13 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
                 legacy_segment_id="SEG-2026-0273",
                 project_id="P-273",
                 workforce_request_id=approved.id,
+                approved_task_catalog_item_id="T-APPROVED",
                 assigned_resource_id=None,
                 start_date=date(2026, 9, 21),
                 end_date=date(2026, 9, 25),
                 planned_hours=Decimal("24"),
                 status="À assigner",
+                required_resource_class="Programmation",
                 required_competency="PLC",
                 required_competency_id="C-PLC",
                 priority="Haute",
@@ -195,6 +210,12 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
             )
             session.add_all([target, covered, load])
             session.flush()
+            session.add(
+                ResourceRequirementCompetency(
+                    resource_requirement_id=target.id,
+                    competency_id="C-PLC",
+                )
+            )
             session.add_all(
                 [
                     Shift(
@@ -278,6 +299,11 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
 
             alice = rows[0]
             self.assertTrue(alice["recommended"])
+            self.assertTrue(alice["preferred"])
+            self.assertEqual(alice["recommendation_category"], 1)
+            self.assertEqual(alice["competency_state"], "SATISFIED")
+            self.assertEqual(alice["missing_competency_ids"], [])
+            self.assertFalse(alice["fallback_requires_confirmation"])
             self.assertTrue(alice["competency_match"])
             self.assertTrue(alice["class_match"])
             self.assertEqual(alice["required_class"], "Programmation")
@@ -288,8 +314,10 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
             self.assertEqual(alice["overtime_needed"], 0.0)
 
             bob = rows[1]
+            self.assertFalse(bob["preferred"])
             self.assertFalse(bob["competency_match"])
             self.assertFalse(bob["class_match"])
+            self.assertEqual(bob["recommendation_category"], 7)
             self.assertEqual(bob["prudent_free"], 32.0)
             self.assertGreater(alice["score"], bob["score"])
 
