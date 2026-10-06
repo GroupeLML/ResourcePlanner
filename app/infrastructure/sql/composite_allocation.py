@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from typing import Any
 
@@ -13,8 +13,19 @@ from ...application.commands import (
     AllocationDuplicateCommand,
     AllocationExtendMoveCommand,
     AllocationSplitCommand,
+    AllocationWindowOverrideMoveCommand,
+    PlanningWindowOverrideExtendCommand,
 )
-from ...application.errors import ApplicationConflictError, ApplicationValidationError
+from ...application.errors import (
+    ApplicationAuthorizationError,
+    ApplicationConflictError,
+    ApplicationValidationError,
+)
+from ...application.idempotency import request_fingerprint
+from ...application.security import (
+    PERMISSION_MANAGE_PLANNING,
+    PERMISSION_OVERRIDE_PLANNING_WINDOW,
+)
 from ...application.repository_ports import PlanningAuthorizationPort, PlanningMutationVersionPort
 from ...domain.approval_envelope import envelope_entry_identity_from_stable_key
 from ...domain.manual_overallocation import (
@@ -29,6 +40,8 @@ from .approval_revision_models import (
     RequestApprovalReference,
 )
 from .asset_service import SqlAssetService
+from .idempotency import SqlCommandIdempotencyAdapter
+from .identity_models import AppUser
 from .base import new_id
 from .command_adapters import INACTIVE_REQUIREMENT_STATUSES, SqlPlanningCommandAdapter
 from .models import ORIGIN_REQUEST, Resource, ResourceRequirement, Shift, WorkforceRequest
@@ -41,6 +54,8 @@ from .overallocation import (
 )
 from .planning_audit import ENTITY_SHIFT, SqlPlanningAuditJournal
 from .planning_version import SqlPlanningMutationVersionRepository
+from .planning_window_override_repository import SqlPlanningWindowOverrideRepository
+from .segment_asset_guard import assert_segment_asset_mutation_compatible
 
 
 _HOUR = Decimal("0.01")
@@ -65,15 +80,183 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
         authorization: PlanningAuthorizationPort | None = None,
         versioning: PlanningMutationVersionPort | None = None,
         journal: SqlPlanningAuditJournal | None = None,
+        actor_user_id: str | None = None,
+        permissions: Sequence[str] | None = None,
     ) -> None:
         self._session = session
         self._versioning = versioning or SqlPlanningMutationVersionRepository(session)
+        self._actor_user_id = _text(actor_user_id) or None
+        self._permissions = frozenset(_text(value) for value in (permissions or ()) if _text(value))
         self._planning = planning or SqlPlanningCommandAdapter(
             session,
             versioning=self._versioning,
         )
         self._authorization = authorization
         self._journal = journal or SqlPlanningAuditJournal(session)
+
+    def _can_override_planning_window(self) -> bool:
+        if (
+            not self._actor_user_id
+            or PERMISSION_MANAGE_PLANNING not in self._permissions
+            or PERMISSION_OVERRIDE_PLANNING_WINDOW not in self._permissions
+        ):
+            return False
+        actor = self._session.get(AppUser, self._actor_user_id)
+        return bool(actor is not None and actor.active)
+
+    def _require_window_override_authority(self) -> str:
+        if (
+            PERMISSION_MANAGE_PLANNING not in self._permissions
+            or PERMISSION_OVERRIDE_PLANNING_WINDOW not in self._permissions
+        ):
+            raise ApplicationAuthorizationError(
+                "Les permissions manage_planning et override_planning_window sont requises.",
+                code="planning_window_override_permission_denied",
+            )
+        actor_id = _text(self._actor_user_id)
+        actor = self._session.get(AppUser, actor_id) if actor_id else None
+        if actor is None or not actor.active:
+            raise ApplicationAuthorizationError(
+                "Une identité AppUser active et stable est requise pour déroger à la fenêtre Planning.",
+                code="planning_window_override_actor_required",
+            )
+        return actor.id
+
+    def _requirement_by_identifier(self, identifier: str) -> ResourceRequirement:
+        wanted = _text(identifier)
+        requirement = self._session.scalar(
+            select(ResourceRequirement).where(
+                (ResourceRequirement.id == wanted)
+                | (ResourceRequirement.legacy_segment_id == wanted)
+            )
+        )
+        if requirement is None:
+            raise KeyError(f"Segment {wanted} introuvable")
+        if requirement.status in INACTIVE_REQUIREMENT_STATUSES:
+            raise ValueError("Le segment ciblé n'est plus actif.")
+        return requirement
+
+    def _planning_window_context(
+        self,
+        requirement: ResourceRequirement,
+        *,
+        expected_approval_revision_id: str,
+        expected_operational_version: int | None,
+    ) -> tuple[str, str, Any, Any, int | None]:
+        if requirement.origin != ORIGIN_REQUEST or not requirement.workforce_request_id:
+            raise ApplicationValidationError(
+                "La dérogation de fenêtre s'applique uniquement à un segment REQUEST approuvé.",
+                code="planning_window_override_request_required",
+                context={"segment_id": self._segment_reference(requirement)},
+            )
+        approval_revision_id, operational_version = self._authorization_context(
+            requirement,
+            expected_approval_revision_id=expected_approval_revision_id,
+            expected_operational_version=expected_operational_version,
+            require_operational_version=False,
+        )
+        if not approval_revision_id or self._authorization is None:
+            raise ApplicationConflictError(
+                "L'autorisation approuvée active est requise pour la dérogation.",
+                code="planning_authorization_unknown",
+            )
+        decision = self._authorization.operational_window_authorization(
+            self._segment_reference(requirement),
+            requirement.start_date,
+            expected_approval_revision_id=expected_approval_revision_id,
+        )
+        approved_entry_key = _text(decision.get("approved_entry_key"))
+        approved_start = decision.get("approved_start")
+        approved_end = decision.get("approved_end")
+        if (
+            approval_revision_id != _text(decision.get("approval_revision_id"))
+            or approved_entry_key != _text(requirement.approved_entry_key)
+            or approved_start is None
+            or approved_end is None
+        ):
+            raise ApplicationConflictError(
+                "Le segment ne correspond plus à l'entrée approuvée active.",
+                code="planning_authorization_revision_conflict",
+                context={
+                    "segment_id": self._segment_reference(requirement),
+                    "expected_approval_revision_id": expected_approval_revision_id,
+                    "current_approval_revision_id": decision.get("approval_revision_id"),
+                    "approved_entry_key": decision.get("approved_entry_key"),
+                },
+            )
+
+        override = SqlPlanningWindowOverrideRepository(
+            self._session
+        ).active_by_requirement_ids(
+            (requirement.id,),
+            approval_revision_id=approval_revision_id,
+        ).get(requirement.id)
+        effective = SqlPlanningWindowOverrideRepository.effective_window_for_requirement(
+            requirement,
+            override,
+            approval_revision_id=approval_revision_id,
+            approved_entry_key=approved_entry_key,
+            approved_start_date=approved_start,
+            approved_end_date=approved_end,
+        )
+        if (
+            requirement.start_date != effective.start_date
+            or requirement.end_date != effective.end_date
+        ):
+            raise ApplicationConflictError(
+                "La fenêtre matérialisée du segment n'est plus cohérente avec son autorisation effective.",
+                code="planning_window_override_state_conflict",
+                context={
+                    "segment_id": self._segment_reference(requirement),
+                    "effective_start": effective.start_date.isoformat(),
+                    "effective_end": effective.end_date.isoformat(),
+                    "segment_start": requirement.start_date.isoformat(),
+                    "segment_end": requirement.end_date.isoformat(),
+                },
+            )
+        return (
+            approval_revision_id,
+            approved_entry_key,
+            approved_start,
+            approved_end,
+            operational_version,
+        )
+
+    def _audit_window_override(
+        self,
+        *,
+        override_id: str,
+        requirement: ResourceRequirement,
+        before_start: Any,
+        before_end: Any,
+        approved_start: Any,
+        approved_end: Any,
+        reason: str,
+        correlation_id: str,
+        operation: str,
+    ) -> None:
+        self._journal.append(
+            entity_type="PLANNING_WINDOW_OVERRIDE",
+            entity_id=override_id,
+            entity_reference=self._segment_reference(requirement),
+            parent_reference=requirement.workforce_request_id,
+            action=operation,
+            before={
+                "effective_start_date": before_start.isoformat(),
+                "effective_end_date": before_end.isoformat(),
+            },
+            after={
+                "approved_start_date": approved_start.isoformat(),
+                "approved_end_date": approved_end.isoformat(),
+                "effective_start_date": requirement.start_date.isoformat(),
+                "effective_end_date": requirement.end_date.isoformat(),
+                "approval_revision_id": requirement.approval_revision_id,
+                "approved_entry_key": requirement.approved_entry_key,
+                "planning_version": self._versioning.current_version(),
+                "reason": _text(reason),
+                "correlation_id": _text(correlation_id),
+            },
+        )
 
     def _shift(self, identifier: str) -> Shift:
         wanted = _text(identifier)
@@ -458,6 +641,24 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
                 }
             )
         else:
+            if (
+                requirement.origin == ORIGIN_REQUEST
+                and self._can_override_planning_window()
+            ):
+                authorization_reason = "PLANNING_WINDOW_OVERRIDE_AVAILABLE"
+                actions.append(
+                    {
+                        "code": "OVERRIDE_WINDOW_AND_MOVE",
+                        "label": "Déroger à la fenêtre et déplacer",
+                        "enabled": True,
+                        "required_parameters": [
+                            "reason",
+                            "expected_planning_version",
+                            "expected_approval_revision_id",
+                            "idempotency_key",
+                        ],
+                    }
+                )
             actions.append(
                 {
                     "code": "PROPOSE_WINDOW_EXTENSION",
@@ -756,6 +957,428 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
             "planning_version": self._versioning.current_version(),
             "approval_revision_id": approval_revision_id,
             "operational_version": self._current_operational_version(requirement),
+            "auto_source_converted": _text(shift_before.get("source")).upper() == "AUTO",
+        }
+
+    def extend_planning_window(
+        self,
+        command: PlanningWindowOverrideExtendCommand,
+    ) -> Mapping[str, Any]:
+        actor_user_id = self._require_window_override_authority()
+        payload = {
+            "segment_id": command.segment_id,
+            "start_date": command.start_date.isoformat(),
+            "end_date": command.end_date.isoformat(),
+            "reason": _text(command.reason),
+            "expected_planning_version": command.expected_planning_version,
+            "expected_approval_revision_id": command.expected_approval_revision_id,
+            "expected_operational_version": command.expected_operational_version,
+        }
+        correlation_id = _text(command.correlation_id) or _text(command.idempotency_key)
+        return SqlCommandIdempotencyAdapter(
+            self._session,
+            actor_name=actor_user_id,
+        ).replay_or_execute(
+            scope="planning_window_override.extend_segment",
+            key=command.idempotency_key,
+            request_fingerprint=request_fingerprint(payload),
+            action=lambda: self._extend_planning_window_once(
+                command,
+                actor_user_id=actor_user_id,
+                correlation_id=correlation_id,
+            ),
+        )
+
+    def _extend_planning_window_once(
+        self,
+        command: PlanningWindowOverrideExtendCommand,
+        *,
+        actor_user_id: str,
+        correlation_id: str,
+    ) -> Mapping[str, Any]:
+        self._versioning.acquire(command.expected_planning_version)
+        requirement = self._requirement_by_identifier(command.segment_id)
+        (
+            approval_revision_id,
+            approved_entry_key,
+            approved_start,
+            approved_end,
+            operational_version,
+        ) = self._planning_window_context(
+            requirement,
+            expected_approval_revision_id=command.expected_approval_revision_id,
+            expected_operational_version=command.expected_operational_version,
+        )
+        before_start = requirement.start_date
+        before_end = requirement.end_date
+        if (
+            command.start_date > before_start
+            or command.end_date < before_end
+            or (
+                command.start_date == before_start
+                and command.end_date == before_end
+            )
+        ):
+            raise ApplicationValidationError(
+                "La commande doit élargir la fenêtre opérationnelle actuelle sans la réduire.",
+                code="planning_window_override_widening_required",
+                context={
+                    "current_start": before_start.isoformat(),
+                    "current_end": before_end.isoformat(),
+                },
+            )
+
+        assert_segment_asset_mutation_compatible(
+            self._session,
+            requirement,
+            target_start_date=command.start_date,
+            target_end_date=command.end_date,
+        )
+        before_row = self._journal.requirement_snapshot(requirement.id)
+        override = SqlPlanningWindowOverrideRepository(self._session).apply_widening(
+            requirement,
+            approval_revision_id=approval_revision_id,
+            approved_entry_key=approved_entry_key,
+            approved_start_date=approved_start,
+            approved_end_date=approved_end,
+            effective_start_date=command.start_date,
+            effective_end_date=command.end_date,
+            actor_user_id=actor_user_id,
+            reason=command.reason,
+            correlation_id=correlation_id,
+        )
+        requirement.start_date = command.start_date
+        requirement.end_date = command.end_date
+        self._session.flush()
+        self._planning.rebuild()
+
+        persisted = self._session.get(ResourceRequirement, requirement.id)
+        if (
+            persisted is None
+            or persisted.start_date != command.start_date
+            or persisted.end_date != command.end_date
+        ):
+            raise RuntimeError(
+                "Le recalcul n'a pas conservé la dérogation de fenêtre Planning."
+            )
+        invalid_locked = self._session.scalar(
+            select(func.count())
+            .select_from(Shift)
+            .where(
+                Shift.resource_requirement_id == persisted.id,
+                Shift.locked == true(),
+                (
+                    (Shift.work_date < persisted.start_date)
+                    | (Shift.work_date > persisted.end_date)
+                ),
+            )
+        )
+        if int(invalid_locked or 0) > 0:
+            raise RuntimeError(
+                "Un quart verrouillé se trouve hors de la fenêtre effective finale."
+            )
+
+        self._audit_window_override(
+            override_id=override.id,
+            requirement=persisted,
+            before_start=before_start,
+            before_end=before_end,
+            approved_start=approved_start,
+            approved_end=approved_end,
+            reason=command.reason,
+            correlation_id=correlation_id,
+            operation="Dérogation explicite de fenêtre Planning",
+        )
+        if before_row is not None:
+            current = self._journal.requirement_snapshot(persisted.id)
+            if current is not None:
+                after = dict(current[2])
+                after.update(
+                    {
+                        "planning_window_override_id": override.id,
+                        "correlation_id": correlation_id,
+                        "planning_version": self._versioning.current_version(),
+                    }
+                )
+                self._journal.append(
+                    entity_type="SEGMENT",
+                    entity_id=current[0],
+                    entity_reference=current[1],
+                    action="Extension opérationnelle dérogée",
+                    before=dict(before_row[2]),
+                    after=after,
+                )
+
+        return {
+            "operation": "OVERRIDE_WINDOW",
+            "segment_id": self._segment_reference(persisted),
+            "requirement_id": persisted.id,
+            "override_id": override.id,
+            "approved_window": {
+                "start": approved_start.isoformat(),
+                "end": approved_end.isoformat(),
+            },
+            "effective_window": {
+                "start": persisted.start_date.isoformat(),
+                "end": persisted.end_date.isoformat(),
+            },
+            "planning_version": self._versioning.current_version(),
+            "approval_revision_id": approval_revision_id,
+            "operational_version": operational_version,
+        }
+
+    def override_and_move(
+        self,
+        command: AllocationWindowOverrideMoveCommand,
+    ) -> Mapping[str, Any]:
+        actor_user_id = self._require_window_override_authority()
+        payload = {
+            "allocation_id": command.allocation_id,
+            "resource_id": command.resource_id,
+            "day": command.day.isoformat(),
+            "reason": _text(command.reason),
+            "expected_planning_version": command.expected_planning_version,
+            "expected_approval_revision_id": command.expected_approval_revision_id,
+            "expected_operational_version": command.expected_operational_version,
+            "outside_standard_hours": command.outside_standard_hours,
+            "overallocation_policy": command.overallocation_policy,
+        }
+        correlation_id = _text(command.correlation_id) or _text(command.idempotency_key)
+        return SqlCommandIdempotencyAdapter(
+            self._session,
+            actor_name=actor_user_id,
+        ).replay_or_execute(
+            scope="planning_window_override.move_shift",
+            key=command.idempotency_key,
+            request_fingerprint=request_fingerprint(payload),
+            action=lambda: self._override_and_move_once(
+                command,
+                actor_user_id=actor_user_id,
+                correlation_id=correlation_id,
+            ),
+        )
+
+    def _override_and_move_once(
+        self,
+        command: AllocationWindowOverrideMoveCommand,
+        *,
+        actor_user_id: str,
+        correlation_id: str,
+    ) -> Mapping[str, Any]:
+        self._versioning.acquire(command.expected_planning_version)
+        source = self._shift(command.allocation_id)
+        requirement = self._requirement(source)
+        self._validate_source(source)
+        target_resource = self._resource(command.resource_id)
+        target_day = command.day
+        (
+            approval_revision_id,
+            approved_entry_key,
+            approved_start,
+            approved_end,
+            operational_version,
+        ) = self._planning_window_context(
+            requirement,
+            expected_approval_revision_id=command.expected_approval_revision_id,
+            expected_operational_version=command.expected_operational_version,
+        )
+        if requirement.start_date <= target_day <= requirement.end_date:
+            raise ApplicationValidationError(
+                "La date cible est déjà dans la fenêtre effective; utilise le déplacement normal.",
+                code="planning_window_override_not_required",
+            )
+        if approved_start <= target_day <= approved_end:
+            raise ApplicationValidationError(
+                "La date cible reste dans l'entrée approuvée; utilise l'extension autorisée existante.",
+                code="planning_window_override_not_required",
+            )
+
+        before_start = requirement.start_date
+        before_end = requirement.end_date
+        proposed_start = min(before_start, target_day)
+        proposed_end = max(before_end, target_day)
+        assert_segment_asset_mutation_compatible(
+            self._session,
+            requirement,
+            target_start_date=proposed_start,
+            target_end_date=proposed_end,
+        )
+
+        before_locked = self._locked_hours(requirement.id)
+        source_hours = _hours(source.hours)
+        projected_locked = (
+            before_locked
+            - (source_hours if source.locked else Decimal("0"))
+            + source_hours
+        )
+        policy = normalize_overallocation_policy(command.overallocation_policy)
+        if policy == INCREASE_PLANNED:
+            raise ApplicationValidationError(
+                "Une dérogation de dates ne modifie jamais le budget ou les heures prévues.",
+                code="planning_window_override_budget_immutable",
+            )
+        _day, impact, availability = evaluate_projected_manual_state(
+            self._session,
+            requirement,
+            target_resource,
+            target_day,
+            command.outside_standard_hours,
+            current_locked_hours=before_locked,
+            projected_locked_hours=projected_locked,
+            window_start=proposed_start,
+            window_end=proposed_end,
+        )
+        if not availability.allowed:
+            raise ApplicationValidationError(
+                "La ressource n'est pas disponible selon son horaire standard cette journée. "
+                "Autorise explicitement le quart hors horaire pour continuer.",
+                code="allocation_outside_standard_hours_confirmation_required",
+            )
+        if impact.increases_exception and policy != KEEP_EXCEPTION:
+            raise ApplicationValidationError(
+                "Ce déplacement augmenterait la surallocation; KEEP_EXCEPTION doit être confirmé explicitement.",
+                code="allocation_overallocation_choice_required",
+                context={
+                    "segment_id": self._segment_reference(requirement),
+                    "planned_hours": impact.planned_hours,
+                    "projected_locked_hours": impact.projected_locked_hours,
+                    "excess_hours": impact.projected_excess_hours,
+                },
+            )
+
+        shift_before_row = self._journal.shift_snapshot(source.id)
+        requirement_before_row = self._journal.requirement_snapshot(requirement.id)
+        requirement_before_metrics = _segment_metrics(self._session, requirement.id)
+        if shift_before_row is None or requirement_before_row is None:
+            raise RuntimeError(
+                "L'état initial du déplacement dérogé est introuvable."
+            )
+        shift_before = dict(shift_before_row[3])
+
+        override = SqlPlanningWindowOverrideRepository(self._session).apply_widening(
+            requirement,
+            approval_revision_id=approval_revision_id,
+            approved_entry_key=approved_entry_key,
+            approved_start_date=approved_start,
+            approved_end_date=approved_end,
+            effective_start_date=proposed_start,
+            effective_end_date=proposed_end,
+            actor_user_id=actor_user_id,
+            reason=command.reason,
+            correlation_id=correlation_id,
+        )
+        requirement.start_date = proposed_start
+        requirement.end_date = proposed_end
+        source.resource_id = target_resource.id
+        source.work_date = target_day
+        source.source = "MANUAL"
+        source.locked = True
+        source.outside_standard_hours = availability.override_applied
+        SqlAssetService(
+            self._session,
+            actor=actor_user_id,
+        ).synchronize_shift_ad_hoc_assignment(shift=source)
+        self._session.flush()
+        self._planning.rebuild()
+
+        persisted = self._session.get(Shift, source.id)
+        current_requirement = self._session.get(ResourceRequirement, requirement.id)
+        if (
+            persisted is None
+            or current_requirement is None
+            or persisted.resource_requirement_id != requirement.id
+            or persisted.resource_id != target_resource.id
+            or persisted.work_date != target_day
+            or not persisted.locked
+            or _text(persisted.source).upper() != "MANUAL"
+            or current_requirement.start_date != proposed_start
+            or current_requirement.end_date != proposed_end
+        ):
+            raise RuntimeError(
+                "Les invariants du déplacement avec dérogation ne sont pas respectés."
+            )
+
+        append_overallocation_audit(
+            self._session,
+            self._journal,
+            self._segment_reference(current_requirement),
+            requirement_before_row,
+            requirement_before_metrics,
+            policy=policy,
+        )
+        self._audit_window_override(
+            override_id=override.id,
+            requirement=current_requirement,
+            before_start=before_start,
+            before_end=before_end,
+            approved_start=approved_start,
+            approved_end=approved_end,
+            reason=command.reason,
+            correlation_id=correlation_id,
+            operation="Dérogation de fenêtre et déplacement atomique",
+        )
+        current_req = self._journal.requirement_snapshot(current_requirement.id)
+        current_shift = self._journal.shift_snapshot(persisted.id)
+        if current_req is not None:
+            req_after = dict(current_req[2])
+            req_after.update(
+                {
+                    "planning_window_override_id": override.id,
+                    "correlation_id": correlation_id,
+                    "expected_planning_version": command.expected_planning_version,
+                    "planning_version": self._versioning.current_version(),
+                    "approval_revision_id": approval_revision_id,
+                }
+            )
+            self._journal.append(
+                entity_type="SEGMENT",
+                entity_id=current_req[0],
+                entity_reference=current_req[1],
+                action="Extension opérationnelle dérogée",
+                before=dict(requirement_before_row[2]),
+                after=req_after,
+            )
+        if current_shift is not None:
+            shift_after = dict(current_shift[3])
+            shift_after.update(
+                {
+                    "planning_window_override_id": override.id,
+                    "correlation_id": correlation_id,
+                    "expected_planning_version": command.expected_planning_version,
+                    "planning_version": self._versioning.current_version(),
+                    "approval_revision_id": approval_revision_id,
+                }
+            )
+            self._journal.append(
+                entity_type=ENTITY_SHIFT,
+                entity_id=current_shift[0],
+                entity_reference=current_shift[1],
+                parent_reference=current_shift[2],
+                action="Déplacement atomique avec dérogation",
+                before=shift_before,
+                after=shift_after,
+            )
+
+        return {
+            "operation": "OVERRIDE_WINDOW_AND_MOVE",
+            "segment_id": self._segment_reference(current_requirement),
+            "requirement_id": current_requirement.id,
+            "override_id": override.id,
+            "approved_window": {
+                "start": approved_start.isoformat(),
+                "end": approved_end.isoformat(),
+            },
+            "effective_window": {
+                "start": current_requirement.start_date.isoformat(),
+                "end": current_requirement.end_date.isoformat(),
+            },
+            "planning_version": self._versioning.current_version(),
+            "approval_revision_id": approval_revision_id,
+            "operational_version": operational_version,
+            "allocation_id": self._reference(persisted),
+            "shift_id": persisted.id,
+            "resource_id": persisted.resource_id,
+            "work_date": persisted.work_date.isoformat(),
             "auto_source_converted": _text(shift_before.get("source")).upper() == "AUTO",
         }
 
