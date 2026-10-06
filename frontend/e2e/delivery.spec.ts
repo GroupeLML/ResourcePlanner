@@ -265,6 +265,7 @@ test("362F Delivery et 363E Verification traversent PM, Team Lead et technicien"
   await expect(technician.page.locator(".delivery-summary").locator("article").filter({ hasText: "Travail restant" }).locator("strong")).toHaveText("0 h");
   await expect(storyFact(storyCard(technician.page, storyTitle), "Référence")).toContainText("8 h");
 
+  await leadA.page.reload();
   await openDelivery(leadA.page, workPackageLabel);
   const leadVerification = leadA.page.locator(".verification-panel");
   await expect(leadVerification).toContainText("Valider démarrage 363E");
@@ -275,6 +276,7 @@ test("362F Delivery et 363E Verification traversent PM, Team Lead et technicien"
   await leadRequirement.getByRole("button", { name: "Affecter" }).click();
   await expect(leadRequirement).toContainText(techPrincipal.local_user_id);
 
+  await technician.page.reload();
   await openDelivery(technician.page, workPackageLabel, true);
   const technicianVerification = technician.page.locator(".verification-panel");
   let technicianRequirement = technicianVerification.locator(".verification-requirement-card").filter({
@@ -299,6 +301,7 @@ test("362F Delivery et 363E Verification traversent PM, Team Lead et technicien"
   await technicianRequirement.getByRole("button", { name: "Ajouter la preuve" }).click();
   await expect(technicianRequirement.locator(".verification-history")).toContainText("Capture FAT 363E");
 
+  await leadA.page.reload();
   await openDelivery(leadA.page, workPackageLabel);
   leadRequirement = leadA.page.locator(".verification-requirement-card").filter({
     hasText: "Valider démarrage 363E",
@@ -307,6 +310,7 @@ test("362F Delivery et 363E Verification traversent PM, Team Lead et technicien"
   await leadRequirement.getByRole("button", { name: "Demander un retest" }).click();
   await expect(leadRequirement.locator(".verification-status")).toHaveText("À exécuter");
 
+  await technician.page.reload();
   await openDelivery(technician.page, workPackageLabel, true);
   technicianRequirement = technician.page.locator(".verification-requirement-card").filter({
     hasText: "Valider démarrage 363E",
