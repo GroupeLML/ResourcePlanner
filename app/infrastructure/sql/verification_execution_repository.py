@@ -4,7 +4,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 import json
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, true
 from sqlalchemy.orm import Session
 
 from app.application.project_managers import ProjectManagerResolutionService
@@ -140,7 +140,7 @@ class SqlVerificationExecutionRepository:
                     == str(requirement_id).strip(),
                     VerificationExecutorAssignmentRow.executor_user_id
                     == str(executor_user_id).strip(),
-                    VerificationExecutorAssignmentRow.active.is_(True),
+                    VerificationExecutorAssignmentRow.active == true(),
                 )
                 .limit(1)
             )
@@ -163,7 +163,7 @@ class SqlVerificationExecutionRepository:
                     == str(scope_id).strip(),
                     VerificationExecutorAssignmentRow.executor_user_id
                     == str(executor_user_id).strip(),
-                    VerificationExecutorAssignmentRow.active.is_(True),
+                    VerificationExecutorAssignmentRow.active == true(),
                 )
                 .limit(1)
             )
@@ -181,7 +181,7 @@ class SqlVerificationExecutionRepository:
                 == assignment.requirement_id,
                 VerificationExecutorAssignmentRow.executor_user_id
                 == assignment.executor_user_id,
-                VerificationExecutorAssignmentRow.active.is_(True),
+                VerificationExecutorAssignmentRow.active == true(),
             )
             .order_by(VerificationExecutorAssignmentRow.created_at.desc())
             .limit(1)
@@ -219,7 +219,7 @@ class SqlVerificationExecutionRepository:
                 == str(requirement_id).strip(),
                 VerificationExecutorAssignmentRow.executor_user_id
                 == str(executor_user_id).strip(),
-                VerificationExecutorAssignmentRow.active.is_(True),
+                VerificationExecutorAssignmentRow.active == true(),
             )
             .order_by(VerificationExecutorAssignmentRow.created_at.desc())
             .limit(1)
@@ -243,7 +243,7 @@ class SqlVerificationExecutionRepository:
                 .where(
                     VerificationExecutorAssignmentRow.requirement_id
                     == str(requirement_id).strip(),
-                    VerificationExecutorAssignmentRow.active.is_(True),
+                    VerificationExecutorAssignmentRow.active == true(),
                 )
                 .order_by(VerificationExecutorAssignmentRow.executor_user_id)
             ).all()
