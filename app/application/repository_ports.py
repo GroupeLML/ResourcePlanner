@@ -46,7 +46,7 @@ class WorkPackageRepositoryPort(Protocol):
         self,
         reference: str,
         *,
-        terminal_status: str,
+        terminal_status: str | None,
         expected_version: int,
     ) -> WorkPackageReadModel: ...
 
