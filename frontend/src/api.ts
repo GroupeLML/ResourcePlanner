@@ -530,6 +530,7 @@ export type ResourceAvailabilityRuleReadModel = {
   availability_type: AvailabilityType;
   resource_id: string | null;
   resource_name: string | null;
+  resource_class_codes: string[];
   start_date: string | null;
   end_date: string | null;
   weekdays: string | null;
@@ -549,6 +550,7 @@ export type AvailabilityRuleWrite = {
   end_time: string | null;
   note: string | null;
   active: boolean;
+  resource_class_codes?: string[];
 };
 
 export type AvailabilityRuleMutationResult = {
