@@ -83,6 +83,16 @@ const DEMAND_HOURS_DIAGNOSTIC_LABELS: Record<string, string> = {
   DEMAND_ALTERNATIVE_UNRESOLVED: "Alternative non sélectionnée : maximum des options retenu",
 };
 
+const REMAINING_DIAGNOSTIC_LABELS: Record<string, string> = {
+  ERP_TASK_BUDGET_FRESHNESS_UNAVAILABLE: "Dernière synchronisation ERP de la tâche indisponible",
+  ERP_REMAINING_WORK_PACKAGE_LOAD_UNAVAILABLE: "Charge WorkPackage après synchronisation indisponible",
+  ERP_FINANCIAL_BUDGET_UNAVAILABLE: "Budget ERP restant indisponible",
+  ERP_FINANCIAL_BUDGET_INCOMPLETE: "Budget ERP restant incomplet",
+  resource_class_cost_missing: "Coût horaire canonique manquant",
+  resource_class_cost_zero: "Coût horaire canonique nul",
+  resource_class_cost_negative: "Coût horaire canonique invalide",
+};
+
 const PROJECTION_DIAGNOSTIC_LABELS: Record<string, string> = {
   UNCLASSIFIED_WORK_PACKAGES: "Des WorkPackages historiques ne sont liés à aucune tâche ERP.",
   UNCLASSIFIED_WORK_PACKAGE_LOAD: "Une charge WorkPackage sans classe canonique est conservée dans « Non classé ».",
@@ -113,15 +123,6 @@ function requestedHoursRatio(workPackage: MediumTermBudgetWorkPackageReadModel) 
     ? "—"
     : formatter.format(workPackage.planned_hours);
   return `${requested} / ${planned} h`;
-}
-
-function cad(value: number | null | undefined) {
-  if (value == null) return "Indisponible";
-  return new Intl.NumberFormat("fr-CA", {
-    style: "currency",
-    currency: "CAD",
-    maximumFractionDigits: 2,
-  }).format(value);
 }
 
 function erpFreshness(value: string | null | undefined) {
@@ -421,11 +422,28 @@ function TaskHeader({
   task: MediumTermBudgetTaskReadModel;
   budgetMode: BudgetMode;
 }) {
-  const attention = BUDGET_ATTENTION.has(task.diagnostic_state);
-  const financialValue = budgetMode === "initial"
-    ? task.budget_amount_cad
-    : task.remaining_budget_cad;
-  const financialLabel = budgetMode === "initial" ? "Budget initial" : "Budget restant";
+  const isRemaining = budgetMode === "remaining";
+  const budgetValue = isRemaining
+    ? task.remaining_budget_hours_from_actual
+    : task.budget_hours;
+  const loadValue = isRemaining
+    ? task.remaining_work_package_hours
+    : task.planned_wp_hours;
+  const balanceValue = isRemaining
+    ? task.remaining_structured_balance_hours
+    : task.remaining_budget_hours;
+  const financialLabel = isRemaining ? "Budget restant" : "Budget initial";
+  const remainingDiagnostics = task.remaining_mode_diagnostics
+    .map((code) => REMAINING_DIAGNOSTIC_LABELS[code] || code);
+  const selectedDiagnostics = isRemaining
+    ? remainingDiagnostics
+    : [
+        diagnosticLabel(task.diagnostic_state),
+        task.budget_source_diagnostic,
+      ].filter((value): value is string => Boolean(value));
+  const attention = isRemaining
+    ? remainingDiagnostics.length > 0
+    : BUDGET_ATTENTION.has(task.diagnostic_state);
   const freshness = erpFreshness(task.erp_budget_last_success_at);
 
   return (
@@ -433,18 +451,19 @@ function TaskHeader({
       <div className="mt-task-title">
         <strong>{task.task_code}</strong>
         <span>{task.task_label}</span>
-        {attention && <span className="mt-yellow-flag" title={task.diagnostic_state}>⚑</span>}
+        {attention && <span className="mt-yellow-flag" title={selectedDiagnostics.join(" · ")}>⚑</span>}
       </div>
       <div className="mt-task-budget" aria-label={`Budget de la tâche ${task.task_code}`}>
-        <span>{financialLabel} <strong>{cad(financialValue)}</strong></span>
-        <span>Charge WP <strong>{hours(task.planned_wp_hours)}</strong></span>
-        <span>Solde structuré <strong>{hours(task.remaining_budget_hours)}</strong></span>
+        <span>{financialLabel} <strong>{hours(budgetValue)}</strong></span>
+        <span>Charge WP <strong>{hours(loadValue)}</strong></span>
+        <span>Solde structuré <strong>{hours(balanceValue)}</strong></span>
         <span>{task.associated_work_package_count} WP</span>
       </div>
       <small>
-        {diagnosticLabel(task.diagnostic_state)}
-        {task.financial_diagnostic ? ` · ${task.financial_diagnostic}` : ""}
-        {task.budget_source_diagnostic ? ` · ${task.budget_source_diagnostic}` : ""}
+        {selectedDiagnostics.join(" · ")}
+        {isRemaining && task.remaining_reference_date
+          ? `${selectedDiagnostics.length ? " · " : ""}Cutoff ERP inclusif ${task.remaining_reference_date}`
+          : ""}
         {freshness ? ` · ERP synchronisé ${freshness}` : ""}
       </small>
     </header>
