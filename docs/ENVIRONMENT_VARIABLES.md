@@ -26,7 +26,7 @@ Ce document inventorie les variables du runtime Web. Il indique **quoi configure
 
 Le mode local refuse par défaut une écoute réseau. Ne pas utiliser l'override comme substitut à l'authentification réelle lors d'une exposition réseau.
 
-Avec `RESOURCEPLANNER_DEV_USER_SWITCHER=false`, le principal local est résolu directement depuis `RESOURCEPLANNER_LOCAL_AUTH_*` et ne nécessite aucun `AppUser` persistant. Ce mécanisme reste strictement local/développement et n'est pas le compte break-glass de production prévu par #457.
+Avec `RESOURCEPLANNER_DEV_USER_SWITCHER=false`, le principal local est configuré depuis `RESOURCEPLANNER_LOCAL_AUTH_*`, puis matérialisé comme `AppUser` de développement (`urn:resourceplanner:local` / `local-user`) au premier accès API authentifié lorsque le schéma applicatif est disponible. Son `AppUser.id` stable devient l'acteur des mutations et audits. Ce mécanisme reste strictement local/développement et n'est pas le compte break-glass de production prévu par #457.
 
 Le sélecteur de développement crée une session locale HttpOnly vers un `AppUser` existant et réutilise les rôles/permissions backend. Il n'émule pas OIDC et le serveur refuse de démarrer si le switcher est demandé en mode `oidc`. Le Compose Synology le force explicitement à `false`.
 
