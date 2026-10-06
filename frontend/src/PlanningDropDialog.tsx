@@ -170,7 +170,7 @@ export default function PlanningDropDialog({
               <strong>{evaluation.current_window.start} → {evaluation.current_window.end}</strong>
             </article>
             <article>
-              <span>Opérationnel projeté</span>
+              <span>Opérationnel projeté (Fenêtre proposée)</span>
               <strong>{evaluation.proposed_window.start} → {evaluation.proposed_window.end}</strong>
             </article>
             <article>
@@ -244,7 +244,7 @@ export default function PlanningDropDialog({
                 disabled={busy}
                 onChange={(event) => void setOutside(event.target.checked)}
               />
-              <span>Consentement hors horaire — décision distincte : autoriser explicitement ce quart hors horaire standard</span>
+              <span>Consentement hors horaire — décision distincte. Autoriser explicitement le quart hors horaire standard pour cette action</span>
             </label>
           )}
 
