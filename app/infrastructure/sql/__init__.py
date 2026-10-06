@@ -93,6 +93,16 @@ from .demand_repository import SqlDemandRepository
 from .delivery_models import DeliveryChangeHistory, DeliveryItemRow, DeliveryPlanRow
 from .delivery_repository import DeliveryVersionConflict, SqlDeliveryRepository
 from .delivery_projection_repository import SqlDeliveryPlanningReadRepository
+from .verification_models import (
+    StoryVerificationDecisionRequirementRow,
+    StoryVerificationDecisionRow,
+    VerificationChangeHistory,
+    VerificationRequirementRevisionRow,
+    VerificationRequirementRow,
+    VerificationRetestRequestRow,
+    VerificationScopeRow,
+)
+from .verification_repository import VerificationVersionConflict, SqlVerificationRepository
 from .emergency_demand_repository import SqlEmergencyDemandRepository
 from .emergency_query_repository import SqlPlannerQueryRepositoryWithEmergencyOverride
 from .employee_sync_repository import SqlEmployeeSyncRepository
