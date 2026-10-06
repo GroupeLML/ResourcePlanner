@@ -140,6 +140,7 @@ class AvailabilityRuleCreateCommand:
     end_time: time | None = None
     note: str | None = None
     active: bool = True
+    resource_class_codes: Sequence[str] = ()
 
     def __post_init__(self) -> None:
         _validate_availability_values(
@@ -165,6 +166,7 @@ class AvailabilityRuleUpdateCommand:
     end_time: time | None | UnsetType = UNSET
     note: str | None | UnsetType = UNSET
     active: bool | UnsetType = UNSET
+    resource_class_codes: Sequence[str] | UnsetType = UNSET
 
     def __post_init__(self) -> None:
         required_text(
@@ -185,6 +187,7 @@ class AvailabilityRuleUpdateCommand:
             "end_time",
             "note",
             "active",
+            "resource_class_codes",
         ):
             value = getattr(self, field)
             if value is not UNSET:
@@ -228,6 +231,44 @@ class ResourceAdminRepositoryPort(Protocol):
     def create_availability_rule(self, values: Mapping[str, Any]) -> str: ...
 
     def update_availability_rule(self, rule_id: str, values: Mapping[str, Any]) -> str: ...
+
+    def resource_class_states(self, codes: Sequence[str]) -> Mapping[str, bool]: ...
+
+
+def _normalized_resource_class_codes(value: object) -> tuple[str, ...]:
+    if value is UNSET:
+        return ()
+    if value is None:
+        raise ApplicationValidationError(
+            "La sélection de classes ne peut pas être null; utilise une liste vide pour un férié global.",
+            code="availability_resource_classes_null",
+            context={"field": "resource_class_codes"},
+        )
+    if isinstance(value, str):
+        values: Sequence[object] = (value,)
+    else:
+        try:
+            values = tuple(value)  # type: ignore[arg-type]
+        except TypeError as exc:
+            raise ApplicationValidationError(
+                "La sélection de classes doit être une liste de codes.",
+                code="availability_resource_classes_invalid",
+                context={"field": "resource_class_codes"},
+            ) from exc
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        code = str(raw or "").strip()
+        if not code:
+            raise ApplicationValidationError(
+                "Un code de classe de ressource est requis.",
+                code="availability_resource_class_code_required",
+                context={"field": "resource_class_codes"},
+            )
+        if code not in seen:
+            seen.add(code)
+            result.append(code)
+    return tuple(result)
 
 
 def _validate_weekdays(value: object) -> None:
@@ -293,6 +334,54 @@ class ResourceAdminService:
 
     def __init__(self, repository: ResourceAdminRepositoryPort) -> None:
         self._repository = repository
+
+    def _validated_holiday_class_scope(
+        self,
+        *,
+        availability_type: object,
+        resource_id: object,
+        resource_class_codes: object,
+        existing_codes: Sequence[str] = (),
+    ) -> tuple[str, ...]:
+        codes = _normalized_resource_class_codes(resource_class_codes)
+        if codes and str(availability_type or "").strip() != AVAILABILITY_HOLIDAY:
+            raise ApplicationValidationError(
+                "Les classes de ressources ne peuvent cibler que des jours fériés.",
+                code="availability_resource_classes_holiday_only",
+                context={"resource_class_codes": list(codes)},
+            )
+        if codes and str(resource_id or "").strip():
+            raise ApplicationValidationError(
+                "Un jour férié ne peut pas cibler à la fois une ressource et des classes.",
+                code="availability_resource_class_scope_ambiguous",
+                context={"resource_class_codes": list(codes), "resource_id": str(resource_id)},
+            )
+        if not codes:
+            return ()
+
+        states = call_application_port(
+            lambda: self._repository.resource_class_states(codes),
+            code_prefix="availability_resource_class_read",
+            context={"resource_class_codes": list(codes)},
+        )
+        unknown = tuple(code for code in codes if code not in states)
+        if unknown:
+            raise ApplicationValidationError(
+                "Une ou plusieurs classes de ressources sont inconnues.",
+                code="availability_resource_class_unknown",
+                context={"resource_class_codes": list(unknown)},
+            )
+        existing = set(existing_codes)
+        newly_inactive = tuple(
+            code for code in codes if not states[code] and code not in existing
+        )
+        if newly_inactive:
+            raise ApplicationValidationError(
+                "Une classe inactive ne peut pas être ajoutée à un jour férié.",
+                code="availability_resource_class_inactive",
+                context={"resource_class_codes": list(newly_inactive)},
+            )
+        return codes
 
     def create_resource(self, command: ResourceCreateCommand) -> ResourceMutationResult:
         existing = call_application_port(
@@ -424,6 +513,11 @@ class ResourceAdminService:
     ) -> AvailabilityRuleMutationResult:
         if command.resource_id:
             self._require_resource(command.resource_id)
+        class_codes = self._validated_holiday_class_scope(
+            availability_type=command.availability_type,
+            resource_id=command.resource_id,
+            resource_class_codes=command.resource_class_codes,
+        )
         identifier = call_application_port(
             lambda: self._repository.create_availability_rule(
                 {
@@ -436,6 +530,7 @@ class ResourceAdminService:
                     "end_time": command.end_time,
                     "note": command.note,
                     "active": command.active,
+                    "resource_class_codes": class_codes,
                 }
             ),
             code_prefix="availability_create",
@@ -466,6 +561,23 @@ class ResourceAdminService:
         weekdays = changes.get("weekdays", current.weekdays)
         start_time = changes.get("start_time", current.start_time)
         end_time = changes.get("end_time", current.end_time)
+        class_codes = (
+            self._validated_holiday_class_scope(
+                availability_type=availability_type,
+                resource_id=resource_id,
+                resource_class_codes=changes["resource_class_codes"],
+                existing_codes=current.resource_class_codes,
+            )
+            if "resource_class_codes" in changes
+            else self._validated_holiday_class_scope(
+                availability_type=availability_type,
+                resource_id=resource_id,
+                resource_class_codes=current.resource_class_codes,
+                existing_codes=current.resource_class_codes,
+            )
+        )
+        if "resource_class_codes" in changes:
+            changes["resource_class_codes"] = class_codes
         _validate_availability_values(
             availability_type=availability_type,
             resource_id=resource_id,
