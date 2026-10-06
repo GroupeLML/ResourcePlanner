@@ -70,6 +70,7 @@ class ReactAssetUxContractTests(unittest.TestCase):
         self.assertNotIn("requirement.demand_number !== shift.demand_number", source)
 
         self.assertIn("Réservations liées ou héritées", editor)
+        self.assertIn("Réservations liées à la demande", editor)
         self.assertIn("shift.related_asset_reservations", editor)
         self.assertIn("reservation.association_kind", editor)
         self.assertIn("Actif lié :", source)
@@ -112,8 +113,8 @@ class ReactAssetUxContractTests(unittest.TestCase):
         self.assertNotIn("start_date: assetId ? requirement.start_date : null", panel)
         self.assertIn("Date début réelle", dialog)
         self.assertIn("Date fin réelle", dialog)
-        self.assertIn("start_date: mode === \"release\" ? null : reservationStart", dialog)
-        self.assertIn("end_date: mode === \"release\" ? null : reservationEnd", dialog)
+        self.assertIn("start_date: mode === \"release\" || projectReuse ? null : reservationStart", dialog)
+        self.assertIn("end_date: mode === \"release\" || projectReuse ? null : reservationEnd", dialog)
 
     def test_asset_api_preserves_backend_authority_and_planning_cas(self) -> None:
         api = (ROOT / "frontend" / "src" / "assetApi.ts").read_text(encoding="utf-8")
