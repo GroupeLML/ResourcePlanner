@@ -44,7 +44,15 @@ from .idempotency import SqlCommandIdempotencyAdapter
 from .identity_models import AppUser
 from .base import new_id
 from .command_adapters import INACTIVE_REQUIREMENT_STATUSES, SqlPlanningCommandAdapter
-from .models import ORIGIN_REQUEST, Resource, ResourceRequirement, Shift, WorkforceRequest
+from .models import (
+    ORIGIN_AD_HOC,
+    ORIGIN_QUICK_SHIFT,
+    ORIGIN_REQUEST,
+    Resource,
+    ResourceRequirement,
+    Shift,
+    WorkforceRequest,
+)
 from .operational_choice_models import RequestOperationalState
 from .overallocation import (
     _segment_metrics,
@@ -59,6 +67,7 @@ from .segment_asset_guard import assert_segment_asset_mutation_compatible
 
 
 _HOUR = Decimal("0.01")
+_AUTO_EXTEND_REQUIREMENT_ORIGINS = frozenset({ORIGIN_AD_HOC, ORIGIN_QUICK_SHIFT})
 
 
 def _text(value: object) -> str:
@@ -587,8 +596,11 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
         period_key: str | None = None
         approved_start = None
         approved_end = None
-        within_authorization = requirement.origin != ORIGIN_REQUEST
-        authorization_reason = "NOT_APPLICABLE"
+        auto_extend_window = requirement.origin in _AUTO_EXTEND_REQUIREMENT_ORIGINS
+        within_authorization = auto_extend_window
+        authorization_reason = (
+            "NOT_APPLICABLE" if auto_extend_window else "ORIGIN_NOT_AUTO_EXTENDABLE"
+        )
 
         if requirement.origin == ORIGIN_REQUEST:
             if self._authorization is None:
@@ -675,13 +687,15 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
                     "code": "EXTEND_AND_MOVE",
                     "label": "Étendre la période et déplacer",
                     "enabled": True,
-                    "required_parameters": ["confirm_window_extension"],
+                    "required_parameters": (
+                        [] if auto_extend_window else ["confirm_window_extension"]
+                    ),
+                    "auto_execute": auto_extend_window,
                 }
             )
-        else:
+        elif requirement.origin == ORIGIN_REQUEST:
             if (
                 command.include_planning_window_override_options
-                and requirement.origin == ORIGIN_REQUEST
                 and self._can_override_planning_window()
             ):
                 authorization_reason = "PLANNING_WINDOW_OVERRIDE_AVAILABLE"
@@ -794,6 +808,23 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
         self._validate_source(source)
         target_resource = self._resource(command.resource_id)
         target_day = command.day
+        auto_extend_window = requirement.origin in _AUTO_EXTEND_REQUIREMENT_ORIGINS
+        if requirement.origin == ORIGIN_REQUEST:
+            if not command.confirm_window_extension:
+                raise ApplicationValidationError(
+                    "L'élargissement de fenêtre REQUEST doit être confirmé explicitement.",
+                    code="allocation_window_extension_confirmation_required",
+                    context={"allocation_id": self._reference(source)},
+                )
+        elif not auto_extend_window:
+            raise ApplicationValidationError(
+                "Seuls les besoins QUICK_SHIFT ou AD_HOC peuvent étendre automatiquement leur fenêtre.",
+                code="allocation_window_extension_origin_invalid",
+                context={
+                    "allocation_id": self._reference(source),
+                    "origin": requirement.origin,
+                },
+            )
         if requirement.start_date <= target_day <= requirement.end_date:
             raise ApplicationValidationError(
                 "La cible est déjà dans la fenêtre du besoin; utilise le déplacement simple.",
