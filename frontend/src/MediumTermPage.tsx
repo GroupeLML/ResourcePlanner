@@ -27,6 +27,8 @@ import {
   startOfWeek,
   toIsoDate,
 } from "./dates";
+import DemandDetail from "./DemandDetail";
+import DemandWorkflowPage from "./DemandWorkflowPage";
 import MediumTermCapacityPanel from "./MediumTermCapacityPanel";
 import MediumTermUnlinkedSegmentsPanel from "./MediumTermUnlinkedSegmentsPanel";
 import SegmentEditor from "./SegmentEditor";
@@ -190,7 +192,7 @@ function WorkPackageRow({
   plannedDemandNumbers,
   horizonStart,
   horizonWeeks,
-  onOpenDemands,
+  onOpenDemand,
   onEdit,
 }: {
   project: ProjectReadModel;
@@ -201,7 +203,7 @@ function WorkPackageRow({
   plannedDemandNumbers: Set<string>;
   horizonStart: Date;
   horizonWeeks: number;
-  onOpenDemands: () => void;
+  onOpenDemand: (demandNumber: string) => void;
   onEdit: (workPackage: WorkPackageReadModel) => void;
 }) {
   const grid = placement(workPackage, horizonStart, horizonWeeks);
@@ -295,7 +297,7 @@ function WorkPackageRow({
                 type="button"
                 className={`mt-demand-chip ${tone}`}
                 key={demand.number}
-                onClick={onOpenDemands}
+                onClick={() => onOpenDemand(demand.number)}
                 title={demandDetails(demand, label)}
                 aria-label={demandDetails(demand, label)}
               >
@@ -375,6 +377,8 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() => new Set());
   const [editor, setEditor] = useState<WorkPackageReadModel | null | undefined>(undefined);
   const [segmentEditorId, setSegmentEditorId] = useState<string | null>(null);
+  const [detailDemandNumber, setDetailDemandNumber] = useState<string | null>(null);
+  const [detailContextDirty, setDetailContextDirty] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
   const horizonEnd = useMemo(
@@ -684,7 +688,7 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
         plannedDemandNumbers={plannedDemandNumbers}
         horizonStart={horizonStart}
         horizonWeeks={horizonWeeks}
-        onOpenDemands={onOpenDemands}
+        onOpenDemand={setDetailDemandNumber}
         onEdit={setEditor}
       />
     );
@@ -976,6 +980,50 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
         onOpenSegment={setSegmentEditorId}
         onLinked={() => setRefreshKey((value) => value + 1)}
       />
+
+      {detailDemandNumber && (
+        <div
+          className="demand-detail-modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.currentTarget !== event.target) return;
+            if (detailContextDirty && !window.confirm("Des périodes non enregistrées seront perdues. Fermer le détail?")) return;
+            setDetailDemandNumber(null);
+            setDetailContextDirty(false);
+          }}
+        >
+          <section className="demand-detail-modal" role="dialog" aria-modal="true" aria-label={`Détail de la demande ${detailDemandNumber}`}>
+            <header className="demand-detail-modal-header">
+              <div>
+                <strong>Détail de la demande</strong>
+                <span>{detailDemandNumber}</span>
+              </div>
+              <button type="button" onClick={() => {
+                if (detailContextDirty && !window.confirm("Des périodes non enregistrées seront perdues. Fermer le détail?")) return;
+                setDetailDemandNumber(null);
+                setDetailContextDirty(false);
+              }}>
+                Fermer
+              </button>
+            </header>
+            <div className="demand-detail-modal-body">
+              <DemandWorkflowPage
+                demandNumber={detailDemandNumber}
+                embedded
+                actionsOnly
+                hasUnsavedChanges={detailContextDirty}
+                onChanged={() => setRefreshKey((value) => value + 1)}
+              />
+              <DemandDetail
+                demandNumber={detailDemandNumber}
+                compact
+                onDirtyChange={setDetailContextDirty}
+                onChanged={() => setRefreshKey((value) => value + 1)}
+              />
+            </div>
+          </section>
+        </div>
+      )}
 
       {segmentEditorId && (
         <SegmentEditor
