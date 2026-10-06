@@ -9,7 +9,12 @@ import json
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from ...application.errors import ApplicationConflictError, ApplicationNotFoundError, ApplicationValidationError
+from ...application.errors import (
+    ApplicationAuthorizationError,
+    ApplicationConflictError,
+    ApplicationNotFoundError,
+    ApplicationValidationError,
+)
 from ...application.security import (
     PERMISSION_ADMIN_SETTINGS,
     PERMISSION_APPROVE_DEMANDS,
@@ -92,7 +97,7 @@ class SqlAssetService:
             or not actor.active
             or permission not in self._user_permissions(actor)
         ):
-            raise ApplicationValidationError(
+            raise ApplicationAuthorizationError(
                 message,
                 code=code,
                 context={"app_user_id": actor_id or None},
@@ -194,7 +199,7 @@ class SqlAssetService:
             None,
         )
         if resolution.blocked or eligible is None:
-            raise ApplicationValidationError(
+            raise ApplicationAuthorizationError(
                 "L'attribution directe de cet actif n'est pas autorisée.",
                 code="asset_assignment_authority_required",
                 context={
