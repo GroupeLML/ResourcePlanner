@@ -73,9 +73,7 @@ export function VerificationDecisionEditor({
     () => existingRequirements.filter((requirement) => requirement.state === "ACTIVE"),
     [existingRequirements],
   );
-  const [kind, setKind] = useState<"NO_TEST_REQUIRED" | "TESTS_DEFINED">(
-    activeExisting.length > 0 ? "TESTS_DEFINED" : "TESTS_DEFINED",
-  );
+  const [kind, setKind] = useState<"NO_TEST_REQUIRED" | "TESTS_DEFINED">("TESTS_DEFINED");
   const [justification, setJustification] = useState("");
   const [selectedExisting, setSelectedExisting] = useState<string[]>(
     activeExisting.map((requirement) => requirement.id),
@@ -321,7 +319,11 @@ function RequirementCard({
   const [localError, setLocalError] = useState("");
 
   useEffect(() => {
-    setEvidenceExecutionId(requirement.latest_execution_id ?? requirement.executions.at(-1)?.id ?? "");
+    setEvidenceExecutionId(
+      requirement.latest_execution_id
+        ?? requirement.executions[requirement.executions.length - 1]?.id
+        ?? "",
+    );
   }, [requirement.executions, requirement.latest_execution_id]);
 
   const assignedToCurrentUser = Boolean(
