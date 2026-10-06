@@ -24,7 +24,7 @@ class VerificationExecutionDomainTests(unittest.TestCase):
         for invalid in (
             "http://evidence.example/fat/1",
             "file:///tmp/proof.jpg",
-            "https://user:secret@example.test/proof",
+            "https://user:@example.test/proof",
             "example.test/proof",
         ):
             with self.subTest(invalid=invalid):
