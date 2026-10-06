@@ -200,6 +200,7 @@ def build_read_router(
         request: Request,
         project_number: str | None = Query(default=None, min_length=1),
         task_catalog_item_id: str | None = Query(default=None, min_length=1),
+        task_code: str | None = Query(default=None, min_length=1),
         resource_class_code: str | None = Query(default=None, min_length=1),
         include_inactive_projects: bool = Query(default=False),
         start: date | None = Query(default=None),
@@ -218,6 +219,7 @@ def build_read_router(
         projection = queries.medium_term_budget_projection(
             project_number=project_number,
             task_catalog_item_id=task_catalog_item_id,
+            task_code=task_code,
             resource_class_code=resource_class_code,
             include_inactive_projects=include_inactive_projects,
             project_ids=project_ids,
