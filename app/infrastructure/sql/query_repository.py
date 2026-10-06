@@ -119,27 +119,6 @@ def _normalized_text(value: object) -> str:
     return " ".join(text.casefold().split())
 
 
-def _resource_class_hint(value: object) -> str | None:
-    text = _normalized_text(value)
-    if not text:
-        return None
-    if "programm" in text or "automatis" in text:
-        return "Programmation"
-    if "installation" in text or "installateur" in text:
-        return "Installation"
-    if ("monteur" in text and "panneau" in text) or (
-        "panel" in text and ("builder" in text or "wire" in text)
-    ):
-        return "Monteur de panneau"
-    if "dessin" in text or "draft" in text or "cad" in text:
-        return "Dessinateur"
-    if ("gestion" in text and "projet" in text) or (
-        "charge" in text and "projet" in text
-    ):
-        return "Gestion de projet"
-    return None
-
-
 def _split_competencies(value: object) -> tuple[str, ...]:
     raw = _text(value)
     if not raw:
