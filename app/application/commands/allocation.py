@@ -6,6 +6,7 @@ from datetime import date
 from ...domain.confirmation import normalize_confirmation
 from ...domain.manual_overallocation import normalize_overallocation_policy
 from ..errors import ApplicationValidationError
+from ..idempotency import normalize_idempotency_key
 from .common import date_value, float_value, required_text
 
 
@@ -339,11 +340,13 @@ class PlanningWindowOverrideExtendCommand:
             field="allocation_approval_revision",
             message="La révision approuvée attendue est requise.",
         )
-        required_text(
-            self.idempotency_key,
-            field="idempotency_key",
-            message="Une clé d'idempotence est requise.",
-        )
+        normalized_key = normalize_idempotency_key(self.idempotency_key)
+        if normalized_key is None:
+            raise ApplicationValidationError(
+                "Une clé d'idempotence est requise.",
+                code="idempotency_key_invalid",
+            )
+        object.__setattr__(self, "idempotency_key", normalized_key)
         if self.end_date < self.start_date:
             raise ApplicationValidationError(
                 "La fin de la fenêtre effective doit être postérieure ou égale au début.",
@@ -399,11 +402,13 @@ class AllocationWindowOverrideMoveCommand:
             field="allocation_approval_revision",
             message="La révision approuvée attendue est requise.",
         )
-        required_text(
-            self.idempotency_key,
-            field="idempotency_key",
-            message="Une clé d'idempotence est requise.",
-        )
+        normalized_key = normalize_idempotency_key(self.idempotency_key)
+        if normalized_key is None:
+            raise ApplicationValidationError(
+                "Une clé d'idempotence est requise.",
+                code="idempotency_key_invalid",
+            )
+        object.__setattr__(self, "idempotency_key", normalized_key)
         if int(self.expected_planning_version) < 1:
             raise ApplicationValidationError(
                 "La version attendue du planning doit être au moins 1.",
