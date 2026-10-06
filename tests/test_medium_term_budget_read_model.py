@@ -211,6 +211,9 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
                     label="Programmation",
                     active=True,
                     erp_task_id="ERP-216",
+                    erp_budget_last_success_at=datetime(
+                        2026, 10, 1, 13, 42, tzinfo=timezone.utc
+                    ),
                     account_group=" DEPMO ",
                     workforce_eligible=True,
                     budget_amount_cad=Decimal("50000.00"),
@@ -226,6 +229,9 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
                     label="Installation automatisation",
                     active=True,
                     erp_task_id="ERP-217",
+                    erp_budget_last_success_at=datetime(
+                        2026, 10, 1, 13, 42, tzinfo=timezone.utc
+                    ),
                     account_group="DEPMO",
                     workforce_eligible=True,
                     budget_amount_cad=Decimal("50000.00"),
@@ -241,6 +247,9 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
                     label="Budget inconnu",
                     active=True,
                     erp_task_id="ERP-218",
+                    erp_budget_last_success_at=datetime(
+                        2026, 10, 1, 13, 42, tzinfo=timezone.utc
+                    ),
                     account_group="DEPMO",
                     workforce_eligible=True,
                     budget_amount_cad=Decimal("50000.00"),
@@ -689,6 +698,20 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
             Decimal(str(programming["remaining_after_work_packages_hours"])),
             Decimal("40"),
         )
+        self.assertEqual(programming["remaining_reference_date"], "2026-10-01")
+        self.assertEqual(
+            programming["remaining_reference_basis"],
+            "ERP_TASK_BUDGET_LAST_SUCCESS_DATE",
+        )
+        self.assertEqual(
+            Decimal(str(programming["remaining_work_package_hours"])),
+            Decimal("124.26"),
+        )
+        self.assertEqual(
+            Decimal(str(programming["remaining_structured_balance_hours"])),
+            Decimal("65.74"),
+        )
+        self.assertEqual(programming["remaining_mode_diagnostics"], [])
         self.assertEqual(Decimal(str(programming["budget_hours"])), Decimal("240"))
         self.assertEqual(Decimal(str(programming["planned_wp_hours"])), Decimal("200"))
         self.assertEqual(
@@ -744,6 +767,15 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
         self.assertEqual(
             Decimal(str(over["remaining_after_work_packages_hours"])),
             Decimal("-120"),
+        )
+        self.assertEqual(over["remaining_reference_date"], "2026-10-01")
+        self.assertEqual(
+            Decimal(str(over["remaining_work_package_hours"])),
+            Decimal("0"),
+        )
+        self.assertEqual(
+            Decimal(str(over["remaining_structured_balance_hours"])),
+            Decimal("-20"),
         )
         self.assertEqual(Decimal(str(over["planned_wp_hours"])), Decimal("100"))
         self.assertEqual(Decimal(str(over["remaining_budget_hours"])), Decimal("-20"))
@@ -803,6 +835,12 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
         self.assertEqual(
             unknown_load["financial_diagnostic"],
             "ERP_FINANCIAL_BUDGET_INCOMPLETE",
+        )
+        self.assertIsNone(unknown_load["remaining_reference_date"])
+        self.assertIsNone(unknown_load["remaining_work_package_hours"])
+        self.assertIn(
+            "ERP_TASK_BUDGET_FRESHNESS_UNAVAILABLE",
+            unknown_load["remaining_mode_diagnostics"],
         )
         self.assertIsNone(unknown_load["remaining_budget_hours_from_actual"])
         self.assertIsNone(unknown_load["future_work_package_hours"])
