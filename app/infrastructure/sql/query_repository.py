@@ -47,6 +47,7 @@ from ...domain.workload import (
     pending_load_mode,
     workload_kind,
 )
+from .availability_class_scope import availability_class_codes_by_rule
 from .asset_models import (
     Asset,
     AssetAllocation,
@@ -136,11 +137,15 @@ def _split_competencies(value: object) -> tuple[str, ...]:
     )
 
 
-def _availability_record(rule: ResourceAvailabilityRule) -> dict[str, object]:
+def _availability_record(
+    rule: ResourceAvailabilityRule,
+    resource_class_codes: tuple[str, ...] = (),
+) -> dict[str, object]:
     return {
         "Type": rule.availability_type,
         "Actif": bool(rule.active),
         "Technicien": rule.resource_id or "",
+        "ClassesRessources": resource_class_codes,
         "DateDebut": rule.start_date,
         "DateFin": rule.end_date,
         "JoursSemaine": rule.weekdays,
@@ -916,7 +921,14 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         rules = self._session.scalars(
             select(ResourceAvailabilityRule).where(ResourceAvailabilityRule.active == true())
         ).all()
-        availability = tuple(_availability_record(rule) for rule in rules)
+        class_codes = availability_class_codes_by_rule(
+            self._session,
+            tuple(rule.id for rule in rules),
+        )
+        availability = tuple(
+            _availability_record(rule, class_codes.get(rule.id, ()))
+            for rule in rules
+        )
 
         requirement_statement = (
             select(ResourceRequirement, Resource)
@@ -995,7 +1007,12 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             day_rows: list[PlanningDayCapacityReadModel] = []
             cursor = start
             while cursor <= end:
-                state = availability_state_for_day(availability, resource.id, cursor)
+                state = availability_state_for_day(
+                    availability,
+                    resource.id,
+                    cursor,
+                    resource_class=resource.resource_class,
+                )
                 own = shifts_by_resource_day.get((resource.id, cursor), [])
                 confirmed = 0.0
                 tentative = 0.0
@@ -1245,7 +1262,14 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         rules = self._session.scalars(
             select(ResourceAvailabilityRule).where(ResourceAvailabilityRule.active == true())
         ).all()
-        availability = tuple(_availability_record(rule) for rule in rules)
+        class_codes = availability_class_codes_by_rule(
+            self._session,
+            tuple(rule.id for rule in rules),
+        )
+        availability = tuple(
+            _availability_record(rule, class_codes.get(rule.id, ()))
+            for rule in rules
+        )
         shifts = self.list_shifts(start=start, end=end)
 
         catalog_row = (
@@ -1275,7 +1299,12 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             capacity = 0.0
             cursor = start
             while cursor <= end:
-                capacity += availability_hours_for_day(availability, resource.id, cursor)
+                capacity += availability_hours_for_day(
+                    availability,
+                    resource.id,
+                    cursor,
+                    resource_class=resource.resource_class,
+                )
                 cursor += timedelta(days=1)
 
             confirmed = 0.0
