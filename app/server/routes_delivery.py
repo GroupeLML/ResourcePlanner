@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from ..application.delivery_projection import DeliveryProjectionService
 from ..application.delivery_service import DeliveryService
+from ..application.errors import ApplicationValidationError
 from ..application.security import AuthPrincipal
 from ..application.verification_story_closure import (
     StoryRequirementDefinition,
@@ -101,22 +102,28 @@ class StoryVerificationCommandRequest(VersionRequest):
 def _story_verification_decision_input(
     body: StoryVerificationDecisionRequest,
 ) -> StoryVerificationDecisionInput:
-    return StoryVerificationDecisionInput(
-        kind=body.kind,
-        justification=body.justification,
-        existing_requirement_ids=tuple(body.existing_requirement_ids),
-        new_requirements=tuple(
-            StoryRequirementDefinition(
-                phase=requirement.phase,
-                objective=requirement.objective,
-                method=requirement.method,
-                expected_result=requirement.expected_result,
-                prerequisites=tuple(requirement.prerequisites),
-                criticality=requirement.criticality,
-            )
-            for requirement in body.new_requirements
-        ),
-    )
+    try:
+        return StoryVerificationDecisionInput(
+            kind=body.kind,
+            justification=body.justification,
+            existing_requirement_ids=tuple(body.existing_requirement_ids),
+            new_requirements=tuple(
+                StoryRequirementDefinition(
+                    phase=requirement.phase,
+                    objective=requirement.objective,
+                    method=requirement.method,
+                    expected_result=requirement.expected_result,
+                    prerequisites=tuple(requirement.prerequisites),
+                    criticality=requirement.criticality,
+                )
+                for requirement in body.new_requirements
+            ),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ApplicationValidationError(
+            str(exc),
+            code="verification_story_decision_invalid",
+        ) from exc
 
 
 def build_delivery_router(
