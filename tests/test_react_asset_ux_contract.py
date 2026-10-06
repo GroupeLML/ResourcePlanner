@@ -64,13 +64,21 @@ class ReactAssetUxContractTests(unittest.TestCase):
         self.assertIn("asset_diagnostics: string[]", api)
 
         self.assertIn("shift.asset_assignment", source)
-        self.assertIn('aria-label={asset ? "Actif affecté au quart"', source)
+        self.assertIn('"Actif affecté au quart"', source)
         self.assertNotIn("snapshot.asset_allocations.forEach", source)
         self.assertNotIn("allocation.operator_resource_id !== shift.resource_id", source)
         self.assertNotIn("requirement.demand_number !== shift.demand_number", source)
 
+        self.assertIn("Réservations liées ou héritées", editor)
         self.assertIn("Réservations liées à la demande", editor)
         self.assertIn("shift.related_asset_reservations", editor)
+        self.assertIn("reservation.association_kind", editor)
+        self.assertIn("Actif lié :", source)
+        dialog = (ROOT / "frontend" / "src" / "ShiftAssetAssignmentDialog.tsx").read_text(encoding="utf-8")
+        asset_api = (ROOT / "frontend" / "src" / "assetApi.ts").read_text(encoding="utf-8")
+        self.assertIn("DESIGNATE_PROJECT_OPERATOR", dialog)
+        self.assertIn("Aucune nouvelle réservation physique n’est créée.", dialog)
+        self.assertIn("asset_allocation_id", asset_api)
         self.assertIn("shift.asset_actions?.change.allowed", editor)
         self.assertIn("shift.asset_actions?.release.allowed", editor)
         self.assertIn("L’actif associé restera sur le quart source.", editor)
@@ -105,8 +113,8 @@ class ReactAssetUxContractTests(unittest.TestCase):
         self.assertNotIn("start_date: assetId ? requirement.start_date : null", panel)
         self.assertIn("Date début réelle", dialog)
         self.assertIn("Date fin réelle", dialog)
-        self.assertIn("start_date: mode === \"release\" ? null : reservationStart", dialog)
-        self.assertIn("end_date: mode === \"release\" ? null : reservationEnd", dialog)
+        self.assertIn("start_date: mode === \"release\" || projectReuse ? null : reservationStart", dialog)
+        self.assertIn("end_date: mode === \"release\" || projectReuse ? null : reservationEnd", dialog)
 
     def test_asset_api_preserves_backend_authority_and_planning_cas(self) -> None:
         api = (ROOT / "frontend" / "src" / "assetApi.ts").read_text(encoding="utf-8")

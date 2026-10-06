@@ -98,6 +98,15 @@ class AssetRequirementReadCompatibilityTests(unittest.TestCase):
                         start_date=DAY,
                         end_date=DAY,
                     ),
+                    AssetRequirement(
+                        id="AR-RESOURCE-HIST",
+                        project_id="P-1",
+                        origin=AssetRequirementOrigin.RESOURCE_PERIOD.value,
+                        context_resource_id="RESOURCE-1",
+                        asset_type_id="AT-1",
+                        start_date=DAY,
+                        end_date=DAY,
+                    ),
                 ]
             )
             session.commit()
@@ -154,6 +163,14 @@ class AssetRequirementReadCompatibilityTests(unittest.TestCase):
             self.assertIsNone(resource_period.demand_number)
             self.assertIsNone(resource_period.resource_requirement_id)
             self.assertIsNone(resource_period.shift_id)
+
+            historical_resource_period = by_id["AR-RESOURCE-HIST"]
+            self.assertEqual(historical_resource_period.project_id, "P-1")
+            self.assertEqual(historical_resource_period.project_number, "P-1")
+            self.assertEqual(
+                historical_resource_period.context_resource_id,
+                "RESOURCE-1",
+            )
 
             window = SqlAssetPlanningQuery(session).planning_window(
                 start=DAY,

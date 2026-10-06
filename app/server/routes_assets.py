@@ -106,7 +106,7 @@ class ProjectDirectReservationUpdate(StrictBody):
 
 class ResourcePeriodReservationCreate(StrictBody):
     resource_id: str
-    project_id: str | None = None
+    project_id: None = None
     asset_type_id: str
     asset_id: str
     start_date: date
@@ -115,7 +115,7 @@ class ResourcePeriodReservationCreate(StrictBody):
 
 
 class ResourcePeriodReservationUpdate(StrictBody):
-    project_id: str | None = None
+    project_id: None = None
     asset_id: str
     start_date: date
     end_date: date
@@ -128,7 +128,7 @@ class SegmentReservationCreate(StrictBody):
     asset_id: str
     start_date: date
     end_date: date
-    operator_resource_id: str
+    operator_resource_id: str | None = None
     expected_planning_version: int = Field(ge=1)
 
 
@@ -136,13 +136,14 @@ class SegmentReservationUpdate(StrictBody):
     asset_id: str
     start_date: date
     end_date: date
-    operator_resource_id: str
+    operator_resource_id: str | None = None
     expected_planning_version: int = Field(ge=1)
 
 
 class ShiftAssetAssignmentChange(StrictBody):
     asset_id: str | None = None
     asset_requirement_id: str | None = None
+    asset_allocation_id: str | None = None
     start_date: date | None = None
     end_date: date | None = None
     expected_planning_version: int = Field(ge=1)
@@ -419,7 +420,6 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
     ) -> dict:
         return service(session, request).create_resource_period_reservation(
             resource_id=body.resource_id,
-            project_id=body.project_id,
             asset_type_id=body.asset_type_id,
             asset_id=body.asset_id,
             start_date=body.start_date,
@@ -438,7 +438,6 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
     ) -> dict:
         return service(session, request).update_resource_period_reservation(
             requirement_id=identifier,
-            project_id=body.project_id,
             asset_id=body.asset_id,
             start_date=body.start_date,
             end_date=body.end_date,
@@ -530,6 +529,7 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
             shift_id=identifier,
             asset_id=body.asset_id,
             requirement_id=body.asset_requirement_id,
+            allocation_id=body.asset_allocation_id,
             start_date=body.start_date,
             end_date=body.end_date,
             expected_version=body.expected_planning_version,

@@ -445,9 +445,8 @@ class DirectAssetReservationTests(unittest.TestCase):
 
         updated = self.client.put(
             f"/api/v1/assets/resource-period-reservations/{payload['requirement_id']}",
-            headers={"Idempotency-Key": "resource-update-575c"},
+            headers={"Idempotency-Key": "resource-update-615c"},
             json={
-                "project_id": "PROJECT-575C",
                 "asset_id": "ASSET-B",
                 "start_date": DAY.isoformat(),
                 "end_date": DAY.isoformat(),
@@ -456,7 +455,7 @@ class DirectAssetReservationTests(unittest.TestCase):
         )
         self.assertEqual(updated.status_code, 200, updated.text)
         changed = updated.json()
-        self.assertEqual(changed["project_id"], "PROJECT-575C")
+        self.assertIsNone(changed["project_id"])
         self.assertEqual(changed["asset_id"], "ASSET-B")
         self.assertEqual(changed["context_resource_id"], "RESOURCE-SKILLED")
         self.assertEqual(changed["operator_resource_id"], "RESOURCE-SKILLED")
@@ -483,10 +482,72 @@ class DirectAssetReservationTests(unittest.TestCase):
                     requirement.origin,
                     AssetRequirementOrigin.RESOURCE_PERIOD.value,
                 )
+                self.assertIsNone(requirement.project_id)
                 self.assertEqual(
                     requirement.context_resource_id,
                     allocation.operator_resource_id,
                 )
+        finally:
+            engine.dispose()
+
+    def test_resource_period_rejects_new_project_and_preserves_historical_project(self) -> None:
+        version = self._version()
+        rejected = self._resource_create(
+            project_id="PROJECT-575C",
+            version=version,
+            key="resource-project-forbidden-615c",
+        )
+        self.assertEqual(rejected.status_code, 422, rejected.text)
+        self.assertEqual(self._version(), version)
+
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory.begin() as session:
+                requirement = AssetRequirement(
+                    id="AR-HIST-RP-615C",
+                    project_id="PROJECT-575C",
+                    origin=AssetRequirementOrigin.RESOURCE_PERIOD.value,
+                    context_resource_id="RESOURCE-SKILLED",
+                    asset_type_id="TYPE-575C",
+                    start_date=DAY,
+                    end_date=DAY,
+                    status="Planifié",
+                )
+                session.add(requirement)
+                session.flush()
+                session.add(
+                    AssetAllocation(
+                        id="ALLOC-HIST-RP-615C",
+                        asset_requirement_id=requirement.id,
+                        asset_id="ASSET-A",
+                        operator_resource_id="RESOURCE-SKILLED",
+                        start_date=DAY,
+                        end_date=DAY,
+                        locked=True,
+                        source="MANUAL",
+                    )
+                )
+
+            current_version = self._version()
+            updated = self.client.put(
+                "/api/v1/assets/resource-period-reservations/AR-HIST-RP-615C",
+                headers={"Idempotency-Key": "resource-historical-update-615c"},
+                json={
+                    "asset_id": "ASSET-B",
+                    "start_date": DAY.isoformat(),
+                    "end_date": DAY.isoformat(),
+                    "expected_planning_version": current_version,
+                },
+            )
+            self.assertEqual(updated.status_code, 200, updated.text)
+            self.assertEqual(updated.json()["project_id"], "PROJECT-575C")
+
+            with factory() as session:
+                historical = session.get(AssetRequirement, "AR-HIST-RP-615C")
+                self.assertIsNotNone(historical)
+                assert historical is not None
+                self.assertEqual(historical.project_id, "PROJECT-575C")
         finally:
             engine.dispose()
 
