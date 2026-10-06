@@ -112,7 +112,7 @@ class SqlVerificationRepository:
     The caller owns the outer transaction. Keyed mutations reuse the shared durable
     command receipt; unkeyed mutations use a SAVEPOINT so a caught failure cannot
     accidentally commit a Verification CAS without its business rows and audit.
-    Story closure remains outside this repository until #363C.
+    Story closure orchestration remains in the application layer.
     """
 
     def __init__(self, session: Session) -> None:
@@ -214,8 +214,19 @@ class SqlVerificationRepository:
         validate_story_source_for_scope(scope, source)
         return source
 
-    def add_scope(self, scope: VerificationScope) -> None:
-        self._guard_work_package_dependency(scope.work_package_id)
+    def guard_work_package_dependency(self, work_package_id: str) -> None:
+        """Acquire the shared WorkPackage dependency guard for composite commands."""
+
+        self._guard_work_package_dependency(work_package_id)
+
+    def add_scope(
+        self,
+        scope: VerificationScope,
+        *,
+        guard_work_package: bool = True,
+    ) -> None:
+        if guard_work_package:
+            self._guard_work_package_dependency(scope.work_package_id)
         if (
             scope.lead_user_id is not None
             and self._session.get(AppUser, scope.lead_user_id) is None
@@ -410,6 +421,20 @@ class SqlVerificationRepository:
                 )
             )
         self._session.flush()
+
+    def has_story_decision(self, scope_id: str, story_id: str) -> bool:
+        return (
+            self._session.scalar(
+                select(StoryVerificationDecisionRow.id)
+                .where(
+                    StoryVerificationDecisionRow.verification_scope_id
+                    == str(scope_id).strip(),
+                    StoryVerificationDecisionRow.story_id == str(story_id).strip(),
+                )
+                .limit(1)
+            )
+            is not None
+        )
 
     def get_story_decision(
         self, decision_id: str

@@ -193,6 +193,29 @@ class SqlDeliveryRepository:
         row.sprint = item.sprint
         self._session.flush()
 
+    def guard_version(
+        self, plan_id: str, *, expected_delivery_version: int
+    ) -> None:
+        """Acquire the Delivery aggregate guard without changing its version."""
+
+        if expected_delivery_version < 1:
+            raise ValueError("expected_delivery_version must be at least 1")
+        result = self._session.execute(
+            update(DeliveryPlanRow)
+            .where(
+                DeliveryPlanRow.id == str(plan_id).strip(),
+                DeliveryPlanRow.delivery_version == expected_delivery_version,
+            )
+            .values(delivery_version=DeliveryPlanRow.delivery_version)
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            raise DeliveryVersionConflict(
+                f"DeliveryPlan version conflict for {plan_id}: "
+                f"expected {expected_delivery_version}"
+            )
+        self._session.flush()
+
     def compare_and_increment_version(
         self, plan_id: str, *, expected_delivery_version: int
     ) -> int:

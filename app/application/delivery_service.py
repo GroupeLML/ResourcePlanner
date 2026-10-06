@@ -356,6 +356,14 @@ class DeliveryService:
         self._ensure_editable(plan)
         self._require_action(principal, plan, DeliveryAction.MANAGE_STRUCTURE)
         item_kind = DeliveryItemType(item_type)
+        if (
+            item_kind is DeliveryItemType.STORY
+            and DeliveryItemStatus(status) is DeliveryItemStatus.DONE
+        ):
+            raise ApplicationValidationError(
+                "La fermeture d'une Story exige une décision Verification atomique.",
+                code="story_verification_decision_required",
+            )
         assignee = self._validate_user(
             assignee_user_id, field="assignee_user_id"
         )
@@ -485,6 +493,18 @@ class DeliveryService:
                 ),
                 item,
             )
+        if "status" in changes:
+            target_status = DeliveryItemStatus(str(changes["status"]))
+            if (
+                item.item_type is DeliveryItemType.STORY
+                and item.status is not DeliveryItemStatus.DONE
+                and target_status is DeliveryItemStatus.DONE
+            ):
+                raise ApplicationValidationError(
+                    "La fermeture d'une Story exige une décision Verification atomique.",
+                    code="story_verification_decision_required",
+                    context={"delivery_item_id": item.id},
+                )
 
         changed = item
         try:
