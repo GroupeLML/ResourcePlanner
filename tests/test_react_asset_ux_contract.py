@@ -69,8 +69,10 @@ class ReactAssetUxContractTests(unittest.TestCase):
         self.assertNotIn("allocation.operator_resource_id !== shift.resource_id", source)
         self.assertNotIn("requirement.demand_number !== shift.demand_number", source)
 
-        self.assertIn("Réservations liées à la demande", editor)
+        self.assertIn("Réservations liées ou héritées", editor)
         self.assertIn("shift.related_asset_reservations", editor)
+        self.assertIn("reservation.association_kind", editor)
+        self.assertIn("Actif lié :", source)
         self.assertIn("shift.asset_actions?.change.allowed", editor)
         self.assertIn("shift.asset_actions?.release.allowed", editor)
         self.assertIn("L’actif associé restera sur le quart source.", editor)
