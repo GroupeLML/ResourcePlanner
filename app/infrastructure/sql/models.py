@@ -183,11 +183,7 @@ class TaskCatalogPreferredResourceAudit(TimestampMixin, Base):
         ForeignKey("task_catalog_items.id"),
         nullable=False,
     )
-    actor_user_id: Mapped[str] = mapped_column(
-        String(ID_LENGTH),
-        ForeignKey("app_users.id"),
-        nullable=False,
-    )
+    actor_user_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
     action: Mapped[str] = mapped_column(String(64), nullable=False)
     old_resource_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), nullable=True)
     new_resource_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), nullable=True)
