@@ -102,8 +102,8 @@ function storyFact(card: Locator, name: string) {
   return card.locator(".delivery-story-facts > div").filter({ hasText: name }).first();
 }
 
-test("362F Delivery traverse PM, Team Lead et technicien sans élargir Planning", async ({ browser }) => {
-  test.setTimeout(180_000);
+test("362F Delivery et 363E Verification traversent PM, Team Lead et technicien", async ({ browser }) => {
+  test.setTimeout(240_000);
   const workPackageLabel = "WP-DELIVERY-362F — Lot Delivery acceptation";
   const epicTitle = "Epic acceptation 362F";
   const storyTitle = "Story acceptation 362F";
@@ -207,7 +207,7 @@ test("362F Delivery traverse PM, Team Lead et technicien sans élargir Planning"
   await labelled(leadStory, "Statut", "select").selectOption("IN_PROGRESS");
   await leadStory.getByRole("button", { name: "Enregistrer" }).click();
   await expect(leadA.page.locator(".error-panel")).toContainText("delivery_version_conflict");
-  await expect(leadA.page.locator(".error-panel")).toContainText("rechargé avec la version courante");
+  await expect(leadA.page.locator(".error-panel")).toContainText("Delivery et Verification ont été rechargés avec les versions courantes");
   await expect(leadA.page.locator(".delivery-plan-toolbar")).toContainText("Version Delivery 7");
   leadStory = storyCard(leadA.page, storyTitle);
   await expect(labelled(leadStory, "Statut", "select")).toHaveValue("TODO");
@@ -252,12 +252,81 @@ test("362F Delivery traverse PM, Team Lead et technicien sans élargir Planning"
   await labelled(techStory, "Statut", "select").selectOption("DONE");
   await labelled(techStory, "Restant (h)", "input").fill("0");
   await techStory.getByRole("button", { name: "Enregistrer" }).click();
-  await expect(technician.page.locator(".error-panel")).toContainText(
-    "story_verification_decision_required",
-  );
-  await expect(technician.page.locator(".delivery-summary").locator("article").filter({ hasText: "Progression" }).locator("strong")).toHaveText("0 %");
-  await expect(technician.page.locator(".delivery-summary").locator("article").filter({ hasText: "Travail restant" }).locator("strong")).toHaveText("3 h");
+
+  const decision = techStory.locator(".verification-decision-editor");
+  await expect(decision).toBeVisible();
+  await labelled(decision, "Objet du test", "input").fill("Valider démarrage 363E");
+  await labelled(decision, "Méthode / action", "textarea").fill("Démarrer la séquence FAT");
+  await labelled(decision, "Résultat attendu", "textarea").fill("Séquence terminée sans alarme");
+  await labelled(decision, "Prérequis", "textarea").fill("Alimentation disponible");
+  await decision.getByRole("button", { name: "Terminer la Story" }).click();
+
+  await expect(technician.page.locator(".delivery-summary").locator("article").filter({ hasText: "Progression" }).locator("strong")).toHaveText("100 %");
+  await expect(technician.page.locator(".delivery-summary").locator("article").filter({ hasText: "Travail restant" }).locator("strong")).toHaveText("0 h");
   await expect(storyFact(storyCard(technician.page, storyTitle), "Référence")).toContainText("8 h");
+
+  await leadA.page.reload();
+  await openDelivery(leadA.page, workPackageLabel);
+  const leadVerification = leadA.page.locator(".verification-panel");
+  await expect(leadVerification).toContainText("Valider démarrage 363E");
+  let leadRequirement = leadVerification.locator(".verification-requirement-card").filter({
+    hasText: "Valider démarrage 363E",
+  }).first();
+  await labelled(leadRequirement, "AppUser à affecter", "input").fill(techPrincipal.local_user_id);
+  await leadRequirement.getByRole("button", { name: "Affecter" }).click();
+  await expect(leadRequirement).toContainText(techPrincipal.local_user_id);
+
+  await technician.page.reload();
+  await openDelivery(technician.page, workPackageLabel, true);
+  const technicianVerification = technician.page.locator(".verification-panel");
+  let technicianRequirement = technicianVerification.locator(".verification-requirement-card").filter({
+    hasText: "Valider démarrage 363E",
+  }).first();
+  await expect(technicianRequirement).toBeVisible();
+  await labelled(technicianRequirement, "Résultat", "select").selectOption("PASS");
+  await labelled(technicianRequirement, "Mesures (objet JSON)", "textarea").fill(
+    '{"pression_bar":5.4,"alarme":false}',
+  );
+  await labelled(technicianRequirement, "Commentaires", "textarea").fill("FAT conforme 363E");
+  await technicianRequirement.getByRole("button", { name: "Enregistrer le résultat" }).click();
+  await expect(technicianRequirement.locator(".verification-status")).toHaveText("Réussi");
+
+  technicianRequirement = technicianVerification.locator(".verification-requirement-card").filter({
+    hasText: "Valider démarrage 363E",
+  }).first();
+  await labelled(technicianRequirement, "URL HTTPS", "input").fill(
+    "https://example.com/resourceplanner/fat-proof-363e",
+  );
+  await labelled(technicianRequirement, "Libellé", "input").fill("Capture FAT 363E");
+  await technicianRequirement.getByRole("button", { name: "Ajouter la preuve" }).click();
+  await expect(technicianRequirement.locator(".verification-history")).toContainText("Capture FAT 363E");
+
+  await leadA.page.reload();
+  await openDelivery(leadA.page, workPackageLabel);
+  leadRequirement = leadA.page.locator(".verification-requirement-card").filter({
+    hasText: "Valider démarrage 363E",
+  }).first();
+  await labelled(leadRequirement, "Motif du retest", "input").fill("Validation après correction 363E");
+  await leadRequirement.getByRole("button", { name: "Demander un retest" }).click();
+  await expect(leadRequirement.locator(".verification-status")).toHaveText("À exécuter");
+
+  await technician.page.reload();
+  await openDelivery(technician.page, workPackageLabel, true);
+  technicianRequirement = technician.page.locator(".verification-requirement-card").filter({
+    hasText: "Valider démarrage 363E",
+  }).first();
+  await labelled(technicianRequirement, "Résultat", "select").selectOption("PASS");
+  await labelled(technicianRequirement, "Commentaires", "textarea").fill("Retest conforme 363E");
+  await technicianRequirement.getByRole("button", { name: "Enregistrer le résultat" }).click();
+  await expect(technicianRequirement.locator(".verification-history summary")).toContainText(
+    "2 exécution(s)",
+  );
+  await expect(technicianRequirement.locator(".verification-history")).toContainText(
+    "FAT conforme 363E",
+  );
+  await expect(technicianRequirement.locator(".verification-history")).toContainText(
+    "Retest conforme 363E",
+  );
 
   await closeContext(technician.context);
   await closeContext(leadB.context);
@@ -266,11 +335,11 @@ test("362F Delivery traverse PM, Team Lead et technicien sans élargir Planning"
   await expect(projectManager.page.locator(".delivery-plan-toolbar")).toContainText("Version Delivery 3");
   await projectManager.page.locator(".delivery-plan-toolbar").getByRole("button", { name: "Archiver" }).click();
   await expect(projectManager.page.locator(".error-panel")).toContainText("delivery_version_conflict");
-  await expect(projectManager.page.locator(".error-panel")).toContainText("rechargé avec la version courante");
-  await expect(projectManager.page.locator(".delivery-plan-toolbar")).toContainText("Version Delivery 10");
+  await expect(projectManager.page.locator(".error-panel")).toContainText("Delivery et Verification ont été rechargés avec les versions courantes");
+  await expect(projectManager.page.locator(".delivery-plan-toolbar")).toContainText("Version Delivery 12");
   await projectManager.page.locator(".delivery-plan-toolbar").getByRole("button", { name: "Archiver" }).click();
   await expect(projectManager.page.locator(".delivery-plan-toolbar")).toContainText("ARCHIVED");
-  await expect(projectManager.page.locator(".delivery-plan-toolbar")).toContainText("Version Delivery 11");
+  await expect(projectManager.page.locator(".delivery-plan-toolbar")).toContainText("Version Delivery 13");
   await expect(storyCard(projectManager.page, storyTitle)).toBeVisible();
 
   await closeContext(projectManager.context);

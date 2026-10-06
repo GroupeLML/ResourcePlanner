@@ -336,3 +336,336 @@
   .delivery-story-controls { grid-template-columns: 1fr; }
   .delivery-control-wide { grid-column: auto; }
 }
+
+
+/* 363E — Verification workflow */
+.verification-panel {
+  display: grid;
+  gap: .7rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: white;
+  overflow: hidden;
+}
+.verification-empty {
+  padding: .8rem;
+  color: var(--muted);
+  font-size: .68rem;
+  line-height: 1.45;
+}
+.verification-summary {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: .5rem;
+  padding: 0 .7rem;
+}
+.verification-summary article {
+  min-width: 0;
+  padding: .62rem;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #f8fafc;
+}
+.verification-summary span,
+.verification-summary strong,
+.verification-summary small { display: block; }
+.verification-summary span { color: var(--muted); font-size: .57rem; font-weight: 800; }
+.verification-summary strong { margin-top: .12rem; font-size: .88rem; }
+.verification-summary small { margin-top: .14rem; color: var(--muted); font-size: .54rem; line-height: 1.4; }
+
+.verification-history-recovery {
+  display: grid;
+  gap: .5rem;
+  margin: 0 .7rem;
+  padding: .65rem;
+  border: 1px solid #e7d9a7;
+  border-radius: 9px;
+  background: #fffbeb;
+}
+.verification-history-recovery > div:first-child {
+  display: grid;
+  gap: .12rem;
+}
+.verification-history-recovery strong { font-size: .68rem; }
+.verification-history-recovery span { color: var(--muted); font-size: .58rem; }
+
+.verification-decision-editor {
+  display: grid;
+  gap: .55rem;
+  margin-top: .55rem;
+  padding: .65rem;
+  border: 1px solid #cdd9ea;
+  border-radius: 9px;
+  background: #f8fbff;
+}
+.verification-decision-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: .6rem;
+  align-items: flex-start;
+}
+.verification-decision-heading span,
+.verification-decision-heading strong { display: block; }
+.verification-decision-heading strong { margin-top: .08rem; font-size: .72rem; }
+.verification-decision-editor > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: .61rem;
+  line-height: 1.45;
+}
+.verification-decision-kind,
+.verification-phase-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .6rem;
+}
+.verification-decision-kind label,
+.verification-phase-picker label,
+.verification-existing-requirements label {
+  display: flex;
+  gap: .3rem;
+  align-items: center;
+  font-size: .62rem;
+  font-weight: 700;
+}
+.verification-decision-editor > label,
+.verification-definition-grid label,
+.verification-history-recovery > label,
+.verification-assignments label,
+.verification-execution-grid label,
+.verification-inline-form label,
+.verification-evidence-form label {
+  display: grid;
+  gap: .22rem;
+}
+.verification-decision-editor label > span,
+.verification-definition-grid label > span,
+.verification-history-recovery label > span,
+.verification-assignments label > span,
+.verification-execution-grid label > span,
+.verification-inline-form label > span,
+.verification-evidence-form label > span {
+  color: var(--muted);
+  font-size: .58rem;
+  font-weight: 800;
+}
+.verification-decision-editor input,
+.verification-decision-editor select,
+.verification-decision-editor textarea,
+.verification-history-recovery select,
+.verification-assignments input,
+.verification-execution-form input,
+.verification-execution-form select,
+.verification-execution-form textarea,
+.verification-inline-form input,
+.verification-evidence-form input,
+.verification-evidence-form select {
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: white;
+  padding: .4rem .46rem;
+  font: inherit;
+  font-size: .64rem;
+}
+.verification-decision-editor textarea,
+.verification-execution-form textarea { min-height: 62px; resize: vertical; }
+.verification-existing-requirements,
+.verification-new-requirement {
+  display: grid;
+  gap: .45rem;
+  margin: 0;
+  padding: .55rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.verification-existing-requirements legend,
+.verification-new-requirement legend {
+  padding: 0 .2rem;
+  color: var(--muted);
+  font-size: .58rem;
+  font-weight: 800;
+}
+.verification-definition-grid,
+.verification-execution-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: .45rem;
+}
+.verification-decision-editor > button,
+.verification-assignments button,
+.verification-execution-form button,
+.verification-inline-form button,
+.verification-evidence-form button {
+  justify-self: start;
+  min-height: 33px;
+  border: 0;
+  border-radius: 7px;
+  padding: .4rem .58rem;
+  background: var(--accent);
+  color: white;
+  font: inherit;
+  font-size: .62rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+.verification-decision-editor button:disabled,
+.verification-assignments button:disabled,
+.verification-execution-form button:disabled,
+.verification-inline-form button:disabled,
+.verification-evidence-form button:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+.verification-decision-editor .secondary-button,
+.verification-assignments .secondary-button {
+  border: 1px solid var(--border);
+  background: white;
+  color: #455164;
+}
+
+.verification-requirements {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .65rem;
+  padding: 0 .7rem;
+}
+.verification-requirement-card {
+  display: grid;
+  gap: .6rem;
+  min-width: 0;
+  padding: .7rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fbfcfe;
+}
+.verification-requirement-card[data-status="FAIL"] { border-left: 3px solid var(--danger); }
+.verification-requirement-card[data-status="PASS"] { border-left: 3px solid var(--good); }
+.verification-requirement-card[data-status="BLOCKED"] { border-left: 3px solid var(--warn); }
+.verification-requirement-card > header {
+  display: flex;
+  justify-content: space-between;
+  gap: .5rem;
+  align-items: flex-start;
+}
+.verification-requirement-card > header span,
+.verification-requirement-card > header strong { display: block; }
+.verification-requirement-card > header div > span {
+  color: var(--accent);
+  font-size: .56rem;
+  font-weight: 800;
+}
+.verification-requirement-card > header strong { margin-top: .08rem; font-size: .72rem; }
+.verification-status {
+  flex: 0 0 auto;
+  padding: .16rem .34rem;
+  border-radius: 999px;
+  background: #e8edf5;
+  color: #4c596b;
+  font-size: .54rem;
+  font-weight: 800;
+}
+.verification-definition {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: .4rem;
+  margin: 0;
+}
+.verification-definition dt { color: var(--muted); font-size: .54rem; }
+.verification-definition dd { margin: .06rem 0 0; font-size: .61rem; line-height: 1.4; }
+.verification-assignments,
+.verification-execution-form,
+.verification-inline-form,
+.verification-evidence-form {
+  display: grid;
+  gap: .4rem;
+  padding-top: .5rem;
+  border-top: 1px solid #e6ebf1;
+}
+.verification-assignments > strong,
+.verification-execution-form > strong,
+.verification-evidence-form > strong { font-size: .62rem; }
+.verification-assignments > span { color: var(--muted); font-size: .58rem; }
+.verification-assignments > div {
+  display: flex;
+  justify-content: space-between;
+  gap: .4rem;
+  align-items: center;
+}
+.verification-assignments code,
+.verification-history code { font-size: .56rem; word-break: break-all; }
+.verification-assignments form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: .4rem;
+  align-items: end;
+}
+.verification-wide-field { grid-column: 1 / -1; }
+.verification-inline-form {
+  grid-template-columns: 1fr auto;
+  align-items: end;
+}
+.verification-evidence-form {
+  grid-template-columns: minmax(100px, .5fr) minmax(180px, 1.4fr) minmax(120px, 1fr) auto;
+  align-items: end;
+}
+
+.verification-history {
+  padding-top: .45rem;
+  border-top: 1px solid #e6ebf1;
+}
+.verification-history summary {
+  cursor: pointer;
+  font-size: .61rem;
+  font-weight: 800;
+}
+.verification-history > p { color: var(--muted); font-size: .58rem; }
+.verification-history ol { display: grid; gap: .4rem; margin: .45rem 0 0; padding-left: 1.15rem; }
+.verification-history ol > li { font-size: .59rem; }
+.verification-history ol > li > div {
+  display: flex;
+  justify-content: space-between;
+  gap: .4rem;
+  align-items: baseline;
+}
+.verification-history ol > li > div span { color: var(--muted); font-size: .54rem; }
+.verification-history p { margin: .18rem 0; }
+.verification-history pre {
+  overflow-x: auto;
+  margin: .25rem 0;
+  padding: .35rem;
+  border-radius: 6px;
+  background: #eef2f7;
+  font-size: .52rem;
+}
+.verification-history ul { margin: .2rem 0 0; padding-left: 1rem; }
+.verification-history a { color: var(--accent); }
+.verification-local-error {
+  padding: .4rem .5rem;
+  border-radius: 7px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: .58rem;
+  font-weight: 700;
+}
+.verification-scope-reference {
+  padding: 0 .7rem .7rem;
+  color: var(--muted);
+  font-size: .54rem;
+}
+
+@media (max-width: 1180px) {
+  .verification-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .verification-requirements { grid-template-columns: 1fr; }
+}
+@media (max-width: 700px) {
+  .verification-summary,
+  .verification-definition-grid,
+  .verification-execution-grid,
+  .verification-definition { grid-template-columns: 1fr; }
+  .verification-evidence-form,
+  .verification-inline-form,
+  .verification-assignments form { grid-template-columns: 1fr; }
+  .verification-wide-field { grid-column: auto; }
+}
