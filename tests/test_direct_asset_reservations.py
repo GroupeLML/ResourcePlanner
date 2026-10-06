@@ -25,6 +25,10 @@ from app.infrastructure.sql import (
     create_sql_engine,
 )
 from app.server import create_api_app
+from tests.approval_test_support import (
+    map_asset_type_to_test_approval_scope,
+    seed_test_approval_routing,
+)
 from tests.http_test_auth import TEST_ADMIN_AUTH_RESOLVER
 
 
@@ -102,6 +106,8 @@ class DirectAssetReservationTests(unittest.TestCase):
                     ),
                 ]
             )
+            seed_test_approval_routing(session, map_existing_tasks=True)
+            map_asset_type_to_test_approval_scope(session, "TYPE-575C")
         engine.dispose()
 
         self.client = TestClient(
