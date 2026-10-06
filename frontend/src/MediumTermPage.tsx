@@ -114,6 +114,15 @@ function hours(value: number | null | undefined) {
   return `${new Intl.NumberFormat("fr-CA", { maximumFractionDigits: 2 }).format(value)} h`;
 }
 
+function cad(value: number | null | undefined) {
+  if (value == null) return "—";
+  return new Intl.NumberFormat("fr-CA", {
+    style: "currency",
+    currency: "CAD",
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
 function requestedHoursRatio(workPackage: MediumTermBudgetWorkPackageReadModel) {
   const formatter = new Intl.NumberFormat("fr-CA", { maximumFractionDigits: 2 });
   const requested = workPackage.requested_hours == null
@@ -457,6 +466,9 @@ function TaskHeader({
         <span>{financialLabel} <strong>{hours(budgetValue)}</strong></span>
         <span>Charge WP <strong>{hours(loadValue)}</strong></span>
         <span>Solde structuré <strong>{hours(balanceValue)}</strong></span>
+        <span>
+          Source ERP <strong>{isRemaining ? cad(task.remaining_budget_cad) : cad(task.budget_amount_cad)}</strong>
+        </span>
         <span>{task.associated_work_package_count} WP</span>
       </div>
       <small>
