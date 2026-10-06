@@ -92,6 +92,17 @@ class WorkPackageLoadState:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkPackageProjectedDay:
+    day: date
+    explicit_hours: Decimal
+    automatic_hours: Decimal
+
+    @property
+    def hours(self) -> Decimal:
+        return self.explicit_hours + self.automatic_hours
+
+
+@dataclass(frozen=True, slots=True)
 class WorkPackageProjectedWeek:
     week_start: date
     explicit_hours: Decimal
@@ -256,9 +267,10 @@ def _daily_distribution(total: Decimal, start_date: date, end_date: date) -> dic
     }
 
 
-def projected_weekly_loads(
+def projected_daily_loads(
     state: WorkPackageLoadState,
-) -> tuple[WorkPackageProjectedWeek, ...]:
+) -> tuple[WorkPackageProjectedDay, ...]:
+    """Project explicit intervals and automatic balance before any date cutoff."""
     normalized = validate_load_intervals(
         start_date=state.start_date,
         end_date=state.end_date,
@@ -293,27 +305,38 @@ def projected_weekly_loads(
         state.start_date,
         state.end_date,
     )
+    days = sorted(set(explicit_by_day) | set(automatic_by_day))
+    return tuple(
+        WorkPackageProjectedDay(
+            day=day,
+            explicit_hours=explicit_by_day.get(day, Decimal("0.00")),
+            automatic_hours=automatic_by_day.get(day, Decimal("0.00")),
+        )
+        for day in days
+    )
 
-    week_starts = {
-        monday_of(day)
-        for day in set(explicit_by_day) | set(automatic_by_day)
-    }
+
+def projected_weekly_loads(
+    state: WorkPackageLoadState,
+) -> tuple[WorkPackageProjectedWeek, ...]:
+    daily = projected_daily_loads(state)
+    week_starts = {monday_of(row.day) for row in daily}
     return tuple(
         WorkPackageProjectedWeek(
             week_start=week_start,
             explicit_hours=sum(
                 (
-                    hours
-                    for day, hours in explicit_by_day.items()
-                    if monday_of(day) == week_start
+                    row.explicit_hours
+                    for row in daily
+                    if monday_of(row.day) == week_start
                 ),
                 Decimal("0.00"),
             ),
             automatic_hours=sum(
                 (
-                    hours
-                    for day, hours in automatic_by_day.items()
-                    if monday_of(day) == week_start
+                    row.automatic_hours
+                    for row in daily
+                    if monday_of(row.day) == week_start
                 ),
                 Decimal("0.00"),
             ),

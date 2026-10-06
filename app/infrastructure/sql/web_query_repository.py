@@ -19,6 +19,9 @@ from ...application.medium_term_budget import (
     MEDIUM_TERM_DIAGNOSTIC_UNCLASSIFIED_WORK_PACKAGE_LOAD,
     MEDIUM_TERM_DIAGNOSTIC_UNCLASSIFIED_WORK_PACKAGES,
     MEDIUM_TERM_DIAGNOSTIC_WEEKLY_LOAD_INCOMPLETE,
+    ERP_REMAINING_REFERENCE_BASIS,
+    ERP_REMAINING_DIAGNOSTIC_FRESHNESS_UNAVAILABLE,
+    ERP_REMAINING_DIAGNOSTIC_LOAD_UNAVAILABLE,
     WEEK_DIAGNOSTIC_CAPACITY_ZERO,
     WEEK_DIAGNOSTIC_LOAD_INCOMPLETE,
     REFERENCE_BASIS_ERP_BUDGET_ACTUAL_THROUGH_PREVIOUS_WEEK,
@@ -34,7 +37,9 @@ from ...application.medium_term_budget import (
     WorkPackageLoadIntervalReadModel,
     actual_hours_diagnostic,
     erp_financial_budget_diagnostic,
+    erp_budget_cutoff_date,
     task_budget_diagnostic,
+    work_package_hours_on_or_after,
     work_package_is_budget_included,
     work_package_is_current_load_included,
     demand_window_diagnostic,
@@ -841,9 +846,6 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                 )
                 else "erp:unassigned"
             )
-            project_budget_sync_state = budget_sync_by_project_number.get(
-                project.number
-            )
             associated = tuple(all_by_task.get(task.id, ()))
             displayed = tuple(display_by_task.get(task.id, ()))
             if wanted_class is not None and not displayed:
@@ -943,6 +945,54 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                 if budget_hours is not None and planned_wp_hours is not None
                 else None
             )
+
+            remaining_reference_date = erp_budget_cutoff_date(
+                task.erp_budget_last_success_at
+            )
+            remaining_mode_diagnostics: list[str] = []
+            if financial_diagnostic is not None:
+                remaining_mode_diagnostics.append(financial_diagnostic)
+            if actual_projection_diagnostic is not None:
+                remaining_mode_diagnostics.append(actual_projection_diagnostic)
+
+            remaining_work_package_hours: Decimal | None
+            if remaining_reference_date is None:
+                remaining_work_package_hours = None
+                remaining_mode_diagnostics.append(
+                    ERP_REMAINING_DIAGNOSTIC_FRESHNESS_UNAVAILABLE
+                )
+            else:
+                remaining_package_hours = tuple(
+                    work_package_hours_on_or_after(
+                        row,
+                        cutoff=remaining_reference_date,
+                    )
+                    for row in associated
+                    if row.current_load_included
+                )
+                if any(value is None for value in remaining_package_hours):
+                    remaining_work_package_hours = None
+                    remaining_mode_diagnostics.append(
+                        ERP_REMAINING_DIAGNOSTIC_LOAD_UNAVAILABLE
+                    )
+                else:
+                    remaining_work_package_hours = sum(
+                        (
+                            value
+                            for value in remaining_package_hours
+                            if value is not None
+                        ),
+                        Decimal("0.00"),
+                    )
+
+            remaining_structured_balance_hours = (
+                remaining_budget_hours_from_actual - remaining_work_package_hours
+                if (
+                    remaining_budget_hours_from_actual is not None
+                    and remaining_work_package_hours is not None
+                )
+                else None
+            )
             task_models.append(
                 MediumTermBudgetTaskReadModel(
                     task_catalog_item_id=task.id,
@@ -963,6 +1013,13 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                     budget_hours=budget_hours,
                     planned_wp_hours=planned_wp_hours,
                     remaining_budget_hours=remaining_budget_hours,
+                    remaining_reference_date=remaining_reference_date,
+                    remaining_reference_basis=ERP_REMAINING_REFERENCE_BASIS,
+                    remaining_work_package_hours=remaining_work_package_hours,
+                    remaining_structured_balance_hours=remaining_structured_balance_hours,
+                    remaining_mode_diagnostics=tuple(
+                        dict.fromkeys(remaining_mode_diagnostics)
+                    ),
                     associated_work_package_count=len(associated),
                     budget_included_work_package_count=len(included),
                     diagnostic_state=task_budget_diagnostic(
@@ -1003,11 +1060,7 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                             else ()
                         )
                     ),
-                    erp_budget_last_success_at=(
-                        project_budget_sync_state.last_success_at
-                        if project_budget_sync_state is not None
-                        else None
-                    ),
+                    erp_budget_last_success_at=task.erp_budget_last_success_at,
                 )
             )
 

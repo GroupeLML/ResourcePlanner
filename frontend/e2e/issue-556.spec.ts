@@ -21,7 +21,7 @@ async function navigateMain(page: Page, label: string) {
   await page.locator(".main-nav").getByRole("button", { name: new RegExp(label, "i") }).click();
 }
 
-test("#556 compacte la capacité et hiérarchise le Gantt par chargé de projet", async ({ browser }) => {
+test("#556/#614F compacte le Gantt et bascule les budgets en heures de façon cohérente", async ({ browser }) => {
   const { context, page } = await openAdmin(browser);
 
   try {
@@ -58,6 +58,11 @@ test("#556 compacte la capacité et hiérarchise le Gantt par chargé de projet"
               budget_hours: 500,
               planned_wp_hours: 0,
               remaining_budget_hours: 500,
+              remaining_reference_date: "2026-10-01",
+              remaining_reference_basis: "ERP_TASK_BUDGET_LAST_SUCCESS_DATE",
+              remaining_work_package_hours: 0,
+              remaining_structured_balance_hours: 190,
+              remaining_mode_diagnostics: [],
               associated_work_package_count: 0,
               budget_included_work_package_count: 0,
               diagnostic_state: "NO_WORK_PACKAGES",
@@ -133,15 +138,16 @@ test("#556 compacte la capacité et hiérarchise le Gantt par chargé de projet"
 
     const task = page.locator(".mt-task-group").filter({ hasText: "Programmation" }).first();
     await expect(task).toContainText("Budget initial");
-    await expect(task).toContainText(/50\s?000/);
+    await expect(task).toContainText("500 h");
     await expect(task).toContainText("Charge WP");
     await expect(task).toContainText("0 h");
-    await expect(task).toContainText("Aucun WorkPackage");
+    await expect(task).toContainText("Solde structuré");
     await expect(task).toContainText("ERP synchronisé");
 
     await page.getByRole("combobox", { name: "Mode budget Moyen terme" }).selectOption("remaining");
     await expect(task).toContainText("Budget restant");
-    await expect(task).toContainText(/19\s?000/);
+    await expect(task).toContainText("190 h");
+    await expect(task).toContainText("Cutoff ERP inclusif 2026-10-01");
 
     await project.click();
     await expect(task).toBeHidden();

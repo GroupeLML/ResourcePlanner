@@ -129,6 +129,9 @@ class TaskCatalogEntry(TimestampMixin, Base):
     budget_actual_cad: Mapped[Decimal | None] = mapped_column(
         Numeric(38, 10), nullable=True
     )
+    erp_budget_last_success_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     budget_diagnostic: Mapped[str | None] = mapped_column(String(64), nullable=True)
     workforce_eligible: Mapped[bool | None] = mapped_column(Boolean, nullable=True, index=True)
     resource_class_code: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)

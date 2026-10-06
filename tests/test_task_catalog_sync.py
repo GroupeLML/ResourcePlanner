@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from decimal import Decimal
 import unittest
 
@@ -273,6 +274,61 @@ class TargetedTaskCatalogSyncTests(unittest.TestCase):
             self.assertEqual(metadata.task_count, 1)
             self.assertEqual(metadata.rejected_rows, 0)
             self.assertIsNotNone(metadata.duration_ms)
+
+    def test_erp_replay_refreshes_task_budget_freshness_without_changing_idempotent_counts(self) -> None:
+        item = TaskCatalogItem(
+            project_number="P-1",
+            code="216",
+            label="Programmation",
+            erp_task_id="9001",
+            account_group="DEPMO",
+            budget_amount_cad=Decimal("1000.00"),
+            budget_actual_cad=Decimal("250.00"),
+        )
+        snapshot = TaskCatalogProjectSnapshot(
+            project_number="P-1",
+            source_rows=1,
+            rejected_rows=0,
+            items=(item,),
+        )
+        self._sync_project(snapshot)
+
+        stale = datetime(2000, 1, 1, tzinfo=timezone.utc)
+        with self.factory.begin() as session:
+            row = session.scalar(
+                select(TaskCatalogEntry).where(TaskCatalogEntry.erp_task_id == "9001")
+            )
+            assert row is not None
+            row.erp_budget_last_success_at = stale
+
+        replay, _ = self._sync_project(snapshot)
+        self.assertEqual((replay.created, replay.updated, replay.unchanged), (0, 0, 1))
+        with self.factory() as session:
+            row = session.scalar(
+                select(TaskCatalogEntry).where(TaskCatalogEntry.erp_task_id == "9001")
+            )
+            assert row is not None
+            refreshed = row.erp_budget_last_success_at
+            self.assertIsNotNone(refreshed)
+            assert refreshed is not None
+            self.assertGreater(refreshed.year, 2000)
+
+        with self.factory.begin() as session:
+            action = SqlTaskCatalogRepository(session).upsert(
+                TaskCatalogItem(
+                    project_number="P-1",
+                    code="216",
+                    label="Libellé import local",
+                )
+            )
+            self.assertEqual(action, "updated")
+
+        with self.factory() as session:
+            row = session.scalar(
+                select(TaskCatalogEntry).where(TaskCatalogEntry.erp_task_id == "9001")
+            )
+            assert row is not None
+            self.assertEqual(row.erp_budget_last_success_at, refreshed)
 
     def test_odata_identity_is_adopted_by_legacy_row_without_breaking_historical_reference(self) -> None:
         with self.factory.begin() as session:

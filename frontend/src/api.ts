@@ -413,6 +413,11 @@ export type MediumTermBudgetTaskReadModel = {
   budget_hours: number | null;
   planned_wp_hours: number | null;
   remaining_budget_hours: number | null;
+  remaining_reference_date: string | null;
+  remaining_reference_basis: string;
+  remaining_work_package_hours: number | null;
+  remaining_structured_balance_hours: number | null;
+  remaining_mode_diagnostics: string[];
   associated_work_package_count: number;
   budget_included_work_package_count: number;
   diagnostic_state: string;

@@ -254,23 +254,46 @@ class ReactMediumTermContractTests(unittest.TestCase):
         self.assertNotIn("project.project_manager", page)
         self.assertNotIn("task.project_manager_display_name || task.project_manager_contact_id", page)
 
-    def test_issue_556_budget_toggle_keeps_cad_and_hours_separate(self) -> None:
+    def test_issue_614f_budget_toggle_selects_coherent_hour_projection(self) -> None:
         page = (ROOT / "frontend" / "src" / "MediumTermPage.tsx").read_text(
             encoding="utf-8"
         )
+        api = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
+        backend = (
+            ROOT / "app" / "infrastructure" / "sql" / "web_query_repository.py"
+        ).read_text(encoding="utf-8")
+        projection = (
+            ROOT / "app" / "application" / "medium_term_budget.py"
+        ).read_text(encoding="utf-8")
 
         self.assertIn('type BudgetMode = "initial" | "remaining"', page)
         self.assertIn('option value="initial">Budget initial', page)
         self.assertIn('option value="remaining">Budget restant', page)
-        self.assertIn("task.budget_amount_cad", page)
-        self.assertIn("task.remaining_budget_cad", page)
-        self.assertIn("cad(financialValue)", page)
-        self.assertIn("Charge WP", page)
-        self.assertIn("hours(task.planned_wp_hours)", page)
-        self.assertIn("hours(task.remaining_budget_hours)", page)
+        self.assertIn("task.budget_hours", page)
+        self.assertIn("task.remaining_budget_hours_from_actual", page)
+        self.assertIn("task.planned_wp_hours", page)
+        self.assertIn("task.remaining_work_package_hours", page)
+        self.assertIn("task.remaining_budget_hours", page)
+        self.assertIn("task.remaining_structured_balance_hours", page)
+        self.assertIn("hours(budgetValue)", page)
+        self.assertIn("hours(loadValue)", page)
+        self.assertIn("hours(balanceValue)", page)
+        self.assertIn("Cutoff ERP inclusif", page)
         self.assertIn("ERP synchronisé", page)
-        self.assertNotIn("remaining_budget_cad /", page)
-        self.assertNotIn("budget_amount_cad /", page)
+        self.assertNotIn("cad(financialValue)", page)
+
+        self.assertIn("remaining_reference_date: string | null;", api)
+        self.assertIn("remaining_reference_basis: string;", api)
+        self.assertIn("remaining_work_package_hours: number | null;", api)
+        self.assertIn("remaining_structured_balance_hours: number | null;", api)
+        self.assertIn("remaining_mode_diagnostics: string[];", api)
+
+        self.assertIn("task.erp_budget_last_success_at", backend)
+        self.assertIn("erp_budget_cutoff_date(", backend)
+        self.assertIn("work_package_hours_on_or_after(", backend)
+        self.assertIn("ERP_TASK_BUDGET_LAST_SUCCESS_DATE", projection)
+        self.assertIn('ZoneInfo("America/Toronto")', projection)
+        self.assertIn("row.day >= cutoff", projection)
 
     def test_issue_556_moves_unlinked_classification_after_gantt(self) -> None:
         page = (ROOT / "frontend" / "src" / "MediumTermPage.tsx").read_text(

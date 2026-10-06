@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
+from zoneinfo import ZoneInfo
+
+from .work_package_load import (
+    WorkPackageLoadIntervalValue,
+    WorkPackageLoadState,
+    projected_daily_loads,
+)
 
 
 BUDGET_DIAGNOSTIC_UNAVAILABLE = "BUDGET_UNAVAILABLE"
@@ -26,6 +33,11 @@ ERP_FINANCIAL_BUDGET_INCOMPLETE = "ERP_FINANCIAL_BUDGET_INCOMPLETE"
 ACTUAL_HOURS_DIAGNOSTIC_COST_MISSING = "resource_class_cost_missing"
 ACTUAL_HOURS_DIAGNOSTIC_COST_ZERO = "resource_class_cost_zero"
 ACTUAL_HOURS_DIAGNOSTIC_COST_NEGATIVE = "resource_class_cost_negative"
+
+ERP_REMAINING_REFERENCE_BASIS = "ERP_TASK_BUDGET_LAST_SUCCESS_DATE"
+ERP_REMAINING_DIAGNOSTIC_FRESHNESS_UNAVAILABLE = "ERP_TASK_BUDGET_FRESHNESS_UNAVAILABLE"
+ERP_REMAINING_DIAGNOSTIC_LOAD_UNAVAILABLE = "ERP_REMAINING_WORK_PACKAGE_LOAD_UNAVAILABLE"
+ERP_BUDGET_BUSINESS_TIMEZONE = ZoneInfo("America/Toronto")
 
 DEMAND_WINDOW_DIAGNOSTIC_BEFORE_WORK_PACKAGE = "DEMAND_BEFORE_WORK_PACKAGE"
 DEMAND_WINDOW_DIAGNOSTIC_AFTER_WORK_PACKAGE = "DEMAND_AFTER_WORK_PACKAGE"
@@ -301,6 +313,47 @@ class MediumTermBudgetWorkPackageReadModel:
     demand_periods: tuple[MediumTermDemandPeriodReadModel, ...] = ()
 
 
+def erp_budget_cutoff_date(value: datetime | None) -> date | None:
+    """Convert per-task ERP freshness to the inclusive business cutoff date."""
+    if value is None:
+        return None
+    aware = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return aware.astimezone(ERP_BUDGET_BUSINESS_TIMEZONE).date()
+
+
+def work_package_hours_on_or_after(
+    work_package: MediumTermBudgetWorkPackageReadModel,
+    *,
+    cutoff: date,
+) -> Decimal | None:
+    """Project the full WorkPackage daily, then retain contributions at/after cutoff."""
+    if work_package.weekly_load_diagnostic is not None:
+        return None
+    state = WorkPackageLoadState(
+        reference=work_package.reference,
+        version=work_package.version,
+        start_date=work_package.start_date,
+        end_date=work_package.end_date,
+        planned_hours=work_package.planned_hours,
+        legacy_status=work_package.status,
+        terminal_status=None,
+        intervals=tuple(
+            WorkPackageLoadIntervalValue(
+                id=interval.id or None,
+                start_date=interval.start_date,
+                end_date=interval.end_date,
+                hours=interval.hours,
+                origin=interval.origin,
+            )
+            for interval in work_package.load_intervals
+        ),
+    )
+    return sum(
+        (row.hours for row in projected_daily_loads(state) if row.day >= cutoff),
+        Decimal("0.00"),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class MediumTermBudgetTaskReadModel:
     task_catalog_item_id: str
@@ -321,6 +374,11 @@ class MediumTermBudgetTaskReadModel:
     budget_hours: Decimal | None
     planned_wp_hours: Decimal | None
     remaining_budget_hours: Decimal | None
+    remaining_reference_date: date | None
+    remaining_reference_basis: str
+    remaining_work_package_hours: Decimal | None
+    remaining_structured_balance_hours: Decimal | None
+    remaining_mode_diagnostics: tuple[str, ...]
     associated_work_package_count: int
     budget_included_work_package_count: int
     diagnostic_state: str

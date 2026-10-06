@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 from app.application.work_package_load import (
     WorkPackageLoadIntervalValue,
     WorkPackageLoadState,
+    projected_daily_loads,
     projected_weekly_loads,
     work_package_status,
 )
@@ -69,6 +70,46 @@ class WorkPackageLoadProjectionTests(unittest.TestCase):
         # 10.01 h -> 1001 cents over 10 calendar days: first day gets 1.01 h.
         self.assertEqual(weeks[0].automatic_hours, Decimal("7.01"))
         self.assertEqual(weeks[1].automatic_hours, Decimal("3.00"))
+
+    def test_daily_projection_preserves_full_distribution_before_midweek_cutoff(self) -> None:
+        state = WorkPackageLoadState(
+            reference="WP-614F",
+            version=1,
+            start_date=date(2026, 9, 28),
+            end_date=date(2026, 10, 4),
+            planned_hours=Decimal("40.00"),
+            legacy_status="planned",
+            terminal_status=None,
+            intervals=(
+                WorkPackageLoadIntervalValue(
+                    id="I-614F",
+                    start_date=date(2026, 9, 28),
+                    end_date=date(2026, 10, 4),
+                    hours=Decimal("40.00"),
+                ),
+            ),
+        )
+
+        days = projected_daily_loads(state)
+        after_cutoff = sum(
+            (row.hours for row in days if row.day >= date(2026, 10, 1)),
+            Decimal("0.00"),
+        )
+
+        self.assertEqual(sum((row.hours for row in days), Decimal("0.00")), Decimal("40.00"))
+        self.assertEqual(after_cutoff, Decimal("22.84"))
+        self.assertEqual(
+            [row.hours for row in days],
+            [
+                Decimal("5.72"),
+                Decimal("5.72"),
+                Decimal("5.72"),
+                Decimal("5.71"),
+                Decimal("5.71"),
+                Decimal("5.71"),
+                Decimal("5.71"),
+            ],
+        )
 
     def test_partial_explicit_interval_is_additive_and_balance_is_not_double_counted(self) -> None:
         state = WorkPackageLoadState(

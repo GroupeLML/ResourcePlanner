@@ -172,7 +172,10 @@ class SqlTaskCatalogRepository(
                 }
             )
 
+        freshness_at = datetime.now(timezone.utc) if erp_task_id is not None else None
         if row is None:
+            if freshness_at is not None:
+                values["erp_budget_last_success_at"] = freshness_at
             self._session.add(TaskCatalogEntry(**values))
             self._session.flush()
             return "created"
@@ -184,9 +187,14 @@ class SqlTaskCatalogRepository(
                 setattr(row, field, value)
                 changed = True
 
+        # ERP freshness is provenance, not a business-value change. Refresh it for
+        # every task actually received/integrated while preserving idempotent
+        # created/updated/unchanged counters.
+        if freshness_at is not None:
+            row.erp_budget_last_success_at = freshness_at
+        self._session.flush()
         if not changed:
             return "unchanged"
-        self._session.flush()
         return "deactivated" if was_active and not bool(row.active) else "updated"
 
     def search(
