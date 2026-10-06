@@ -1806,8 +1806,6 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                     diagnostics.append("asset_inactive")
                 if asset_assignment.qualification_state != QUALIFICATION_SATISFIED:
                     diagnostics.append("operator_not_qualified")
-            if len(related) > 1:
-                diagnostics.append("related_asset_reservations_multiple")
 
             if not can_manage_planning:
                 denied = ShiftAssetActionReadModel(
