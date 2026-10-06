@@ -93,6 +93,10 @@ export default function DirectAssetReservationForm({
     })),
     [activeResources],
   );
+  const selectedSegment = useMemo(
+    () => snapshot.segments.find((row) => row.segment_id === segmentId) ?? null,
+    [segmentId, snapshot.segments],
+  );
   const segmentOptions = useMemo(
     () => snapshot.segments
       .filter((row) => row.status !== "Annulé" && row.start_date && row.end_date)
@@ -126,7 +130,7 @@ export default function DirectAssetReservationForm({
         ? projectId
         : mode === "RESOURCE_PERIOD"
           ? resourceId
-          : segmentId && operatorId
+          : segmentId
     ),
   );
 
@@ -166,7 +170,6 @@ export default function DirectAssetReservationForm({
         await createResourcePeriodReservation(
           {
             resource_id: resourceId!,
-            project_id: projectId,
             asset_type_id: assetTypeId,
             asset_id: assetId,
             start_date: startDate,
@@ -183,7 +186,7 @@ export default function DirectAssetReservationForm({
             asset_id: assetId,
             start_date: startDate,
             end_date: endDate,
-            operator_resource_id: operatorId!,
+            operator_resource_id: operatorId,
             expected_planning_version: snapshot.planning_version,
           },
           key,
@@ -225,6 +228,7 @@ export default function DirectAssetReservationForm({
                 setResourceId(null);
                 setSegmentId(null);
               } else if (next === "RESOURCE_PERIOD") {
+                setProjectId(null);
                 setSegmentId(null);
               } else {
                 setResourceId(null);
@@ -249,39 +253,46 @@ export default function DirectAssetReservationForm({
             required
           />
         ) : mode === "RESOURCE_PERIOD" ? (
-          <>
-            <SearchableCombobox
-              label="Ressource"
-              value={resourceId}
-              options={resourceOptions}
-              onChange={setResourceId}
-              disabled={!canManage || busy}
-              required
-            />
-            <SearchableCombobox
-              label="Projet (facultatif)"
-              value={projectId}
-              options={projectOptions}
-              onChange={setProjectId}
-              disabled={!canManage || busy}
-              error={projectError}
-              clearable
-            />
-          </>
-        ) : (
           <SearchableCombobox
-            label="Segment"
-            value={segmentId}
-            options={segmentOptions}
-            onChange={(value) => {
-              setSegmentId(value);
-              const segment = snapshot.segments.find((row) => row.segment_id === value);
-              if (segment?.start_date) setStartDate(segment.start_date);
-              if (segment?.end_date) setEndDate(segment.end_date);
-            }}
+            label="Ressource"
+            value={resourceId}
+            options={resourceOptions}
+            onChange={setResourceId}
             disabled={!canManage || busy}
             required
           />
+        ) : (
+          <>
+            <SearchableCombobox
+              label="Segment"
+              value={segmentId}
+              options={segmentOptions}
+              onChange={(value) => {
+                setSegmentId(value);
+                const segment = snapshot.segments.find((row) => row.segment_id === value);
+                if (segment?.start_date) setStartDate(segment.start_date);
+                if (segment?.end_date) setEndDate(segment.end_date);
+              }}
+              disabled={!canManage || busy}
+              required
+            />
+            <label>
+              <span>Projet dérivé</span>
+              <input
+                aria-label="Projet dérivé du segment"
+                value={
+                  selectedSegment
+                    ? [selectedSegment.project_number, selectedSegment.project_name]
+                      .filter(Boolean)
+                      .join(" — ")
+                    : ""
+                }
+                placeholder="Sélectionner un segment"
+                disabled
+                readOnly
+              />
+            </label>
+          </>
         )}
 
         <label>
@@ -317,13 +328,12 @@ export default function DirectAssetReservationForm({
 
         {(mode === "PROJECT_DIRECT" || mode === "SEGMENT") && (
           <SearchableCombobox
-            label={mode === "SEGMENT" ? "Opérateur" : "Opérateur (facultatif)"}
+            label="Opérateur (facultatif)"
             value={operatorId}
             options={resourceOptions}
             onChange={setOperatorId}
             disabled={!canManage || busy}
-            clearable={mode !== "SEGMENT"}
-            required={mode === "SEGMENT"}
+            clearable
           />
         )}
 
