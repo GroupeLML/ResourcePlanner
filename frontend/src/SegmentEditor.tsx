@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { createClientId } from "./clientId";
+import { useAuth } from "./AuthContext";
 import {
   ApiError,
   CompetencyReadModel,
@@ -8,11 +9,13 @@ import {
   ResourceReadModel,
   SegmentReadModel,
   getCompetencies,
+  getDemandDetail,
 } from "./api";
 import CompetencyPicker from "./CompetencyPicker";
 import {
   OverallocationApiError,
   OverallocationContext,
+  extendPlanningWindowOverride,
   overallocationContext,
   updateSegmentWithOverallocation,
 } from "./manualOverallocationApi";
@@ -129,6 +132,7 @@ export default function SegmentEditor({
   onSaved,
   onOpenDemand,
   planningVersion,
+  onStale,
 }: {
   open: boolean;
   segmentId: string | null;
@@ -138,7 +142,9 @@ export default function SegmentEditor({
   onSaved: () => void;
   onOpenDemand?: (demandNumber: string) => void;
   planningVersion?: number | null;
+  onStale?: () => void;
 }) {
+  const { can } = useAuth();
   const [segment, setSegment] = useState<SegmentReadModel | null>(null);
   const [competencies, setCompetencies] = useState<CompetencyReadModel[]>([]);
   const [form, setForm] = useState<FormState | null>(null);
@@ -148,6 +154,13 @@ export default function SegmentEditor({
   const [error, setError] = useState<string | null>(null);
   const [overallocationChoice, setOverallocationChoice] = useState<OverallocationContext | null>(null);
   const [allowLockedOverallocation, setAllowLockedOverallocation] = useState(false);
+  const [windowOverrideOpen, setWindowOverrideOpen] = useState(false);
+  const [windowOverrideStart, setWindowOverrideStart] = useState("");
+  const [windowOverrideEnd, setWindowOverrideEnd] = useState("");
+  const [windowOverrideReason, setWindowOverrideReason] = useState("");
+  const [windowOverrideConfirmed, setWindowOverrideConfirmed] = useState(false);
+  const [windowOverrideBusy, setWindowOverrideBusy] = useState(false);
+  const windowOverrideKey = useRef<string | null>(null);
   const createRetry = useRef<RetryReceipt | null>(null);
 
   useEffect(() => {
@@ -155,6 +168,10 @@ export default function SegmentEditor({
     setError(null);
     setOverallocationChoice(null);
     setAllowLockedOverallocation(false);
+    setWindowOverrideOpen(false);
+    setWindowOverrideReason("");
+    setWindowOverrideConfirmed(false);
+    windowOverrideKey.current = null;
     createRetry.current = null;
     if (!segmentId) {
       setLoading(false);
@@ -224,9 +241,16 @@ export default function SegmentEditor({
     && !effectiveDemandNumber
     && isCanonicalAdHocSegment(segment),
   );
-  const busy = loading || saving || cancelling;
+  const busy = loading || saving || cancelling || windowOverrideBusy;
   const planningSegment = segment as PlanningSegment | null;
   const currentExcess = Number(planningSegment?.overallocated_hours ?? 0);
+  const canOverridePlanningWindow = (
+    can("manage_planning")
+    && can("override_planning_window")
+    && segment?.origin === "REQUEST"
+    && Boolean(effectiveDemandNumber)
+    && planningVersion != null
+  );
 
   function setField<K extends keyof FormState>(field: K, value: FormState[K]) {
     setForm((current) => current ? { ...current, [field]: value } : current);
@@ -339,6 +363,75 @@ export default function SegmentEditor({
       }
     } finally {
       setSaving(false);
+    }
+  }
+
+  function openWindowOverride() {
+    if (!segment || !canOverridePlanningWindow) return;
+    setWindowOverrideStart(segment.start_date ?? "");
+    setWindowOverrideEnd(segment.end_date ?? segment.start_date ?? "");
+    setWindowOverrideReason("");
+    setWindowOverrideConfirmed(false);
+    windowOverrideKey.current = newIdempotencyKey();
+    setWindowOverrideOpen(true);
+  }
+
+  async function executeWindowOverride() {
+    if (
+      !segmentId
+      || !effectiveDemandNumber
+      || planningVersion == null
+      || !windowOverrideConfirmed
+      || !windowOverrideReason.trim()
+      || !windowOverrideStart
+      || !windowOverrideEnd
+      || windowOverrideBusy
+    ) return;
+    setWindowOverrideBusy(true);
+    setError(null);
+    try {
+      const detail = await getDemandDetail(effectiveDemandNumber);
+      const approvalRevisionId = detail.approval_state?.active_revision_id ?? null;
+      if (!approvalRevisionId) {
+        setError("Aucune révision approuvée active n’est disponible. Rafraîchis le planning avant de continuer.");
+        return;
+      }
+      const key = windowOverrideKey.current ?? newIdempotencyKey();
+      windowOverrideKey.current = key;
+      await extendPlanningWindowOverride(
+        segmentId,
+        {
+          start_date: windowOverrideStart,
+          end_date: windowOverrideEnd,
+          reason: windowOverrideReason.trim(),
+          expected_planning_version: planningVersion,
+          expected_approval_revision_id: approvalRevisionId,
+          expected_operational_version: detail.approval_state?.operational_version ?? null,
+        },
+        key,
+      );
+      setWindowOverrideOpen(false);
+      windowOverrideKey.current = null;
+      onSaved();
+    } catch (reason: unknown) {
+      if (
+        reason instanceof ApiError
+        && (
+          reason.code === "planning_version_conflict"
+          || reason.code === "operational_choice_version_conflict"
+          || reason.code === "planning_authorization_revision_conflict"
+          || reason.code === "planning_authorization_unknown"
+        )
+      ) {
+        windowOverrideKey.current = null;
+        setWindowOverrideOpen(false);
+        if (onStale) onStale();
+        else setError("Le planning ou l’approbation a changé. Ferme puis rouvre le segment pour actualiser le contexte.");
+      } else {
+        setError(messageFromError(reason));
+      }
+    } finally {
+      setWindowOverrideBusy(false);
     }
   }
 
@@ -572,6 +665,98 @@ export default function SegmentEditor({
                 <textarea rows={4} value={form.description} onChange={(event) => setField("description", event.target.value)} />
               </label>
             </div>
+
+            {canOverridePlanningWindow && (
+              <div className="atomic-action-section" data-testid="segment-window-override">
+                <div className="atomic-action-heading">
+                  <div>
+                    <strong>Dérogation de fenêtre opérationnelle</strong>
+                    <span>Élargit la fenêtre du plan sans modifier la candidate, la révision approuvée, le quorum, les heures prévues ni le budget.</span>
+                  </div>
+                  {!windowOverrideOpen && (
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={busy}
+                      onClick={openWindowOverride}
+                    >
+                      Étendre avec dérogation
+                    </button>
+                  )}
+                </div>
+                {windowOverrideOpen && (
+                  <div className="atomic-action-panel">
+                    <div className="dialog-form-grid">
+                      <label>
+                        <span>Début opérationnel demandé</span>
+                        <input
+                          type="date"
+                          value={windowOverrideStart}
+                          disabled={windowOverrideBusy}
+                          onChange={(event) => setWindowOverrideStart(event.target.value)}
+                        />
+                      </label>
+                      <label>
+                        <span>Fin opérationnelle demandée</span>
+                        <input
+                          type="date"
+                          value={windowOverrideEnd}
+                          disabled={windowOverrideBusy}
+                          onChange={(event) => setWindowOverrideEnd(event.target.value)}
+                        />
+                      </label>
+                      <label className="span-2">
+                        <span>Motif obligatoire</span>
+                        <textarea
+                          rows={3}
+                          value={windowOverrideReason}
+                          disabled={windowOverrideBusy}
+                          onChange={(event) => setWindowOverrideReason(event.target.value)}
+                        />
+                      </label>
+                      <label className="checkbox-field span-2">
+                        <input
+                          type="checkbox"
+                          checked={windowOverrideConfirmed}
+                          disabled={windowOverrideBusy}
+                          onChange={(event) => setWindowOverrideConfirmed(event.target.checked)}
+                        />
+                        <span>Je confirme explicitement cette dérogation de dates. Elle n’approuve pas la demande candidate.</span>
+                      </label>
+                    </div>
+                    <div className="dialog-actions">
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={windowOverrideBusy}
+                        onClick={() => {
+                          setWindowOverrideOpen(false);
+                          setWindowOverrideConfirmed(false);
+                          setWindowOverrideReason("");
+                          windowOverrideKey.current = null;
+                        }}
+                      >
+                        Annuler
+                      </button>
+                      <button
+                        type="button"
+                        className="primary-button"
+                        disabled={
+                          windowOverrideBusy
+                          || !windowOverrideConfirmed
+                          || !windowOverrideReason.trim()
+                          || !windowOverrideStart
+                          || !windowOverrideEnd
+                        }
+                        onClick={() => void executeWindowOverride()}
+                      >
+                        {windowOverrideBusy ? "Application…" : "Confirmer la dérogation"}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="segment-help">
               <strong>Segment = besoin ressource; quart = affectation opérationnelle datée.</strong>

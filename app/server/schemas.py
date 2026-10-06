@@ -457,6 +457,27 @@ class AllocationDropEvaluateRequest(StrictRequest):
     resource_id: str = Field(min_length=1)
     day: date
     outside_standard_hours: bool = False
+    include_planning_window_override_options: bool = False
+
+
+class PlanningWindowOverrideExtendRequest(StrictRequest):
+    start_date: date
+    end_date: date
+    reason: str = Field(min_length=1)
+    expected_planning_version: int = Field(ge=1)
+    expected_approval_revision_id: str = Field(min_length=1)
+    expected_operational_version: int | None = Field(default=None, ge=1)
+
+
+class AllocationWindowOverrideMoveRequest(StrictRequest):
+    resource_id: str = Field(min_length=1)
+    day: date
+    reason: str = Field(min_length=1)
+    expected_planning_version: int = Field(ge=1)
+    expected_approval_revision_id: str = Field(min_length=1)
+    outside_standard_hours: bool = False
+    overallocation_policy: OverallocationPolicy | None = None
+    expected_operational_version: int | None = Field(default=None, ge=1)
 
 
 class AtomicAllocationBaseRequest(StrictRequest):
