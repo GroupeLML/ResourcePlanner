@@ -119,7 +119,78 @@ def _reshape_as_0048(path: Path) -> None:
             DROP TABLE IF EXISTS project_co_managers;
             DROP TABLE IF EXISTS task_catalog_preferred_resource_audit;
 
-            CREATE TABLE task_catalog_items_0048 AS
+            CREATE TABLE task_catalog_items_0048 (
+                id VARCHAR(36) NOT NULL PRIMARY KEY,
+                project_number VARCHAR(64) NOT NULL,
+                task_code VARCHAR(64) NOT NULL,
+                label VARCHAR(255) NOT NULL,
+                status VARCHAR(32) DEFAULT 'Actif' NOT NULL,
+                active BOOLEAN DEFAULT 1 NOT NULL,
+                billing_rule VARCHAR(128),
+                allocation_rule VARCHAR(128),
+                completion_percent NUMERIC(7, 2),
+                erp_created_at DATETIME,
+                branch VARCHAR(64),
+                approver_name VARCHAR(255),
+                operational_responsible_contact_id VARCHAR(36),
+                coordinator_contact_id VARCHAR(36),
+                cv_enabled BOOLEAN,
+                time_entry_enabled BOOLEAN,
+                expenses_enabled BOOLEAN,
+                erp_task_id VARCHAR(128),
+                account_group VARCHAR(64),
+                cost_code VARCHAR(128),
+                inventory_id VARCHAR(128),
+                budget_amount_cad NUMERIC(38, 10),
+                budget_actual_cad NUMERIC(38, 10),
+                budget_diagnostic VARCHAR(64),
+                workforce_eligible BOOLEAN,
+                resource_class_code VARCHAR(64),
+                average_hourly_cost_cad NUMERIC(18, 4),
+                budget_hours NUMERIC(38, 18),
+                workforce_diagnostics TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                CONSTRAINT uq_task_catalog_items_project_code
+                    UNIQUE (project_number, task_code),
+                FOREIGN KEY(operational_responsible_contact_id)
+                    REFERENCES business_contacts (id),
+                FOREIGN KEY(coordinator_contact_id)
+                    REFERENCES business_contacts (id)
+            );
+            INSERT INTO task_catalog_items_0048 (
+                id,
+                project_number,
+                task_code,
+                label,
+                status,
+                active,
+                billing_rule,
+                allocation_rule,
+                completion_percent,
+                erp_created_at,
+                branch,
+                approver_name,
+                operational_responsible_contact_id,
+                coordinator_contact_id,
+                cv_enabled,
+                time_entry_enabled,
+                expenses_enabled,
+                erp_task_id,
+                account_group,
+                cost_code,
+                inventory_id,
+                budget_amount_cad,
+                budget_actual_cad,
+                budget_diagnostic,
+                workforce_eligible,
+                resource_class_code,
+                average_hourly_cost_cad,
+                budget_hours,
+                workforce_diagnostics,
+                created_at,
+                updated_at
+            )
             SELECT
                 id,
                 project_number,
@@ -155,6 +226,33 @@ def _reshape_as_0048(path: Path) -> None:
             FROM task_catalog_items;
             DROP TABLE task_catalog_items;
             ALTER TABLE task_catalog_items_0048 RENAME TO task_catalog_items;
+            CREATE INDEX ix_task_catalog_items_account_group
+                ON task_catalog_items (account_group);
+            CREATE INDEX ix_task_catalog_items_active
+                ON task_catalog_items (active);
+            CREATE INDEX ix_task_catalog_items_coordinator_contact_id
+                ON task_catalog_items (coordinator_contact_id);
+            CREATE INDEX ix_task_catalog_items_erp_task_id
+                ON task_catalog_items (erp_task_id);
+            CREATE INDEX ix_task_catalog_items_operational_responsible_contact_id
+                ON task_catalog_items (operational_responsible_contact_id);
+            CREATE INDEX ix_task_catalog_items_project_active
+                ON task_catalog_items (project_number, active);
+            CREATE INDEX ix_task_catalog_items_project_number
+                ON task_catalog_items (project_number);
+            CREATE INDEX ix_task_catalog_items_project_workforce
+                ON task_catalog_items (project_number, active, workforce_eligible);
+            CREATE INDEX ix_task_catalog_items_resource_class_code
+                ON task_catalog_items (resource_class_code);
+            CREATE INDEX ix_task_catalog_items_status
+                ON task_catalog_items (status);
+            CREATE INDEX ix_task_catalog_items_task_code
+                ON task_catalog_items (task_code);
+            CREATE INDEX ix_task_catalog_items_workforce_eligible
+                ON task_catalog_items (workforce_eligible);
+            CREATE UNIQUE INDEX ux_task_catalog_items_erp_task_id_not_null
+                ON task_catalog_items (erp_task_id)
+                WHERE erp_task_id IS NOT NULL;
 
             ALTER TABLE communication_messages
                 DROP COLUMN to_recipients_json;
