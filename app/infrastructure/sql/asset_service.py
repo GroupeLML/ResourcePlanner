@@ -10,13 +10,29 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from ...application.errors import ApplicationConflictError, ApplicationNotFoundError, ApplicationValidationError
-from ...application.security import PERMISSION_APPROVE_DEMANDS, normalize_roles, permissions_for_roles
+from ...application.security import (
+    PERMISSION_ADMIN_SETTINGS,
+    PERMISSION_APPROVE_DEMANDS,
+    PERMISSION_MANAGE_PLANNING,
+    normalize_roles,
+    permissions_for_roles,
+)
+from ...domain.approval_routing import (
+    ApprovalRoutingUser,
+    ApprovalScopeCandidate,
+    resolve_asset_line_approvers,
+)
 from ...domain.reservable_assets import (
     AssetOccupation,
     AssetRequirementOrigin,
     overlapping_asset_occupations,
 )
 from ...domain.approval_envelope import approval_envelope_from_snapshot_payload
+from .approval_scope_models import (
+    ApprovalScope,
+    ApprovalScopeApprover,
+    AssetTypeApprovalScopeMapping,
+)
 from .asset_models import (
     Asset,
     AssetAllocation,
@@ -52,6 +68,161 @@ class SqlAssetService:
         self.version = SqlPlanningMutationVersionRepository(session)
         self.audit = SqlPlanningAuditJournal(session, actor_name=actor)
 
+    @staticmethod
+    def _user_permissions(user: AppUser) -> tuple[str, ...]:
+        try:
+            roles = normalize_roles(
+                tuple(str(value) for value in json.loads(user.roles_json or "[]"))
+            )
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return ()
+        return permissions_for_roles(roles)
+
+    def _require_actor_permission(
+        self,
+        permission: str,
+        *,
+        code: str,
+        message: str,
+    ) -> AppUser:
+        actor_id = str(self.actor or "").strip()
+        actor = self.session.get(AppUser, actor_id) if actor_id else None
+        if (
+            actor is None
+            or not actor.active
+            or permission not in self._user_permissions(actor)
+        ):
+            raise ApplicationValidationError(
+                message,
+                code=code,
+                context={"app_user_id": actor_id or None},
+            )
+        return actor
+
+    def _require_assignment_authority(self, asset_id: str) -> dict[str, object]:
+        actor = self._require_actor_permission(
+            PERMISSION_MANAGE_PLANNING,
+            code="asset_assignment_authority_required",
+            message="L'attribution directe de cet actif n'est pas autorisée.",
+        )
+        asset = self.session.get(Asset, str(asset_id or "").strip())
+        asset_type = (
+            self.session.get(AssetType, asset.asset_type_id)
+            if asset is not None
+            else None
+        )
+        if asset is None:
+            raise ApplicationNotFoundError(
+                "Unité d'actif introuvable.",
+                code="asset_not_found",
+            )
+
+        scopes = tuple(
+            self.session.scalars(
+                select(ApprovalScope)
+                .join(
+                    AssetTypeApprovalScopeMapping,
+                    AssetTypeApprovalScopeMapping.approval_scope_id
+                    == ApprovalScope.id,
+                )
+                .where(
+                    AssetTypeApprovalScopeMapping.asset_type_id
+                    == asset.asset_type_id
+                )
+                .order_by(ApprovalScope.id)
+            ).all()
+        )
+        scope_ids = tuple(row.id for row in scopes)
+        scope_approver_ids = (
+            tuple(
+                self.session.scalars(
+                    select(ApprovalScopeApprover.app_user_id)
+                    .where(
+                        ApprovalScopeApprover.approval_scope_id.in_(scope_ids)
+                    )
+                    .order_by(ApprovalScopeApprover.app_user_id)
+                ).all()
+            )
+            if scope_ids
+            else ()
+        )
+        asset_approver_ids = tuple(
+            self.session.scalars(
+                select(AssetApprover.app_user_id)
+                .where(AssetApprover.asset_id == asset.id)
+                .order_by(AssetApprover.app_user_id)
+            ).all()
+        )
+        user_ids = tuple(
+            sorted(set(scope_approver_ids) | set(asset_approver_ids) | {actor.id})
+        )
+        users = {
+            row.id: ApprovalRoutingUser(
+                user_id=row.id,
+                active=bool(row.active),
+                permissions=self._user_permissions(row),
+            )
+            for row in self.session.scalars(
+                select(AppUser).where(AppUser.id.in_(user_ids)).order_by(AppUser.id)
+            ).all()
+        }
+        resolution = resolve_asset_line_approvers(
+            line_active=True,
+            asset_type_id=asset.asset_type_id,
+            asset_type_exists=asset_type is not None,
+            asset_type_active=bool(asset_type and asset_type.active),
+            scope_candidates=tuple(
+                ApprovalScopeCandidate(scope_id=row.id, active=bool(row.active))
+                for row in scopes
+            ),
+            scope_approver_user_ids=scope_approver_ids,
+            users=users,
+            proposed_asset_id=asset.id,
+            proposed_asset_exists=True,
+            proposed_asset_active=bool(asset.active),
+            proposed_asset_type_matches=bool(
+                asset_type is not None and asset.asset_type_id == asset_type.id
+            ),
+            asset_approver_user_ids=asset_approver_ids,
+        )
+        eligible = next(
+            (
+                item
+                for item in resolution.eligible_approvers
+                if item.user_id == actor.id
+            ),
+            None,
+        )
+        if resolution.blocked or eligible is None:
+            raise ApplicationValidationError(
+                "L'attribution directe de cet actif n'est pas autorisée.",
+                code="asset_assignment_authority_required",
+                context={
+                    "asset_id": asset.id,
+                    "approval_scope_id": resolution.approval_scope_id,
+                    "diagnostics": list(resolution.diagnostics),
+                },
+            )
+        return {
+            "asset_id": asset.id,
+            "app_user_id": actor.id,
+            "approval_scope_id": resolution.approval_scope_id,
+            "sources": list(eligible.sources),
+        }
+
+    def _require_assignment_authorities(
+        self,
+        *asset_ids: str | None,
+    ) -> list[dict[str, object]]:
+        normalized = sorted(
+            {
+                str(asset_id or "").strip()
+                for asset_id in asset_ids
+                if str(asset_id or "").strip()
+            }
+        )
+        return [self._require_assignment_authority(asset_id) for asset_id in normalized]
+
     def create_type(self, *, code: str, label: str, category: str, metadata: dict | None = None) -> AssetType:
         if category not in {"VEHICLE", "EQUIPMENT", "TOOL", "WORKCENTER"}:
             raise ApplicationValidationError("Catégorie d'actif invalide.", code="asset_category_invalid")
@@ -86,6 +257,12 @@ class SqlAssetService:
         user_id: str,
         assigned: bool,
     ) -> dict:
+        self.version.acquire()
+        self._require_actor_permission(
+            PERMISSION_ADMIN_SETTINGS,
+            code="asset_authority_admin_required",
+            message="La modification de l'autorité d'un actif exige admin_settings.",
+        )
         asset = self.session.get(Asset, asset_id)
         if asset is None:
             raise ApplicationNotFoundError(
@@ -167,7 +344,15 @@ class SqlAssetService:
         if model is AssetType:
             if updates.get("category", row.category) not in {"VEHICLE", "EQUIPMENT", "TOOL", "WORKCENTER"}:
                 raise ApplicationValidationError("Catégorie invalide.", code="asset_category_invalid")
-        elif "asset_type_id" in updates:
+        elif (
+            "asset_type_id" in updates
+            and updates["asset_type_id"] != row.asset_type_id
+        ):
+            self._require_actor_permission(
+                PERMISSION_ADMIN_SETTINGS,
+                code="asset_authority_admin_required",
+                message="Le changement de type d'une unité exige admin_settings.",
+            )
             destination = self.session.get(AssetType, updates["asset_type_id"])
             if destination is None or not destination.active:
                 raise ApplicationValidationError("Type d'actif indisponible.", code="asset_type_unavailable")
@@ -378,6 +563,7 @@ class SqlAssetService:
                 "Une réservation d'actif est requise avant de choisir un opérateur.",
                 code="asset_operator_requires_reservation",
             )
+        authority_proof = self._require_assignment_authorities(allocation.asset_id)
 
         proposed_operator_id = str(operator_resource_id or "").strip() or None
         before = {
@@ -409,6 +595,7 @@ class SqlAssetService:
                 "start_date": allocation.start_date,
                 "end_date": allocation.end_date,
                 "operator_resource_id": allocation.operator_resource_id,
+                "assignment_authority": authority_proof,
             },
         )
         self.session.flush()
@@ -1048,6 +1235,10 @@ class SqlAssetService:
                 code="asset_reservation_dates_required",
             )
         previous = self._allocation_for_requirement(requirement.id)
+        authority_proof = self._require_assignment_authorities(
+            previous.asset_id if previous is not None else None,
+            asset.id if asset is not None else None,
+        )
         requirement_id_value = requirement.id
         before = (
             {
@@ -1056,6 +1247,7 @@ class SqlAssetService:
                 "end_date": previous.end_date,
                 "operator_resource_id": previous.operator_resource_id,
                 "origin": origin,
+                "assignment_authority": authority_proof,
             }
             if previous is not None
             else None
@@ -1226,6 +1418,7 @@ class SqlAssetService:
             "end_date": allocation.end_date,
             "operator_resource_id": allocation.operator_resource_id,
             "origin": origin,
+            "assignment_authority": authority_proof,
         }
         self.audit.append(
             entity_type="ASSET_ALLOCATION",
@@ -1653,6 +1846,7 @@ class SqlAssetService:
         expected_version: int,
     ) -> dict:
         self.version.acquire(expected_version)
+        authority_proof = self._require_assignment_authorities(asset_id)
         self._validate_direct_window(start_date, end_date)
         if origin == AssetRequirementOrigin.PROJECT_DIRECT:
             if not project_id:
@@ -1730,6 +1924,7 @@ class SqlAssetService:
                 "operator_resource_id": operator_resource_id,
                 "start_date": start_date,
                 "end_date": end_date,
+                "assignment_authority": authority_proof,
             },
         )
         self.session.flush()
@@ -1858,6 +2053,10 @@ class SqlAssetService:
                 "La réservation directe n'a plus d'allocation physique.",
                 code="asset_direct_allocation_missing",
             )
+        authority_proof = self._require_assignment_authorities(
+            allocation.asset_id,
+            asset_id,
+        )
 
         if expected_origin == AssetRequirementOrigin.PROJECT_DIRECT:
             project_id = requirement.project_id
@@ -1918,6 +2117,7 @@ class SqlAssetService:
                 "operator_resource_id": allocation.operator_resource_id,
                 "start_date": allocation.start_date,
                 "end_date": allocation.end_date,
+                "assignment_authority": authority_proof,
             },
         )
         self.session.flush()
@@ -2031,6 +2231,9 @@ class SqlAssetService:
             )
         allocation = self._allocation_for_requirement(requirement.id)
         allocation_id = allocation.id if allocation is not None else None
+        authority_proof = self._require_assignment_authorities(
+            allocation.asset_id if allocation is not None else None
+        )
         before = (
             {
                 "origin": requirement.origin,
@@ -2040,6 +2243,7 @@ class SqlAssetService:
                 "operator_resource_id": allocation.operator_resource_id,
                 "start_date": allocation.start_date,
                 "end_date": allocation.end_date,
+                "assignment_authority": authority_proof,
             }
             if allocation is not None
             else {
@@ -2239,6 +2443,7 @@ class SqlAssetService:
         expected_version: int,
     ) -> dict:
         self.version.acquire(expected_version)
+        authority_proof = self._require_assignment_authorities(asset_id)
         segment = self._segment_context(segment_id)
         requirement = AssetRequirement(
             id=new_id(),
@@ -2287,6 +2492,7 @@ class SqlAssetService:
                 "operator_resource_id": operator_resource_id,
                 "start_date": start_date,
                 "end_date": end_date,
+                "assignment_authority": authority_proof,
             },
         )
         self.session.flush()
@@ -2366,6 +2572,10 @@ class SqlAssetService:
                 "La réservation physique du segment est introuvable.",
                 code="asset_segment_allocation_missing",
             )
+        authority_proof = self._require_assignment_authorities(
+            allocation.asset_id,
+            asset_id,
+        )
         before = {
             "asset_id": allocation.asset_id,
             "operator_resource_id": allocation.operator_resource_id,
@@ -2400,6 +2610,7 @@ class SqlAssetService:
                 "operator_resource_id": operator_resource_id,
                 "start_date": start_date,
                 "end_date": end_date,
+                "assignment_authority": authority_proof,
             },
         )
         self.session.flush()
@@ -2515,12 +2726,17 @@ class SqlAssetService:
                 code="asset_reservation_dates_required",
             )
         previous = self._allocation_for_requirement(requirement.id)
+        authority_proof = self._require_assignment_authorities(
+            previous.asset_id if previous is not None else None,
+            asset_id,
+        )
         before = (
             {
                 "asset_id": previous.asset_id,
                 "start_date": previous.start_date,
                 "end_date": previous.end_date,
                 "operator_resource_id": previous.operator_resource_id,
+                "assignment_authority": authority_proof,
             }
             if previous
             else None
@@ -2568,6 +2784,7 @@ class SqlAssetService:
                 "start_date": begin,
                 "end_date": end,
                 "operator_resource_id": operator_resource_id,
+                "assignment_authority": authority_proof,
             }
         self.audit.append(
             entity_type="ASSET_ALLOCATION",
