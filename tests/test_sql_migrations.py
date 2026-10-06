@@ -21,7 +21,7 @@ MIGRATIONS = ROOT / "migrations"
 VERSIONS = MIGRATIONS / "versions"
 BASELINE_FILE = VERSIONS / "0001_v2_production_baseline.py"
 BASELINE_REVISION = "v2_production_baseline"
-HEAD_REVISION = "0013_planning_window_overrides"
+HEAD_REVISION = "0014_verification_persistence"
 
 
 def alembic_config(database_path: Path) -> Config:
@@ -82,6 +82,7 @@ class SqlMigrationTests(unittest.TestCase):
                 "0011_communication_to_recipients.py",
                 "0012_holiday_resource_classes.py",
                 "0013_planning_window_overrides.py",
+                "0014_verification_persistence.py",
             ],
         )
 
@@ -100,6 +101,7 @@ class SqlMigrationTests(unittest.TestCase):
             [revision.revision for revision in script.walk_revisions()],
             [
                 HEAD_REVISION,
+                "0013_planning_window_overrides",
                 "0012_holiday_resource_classes",
                 "0011_communication_to_recipients",
                 "0010_operational_responsibility_context",
@@ -114,6 +116,60 @@ class SqlMigrationTests(unittest.TestCase):
                 BASELINE_REVISION,
             ],
         )
+
+    def test_verification_persistence_migration_is_additive_and_starts_empty(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_path = Path(directory) / "verification-persistence.db"
+            config = alembic_config(database_path)
+            command.upgrade(config, "0013_planning_window_overrides")
+
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "INSERT INTO projects (id, number, name) "
+                        "VALUES ('P-363B', 'P-363B', 'Projet historique')"
+                    )
+                )
+                connection.execute(
+                    text(
+                        "INSERT INTO work_packages (id, project_id, name) "
+                        "VALUES ('WP-363B', 'P-363B', 'WP historique')"
+                    )
+                )
+            engine.dispose()
+
+            command.upgrade(config, "head")
+
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            try:
+                inspector = inspect(engine)
+                tables = set(inspector.get_table_names())
+                expected = {
+                    "verification_scopes",
+                    "verification_requirements",
+                    "verification_requirement_revisions",
+                    "story_verification_decisions",
+                    "story_verification_decision_requirements",
+                    "verification_retest_requests",
+                    "verification_change_history",
+                }
+                self.assertTrue(expected.issubset(tables))
+                with engine.connect() as connection:
+                    self.assertEqual(
+                        connection.execute(
+                            text("SELECT COUNT(*) FROM verification_scopes")
+                        ).scalar_one(),
+                        0,
+                    )
+                    self.assertEqual(
+                        connection.execute(
+                            text("SELECT COUNT(*) FROM work_packages WHERE id = 'WP-363B'")
+                        ).scalar_one(),
+                        1,
+                    )
+            finally:
+                engine.dispose()
 
     def test_communication_to_recipients_migration_is_additive_and_reversible(self) -> None:
         with TemporaryDirectory() as directory:
@@ -976,6 +1032,14 @@ class SqlMigrationTests(unittest.TestCase):
             "CREATE TABLE AUTH_SECURITY_AUDIT",
             "CREATE TABLE PLANNING_MUTATION_STATE",
             "CREATE TABLE PLANNING_WINDOW_OVERRIDES",
+            "CREATE TABLE VERIFICATION_SCOPES",
+            "CREATE TABLE VERIFICATION_REQUIREMENTS",
+            "CREATE TABLE VERIFICATION_REQUIREMENT_REVISIONS",
+            "CREATE TABLE STORY_VERIFICATION_DECISIONS",
+            "CREATE TABLE STORY_VERIFICATION_DECISION_REQUIREMENTS",
+            "CREATE TABLE VERIFICATION_RETEST_REQUESTS",
+            "CREATE TABLE VERIFICATION_CHANGE_HISTORY",
+            "VERIFICATION_VERSION",
             "SHIFT_AD_HOC",
             "UX_ASSET_REQUIREMENTS_SHIFT_AD_HOC",
         ):
