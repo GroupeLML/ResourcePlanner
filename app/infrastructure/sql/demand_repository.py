@@ -23,6 +23,7 @@ from ...domain.reservable_assets import AssetRequirementOrigin
 from .asset_models import AssetAllocation, AssetRequirement
 from .base import new_id, utc_now
 from .request_version import acquire_request_aggregate_version
+from .planning_window_override_repository import SqlPlanningWindowOverrideRepository
 from .resource_class_models import ResourceClassConfig
 from .models import (
     Competency,
@@ -1558,6 +1559,13 @@ class SqlDemandRepository(DemandRepositoryPort):
             self._session.delete(row)
         if human_shifts:
             self._session.flush()
+
+        SqlPlanningWindowOverrideRepository(
+            self._session
+        ).supersede_for_request(
+            request.id,
+            resolution_reason="CANCELLATION_ACCEPTED",
+        )
 
         cancelled_workforce = 0
         for row in workforce_requirements:
