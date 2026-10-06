@@ -721,7 +721,7 @@ export default function VerificationPanel({
     try {
       await recordHistoricalStoryVerificationDecision(historicalStoryId, {
         expected_delivery_version: deliveryVersion,
-        expected_verification_version: packageModel.verification_version,
+        expected_verification_version: version,
         decision,
       });
       setHistoricalStoryId("");
