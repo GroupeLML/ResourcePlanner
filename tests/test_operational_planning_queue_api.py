@@ -301,6 +301,9 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
             alice = rows[0]
             self.assertTrue(alice["recommended"])
             self.assertTrue(alice["preferred"])
+            self.assertEqual(alice["preferred_resource_id"], "R-ALICE")
+            self.assertEqual(alice["preferred_resource_name"], "Alice")
+            self.assertEqual(alice["preferred_resource_status"], "ELIGIBLE")
             self.assertEqual(alice["recommendation_category"], 1)
             self.assertEqual(alice["competency_state"], "SATISFIED")
             self.assertEqual(alice["missing_competency_ids"], [])
@@ -379,6 +382,56 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
             self.assertTrue(bob["preferred"])
             self.assertEqual(bob["recommendation_category"], 7)
             self.assertFalse(bob["recommended"])
+
+    def test_inactive_preferred_resource_is_diagnostic_not_candidate(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            with factory.begin() as session:
+                alice = session.get(Resource, "R-ALICE")
+                assert alice is not None
+                alice.active = False
+            engine.dispose()
+
+            app = create_api_app(url)
+            with TestClient(app) as client:
+                response = client.get(
+                    "/api/v1/segments/SEG-2026-0273/resource-recommendations"
+                )
+
+            self.assertEqual(response.status_code, 200, response.text)
+            rows = response.json()
+            self.assertEqual([row["resource_id"] for row in rows], ["R-BOB"])
+            self.assertFalse(rows[0]["preferred"])
+            self.assertEqual(rows[0]["preferred_resource_id"], "R-ALICE")
+            self.assertEqual(rows[0]["preferred_resource_name"], "Alice")
+            self.assertEqual(rows[0]["preferred_resource_status"], "INACTIVE_LOCAL")
+
+    def test_legacy_unknown_task_context_never_invents_preference(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            with factory.begin() as session:
+                target = session.get(ResourceRequirement, "REQ-TARGET")
+                assert target is not None
+                target.approval_reference_status = "LEGACY_UNKNOWN"
+            engine.dispose()
+
+            app = create_api_app(url)
+            with TestClient(app) as client:
+                response = client.get(
+                    "/api/v1/segments/SEG-2026-0273/resource-recommendations"
+                )
+
+            self.assertEqual(response.status_code, 200, response.text)
+            rows = response.json()
+            self.assertFalse(rows[0]["preferred"])
+            self.assertIsNone(rows[0]["preferred_resource_id"])
+            self.assertEqual(rows[0]["preferred_resource_status"], "UNRESOLVED_CONTEXT")
+            self.assertEqual(rows[0]["recommendation_category"], 2)
+            self.assertTrue(rows[0]["recommended"])
 
 
 if __name__ == "__main__":
