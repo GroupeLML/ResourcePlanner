@@ -291,6 +291,7 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
             if qualification.state == QUALIFICATION_SATISFIED:
                 continue
             diagnostic = f"ASSET_QUALIFICATION_{qualification.state}"
+            matched_shift = False
             for shift, human_requirement, _resource, _project in rows:
                 association = asset_shift_association(
                     requirement=asset_requirement,
@@ -300,10 +301,33 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                 )
                 if association is None:
                     continue
+                matched_shift = True
                 asset_qualification_diagnostics_by_shift.setdefault(
                     shift.id,
                     [],
                 ).append(diagnostic)
+
+            # PROJECT_DIRECT without an operator is deliberately not inherited by
+            # an individual Shift, but it remains a project-context reservation
+            # and must still participate in the project communication gate.
+            if (
+                not matched_shift
+                and asset_requirement.origin
+                == AssetRequirementOrigin.PROJECT_DIRECT.value
+                and asset_requirement.project_id
+            ):
+                for shift, human_requirement, _resource, _project in rows:
+                    if (
+                        human_requirement.project_id
+                        == asset_requirement.project_id
+                        and allocation.start_date
+                        <= shift.work_date
+                        <= allocation.end_date
+                    ):
+                        asset_qualification_diagnostics_by_shift.setdefault(
+                            shift.id,
+                            [],
+                        ).append(diagnostic)
 
         resolutions = {
             resolution.shift_id: resolution
