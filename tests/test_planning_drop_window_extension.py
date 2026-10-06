@@ -14,6 +14,7 @@ from app.infrastructure.sql import (
     Base,
     BusinessContact,
     ORIGIN_AD_HOC,
+    ORIGIN_QUICK_SHIFT,
     PlanningChangeHistory,
     Project,
     Resource,
@@ -37,7 +38,12 @@ NEXT_WEEK = DAY + timedelta(days=7)
 
 class PlanningDropWindowExtensionTests(unittest.TestCase):
     @staticmethod
-    def _database(directory: str, *, with_adhoc: bool = True) -> str:
+    def _database(
+        directory: str,
+        *,
+        with_adhoc: bool = True,
+        origin: str = ORIGIN_AD_HOC,
+    ) -> str:
         path = Path(directory) / "planning-drop-333.db"
         url = f"sqlite:///{path.as_posix()}"
         engine = create_sql_engine(url)
@@ -85,7 +91,7 @@ class PlanningDropWindowExtensionTests(unittest.TestCase):
                         status="Planifié",
                         planning_type="Flexible",
                         confirmation="Confirmée",
-                        origin=ORIGIN_AD_HOC,
+                        origin=origin,
                     )
                 )
                 session.flush()
@@ -177,9 +183,9 @@ class PlanningDropWindowExtensionTests(unittest.TestCase):
                 self.assertTrue(shift.locked)
             engine.dispose()
 
-    def test_adhoc_shift_edit_auto_expands_window_without_changing_hours(self) -> None:
+    def test_quick_shift_edit_auto_expands_window_without_changing_hours(self) -> None:
         with TemporaryDirectory() as directory:
-            url = self._database(directory)
+            url = self._database(directory, origin=ORIGIN_QUICK_SHIFT)
             app = create_api_app(url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
             with TestClient(app, raise_server_exceptions=False) as client:
                 response = client.put(
