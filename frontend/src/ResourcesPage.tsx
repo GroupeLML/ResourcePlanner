@@ -73,11 +73,12 @@ type RuleEditorProps = {
   resourceId: string | null;
   rule?: ResourceAvailabilityRuleReadModel | null;
   forcedType?: AvailabilityType;
+  resourceClasses: ResourceClassOptionReadModel[];
   onSaved: () => void;
   onCancel: () => void;
 };
 
-function RuleEditor({ resourceId, rule, forcedType, onSaved, onCancel }: RuleEditorProps) {
+function RuleEditor({ resourceId, rule, forcedType, resourceClasses, onSaved, onCancel }: RuleEditorProps) {
   const initialType = forcedType ?? rule?.availability_type ?? "Horaire standard";
   const [kind, setKind] = useState<AvailabilityType>(initialType);
   const [startDate, setStartDate] = useState(rule?.start_date ?? "");
@@ -88,6 +89,9 @@ function RuleEditor({ resourceId, rule, forcedType, onSaved, onCancel }: RuleEdi
     () => new Set((rule?.weekdays ?? DEFAULT_WEEKDAYS).split(",").map((item) => item.trim()).filter(Boolean)),
   );
   const [note, setNote] = useState(rule?.note ?? "");
+  const [resourceClassCodes, setResourceClassCodes] = useState<string[]>(
+    rule?.resource_class_codes ?? [],
+  );
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const idempotencyKey = useRef(mutationKey("availability"));
@@ -95,6 +99,17 @@ function RuleEditor({ resourceId, rule, forcedType, onSaved, onCancel }: RuleEdi
   const effectiveType = forcedType ?? kind;
   const isStandard = effectiveType === "Horaire standard";
   const isHoliday = effectiveType === "Jour férié";
+  const holidayClassOptions = resourceClasses
+    .filter((row) => row.active || resourceClassCodes.includes(row.code))
+    .sort((left, right) => left.label.localeCompare(right.label, "fr-CA"));
+
+  function toggleResourceClass(code: string) {
+    setResourceClassCodes((current) => (
+      current.includes(code)
+        ? current.filter((item) => item !== code)
+        : [...current, code]
+    ));
+  }
 
   function toggleWeekday(day: string) {
     setWeekdays((current) => {
@@ -137,6 +152,7 @@ function RuleEditor({ resourceId, rule, forcedType, onSaved, onCancel }: RuleEdi
       end_time: isStandard ? endTime : null,
       note: nullable(note),
       active: rule?.active ?? true,
+      ...(isHoliday ? { resource_class_codes: resourceClassCodes } : {}),
     };
 
     setPending(true);
@@ -208,6 +224,25 @@ function RuleEditor({ resourceId, rule, forcedType, onSaved, onCancel }: RuleEdi
             </label>
           </div>
         </>
+      )}
+
+      {isHoliday && (
+        <fieldset className="weekday-picker" aria-label="Classes visées par le jour férié">
+          <legend>Classes visées</legend>
+          {holidayClassOptions.map((row) => (
+            <label key={row.code} className={resourceClassCodes.includes(row.code) ? "selected" : ""}>
+              <input
+                type="checkbox"
+                checked={resourceClassCodes.includes(row.code)}
+                onChange={() => toggleResourceClass(row.code)}
+              />
+              {row.label}{row.active ? "" : " (inactive)"}
+            </label>
+          ))}
+          <small>
+            Aucune classe sélectionnée = jour férié global, incluant les ressources non classées.
+          </small>
+        </fieldset>
       )}
 
       <label>
@@ -654,6 +689,7 @@ export default function ResourcesPage() {
                       key={editingRule?.id ?? "new-resource-rule"}
                       resourceId={selected.id}
                       rule={editingRule}
+                      resourceClasses={resourceClasses}
                       onCancel={() => { setRuleEditorOpen(false); setEditingRule(null); }}
                       onSaved={() => { setRuleEditorOpen(false); setEditingRule(null); setRefreshKey((value) => value + 1); }}
                     />
@@ -699,7 +735,7 @@ export default function ResourcesPage() {
 
       <div className="admin-card holiday-panel">
         <div className="panel-heading">
-          <div><span className="eyebrow">Calendrier global</span><h2>Jours fériés</h2><p>Ces règles s’appliquent à toutes les ressources ayant un horaire standard actif.</p></div>
+          <div><span className="eyebrow">Calendrier de disponibilité</span><h2>Jours fériés</h2><p>Un jour férié peut être global ou viser une ou plusieurs classes de ressources.</p></div>
           <button className="secondary-button" type="button" onClick={() => { setEditingHoliday(null); setHolidayEditorOpen(true); }}>+ Jour férié</button>
         </div>
 
@@ -709,6 +745,7 @@ export default function ResourcesPage() {
             resourceId={null}
             rule={editingHoliday}
             forcedType="Jour férié"
+            resourceClasses={resourceClasses}
             onCancel={() => { setHolidayEditorOpen(false); setEditingHoliday(null); }}
             onSaved={() => { setHolidayEditorOpen(false); setEditingHoliday(null); setRefreshKey((value) => value + 1); }}
           />
@@ -716,12 +753,20 @@ export default function ResourcesPage() {
 
         <div className="holiday-list">
           {holidays.length === 0 && <p className="empty-admin-state">Aucun jour férié enregistré.</p>}
-          {holidays.map((rule) => (
+          {holidays.map((rule) => {
+            const scope = rule.resource_class_codes.length === 0
+              ? "Toutes les classes"
+              : rule.resource_class_codes.map((code) => {
+                const option = resourceClasses.find((row) => row.code === code);
+                return option ? `${option.label}${option.active ? "" : " (inactive)"}` : code;
+              }).join(", ");
+            return (
             <article className={`availability-rule ${rule.active ? "" : "inactive"}`} key={rule.id}>
-              <div><strong>{rule.start_date || "—"}{rule.end_date && rule.end_date !== rule.start_date ? ` → ${rule.end_date}` : ""}</strong><span>{rule.note || "Jour férié"}</span></div>
+              <div><strong>{rule.start_date || "—"}{rule.end_date && rule.end_date !== rule.start_date ? ` → ${rule.end_date}` : ""}</strong><span>{rule.note || "Jour férié"}</span><small>{scope}</small></div>
               <div className="rule-actions"><button type="button" onClick={() => { setEditingHoliday(rule); setHolidayEditorOpen(true); }}>Modifier</button>{rule.active && <button type="button" onClick={() => disableRule(rule)}>Désactiver</button>}</div>
             </article>
-          ))}
+            );
+          })}
         </div>
       </div>
     </section>
