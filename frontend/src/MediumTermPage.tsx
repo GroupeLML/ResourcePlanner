@@ -28,6 +28,7 @@ import {
   toIsoDate,
 } from "./dates";
 import DemandDetail from "./DemandDetail";
+import DemandWorkflowPage from "./DemandWorkflowPage";
 import MediumTermCapacityPanel from "./MediumTermCapacityPanel";
 import MediumTermUnlinkedSegmentsPanel from "./MediumTermUnlinkedSegmentsPanel";
 import SegmentEditor from "./SegmentEditor";
@@ -1006,10 +1007,16 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
               </button>
             </header>
             <div className="demand-detail-modal-body">
+              <DemandWorkflowPage
+                demandNumber={detailDemandNumber}
+                embedded
+                actionsOnly
+                hasUnsavedChanges={detailContextDirty}
+                onChanged={() => setRefreshKey((value) => value + 1)}
+              />
               <DemandDetail
                 demandNumber={detailDemandNumber}
                 compact
-                showWorkflowActions
                 onDirtyChange={setDetailContextDirty}
                 onChanged={() => setRefreshKey((value) => value + 1)}
               />
