@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from ...application.repository_ports import PlanningReadRepositoryPort
 from ...domain.planning_snapshot import PlanningSnapshot
+from .availability_class_scope import availability_class_codes_by_rule
 from .models import (
     Project,
     Resource,
@@ -163,10 +164,16 @@ class SqlPlanningReadRepository(PlanningReadRepositoryPort):
                 ResourceAvailabilityRule.id,
             )
         ).all()
+        class_codes = availability_class_codes_by_rule(
+            self._session,
+            tuple(rule.id for rule, _resource in rows),
+        )
         return [
             {
                 "ID": _identifier(rule.legacy_id, rule.id),
                 "Technicien": resource.name if resource is not None else "",
+                "ClasseRessource": resource.resource_class if resource is not None else None,
+                "ClassesRessources": class_codes.get(rule.id, ()),
                 "Type": rule.availability_type,
                 "DateDebut": rule.start_date,
                 "DateFin": rule.end_date,
