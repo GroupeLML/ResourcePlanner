@@ -228,23 +228,27 @@ test("575E relie navigation REQUEST et trois contextes de réservation directe",
     expect(captured.PROJECT_DIRECT.operator_resource_id).toBeNull();
 
     await form.getByLabel("Réserver pour").selectOption("RESOURCE_PERIOD");
+    await expect(form.getByRole("combobox", { name: "Projet", exact: true })).toHaveCount(0);
     await chooseCombobox(form, "Ressource", "575E", "Ressource 575E");
     await form.getByLabel("Type d’actif").selectOption("TYPE-575E");
     await expect(unitSelect.locator('option[value="ASSET-575E"]')).toBeAttached();
     await unitSelect.selectOption("ASSET-575E");
     await reserveAndWaitForPlanningRefresh(page, form);
     expect(captured.RESOURCE_PERIOD.resource_id).toBe("R-575E");
-    expect(captured.RESOURCE_PERIOD.project_id).toBeNull();
+    expect(captured.RESOURCE_PERIOD).not.toHaveProperty("project_id");
 
     await form.getByLabel("Réserver pour").selectOption("SEGMENT");
     await chooseCombobox(form, "Segment", "575E", "P-575E");
+    await expect(form.getByLabel("Projet dérivé du segment")).toHaveValue(
+      "P-575E — Projet acceptation 575E",
+    );
+    await expect(form.getByLabel("Projet dérivé du segment")).toBeDisabled();
     await form.getByLabel("Type d’actif").selectOption("TYPE-575E");
     await expect(unitSelect.locator('option[value="ASSET-575E"]')).toBeAttached();
     await unitSelect.selectOption("ASSET-575E");
-    await chooseCombobox(form, "Opérateur", "575E", "Ressource 575E");
     await reserveAndWaitForPlanningRefresh(page, form);
     expect(captured.SEGMENT.segment_id).toBe("SEG-575E");
-    expect(captured.SEGMENT.operator_resource_id).toBe("R-575E");
+    expect(captured.SEGMENT.operator_resource_id).toBeNull();
   } finally {
     await closeContext(context);
   }

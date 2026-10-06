@@ -2089,7 +2089,7 @@ class SqlAssetService:
                     "La ressource bénéficiaire doit être l'opérateur de la période.",
                     code="asset_resource_period_operator_conflict",
                 )
-            self._direct_project(project_id)
+            project_id = None
         else:
             raise ApplicationConflictError(
                 "Origine de réservation directe invalide.",
@@ -2204,7 +2204,6 @@ class SqlAssetService:
         self,
         *,
         resource_id: str,
-        project_id: str | None,
         asset_type_id: str,
         asset_id: str,
         start_date: date,
@@ -2214,7 +2213,6 @@ class SqlAssetService:
     ) -> dict:
         payload = {
             "resource_id": resource_id,
-            "project_id": project_id,
             "asset_type_id": asset_type_id,
             "asset_id": asset_id,
             "start_date": start_date.isoformat(),
@@ -2233,7 +2231,7 @@ class SqlAssetService:
             request_fingerprint=fingerprint,
             action=lambda: self._create_direct_reservation(
                 origin=AssetRequirementOrigin.RESOURCE_PERIOD,
-                project_id=project_id,
+                project_id=None,
                 context_resource_id=resource_id,
                 asset_type_id=asset_type_id,
                 asset_id=asset_id,
@@ -2253,7 +2251,6 @@ class SqlAssetService:
         start_date: date,
         end_date: date,
         operator_resource_id: str | None,
-        project_id: str | None,
         expected_version: int,
     ) -> dict:
         self.version.acquire(expected_version)
@@ -2279,10 +2276,7 @@ class SqlAssetService:
             asset_id,
         )
 
-        if expected_origin == AssetRequirementOrigin.PROJECT_DIRECT:
-            project_id = requirement.project_id
-        else:
-            self._direct_project(project_id)
+        if expected_origin == AssetRequirementOrigin.RESOURCE_PERIOD:
             operator_resource_id = requirement.context_resource_id
             if not operator_resource_id:
                 raise ApplicationConflictError(
@@ -2300,8 +2294,6 @@ class SqlAssetService:
             "start_date": allocation.start_date,
             "end_date": allocation.end_date,
         }
-        if expected_origin == AssetRequirementOrigin.RESOURCE_PERIOD:
-            requirement.project_id = project_id
         qualification_state = self._validate_direct_allocation_state(
             requirement=requirement,
             asset_id=asset_id,
@@ -2385,7 +2377,6 @@ class SqlAssetService:
                 start_date=start_date,
                 end_date=end_date,
                 operator_resource_id=operator_resource_id,
-                project_id=None,
                 expected_version=expected_version,
             ),
         )
@@ -2394,7 +2385,6 @@ class SqlAssetService:
         self,
         *,
         requirement_id: str,
-        project_id: str | None,
         asset_id: str,
         start_date: date,
         end_date: date,
@@ -2403,7 +2393,6 @@ class SqlAssetService:
     ) -> dict:
         payload = {
             "requirement_id": requirement_id,
-            "project_id": project_id,
             "asset_id": asset_id,
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),
@@ -2426,7 +2415,6 @@ class SqlAssetService:
                 start_date=start_date,
                 end_date=end_date,
                 operator_resource_id=None,
-                project_id=project_id,
                 expected_version=expected_version,
             ),
         )
@@ -2614,13 +2602,9 @@ class SqlAssetService:
                 "Réservation hors fenêtre du segment.",
                 code="asset_outside_segment_window",
             )
-        operator_id = str(operator_resource_id or "").strip()
-        if not operator_id:
-            raise ApplicationValidationError(
-                "Un opérateur explicite est requis pour une réservation de segment.",
-                code="asset_segment_operator_required",
-            )
-        self._direct_resource(operator_id)
+        operator_id = str(operator_resource_id or "").strip() or None
+        if operator_id is not None:
+            self._direct_resource(operator_id)
         asset, _asset_type = self._active_asset(asset_id)
         if asset.asset_type_id != requirement.asset_type_id:
             raise ApplicationValidationError(
@@ -2648,7 +2632,10 @@ class SqlAssetService:
             requirement=requirement,
             allocation=candidate,
         )
-        if qualification.state != QUALIFICATION_SATISFIED:
+        if (
+            operator_id is not None
+            and qualification.state != QUALIFICATION_SATISFIED
+        ):
             raise self._request_operator_error(qualification.state)
         return qualification.state
 
@@ -2660,12 +2647,13 @@ class SqlAssetService:
         asset_id: str,
         start_date: date,
         end_date: date,
-        operator_resource_id: str,
+        operator_resource_id: str | None,
         expected_version: int,
     ) -> dict:
         self.version.acquire(expected_version)
         authority_proof = self._require_assignment_authorities(asset_id)
         segment = self._segment_context(segment_id)
+        operator_resource_id = str(operator_resource_id or "").strip() or None
         requirement = AssetRequirement(
             id=new_id(),
             project_id=segment.project_id,
@@ -2732,7 +2720,7 @@ class SqlAssetService:
         asset_id: str,
         start_date: date,
         end_date: date,
-        operator_resource_id: str,
+        operator_resource_id: str | None,
         expected_version: int,
         idempotency_key: str,
     ) -> dict:
@@ -2773,7 +2761,7 @@ class SqlAssetService:
         asset_id: str,
         start_date: date,
         end_date: date,
-        operator_resource_id: str,
+        operator_resource_id: str | None,
         expected_version: int,
     ) -> dict:
         self.version.acquire(expected_version)
@@ -2797,6 +2785,7 @@ class SqlAssetService:
             allocation.asset_id,
             asset_id,
         )
+        operator_resource_id = str(operator_resource_id or "").strip() or None
         before = {
             "asset_id": allocation.asset_id,
             "operator_resource_id": allocation.operator_resource_id,
@@ -2849,7 +2838,7 @@ class SqlAssetService:
         asset_id: str,
         start_date: date,
         end_date: date,
-        operator_resource_id: str,
+        operator_resource_id: str | None,
         expected_version: int,
         idempotency_key: str,
     ) -> dict:
