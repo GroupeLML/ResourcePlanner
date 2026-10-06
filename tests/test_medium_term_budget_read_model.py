@@ -796,6 +796,62 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
         self.assertEqual(historical["reference"], "EFF-HISTORICAL")
         self.assertEqual(Decimal(str(historical["planned_hours"])), Decimal("40"))
 
+    def test_task_code_filter_spans_visible_projects_and_intersects_stable_id(self) -> None:
+        with TemporaryDirectory() as directory:
+            app = create_api_app(self._database(directory))
+            with TestClient(app) as client:
+                transversal = client.get(
+                    "/api/v1/medium-term/budget",
+                    params={"task_code": "216"},
+                )
+                scoped = client.get(
+                    "/api/v1/medium-term/budget",
+                    params={"project_number": "P-1", "task_code": "216"},
+                )
+                intersection = client.get(
+                    "/api/v1/medium-term/budget",
+                    params={
+                        "task_code": "216",
+                        "task_catalog_item_id": "TASK-217",
+                    },
+                )
+
+        self.assertEqual(transversal.status_code, 200, transversal.text)
+        payload = transversal.json()
+        self.assertEqual(
+            {task["task_catalog_item_id"] for task in payload["tasks"]},
+            {"TASK-216", "TASK-P2-216"},
+        )
+        self.assertEqual(
+            {task["project_number"] for task in payload["tasks"]},
+            {"P-1", "P-2"},
+        )
+        self.assertEqual(
+            {
+                option["task_catalog_item_id"]
+                for option in payload["task_options"]
+                if option["task_code"] == "216"
+            },
+            {"TASK-216", "TASK-P2-216"},
+        )
+        self.assertEqual(
+            {
+                work_package["project_number"]
+                for task in payload["tasks"]
+                for work_package in task["work_packages"]
+            },
+            {"P-1", "P-2"},
+        )
+
+        self.assertEqual(scoped.status_code, 200, scoped.text)
+        self.assertEqual(
+            [task["task_catalog_item_id"] for task in scoped.json()["tasks"]],
+            ["TASK-216"],
+        )
+
+        self.assertEqual(intersection.status_code, 200, intersection.text)
+        self.assertEqual(intersection.json()["tasks"], [])
+
     def test_projection_is_isolated_between_projects(self) -> None:
         with TemporaryDirectory() as directory:
             app = create_api_app(self._database(directory))

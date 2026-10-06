@@ -535,9 +535,9 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
 
     const mediumTermTaskFilter = labelled(mediumTermFilters, "Tâche ERP", "select");
     await expect(
-      mediumTermTaskFilter.locator("option", { hasText: "P-251 · 210 — AUTOMATISATION E2E" }),
+      mediumTermTaskFilter.locator("option", { hasText: "210 — AUTOMATISATION E2E" }),
     ).toBeAttached();
-    await mediumTermTaskFilter.selectOption({ label: "P-251 · 210 — AUTOMATISATION E2E" });
+    await mediumTermTaskFilter.selectOption({ label: "210 — AUTOMATISATION E2E" });
     await expect(refreshedWorkPackageRow).toBeVisible();
 
     const mediumTermClassFilter = labelled(mediumTermFilters, "Classe de ressource", "select");
