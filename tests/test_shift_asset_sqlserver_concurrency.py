@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from decimal import Decimal
+import json
 import os
 from uuid import uuid4
 import unittest
@@ -10,6 +11,7 @@ import unittest
 from sqlalchemy import delete, select
 
 from app.application.errors import ApplicationConflictError
+from app.application.security import ROLE_ADMIN
 from app.domain.reservable_assets import AssetRequirementOrigin
 from app.infrastructure.sql import (
     ORIGIN_AD_HOC,
@@ -25,7 +27,13 @@ from app.infrastructure.sql import (
     create_session_factory,
     create_sql_engine,
 )
+from app.infrastructure.sql.approval_scope_models import (
+    ApprovalScope,
+    ApprovalScopeApprover,
+    AssetTypeApprovalScopeMapping,
+)
 from app.infrastructure.sql.asset_service import SqlAssetService
+from app.infrastructure.sql.identity_models import AppUser
 from app.infrastructure.sql.idempotency import CommandIdempotencyReceipt
 from app.infrastructure.sql.planning_version import (
     SqlPlanningMutationVersionRepository,
@@ -52,6 +60,7 @@ class ShiftAssetSqlServerConcurrencyTests(unittest.TestCase):
         asset_a_id = f"AA560B-{marker}"
         asset_b_id = f"AB560B-{marker}"
         actor = f"560b-sql-{marker}"
+        scope_id = f"SCOPE-560B-{marker}"
 
         engine = create_sql_engine(DATABASE_URL)
         factory = create_session_factory(engine)
@@ -75,6 +84,36 @@ class ShiftAssetSqlServerConcurrencyTests(unittest.TestCase):
                             code=f"T-{marker}",
                             label="Type 560B",
                             category="EQUIPMENT",
+                        ),
+                        AppUser(
+                            id=actor,
+                            issuer="urn:resourceplanner:test",
+                            subject=actor,
+                            display_name=actor,
+                            email=None,
+                            employee_external_id=None,
+                            roles_json=json.dumps([ROLE_ADMIN]),
+                            active=True,
+                        ),
+                        ApprovalScope(
+                            id=scope_id,
+                            code=f"SCOPE_{marker}".upper(),
+                            label="Autorité 615A SQL Server",
+                            active=True,
+                            version=1,
+                        ),
+                    ]
+                )
+                session.flush()
+                session.add_all(
+                    [
+                        ApprovalScopeApprover(
+                            approval_scope_id=scope_id,
+                            app_user_id=actor,
+                        ),
+                        AssetTypeApprovalScopeMapping(
+                            asset_type_id=asset_type_id,
+                            approval_scope_id=scope_id,
                         ),
                     ]
                 )
@@ -236,8 +275,23 @@ class ShiftAssetSqlServerConcurrencyTests(unittest.TestCase):
                     )
                 )
                 session.execute(
+                    delete(AssetTypeApprovalScopeMapping).where(
+                        AssetTypeApprovalScopeMapping.asset_type_id
+                        == asset_type_id
+                    )
+                )
+                session.execute(
+                    delete(ApprovalScopeApprover).where(
+                        ApprovalScopeApprover.approval_scope_id == scope_id
+                    )
+                )
+                session.execute(
                     delete(AssetType).where(AssetType.id == asset_type_id)
                 )
+                session.execute(
+                    delete(ApprovalScope).where(ApprovalScope.id == scope_id)
+                )
+                session.execute(delete(AppUser).where(AppUser.id == actor))
                 session.execute(
                     delete(Resource).where(Resource.id == resource_id)
                 )
