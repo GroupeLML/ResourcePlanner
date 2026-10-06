@@ -5,11 +5,13 @@ from decimal import Decimal
 import unittest
 
 from app.infrastructure.sql import (
+    AvailabilityRuleResourceClass,
     Base,
     ORIGIN_REQUEST,
     Project,
     Resource,
     ResourceAvailabilityRule,
+    ResourceClassConfig,
     ResourceRequirement,
     Shift,
     SqlPlannerQueryRepository,
@@ -33,6 +35,8 @@ class MediumTermCapacityReadModelTests(unittest.TestCase):
             session.add(Project(id="P1", number="P-1", name="Projet test", status="Actif"))
             session.add_all(
                 [
+                    ResourceClassConfig(code="Programmation", label="Programmation", active=True),
+                    ResourceClassConfig(code="Installation", label="Installation", active=True),
                     Resource(id="R1", name="Alice", resource_class="Programmation", active=True),
                     Resource(id="R2", name="Bob", resource_class="Installation", active=True),
                 ]
@@ -209,6 +213,42 @@ class MediumTermCapacityReadModelTests(unittest.TestCase):
         self.assertEqual(installation.replacement_proposal_hours, 20.0)
         self.assertEqual(installation.exposure_hours, 4.0)
         self.assertEqual(installation.residual_hours, 36.0)
+
+    def test_class_scoped_holiday_reduces_only_target_class_capacity(self) -> None:
+        with transactional_session(self.factory) as session:
+            session.add(
+                ResourceAvailabilityRule(
+                    id="HOL-PROG",
+                    availability_type="Jour férié",
+                    start_date=MONDAY,
+                    end_date=MONDAY,
+                    active=True,
+                )
+            )
+            session.flush()
+            session.add(
+                AvailabilityRuleResourceClass(
+                    availability_rule_id="HOL-PROG",
+                    resource_class_code="Programmation",
+                )
+            )
+
+        with self.factory() as session:
+            snapshot = SqlPlannerQueryRepository(session).planning_snapshot(
+                start=MONDAY,
+                end=FRIDAY,
+            )
+
+        total = next(bucket for bucket in snapshot.capacity_buckets if bucket.resource_class is None)
+        programming = next(
+            bucket for bucket in snapshot.capacity_buckets if bucket.resource_class == "Programmation"
+        )
+        installation = next(
+            bucket for bucket in snapshot.capacity_buckets if bucket.resource_class == "Installation"
+        )
+        self.assertEqual(total.capacity_hours, 72.0)
+        self.assertEqual(programming.capacity_hours, 32.0)
+        self.assertEqual(installation.capacity_hours, 40.0)
 
     def test_vacation_reduces_capacity_without_changing_load(self) -> None:
         with transactional_session(self.factory) as session:
