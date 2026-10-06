@@ -461,6 +461,128 @@ class PlanningWindowOverrideCommandTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_candidate_edit_does_not_block_override_against_active_approval(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    request = session.get(WorkforceRequest, REQUEST_ID)
+                    assert request is not None
+                    request.desired_end = DAY + timedelta(days=5)
+                    request.aggregate_version = 2
+
+                command = PlanningWindowOverrideExtendCommand(
+                    segment_id=SEGMENT_ID,
+                    start_date=DAY,
+                    end_date=NEXT_DAY,
+                    reason="Candidate concurrente sans nouvelle approbation",
+                    expected_planning_version=1,
+                    expected_approval_revision_id=REVISION_ID,
+                    idempotency_key="613c-candidate-independent",
+                )
+                with factory.begin() as session:
+                    result = self._adapter(
+                        session,
+                        _PlanningStub(),
+                    ).extend_planning_window(command)
+                    self.assertEqual(result["approval_revision_id"], REVISION_ID)
+                    self.assertEqual(result["planning_version"], 2)
+
+                with factory() as session:
+                    request = session.get(WorkforceRequest, REQUEST_ID)
+                    revision = session.get(RequestApprovalRevision, REVISION_ID)
+                    requirement = session.get(ResourceRequirement, REQUIREMENT_ID)
+                    assert request is not None
+                    assert revision is not None
+                    assert requirement is not None
+                    self.assertEqual(request.desired_end, DAY + timedelta(days=5))
+                    self.assertEqual(request.aggregate_version, 2)
+                    self.assertEqual(revision.payload_text, _snapshot_payload())
+                    self.assertEqual(requirement.end_date, NEXT_DAY)
+            finally:
+                engine.dispose()
+
+    def test_second_widening_preserves_first_override_as_history(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            try:
+                first = PlanningWindowOverrideExtendCommand(
+                    segment_id=SEGMENT_ID,
+                    start_date=DAY,
+                    end_date=NEXT_DAY,
+                    reason="Premier élargissement",
+                    expected_planning_version=1,
+                    expected_approval_revision_id=REVISION_ID,
+                    idempotency_key="613c-widen-1",
+                )
+                with factory.begin() as session:
+                    self._adapter(
+                        session,
+                        _PlanningStub(),
+                    ).extend_planning_window(first)
+
+                second_end = DAY + timedelta(days=2)
+                second = PlanningWindowOverrideExtendCommand(
+                    segment_id=SEGMENT_ID,
+                    start_date=DAY,
+                    end_date=second_end,
+                    reason="Deuxième élargissement",
+                    expected_planning_version=2,
+                    expected_approval_revision_id=REVISION_ID,
+                    idempotency_key="613c-widen-2",
+                )
+                with factory.begin() as session:
+                    result = self._adapter(
+                        session,
+                        _PlanningStub(),
+                    ).extend_planning_window(second)
+                    self.assertEqual(
+                        result["effective_window"]["end"],
+                        second_end.isoformat(),
+                    )
+
+                with factory() as session:
+                    rows = tuple(
+                        session.scalars(
+                            select(PlanningWindowOverride)
+                            .where(
+                                PlanningWindowOverride.resource_requirement_id
+                                == REQUIREMENT_ID
+                            )
+                            .order_by(
+                                PlanningWindowOverride.created_at,
+                                PlanningWindowOverride.id,
+                            )
+                        ).all()
+                    )
+                    self.assertEqual(len(rows), 2)
+                    active = next(
+                        row
+                        for row in rows
+                        if row.status == PLANNING_WINDOW_OVERRIDE_ACTIVE
+                    )
+                    historical = next(
+                        row
+                        for row in rows
+                        if row.status == PLANNING_WINDOW_OVERRIDE_SUPERSEDED
+                    )
+                    self.assertEqual(historical.effective_end_date, NEXT_DAY)
+                    self.assertEqual(
+                        historical.resolution_reason,
+                        "WIDENED_BY_OVERRIDE_COMMAND",
+                    )
+                    self.assertIsNotNone(historical.resolved_at)
+                    self.assertEqual(active.effective_end_date, second_end)
+                    self.assertEqual(active.reason, "Deuxième élargissement")
+                    self.assertEqual(active.correlation_id, "613c-widen-2")
+                    self.assertEqual(self._version(session), 3)
+            finally:
+                engine.dispose()
+
     def test_override_and_move_converts_auto_to_manual_locked_and_replays_stale_version(self) -> None:
         with TemporaryDirectory() as directory:
             url = self._database(directory)
