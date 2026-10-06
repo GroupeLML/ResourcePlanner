@@ -73,6 +73,11 @@ def required_permission(method: str, path: str) -> str | None:
     if verb == "GET":
         return PERMISSION_READ
     if (
+        path.startswith("/api/v1/assets/")
+        and "/approvers/" in path
+    ):
+        return PERMISSION_ADMIN_SETTINGS
+    if (
         path.startswith("/api/v1/assets/requirements/")
         and (path.endswith("/reservation") or path.endswith("/operator"))
     ):

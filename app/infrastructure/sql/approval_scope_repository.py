@@ -30,6 +30,7 @@ from .asset_models import Asset, AssetApprover, AssetType
 from .base import new_id
 from .identity_models import AppUser
 from .models import RequestLine, Resource, TaskCatalogEntry
+from .planning_version import SqlPlanningMutationVersionRepository
 from .resource_class_models import ResourceClassConfig
 
 
@@ -170,6 +171,8 @@ class SqlApprovalScopeRepository(ApprovalScopeRepositoryPort):
         values: Mapping[str, object],
         expected_version: int,
     ) -> ApprovalScopeRecord:
+        if "active" in values and self._scope_controls_assets(scope_id):
+            SqlPlanningMutationVersionRepository(self._session).acquire()
         row = self._acquire_scope_version(scope_id, expected_version)
         if "label" in values:
             row.label = _text(values["label"])
@@ -177,6 +180,16 @@ class SqlApprovalScopeRepository(ApprovalScopeRepositoryPort):
             row.active = bool(values["active"])
         self._session.flush()
         return self._record(row)
+
+    def _scope_controls_assets(self, scope_id: str) -> bool:
+        return bool(
+            self._session.scalar(
+                select(AssetTypeApprovalScopeMapping.asset_type_id).where(
+                    AssetTypeApprovalScopeMapping.approval_scope_id
+                    == _text(scope_id)
+                )
+            )
+        )
 
     def set_scope_approver(
         self,
@@ -186,6 +199,8 @@ class SqlApprovalScopeRepository(ApprovalScopeRepositoryPort):
         assigned: bool,
         expected_version: int,
     ) -> ApprovalScopeRecord:
+        if self._scope_controls_assets(scope_id):
+            SqlPlanningMutationVersionRepository(self._session).acquire()
         row = self._acquire_scope_version(scope_id, expected_version)
         user_identifier = _text(user_id)
         if self._session.get(AppUser, user_identifier) is None:
@@ -290,6 +305,7 @@ class SqlApprovalScopeRepository(ApprovalScopeRepositoryPort):
         assigned: bool,
         expected_version: int,
     ) -> ApprovalScopeRecord:
+        SqlPlanningMutationVersionRepository(self._session).acquire()
         row = self._acquire_scope_version(scope_id, expected_version)
         type_id = _text(asset_type_id)
         if self._session.get(AssetType, type_id) is None:

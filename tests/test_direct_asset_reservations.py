@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from app.domain.reservable_assets import AssetRequirementOrigin
 from app.infrastructure.sql import (
@@ -24,8 +24,19 @@ from app.infrastructure.sql import (
     create_session_factory,
     create_sql_engine,
 )
+from app.infrastructure.sql.approval_scope_models import ApprovalScopeApprover
 from app.server import create_api_app
-from tests.http_test_auth import TEST_ADMIN_AUTH_RESOLVER
+from tests.approval_test_support import (
+    TEST_ADMIN_USER_ID,
+    TEST_APPROVAL_SCOPE_ID,
+    TEST_COORDINATOR_USER_ID,
+    map_asset_type_to_test_approval_scope,
+    seed_test_approval_routing,
+)
+from tests.http_test_auth import (
+    TEST_ADMIN_AUTH_RESOLVER,
+    TEST_COORDINATOR_AUTH_RESOLVER,
+)
 
 
 DAY = date(2026, 10, 12)
@@ -71,6 +82,12 @@ class DirectAssetReservationTests(unittest.TestCase):
                         label="Véhicule 575C",
                         category="VEHICLE",
                     ),
+                    AssetType(
+                        id="TYPE-615A-OTHER",
+                        code="VEH-615A-OTHER",
+                        label="Autre type 615A",
+                        category="VEHICLE",
+                    ),
                 ]
             )
             session.flush()
@@ -102,6 +119,8 @@ class DirectAssetReservationTests(unittest.TestCase):
                     ),
                 ]
             )
+            seed_test_approval_routing(session, map_existing_tasks=True)
+            map_asset_type_to_test_approval_scope(session, "TYPE-575C")
         engine.dispose()
 
         self.client = TestClient(
@@ -229,6 +248,172 @@ class DirectAssetReservationTests(unittest.TestCase):
         self.assertIsNone(requirement["resource_requirement_id"])
         self.assertIsNone(requirement["shift_id"])
         self.assertEqual(allocation["operator_resource_id"], "RESOURCE-SKILLED")
+
+    def test_admin_role_does_not_bypass_asset_authority(self) -> None:
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory.begin() as session:
+                session.execute(
+                    delete(ApprovalScopeApprover).where(
+                        ApprovalScopeApprover.approval_scope_id
+                        == TEST_APPROVAL_SCOPE_ID,
+                        ApprovalScopeApprover.app_user_id
+                        == TEST_ADMIN_USER_ID,
+                    )
+                )
+        finally:
+            engine.dispose()
+
+        denied = self._project_create(key="admin-bypass-denied-615a")
+        self.assertEqual(denied.status_code, 403, denied.text)
+        self.assertEqual(
+            denied.json()["error"]["code"],
+            "asset_assignment_authority_required",
+        )
+
+    def test_coordinator_requires_current_unit_authority_for_create_replace_and_release(self) -> None:
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory.begin() as session:
+                session.execute(
+                    delete(ApprovalScopeApprover).where(
+                        ApprovalScopeApprover.approval_scope_id
+                        == TEST_APPROVAL_SCOPE_ID,
+                        ApprovalScopeApprover.app_user_id
+                        == TEST_COORDINATOR_USER_ID,
+                    )
+                )
+        finally:
+            engine.dispose()
+
+        with TestClient(
+            create_api_app(
+                self.url,
+                auth_resolver=TEST_COORDINATOR_AUTH_RESOLVER,
+            ),
+            raise_server_exceptions=False,
+        ) as coordinator:
+            denied = coordinator.post(
+                "/api/v1/assets/project-reservations",
+                headers={"Idempotency-Key": "coord-denied-615a"},
+                json={
+                    "project_id": "PROJECT-575C",
+                    "asset_type_id": "TYPE-575C",
+                    "asset_id": "ASSET-A",
+                    "start_date": DAY.isoformat(),
+                    "end_date": DAY.isoformat(),
+                    "operator_resource_id": None,
+                    "expected_planning_version": coordinator.get(
+                        "/api/v1/assets/requirements"
+                    ).json()["planning_version"],
+                },
+            )
+            self.assertEqual(denied.status_code, 403, denied.text)
+            self.assertEqual(
+                denied.json()["error"]["code"],
+                "asset_assignment_authority_required",
+            )
+
+            self_add = coordinator.put(
+                f"/api/v1/assets/ASSET-A/approvers/{TEST_COORDINATOR_USER_ID}"
+            )
+            self.assertEqual(self_add.status_code, 403, self_add.text)
+
+            type_change = coordinator.patch(
+                "/api/v1/assets/ASSET-A",
+                json={
+                    "asset_type_id": "TYPE-615A-OTHER",
+                    "expected_planning_version": coordinator.get(
+                        "/api/v1/assets/requirements"
+                    ).json()["planning_version"],
+                },
+            )
+            self.assertEqual(type_change.status_code, 403, type_change.text)
+            self.assertEqual(
+                type_change.json()["error"]["code"],
+                "asset_authority_admin_required",
+            )
+
+            granted = self.client.put(
+                f"/api/v1/assets/ASSET-A/approvers/{TEST_COORDINATOR_USER_ID}"
+            )
+            self.assertEqual(granted.status_code, 200, granted.text)
+
+            created = coordinator.post(
+                "/api/v1/assets/project-reservations",
+                headers={"Idempotency-Key": "coord-create-615a"},
+                json={
+                    "project_id": "PROJECT-575C",
+                    "asset_type_id": "TYPE-575C",
+                    "asset_id": "ASSET-A",
+                    "start_date": DAY.isoformat(),
+                    "end_date": DAY.isoformat(),
+                    "operator_resource_id": None,
+                    "expected_planning_version": coordinator.get(
+                        "/api/v1/assets/requirements"
+                    ).json()["planning_version"],
+                },
+            )
+            self.assertEqual(created.status_code, 201, created.text)
+            requirement_id = created.json()["requirement_id"]
+
+            replace_denied = coordinator.put(
+                f"/api/v1/assets/project-reservations/{requirement_id}",
+                headers={"Idempotency-Key": "coord-replace-denied-615a"},
+                json={
+                    "asset_id": "ASSET-B",
+                    "start_date": DAY.isoformat(),
+                    "end_date": DAY.isoformat(),
+                    "operator_resource_id": None,
+                    "expected_planning_version": created.json()["planning_version"],
+                },
+            )
+            self.assertEqual(replace_denied.status_code, 403, replace_denied.text)
+            self.assertEqual(
+                replace_denied.json()["error"]["code"],
+                "asset_assignment_authority_required",
+            )
+
+            granted_b = self.client.put(
+                f"/api/v1/assets/ASSET-B/approvers/{TEST_COORDINATOR_USER_ID}"
+            )
+            self.assertEqual(granted_b.status_code, 200, granted_b.text)
+            current_version = coordinator.get(
+                "/api/v1/assets/requirements"
+            ).json()["planning_version"]
+            replaced = coordinator.put(
+                f"/api/v1/assets/project-reservations/{requirement_id}",
+                headers={"Idempotency-Key": "coord-replace-615a"},
+                json={
+                    "asset_id": "ASSET-B",
+                    "start_date": DAY.isoformat(),
+                    "end_date": DAY.isoformat(),
+                    "operator_resource_id": None,
+                    "expected_planning_version": current_version,
+                },
+            )
+            self.assertEqual(replaced.status_code, 200, replaced.text)
+
+            revoked_b = self.client.delete(
+                f"/api/v1/assets/ASSET-B/approvers/{TEST_COORDINATOR_USER_ID}"
+            )
+            self.assertEqual(revoked_b.status_code, 200, revoked_b.text)
+            release_denied = coordinator.delete(
+                f"/api/v1/assets/project-reservations/{requirement_id}",
+                headers={"Idempotency-Key": "coord-release-denied-615a"},
+                params={
+                    "expected_planning_version": coordinator.get(
+                        "/api/v1/assets/requirements"
+                    ).json()["planning_version"],
+                },
+            )
+            self.assertEqual(release_denied.status_code, 403, release_denied.text)
+            self.assertEqual(
+                release_denied.json()["error"]["code"],
+                "asset_assignment_authority_required",
+            )
 
     def test_project_direct_invalid_operator_rolls_back_without_version_change(self) -> None:
         version = self._version()

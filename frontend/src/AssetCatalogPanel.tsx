@@ -80,6 +80,7 @@ export default function AssetCatalogPanel({
   const { can } = useAuth();
   const canManagePlanning = can("manage_planning");
   const canManageResources = can("manage_resources");
+  const canAdminSettings = can("admin_settings");
   const [catalog, setCatalog] = useState<AssetCatalog | null>(null);
   const [planningState, setPlanningState] = useState<AssetPlanningState | null>(null);
   const [selectedTypeId, setSelectedTypeId] = useState<string | null>(null);
@@ -359,7 +360,7 @@ export default function AssetCatalogPanel({
   }
 
   async function toggleAssetApprover(userId: string, assigned: boolean) {
-    if (!selectedAsset || pending || !canManageResources) return;
+    if (!selectedAsset || pending || !canAdminSettings) return;
     setPending("asset-approver");
     setNotice(null);
     try {
@@ -598,7 +599,11 @@ export default function AssetCatalogPanel({
                         </label>
                         <label>
                           Type
-                          <select value={assetForm.asset_type_id} onChange={(event) => setAssetForm((current) => ({ ...current, asset_type_id: event.target.value }))}>
+                          <select
+                            value={assetForm.asset_type_id}
+                            disabled={Boolean(pending) || (!creatingAsset && !canAdminSettings)}
+                            onChange={(event) => setAssetForm((current) => ({ ...current, asset_type_id: event.target.value }))}
+                          >
                             {(catalog?.types ?? []).filter((row) => row.active || row.id === assetForm.asset_type_id).map((row) => (
                               <option value={row.id} key={row.id}>{row.code} — {row.label}{row.active ? "" : " — inactif"}</option>
                             ))}
@@ -639,8 +644,8 @@ export default function AssetCatalogPanel({
                         <small>Ces utilisateurs sont additifs au périmètre résolu depuis le type d’actif.</small>
                       </div>
                     </div>
-                    {!canManageResources && (
-                      <div className="subtle-status">La permission manage_resources est requise pour modifier les approbateurs.</div>
+                    {!canAdminSettings && (
+                      <div className="subtle-status">La permission admin_settings est requise pour modifier les approbateurs.</div>
                     )}
                     <div className="approval-scope-approvers">
                       {(catalog?.approver_candidates ?? []).map((user) => (
@@ -648,7 +653,7 @@ export default function AssetCatalogPanel({
                           <input
                             type="checkbox"
                             checked={selectedAsset.approver_user_ids.includes(user.id)}
-                            disabled={Boolean(pending) || !canManageResources}
+                            disabled={Boolean(pending) || !canAdminSettings}
                             onChange={(event) => void toggleAssetApprover(user.id, event.target.checked)}
                           />
                           {user.display_name}
@@ -660,7 +665,7 @@ export default function AssetCatalogPanel({
                           <input
                             type="checkbox"
                             checked
-                            disabled={Boolean(pending) || !canManageResources}
+                            disabled={Boolean(pending) || !canAdminSettings}
                             onChange={(event) => void toggleAssetApprover(userId, event.target.checked)}
                           />
                           {userId}
