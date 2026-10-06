@@ -164,6 +164,7 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
                 project_id="P-273",
                 workforce_request_id=approved.id,
                 approved_task_catalog_item_id="T-APPROVED",
+                approval_reference_status="CAPTURED",
                 assigned_resource_id=None,
                 start_date=date(2026, 9, 21),
                 end_date=date(2026, 9, 25),
