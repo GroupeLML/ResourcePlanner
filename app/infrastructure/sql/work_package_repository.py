@@ -993,13 +993,16 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
         self,
         reference: str,
         *,
-        terminal_status: str,
+        terminal_status: str | None,
         expected_version: int,
     ) -> WorkPackageReadModel:
-        target_status = str(terminal_status or "").strip().casefold()
-        if target_status not in TERMINAL_STATUSES:
+        requested_status = _optional_text(terminal_status)
+        target_status = (
+            requested_status.casefold() if requested_status is not None else None
+        )
+        if target_status is not None and target_status not in TERMINAL_STATUSES:
             raise ApplicationValidationError(
-                "Le statut terminal du WorkPackage doit être closed ou cancelled.",
+                "Le statut terminal du WorkPackage doit être closed, cancelled ou nul pour une réouverture.",
                 code="work_package_terminal_status_invalid",
                 context={"terminal_status": terminal_status},
             )
@@ -1024,14 +1027,35 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
             _optional_text(work_package.terminal_status)
             or terminal_status_from_legacy(work_package.status)
         )
-        if current_terminal is not None:
+        lifecycle_reference = _optional_text(work_package.legacy_effort_id) or work_package.id
+        if target_status is None:
+            if current_terminal is None:
+                raise ApplicationConflictError(
+                    "Le WorkPackage est déjà ouvert.",
+                    code="work_package_not_terminal",
+                    context={"reference": lifecycle_reference},
+                )
+        elif current_terminal is None:
+            pass
+        elif current_terminal == target_status:
             raise ApplicationConflictError(
-                "Le WorkPackage est déjà dans un état terminal.",
+                "Le WorkPackage est déjà dans cet état terminal.",
                 code="work_package_already_terminal",
                 context={
-                    "reference": _optional_text(work_package.legacy_effort_id)
-                    or work_package.id,
+                    "reference": lifecycle_reference,
                     "terminal_status": current_terminal,
+                },
+            )
+        elif current_terminal == "closed" and target_status == "cancelled":
+            pass
+        else:
+            raise ApplicationConflictError(
+                "Cette transition de cycle de vie WorkPackage n'est pas autorisée.",
+                code="work_package_lifecycle_transition_invalid",
+                context={
+                    "reference": lifecycle_reference,
+                    "current_status": current_terminal,
+                    "target_status": target_status,
                 },
             )
 
@@ -1039,6 +1063,15 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
         if project is None:
             raise KeyError("Projet du WorkPackage introuvable")
         old_values = self._snapshot(work_package, project)
+        persisted_status = (
+            work_package_status(
+                start_date=work_package.start_date,
+                terminal_status=None,
+                legacy_status=None,
+            )[0]
+            if target_status is None
+            else target_status
+        )
         result = self._session.execute(
             update(WorkPackage)
             .where(
@@ -1047,7 +1080,7 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
             )
             .values(
                 terminal_status=target_status,
-                status=target_status,
+                status=persisted_status,
                 version=WorkPackage.version + 1,
             )
         )
@@ -1059,8 +1092,7 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
                 "Le WorkPackage a été modifié par une autre opération.",
                 code="work_package_version_conflict",
                 context={
-                    "reference": _optional_text(work_package.legacy_effort_id)
-                    or work_package.id,
+                    "reference": lifecycle_reference,
                     "expected_version": expected,
                     "current_version": int(actual or current_version),
                 },
@@ -1068,9 +1100,16 @@ class SqlWorkPackageRepository(WorkPackageRepositoryPort):
 
         self._session.flush()
         self._session.refresh(work_package)
+        action = (
+            "REOPEN"
+            if target_status is None
+            else "CLOSE"
+            if target_status == "closed"
+            else "CANCEL"
+        )
         self._audit(
             work_package,
-            action="CLOSE" if target_status == "closed" else "CANCEL",
+            action=action,
             old_values=old_values,
             new_values=self._snapshot(work_package, project),
         )
