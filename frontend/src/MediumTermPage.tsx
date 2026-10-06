@@ -34,6 +34,7 @@ import MediumTermUnlinkedSegmentsPanel from "./MediumTermUnlinkedSegmentsPanel";
 import SegmentEditor from "./SegmentEditor";
 import { useViewScope } from "./ViewScopeContext";
 import ViewScopeSelector from "./ViewScopeSelector";
+import type { DemandCreateContext } from "./DemandsPage";
 import WorkPackageEditor from "./WorkPackageEditor";
 
 const HORIZONS = [4, 8, 12] as const;
@@ -193,6 +194,7 @@ function WorkPackageRow({
   horizonStart,
   horizonWeeks,
   onOpenDemand,
+  onCreateDemand,
   onEdit,
 }: {
   project: ProjectReadModel;
@@ -204,6 +206,7 @@ function WorkPackageRow({
   horizonStart: Date;
   horizonWeeks: number;
   onOpenDemand: (demandNumber: string) => void;
+  onCreateDemand: (context: DemandCreateContext) => void;
   onEdit: (workPackage: WorkPackageReadModel) => void;
 }) {
   const grid = placement(workPackage, horizonStart, horizonWeeks);
@@ -214,6 +217,10 @@ function WorkPackageRow({
     : null;
   const resourceClassLabel = workPackageResourceClassLabel(workPackage);
   const classDivergesFromTask = workPackage.resource_class_diagnostic === RESOURCE_CLASS_DIVERGENCE;
+  const canCreateDemand = Boolean(
+    baseWorkPackage
+    && ["planned", "active"].includes(normalize(baseWorkPackage.status)),
+  );
 
   return (
     <div className="mt-timeline-row" style={{ gridTemplateColumns: template }}>
@@ -253,9 +260,26 @@ function WorkPackageRow({
           )}
         </div>
         {baseWorkPackage ? (
-          <button className="mt-edit-package" type="button" onClick={() => onEdit(baseWorkPackage)}>
-            Modifier / répartir
-          </button>
+          <div className="mt-package-actions">
+            <button className="mt-edit-package" type="button" onClick={() => onEdit(baseWorkPackage)}>
+              Modifier / répartir
+            </button>
+            {canCreateDemand && (
+              <button
+                className="mt-edit-package"
+                type="button"
+                onClick={() => onCreateDemand({
+                  project_number: baseWorkPackage.project_number,
+                  work_package_ref: baseWorkPackage.reference,
+                  task_code: baseWorkPackage.task_catalog_item_id
+                    ? baseWorkPackage.task_code
+                    : null,
+                })}
+              >
+                Créer une demande
+              </button>
+            )}
+          </div>
         ) : (
           <small>Édition indisponible jusqu’au rechargement du catalogue WorkPackage.</small>
         )}
@@ -352,7 +376,15 @@ function TaskHeader({
   );
 }
 
-export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () => void }) {
+type MediumTermPageProps = {
+  onOpenDemands: () => void;
+  onCreateDemand: (context: DemandCreateContext) => void;
+};
+
+export default function MediumTermPage({
+  onOpenDemands,
+  onCreateDemand,
+}: MediumTermPageProps) {
   const { scope, loading: scopeLoading, error: scopeError } = useViewScope();
   const [horizonStart, setHorizonStart] = useState(() => startOfWeek(new Date()));
   const [horizonWeeks, setHorizonWeeks] = useState<HorizonWeeks>(8);
@@ -699,6 +731,7 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
         horizonStart={horizonStart}
         horizonWeeks={horizonWeeks}
         onOpenDemand={setDetailDemandNumber}
+        onCreateDemand={onCreateDemand}
         onEdit={setEditor}
       />
     );

@@ -134,6 +134,32 @@ class ReactDemandsContractTests(unittest.TestCase):
         self.assertIn('task_code: task?.code ?? ""', source)
         self.assertIn("required_resource_class:", source)
 
+    def test_work_package_creation_context_reuses_canonical_demand_editor(self) -> None:
+        app = (ROOT / "frontend" / "src" / "App.tsx").read_text(encoding="utf-8")
+        workspace = (ROOT / "frontend" / "src" / "DemandsWorkspace.tsx").read_text(
+            encoding="utf-8"
+        )
+        demands = (ROOT / "frontend" / "src" / "DemandsPage.tsx").read_text(
+            encoding="utf-8"
+        )
+        medium = (ROOT / "frontend" / "src" / "MediumTermPage.tsx").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("DemandCreateContext", app)
+        self.assertIn("createDemandFromWorkPackage", app)
+        self.assertIn("initialCreateContext", workspace)
+        self.assertIn("initialCreateContext", demands)
+        self.assertIn("beginCreate(initialCreateContext)", demands)
+        self.assertIn("work_package_ref: context?.work_package_ref", demands)
+        self.assertIn("task_code: context?.task_code", demands)
+        self.assertIn("Créer une demande", medium)
+        self.assertIn('["planned", "active"].includes', medium)
+        self.assertIn("task_catalog_item_id", medium)
+        self.assertIn("? baseWorkPackage.task_code", medium)
+        self.assertNotIn("planned_hours: baseWorkPackage.planned_hours", medium)
+        self.assertNotIn("createDemand(", medium)
+
     def test_multi_line_editor_groups_dates_and_keeps_compact_business_fields(self) -> None:
         editor = (ROOT / "frontend" / "src" / "DemandLinesEditor.tsx").read_text(
             encoding="utf-8"

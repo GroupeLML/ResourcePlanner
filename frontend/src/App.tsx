@@ -8,6 +8,7 @@ import ConfigurationPage from "./ConfigurationPage";
 import DevUserSwitcher from "./DevUserSwitcher";
 import DeliveryPage from "./DeliveryPage";
 import DemandsWorkspace from "./DemandsWorkspace";
+import type { DemandCreateContext } from "./DemandsPage";
 import MediumTermPage from "./MediumTermPage";
 import PlanningPage from "./PlanningPage";
 import ProjectsPage from "./ProjectsPage";
@@ -71,6 +72,7 @@ export default function App() {
   const { setScope } = useViewScope();
   const [view, setView] = useState<View>("planning");
   const [demandToOpen, setDemandToOpen] = useState<string | null>(null);
+  const [demandCreateContext, setDemandCreateContext] = useState<DemandCreateContext | null>(null);
   const [initialViewResolved, setInitialViewResolved] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCompact, setSidebarCompact] = useState(() => {
@@ -148,12 +150,20 @@ export default function App() {
 
   function openDemand(number: string) {
     setScope("global");
+    setDemandCreateContext(null);
     setDemandToOpen(number);
     setView("demands");
   }
 
   function openDemands() {
     setDemandToOpen(null);
+    setDemandCreateContext(null);
+    setView("demands");
+  }
+
+  function createDemandFromWorkPackage(context: DemandCreateContext) {
+    setDemandToOpen(null);
+    setDemandCreateContext(context);
     setView("demands");
   }
 
@@ -189,7 +199,10 @@ export default function App() {
               key={item.key}
               className={view === item.key ? "active" : ""}
               onClick={() => {
-                if (item.key === "demands") setDemandToOpen(null);
+                if (item.key === "demands") {
+                  setDemandToOpen(null);
+                  setDemandCreateContext(null);
+                }
                 setView(item.key);
                 setSidebarOpen(false);
               }}
@@ -273,12 +286,17 @@ export default function App() {
               onOpenPlanning={() => setView("planning")}
             />
           ) : view === "planning" ? (
-            <PlanningPage onOpenDemands={() => setView("demands")} />
+            <PlanningPage onOpenDemands={openDemands} />
           ) : view === "medium-term" ? (
-            <MediumTermPage onOpenDemands={() => setView("demands")} />
+            <MediumTermPage
+              onOpenDemands={openDemands}
+              onCreateDemand={createDemandFromWorkPackage}
+            />
           ) : view === "demands" ? (
             demandToOpen ? (
               <DemandsWorkspace initialDemandNumber={demandToOpen} />
+            ) : demandCreateContext ? (
+              <DemandsWorkspace initialCreateContext={demandCreateContext} />
             ) : (
               <DemandsWorkspace />
             )
