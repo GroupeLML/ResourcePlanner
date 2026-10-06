@@ -7,10 +7,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ...application.security import UserIdentityRecord, normalize_roles
+from .approval_scope_models import ApprovalScopeApprover, AssetTypeApprovalScopeMapping
+from .asset_models import AssetApprover
 from .base import new_id
 from .business_contact_models import BusinessContact
 from .erp_user_models import ErpUserDirectoryEntry
 from .identity_models import AppUser
+from .planning_version import SqlPlanningMutationVersionRepository
 
 
 def _optional_text(value: object) -> str | None:
@@ -28,6 +31,41 @@ def _required_text(value: object, field: str) -> str:
 class SqlUserIdentityRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
+
+    def _controls_asset_authority(self, user_id: str) -> bool:
+        identifier = str(user_id or "").strip()
+        if not identifier:
+            return False
+        specific = self._session.scalar(
+            select(AssetApprover.asset_id).where(
+                AssetApprover.app_user_id == identifier
+            )
+        )
+        if specific is not None:
+            return True
+        scoped = self._session.scalar(
+            select(ApprovalScopeApprover.approval_scope_id)
+            .join(
+                AssetTypeApprovalScopeMapping,
+                AssetTypeApprovalScopeMapping.approval_scope_id
+                == ApprovalScopeApprover.approval_scope_id,
+            )
+            .where(ApprovalScopeApprover.app_user_id == identifier)
+        )
+        return scoped is not None
+
+    def _guard_asset_authority_change(
+        self,
+        row: AppUser,
+        *,
+        roles_json: str,
+        active: bool,
+    ) -> None:
+        if (
+            row.roles_json != roles_json
+            or bool(row.active) != bool(active)
+        ) and self._controls_asset_authority(row.id):
+            SqlPlanningMutationVersionRepository(self._session).acquire()
 
     def _record(self, row: AppUser) -> UserIdentityRecord:
         raw_roles = json.loads(row.roles_json or "[]")
@@ -251,9 +289,15 @@ class SqlUserIdentityRepository:
             employee_external_id=employee_value,
             erp_user_id=erp_value,
         )
+        roles_json = self._roles_json(roles)
+        self._guard_asset_authority_change(
+            row,
+            roles_json=roles_json,
+            active=bool(active),
+        )
         row.display_name = _required_text(display_name, "display_name")
         row.email = _optional_text(email)
-        row.roles_json = self._roles_json(roles)
+        row.roles_json = roles_json
         row.active = bool(active)
         row.employee_external_id = employee_value
         row.erp_user_id = erp_value
@@ -366,6 +410,11 @@ class SqlUserIdentityRepository:
                 current_user_id=row.id,
                 employee_external_id=employee_value,
                 erp_user_id=_optional_text(row.erp_user_id),
+            )
+            self._guard_asset_authority_change(
+                row,
+                roles_json=roles_json,
+                active=bool(active),
             )
             row.display_name = display_name_value
             row.email = _optional_text(email)
