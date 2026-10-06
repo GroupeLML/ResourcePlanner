@@ -607,6 +607,32 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
                 )
 
         inside_current = current_start <= target_day <= current_end
+        if (
+            inside_current
+            and requirement.origin == ORIGIN_REQUEST
+            and not within_authorization
+            and approval_revision_id
+            and approved_entry_key
+            and approved_start is not None
+            and approved_end is not None
+        ):
+            active_override = SqlPlanningWindowOverrideRepository(
+                self._session
+            ).active_by_requirement_ids(
+                (requirement.id,),
+                approval_revision_id=approval_revision_id,
+            ).get(requirement.id)
+            if active_override is not None:
+                effective = SqlPlanningWindowOverrideRepository.effective_window_for_requirement(
+                    requirement,
+                    active_override,
+                    approval_revision_id=approval_revision_id,
+                    approved_entry_key=approved_entry_key,
+                    approved_start_date=approved_start,
+                    approved_end_date=approved_end,
+                )
+                if effective.start_date <= target_day <= effective.end_date:
+                    authorization_reason = "WITHIN_ACTIVE_PLANNING_WINDOW_OVERRIDE"
         actions: list[dict[str, object]] = []
         if inside_current:
             actions.extend(
