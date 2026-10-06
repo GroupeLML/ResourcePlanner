@@ -354,6 +354,56 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
             self.assertEqual(bob["competency_state"], "MISSING")
             self.assertEqual(bob["recommendation_category"], 3)
 
+    def test_canonical_multi_competency_ids_survive_renames(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            with factory.begin() as session:
+                plc = session.get(Competency, "C-PLC")
+                target = session.get(ResourceRequirement, "REQ-TARGET")
+                assert plc is not None
+                assert target is not None
+                plc.name = "Automate"
+                target.required_resource_class = None
+                target.required_competency = "Libellé historique obsolète"
+                session.add(
+                    Competency(
+                        id="C-SCADA",
+                        name="SCADA",
+                        active=True,
+                        sort_order=20,
+                    )
+                )
+                session.add(
+                    ResourceCompetency(
+                        resource_id="R-ALICE",
+                        competency_id="C-SCADA",
+                    )
+                )
+                session.add(
+                    ResourceRequirementCompetency(
+                        resource_requirement_id="REQ-TARGET",
+                        competency_id="C-SCADA",
+                    )
+                )
+            engine.dispose()
+
+            app = create_api_app(url)
+            with TestClient(app) as client:
+                response = client.get(
+                    "/api/v1/segments/SEG-2026-0273/resource-recommendations"
+                )
+
+            self.assertEqual(response.status_code, 200, response.text)
+            alice, bob = response.json()
+            self.assertEqual(alice["required_competency"], "Automate; SCADA")
+            self.assertEqual(alice["competency_state"], "SATISFIED")
+            self.assertEqual(alice["missing_competency_ids"], [])
+            self.assertEqual(bob["competency_state"], "MISSING")
+            self.assertEqual(bob["missing_competency_ids"], ["C-PLC", "C-SCADA"])
+            self.assertEqual(bob["recommendation_category"], 3)
+
     def test_preferred_resource_never_bypasses_real_qualification(self) -> None:
         with TemporaryDirectory() as directory:
             url = self._database(directory)
