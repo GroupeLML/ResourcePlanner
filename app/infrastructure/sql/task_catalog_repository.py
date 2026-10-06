@@ -4,17 +4,28 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import json
 
-from sqlalchemy import or_, select, true
+from sqlalchemy import or_, select, true, update
 from sqlalchemy.orm import Session
 
-from ...application.errors import ApplicationConflictError
+from ...application.errors import (
+    ApplicationAuthorizationError,
+    ApplicationConflictError,
+    ApplicationNotFoundError,
+    ApplicationValidationError,
+)
 from ...application.task_catalog import (
     TaskCatalogItem,
     TaskCatalogProjectSyncMetadata,
     TaskCatalogProjectSyncMetadataRepositoryPort,
     TaskCatalogRepositoryPort,
+    TaskPreferredResourceMutationResult,
 )
-from .models import TaskCatalogEntry, TaskCatalogProjectSyncState
+from .models import (
+    Resource,
+    TaskCatalogEntry,
+    TaskCatalogPreferredResourceAudit,
+    TaskCatalogProjectSyncState,
+)
 
 
 def _text(value: object) -> str:
@@ -93,6 +104,8 @@ class SqlTaskCatalogRepository(
             id=row.id,
             operational_responsible_contact_id=row.operational_responsible_contact_id,
             coordinator_contact_id=row.coordinator_contact_id,
+            preferred_resource_id=row.preferred_resource_id,
+            preferred_resource_version=int(row.preferred_resource_version or 1),
         )
 
     def upsert(self, item: TaskCatalogItem) -> str:
@@ -232,6 +245,133 @@ class SqlTaskCatalogRepository(
         ).limit(max(1, min(int(limit), 500)))
         rows = self._session.scalars(statement).all()
         return tuple(self._item(row) for row in rows)
+
+
+    def set_preferred_resource(
+        self,
+        task_catalog_item_id: str,
+        resource_id: str | None,
+        *,
+        actor_user_id: str | None,
+        expected_version: int,
+    ) -> TaskPreferredResourceMutationResult:
+        task_id = _text(task_catalog_item_id)
+        if not task_id:
+            raise ApplicationValidationError(
+                "La tâche projet est requise.",
+                code="task_preferred_resource_task_required",
+            )
+        actor_id = _text(actor_user_id)
+        if not actor_id:
+            raise ApplicationAuthorizationError(
+                "Une identité locale authentifiée est requise pour administrer la ressource attitrée.",
+                code="task_preferred_resource_actor_required",
+            )
+        try:
+            expected = int(expected_version)
+        except (TypeError, ValueError) as exc:
+            raise ApplicationValidationError(
+                "La version attendue de la ressource attitrée est invalide.",
+                code="task_preferred_resource_version_invalid",
+            ) from exc
+        if expected < 1:
+            raise ApplicationValidationError(
+                "La version attendue de la ressource attitrée doit être positive.",
+                code="task_preferred_resource_version_invalid",
+                context={"expected_version": expected},
+            )
+
+        preferred_id = _optional_text(resource_id)
+        with self._session.begin_nested():
+            task = self._session.get(TaskCatalogEntry, task_id)
+            if task is None:
+                raise ApplicationNotFoundError(
+                    "Tâche projet introuvable.",
+                    code="task_catalog_item_not_found",
+                    context={"task_catalog_item_id": task_id},
+                )
+            old_resource_id = _optional_text(task.preferred_resource_id)
+
+            if preferred_id is not None:
+                resource = self._session.get(Resource, preferred_id)
+                if resource is None:
+                    raise ApplicationNotFoundError(
+                        "Ressource attitrée introuvable.",
+                        code="task_preferred_resource_not_found",
+                        context={"resource_id": preferred_id},
+                    )
+                if not bool(resource.active):
+                    raise ApplicationValidationError(
+                        "Une ressource locale inactive ne peut pas être nouvellement attitrée.",
+                        code="task_preferred_resource_inactive",
+                        context={"resource_id": preferred_id},
+                    )
+                if not bool(resource.erp_active):
+                    raise ApplicationValidationError(
+                        "Une ressource inactive côté ERP ne peut pas être nouvellement attitrée.",
+                        code="task_preferred_resource_erp_inactive",
+                        context={"resource_id": preferred_id},
+                    )
+
+            result = self._session.execute(
+                update(TaskCatalogEntry)
+                .where(
+                    TaskCatalogEntry.id == task_id,
+                    TaskCatalogEntry.preferred_resource_version == expected,
+                )
+                .values(
+                    preferred_resource_id=preferred_id,
+                    preferred_resource_version=(
+                        TaskCatalogEntry.preferred_resource_version + 1
+                    ),
+                )
+            )
+            if int(result.rowcount or 0) != 1:
+                current = self._session.scalar(
+                    select(TaskCatalogEntry.preferred_resource_version).where(
+                        TaskCatalogEntry.id == task_id
+                    )
+                )
+                if current is None:
+                    raise ApplicationNotFoundError(
+                        "Tâche projet introuvable.",
+                        code="task_catalog_item_not_found",
+                        context={"task_catalog_item_id": task_id},
+                    )
+                raise ApplicationConflictError(
+                    "La ressource attitrée a été modifiée depuis sa lecture.",
+                    code="task_preferred_resource_version_conflict",
+                    context={
+                        "task_catalog_item_id": task_id,
+                        "expected_version": expected,
+                        "current_version": int(current),
+                    },
+                )
+
+            resulting_version = expected + 1
+            action = (
+                "TASK_PREFERRED_RESOURCE_CLEARED"
+                if preferred_id is None
+                else "TASK_PREFERRED_RESOURCE_SET"
+            )
+            self._session.add(
+                TaskCatalogPreferredResourceAudit(
+                    task_catalog_item_id=task_id,
+                    actor_user_id=actor_id,
+                    action=action,
+                    old_resource_id=old_resource_id,
+                    new_resource_id=preferred_id,
+                    resulting_version=resulting_version,
+                )
+            )
+            self._session.flush()
+
+        return TaskPreferredResourceMutationResult(
+            task_catalog_item_id=task_id,
+            preferred_resource_id=preferred_id,
+            version=resulting_version,
+            action=action,
+        )
 
     def record_project_sync_success(
         self,

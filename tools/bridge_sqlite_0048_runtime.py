@@ -41,6 +41,7 @@ SOURCE_MISSING_TABLES = {
     "acumatica_project_task_sync_runs",
     "project_co_managers",
     "project_manager_audit",
+    "task_catalog_preferred_resource_audit",
     "availability_rule_resource_classes",
     "planning_window_overrides",
     "verification_scopes",
@@ -90,7 +91,11 @@ SOURCE_MISSING_COLUMNS = {
         "resource_requirement_id",
         "context_resource_id",
     },
-    "task_catalog_items": {"erp_budget_last_success_at"},
+    "task_catalog_items": {
+        "erp_budget_last_success_at",
+        "preferred_resource_id",
+        "preferred_resource_version",
+    },
 }
 
 
