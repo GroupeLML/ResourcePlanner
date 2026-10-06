@@ -41,6 +41,7 @@ SOURCE_MISSING_TABLES = {
     "acumatica_project_task_sync_runs",
     "project_co_managers",
     "project_manager_audit",
+    "availability_rule_resource_classes",
 }
 SOURCE_MISSING_COLUMNS = {
     "projects": {
