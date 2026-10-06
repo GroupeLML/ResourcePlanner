@@ -105,6 +105,9 @@ def _reshape_as_0048(path: Path) -> None:
             DROP TABLE IF EXISTS work_package_load_intervals;
             DROP TABLE IF EXISTS availability_rule_resource_classes;
             DROP TABLE IF EXISTS planning_window_overrides;
+            DROP TABLE IF EXISTS verification_evidence_links;
+            DROP TABLE IF EXISTS verification_test_executions;
+            DROP TABLE IF EXISTS verification_executor_assignments;
             DROP TABLE IF EXISTS verification_change_history;
             DROP TABLE IF EXISTS verification_retest_requests;
             DROP TABLE IF EXISTS story_verification_decision_requirements;
