@@ -208,7 +208,6 @@ function StoryCard({
     } catch (reason) {
       setClosureDeliveryVersion(null);
       await onMutationFailure(reason, "Impossible de terminer la Story avec sa décision Verification.");
-      throw reason;
     } finally {
       setPending(false);
     }
