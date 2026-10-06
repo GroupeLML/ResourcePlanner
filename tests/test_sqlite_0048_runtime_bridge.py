@@ -118,6 +118,10 @@ def _reshape_as_0048(path: Path) -> None:
             DROP TABLE IF EXISTS project_manager_audit;
             DROP TABLE IF EXISTS project_co_managers;
 
+            DROP INDEX IF EXISTS ix_task_catalog_items_erp_budget_last_success_at;
+            ALTER TABLE task_catalog_items
+                DROP COLUMN erp_budget_last_success_at;
+
             ALTER TABLE communication_messages
                 DROP COLUMN to_recipients_json;
 

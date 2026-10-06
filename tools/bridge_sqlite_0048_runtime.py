@@ -90,6 +90,7 @@ SOURCE_MISSING_COLUMNS = {
         "resource_requirement_id",
         "context_resource_id",
     },
+    "task_catalog_items": {"erp_budget_last_success_at"},
 }
 
 
