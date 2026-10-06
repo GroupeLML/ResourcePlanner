@@ -1314,19 +1314,51 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             unresolved_competency_names = tuple(unresolved)
 
         preferred_resource_id: str | None = None
+        preferred_resource_name: str | None = None
+        preferred_resource_status = "NONE"
         if (
             _normalized_text(requirement.origin) == "request"
             and requirement.approval_reference_status == "CAPTURED"
             and requirement.approved_task_catalog_item_id
         ):
-            preferred_resource_id = self._session.scalar(
-                select(TaskCatalogEntry.preferred_resource_id)
+            task_context = self._session.execute(
+                select(
+                    TaskCatalogEntry.preferred_resource_id,
+                    Resource.name,
+                    Resource.active,
+                    Resource.erp_active,
+                )
+                .select_from(TaskCatalogEntry)
                 .join(Project, Project.number == TaskCatalogEntry.project_number)
+                .outerjoin(Resource, Resource.id == TaskCatalogEntry.preferred_resource_id)
                 .where(
                     TaskCatalogEntry.id == requirement.approved_task_catalog_item_id,
                     Project.id == requirement.project_id,
                 )
-            )
+            ).one_or_none()
+            if task_context is None:
+                preferred_resource_status = "INVALID_TASK_CONTEXT"
+            else:
+                (
+                    preferred_resource_id,
+                    preferred_resource_name,
+                    preferred_active,
+                    preferred_erp_active,
+                ) = task_context
+                if preferred_resource_id is None:
+                    preferred_resource_status = "NONE"
+                elif preferred_resource_name is None:
+                    preferred_resource_status = "NOT_FOUND"
+                elif not bool(preferred_active):
+                    preferred_resource_status = "INACTIVE_LOCAL"
+                elif not bool(preferred_erp_active):
+                    preferred_resource_status = "INACTIVE_ERP"
+                elif preferred_resource_id not in {resource.id for resource in resources}:
+                    preferred_resource_status = "NO_SCHEDULE_IN_WINDOW"
+                else:
+                    preferred_resource_status = "ELIGIBLE"
+        elif requirement.approved_task_catalog_item_id:
+            preferred_resource_status = "UNRESOLVED_CONTEXT"
 
         rules = self._session.scalars(
             select(ResourceAvailabilityRule).where(ResourceAvailabilityRule.active == true())
@@ -1489,6 +1521,9 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                     fallback_requires_confirmation=(
                         ranked_candidate.fallback_requires_confirmation
                     ),
+                    preferred_resource_id=preferred_resource_id,
+                    preferred_resource_name=preferred_resource_name,
+                    preferred_resource_status=preferred_resource_status,
                 )
             )
         return tuple(result)
