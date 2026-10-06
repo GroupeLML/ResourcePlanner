@@ -131,6 +131,31 @@ type ApiErrorPayload = {
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 
+function verificationDocumentUrl(path: string) {
+  return `${API_BASE}${path}`;
+}
+
+export function verificationTestPlanUrl(workPackageId: string) {
+  return verificationDocumentUrl(
+    `/api/v1/verification/work-packages/${encodeURIComponent(workPackageId)}/documents/test-plan`,
+  );
+}
+
+export function verificationPhaseReportUrl(
+  workPackageId: string,
+  phase: VerificationPhase,
+) {
+  return verificationDocumentUrl(
+    `/api/v1/verification/work-packages/${encodeURIComponent(workPackageId)}/documents/reports/${phase}`,
+  );
+}
+
+export function verificationTraceabilityUrl(workPackageId: string) {
+  return verificationDocumentUrl(
+    `/api/v1/verification/work-packages/${encodeURIComponent(workPackageId)}/documents/traceability.csv`,
+  );
+}
+
 async function responseError(response: Response): Promise<ApiError> {
   let payload: ApiErrorPayload | null = null;
   try {
