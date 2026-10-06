@@ -269,7 +269,7 @@ function AssetRequirementCard({
               : isProjectDirect
                 ? "Aucune compétence obligatoire; l’opérateur reste facultatif dans le contexte projet."
                 : isSegment
-                  ? "Aucune compétence obligatoire; un opérateur explicite reste requis pour le segment."
+                  ? "Aucune compétence obligatoire; l’opérateur reste facultatif dans le contexte segment."
                   : "Aucune compétence obligatoire; l’opérateur reste associable dans le contexte REQUEST."}
           </span>
           <div className="asset-reservation-controls">
@@ -281,7 +281,7 @@ function AssetRequirementCard({
                 disabled={!canManage || busy}
                 aria-label={`Opérateur pour ${requirement.asset_type_label} ${requirement.demand_number}`}
               >
-                <option value="" disabled={isSegment}>Aucun opérateur</option>
+                <option value="">Aucun opérateur</option>
                 {requirement.operator_resource_id
                   && !operatorCandidates.some((row) => row.resource_id === requirement.operator_resource_id) && (
                   <option value={requirement.operator_resource_id}>
@@ -408,7 +408,6 @@ export default function AssetPlanningPanel({
           await updateResourcePeriodReservation(
             requirement.requirement_id,
             {
-              project_id: requirement.project_id,
               asset_id: assetId,
               start_date: startDate!,
               end_date: endDate!,
@@ -425,9 +424,6 @@ export default function AssetPlanningPanel({
         }
       } else if (requirement.origin === "SEGMENT") {
         if (assetId) {
-          if (!requirement.operator_resource_id) {
-            throw new Error("La réservation de segment doit conserver un opérateur explicite.");
-          }
           await updateSegmentReservation(
             requirement.requirement_id,
             {
@@ -525,8 +521,7 @@ export default function AssetPlanningPanel({
         );
       } else if (requirement.origin === "SEGMENT") {
         if (
-          !resourceId
-          || !requirement.asset_id
+          !requirement.asset_id
           || !requirement.allocation_start_date
           || !requirement.allocation_end_date
         ) {
