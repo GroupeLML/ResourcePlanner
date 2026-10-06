@@ -310,6 +310,7 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
         *,
         project_number: str | None = None,
         task_catalog_item_id: str | None = None,
+        task_code: str | None = None,
         resource_class_code: str | None = None,
         include_inactive_projects: bool = False,
         project_ids: Sequence[str] | None = None,
@@ -318,6 +319,7 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
     ) -> MediumTermBudgetReadModel | None:
         wanted_project = _optional_text(project_number)
         wanted_task = _optional_text(task_catalog_item_id)
+        wanted_task_code = _optional_text(task_code)
         wanted_class = _optional_text(resource_class_code)
 
         visible_projects = tuple(
@@ -428,8 +430,10 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
         tasks = tuple(
             task
             for task in depmo_tasks
-            if wanted_task is None or task.id == wanted_task
+            if (wanted_task is None or task.id == wanted_task)
+            and (wanted_task_code is None or task.task_code == wanted_task_code)
         )
+        selected_task_ids = {task.id for task in tasks}
         tasks_by_id = {task.id: task for task in depmo_tasks}
 
         work_packages = (
@@ -533,7 +537,10 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
             if task_id in tasks_by_id:
                 all_by_task[task_id].append(projected)
 
-            if wanted_task is not None and task_id != wanted_task:
+            if (
+                (wanted_task is not None or wanted_task_code is not None)
+                and task_id not in selected_task_ids
+            ):
                 continue
             if wanted_class is not None and class_code != wanted_class:
                 continue

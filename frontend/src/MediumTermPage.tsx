@@ -453,7 +453,7 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
       controller.signal,
       scope,
       {
-        taskCatalogItemId: taskFilter || undefined,
+        taskCode: taskFilter || undefined,
         resourceClassCode: resourceClassFilter || undefined,
         includeInactiveProjects,
       },
@@ -493,7 +493,7 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
 
   useEffect(() => {
     if (!projection || !taskFilter) return;
-    if (!projection.task_options.some((task) => task.task_catalog_item_id === taskFilter)) {
+    if (!projection.task_options.some((task) => task.task_code === taskFilter)) {
       setTaskFilter("");
     }
   }, [projection, taskFilter]);
@@ -515,14 +515,24 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
     [projects],
   );
 
-  const taskOptions = useMemo(
-    () => [...(projection?.task_options ?? [])].sort((left, right) => (
-      left.project_number.localeCompare(right.project_number, "fr-CA")
-      || left.task_code.localeCompare(right.task_code, "fr-CA")
-      || left.task_label.localeCompare(right.task_label, "fr-CA")
-    )),
-    [projection],
-  );
+  const taskOptions = useMemo(() => {
+    const byCode = new Map<string, { task_code: string; task_label: string }>();
+    [...(projection?.task_options ?? [])]
+      .sort((left, right) => (
+        left.task_code.localeCompare(right.task_code, "fr-CA")
+        || left.task_label.localeCompare(right.task_label, "fr-CA")
+        || left.project_number.localeCompare(right.project_number, "fr-CA")
+      ))
+      .forEach((task) => {
+        if (!byCode.has(task.task_code)) {
+          byCode.set(task.task_code, {
+            task_code: task.task_code,
+            task_label: task.task_label,
+          });
+        }
+      });
+    return [...byCode.values()];
+  }, [projection]);
 
   const resourceClassOptions = useMemo(
     () => [...(projection?.resource_classes ?? [])].sort((left, right) => (
@@ -802,8 +812,8 @@ export default function MediumTermPage({ onOpenDemands }: { onOpenDemands: () =>
           <select value={taskFilter} onChange={(event) => setTaskFilter(event.target.value)}>
             <option value="">Toutes les tâches</option>
             {taskOptions.map((task) => (
-              <option value={task.task_catalog_item_id} key={task.task_catalog_item_id}>
-                {task.project_number} · {task.task_code} — {task.task_label}
+              <option value={task.task_code} key={task.task_code}>
+                {task.task_code} — {task.task_label}
               </option>
             ))}
           </select>
