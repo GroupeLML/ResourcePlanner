@@ -335,7 +335,7 @@ test("362F Delivery et 363E Verification traversent PM, Team Lead et technicien"
   await expect(projectManager.page.locator(".delivery-plan-toolbar")).toContainText("Version Delivery 3");
   await projectManager.page.locator(".delivery-plan-toolbar").getByRole("button", { name: "Archiver" }).click();
   await expect(projectManager.page.locator(".error-panel")).toContainText("delivery_version_conflict");
-  await expect(projectManager.page.locator(".error-panel")).toContainText("rechargé avec la version courante");
+  await expect(projectManager.page.locator(".error-panel")).toContainText("Delivery et Verification ont été rechargés avec les versions courantes");
   await expect(projectManager.page.locator(".delivery-plan-toolbar")).toContainText("Version Delivery 12");
   await projectManager.page.locator(".delivery-plan-toolbar").getByRole("button", { name: "Archiver" }).click();
   await expect(projectManager.page.locator(".delivery-plan-toolbar")).toContainText("ARCHIVED");
