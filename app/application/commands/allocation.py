@@ -251,6 +251,7 @@ class AllocationDropEvaluateCommand:
     resource_id: str
     day: date
     outside_standard_hours: bool = False
+    include_planning_window_override_options: bool = False
 
     def __post_init__(self) -> None:
         required_text(
