@@ -34,7 +34,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name=op.f("pk_verification_executor_assignments")),
     )
     op.create_index(
-        "ix_verification_executor_assignments_requirement_executor_active",
+        "ix_verification_executor_req_user_active",
         "verification_executor_assignments",
         ["requirement_id", "executor_user_id", "active"],
         unique=False,
