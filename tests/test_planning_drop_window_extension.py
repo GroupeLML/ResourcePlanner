@@ -32,6 +32,7 @@ from tests.http_test_auth import TEST_ADMIN_AUTH_RESOLVER
 
 DAY = date(2026, 9, 22)
 NEXT_DAY = DAY + timedelta(days=1)
+NEXT_WEEK = DAY + timedelta(days=7)
 
 
 class PlanningDropWindowExtensionTests(unittest.TestCase):
@@ -128,6 +129,9 @@ class PlanningDropWindowExtensionTests(unittest.TestCase):
                 [action["code"] for action in payload["actions"]],
                 ["EXTEND_AND_MOVE", "CANCEL"],
             )
+            extension = payload["actions"][0]
+            self.assertTrue(extension["auto_execute"])
+            self.assertEqual(extension["required_parameters"], [])
 
             engine = create_sql_engine(url)
             factory = create_session_factory(engine)
@@ -138,6 +142,71 @@ class PlanningDropWindowExtensionTests(unittest.TestCase):
                 self.assertEqual(requirement.end_date, DAY)
                 self.assertEqual(shift.work_date, DAY)
                 self.assertEqual(shift.resource_id, "R1")
+            engine.dispose()
+
+    def test_adhoc_extend_and_move_auto_expands_minimally_without_confirmation(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            app = create_api_app(url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+            with TestClient(app, raise_server_exceptions=False) as client:
+                response = client.post(
+                    "/api/v1/allocations/ALLOC-1/extend-and-move",
+                    json={
+                        "resource_id": "R2",
+                        "day": NEXT_WEEK.isoformat(),
+                        "expected_planning_version": 1,
+                        "confirm_window_extension": False,
+                    },
+                    headers={"Idempotency-Key": "extend-move-659a-auto"},
+                )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["operation"], "EXTEND_AND_MOVE")
+
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            with factory() as session:
+                requirement = session.get(ResourceRequirement, "REQ1")
+                shift = session.get(Shift, "SHIFT-1")
+                assert requirement is not None and shift is not None
+                self.assertEqual(requirement.start_date, DAY)
+                self.assertEqual(requirement.end_date, NEXT_WEEK)
+                self.assertEqual(float(requirement.planned_hours), 8.0)
+                self.assertEqual(shift.work_date, NEXT_WEEK)
+                self.assertEqual(shift.resource_id, "R2")
+                self.assertEqual(float(shift.hours), 8.0)
+                self.assertTrue(shift.locked)
+            engine.dispose()
+
+    def test_adhoc_shift_edit_auto_expands_window_without_changing_hours(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            app = create_api_app(url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+            with TestClient(app, raise_server_exceptions=False) as client:
+                response = client.put(
+                    "/api/v1/allocations/ALLOC-1",
+                    json={
+                        "resource_id": "R2",
+                        "day": NEXT_WEEK.isoformat(),
+                        "hours": 8,
+                        "outside_standard_hours": False,
+                        "note": "659A edit",
+                        "confirmation": "Confirmée",
+                    },
+                )
+            self.assertEqual(response.status_code, 200, response.text)
+
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            with factory() as session:
+                requirement = session.get(ResourceRequirement, "REQ1")
+                shift = session.get(Shift, "SHIFT-1")
+                assert requirement is not None and shift is not None
+                self.assertEqual(requirement.start_date, DAY)
+                self.assertEqual(requirement.end_date, NEXT_WEEK)
+                self.assertEqual(float(requirement.planned_hours), 8.0)
+                self.assertEqual(shift.work_date, NEXT_WEEK)
+                self.assertEqual(shift.resource_id, "R2")
+                self.assertEqual(float(shift.hours), 8.0)
             engine.dispose()
 
     def test_extend_and_move_is_atomic_idempotent_and_audited(self) -> None:
