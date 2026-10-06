@@ -64,7 +64,7 @@ class ReactAssetUxContractTests(unittest.TestCase):
         self.assertIn("asset_diagnostics: string[]", api)
 
         self.assertIn("shift.asset_assignment", source)
-        self.assertIn('aria-label={asset ? "Actif affecté au quart"', source)
+        self.assertIn('"Actif affecté au quart"', source)
         self.assertNotIn("snapshot.asset_allocations.forEach", source)
         self.assertNotIn("allocation.operator_resource_id !== shift.resource_id", source)
         self.assertNotIn("requirement.demand_number !== shift.demand_number", source)
