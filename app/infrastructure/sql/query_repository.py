@@ -34,6 +34,14 @@ from ...application.read_models import DemandPeriodReadModel, DemandReadModel, S
 from ...domain.availability_rules import availability_hours_for_day, availability_state_for_day
 from ...domain.confirmation import effective_confirmation
 from ...domain.planning_engine import MISSING_ALLOCATION_TYPE
+from ...domain.resource_recommendations import (
+    COMPETENCY_MISSING,
+    COMPETENCY_NOT_REQUIRED,
+    COMPETENCY_SATISFIED,
+    COMPETENCY_UNRESOLVED,
+    RecommendationCandidate,
+    rank_recommendation_candidates,
+)
 from ...domain.reservable_assets import AssetRequirementOrigin
 from ...domain.demand_periods import (
     DemandPeriodDefinition,
@@ -75,7 +83,9 @@ from .models import (
     ResourceAvailabilityRule,
     ResourceCompetency,
     ResourceRequirement,
+    ResourceRequirementCompetency,
     Shift,
+    TaskCatalogEntry,
     WorkforceRequest,
     WorkPackage,
 )
@@ -107,27 +117,6 @@ def _optional_text(value: object) -> str | None:
 def _normalized_text(value: object) -> str:
     text = unicodedata.normalize("NFKD", _text(value)).encode("ascii", "ignore").decode("ascii")
     return " ".join(text.casefold().split())
-
-
-def _resource_class_hint(value: object) -> str | None:
-    text = _normalized_text(value)
-    if not text:
-        return None
-    if "programm" in text or "automatis" in text:
-        return "Programmation"
-    if "installation" in text or "installateur" in text:
-        return "Installation"
-    if ("monteur" in text and "panneau" in text) or (
-        "panel" in text and ("builder" in text or "wire" in text)
-    ):
-        return "Monteur de panneau"
-    if "dessin" in text or "draft" in text or "cad" in text:
-        return "Dessinateur"
-    if ("gestion" in text and "projet" in text) or (
-        "charge" in text and "projet" in text
-    ):
-        return "Gestion de projet"
-    return None
 
 
 def _split_competencies(value: object) -> tuple[str, ...]:
@@ -1250,19 +1239,127 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         self,
         segment_id: str,
     ) -> tuple[ResourceRecommendationReadModel, ...]:
-        """Rank schedulable resources using the V1.6 competency/capacity semantics."""
+        """Rank schedulable resources using the deterministic ADR-025 contract."""
 
         segment = self.get_segment(segment_id)
         if segment is None or segment.start_date is None or segment.end_date is None:
             return ()
+        requirement_id = _optional_text(segment.requirement_id)
+        requirement = (
+            self._session.get(ResourceRequirement, requirement_id)
+            if requirement_id is not None
+            else None
+        )
+        if requirement is None:
+            return ()
+
         start = segment.start_date
         end = segment.end_date
         if end < start:
             start, end = end, start
+        required_hours = max(float(segment.automatic_rebuild_hours), 0.0)
+        if required_hours <= 0.01:
+            return ()
 
         resources = self.list_schedulable_resources(start=start, end=end)
         if not resources:
             return ()
+
+        # Canonical requirement competency snapshots win over legacy text.  A legacy
+        # token that cannot be resolved stays explicitly unverifiable instead of
+        # becoming an implicit match.
+        required_competency_ids = tuple(
+            self._session.scalars(
+                select(ResourceRequirementCompetency.competency_id)
+                .where(
+                    ResourceRequirementCompetency.resource_requirement_id
+                    == requirement.id
+                )
+                .order_by(ResourceRequirementCompetency.competency_id)
+            ).all()
+        )
+        if not required_competency_ids and requirement.required_competency_id:
+            required_competency_ids = (requirement.required_competency_id,)
+
+        legacy_competency_names = _split_competencies(requirement.required_competency)
+        unresolved_competency_names: tuple[str, ...] = ()
+        required_names: tuple[str, ...] = ()
+        if required_competency_ids:
+            catalog_rows = self._session.scalars(
+                select(Competency).where(Competency.id.in_(required_competency_ids))
+            ).all()
+            names_by_id = {row.id: row.name for row in catalog_rows}
+            required_names = tuple(
+                names_by_id[competency_id]
+                for competency_id in required_competency_ids
+                if competency_id in names_by_id
+            )
+        elif legacy_competency_names:
+            catalog_rows = self._session.scalars(select(Competency)).all()
+            by_name: dict[str, list[Competency]] = {}
+            for row in catalog_rows:
+                by_name.setdefault(_normalized_text(row.name), []).append(row)
+            resolved_ids: list[str] = []
+            resolved_names: list[str] = []
+            unresolved: list[str] = []
+            for name in legacy_competency_names:
+                matches = by_name.get(_normalized_text(name), [])
+                if len(matches) != 1:
+                    unresolved.append(name)
+                    continue
+                resolved_ids.append(matches[0].id)
+                resolved_names.append(matches[0].name)
+            required_competency_ids = tuple(dict.fromkeys(resolved_ids))
+            required_names = tuple(dict.fromkeys(resolved_names))
+            unresolved_competency_names = tuple(unresolved)
+
+        preferred_resource_id: str | None = None
+        preferred_resource_name: str | None = None
+        preferred_resource_status = "NONE"
+        if (
+            _normalized_text(requirement.origin) == "request"
+            and requirement.approval_reference_status == "CAPTURED"
+            and requirement.approved_task_catalog_item_id
+        ):
+            task_context = self._session.execute(
+                select(
+                    TaskCatalogEntry.preferred_resource_id,
+                    Resource.name,
+                    Resource.active,
+                    Resource.erp_active,
+                )
+                .select_from(TaskCatalogEntry)
+                .join(Project, Project.number == TaskCatalogEntry.project_number)
+                .outerjoin(Resource, Resource.id == TaskCatalogEntry.preferred_resource_id)
+                .where(
+                    TaskCatalogEntry.id == requirement.approved_task_catalog_item_id,
+                    Project.id == requirement.project_id,
+                )
+            ).one_or_none()
+            if task_context is None:
+                preferred_resource_status = "INVALID_TASK_CONTEXT"
+            else:
+                (
+                    preferred_resource_id,
+                    preferred_resource_name,
+                    preferred_active,
+                    preferred_erp_active,
+                ) = task_context
+                if preferred_resource_id is None:
+                    preferred_resource_status = "NONE"
+                elif preferred_resource_name is None:
+                    preferred_resource_status = "NOT_FOUND"
+                elif not bool(preferred_active):
+                    preferred_resource_status = "INACTIVE_LOCAL"
+                elif not bool(preferred_erp_active):
+                    preferred_resource_status = "INACTIVE_ERP"
+                elif preferred_resource_id not in {resource.id for resource in resources}:
+                    preferred_resource_status = "NO_SCHEDULE_IN_WINDOW"
+                else:
+                    preferred_resource_status = "ELIGIBLE"
+        elif requirement.approved_task_catalog_item_id:
+            preferred_resource_status = "UNRESOLVED_CONTEXT"
+
         rules = self._session.scalars(
             select(ResourceAvailabilityRule).where(ResourceAvailabilityRule.active == true())
         ).all()
@@ -1274,33 +1371,28 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             _availability_record(rule, class_codes.get(rule.id, ()))
             for rule in rules
         )
-        shifts = self.list_shifts(start=start, end=end)
 
-        catalog_row = (
-            self._session.get(Competency, segment.required_competency_id)
-            if segment.required_competency_id
-            else None
-        )
-        required_names = list(_split_competencies(segment.required_competency))
-        if not required_names and catalog_row is not None:
-            required_names.append(catalog_row.name)
-        required_keys = {_normalized_text(name) for name in required_names if _text(name)}
-        class_hints = {
-            hint
-            for hint in (
-                *(_resource_class_hint(name) for name in required_names),
-                _resource_class_hint(catalog_row.description) if catalog_row is not None else None,
-            )
-            if hint
-        }
-        required_class = _optional_text(segment.required_resource_class)
-        if required_class is None and len(class_hints) == 1:
-            required_class = next(iter(class_hints))
-        required_hours = max(float(segment.automatic_rebuild_hours), 0.0)
-        candidates: list[dict[str, object]] = []
+        shifts_by_resource_day: dict[tuple[str, date], list[ShiftReadModel]] = {}
+        for shift in self.list_shifts(start=start, end=end):
+            if shift.allocation_type == MISSING_ALLOCATION_TYPE:
+                continue
+            if shift.requirement_id == requirement.id and not shift.locked:
+                # Replaceable automatic output of the evaluated requirement is not a
+                # commitment. Locked decisions remain on their real resource.
+                continue
+            shifts_by_resource_day.setdefault(
+                (shift.resource_id, shift.work_date), []
+            ).append(shift)
+
+        required_class = _optional_text(requirement.required_resource_class)
+        prepared_rows: dict[str, dict[str, object]] = {}
+        domain_candidates: list[RecommendationCandidate] = []
 
         for resource in resources:
             capacity = 0.0
+            confirmed = 0.0
+            tentative = 0.0
+            outside = 0.0
             cursor = start
             while cursor <= end:
                 capacity += availability_hours_for_day(
@@ -1309,108 +1401,100 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                     cursor,
                     resource_class=resource.resource_class,
                 )
+                for shift in shifts_by_resource_day.get((resource.id, cursor), ()):
+                    shift_hours = float(shift.hours)
+                    if shift.outside_standard_hours:
+                        outside += shift_hours
+                    elif shift.load_kind == "FIRM":
+                        confirmed += shift_hours
+                    else:
+                        tentative += shift_hours
                 cursor += timedelta(days=1)
-
-            confirmed = 0.0
-            tentative = 0.0
-            outside = 0.0
-            for shift in shifts:
-                if shift.allocation_type == MISSING_ALLOCATION_TYPE:
-                    continue
-                if shift.resource_id != resource.id:
-                    continue
-                if shift.segment_id == segment.segment_id and not shift.locked:
-                    # Replaceable output of this need will be regenerated; locked
-                    # decisions remain real capacity commitments on their resources.
-                    continue
-                shift_hours = float(shift.hours)
-                if shift.outside_standard_hours:
-                    outside += shift_hours
-                elif shift.load_kind == "FIRM":
-                    confirmed += shift_hours
-                else:
-                    tentative += shift_hours
 
             free_after_confirmed = max(capacity - confirmed, 0.0)
             prudent_free = max(capacity - confirmed - tentative, 0.0)
             overtime_needed = max(required_hours - prudent_free, 0.0)
-            resource_skill_keys = {
-                _normalized_text(name)
-                for name in _split_competencies(resource.competencies)
-            }
-            if required_keys:
-                competency_match = required_keys.issubset(resource_skill_keys)
-            elif segment.required_competency_id:
-                competency_match = segment.required_competency_id in resource.competency_ids
-            else:
+            resource_competency_ids = set(resource.competency_ids)
+            missing_competency_ids = tuple(
+                competency_id
+                for competency_id in required_competency_ids
+                if competency_id not in resource_competency_ids
+            )
+            if unresolved_competency_names:
+                competency_state = COMPETENCY_UNRESOLVED
+                competency_match = False
+            elif not required_competency_ids:
+                competency_state = COMPETENCY_NOT_REQUIRED
                 competency_match = True
+            elif missing_competency_ids:
+                competency_state = COMPETENCY_MISSING
+                competency_match = False
+            else:
+                competency_state = COMPETENCY_SATISFIED
+                competency_match = True
+
             class_match = (
                 required_class is None
-                or _normalized_text(resource.resource_class) == _normalized_text(required_class)
+                or _text(resource.resource_class) == required_class
             )
             enough_prudent = prudent_free + 0.01 >= required_hours
             enough_after_confirmed = free_after_confirmed + 0.01 >= required_hours
-
-            score = 0.0
-            if competency_match:
-                score += 20000.0
-            if class_match:
-                score += 10000.0
-            if enough_prudent:
-                score += 5000.0
-            elif enough_after_confirmed:
-                score += 2500.0
-            score += min(prudent_free, required_hours) * 10.0
-            score -= tentative * 2.0
-            score -= overtime_needed * 8.0
-
-            candidates.append(
-                {
-                    "resource": resource,
-                    "competency_match": competency_match,
-                    "class_match": class_match,
-                    "capacity": round(capacity, 2),
-                    "confirmed": round(confirmed, 2),
-                    "tentative": round(tentative, 2),
-                    "outside": round(outside, 2),
-                    "free_after_confirmed": round(free_after_confirmed, 2),
-                    "prudent_free": round(prudent_free, 2),
-                    "overtime_needed": round(overtime_needed, 2),
-                    "enough_after_confirmed": enough_after_confirmed,
-                    "enough_prudent": enough_prudent,
-                    "score": round(score, 2),
-                }
+            preferred = bool(
+                preferred_resource_id and resource.id == preferred_resource_id
             )
 
-        candidates.sort(
-            key=lambda row: (
-                -int(bool(row["competency_match"])),
-                -int(bool(row["class_match"])),
-                -int(bool(row["enough_prudent"])),
-                -float(row["score"]),
-                -float(row["prudent_free"]),
-                str(row["resource"].name).casefold(),
+            prepared_rows[resource.id] = {
+                "resource": resource,
+                "competency_match": competency_match,
+                "competency_state": competency_state,
+                "missing_competency_ids": missing_competency_ids,
+                "class_match": class_match,
+                "capacity": round(capacity, 2),
+                "confirmed": round(confirmed, 2),
+                "tentative": round(tentative, 2),
+                "outside": round(outside, 2),
+                "free_after_confirmed": round(free_after_confirmed, 2),
+                "prudent_free": round(prudent_free, 2),
+                "overtime_needed": round(overtime_needed, 2),
+                "enough_after_confirmed": enough_after_confirmed,
+                "enough_prudent": enough_prudent,
+                "preferred": preferred,
+            }
+            domain_candidates.append(
+                RecommendationCandidate(
+                    resource_id=resource.id,
+                    resource_name=resource.name,
+                    preferred=preferred,
+                    class_match=class_match,
+                    competency_state=competency_state,
+                    missing_competency_count=(
+                        len(missing_competency_ids)
+                        + len(unresolved_competency_names)
+                    ),
+                    prudent_free=prudent_free,
+                    free_after_confirmed=free_after_confirmed,
+                    tentative_hours=tentative,
+                    required_hours=required_hours,
+                )
             )
+
+        ranked = rank_recommendation_candidates(tuple(domain_candidates))
+        required_competency = (
+            "; ".join(required_names)
+            if required_names
+            else _optional_text(requirement.required_competency)
         )
-
         result: list[ResourceRecommendationReadModel] = []
-        for index, row in enumerate(candidates, start=1):
+        for ranked_candidate in ranked:
+            candidate = ranked_candidate.candidate
+            row = prepared_rows[candidate.resource_id]
             resource = row["resource"]
-            recommended = (
-                index == 1
-                and bool(row["competency_match"])
-                and bool(row["class_match"])
-            )
             result.append(
                 ResourceRecommendationReadModel(
                     resource_id=resource.id,
                     resource_name=resource.name,
                     resource_class=resource.resource_class,
-                    required_competency=(
-                        "; ".join(required_names)
-                        if required_names
-                        else segment.required_competency
-                    ),
+                    required_competency=required_competency,
                     required_class=required_class,
                     competency_match=bool(row["competency_match"]),
                     class_match=bool(row["class_match"]),
@@ -1423,9 +1507,22 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                     overtime_needed=float(row["overtime_needed"]),
                     enough_after_confirmed=bool(row["enough_after_confirmed"]),
                     enough_prudent=bool(row["enough_prudent"]),
-                    score=float(row["score"]),
-                    rank=index,
-                    recommended=recommended,
+                    # Compatibility only. ADR-025 ranking is category/tie-break based;
+                    # this value is a monotonic projection of the authoritative rank.
+                    score=round(1.0 / ranked_candidate.rank, 6),
+                    rank=ranked_candidate.rank,
+                    recommended=ranked_candidate.recommended,
+                    preferred=bool(row["preferred"]),
+                    recommendation_category=ranked_candidate.category,
+                    competency_state=str(row["competency_state"]),
+                    missing_competency_ids=tuple(row["missing_competency_ids"]),
+                    capacity_state=ranked_candidate.capacity_state,
+                    fallback_requires_confirmation=(
+                        ranked_candidate.fallback_requires_confirmation
+                    ),
+                    preferred_resource_id=preferred_resource_id,
+                    preferred_resource_name=preferred_resource_name,
+                    preferred_resource_status=preferred_resource_status,
                 )
             )
         return tuple(result)

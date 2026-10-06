@@ -18,7 +18,9 @@ from app.infrastructure.sql import (
     ResourceAvailabilityRule,
     ResourceCompetency,
     ResourceRequirement,
+    ResourceRequirementCompetency,
     Shift,
+    TaskCatalogEntry,
     WorkforceRequest,
     WorkforceRequestCompetency,
     create_session_factory,
@@ -79,6 +81,17 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
                 ]
             )
             session.flush()
+            session.add(
+                TaskCatalogEntry(
+                    id="T-APPROVED",
+                    project_number="P-273",
+                    task_code="310",
+                    label="Programmation",
+                    active=True,
+                    workforce_eligible=True,
+                    preferred_resource_id="R-ALICE",
+                )
+            )
             session.add(
                 ResourceCompetency(resource_id="R-ALICE", competency_id="C-PLC")
             )
@@ -150,11 +163,14 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
                 legacy_segment_id="SEG-2026-0273",
                 project_id="P-273",
                 workforce_request_id=approved.id,
+                approved_task_catalog_item_id="T-APPROVED",
+                approval_reference_status="CAPTURED",
                 assigned_resource_id=None,
                 start_date=date(2026, 9, 21),
                 end_date=date(2026, 9, 25),
                 planned_hours=Decimal("24"),
                 status="À assigner",
+                required_resource_class="Programmation",
                 required_competency="PLC",
                 required_competency_id="C-PLC",
                 priority="Haute",
@@ -195,6 +211,12 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
             )
             session.add_all([target, covered, load])
             session.flush()
+            session.add(
+                ResourceRequirementCompetency(
+                    resource_requirement_id=target.id,
+                    competency_id="C-PLC",
+                )
+            )
             session.add_all(
                 [
                     Shift(
@@ -278,6 +300,14 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
 
             alice = rows[0]
             self.assertTrue(alice["recommended"])
+            self.assertTrue(alice["preferred"])
+            self.assertEqual(alice["preferred_resource_id"], "R-ALICE")
+            self.assertEqual(alice["preferred_resource_name"], "Alice")
+            self.assertEqual(alice["preferred_resource_status"], "ELIGIBLE")
+            self.assertEqual(alice["recommendation_category"], 1)
+            self.assertEqual(alice["competency_state"], "SATISFIED")
+            self.assertEqual(alice["missing_competency_ids"], [])
+            self.assertFalse(alice["fallback_requires_confirmation"])
             self.assertTrue(alice["competency_match"])
             self.assertTrue(alice["class_match"])
             self.assertEqual(alice["required_class"], "Programmation")
@@ -288,10 +318,170 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
             self.assertEqual(alice["overtime_needed"], 0.0)
 
             bob = rows[1]
+            self.assertFalse(bob["preferred"])
             self.assertFalse(bob["competency_match"])
             self.assertFalse(bob["class_match"])
+            self.assertEqual(bob["recommendation_category"], 7)
             self.assertEqual(bob["prudent_free"], 32.0)
             self.assertGreater(alice["score"], bob["score"])
+
+    def test_recommendations_do_not_infer_class_and_keep_canonical_skill_ids(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            with factory.begin() as session:
+                target = session.get(ResourceRequirement, "REQ-TARGET")
+                assert target is not None
+                target.required_resource_class = None
+                target.required_competency = "Texte historique non canonique"
+            engine.dispose()
+
+            app = create_api_app(url)
+            with TestClient(app) as client:
+                response = client.get(
+                    "/api/v1/segments/SEG-2026-0273/resource-recommendations"
+                )
+
+            self.assertEqual(response.status_code, 200, response.text)
+            rows = response.json()
+            alice, bob = rows
+            self.assertIsNone(alice["required_class"])
+            self.assertTrue(alice["class_match"])
+            self.assertTrue(bob["class_match"])
+            self.assertEqual(alice["required_competency"], "PLC")
+            self.assertEqual(alice["competency_state"], "SATISFIED")
+            self.assertEqual(bob["competency_state"], "MISSING")
+            self.assertEqual(bob["recommendation_category"], 3)
+
+    def test_canonical_multi_competency_ids_survive_renames(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            with factory.begin() as session:
+                plc = session.get(Competency, "C-PLC")
+                target = session.get(ResourceRequirement, "REQ-TARGET")
+                assert plc is not None
+                assert target is not None
+                plc.name = "Automate"
+                target.required_resource_class = None
+                target.required_competency = "Libellé historique obsolète"
+                session.add(
+                    Competency(
+                        id="C-SCADA",
+                        name="SCADA",
+                        active=True,
+                        sort_order=20,
+                    )
+                )
+                session.add(
+                    ResourceCompetency(
+                        resource_id="R-ALICE",
+                        competency_id="C-SCADA",
+                    )
+                )
+                session.add(
+                    ResourceRequirementCompetency(
+                        resource_requirement_id="REQ-TARGET",
+                        competency_id="C-SCADA",
+                    )
+                )
+            engine.dispose()
+
+            app = create_api_app(url)
+            with TestClient(app) as client:
+                response = client.get(
+                    "/api/v1/segments/SEG-2026-0273/resource-recommendations"
+                )
+
+            self.assertEqual(response.status_code, 200, response.text)
+            alice, bob = response.json()
+            self.assertEqual(alice["required_competency"], "Automate; SCADA")
+            self.assertEqual(alice["competency_state"], "SATISFIED")
+            self.assertEqual(alice["missing_competency_ids"], [])
+            self.assertEqual(bob["competency_state"], "MISSING")
+            self.assertEqual(bob["missing_competency_ids"], ["C-PLC", "C-SCADA"])
+            self.assertEqual(bob["recommendation_category"], 3)
+
+    def test_preferred_resource_never_bypasses_real_qualification(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            with factory.begin() as session:
+                task = session.get(TaskCatalogEntry, "T-APPROVED")
+                assert task is not None
+                task.preferred_resource_id = "R-BOB"
+            engine.dispose()
+
+            app = create_api_app(url)
+            with TestClient(app) as client:
+                response = client.get(
+                    "/api/v1/segments/SEG-2026-0273/resource-recommendations"
+                )
+
+            self.assertEqual(response.status_code, 200, response.text)
+            rows = response.json()
+            alice, bob = rows
+            self.assertEqual(alice["resource_id"], "R-ALICE")
+            self.assertEqual(alice["recommendation_category"], 2)
+            self.assertTrue(alice["recommended"])
+            self.assertFalse(alice["preferred"])
+            self.assertEqual(bob["resource_id"], "R-BOB")
+            self.assertTrue(bob["preferred"])
+            self.assertEqual(bob["recommendation_category"], 7)
+            self.assertFalse(bob["recommended"])
+
+    def test_inactive_preferred_resource_is_diagnostic_not_candidate(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            with factory.begin() as session:
+                alice = session.get(Resource, "R-ALICE")
+                assert alice is not None
+                alice.active = False
+            engine.dispose()
+
+            app = create_api_app(url)
+            with TestClient(app) as client:
+                response = client.get(
+                    "/api/v1/segments/SEG-2026-0273/resource-recommendations"
+                )
+
+            self.assertEqual(response.status_code, 200, response.text)
+            rows = response.json()
+            self.assertEqual([row["resource_id"] for row in rows], ["R-BOB"])
+            self.assertFalse(rows[0]["preferred"])
+            self.assertEqual(rows[0]["preferred_resource_id"], "R-ALICE")
+            self.assertEqual(rows[0]["preferred_resource_name"], "Alice")
+            self.assertEqual(rows[0]["preferred_resource_status"], "INACTIVE_LOCAL")
+
+    def test_legacy_unknown_task_context_never_invents_preference(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            with factory.begin() as session:
+                target = session.get(ResourceRequirement, "REQ-TARGET")
+                assert target is not None
+                target.approval_reference_status = "LEGACY_UNKNOWN"
+            engine.dispose()
+
+            app = create_api_app(url)
+            with TestClient(app) as client:
+                response = client.get(
+                    "/api/v1/segments/SEG-2026-0273/resource-recommendations"
+                )
+
+            self.assertEqual(response.status_code, 200, response.text)
+            rows = response.json()
+            self.assertFalse(rows[0]["preferred"])
+            self.assertIsNone(rows[0]["preferred_resource_id"])
+            self.assertEqual(rows[0]["preferred_resource_status"], "UNRESOLVED_CONTEXT")
+            self.assertEqual(rows[0]["recommendation_category"], 2)
+            self.assertTrue(rows[0]["recommended"])
 
 
 if __name__ == "__main__":

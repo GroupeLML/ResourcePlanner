@@ -1165,6 +1165,23 @@ export type ResourceRecommendationReadModel = {
   score: number;
   rank: number;
   recommended: boolean;
+  preferred: boolean;
+  recommendation_category: number;
+  competency_state: "NOT_REQUIRED" | "SATISFIED" | "MISSING" | "UNRESOLVED";
+  missing_competency_ids: string[];
+  capacity_state: "PRUDENT_FULL" | "PRUDENT_PARTIAL" | "TENTATIVE_ONLY" | "NONE";
+  fallback_requires_confirmation: boolean;
+  preferred_resource_id: string | null;
+  preferred_resource_name: string | null;
+  preferred_resource_status:
+    | "NONE"
+    | "ELIGIBLE"
+    | "INACTIVE_LOCAL"
+    | "INACTIVE_ERP"
+    | "NO_SCHEDULE_IN_WINDOW"
+    | "NOT_FOUND"
+    | "INVALID_TASK_CONTEXT"
+    | "UNRESOLVED_CONTEXT";
 };
 
 export type MediumTermUnlinkedSegmentReadModel = {
