@@ -14,6 +14,10 @@ from app.application.security import (
     ROLE_DELIVERY_CONTRIBUTOR,
     ROLE_TECHNICIAN,
 )
+from app.application.verification_documents import (
+    render_phase_report_html,
+    render_traceability_csv,
+)
 from app.application.verification_execution_service import VerificationExecutionService
 from app.domain.delivery import (
     DeliveryItem,
@@ -211,6 +215,162 @@ class VerificationExecutionSqlServerConcurrencyTests(unittest.TestCase):
                 )
                 self.assertEqual(len(executions), 1)
                 self.assertEqual(executions[0].sequence, 1)
+        finally:
+            engine.dispose()
+
+    def test_document_snapshot_and_exports_run_on_sql_server(self) -> None:
+        marker = uuid4().hex[:10]
+        project_id = f"P363F-{marker}"
+        work_package_id = f"WP363F-{marker}"
+        lead_id = f"L363F-{marker}"
+        tech_id = f"T363F-{marker}"
+        plan_id = f"DP363F-{marker}"
+        epic_id = f"EP363F-{marker}"
+        story_id = f"ST363F-{marker}"
+        scope_id = f"VS363F-{marker}"
+        requirement_id = f"RQ363F-{marker}"
+        revision_id = f"RV363F-{marker}"
+
+        engine = create_sql_engine(DATABASE_URL)
+        factory = create_session_factory(engine)
+        try:
+            with factory.begin() as session:
+                session.add(
+                    Project(
+                        id=project_id,
+                        number=project_id,
+                        name="Projet documents 363F",
+                    )
+                )
+                session.add(
+                    WorkPackage(
+                        id=work_package_id,
+                        project_id=project_id,
+                        code="WP-DOC",
+                        name="WP documents 363F",
+                    )
+                )
+                session.add_all(
+                    [
+                        AppUser(
+                            id=lead_id,
+                            issuer="urn:test",
+                            subject=f"lead-doc-{marker}",
+                            display_name="Lead 363F",
+                            roles_json=json.dumps([]),
+                            active=True,
+                        ),
+                        AppUser(
+                            id=tech_id,
+                            issuer="urn:test",
+                            subject=f"tech-doc-{marker}",
+                            display_name="Tech 363F",
+                            roles_json=json.dumps(
+                                [ROLE_TECHNICIAN, ROLE_DELIVERY_CONTRIBUTOR]
+                            ),
+                            active=True,
+                        ),
+                    ]
+                )
+
+            with factory.begin() as session:
+                delivery = SqlDeliveryRepository(session)
+                delivery.add_plan(
+                    DeliveryPlan(
+                        id=plan_id,
+                        work_package_id=work_package_id,
+                        status=DeliveryPlanStatus.ACTIVE,
+                        lead_user_id=lead_id,
+                    )
+                )
+                delivery.add_item(
+                    DeliveryItem(
+                        id=epic_id,
+                        delivery_plan_id=plan_id,
+                        item_type=DeliveryItemType.EPIC,
+                        title="Epic documents 363F",
+                    )
+                )
+                delivery.add_item(
+                    DeliveryItem(
+                        id=story_id,
+                        delivery_plan_id=plan_id,
+                        parent_id=epic_id,
+                        item_type=DeliveryItemType.STORY,
+                        title="Story documents 363F",
+                        status=DeliveryItemStatus.DONE,
+                    )
+                )
+                verification = SqlVerificationRepository(session)
+                verification.add_scope(
+                    VerificationScope(
+                        id=scope_id,
+                        work_package_id=work_package_id,
+                        lead_user_id=lead_id,
+                    )
+                )
+                verification.add_requirement(
+                    VerificationRequirement(
+                        id=requirement_id,
+                        verification_scope_id=scope_id,
+                        story_id=story_id,
+                        phase=VerificationPhase.FAT,
+                        current_revision_id=revision_id,
+                    ),
+                    VerificationRequirementRevision(
+                        id=revision_id,
+                        requirement_id=requirement_id,
+                        revision_number=1,
+                        objective="Valider export SQL Server",
+                        method="Exécuter le scénario 363F",
+                        expected_result="Document cohérent",
+                    ),
+                )
+                SqlVerificationExecutionRepository(session).assign_executor(
+                    VerificationExecutorAssignment(
+                        id=f"AS363F-{marker}",
+                        requirement_id=requirement_id,
+                        executor_user_id=tech_id,
+                        assigned_by_user_id=lead_id,
+                    )
+                )
+
+            with factory.begin() as session:
+                service = VerificationExecutionService(
+                    SqlVerificationExecutionRepository(session)
+                )
+                result = service.record_execution(
+                    requirement_id,
+                    result="PASS",
+                    executed_at=None,
+                    measurements={"sqlserver": True},
+                    comments="Validation SQL Server 363F",
+                    expected_verification_version=1,
+                    idempotency_key=f"363f-execution-{marker}",
+                    principal=principal(tech_id),
+                )
+                self.assertEqual(result["verification_version"], 2)
+
+            with factory.begin() as session:
+                service = VerificationExecutionService(
+                    SqlVerificationExecutionRepository(session)
+                )
+                snapshot = service.document_snapshot(
+                    work_package_id,
+                    principal=principal(tech_id),
+                )
+                self.assertEqual(snapshot["package"]["verification_version"], 2)
+                self.assertEqual(
+                    snapshot["context"]["stories"][story_id]["epic_title"],
+                    "Epic documents 363F",
+                )
+                report = render_phase_report_html(snapshot, "FAT")
+                traceability = render_traceability_csv(snapshot)
+                self.assertIn("Valider export SQL Server", report)
+                self.assertIn("Validation SQL Server 363F", report)
+                self.assertIn("PASS", report)
+                self.assertIn(revision_id, traceability)
+                self.assertIn("Validation SQL Server 363F", traceability)
         finally:
             engine.dispose()
 
