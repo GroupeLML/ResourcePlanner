@@ -3,6 +3,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useAuth } from "./AuthContext";
 import ViewScopeSelector from "./ViewScopeSelector";
 import { useViewScope } from "./ViewScopeContext";
+import VerificationPanel, { VerificationDecisionEditor } from "./VerificationPanel";
 import {
   ApiError,
   ProjectReadModel,
@@ -27,6 +28,13 @@ import {
   setDeliveryLead,
   updateDeliveryItem,
 } from "./deliveryApi";
+import {
+  StoryVerificationDecisionPayload,
+  VerificationPackageReadModel,
+  VerificationRequirementReadModel,
+  completeStoryWithVerification,
+  getVerificationPackage,
+} from "./verificationApi";
 
 const RESOURCE_CLASS_DIVERGENCE = "WORK_PACKAGE_TASK_RESOURCE_CLASS_DIVERGENCE";
 
@@ -82,8 +90,11 @@ type StoryCardProps = {
   item: DeliveryItemReadModel;
   epicTitle: string | null;
   deliveryVersion: number;
+  verificationVersion: number | null;
+  verificationRequirements: VerificationRequirementReadModel[];
   disabled: boolean;
   onChanged: (board: DeliveryBoardReadModel) => Promise<void> | void;
+  onVerificationChanged: () => Promise<void>;
   onError: (message: string) => void;
   onMutationFailure: (reason: unknown, fallback: string) => Promise<void> | void;
 };
@@ -92,8 +103,11 @@ function StoryCard({
   item,
   epicTitle,
   deliveryVersion,
+  verificationVersion,
+  verificationRequirements,
   disabled,
   onChanged,
+  onVerificationChanged,
   onError,
   onMutationFailure,
 }: StoryCardProps) {
@@ -107,6 +121,8 @@ function StoryCard({
   const [assignee, setAssignee] = useState(item.assignee_user_id ?? "");
   const [blockageNote, setBlockageNote] = useState("");
   const [pending, setPending] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const [closureDeliveryVersion, setClosureDeliveryVersion] = useState<number | null>(null);
 
   useEffect(() => {
     setStatus(item.status);
@@ -138,7 +154,8 @@ function StoryCard({
 
   async function save() {
     const changes: Record<string, unknown> = {};
-    if (canStatus && status !== item.status) changes.status = status;
+    const wantsCompletion = canStatus && status === "DONE" && item.status !== "DONE";
+    if (canStatus && status !== item.status && !wantsCompletion) changes.status = status;
     if (canRemaining) {
       const next = remaining.trim() === "" ? null : Number(remaining);
       if (next !== item.remaining_hours) changes.remaining_hours = next;
@@ -151,18 +168,47 @@ function StoryCard({
       const next = assignee.trim() || null;
       if (next !== item.assignee_user_id) changes.assignee_user_id = next;
     }
-    if (Object.keys(changes).length === 0) return;
+    if (Object.keys(changes).length === 0 && !wantsCompletion) return;
 
     setPending(true);
     onError("");
     try {
-      const board = await updateDeliveryItem(item.id, {
-        expected_delivery_version: deliveryVersion,
-        ...changes,
-      });
-      await onChanged(board);
+      let nextDeliveryVersion = deliveryVersion;
+      if (Object.keys(changes).length > 0) {
+        const board = await updateDeliveryItem(item.id, {
+          expected_delivery_version: deliveryVersion,
+          ...changes,
+        });
+        nextDeliveryVersion = board.plan.delivery_version;
+        await onChanged(board);
+      }
+      if (wantsCompletion) {
+        setClosureDeliveryVersion(nextDeliveryVersion);
+        setClosing(true);
+      }
     } catch (reason) {
       await onMutationFailure(reason, "Impossible de modifier la Story.");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function completeWithVerification(decision: StoryVerificationDecisionPayload) {
+    setPending(true);
+    onError("");
+    try {
+      await completeStoryWithVerification(item.id, {
+        expected_delivery_version: closureDeliveryVersion ?? deliveryVersion,
+        expected_verification_version: verificationVersion,
+        decision,
+      });
+      setClosing(false);
+      setClosureDeliveryVersion(null);
+      await onVerificationChanged();
+    } catch (reason) {
+      setClosureDeliveryVersion(null);
+      await onMutationFailure(reason, "Impossible de terminer la Story avec sa décision Verification.");
+      throw reason;
     } finally {
       setPending(false);
     }
@@ -285,6 +331,20 @@ function StoryCard({
         </div>
       )}
 
+      {closing && (
+        <VerificationDecisionEditor
+          storyTitle={item.title}
+          existingRequirements={verificationRequirements}
+          disabled={disabled || pending}
+          onSubmit={completeWithVerification}
+          onCancel={() => {
+            setClosing(false);
+            setClosureDeliveryVersion(null);
+            setStatus(item.status);
+          }}
+        />
+      )}
+
       {canBlockage && item.status === "BLOCKED" && (
         <div className="delivery-blockage-note">
           <label>
@@ -318,6 +378,8 @@ export default function DeliveryPage() {
   const [workPackageId, setWorkPackageId] = useState("");
   const [board, setBoard] = useState<DeliveryBoardReadModel | null>(null);
   const [summary, setSummary] = useState<DeliverySummary | null>(null);
+  const [verificationPackage, setVerificationPackage] = useState<VerificationPackageReadModel | null>(null);
+  const [verificationInaccessible, setVerificationInaccessible] = useState(false);
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
@@ -393,6 +455,34 @@ export default function DeliveryPage() {
     setLeadUserId(nextBoard?.plan.lead_user_id ?? "");
   }
 
+  async function reloadVerification(signal?: AbortSignal) {
+    if (!workPackageId) {
+      setVerificationPackage(null);
+      setVerificationInaccessible(false);
+      return;
+    }
+    try {
+      const nextPackage = await getVerificationPackage(workPackageId, signal);
+      setVerificationPackage(nextPackage);
+      setVerificationInaccessible(false);
+    } catch (reason) {
+      if (reason instanceof DOMException && reason.name === "AbortError") throw reason;
+      if (reason instanceof ApiError && reason.status === 403) {
+        setVerificationPackage(null);
+        setVerificationInaccessible(true);
+        return;
+      }
+      throw reason;
+    }
+  }
+
+  async function reloadWorkspace(signal?: AbortSignal) {
+    await Promise.all([
+      reloadDelivery(signal),
+      reloadVerification(signal),
+    ]);
+  }
+
   useEffect(() => {
     if (!workPackageId) {
       setBoard(null);
@@ -402,10 +492,10 @@ export default function DeliveryPage() {
     const controller = new AbortController();
     setLoading(true);
     setError("");
-    reloadDelivery(controller.signal)
+    reloadWorkspace(controller.signal)
       .catch((reason) => {
         if (reason instanceof DOMException && reason.name === "AbortError") return;
-        setError(errorMessage(reason, "Impossible de charger Delivery."));
+        setError(errorMessage(reason, "Impossible de charger Delivery et Verification."));
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
@@ -430,28 +520,37 @@ export default function DeliveryPage() {
     [epics],
   );
   const cancelledStories = stories.filter((story) => story.status === "CANCELLED");
+  const storyTitles = useMemo(
+    () => new Map(stories.map((story) => [story.id, story.title])),
+    [stories],
+  );
 
   async function adoptBoard(nextBoard: DeliveryBoardReadModel) {
     setBoard(nextBoard);
     setLeadUserId(nextBoard.plan.lead_user_id ?? "");
     try {
-      const nextSummary = await getDeliverySummary(workPackageId);
+      const [nextSummary] = await Promise.all([
+        getDeliverySummary(workPackageId),
+        reloadVerification(),
+      ]);
       setSummary(nextSummary);
     } catch (reason) {
-      setError(errorMessage(reason, "Le board est à jour, mais le résumé n'a pas pu être rechargé."));
+      setError(errorMessage(reason, "Le board est à jour, mais ses projections n'ont pas pu être rechargées."));
     }
   }
 
   async function handleMutationFailure(reason: unknown, fallback: string) {
     const message = errorMessage(reason, fallback);
-    if (!(reason instanceof ApiError) || reason.code !== "delivery_version_conflict") {
+    const versionConflict = reason instanceof ApiError
+      && (reason.code === "delivery_version_conflict" || reason.code === "verification_version_conflict");
+    if (!versionConflict) {
       setError(message);
       return;
     }
     try {
-      await reloadDelivery();
+      await reloadWorkspace();
       setError(
-        `${message} Le board a été rechargé avec la version courante. Réessayez l'action.`,
+        `${message} Delivery et Verification ont été rechargés avec les versions courantes. Réessayez l'action.`,
       );
     } catch (reloadReason) {
       setError(
@@ -778,6 +877,17 @@ export default function DeliveryPage() {
                 </div>
               </section>
 
+              <VerificationPanel
+                workPackageId={workPackageId}
+                packageModel={verificationPackage}
+                storyTitles={storyTitles}
+                deliveryVersion={board.plan.delivery_version}
+                disabled={pending}
+                inaccessible={verificationInaccessible}
+                onReload={reloadWorkspace}
+                onMutationFailure={handleMutationFailure}
+              />
+
               <div className="delivery-workspace">
                 <aside className="delivery-epics" aria-label="Epics">
                   <div className="delivery-section-heading">
@@ -840,8 +950,13 @@ export default function DeliveryPage() {
                                       : null
                                   }
                                   deliveryVersion={board.plan.delivery_version}
+                                  verificationVersion={verificationPackage?.verification_version ?? null}
+                                  verificationRequirements={(verificationPackage?.requirements ?? []).filter(
+                                    (requirement) => requirement.story_id === story.id,
+                                  )}
                                   disabled={pending || !planIsEditable}
                                   onChanged={adoptBoard}
+                                  onVerificationChanged={reloadWorkspace}
                                   onError={setError}
                                   onMutationFailure={handleMutationFailure}
                                 />
