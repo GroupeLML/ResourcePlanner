@@ -283,6 +283,7 @@ class PlanningWindowOverrideCommandTests(unittest.TestCase):
                             allocation_id=ALLOCATION_ID,
                             resource_id=RESOURCE_B,
                             day=NEXT_DAY,
+                            include_planning_window_override_options=True,
                         )
                     )
                     self.assertEqual(
@@ -308,6 +309,7 @@ class PlanningWindowOverrideCommandTests(unittest.TestCase):
                             allocation_id=ALLOCATION_ID,
                             resource_id=RESOURCE_B,
                             day=NEXT_DAY,
+                            include_planning_window_override_options=True,
                         )
                     )
                     self.assertEqual(
@@ -363,6 +365,7 @@ class PlanningWindowOverrideCommandTests(unittest.TestCase):
                             allocation_id=ALLOCATION_ID,
                             resource_id=RESOURCE_B,
                             day=NEXT_DAY,
+                            include_planning_window_override_options=True,
                         )
                     )
                     self.assertEqual(
