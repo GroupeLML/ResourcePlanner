@@ -1601,6 +1601,7 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
               <DemandDetail
                 demandNumber={detailDemandNumber}
                 compact
+                showWorkflowActions
                 onDirtyChange={setDetailContextDirty}
                 onChanged={() => setRefreshKey((value) => value + 1)}
               />
