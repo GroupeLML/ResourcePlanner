@@ -7,10 +7,12 @@ import unittest
 
 from app.domain.planning_projection import project_planning_snapshot
 from app.infrastructure.sql import (
+    AvailabilityRuleResourceClass,
     Base,
     Project,
     Resource,
     ResourceAvailabilityRule,
+    ResourceClassConfig,
     ResourceRequirement,
     Shift,
     SqlPlanningReadRepository,
@@ -36,6 +38,11 @@ class SqlPlanningReadRepositoryTests(unittest.TestCase):
         with transactional_session(self.factory) as session:
             session.add_all(
                 [
+                    ResourceClassConfig(
+                        code="Installation",
+                        label="Installation",
+                        active=True,
+                    ),
                     Project(
                         id="P1",
                         number="P-1",
@@ -113,7 +120,23 @@ class SqlPlanningReadRepositoryTests(unittest.TestCase):
                         end_date=D2,
                         active=True,
                     ),
+                    ResourceAvailabilityRule(
+                        id="AV-HOLIDAY-INSTALLATION",
+                        legacy_id="HOLIDAY-INSTALLATION",
+                        resource_id=None,
+                        availability_type="Jour férié",
+                        start_date=D1,
+                        end_date=D1,
+                        active=True,
+                    ),
                 ]
+            )
+            session.flush()
+            session.add(
+                AvailabilityRuleResourceClass(
+                    availability_rule_id="AV-HOLIDAY-INSTALLATION",
+                    resource_class_code="Installation",
+                )
             )
             session.add_all(
                 [
@@ -171,6 +194,10 @@ class SqlPlanningReadRepositoryTests(unittest.TestCase):
         )
         self.assertEqual(global_holiday["Technicien"], "")
         self.assertEqual(global_holiday["Type"], "Jour férié")
+        class_holiday = next(
+            row for row in snapshot.availability if row["ID"] == "HOLIDAY-INSTALLATION"
+        )
+        self.assertEqual(class_holiday["ClassesRessources"], ("Installation",))
 
         self.assertEqual(snapshot.technicians, ({
             "name": "Alice",
