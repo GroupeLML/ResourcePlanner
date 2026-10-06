@@ -797,7 +797,13 @@ export default function ShiftEditor({
 
             {(shift.related_asset_reservations ?? []).length > 0 && (
               <div className="shift-related-assets">
-                <strong>Réservations liées ou héritées</strong>
+                <strong>
+                  {(shift.related_asset_reservations ?? []).some((reservation) =>
+                    reservation.association_kind.startsWith("INHERITED_"),
+                  )
+                    ? "Réservations liées ou héritées"
+                    : "Réservations liées à la demande"}
+                </strong>
                 {(shift.related_asset_reservations ?? []).map((reservation) => (
                   <div key={reservation.allocation_id}>
                     <span>{reservation.asset_code} — {reservation.asset_label}</span>
