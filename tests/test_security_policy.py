@@ -7,6 +7,8 @@ from app.application.security import (
     PERMISSION_ADMIN_USERS,
     PERMISSION_APPROVE_DEMANDS,
     PERMISSION_CONTRIBUTE_DELIVERY,
+    PERMISSION_EXECUTE_VERIFICATION,
+    PERMISSION_MANAGE_VERIFICATION,
     PERMISSION_MANAGE_DELIVERY,
     PERMISSION_MANAGE_COMMUNICATIONS,
     PERMISSION_MANAGE_DEMANDS,
@@ -42,6 +44,8 @@ class SecurityPolicyTests(unittest.TestCase):
                 PERMISSION_MANAGE_WORK_PACKAGES,
                 PERMISSION_MANAGE_DELIVERY,
                 PERMISSION_CONTRIBUTE_DELIVERY,
+                PERMISSION_MANAGE_VERIFICATION,
+                PERMISSION_EXECUTE_VERIFICATION,
                 PERMISSION_MANAGE_RESOURCES,
                 PERMISSION_MANAGE_COMMUNICATIONS,
                 PERMISSION_SYNC_PROJECTS,
@@ -56,7 +60,10 @@ class SecurityPolicyTests(unittest.TestCase):
         project_manager = set(permissions_for_roles((ROLE_PROJECT_MANAGER,)))
         coordinator = set(permissions_for_roles((ROLE_COORDINATOR,)))
 
-        self.assertEqual(technician, {PERMISSION_READ})
+        self.assertEqual(
+            technician,
+            {PERMISSION_READ, PERMISSION_EXECUTE_VERIFICATION},
+        )
         self.assertIn(PERMISSION_APPROVE_DEMANDS, manager)
         self.assertNotIn(PERMISSION_MANAGE_DEMANDS, manager)
         self.assertIn(PERMISSION_MANAGE_DEMANDS, project_manager)
@@ -80,7 +87,12 @@ class SecurityPolicyTests(unittest.TestCase):
         )
         self.assertEqual(
             delivery_contributor,
-            {PERMISSION_READ, PERMISSION_CONTRIBUTE_DELIVERY},
+            {
+                PERMISSION_READ,
+                PERMISSION_CONTRIBUTE_DELIVERY,
+                PERMISSION_MANAGE_VERIFICATION,
+                PERMISSION_EXECUTE_VERIFICATION,
+            },
         )
 
     def test_invalid_role_is_rejected(self) -> None:
@@ -248,6 +260,27 @@ class SecurityPolicyTests(unittest.TestCase):
         self.assertEqual(
             required_permission("POST", "/api/v1/delivery/plans"),
             PERMISSION_CONTRIBUTE_DELIVERY,
+        )
+        self.assertEqual(
+            required_permission(
+                "POST",
+                "/api/v1/verification/requirements/REQ-1/assignments",
+            ),
+            PERMISSION_MANAGE_VERIFICATION,
+        )
+        self.assertEqual(
+            required_permission(
+                "POST",
+                "/api/v1/verification/requirements/REQ-1/executions",
+            ),
+            PERMISSION_EXECUTE_VERIFICATION,
+        )
+        self.assertEqual(
+            required_permission(
+                "POST",
+                "/api/v1/verification/executions/EX-1/evidence-links",
+            ),
+            PERMISSION_EXECUTE_VERIFICATION,
         )
         self.assertEqual(
             required_permission("POST", "/api/v1/future-command"),

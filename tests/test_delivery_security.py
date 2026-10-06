@@ -9,6 +9,7 @@ from app.application.security import (
     PERMISSION_CONTRIBUTE_DELIVERY,
     PERMISSION_MANAGE_DELIVERY,
     PERMISSION_MANAGE_PLANNING,
+    PERMISSION_EXECUTE_VERIFICATION,
     PERMISSION_READ,
     ROLE_COORDINATOR,
     ROLE_DELIVERY_CONTRIBUTOR,
@@ -57,7 +58,10 @@ class DeliverySecurityTests(unittest.TestCase):
         self.assertIn(PERMISSION_CONTRIBUTE_DELIVERY, project_manager)
         self.assertNotIn(PERMISSION_MANAGE_PLANNING, project_manager)
 
-        self.assertEqual(technician, {PERMISSION_READ})
+        self.assertEqual(
+            technician,
+            {PERMISSION_READ, PERMISSION_EXECUTE_VERIFICATION},
+        )
         self.assertIn(PERMISSION_CONTRIBUTE_DELIVERY, contributor)
         for permissions in (technician, coordinator, manager):
             self.assertNotIn(PERMISSION_MANAGE_DELIVERY, permissions)

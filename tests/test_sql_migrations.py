@@ -153,6 +153,9 @@ class SqlMigrationTests(unittest.TestCase):
                     "story_verification_decision_requirements",
                     "verification_retest_requests",
                     "verification_change_history",
+                    "verification_executor_assignments",
+                    "verification_test_executions",
+                    "verification_evidence_links",
                 }
                 self.assertTrue(expected.issubset(tables))
                 with engine.connect() as connection:

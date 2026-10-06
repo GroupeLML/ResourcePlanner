@@ -57,7 +57,7 @@ class VerificationTestExecutionRow(Base):
     __tablename__ = "verification_test_executions"
     __table_args__ = (
         CheckConstraint(
-            "sequence >= 1",
+            "execution_sequence >= 1",
             name="verification_test_execution_sequence_positive",
         ),
         CheckConstraint(
@@ -66,14 +66,14 @@ class VerificationTestExecutionRow(Base):
         ),
         UniqueConstraint(
             "requirement_id",
-            "sequence",
+            "execution_sequence",
             name="uq_verification_test_execution_requirement_sequence",
         ),
         Index(
             "ix_verification_test_executions_requirement_revision_sequence",
             "requirement_id",
             "revision_id",
-            "sequence",
+            "execution_sequence",
         ),
     )
 
@@ -86,7 +86,7 @@ class VerificationTestExecutionRow(Base):
         ForeignKey("verification_requirement_revisions.id"),
         nullable=False,
     )
-    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    sequence: Mapped[int] = mapped_column("execution_sequence", Integer, nullable=False)
     result: Mapped[str] = mapped_column(String(16), nullable=False)
     executor_user_id: Mapped[str] = mapped_column(
         String(ID_LENGTH), ForeignKey("app_users.id"), nullable=False
