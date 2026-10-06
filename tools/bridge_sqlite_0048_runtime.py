@@ -50,6 +50,9 @@ SOURCE_MISSING_TABLES = {
     "story_verification_decision_requirements",
     "verification_retest_requests",
     "verification_change_history",
+    "verification_executor_assignments",
+    "verification_test_executions",
+    "verification_evidence_links",
 }
 SOURCE_MISSING_COLUMNS = {
     "projects": {
