@@ -24,8 +24,10 @@ from app.infrastructure.sql import (
     create_session_factory,
     create_sql_engine,
 )
+from app.infrastructure.sql.approval_scope_models import ApprovalScopeApprover
 from app.server import create_api_app
 from tests.approval_test_support import (
+    TEST_ADMIN_USER_ID,
     TEST_APPROVAL_SCOPE_ID,
     TEST_COORDINATOR_USER_ID,
     map_asset_type_to_test_approval_scope,
@@ -35,7 +37,6 @@ from tests.http_test_auth import (
     TEST_ADMIN_AUTH_RESOLVER,
     TEST_COORDINATOR_AUTH_RESOLVER,
 )
-from app.infrastructure.sql.approval_scope_models import ApprovalScopeApprover
 
 
 DAY = date(2026, 10, 12)
@@ -247,6 +248,29 @@ class DirectAssetReservationTests(unittest.TestCase):
         self.assertIsNone(requirement["resource_requirement_id"])
         self.assertIsNone(requirement["shift_id"])
         self.assertEqual(allocation["operator_resource_id"], "RESOURCE-SKILLED")
+
+    def test_admin_role_does_not_bypass_asset_authority(self) -> None:
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory.begin() as session:
+                session.execute(
+                    delete(ApprovalScopeApprover).where(
+                        ApprovalScopeApprover.approval_scope_id
+                        == TEST_APPROVAL_SCOPE_ID,
+                        ApprovalScopeApprover.app_user_id
+                        == TEST_ADMIN_USER_ID,
+                    )
+                )
+        finally:
+            engine.dispose()
+
+        denied = self._project_create(key="admin-bypass-denied-615a")
+        self.assertEqual(denied.status_code, 403, denied.text)
+        self.assertEqual(
+            denied.json()["error"]["code"],
+            "asset_assignment_authority_required",
+        )
 
     def test_coordinator_requires_current_unit_authority_for_create_replace_and_release(self) -> None:
         engine = create_sql_engine(self.url)
