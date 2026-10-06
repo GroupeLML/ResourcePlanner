@@ -21,8 +21,9 @@ from ...domain.project_communication import (
 from .asset_models import AssetAllocation, AssetRequirement
 from .asset_qualification import (
     QUALIFICATION_SATISFIED,
-    evaluate_asset_qualification,
+    evaluate_asset_qualifications,
 )
+from .asset_shift_projection import asset_shift_association
 from .business_contact_models import BusinessContact
 from .identity_models import AppUser
 from .models import Project, Resource, ResourceRequirement, Shift, WorkforceRequest
@@ -222,11 +223,21 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
         )
         requests_by_id = {row.id: row for row in requests}
 
-        asset_qualification_diagnostics: dict[str, list[str]] = {}
         asset_qualification_diagnostics_by_shift: dict[str, list[str]] = {}
-        asset_qualification_diagnostics_by_project: dict[str, list[str]] = {}
         shift_ids = tuple(
             shift.id for shift, _requirement, _resource, _project in rows
+        )
+        resource_ids = tuple(
+            dict.fromkeys(
+                shift.resource_id
+                for shift, _requirement, _resource, _project in rows
+            )
+        )
+        human_requirement_ids = tuple(
+            dict.fromkeys(
+                requirement.id
+                for _shift, requirement, _resource, _project in rows
+            )
         )
         asset_scope = []
         if request_ids:
@@ -237,51 +248,60 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
             asset_scope.append(AssetRequirement.shift_id.in_(shift_ids))
         if project_ids:
             asset_scope.append(AssetRequirement.project_id.in_(project_ids))
+        if resource_ids:
+            asset_scope.append(
+                AssetRequirement.context_resource_id.in_(resource_ids)
+            )
+        if human_requirement_ids:
+            asset_scope.append(
+                AssetRequirement.resource_requirement_id.in_(
+                    human_requirement_ids
+                )
+            )
         asset_rows = (
-            self._session.execute(
-                select(AssetAllocation, AssetRequirement)
-                .join(
-                    AssetRequirement,
-                    AssetAllocation.asset_requirement_id == AssetRequirement.id,
-                )
-                .where(
-                    or_(*asset_scope),
-                    AssetAllocation.start_date <= week_end,
-                    AssetAllocation.end_date >= week_start,
-                )
-            ).all()
+            tuple(
+                self._session.execute(
+                    select(AssetAllocation, AssetRequirement)
+                    .join(
+                        AssetRequirement,
+                        AssetAllocation.asset_requirement_id == AssetRequirement.id,
+                    )
+                    .where(
+                        or_(*asset_scope),
+                        AssetRequirement.status != "Annulé",
+                        AssetAllocation.start_date <= week_end,
+                        AssetAllocation.end_date >= week_start,
+                    )
+                ).all()
+            )
             if asset_scope
-            else []
+            else ()
+        )
+        qualifications = evaluate_asset_qualifications(
+            self._session,
+            pairs=tuple(
+                (asset_requirement, allocation)
+                for allocation, asset_requirement in asset_rows
+            ),
         )
         for allocation, asset_requirement in asset_rows:
-            qualification = evaluate_asset_qualification(
-                self._session,
-                requirement=asset_requirement,
-                allocation=allocation,
-            )
+            qualification = qualifications[
+                (asset_requirement.id, allocation.id)
+            ]
             if qualification.state == QUALIFICATION_SATISFIED:
                 continue
             diagnostic = f"ASSET_QUALIFICATION_{qualification.state}"
-            if (
-                asset_requirement.origin
-                == AssetRequirementOrigin.SHIFT_AD_HOC.value
-                and asset_requirement.shift_id
-            ):
+            for shift, human_requirement, _resource, _project in rows:
+                association = asset_shift_association(
+                    requirement=asset_requirement,
+                    allocation=allocation,
+                    shift=shift,
+                    human_requirement=human_requirement,
+                )
+                if association is None:
+                    continue
                 asset_qualification_diagnostics_by_shift.setdefault(
-                    asset_requirement.shift_id,
-                    [],
-                ).append(diagnostic)
-            elif (
-                asset_requirement.origin == AssetRequirementOrigin.REQUEST.value
-                and asset_requirement.workforce_request_id
-            ):
-                asset_qualification_diagnostics.setdefault(
-                    asset_requirement.workforce_request_id,
-                    [],
-                ).append(diagnostic)
-            elif asset_requirement.project_id:
-                asset_qualification_diagnostics_by_project.setdefault(
-                    asset_requirement.project_id,
+                    shift.id,
                     [],
                 ).append(diagnostic)
 
@@ -394,20 +414,8 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                 + list(resource_contact.diagnostics)
                 + operational_diagnostics
                 + list(
-                    asset_qualification_diagnostics.get(
-                        requirement.workforce_request_id or "",
-                        (),
-                    )
-                )
-                + list(
                     asset_qualification_diagnostics_by_shift.get(
                         shift.id,
-                        (),
-                    )
-                )
-                + list(
-                    asset_qualification_diagnostics_by_project.get(
-                        project.id,
                         (),
                     )
                 )
