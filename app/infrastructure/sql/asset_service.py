@@ -175,7 +175,10 @@ class SqlAssetService:
             line_active=True,
             asset_type_id=asset.asset_type_id,
             asset_type_exists=asset_type is not None,
-            asset_type_active=bool(asset_type and asset_type.active),
+            # Authority survives catalogue deactivation so an already assigned
+            # physical unit can still be changed or released. Availability is
+            # validated separately by the mutation-specific allocation rules.
+            asset_type_active=asset_type is not None,
             scope_candidates=tuple(
                 ApprovalScopeCandidate(scope_id=row.id, active=bool(row.active))
                 for row in scopes
@@ -184,7 +187,7 @@ class SqlAssetService:
             users=users,
             proposed_asset_id=asset.id,
             proposed_asset_exists=True,
-            proposed_asset_active=bool(asset.active),
+            proposed_asset_active=True,
             proposed_asset_type_matches=bool(
                 asset_type is not None and asset.asset_type_id == asset_type.id
             ),
