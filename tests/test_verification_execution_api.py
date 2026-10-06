@@ -256,6 +256,34 @@ class VerificationExecutionApiTests(unittest.TestCase):
                 "https://files.example/fat/proof-1",
             )
 
+            test_plan = client.get(
+                "/api/v1/verification/work-packages/WP-1/documents/test-plan"
+            )
+            self.assertEqual(test_plan.status_code, 200, test_plan.text)
+            self.assertIn("text/html", test_plan.headers["content-type"])
+            self.assertIn("inline;", test_plan.headers["content-disposition"])
+            self.assertIn("Plan de test Verification", test_plan.text)
+            self.assertIn("Valider démarrage pompe", test_plan.text)
+            self.assertIn("REV-1", test_plan.text)
+
+            fat_report = client.get(
+                "/api/v1/verification/work-packages/WP-1/documents/reports/FAT"
+            )
+            self.assertEqual(fat_report.status_code, 200, fat_report.text)
+            self.assertIn("Rapport Verification — FAT", fat_report.text)
+            self.assertIn("FAT conforme", fat_report.text)
+            self.assertIn("https://files.example/fat/proof-1", fat_report.text)
+
+            traceability = client.get(
+                "/api/v1/verification/work-packages/WP-1/documents/traceability.csv"
+            )
+            self.assertEqual(traceability.status_code, 200, traceability.text)
+            self.assertIn("text/csv", traceability.headers["content-type"])
+            self.assertIn("attachment;", traceability.headers["content-disposition"])
+            self.assertIn("current_revision_id", traceability.text)
+            self.assertIn("REV-1", traceability.text)
+            self.assertIn("FAT conforme", traceability.text)
+
         with TestClient(lead_app) as client:
             retest = client.post(
                 "/api/v1/verification/requirements/REQ-1/retests",
