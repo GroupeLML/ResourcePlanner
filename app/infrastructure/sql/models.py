@@ -635,6 +635,22 @@ class ResourceAvailabilityRule(TimestampMixin, Base):
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=true(), index=True)
 
 
+class AvailabilityRuleResourceClass(Base):
+    __tablename__ = "availability_rule_resource_classes"
+
+    availability_rule_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("resource_availability_rules.id"),
+        primary_key=True,
+    )
+    resource_class_code: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("resource_class_configs.code"),
+        primary_key=True,
+        index=True,
+    )
+
+
 class ResourceRequirement(TimestampMixin, Base):
     __tablename__ = "resource_requirements"
     __table_args__ = (
