@@ -50,6 +50,7 @@ function acceptanceDates() {
     d3: localIso(addDays(nextMonday, 2)),
     d4: localIso(addDays(nextMonday, 3)),
     d5: localIso(addDays(nextMonday, 4)),
+    d6: localIso(addDays(nextMonday, 5)),
   };
 }
 
@@ -245,7 +246,7 @@ test("client IDs fall back to crypto.getRandomValues when randomUUID is unavaila
 
 test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite", async ({ browser }) => {
   test.setTimeout(240_000);
-  const { today, d1, d2, d3, d4, d5 } = acceptanceDates();
+  const { today, d1, d2, d3, d4, d5, d6 } = acceptanceDates();
   let demandNumber = "";
   let urgentNumber = "";
 
@@ -585,7 +586,7 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await expect(alternatives).toHaveCount(2);
     for (const [card, day, confirmation] of [
       [alternatives.nth(0).locator(".period-card"), d4, "Confirmée"],
-      [alternatives.nth(1).locator(".period-card"), d5, "Tentative"],
+      [alternatives.nth(1).locator(".period-card"), d6, "Tentative"],
     ] as const) {
       await labelled(card, "Début", "input").fill(day);
       await labelled(card, "Fin", "input").fill(day);
@@ -619,6 +620,24 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await submitButton.click();
     await expect(page.locator(".demand-notice").filter({ hasText: "soumise pour approbation" })).toContainText("soumise pour approbation");
     await expect(page.getByTestId("plan-delta-preview")).toBeVisible();
+
+    await navigateMain(page, "Moyen terme");
+    const demandGanttRows = page.locator(".mt-demand-timeline-row").filter({ hasText: demandNumber });
+    await expect(demandGanttRows).toHaveCount(3);
+    await expect(demandGanttRows.filter({ hasText: "Période cumulative" })).toHaveCount(1);
+    await expect(demandGanttRows.filter({ hasText: "Alternative" })).toHaveCount(2);
+    await expect(
+      demandGanttRows.filter({ hasText: "Dépasse après le WorkPackage" }),
+    ).toHaveCount(1);
+    await demandGanttRows.first().getByRole("button", { name: new RegExp(demandNumber) }).first().click();
+    await expect(
+      page.getByRole("dialog", { name: `Détail de la demande ${demandNumber}` }),
+    ).toBeVisible();
+    await page.getByRole("dialog", { name: `Détail de la demande ${demandNumber}` })
+      .getByRole("button", { name: "Fermer" })
+      .click();
+    await navigateMain(page, "Demandes");
+    await workflowSelect(page, demandNumber);
 
     await expect(
       page.getByRole("button", { name: "Approuver", exact: true }),
