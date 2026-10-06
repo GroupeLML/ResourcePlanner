@@ -98,6 +98,7 @@ EXPECTED_TABLES = {
     "smtp_configuration_audit",
     "shifts",
     "task_catalog_items",
+    "task_catalog_preferred_resource_audit",
     "task_catalog_project_sync_state",
     "task_class_standards",
 }
