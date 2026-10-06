@@ -207,6 +207,34 @@ class SqlPlanningWindowOverrideRepository:
         self._session.flush()
         return row
 
+    def supersede_for_request(
+        self,
+        request_id: str,
+        *,
+        resolution_reason: str,
+    ) -> int:
+        rows = list(
+            self._session.scalars(
+                select(PlanningWindowOverride)
+                .where(
+                    PlanningWindowOverride.workforce_request_id == _text(request_id),
+                    PlanningWindowOverride.status == PLANNING_WINDOW_OVERRIDE_ACTIVE,
+                )
+                .order_by(PlanningWindowOverride.created_at, PlanningWindowOverride.id)
+            ).all()
+        )
+        if not rows:
+            return 0
+        resolved_at = utc_now()
+        reason = _text(resolution_reason) or "REQUEST_CANCELLED"
+        for row in rows:
+            row.status = PLANNING_WINDOW_OVERRIDE_SUPERSEDED
+            row.resolution_reason = reason
+            row.resolved_by_revision_id = None
+            row.resolved_at = resolved_at
+        self._session.flush()
+        return len(rows)
+
     def supersede_for_requirements(
         self,
         requirement_ids: Iterable[str],
