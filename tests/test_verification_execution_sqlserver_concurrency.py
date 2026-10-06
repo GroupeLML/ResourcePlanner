@@ -9,7 +9,11 @@ import unittest
 from sqlalchemy import select
 
 from app.application import ApplicationConflictError
-from app.application.security import AuthPrincipal, ROLE_TECHNICIAN
+from app.application.security import (
+    AuthPrincipal,
+    ROLE_DELIVERY_CONTRIBUTOR,
+    ROLE_TECHNICIAN,
+)
 from app.application.verification_execution_service import VerificationExecutionService
 from app.domain.delivery import (
     DeliveryItem,
@@ -50,7 +54,7 @@ def principal(user_id: str) -> AuthPrincipal:
         subject=f"subject-{user_id}",
         display_name=user_id,
         email=None,
-        roles=(ROLE_TECHNICIAN,),
+        roles=(ROLE_TECHNICIAN, ROLE_DELIVERY_CONTRIBUTOR),
         auth_mode="test",
     )
 
@@ -99,7 +103,9 @@ class VerificationExecutionSqlServerConcurrencyTests(unittest.TestCase):
                             issuer="urn:test",
                             subject=f"tech-{marker}",
                             display_name="Tech 363D",
-                            roles_json=json.dumps([ROLE_TECHNICIAN]),
+                            roles_json=json.dumps(
+                                [ROLE_TECHNICIAN, ROLE_DELIVERY_CONTRIBUTOR]
+                            ),
                             active=True,
                         ),
                     ]

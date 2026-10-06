@@ -60,10 +60,7 @@ class SecurityPolicyTests(unittest.TestCase):
         project_manager = set(permissions_for_roles((ROLE_PROJECT_MANAGER,)))
         coordinator = set(permissions_for_roles((ROLE_COORDINATOR,)))
 
-        self.assertEqual(
-            technician,
-            {PERMISSION_READ, PERMISSION_EXECUTE_VERIFICATION},
-        )
+        self.assertEqual(technician, {PERMISSION_READ})
         self.assertIn(PERMISSION_APPROVE_DEMANDS, manager)
         self.assertNotIn(PERMISSION_MANAGE_DEMANDS, manager)
         self.assertIn(PERMISSION_MANAGE_DEMANDS, project_manager)

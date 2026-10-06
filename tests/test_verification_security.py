@@ -41,7 +41,9 @@ class VerificationSecurityTests(unittest.TestCase):
         self.assertNotIn(VerificationAction.RECORD_RESULT, actions)
 
     def test_assigned_technician_can_execute_but_cannot_manage(self) -> None:
-        tech = principal("TECH", ROLE_TECHNICIAN)
+        tech = principal(
+            "TECH", ROLE_TECHNICIAN, ROLE_DELIVERY_CONTRIBUTOR
+        )
         actions = authorized_verification_actions_for(
             tech,
             self.scope,

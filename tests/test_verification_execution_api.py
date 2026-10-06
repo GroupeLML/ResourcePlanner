@@ -76,7 +76,7 @@ class VerificationExecutionApiTests(unittest.TestCase):
                         issuer="urn:test",
                         subject="subject-TECH",
                         display_name="Technicien",
-                        roles_json=json.dumps([ROLE_TECHNICIAN]),
+                        roles_json=json.dumps([ROLE_TECHNICIAN, ROLE_DELIVERY_CONTRIBUTOR]),
                         active=True,
                     ),
                     AppUser(
@@ -178,7 +178,7 @@ class VerificationExecutionApiTests(unittest.TestCase):
             self.assertEqual(replay.status_code, 200, replay.text)
             self.assertEqual(replay.json(), assigned.json())
 
-        other_app = self._app(principal("TECH2", ROLE_TECHNICIAN))
+        other_app = self._app(principal("TECH2", ROLE_TECHNICIAN, ROLE_DELIVERY_CONTRIBUTOR))
         with TestClient(other_app) as client:
             denied = client.post(
                 "/api/v1/verification/requirements/REQ-1/executions",
@@ -194,7 +194,7 @@ class VerificationExecutionApiTests(unittest.TestCase):
                 "verification_action_denied",
             )
 
-        tech_app = self._app(principal("TECH", ROLE_TECHNICIAN))
+        tech_app = self._app(principal("TECH", ROLE_TECHNICIAN, ROLE_DELIVERY_CONTRIBUTOR))
         with TestClient(tech_app) as client:
             executed = client.post(
                 "/api/v1/verification/requirements/REQ-1/executions",
