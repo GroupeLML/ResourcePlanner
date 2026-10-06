@@ -7,9 +7,9 @@ Shift; it never persists a Shift-to-asset link.
 
 from __future__ import annotations
 
+from ...domain.reservable_assets import AssetRequirementOrigin
 from .asset_models import AssetAllocation, AssetRequirement
 from .models import ResourceRequirement, Shift
-from ...domain.reservable_assets import AssetRequirementOrigin
 
 
 ASSOCIATION_OWNED_SHIFT = "OWNED_SHIFT"
