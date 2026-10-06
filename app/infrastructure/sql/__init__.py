@@ -157,6 +157,13 @@ from .project_manager_resolution_repository import (
 )
 from .period_approved_sync import SqlPeriodAwareApprovedDemandSyncAdapter
 from .planning_audit import PlanningChangeHistory
+from .planning_window_override_models import (
+    PLANNING_WINDOW_OVERRIDE_ABSORBED,
+    PLANNING_WINDOW_OVERRIDE_ACTIVE,
+    PLANNING_WINDOW_OVERRIDE_SUPERSEDED,
+    PlanningWindowOverride,
+)
+from .planning_window_override_repository import SqlPlanningWindowOverrideRepository
 from .planning_authorization_repository import SqlRequestPlanningAuthorizationRepository
 from .planning_repository import SqlPlanningReadRepository
 from .planning_version import (
@@ -232,6 +239,10 @@ __all__ = [
     "OverallocationAuditedSegmentRepository",
     "PlanningChangeHistory",
     "PlanningMutationState",
+    "PLANNING_WINDOW_OVERRIDE_ABSORBED",
+    "PLANNING_WINDOW_OVERRIDE_ACTIVE",
+    "PLANNING_WINDOW_OVERRIDE_SUPERSEDED",
+    "PlanningWindowOverride",
     "Project",
     "ProjectCoManager",
     "ProjectManagerAudit",
@@ -295,6 +306,7 @@ __all__ = [
     "SqlPlannerQueryRepositoryWithLoadProfiles",
     "SqlPlannerQueryRepositoryWithOverallocation",
     "SqlPlanningCommandAdapter",
+    "SqlPlanningWindowOverrideRepository",
     "SqlRequestPlanningAuthorizationRepository",
     "SqlPlanningReadRepository",
     "SqlPlanningMutationVersionRepository",
