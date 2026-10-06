@@ -353,6 +353,24 @@ class PlanningDropWindowExtensionTests(unittest.TestCase):
             self.assertIsNotNone(payload["approved_entry_key"])
             self.assertIsNotNone(payload["request_version"])
 
+            with TestClient(app, raise_server_exceptions=False) as client:
+                direct = client.post(
+                    f"/api/v1/allocations/{allocation_id}/extend-and-move",
+                    json={
+                        "resource_id": "R2",
+                        "day": NEXT_DAY.isoformat(),
+                        "expected_planning_version": payload["planning_version"],
+                        "confirm_window_extension": False,
+                        "expected_approval_revision_id": payload["approval_revision_id"],
+                    },
+                    headers={"Idempotency-Key": "request-auto-extension-refused-659a"},
+                )
+            self.assertEqual(direct.status_code, 422, direct.text)
+            self.assertEqual(
+                direct.json()["error"]["code"],
+                "allocation_window_extension_confirmation_required",
+            )
+
 
     def test_outside_request_proposal_changes_candidate_and_approval_but_never_moves_shift(self) -> None:
         with TemporaryDirectory() as directory:
