@@ -24,12 +24,13 @@ class ReactMediumTermContractTests(unittest.TestCase):
         api = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
 
         self.assertIn("getMediumTermBudget(", page)
-        self.assertIn("taskCatalogItemId: taskFilter || undefined", page)
+        self.assertIn("taskCode: taskFilter || undefined", page)
         self.assertIn("resourceClassCode: resourceClassFilter || undefined", page)
         self.assertIn("includeInactiveProjects,", page)
         self.assertIn("/api/v1/medium-term/budget?", api)
         self.assertIn('params.set("project_number", project)', api)
         self.assertIn('params.set("task_catalog_item_id", filters.taskCatalogItemId)', api)
+        self.assertIn('params.set("task_code", filters.taskCode)', api)
         self.assertIn('params.set("resource_class_code", filters.resourceClassCode)', api)
         self.assertIn("include_inactive_projects", api)
         self.assertIn("start,", api)
@@ -58,6 +59,47 @@ class ReactMediumTermContractTests(unittest.TestCase):
         self.assertNotIn('project.status === "Terminé"', page)
         self.assertNotIn('project.status === "Annulé"', page)
         self.assertNotIn('normalize(project.status)', page)
+
+    def test_issue_614a_task_filter_groups_by_code_without_replacing_task_identity(self) -> None:
+        page = (ROOT / "frontend" / "src" / "MediumTermPage.tsx").read_text(
+            encoding="utf-8"
+        )
+        api = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
+        routes = (ROOT / "app" / "server" / "routes_reads.py").read_text(
+            encoding="utf-8"
+        )
+        query_port = (ROOT / "app" / "application" / "query_ports.py").read_text(
+            encoding="utf-8"
+        )
+        repository = (
+            ROOT / "app" / "infrastructure" / "sql" / "web_query_repository.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("taskCode: taskFilter || undefined", page)
+        self.assertIn("task.task_code === taskFilter", page)
+        self.assertIn(
+            'new Map<string, { task_code: string; task_label: string }>()',
+            page,
+        )
+        self.assertIn(
+            '<option value={task.task_code} key={task.task_code}>',
+            page,
+        )
+        self.assertIn("{task.task_code} — {task.task_label}", page)
+        self.assertNotIn(
+            "{task.project_number} · {task.task_code} — {task.task_label}",
+            page,
+        )
+        self.assertIn("taskCatalogItemId?: string;", api)
+        self.assertIn("taskCode?: string;", api)
+        self.assertIn('params.set("task_code", filters.taskCode)', api)
+        self.assertIn("task_code: str | None = Query", routes)
+        self.assertIn("task_code: str | None = None", query_port)
+        self.assertIn("wanted_task_code = _optional_text(task_code)", repository)
+        self.assertIn(
+            "and (wanted_task_code is None or task.task_code == wanted_task_code)",
+            repository,
+        )
 
     def test_gantt_renders_pm_project_task_work_package_hierarchy_from_backend(self) -> None:
         page = (ROOT / "frontend" / "src" / "MediumTermPage.tsx").read_text(
