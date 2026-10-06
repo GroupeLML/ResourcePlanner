@@ -87,6 +87,7 @@ class StoryVerificationDecisionInput:
             )
         )
         object.__setattr__(self, "existing_requirement_ids", requirement_ids)
+        object.__setattr__(self, "new_requirements", tuple(self.new_requirements))
         if kind is VerificationDecisionKind.NO_TEST_REQUIRED:
             if justification is None:
                 raise ValueError(
