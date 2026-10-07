@@ -982,6 +982,10 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
       response.request().method() === "POST"
       && response.url().includes(`/api/v1/allocations/${encodeURIComponent(allocationId)}/evaluate-drop`)
     ));
+    const extendPromise = page.waitForResponse((response) => (
+      response.request().method() === "POST"
+      && response.url().includes(`/api/v1/allocations/${encodeURIComponent(allocationId)}/extend-and-move`)
+    ));
     await dragWithDataTransfer(page, source, outsideTarget);
     const evaluated = await evaluatePromise;
     expect(evaluated.status(), await evaluated.text()).toBe(200);
@@ -991,60 +995,40 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
       outside_standard_hours: false,
       include_planning_window_override_options: true,
     });
-    expect((await evaluated.json()).actions.map((row: { code: string }) => row.code)).toEqual([
+    const evaluationBody = await evaluated.json() as {
+      actions: Array<{ code: string; auto_execute?: boolean }>;
+    };
+    expect(evaluationBody.actions.map((row) => row.code)).toEqual([
       "EXTEND_AND_MOVE",
       "CANCEL",
     ]);
+    expect(evaluationBody.actions[0].auto_execute).toBe(true);
 
-    let dropDialog = page.getByRole("dialog", { name: "Choisir l’action du déplacement" });
-    await expect(dropDialog).toContainText("Fenêtre proposée");
-    await expect(dropDialog).toContainText("Besoin autonome");
-    await dropDialog.getByRole("button", { name: "Annuler", exact: true }).click();
-    await expect(dropDialog).toBeHidden();
-
-    const unchangedSegmentResponse = await page.request.get(
-      `/api/v1/segments/${encodeURIComponent(createdShift!.segment_id)}`,
-    );
-    expect(unchangedSegmentResponse.ok()).toBeTruthy();
-    expect((await unchangedSegmentResponse.json()).end_date).toBe(d2);
-    const unchangedShiftsResponse = await page.request.get(
-      `/api/v1/shifts?start=${d1}&end=${d5}`,
-    );
-    const unchangedShift = (await unchangedShiftsResponse.json() as Array<{
-      allocation_id: string;
-      resource_name: string;
-      work_date: string;
-    }>).find((row) => row.allocation_id === allocationId);
-    expect(unchangedShift?.resource_name).toBe("Alice");
-    expect(unchangedShift?.work_date).toBe(d2);
-
-    await dragWithDataTransfer(
-      page,
-      sourceCell.locator(`.shift-card[data-allocation-id="${allocationId}"]`),
-      outsideTarget,
-    );
-    dropDialog = page.getByRole("dialog", { name: "Choisir l’action du déplacement" });
-    await expect(dropDialog).toBeVisible();
-    const extendPromise = page.waitForResponse((response) => (
-      response.request().method() === "POST"
-      && response.url().includes(`/api/v1/allocations/${encodeURIComponent(allocationId)}/extend-and-move`)
-    ));
-    await dropDialog.getByRole("button", { name: "Étendre la période et déplacer", exact: true }).click();
     const extended = await extendPromise;
     expect(extended.status(), await extended.text()).toBe(200);
     expect(extended.request().headers()["idempotency-key"]).toBeTruthy();
     expect(typeof extended.request().postDataJSON().expected_planning_version).toBe("number");
-    await expect(page.locator(".planning-drag-feedback")).toContainText("Période étendue et quart déplacé");
+    expect(extended.request().postDataJSON().confirm_window_extension).toBe(false);
+    await expect(page.getByRole("dialog", { name: "Choisir l’action du déplacement" })).toHaveCount(0);
+    await expect(page.locator(".planning-drag-feedback")).toContainText("Fenêtre du besoin étendue automatiquement");
 
     const extendedSegmentResponse = await page.request.get(
       `/api/v1/segments/${encodeURIComponent(createdShift!.segment_id)}`,
     );
     expect(extendedSegmentResponse.ok()).toBeTruthy();
-    expect((await extendedSegmentResponse.json()).end_date).toBe(d3);
+    const extendedSegment = await extendedSegmentResponse.json() as {
+      start_date: string;
+      end_date: string;
+      planned_hours: number;
+    };
+    expect(extendedSegment.start_date).toBe(d2);
+    expect(extendedSegment.end_date).toBe(d3);
+    expect(Number(extendedSegment.planned_hours)).toBe(1.25);
     await expect(
       bobRow.locator(`.planning-drop-day[data-day="${d3}"] .shift-card[data-allocation-id="${allocationId}"]`),
     ).toBeVisible();
 
+    let dropDialog = page.getByRole("dialog", { name: "Choisir l’action du déplacement" });
     const bobD3Source = bobRow
       .locator(`.planning-drop-day[data-day="${d3}"]`)
       .locator(`.shift-card[data-allocation-id="${allocationId}"]`);

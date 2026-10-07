@@ -1,3 +1,4 @@
+import { resourceDisplayName } from "./resourceLabels";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { createClientId } from "./clientId";
@@ -1229,14 +1230,14 @@ export default function DemandsPage({
                       }
                       options={resources.map((resource) => ({
                         value: resource.id,
-                        label: `${resource.name}${resource.resource_class ? ` — ${resource.resource_class}` : ""}`,
+                        label: `${resourceDisplayName(resource.name)}${resource.resource_class ? ` — ${resource.resource_class}` : ""}`,
                         searchText: [resource.name, resource.resource_class, resource.competencies].filter(Boolean).join(" "),
                       }))}
                       selectedOption={
                         missingProposedResource
                           ? {
                             value: historicalIdentity("resource-name", missingProposedResource),
-                            label: `${missingProposedResource} — inactive/non listée`,
+                            label: `${resourceDisplayName(missingProposedResource)} — inactive/non listée`,
                             disabled: true,
                           }
                           : null
@@ -1345,7 +1346,7 @@ export default function DemandsPage({
                             <strong>Ligne {index + 1}</strong>
                             <span>
                               {resolution.task_code ? `Tâche ${resolution.task_code}` : "Sans tâche"}
-                              {resolution.proposed_resource_name ? ` · ${resolution.proposed_resource_name}` : ""}
+                              {resolution.proposed_resource_name ? ` · ${resourceDisplayName(resolution.proposed_resource_name)}` : ""}
                             </span>
                           </div>
                           <ResolutionSummary title="Responsable opérationnel" resolution={resolution.operational_responsible} />

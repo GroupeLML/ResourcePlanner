@@ -1,3 +1,4 @@
+import { resourceDisplayName } from "./resourceLabels";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { createClientId } from "./clientId";
@@ -254,7 +255,7 @@ function deltaSide(
 ): string {
   if (!day || !resource || hours <= 0) return "—";
   const suffix = outside ? " · hors horaire" : "";
-  return `${day} · ${resource} · ${hours} h${allocationType ? ` · ${allocationType}` : ""}${suffix}`;
+  return `${day} · ${resourceDisplayName(resource)} · ${hours} h${allocationType ? ` · ${allocationType}` : ""}${suffix}`;
 }
 
 function envelopeDecisionLabel(decision: string | null): string {
@@ -932,11 +933,22 @@ export default function DemandWorkflowPage({
                         (row) => row.line.line_id === requirement.request_line_id,
                       )?.line;
                       const resourceClassLabel = line?.required_resource_class_label?.trim() || null;
-                      const fallbackLineLabel = resourceClassLabel
-                        || line?.description
-                        || (line ? `Ligne ${line.position + 1}` : "Ligne");
-                      const lineLabel = line?.task_code
-                        ? `${line.task_code} — ${line.task_label || line.description || resourceClassLabel || `Ligne ${line.position + 1}`}`
+                      const fallbackLineNumber = line ? `Ligne ${line.position + 1}` : "Ligne";
+                      const assetTypeCode = line?.asset_type_code?.trim() || null;
+                      const assetTypeName = line?.asset_type_label?.trim() || null;
+                      const assetTypeLabel = assetTypeCode && assetTypeName
+                        ? `${assetTypeCode} — ${assetTypeName}`
+                        : assetTypeCode || assetTypeName;
+                      const proposedAssetCode = line?.proposed_asset_code?.trim() || null;
+                      const proposedAssetName = line?.proposed_asset_label?.trim() || null;
+                      const proposedAssetLabel = proposedAssetCode && proposedAssetName
+                        ? `${proposedAssetCode} — ${proposedAssetName}`
+                        : proposedAssetCode || proposedAssetName;
+                      const fallbackLineLabel = line?.kind === "ASSET"
+                        ? proposedAssetLabel || assetTypeLabel || fallbackLineNumber
+                        : resourceClassLabel || line?.description || fallbackLineNumber;
+                      const lineLabel = line?.kind !== "ASSET" && line?.task_code
+                        ? `${line.task_code} — ${line.task_label || line.description || resourceClassLabel || fallbackLineNumber}`
                         : fallbackLineLabel;
                       return (
                         <article
@@ -1160,7 +1172,7 @@ export default function DemandWorkflowPage({
                               <span>
                                 {requirement.covered_hours} h affectées · {requirement.locked_hours} h verrouillées
                                 {requirement.mobilized_resources.length > 0
-                                  ? ` · ${requirement.mobilized_resources.map((resource) => resource.resource_name).join(", ")}`
+                                  ? ` · ${requirement.mobilized_resources.map((resource) => resourceDisplayName(resource.resource_name)).join(", ")}`
                                   : ""}
                               </span>
                             </div>

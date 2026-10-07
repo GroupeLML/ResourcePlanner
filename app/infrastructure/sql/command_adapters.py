@@ -24,6 +24,8 @@ from ...domain.value_coercion import date_from_value
 from .asset_service import SqlAssetService
 from .base import new_id, utc_now
 from .models import (
+    ORIGIN_AD_HOC,
+    ORIGIN_QUICK_SHIFT,
     ORIGIN_REQUEST,
     Project,
     Resource,
@@ -46,6 +48,20 @@ def _text(value: object) -> str:
 
 def _decimal(value: object) -> Decimal:
     return Decimal(str(value).replace(",", "."))
+
+
+_AUTO_EXTEND_REQUIREMENT_ORIGINS = frozenset({ORIGIN_AD_HOC, ORIGIN_QUICK_SHIFT})
+
+
+def _extend_ad_hoc_requirement_window(
+    requirement: ResourceRequirement,
+    day: date,
+) -> bool:
+    if requirement.origin not in _AUTO_EXTEND_REQUIREMENT_ORIGINS:
+        return False
+    requirement.start_date = min(requirement.start_date, day)
+    requirement.end_date = max(requirement.end_date, day)
+    return True
 
 
 class SqlPlanningCommandAdapter(PlanningCommandPort):
@@ -355,10 +371,15 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             raise KeyError(f"Allocation {allocation_id} introuvable")
         requirement = self._requirement(shift.resource_requirement_id)
         resource = self._resource(technician)
+        requested_day = date_from_value(day_value)
+        if requested_day is None:
+            raise ValueError("La date du quart est requise.")
+        if requested_day < requirement.start_date or requested_day > requirement.end_date:
+            _extend_ad_hoc_requirement_window(requirement, requested_day)
         day, hours, _availability = self._validate_manual(
             requirement,
             resource,
-            day_value,
+            requested_day,
             hours_value,
             bool(hors_horaire),
             exclude_shift_id=shift.id,
@@ -401,7 +422,8 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
         if requested_day is None:
             raise ValueError("La date du quart est requise.")
         if requested_day < requirement.start_date or requested_day > requirement.end_date:
-            raise ValueError("Le quart déplacé doit demeurer dans la fenêtre du segment.")
+            if not _extend_ad_hoc_requirement_window(requirement, requested_day):
+                raise ValueError("Le quart déplacé doit demeurer dans la fenêtre du segment.")
         day, _, availability = self._validate_manual(
             requirement,
             resource,

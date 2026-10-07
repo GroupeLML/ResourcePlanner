@@ -1,3 +1,4 @@
+import { resourceDisplayName } from "./resourceLabels";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { createClientId } from "./clientId";
@@ -311,7 +312,7 @@ export default function ShiftAssetAssignmentDialog({
         <div className="shift-asset-dialog-body">
           <div className="dialog-context-grid">
             <div><span>Projet / demande</span><strong>{shift.project_number || "—"} · {shift.demand_number || "—"}</strong></div>
-            <div><span>Ressource</span><strong>{shift.resource_name}</strong></div>
+            <div><span>Ressource</span><strong>{resourceDisplayName(shift.resource_name)}</strong></div>
             <div><span>Date du quart</span><strong>{shift.work_date}</strong></div>
             <div><span>Actif actuel</span><strong>{current?.asset_code || "Aucun actif"}</strong></div>
           </div>
@@ -362,7 +363,7 @@ export default function ShiftAssetAssignmentDialog({
               {projectReuse && selectedCandidate ? (
                 <div className="info-banner" role="status">
                   Réservation projet existante du {selectedCandidate.existing_start_date} au {selectedCandidate.existing_end_date}.
-                  En choisissant cet actif, {shift.resource_name} devient l’opérateur de toute cette période.
+                  En choisissant cet actif, {resourceDisplayName(shift.resource_name)} devient l’opérateur de toute cette période.
                   Aucune nouvelle réservation physique n’est créée.
                 </div>
               ) : (
