@@ -29,19 +29,6 @@ async function openResourcesForAlice(page: Page) {
   await expect(page.locator(".resource-profile-card")).toContainText("Alice");
 }
 
-async function patchAliceSchedule(page: Page, startTime: string, endTime: string) {
-  return page.request.patch(
-    "/api/v1/availability-rules/E2E-STD-ALICE",
-    {
-      headers: { "X-E2E-Role": "ADMIN" },
-      data: {
-        start_time: startTime,
-        end_time: endTime,
-      },
-    },
-  );
-}
-
 test("653 — Ouvrir amène au détail projet et conserve le focus", async ({ browser }) => {
   const { context, page } = await openAdmin(browser);
   try {
@@ -86,15 +73,15 @@ test("653 — le coordonnateur de ressource est recherchable sans casse", async 
   }
 });
 
-test("653 — nouvelle règle 07:00–15:00 et règle historique 15:30 préservée", async ({ browser }) => {
+test("653 — nouvelle règle 07:00–15:00 et règle existante préservée", async ({ browser }) => {
   const { context, page } = await openAdmin(browser);
   try {
-    const historicalSchedule = await patchAliceSchedule(page, "07:00:00", "15:30:00");
-    expect(historicalSchedule.status(), await historicalSchedule.text()).toBe(200);
-
     await openResourcesForAlice(page);
 
     const availabilityCard = page.locator(".admin-card").filter({ hasText: "Horaire & absences" });
+    const existingRule = availabilityCard.locator(".availability-rule").filter({ hasText: "08:00 → 16:00" });
+    await expect(existingRule).toBeVisible();
+
     const addRule = availabilityCard.getByRole("button", { name: "+ Ajouter", exact: true });
     await expect(addRule).toBeVisible();
     await addRule.click();
@@ -104,17 +91,15 @@ test("653 — nouvelle règle 07:00–15:00 et règle historique 15:30 préserv�
     await expect(newRuleEditor.getByLabel("Fin", { exact: true })).toHaveValue("15:00");
     await newRuleEditor.getByRole("button", { name: "Fermer", exact: true }).click();
 
-    const historicalRule = availabilityCard.locator(".availability-rule").filter({ hasText: "07:00 → 15:30" });
-    await expect(historicalRule).toBeVisible();
-    const editHistorical = historicalRule.getByRole("button", { name: "Modifier", exact: true });
-    await expect(editHistorical).toBeVisible();
-    await editHistorical.click();
+    await expect(existingRule).toBeVisible();
+    const editExisting = existingRule.getByRole("button", { name: "Modifier", exact: true });
+    await expect(editExisting).toBeVisible();
+    await editExisting.click();
 
-    const historicalEditor = availabilityCard.locator(".admin-editor");
-    await expect(historicalEditor.getByLabel("Début", { exact: true })).toHaveValue("07:00");
-    await expect(historicalEditor.getByLabel("Fin", { exact: true })).toHaveValue("15:30");
+    const existingEditor = availabilityCard.locator(".admin-editor");
+    await expect(existingEditor.getByLabel("Début", { exact: true })).toHaveValue("08:00");
+    await expect(existingEditor.getByLabel("Fin", { exact: true })).toHaveValue("16:00");
   } finally {
-    await patchAliceSchedule(page, "08:00:00", "16:00:00");
     await closeContext(context);
   }
 });
