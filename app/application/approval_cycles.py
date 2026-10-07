@@ -56,6 +56,7 @@ class ApprovalCycleRoutingInput:
     approval_scope_ids: tuple[str, ...]
     proposed_resource_id: str | None
     line_kind: str = "WORKFORCE"
+    period_proposed_resources: tuple[tuple[str, str | None], ...] = ()
     asset_type_id: str | None = None
     proposed_asset_id: str | None = None
 
