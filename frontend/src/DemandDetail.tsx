@@ -129,7 +129,7 @@ export default function DemandDetail({
           canonicalDetail={detail}
           hasUnsavedChanges={hasUnsavedChanges}
           embedded
-          showActions={!readOnly}
+          showActions={false}
           onChanged={changed}
           refreshToken={refreshKey}
         />
