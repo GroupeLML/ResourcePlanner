@@ -345,16 +345,6 @@ class SqlDemandPeriodRepository(DemandPeriodRepositoryPort):
             period.proposed_resource for period in periods
         ):
             raise ValueError("Une période matérielle ne peut pas proposer un technicien.")
-        if any(
-            normalized_proposed_resource_mode(period.proposed_resource_mode)
-            == PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD
-            for period in periods
-        ):
-            raise ValueError(
-                "SAME_AS_PERIOD est persistable par le contrat 655A mais ne peut pas être "
-                "activé avant 655B, qui imposera la contrainte sur les Shift réels."
-            )
-
         current = self._session.scalars(
             select(WorkforceRequestPeriod).where(
                 WorkforceRequestPeriod.workforce_request_id == request.id,
