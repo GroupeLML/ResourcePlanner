@@ -150,6 +150,7 @@ class PlannerQueryPort(Protocol):
         start: date,
         end: date,
         project_ids: Sequence[str] | None = None,
+        demand_ids: Sequence[str] | None = None,
     ) -> Sequence[PendingDemandLoadReadModel]: ...
 
     def list_medium_term_unlinked_segments(
@@ -166,7 +167,10 @@ class PlannerQueryPort(Protocol):
         start: date,
         end: date,
         project_ids: Sequence[str] | None = None,
+        demand_ids: Sequence[str] | None = None,
         include_resource_ids: Sequence[str] = (),
+        shift_resource_ids: Sequence[str] = (),
+        project_day_keys: Sequence[tuple[str, date]] = (),
     ) -> PlanningCapacityGridReadModel: ...
 
     def list_planning_actions(
@@ -175,6 +179,8 @@ class PlannerQueryPort(Protocol):
         start: date,
         end: date,
         project_ids: Sequence[str] | None = None,
+        demand_ids: Sequence[str] | None = None,
+        resource_ids: Sequence[str] = (),
     ) -> Sequence[PlanningActionReadModel]: ...
 
     def recommend_resources(
@@ -189,6 +195,8 @@ class PlannerQueryPort(Protocol):
         end: date | None = None,
         include_cancelled: bool = False,
         project_ids: Sequence[str] | None = None,
+        demand_ids: Sequence[str] | None = None,
+        resource_ids: Sequence[str] = (),
     ) -> Sequence[SegmentReadModel]: ...
 
     def get_segment(self, segment_id: str) -> SegmentReadModel | None: ...
@@ -207,6 +215,9 @@ class PlannerQueryPort(Protocol):
         resource_name: str | None = None,
         resource_id: str | None = None,
         project_ids: Sequence[str] | None = None,
+        demand_ids: Sequence[str] | None = None,
+        visible_resource_ids: Sequence[str] = (),
+        project_day_keys: Sequence[tuple[str, date]] = (),
         can_manage_planning: bool = False,
     ) -> Sequence[ShiftReadModel]: ...
 
@@ -216,6 +227,10 @@ class PlannerQueryPort(Protocol):
         start: date,
         end: date,
         project_ids: Sequence[str] | None = None,
+        demand_ids: Sequence[str] | None = None,
         include_resource_ids: Sequence[str] = (),
+        shift_resource_ids: Sequence[str] = (),
+        segment_resource_ids: Sequence[str] = (),
+        project_day_keys: Sequence[tuple[str, date]] = (),
         can_manage_planning: bool = False,
     ) -> PlanningSnapshotReadModel: ...
