@@ -1,3 +1,5 @@
+import type { ViewScope } from "./api";
+
 export type DemandHistoryReadModel = {
   demand_number: string;
   action: string;
@@ -18,9 +20,16 @@ type ApiErrorPayload = {
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 
-export async function getDemandHistory(number: string, signal?: AbortSignal) {
+export async function getDemandHistory(
+  number: string,
+  signal?: AbortSignal,
+  scope?: ViewScope,
+) {
+  const params = new URLSearchParams();
+  if (scope) params.set("scope", scope);
+  const query = params.toString();
   const response = await fetch(
-    `${API_BASE}/api/v1/demands/${encodeURIComponent(number)}/history`,
+    `${API_BASE}/api/v1/demands/${encodeURIComponent(number)}/history${query ? `?${query}` : ""}`,
     {
       headers: { Accept: "application/json" },
       signal,
