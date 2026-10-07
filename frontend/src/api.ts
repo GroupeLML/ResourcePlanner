@@ -473,6 +473,39 @@ export type MediumTermClassWeekReadModel = {
   diagnostics: string[];
 };
 
+export type MediumTermCompetencyWeekReadModel = {
+  competency_id: string;
+  competency_name: string;
+  competency_active: boolean;
+  resource_class_code: string | null;
+  resource_class_label: string | null;
+  resource_class_active: boolean | null;
+  requested_hours: number | null;
+  capacity_hours: number;
+  utilization: number | null;
+  state: "available" | "warning" | "overloaded" | "unavailable";
+  diagnostics: string[];
+  load_source: "CURRENT_WORKFORCE_DEMAND";
+  capacity_basis: "GROSS_AVAILABILITY";
+  non_additive: boolean;
+  qualifying_resource_count: number;
+};
+
+export type MediumTermCompetencyCombinationWeekReadModel = {
+  competency_ids: string[];
+  competency_names: string[];
+  required_resource_class_code: string | null;
+  requested_hours: number | null;
+  common_capacity_hours: number;
+  utilization: number | null;
+  state: "available" | "warning" | "overloaded" | "unavailable";
+  diagnostics: string[];
+  demand_line_count: number;
+  capacity_basis: "GROSS_AVAILABILITY";
+  non_additive: boolean;
+  advisory_only: boolean;
+};
+
 export type MediumTermWeekReadModel = {
   week_start: string;
   work_package_hours: number | null;
@@ -481,6 +514,9 @@ export type MediumTermWeekReadModel = {
   state: "available" | "warning" | "overloaded" | "unavailable";
   diagnostics: string[];
   classes: MediumTermClassWeekReadModel[];
+  competencies: MediumTermCompetencyWeekReadModel[];
+  competency_combinations: MediumTermCompetencyCombinationWeekReadModel[];
+  competency_diagnostics: string[];
 };
 
 export type MediumTermBudgetReadModel = {
@@ -507,6 +543,7 @@ export type MediumTermBudgetFilters = {
   taskCatalogItemId?: string;
   taskCode?: string;
   resourceClassCode?: string;
+  competencyResourceClassCode?: string;
   includeInactiveProjects?: boolean;
 };
 
@@ -1571,6 +1608,9 @@ export function getMediumTermBudget(
   }
   if (filters.resourceClassCode) {
     params.set("resource_class_code", filters.resourceClassCode);
+  }
+  if (filters.competencyResourceClassCode) {
+    params.set("competency_resource_class_code", filters.competencyResourceClassCode);
   }
   return getJson<MediumTermBudgetReadModel>(
     `/api/v1/medium-term/budget?${params.toString()}`,

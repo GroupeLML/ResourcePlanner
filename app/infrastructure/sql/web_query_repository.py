@@ -87,8 +87,10 @@ from .planning_audit import PlanningChangeHistory
 from .capacity_query_repository import SqlPlannerQueryRepository
 from .medium_term_capacity_query import (
     UNCLASSIFIED,
-    build_workforce_weekly_capacity_by_class,
     medium_term_capacity_state,
+)
+from .medium_term_competency_query import (
+    build_medium_term_competency_projection,
 )
 
 
@@ -572,6 +574,7 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
         task_catalog_item_id: str | None = None,
         task_code: str | None = None,
         resource_class_code: str | None = None,
+        competency_resource_class_code: str | None = None,
         include_inactive_projects: bool = False,
         project_ids: Sequence[str] | None = None,
         start: date | None = None,
@@ -581,6 +584,7 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
         wanted_task = _optional_text(task_catalog_item_id)
         wanted_task_code = _optional_text(task_code)
         wanted_class = _optional_text(resource_class_code)
+        wanted_competency_class = _optional_text(competency_resource_class_code)
 
         visible_projects = tuple(
             self.list_projects(
@@ -695,6 +699,10 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
         )
         selected_task_ids = {task.id for task in tasks}
         tasks_by_id = {task.id: task for task in depmo_tasks}
+        task_filter_active = wanted_task is not None or wanted_task_code is not None
+        allowed_task_codes_by_project: defaultdict[str, set[str]] = defaultdict(set)
+        for task in tasks:
+            allowed_task_codes_by_project[task.project_number].add(task.task_code)
 
         work_packages = (
             tuple(
@@ -1102,16 +1110,31 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
             for package in current_packages
         }
 
+        competency_projection = build_medium_term_competency_projection(
+            self,
+            self._web_session,
+            demands=tuple(self._demands.list(project_ids=selected_project_ids)),
+            project_ids=selected_project_ids,
+            start=effective_start,
+            end=effective_end,
+            business_resource_class_code=wanted_class,
+            competency_resource_class_code=wanted_competency_class,
+            task_filter_active=task_filter_active,
+            allowed_task_ids=frozenset(selected_task_ids),
+            allowed_task_codes_by_project={
+                project_number: frozenset(codes)
+                for project_number, codes in allowed_task_codes_by_project.items()
+            },
+        )
+        if effective_start is None and effective_end is None:
+            effective_start = competency_projection.window_start
+            effective_end = competency_projection.window_end
+
         weeks: list[MediumTermWeekReadModel] = []
         if effective_start is not None and effective_end is not None:
             first_week = effective_start - timedelta(days=effective_start.weekday())
             last_week = effective_end - timedelta(days=effective_end.weekday())
-            capacity_by_week = build_workforce_weekly_capacity_by_class(
-                self,
-                self._web_session,
-                start=effective_start,
-                end=effective_end,
-            )
+            capacity_by_week = competency_projection.class_capacity_by_week
             cursor = first_week
             any_capacity_zero = False
             while cursor <= last_week:
@@ -1270,6 +1293,22 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                         state=legacy_state,
                         diagnostics=tuple(week_diagnostics),
                         classes=tuple(class_rows),
+                        competencies=competency_projection.skills_by_week.get(
+                            cursor,
+                            (),
+                        ),
+                        competency_combinations=(
+                            competency_projection.combinations_by_week.get(
+                                cursor,
+                                (),
+                            )
+                        ),
+                        competency_diagnostics=(
+                            competency_projection.diagnostics_by_week.get(
+                                cursor,
+                                (),
+                            )
+                        ),
                     )
                 )
                 cursor += timedelta(days=7)

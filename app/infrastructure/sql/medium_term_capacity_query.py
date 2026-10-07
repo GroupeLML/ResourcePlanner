@@ -69,14 +69,17 @@ def _hours_decimal(value: float) -> Decimal:
     return Decimal(str(round(value, 2))).quantize(Decimal("0.01"))
 
 
-def build_workforce_weekly_capacity_by_class(
+def build_workforce_weekly_capacity_details(
     queries: Any,
     session: Session,
     *,
     start: date,
     end: date,
-) -> dict[date, tuple[Decimal, dict[str, Decimal]]]:
-    """Return gross workforce availability by Monday week, globally and by class."""
+) -> dict[
+    date,
+    tuple[Decimal, dict[str, Decimal], dict[str, Decimal]],
+]:
+    """Return one batched gross-capacity projection for class and skill analytics."""
 
     if end < start:
         start, end = end, start
@@ -94,24 +97,69 @@ def build_workforce_weekly_capacity_by_class(
         for rule in rules
     )
 
-    result: dict[date, tuple[Decimal, dict[str, Decimal]]] = {}
+    result: dict[
+        date,
+        tuple[Decimal, dict[str, Decimal], dict[str, Decimal]],
+    ] = {}
     cursor = first
     while cursor <= last:
-        _resources, capacity, by_class, _resources_by_class = _capacity_slice(
-            queries,
-            availability_records,
-            start=cursor,
-            end=cursor + timedelta(days=6),
+        schedulable = tuple(
+            queries.list_schedulable_resources(
+                start=cursor,
+                end=cursor + timedelta(days=6),
+            )
         )
+        total_capacity = 0.0
+        capacity_by_class: defaultdict[str, float] = defaultdict(float)
+        capacity_by_resource: defaultdict[str, float] = defaultdict(float)
+        day = cursor
+        while day <= cursor + timedelta(days=6):
+            for resource in schedulable:
+                hours = availability_hours_for_day(
+                    availability_records,
+                    resource.id,
+                    day,
+                    resource_class=resource.resource_class,
+                )
+                total_capacity += hours
+                capacity_by_class[resource.resource_class or UNCLASSIFIED] += hours
+                capacity_by_resource[resource.id] += hours
+            day += timedelta(days=1)
         result[cursor] = (
-            _hours_decimal(capacity),
+            _hours_decimal(total_capacity),
             {
                 resource_class: _hours_decimal(hours)
-                for resource_class, hours in by_class.items()
+                for resource_class, hours in capacity_by_class.items()
+            },
+            {
+                resource.id: _hours_decimal(capacity_by_resource.get(resource.id, 0.0))
+                for resource in schedulable
             },
         )
         cursor += timedelta(days=7)
     return result
+
+
+def build_workforce_weekly_capacity_by_class(
+    queries: Any,
+    session: Session,
+    *,
+    start: date,
+    end: date,
+) -> dict[date, tuple[Decimal, dict[str, Decimal]]]:
+    """Return gross workforce availability by Monday week, globally and by class."""
+
+    return {
+        week_start: (total, by_class)
+        for week_start, (total, by_class, _by_resource) in (
+            build_workforce_weekly_capacity_details(
+                queries,
+                session,
+                start=start,
+                end=end,
+            ).items()
+        )
+    }
 
 
 def build_workforce_weekly_capacity(
