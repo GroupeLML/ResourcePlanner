@@ -69,3 +69,9 @@
   .period-form-grid { grid-template-columns: 1fr; }
   .period-form-grid .span-2 { grid-column: auto; }
 }
+
+.period-effective-field { display: grid; gap: .22rem; min-width: 0; padding: .5rem .6rem; border: 1px solid var(--border); border-radius: 9px; background: rgba(248,250,252,.85); }
+.period-effective-field > span { color: var(--muted); font-size: .65rem; font-weight: 700; }
+.period-effective-field > strong { font-size: .78rem; }
+.period-effective-field > small, .period-form-grid small { color: var(--muted); font-size: .65rem; line-height: 1.35; }
+.period-authority-note { margin-bottom: .65rem; padding: .55rem .65rem; border: 1px solid #ead6ad; border-radius: 9px; background: #fffbf1; color: var(--muted); font-size: .68rem; }
