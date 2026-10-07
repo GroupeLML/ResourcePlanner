@@ -171,6 +171,7 @@ button { cursor: pointer; }
 .planning-filter-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .planning-filter-toggle-label { font-size: .7rem; font-weight: 800; }
 .planning-filter-toggle-meta { display: inline-flex; align-items: center; justify-content: flex-end; gap: .4rem; min-width: 0; }
+.planning-filter-toggle-action { color: var(--muted); font-size: .62rem; font-weight: 750; }
 .planning-filter-active-badge {
   padding: .16rem .4rem;
   border-radius: 999px;
@@ -199,6 +200,7 @@ button { cursor: pointer; }
   border-top: 1px solid var(--border);
   border-radius: 0;
 }
+.planning-filter-section .planning-filter-bar[hidden] { display: none; }
 
 .page-heading-actions { display: flex; align-items: center; justify-content: flex-end; gap: .55rem; flex-wrap: wrap; }
 .view-scope-selector {
