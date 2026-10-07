@@ -242,6 +242,7 @@ class DemandPeriodReadModel:
     confirmation_mode: str | None = None
     confirmation_explicit: str | None = None
     confirmation_provenance: str | None = None
+    proposed_resource_id: str | None = None
     proposed_resource: str | None = None
     proposed_resource_mode: str | None = None
     proposed_resource_explicit: str | None = None

@@ -14,6 +14,7 @@ from ...application.query_models import (
     DemandMaterializedRequirementReadModel,
     DemandMaterializedResourceReadModel,
     MediumTermUnlinkedSegmentReadModel,
+    PendingDemandCandidateWindowReadModel,
     PendingDemandLoadReadModel,
     PlanningActionReadModel,
     PlanningCapacityGridReadModel,
@@ -582,7 +583,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         project_ids: Sequence[str] | None = None,
         demand_ids: Sequence[str] | None = None,
     ) -> tuple[PendingDemandLoadReadModel, ...]:
-        """Project submitted requests without mutating or double-counting approved work."""
+        """Project submitted requests and their non-materialized Planning candidates."""
 
         statement = select(WorkforceRequest).where(WorkforceRequest.status == "Soumise")
         scope_filters = []
@@ -621,6 +622,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                 continue
 
             periods = tuple(self._periods.list_for_demand(number))
+            candidate_windows: list[PendingDemandCandidateWindowReadModel] = []
             if demand.line_mode:
                 active_line_ids = {
                     line.line_id for line in demand.lines if line.active
@@ -642,7 +644,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                     if not line.active:
                         continue
                     if line.kind == "ASSET":
-                        continue  # A physical reservation is not human workload.
+                        continue
                     line_periods = periods_by_line.get(line.line_id, [])
                     if line_periods:
                         definitions = tuple(
@@ -665,6 +667,39 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                             end,
                             selections,
                         )
+                        for period in line_periods:
+                            if period.end_date < start or period.start_date > end:
+                                continue
+                            candidate_windows.append(
+                                PendingDemandCandidateWindowReadModel(
+                                    candidate_key=f"{number}:{line.line_id}:{period.period_id}",
+                                    start_date=period.start_date,
+                                    end_date=period.end_date,
+                                    projected_hours=period.hours,
+                                    window_hours=(
+                                        projected_hours_in_window(
+                                            period.hours,
+                                            period.start_date,
+                                            period.end_date,
+                                            start,
+                                            end,
+                                        )
+                                        if period.hours is not None
+                                        else 0.0
+                                    ),
+                                    proposed_resource_id=period.proposed_resource_id or line.proposed_resource_id,
+                                    proposed_resource=period.proposed_resource or line.proposed_resource,
+                                    task_code=line.task_code,
+                                    task_label=line.task_label,
+                                    required_resource_class=line.required_resource_class,
+                                    required_competencies=line.required_competencies,
+                                    confirmation=period.confirmation,
+                                    resource_count=period.resource_count,
+                                    period_kind=period.kind,
+                                    alternative_group=period.alternative_group,
+                                    selected=period.selected,
+                                )
+                            )
                     else:
                         line_start = line.desired_start
                         if line_start is None:
@@ -678,6 +713,34 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                                 line_end,
                                 start,
                                 end,
+                            )
+                        if line_end >= start and line_start <= end:
+                            candidate_windows.append(
+                                PendingDemandCandidateWindowReadModel(
+                                    candidate_key=f"{number}:{line.line_id}:window",
+                                    start_date=line_start,
+                                    end_date=line_end,
+                                    projected_hours=line.estimated_hours,
+                                    window_hours=(
+                                        projected_hours_in_window(
+                                            line.estimated_hours,
+                                            line_start,
+                                            line_end,
+                                            start,
+                                            end,
+                                        )
+                                        if line.estimated_hours is not None
+                                        else 0.0
+                                    ),
+                                    proposed_resource_id=line.proposed_resource_id,
+                                    proposed_resource=line.proposed_resource,
+                                    task_code=line.task_code,
+                                    task_label=line.task_label,
+                                    required_resource_class=line.required_resource_class,
+                                    required_competencies=line.required_competencies,
+                                    confirmation=line.confirmation,
+                                    resource_count=line.slot_count,
+                                )
                             )
                     windows.append((line_start, line_end))
 
@@ -713,6 +776,38 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                     end,
                     selections,
                 )
+                for period in periods:
+                    if period.end_date < start or period.start_date > end:
+                        continue
+                    candidate_windows.append(
+                        PendingDemandCandidateWindowReadModel(
+                            candidate_key=f"{number}:{period.period_id}",
+                            start_date=period.start_date,
+                            end_date=period.end_date,
+                            projected_hours=period.hours,
+                            window_hours=(
+                                projected_hours_in_window(
+                                    period.hours,
+                                    period.start_date,
+                                    period.end_date,
+                                    start,
+                                    end,
+                                )
+                                if period.hours is not None
+                                else 0.0
+                            ),
+                            proposed_resource_id=period.proposed_resource_id or request.proposed_resource_id,
+                            proposed_resource=period.proposed_resource or demand.proposed_resource,
+                            task_code=demand.task_code,
+                            task_label=demand.task_label,
+                            required_competencies=demand.required_competencies,
+                            confirmation=period.confirmation,
+                            resource_count=period.resource_count,
+                            period_kind=period.kind,
+                            alternative_group=period.alternative_group,
+                            selected=period.selected,
+                        )
+                    )
             else:
                 proposal_start = demand.desired_start
                 if proposal_start is None:
@@ -731,6 +826,22 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                     )
                     if projected_hours is not None
                     else 0.0
+                )
+                candidate_windows.append(
+                    PendingDemandCandidateWindowReadModel(
+                        candidate_key=f"{number}:window",
+                        start_date=proposal_start,
+                        end_date=proposal_end,
+                        projected_hours=projected_hours,
+                        window_hours=window_hours,
+                        proposed_resource_id=request.proposed_resource_id,
+                        proposed_resource=demand.proposed_resource,
+                        task_code=demand.task_code,
+                        task_label=demand.task_label,
+                        required_competencies=demand.required_competencies,
+                        confirmation=demand.confirmation,
+                        resource_count=demand.resource_count,
+                    )
                 )
 
             current = self._session.scalars(
@@ -776,6 +887,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                     work_package_ref=demand.work_package_ref,
                     confirmation=demand.confirmation,
                     periods=periods,
+                    candidate_windows=tuple(candidate_windows) if not current else (),
                 )
             )
 
@@ -2352,9 +2464,10 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                 if segment.resource_name in resource_by_name
             )
             visible_ids.update(
-                resource_by_name[pending.proposed_resource].id
+                window.proposed_resource_id
                 for pending in pending_loads
-                if pending.proposed_resource in resource_by_name
+                for window in pending.candidate_windows
+                if window.proposed_resource_id
             )
             resources = tuple(
                 resource

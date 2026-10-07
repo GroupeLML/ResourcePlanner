@@ -90,6 +90,11 @@ class PendingDemandLoadProjectionTests(unittest.TestCase):
         self.assertEqual(row.window_hours, 40.0)
         self.assertEqual(row.required_competencies, "SCADA")
         self.assertEqual(row.proposed_resource, "Alice")
+        self.assertEqual(len(row.candidate_windows), 1)
+        candidate = row.candidate_windows[0]
+        self.assertEqual(candidate.proposed_resource_id, "R1")
+        self.assertEqual(candidate.proposed_resource, "Alice")
+        self.assertEqual(candidate.window_hours, 40.0)
         self.assertEqual(snapshot.firm_hours, 0.0)
         self.assertEqual(snapshot.potential_hours, 40.0)
         self.assertEqual(snapshot.replacement_proposal_hours, 0.0)
@@ -152,6 +157,7 @@ class PendingDemandLoadProjectionTests(unittest.TestCase):
         self.assertEqual(row.window_hours, 50.0)
         self.assertEqual(row.current_plan_hours, 40.0)
         self.assertEqual(row.delta_hours, 10.0)
+        self.assertEqual(row.candidate_windows, ())
         self.assertEqual(snapshot.firm_hours, 40.0)
         self.assertEqual(snapshot.potential_hours, 0.0)
         self.assertEqual(snapshot.replacement_proposal_hours, 50.0)
@@ -207,7 +213,42 @@ class PendingDemandLoadProjectionTests(unittest.TestCase):
         self.assertEqual(row.window_hours, 8.0)
         self.assertEqual(len(row.periods), 2)
         self.assertFalse(any(period.selected for period in row.periods))
+        self.assertEqual(len(row.candidate_windows), 2)
+        self.assertEqual({candidate.proposed_resource_id for candidate in row.candidate_windows}, {"R1", "R2"})
+        self.assertTrue(all(candidate.period_kind == PERIOD_KIND_ALTERNATIVE for candidate in row.candidate_windows))
         self.assertEqual(snapshot.potential_hours, 8.0)
+
+    def test_unassigned_candidate_is_projected_without_synthetic_resource(self) -> None:
+        with transactional_session(self.factory) as session:
+            session.add(
+                WorkforceRequest(
+                    id="D4",
+                    legacy_demand_number="DMO-2026-1004",
+                    project_id="P1",
+                    status="Soumise",
+                    confirmation="Tentative",
+                    desired_start=MONDAY,
+                    desired_end=TUESDAY,
+                    estimated_hours=Decimal("16"),
+                    resource_count=1,
+                    required_competencies="PLC",
+                )
+            )
+
+        with self.factory() as session:
+            snapshot = SqlPlannerQueryRepository(session).planning_snapshot(
+                start=MONDAY,
+                end=FRIDAY,
+                project_ids=("P1",),
+            )
+
+        self.assertEqual(len(snapshot.pending_loads), 1)
+        candidate = snapshot.pending_loads[0].candidate_windows[0]
+        self.assertIsNone(candidate.proposed_resource_id)
+        self.assertIsNone(candidate.proposed_resource)
+        self.assertEqual(candidate.window_hours, 16.0)
+        self.assertEqual(candidate.required_competencies, "PLC")
+        self.assertEqual(snapshot.resources, ())
 
     def test_macro_hours_are_prorated_to_the_displayed_window(self) -> None:
         self.assertEqual(
