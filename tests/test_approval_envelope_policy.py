@@ -234,6 +234,7 @@ class ApprovalEnvelopeNormalizationTests(unittest.TestCase):
                     start_date=DAY_1,
                     end_date=DAY_1,
                     hours=4,
+                    resource_count=2,
                     kind=PERIOD_KIND_CUMULATIVE,
                 ),
                 EnvelopePeriodDefinition(
@@ -241,6 +242,7 @@ class ApprovalEnvelopeNormalizationTests(unittest.TestCase):
                     start_date=DAY_2,
                     end_date=DAY_2,
                     hours=4,
+                    resource_count=2,
                     kind=PERIOD_KIND_CUMULATIVE,
                     proposed_resource_mode=PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD,
                     same_as_period_key="A",
