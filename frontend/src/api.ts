@@ -2253,8 +2253,18 @@ export function getDemands(
   return getJson<DemandReadModel[]>(`/api/v1/demands?${params.toString()}`, signal);
 }
 
-export function getDemand(number: string, signal?: AbortSignal) {
-  return getJson<DemandReadModel>(`/api/v1/demands/${encodeURIComponent(number)}`, signal);
+export function getDemand(
+  number: string,
+  signal?: AbortSignal,
+  scope?: ViewScope,
+) {
+  const params = new URLSearchParams();
+  if (scope) params.set("scope", scope);
+  const query = params.toString();
+  return getJson<DemandReadModel>(
+    `/api/v1/demands/${encodeURIComponent(number)}${query ? `?${query}` : ""}`,
+    signal,
+  );
 }
 
 export function getDemandDetail(
@@ -2271,9 +2281,16 @@ export function getDemandDetail(
   );
 }
 
-export function getDemandPeriods(number: string, signal?: AbortSignal) {
+export function getDemandPeriods(
+  number: string,
+  signal?: AbortSignal,
+  scope?: ViewScope,
+) {
+  const params = new URLSearchParams();
+  if (scope) params.set("scope", scope);
+  const query = params.toString();
   return getJson<DemandPeriodReadModel[]>(
-    `/api/v1/demands/${encodeURIComponent(number)}/periods`,
+    `/api/v1/demands/${encodeURIComponent(number)}/periods${query ? `?${query}` : ""}`,
     signal,
   );
 }
@@ -2282,9 +2299,13 @@ export function getDemandLinePeriods(
   number: string,
   lineId: string,
   signal?: AbortSignal,
+  scope?: ViewScope,
 ) {
+  const params = new URLSearchParams();
+  if (scope) params.set("scope", scope);
+  const query = params.toString();
   return getJson<DemandPeriodReadModel[]>(
-    `/api/v1/demands/${encodeURIComponent(number)}/lines/${encodeURIComponent(lineId)}/periods`,
+    `/api/v1/demands/${encodeURIComponent(number)}/lines/${encodeURIComponent(lineId)}/periods${query ? `?${query}` : ""}`,
     signal,
   );
 }
