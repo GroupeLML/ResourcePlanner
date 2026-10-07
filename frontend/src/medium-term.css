@@ -5,7 +5,7 @@
 .mt-demands-button:hover { background: #274f90; }
 .mt-create-package { border: 1px solid var(--border); background: white; color: var(--accent); }
 .mt-create-package:hover { border-color: #aebbd0; background: #f8fafc; }
-.mt-filters { grid-template-columns: minmax(220px, 1.2fr) repeat(5, minmax(145px, .7fr)); }
+.mt-filters { grid-template-columns: minmax(220px, 1.2fr) repeat(6, minmax(145px, .7fr)); }
 .mt-metrics strong { font-size: 1.18rem; }
 
 .mt-capacity-panel { margin: .85rem 0; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); overflow: hidden; transition: opacity .15s; }
@@ -544,7 +544,7 @@
   padding: .55rem .7rem;
   border: 1px solid var(--border);
   border-radius: .6rem;
-  background: var(--surface-subtle);
+  background: #f8fafc;
   font-size: .78rem;
 }
 
@@ -573,7 +573,7 @@
 
 .mt-capacity-label.is-competency {
   padding-left: 1.35rem;
-  background: var(--surface-subtle);
+  background: #f8fafc;
   border-top: 1px dashed var(--border);
 }
 
