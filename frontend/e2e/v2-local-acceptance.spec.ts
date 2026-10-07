@@ -91,9 +91,7 @@ function labelled(scope: Locator, label: string, control: "select" | "input" | "
 }
 
 function periodSelect(scope: Locator, label: string) {
-  return scope.locator("label").filter({
-    has: scope.locator("span", { hasText: label }),
-  }).first().locator("select");
+  return scope.locator("span", { hasText: label }).first().locator("..").locator("select");
 }
 
 function combobox(scope: Locator, label: string) {
