@@ -196,15 +196,21 @@ class SecurityHardeningTests(unittest.TestCase):
             )
             self.assertEqual(same_origin.status_code, 200, same_origin.text)
 
-    def test_root_compose_binds_development_frontend_to_loopback(self) -> None:
-        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-        self.assertIn(
-            '127.0.0.1:${RESOURCEPLANNER_HTTP_PORT:-8080}:8080',
-            compose,
+    def test_compose_frontend_bind_address_is_environment_configurable(self) -> None:
+        root_compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        synology_compose = (ROOT / "deploy" / "synology" / "compose.yml").read_text(
+            encoding="utf-8"
         )
+        expected_binding = (
+            "${RESOURCEPLANNER_BIND_ADDRESS:-0.0.0.0}:"
+            "${RESOURCEPLANNER_HTTP_PORT:-8080}:8080"
+        )
+
+        self.assertIn(expected_binding, root_compose)
+        self.assertIn(expected_binding, synology_compose)
         self.assertNotIn(
-            '- "${RESOURCEPLANNER_HTTP_PORT:-8080}:8080"',
-            compose,
+            '127.0.0.1:${RESOURCEPLANNER_HTTP_PORT:-8080}:8080',
+            root_compose,
         )
 
 
