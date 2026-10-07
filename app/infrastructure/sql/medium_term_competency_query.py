@@ -16,6 +16,7 @@ from ...application.medium_term_budget import (
     COMPETENCY_DIAGNOSTIC_COMMON_QUALIFICATION_EXCEEDED,
     COMPETENCY_DIAGNOSTIC_COMMON_QUALIFICATION_ZERO,
     COMPETENCY_DIAGNOSTIC_GROUP_CLASS_INACTIVE,
+    COMPETENCY_DIAGNOSTIC_GROUP_CLASS_UNRESOLVED,
     COMPETENCY_DIAGNOSTIC_REFERENCE_UNRESOLVED,
     COMPETENCY_DIAGNOSTIC_REQUESTED_HOURS_UNAVAILABLE,
     MediumTermCompetencyCombinationWeekReadModel,
@@ -614,7 +615,14 @@ def build_medium_term_competency_projection(
                 Decimal("0.00"),
             ).quantize(Decimal("0.01"))
             diagnostics = list(accumulator.diagnostics or ())
-            if resource_class is not None and not bool(resource_class.active):
+            if (
+                competency.resource_class_code is not None
+                and resource_class is None
+            ):
+                diagnostics.append(
+                    COMPETENCY_DIAGNOSTIC_GROUP_CLASS_UNRESOLVED
+                )
+            elif resource_class is not None and not bool(resource_class.active):
                 diagnostics.append(COMPETENCY_DIAGNOSTIC_GROUP_CLASS_INACTIVE)
             if capacity <= 0:
                 diagnostics.append(COMPETENCY_DIAGNOSTIC_CAPACITY_ZERO)
