@@ -635,7 +635,13 @@ function ResourceRow({
   );
 }
 
-export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => void }) {
+export default function PlanningPage({
+  onOpenDemands,
+  onOpenDemand,
+}: {
+  onOpenDemands?: () => void;
+  onOpenDemand?: (demandNumber: string) => void;
+}) {
   const { can, principal } = useAuth();
   const { scope, loading: scopeLoading, error: scopeError } = useViewScope();
   const canManagePlanning = can("manage_planning");
@@ -1666,13 +1672,27 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
                 <strong>Détail de la demande</strong>
                 <span>{detailDemandNumber}</span>
               </div>
-              <button type="button" onClick={() => {
-                if (detailContextDirty && !window.confirm("Des périodes non enregistrées seront perdues. Fermer le détail?")) return;
-                setDetailDemandNumber(null);
-                setDetailContextDirty(false);
-              }}>
-                Fermer
-              </button>
+              <div className="demand-detail-modal-header-actions">
+                {onOpenDemand && (
+                  <button type="button" onClick={() => {
+                    const demandNumber = detailDemandNumber;
+                    if (!demandNumber) return;
+                    if (detailContextDirty && !window.confirm("Des périodes non enregistrées seront perdues. Fermer le détail?")) return;
+                    setDetailDemandNumber(null);
+                    setDetailContextDirty(false);
+                    onOpenDemand(demandNumber);
+                  }}>
+                    Ouvrir dans Demandes
+                  </button>
+                )}
+                <button type="button" onClick={() => {
+                  if (detailContextDirty && !window.confirm("Des périodes non enregistrées seront perdues. Fermer le détail?")) return;
+                  setDetailDemandNumber(null);
+                  setDetailContextDirty(false);
+                }}>
+                  Fermer
+                </button>
+              </div>
             </header>
             <div className="demand-detail-modal-body">
               <DemandWorkflowPage
