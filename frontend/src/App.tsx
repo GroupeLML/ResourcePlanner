@@ -35,8 +35,16 @@ const navItems: NavItem[] = [
   { key: "configuration", label: "Configuration", eyebrow: "Administration", shortLabel: "CF", permission: "admin_settings" },
 ];
 
+declare global {
+  interface Window {
+    RESOURCEPLANNER_CONFIG?: {
+      environment?: string;
+    };
+  }
+}
+
 const SIDEBAR_COMPACT_STORAGE_KEY = "resourceplanner.sidebar.compact";
-const RUNTIME_ENVIRONMENT = (import.meta.env.VITE_RESOURCEPLANNER_ENVIRONMENT || "PROD").trim().toUpperCase();
+const RUNTIME_ENVIRONMENT = (window.RESOURCEPLANNER_CONFIG?.environment || "PROD").trim().toUpperCase();
 const IS_DEV_ENVIRONMENT = RUNTIME_ENVIRONMENT === "DEV";
 
 function displayInitials(displayName: string) {
