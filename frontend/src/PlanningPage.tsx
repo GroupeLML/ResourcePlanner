@@ -227,6 +227,7 @@ function actionText(action: PlanningActionReadModel) {
     action.project_name,
     action.task_code,
     action.task_label,
+    action.required_resource_class,
     action.required_competency,
     action.priority,
     action.project_manager,
@@ -1100,17 +1101,12 @@ export default function PlanningPage({
     });
   }, [snapshot, project, confirmation]);
 
-  const visibleActions = useMemo(() => actions.filter((action) => {
+  const baseVisibleActions = useMemo(() => actions.filter((action) => {
     if (project !== "all" && action.project_number !== project) return false;
     if (query && !actionText(action).includes(query)) return false;
     if (confirmation !== "all" && confirmationKind(action.confirmation) !== confirmation) return false;
-    if (
-      action.kind === "ASSIGNMENT"
-      && classFilter !== "all"
-      && (action.required_resource_class || "Non classé") !== classFilter
-    ) return false;
     return true;
-  }), [actions, project, confirmation, classFilter, query]);
+  }), [actions, project, confirmation, query]);
 
   const visiblePendingCandidates = useMemo<PendingCandidateEntry[]>(() => {
     if (!snapshot) return [];
@@ -1125,6 +1121,18 @@ export default function PlanningPage({
         .map((candidate) => ({ load, candidate }));
     });
   }, [snapshot, project, confirmation, query]);
+
+  const visibleActions = useMemo(() => baseVisibleActions.filter((action) => {
+    if (classFilter === "all") return true;
+    if (action.kind === "ASSIGNMENT") {
+      return (action.required_resource_class || "Non classé") === classFilter;
+    }
+    if (!action.demand_number) return false;
+    return visiblePendingCandidates.some(({ load, candidate }) => (
+      load.demand_number === action.demand_number
+      && (candidate.required_resource_class || "Non classé") === classFilter
+    ));
+  }), [baseVisibleActions, visiblePendingCandidates, classFilter]);
 
   const visiblePlanningAssignments = useMemo(
     () => visibleActions.filter((action) => action.kind === "ASSIGNMENT"),
