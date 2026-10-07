@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
-import { DemandReadModel, getDemand, getDemands } from "./api";
+import { DemandReadModel, type ViewScope, getDemand, getDemands } from "./api";
 import { DemandHistoryReadModel, getDemandHistory } from "./demandHistoryApi";
 
 function formatDateTime(value: string) {
@@ -21,12 +21,14 @@ function statusTransition(event: DemandHistoryReadModel) {
 
 type DemandHistoryPageProps = {
   demandNumber?: string;
+  viewScope?: ViewScope;
   embedded?: boolean;
   refreshToken?: number;
 };
 
 export default function DemandHistoryPage({
   demandNumber,
+  viewScope,
   embedded = false,
   refreshToken = 0,
 }: DemandHistoryPageProps = {}) {
@@ -41,7 +43,7 @@ export default function DemandHistoryPage({
     const controller = new AbortController();
     setLoadingDemands(true);
     const request = demandNumber
-      ? getDemand(demandNumber, controller.signal).then((row) => [row])
+      ? getDemand(demandNumber, controller.signal, viewScope).then((row) => [row])
       : getDemands(controller.signal);
     request
       .then((rows) => {
@@ -58,7 +60,7 @@ export default function DemandHistoryPage({
         if (!controller.signal.aborted) setLoadingDemands(false);
       });
     return () => controller.abort();
-  }, [demandNumber]);
+  }, [demandNumber, viewScope]);
 
   useEffect(() => {
     if (!selectedNumber) {
@@ -68,7 +70,7 @@ export default function DemandHistoryPage({
     const controller = new AbortController();
     setLoadingHistory(true);
     setError(null);
-    getDemandHistory(selectedNumber, controller.signal)
+    getDemandHistory(selectedNumber, controller.signal, viewScope)
       .then(setHistory)
       .catch((reason: unknown) => {
         if (!controller.signal.aborted) {
@@ -79,7 +81,7 @@ export default function DemandHistoryPage({
         if (!controller.signal.aborted) setLoadingHistory(false);
       });
     return () => controller.abort();
-  }, [selectedNumber, refreshToken]);
+  }, [selectedNumber, refreshToken, viewScope]);
 
   const selectedDemand = useMemo(
     () => demands.find((row) => row.number === selectedNumber) ?? null,
