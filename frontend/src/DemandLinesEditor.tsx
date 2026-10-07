@@ -1,3 +1,4 @@
+import { resourceDisplayName } from "./resourceLabels";
 import { useMemo } from "react";
 
 import { createClientId } from "./clientId";
@@ -565,7 +566,7 @@ export default function DemandLinesEditor({
                     value={line.proposed_resource_id || null}
                     options={resources.map((resource) => ({
                       value: resource.id,
-                      label: `${resource.name}${resource.resource_class ? ` — ${resource.resource_class}` : ""}`,
+                      label: `${resourceDisplayName(resource.name)}${resource.resource_class ? ` — ${resource.resource_class}` : ""}`,
                       searchText: [resource.name, resource.resource_class, resource.competencies].filter(Boolean).join(" "),
                     }))}
                     selectedOption={

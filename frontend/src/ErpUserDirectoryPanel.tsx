@@ -1,3 +1,4 @@
+import { resourceDisplayName } from "./resourceLabels";
 import { useEffect, useMemo, useState } from "react";
 
 import { ApiError } from "./api";
@@ -161,7 +162,7 @@ export default function ErpUserDirectoryPanel({
                     <td><code>{user.user_id}</code></td>
                     <td>
                       <code>{user.employee_external_id}</code>
-                      <small>{user.resource_name ?? "Ressource non résolue"}</small>
+                      <small>{resourceDisplayName(user.resource_name) || "Ressource non résolue"}</small>
                     </td>
                     <td>{user.erp_user_active ? "Actif" : "Inactif"}</td>
                     <td>{user.employee_status ?? "—"}</td>
@@ -182,7 +183,7 @@ export default function ErpUserDirectoryPanel({
             <dl>
               <div><dt>UserID</dt><dd>{selected.user_id}</dd></div>
               <div><dt>EmployeID</dt><dd>{selected.employee_external_id}</dd></div>
-              <div><dt>Ressource</dt><dd>{selected.resource_name ?? "Non résolue"}</dd></div>
+              <div><dt>Ressource</dt><dd>{resourceDisplayName(selected.resource_name) || "Non résolue"}</dd></div>
               <div><dt>AppUser</dt><dd><code>{selected.app_user_id ?? "Non provisionné"}</code></dd></div>
               <div><dt>Compte</dt><dd>{selected.app_user_id ? accountStateLabel(selected.active) : "—"}</dd></div>
               <div><dt>OIDC</dt><dd>{selected.app_user_id ? oidcStateLabel(selected.oidc_state) : "—"}</dd></div>

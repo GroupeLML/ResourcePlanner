@@ -1,3 +1,4 @@
+import { resourceDisplayName } from "./resourceLabels";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { createClientId } from "./clientId";
@@ -578,7 +579,7 @@ export default function ResourcesPage() {
                 className={`resource-list-item ${selectedId === resource.id ? "selected" : ""} ${resource.active ? "" : "inactive"}`}
                 onClick={() => selectResource(resource)}
               >
-                <span className="resource-list-main"><strong>{resource.name}</strong><small>{resource.resource_class || "Non classé"}</small></span>
+                <span className="resource-list-main"><strong>{resourceDisplayName(resource.name)}</strong><small>{resource.resource_class || "Non classé"}</small></span>
                 <span className="resource-order">#{resource.sort_order}</span>
               </button>
             ))}
@@ -592,7 +593,7 @@ export default function ResourcesPage() {
                 <div className="panel-heading">
                   <div>
                     <span className="eyebrow">Profil</span>
-                    <h2>{creatingResource ? "Nouvelle ressource" : selected?.name}</h2>
+                    <h2>{creatingResource ? "Nouvelle ressource" : resourceDisplayName(selected?.name)}</h2>
                   </div>
                   {!creatingResource && selected && <span className={`status-chip ${selected.active ? "active" : "inactive"}`}>{selected.active ? "Active" : "Inactive"}</span>}
                 </div>
@@ -607,7 +608,7 @@ export default function ResourcesPage() {
                 )}
 
                 <div className="form-grid two-columns">
-                  <label>Nom<input value={profile.name} onChange={(event) => profileField("name", event.target.value)} required /></label>
+                  <label>Nom<input value={resourceDisplayName(profile.name)} onChange={(event) => profileField("name", event.target.value)} required /></label>
                   <label>Courriel<input type="email" value={profile.email ?? ""} onChange={(event) => profileField("email", event.target.value)} /></label>
                   <label>
                     Classe

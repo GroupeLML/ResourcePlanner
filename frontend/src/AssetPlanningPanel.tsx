@@ -1,3 +1,4 @@
+import { resourceDisplayName } from "./resourceLabels";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { createClientId } from "./clientId";
@@ -151,7 +152,7 @@ function AssetRequirementCard({
   const contextLabel = isProjectDirect
     ? `Projet ${requirement.project_number ?? requirement.project_id ?? "inconnu"}`
     : isResourcePeriod
-      ? `${requirement.operator_resource_name ?? requirement.context_resource_id ?? "Ressource"} · ${requirement.project_number ?? "sans projet"}`
+      ? `${resourceDisplayName(requirement.operator_resource_name) || requirement.context_resource_id || "Ressource"} · ${requirement.project_number ?? "sans projet"}`
       : isSegment
         ? `Segment ${requirement.segment_reference ?? requirement.resource_requirement_id ?? "inconnu"} · ${requirement.project_number ?? "projet inconnu"}`
         : [requirement.demand_number, requirement.project_number].filter(Boolean).join(" · ");
@@ -285,12 +286,12 @@ function AssetRequirementCard({
                 {requirement.operator_resource_id
                   && !operatorCandidates.some((row) => row.resource_id === requirement.operator_resource_id) && (
                   <option value={requirement.operator_resource_id}>
-                    {requirement.operator_resource_name ?? requirement.operator_resource_id} — non admissible actuellement
+                    {resourceDisplayName(requirement.operator_resource_name) || requirement.operator_resource_id} — non admissible actuellement
                   </option>
                 )}
                 {operatorCandidates.map((candidate) => (
                   <option value={candidate.resource_id} key={candidate.resource_id}>
-                    {candidate.resource_name}
+                    {resourceDisplayName(candidate.resource_name)}
                   </option>
                 ))}
               </select>
@@ -314,7 +315,7 @@ function AssetRequirementCard({
       {requirement.asset_id && isResourcePeriod && (
         <div className="asset-current-allocation asset-qualification">
           <strong>Ressource bénéficiaire et opérateur</strong>
-          <span>{requirement.operator_resource_name ?? requirement.context_resource_id}</span>
+          <span>{resourceDisplayName(requirement.operator_resource_name) || requirement.context_resource_id}</span>
           <small>La ressource de contexte reste obligatoirement l’opérateur sur toute la période.</small>
         </div>
       )}
@@ -829,7 +830,7 @@ export default function AssetPlanningPanel({
                               >
                                 {occupation.project_number && <span>{occupation.project_number}</span>}
                                 {occupation.operator_resource_name && (
-                                  <small>{occupation.operator_resource_name}</small>
+                                  <small>{resourceDisplayName(occupation.operator_resource_name)}</small>
                                 )}
                               </div>
                             ))}

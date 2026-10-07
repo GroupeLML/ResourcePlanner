@@ -1,3 +1,4 @@
+import { resourceDisplayName } from "./resourceLabels";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { createClientId } from "./clientId";
@@ -646,12 +647,12 @@ export default function SegmentEditor({
                   <option value="">Aucune cible automatique</option>
                   {segment?.automatic_target_resource_id && !resources.some((resource) => resource.id === segment.automatic_target_resource_id) && (
                     <option value={segment.automatic_target_resource_id}>
-                      {segment.automatic_target_resource_name || segment.resource_name || segment.automatic_target_resource_id} — inactive/inconnue
+                      {resourceDisplayName(segment.automatic_target_resource_name || segment.resource_name) || segment.automatic_target_resource_id} — inactive/inconnue
                     </option>
                   )}
                   {sortedResources.map((resource) => (
                     <option value={resource.id} key={resource.id}>
-                      {resource.name}{resource.resource_class ? ` — ${resource.resource_class}` : ""}
+                      {resourceDisplayName(resource.name)}{resource.resource_class ? ` — ${resource.resource_class}` : ""}
                     </option>
                   ))}
                 </select>
