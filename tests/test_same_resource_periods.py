@@ -189,6 +189,62 @@ class SameResourcePeriodPlanningTests(unittest.TestCase):
             self.assertEqual(summary["same_resource_groups"], 1)
             self.assertEqual(summary["same_resource_unresolved_groups"], 0)
 
+    def test_candidate_period_edits_do_not_rewrite_the_active_same_as_graph(self) -> None:
+        with transactional_session(self.factory) as session:
+            root, child = self._same_as_plan(session, root_target="R1")
+            approved_periods = session.scalars(
+                select(WorkforceRequestPeriod).where(
+                    WorkforceRequestPeriod.id.in_(("PER-A", "PER-B"))
+                )
+            ).all()
+            for period in approved_periods:
+                period.active = False
+            session.add_all(
+                [
+                    WorkforceRequestPeriod(
+                        id="PER-A-CAND",
+                        period_key="A",
+                        workforce_request_id="D-SAME",
+                        request_line_id="L-SAME",
+                        sequence=1,
+                        kind="CUMULATIVE",
+                        start_date=D1,
+                        end_date=D1,
+                        hours=Decimal("8"),
+                        inheritance_contract_version=1,
+                        confirmation_mode="EXPLICIT",
+                        confirmation="Confirmée",
+                        proposed_resource_mode="EXPLICIT",
+                        resource_count=1,
+                        active=True,
+                    ),
+                    WorkforceRequestPeriod(
+                        id="PER-B-CAND",
+                        period_key="B",
+                        workforce_request_id="D-SAME",
+                        request_line_id="L-SAME",
+                        sequence=2,
+                        kind="CUMULATIVE",
+                        start_date=D2,
+                        end_date=D2,
+                        hours=Decimal("8"),
+                        inheritance_contract_version=1,
+                        confirmation_mode="EXPLICIT",
+                        confirmation="Confirmée",
+                        proposed_resource_mode="EXPLICIT",
+                        resource_count=1,
+                        active=True,
+                    ),
+                ]
+            )
+            session.flush()
+
+            summary = SqlPlanningCommandAdapter(session).rebuild()
+
+            self.assertEqual(summary["same_resource_groups"], 1)
+            self.assertEqual(root.assigned_resource_id, "R1")
+            self.assertEqual(child.assigned_resource_id, "R1")
+
     def test_unassigned_component_remains_unresolved_without_inventing_a_resource(self) -> None:
         with transactional_session(self.factory) as session:
             root, child = self._same_as_plan(session, root_target=None)
