@@ -29,6 +29,20 @@ class ReactIssue612CContractTests(unittest.TestCase):
         self.assertIn("demande {shift.demand_number}", shift)
         self.assertIn("setDetailDemandNumber(demandNumber)", planning)
 
+    def test_659c_planning_popup_opens_current_demand_in_demands_workspace(self) -> None:
+        app = (FRONTEND / "App.tsx").read_text(encoding="utf-8")
+        planning = (FRONTEND / "PlanningPage.tsx").read_text(encoding="utf-8")
+        shift = (FRONTEND / "ShiftEditor.tsx").read_text(encoding="utf-8")
+
+        self.assertIn("onOpenDemand={openDemand}", app)
+        self.assertIn("setDemandToOpen(number)", app)
+        self.assertIn("initialDemandNumber={demandToOpen}", app)
+        self.assertIn("onOpenDemand?: (demandNumber: string) => void;", planning)
+        self.assertIn("Ouvrir dans Demandes", planning)
+        self.assertIn("const demandNumber = detailDemandNumber;", planning)
+        self.assertIn("onOpenDemand(demandNumber);", planning)
+        self.assertIn("shift.demand_number ? (", shift)
+
     def test_medium_term_demand_gantt_opens_unified_detail_with_canonical_actions(self) -> None:
         medium = (FRONTEND / "MediumTermPage.tsx").read_text(encoding="utf-8")
 
