@@ -188,21 +188,22 @@ class SqlRepositoryTests(unittest.TestCase):
 
     def test_demand_line_projection_resolves_asset_business_labels_for_mixed_request(self) -> None:
         with transactional_session(self.factory) as session:
-            session.add_all(
-                [
-                    AssetType(
-                        id="AT-LIFT",
-                        code="LIFT",
-                        label="Nacelle",
-                        category="EQUIPMENT",
-                    ),
-                    Asset(
-                        id="A-LIFT-63",
-                        code="LIFT-63",
-                        label="Nacelle #63",
-                        asset_type_id="AT-LIFT",
-                    ),
-                ]
+            session.add(
+                AssetType(
+                    id="AT-LIFT",
+                    code="LIFT",
+                    label="Nacelle",
+                    category="EQUIPMENT",
+                )
+            )
+            session.flush()
+            session.add(
+                Asset(
+                    id="A-LIFT-63",
+                    code="LIFT-63",
+                    label="Nacelle #63",
+                    asset_type_id="AT-LIFT",
+                )
             )
             session.flush()
             repository = SqlDemandRepository(session, actor_name="Jean")
