@@ -1121,31 +1121,23 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             specs,
             target_project_id=request.project_id,
         )
-        current_by_key = self._current_requirement_keys(current)
-
-        keep: dict[tuple[str, ...], ResourceRequirement | None] = {}
-        desired_by_key = {spec.key: spec for spec in specs}
-        obsolete: list[ResourceRequirement] = []
-
-        for key, rows in current_by_key.items():
-            spec = desired_by_key.get(key)
-            if spec is None:
-                obsolete.extend(rows)
-                continue
-            keep[key] = rows[0]
-            obsolete.extend(rows[1:])
-
+        matches, obsolete_rows = self._plan_preparer.match_current(
+            request,
+            current,
+            specs,
+        )
+        obsolete = list(obsolete_rows)
         for requirement in obsolete:
             requirement.status = "Annulé"
 
         materialized: list[ResourceRequirement] = []
-        for spec in specs:
+        for match in matches:
             materialized.append(
                 self._apply_line_spec(
                     request,
                     project,
-                    keep.get(spec.key),
-                    spec,
+                    match.requirement,
+                    match.spec,
                 )
             )
 
