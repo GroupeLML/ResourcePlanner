@@ -127,14 +127,13 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
-      args:
-        VITE_RESOURCEPLANNER_ENVIRONMENT: "${RESOURCEPLANNER_ENVIRONMENT:-PROD}"
     image: ${RESOURCEPLANNER_FRONTEND_IMAGE:-resourceplanner-frontend}:${RESOURCEPLANNER_IMAGE_TAG:-local}
     depends_on:
       backend:
         condition: service_healthy
     environment:
       RESOURCEPLANNER_FRAME_ANCESTORS: "${RESOURCEPLANNER_FRAME_ANCESTORS:-'self'}"
+      RESOURCEPLANNER_ENVIRONMENT: "${RESOURCEPLANNER_ENVIRONMENT:-PROD}"
     ports:
       - "127.0.0.1:${RESOURCEPLANNER_HTTP_PORT:-8080}:8080"
     restart: unless-stopped

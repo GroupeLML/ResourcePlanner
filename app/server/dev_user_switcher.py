@@ -1,22 +1,29 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 import secrets
+from threading import Lock
 
 from fastapi import Request
+from sqlalchemy import inspect as inspect_database
 
 from ..application.security import AuthPrincipal
-from ..infrastructure.sql import SqlAuthSessionRepository, SqlSessionFactory
+from ..infrastructure.sql import (
+    SqlAuthSessionRepository,
+    SqlSessionFactory,
+    SqlUserIdentityRepository,
+)
 from ..infrastructure.sql.base import utc_now
 from .security import AuthResolver
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class DevUserSwitcherRuntime:
     bootstrap_principal: AuthPrincipal
     cookie_name: str = "resourceplanner_dev_session"
     session_hours: int = 24
+    _bootstrap_lock: Lock = field(default_factory=Lock, init=False, repr=False)
 
     @property
     def session_ttl(self) -> timedelta:
@@ -24,6 +31,63 @@ class DevUserSwitcherRuntime:
 
     def new_secret(self, length: int = 64) -> str:
         return secrets.token_urlsafe(length)
+
+    def resolve_bootstrap_principal(self, request: Request) -> AuthPrincipal:
+        """Materialize the local bootstrap identity as the canonical AppUser actor."""
+
+        principal = self.bootstrap_principal
+        if principal.local_user_id is not None:
+            return principal
+        if principal.auth_mode != "local":
+            raise RuntimeError(
+                "Le bootstrap d'identité de développement exige auth_mode=local."
+            )
+
+        with self._bootstrap_lock:
+            principal = self.bootstrap_principal
+            if principal.local_user_id is not None:
+                return principal
+
+            factory: SqlSessionFactory = request.app.state.session_factory
+            with factory.begin() as session:
+                if not inspect_database(session.get_bind()).has_table("app_users"):
+                    return principal
+                record = SqlUserIdentityRepository(session).upsert(
+                    issuer=principal.issuer,
+                    subject=principal.subject,
+                    display_name=principal.display_name,
+                    email=principal.email,
+                    employee_external_id=principal.employee_external_id,
+                    roles=principal.roles,
+                    active=True,
+                )
+
+            if record.issuer is None or record.subject is None:
+                raise RuntimeError(
+                    "L'identité locale de développement matérialisée est incomplète."
+                )
+
+            resolved = AuthPrincipal.from_roles(
+                local_user_id=record.user_id,
+                issuer=record.issuer,
+                subject=record.subject,
+                display_name=record.display_name,
+                email=record.email,
+                employee_external_id=record.employee_external_id,
+                roles=record.roles,
+                auth_mode="local",
+            )
+            self.bootstrap_principal = resolved
+            return resolved
+
+
+def local_dev_auth_resolver(runtime: DevUserSwitcherRuntime) -> AuthResolver:
+    """Resolve the canonical persisted bootstrap identity for local development."""
+
+    def resolve(request: Request) -> AuthPrincipal:
+        return runtime.resolve_bootstrap_principal(request)
+
+    return resolve
 
 
 def dev_user_switcher_auth_resolver(runtime: DevUserSwitcherRuntime) -> AuthResolver:
@@ -40,7 +104,7 @@ def dev_user_switcher_auth_resolver(runtime: DevUserSwitcherRuntime) -> AuthReso
                 )
             if principal is not None:
                 return principal
-        return runtime.bootstrap_principal
+        return runtime.resolve_bootstrap_principal(request)
 
     return resolve
 

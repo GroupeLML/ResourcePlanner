@@ -1,3 +1,4 @@
+import { resourceDisplayName } from "./resourceLabels";
 import { useMemo, useState } from "react";
 
 import {
@@ -29,6 +30,79 @@ function dateRange(action: PlanningActionReadModel) {
   return action.start_date === action.end_date
     ? action.start_date
     : `${action.start_date} → ${action.end_date}`;
+}
+
+function recommendationCategoryLabel(candidate: ResourceRecommendationReadModel) {
+  switch (candidate.recommendation_category) {
+    case 1:
+      return "Catégorie 1 · attitré pleinement compatible";
+    case 2:
+      return "Catégorie 2 · pleinement compatible";
+    case 3:
+      return "Catégorie 3 · compétences incomplètes";
+    case 4:
+      return "Catégorie 4 · capacité prudente partielle";
+    case 5:
+      return "Catégorie 5 · compétences et capacité partielles";
+    case 6:
+      return "Catégorie 6 · aucune capacité prudente";
+    case 7:
+      return "Catégorie 7 · classe ou qualification non compatible";
+    default:
+      return `Catégorie ${candidate.recommendation_category}`;
+  }
+}
+
+function competencyDiagnostic(candidate: ResourceRecommendationReadModel) {
+  switch (candidate.competency_state) {
+    case "NOT_REQUIRED":
+      return "Aucune compétence requise";
+    case "SATISFIED":
+      return "Compétences requises satisfaites";
+    case "MISSING":
+      return candidate.missing_competency_ids.length > 0
+        ? `Compétences manquantes : ${candidate.missing_competency_ids.join(", ")}`
+        : "Compétences requises incomplètes";
+    case "UNRESOLVED":
+      return "Compétences historiques non résolues";
+  }
+}
+
+function capacityDiagnostic(candidate: ResourceRecommendationReadModel) {
+  switch (candidate.capacity_state) {
+    case "PRUDENT_FULL":
+      return "Capacité prudente suffisante";
+    case "PRUDENT_PARTIAL":
+      return "Capacité prudente partielle";
+    case "TENTATIVE_ONLY":
+      return "Capacité seulement après retrait des tentatives";
+    case "NONE":
+      return "Aucune capacité prudente";
+  }
+}
+
+function preferredContextDiagnostic(candidate: ResourceRecommendationReadModel) {
+  const identity = candidate.preferred_resource_name
+    ? resourceDisplayName(candidate.preferred_resource_name)
+    : candidate.preferred_resource_id || "La ressource attitrée";
+  switch (candidate.preferred_resource_status) {
+    case "NONE":
+      return null;
+    case "ELIGIBLE":
+      return `${identity} est attitré(e) à cette tâche et conserve son rang réel selon les critères.`;
+    case "INACTIVE_LOCAL":
+      return `${identity} est attitré(e), mais inactif(ve) dans RessourcePlanner; aucun avantage de rang n'est appliqué.`;
+    case "INACTIVE_ERP":
+      return `${identity} est attitré(e), mais inactif(ve) dans l'ERP; aucun avantage de rang n'est appliqué.`;
+    case "NO_SCHEDULE_IN_WINDOW":
+      return `${identity} est attitré(e), mais n'a aucun horaire dans la fenêtre évaluée.`;
+    case "NOT_FOUND":
+      return `${identity} est attitré(e), mais la ressource n'est plus résolue localement.`;
+    case "INVALID_TASK_CONTEXT":
+      return "Le contexte de tâche approuvé ne correspond plus au projet; aucune préférence n'est appliquée.";
+    case "UNRESOLVED_CONTEXT":
+      return "Le contexte historique ne permet pas de résoudre une ressource attitrée.";
+  }
 }
 
 function ActionCard({
@@ -163,6 +237,15 @@ export default function PlanningActionPanel({
 
   const assign = async (candidate: ResourceRecommendationReadModel) => {
     if (!selectedAction?.segment_id || !canAssign) return;
+    if (candidate.fallback_requires_confirmation) {
+      const missing = candidate.missing_competency_ids.length > 0
+        ? ` Compétences manquantes : ${candidate.missing_competency_ids.join(", ")}.`
+        : "";
+      const confirmed = window.confirm(
+        `Cette ressource est un repli avec des compétences incomplètes.${missing} Confirmer son utilisation comme cible?`,
+      );
+      if (!confirmed) return;
+    }
     setAssigningResource(candidate.resource_id);
     setRecommendationError(null);
     try {
@@ -276,9 +359,17 @@ export default function PlanningActionPanel({
             </div>
 
             <p className="recommendation-explainer">
-              Classement backend inspiré de NiceGUI V1.6 : compétence, classe puis capacité prudente sur toute
-              la fenêtre du segment. La capacité prudente soustrait la charge confirmée et tentative.
+              Ordre calculé par le backend selon ADR-025. La ressource attitrée n'est prioritaire que si elle
+              respecte la classe, les compétences et la capacité prudente requises. React conserve le rang reçu;
+              choisir une ressource reste une action manuelle.
             </p>
+
+            {recommendations[0] && preferredContextDiagnostic(recommendations[0]) && (
+              <div className="recommendation-context" data-testid="preferred-resource-context">
+                <strong>Ressource attitrée</strong>
+                <span>{preferredContextDiagnostic(recommendations[0])}</span>
+              </div>
+            )}
 
             {recommendationError && <div className="error-panel">{recommendationError}</div>}
 
@@ -290,33 +381,56 @@ export default function PlanningActionPanel({
               <div className="recommendation-list">
                 {recommendations.map((candidate) => (
                   <article
-                    className={`recommendation-card ${candidate.recommended ? "is-recommended" : ""}`}
+                    className={[
+                      "recommendation-card",
+                      candidate.recommended ? "is-recommended" : "",
+                      candidate.preferred ? "is-preferred" : "",
+                      candidate.fallback_requires_confirmation ? "is-fallback" : "",
+                    ].filter(Boolean).join(" ")}
                     key={candidate.resource_id}
+                    data-recommendation-rank={candidate.rank}
                   >
                     <div className="recommendation-card-heading">
                       <div>
-                        <strong>
-                          {candidate.resource_name}
-                          {candidate.recommended ? " · Recommandé" : ""}
-                        </strong>
+                        <strong>{resourceDisplayName(candidate.resource_name)}</strong>
                         <span>{candidate.resource_class || "Non classé"}</span>
+                        <div className="recommendation-badges">
+                          {candidate.recommended && (
+                            <span className="recommendation-badge is-recommended-badge">Recommandé</span>
+                          )}
+                          {candidate.preferred && (
+                            <span className="recommendation-badge is-preferred-badge">Attitré</span>
+                          )}
+                          {candidate.fallback_requires_confirmation && (
+                            <span className="recommendation-badge is-fallback-badge">Repli à confirmer</span>
+                          )}
+                        </div>
                       </div>
                       <span className="rank-pill">#{candidate.rank}</span>
                     </div>
 
                     <div className="recommendation-signals">
-                      <span className={candidate.competency_match ? "signal-good" : "signal-warn"}>
-                        {candidate.competency_match
-                          ? "Compétence correspondante"
-                          : "Compétence requise non attribuée"}
+                      <span className="signal-muted">{recommendationCategoryLabel(candidate)}</span>
+                      <span
+                        className={
+                          candidate.competency_state === "SATISFIED"
+                            || candidate.competency_state === "NOT_REQUIRED"
+                            ? "signal-good"
+                            : "signal-warn"
+                        }
+                      >
+                        {competencyDiagnostic(candidate)}
                       </span>
                       {candidate.required_class && (
-                        <span className={candidate.class_match ? "signal-good" : "signal-muted"}>
+                        <span className={candidate.class_match ? "signal-good" : "signal-warn"}>
                           {candidate.class_match
-                            ? `Classe ${candidate.required_class}`
+                            ? `Classe ${candidate.required_class} satisfaite`
                             : `Classe différente de ${candidate.required_class}`}
                         </span>
                       )}
+                      <span className={candidate.capacity_state === "PRUDENT_FULL" ? "signal-good" : "signal-warn"}>
+                        {capacityDiagnostic(candidate)}
+                      </span>
                     </div>
 
                     <div className="recommendation-capacity">
@@ -332,6 +446,12 @@ export default function PlanningActionPanel({
                       </small>
                     )}
 
+                    {candidate.fallback_requires_confirmation && (
+                      <small className="recommendation-confirmation-note">
+                        Ce repli a des compétences manquantes et demande votre confirmation explicite.
+                      </small>
+                    )}
+
                     <button
                       type="button"
                       className="primary-action"
@@ -339,7 +459,11 @@ export default function PlanningActionPanel({
                       onClick={() => void assign(candidate)}
                       title={!canAssign ? "Permission manage_planning requise" : undefined}
                     >
-                      {assigningResource === candidate.resource_id ? "Définition…" : "Utiliser comme cible"}
+                      {assigningResource === candidate.resource_id
+                        ? "Définition…"
+                        : candidate.fallback_requires_confirmation
+                          ? "Confirmer ce repli"
+                          : "Utiliser comme cible"}
                     </button>
                   </article>
                 ))}

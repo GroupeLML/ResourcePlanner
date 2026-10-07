@@ -1,3 +1,4 @@
+import { resourceDisplayName } from "./resourceLabels";
 import { useEffect, useMemo, useState } from "react";
 
 import { ResourceReadModel, ShiftReadModel } from "./api";
@@ -145,7 +146,7 @@ export default function PlanningDropDialog({
             <h2>Choisir l’action</h2>
             <p>
               {shift.project_number || shift.project_name || evaluation.segment_id} · {hours(shift.hours)} h ·
-              {" "}{shift.resource_name} → {targetResource.name}, {evaluation.target_day}
+              {" "}{resourceDisplayName(shift.resource_name)} → {resourceDisplayName(targetResource.name)}, {evaluation.target_day}
             </p>
           </div>
           <button type="button" onClick={onClose} disabled={busy} aria-label="Annuler le déplacement">×</button>

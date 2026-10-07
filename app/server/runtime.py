@@ -26,12 +26,15 @@ from ..infrastructure.m365 import (
     MicrosoftGraphCommunicationTransport,
 )
 from .break_glass import BreakGlassRuntime
-from .dev_user_switcher import DevUserSwitcherRuntime, dev_user_switcher_auth_resolver
+from .dev_user_switcher import (
+    DevUserSwitcherRuntime,
+    dev_user_switcher_auth_resolver,
+    local_dev_auth_resolver,
+)
 from .embedding import EmbeddingSettings, install_embedding_headers
 from .frontend import FrontendBuildError, attach_frontend
 from .http import create_api_app
 from .oidc import OidcRuntime, oidc_session_auth_resolver
-from .security import static_auth_resolver
 
 
 DATABASE_URL_ENV = "RESOURCEPLANNER_DATABASE_URL"
@@ -510,15 +513,18 @@ def create_configured_app(settings: ServerSettings | None = None) -> FastAPI:
                 cookie_samesite=resolved.embedding.oidc_cookie_samesite,
             )
     else:
-        if resolved.dev_user_switcher:
-            if resolved.auth_principal is None:
-                raise ServerConfigurationError("L’identité administrateur locale de bootstrap est absente.")
-            dev_user_switcher_runtime = DevUserSwitcherRuntime(
-                bootstrap_principal=resolved.auth_principal,
+        if resolved.auth_principal is None:
+            raise ServerConfigurationError(
+                "L’identité administrateur locale de bootstrap est absente."
             )
-            auth_resolver = dev_user_switcher_auth_resolver(dev_user_switcher_runtime)
+        local_dev_runtime = DevUserSwitcherRuntime(
+            bootstrap_principal=resolved.auth_principal,
+        )
+        if resolved.dev_user_switcher:
+            dev_user_switcher_runtime = local_dev_runtime
+            auth_resolver = dev_user_switcher_auth_resolver(local_dev_runtime)
         else:
-            auth_resolver = static_auth_resolver(resolved.auth_principal)
+            auth_resolver = local_dev_auth_resolver(local_dev_runtime)
 
     app = create_api_app(
         resolved.database_url,

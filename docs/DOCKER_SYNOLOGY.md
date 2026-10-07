@@ -97,7 +97,7 @@ Copier `.env.example` vers `.env` seulement si une surcharge est nécessaire.
 
 Le fichier `.env` réel est ignoré par Git. Ne jamais y committer de secret.
 
-Le Compose local active explicitement le mode d'authentification local sur le réseau Docker et utilise par défaut le principal ADMIN statique `RESOURCEPLANNER_LOCAL_AUTH_*`. Ce principal n'est pas persisté dans `app_users` et reste utilisable sur une base fraîche sans aucun seed. `RESOURCEPLANNER_DEV_USER_SWITCHER` est désactivé par défaut.
+Le Compose local active explicitement le mode d'authentification local sur le réseau Docker et utilise par défaut le bootstrap ADMIN `RESOURCEPLANNER_LOCAL_AUTH_*`. Aucun seed préalable n'est requis : après migration du schéma, ce bootstrap est matérialisé comme `AppUser` local au premier accès API authentifié afin de fournir un acteur stable aux mutations et audits. `RESOURCEPLANNER_DEV_USER_SWITCHER` est désactivé par défaut.
 
 Ce mode sert uniquement au développement/smoke sur une machine de confiance. Il ne constitue ni une configuration de production exposée sur le LAN ni le futur mécanisme break-glass de #457.
 

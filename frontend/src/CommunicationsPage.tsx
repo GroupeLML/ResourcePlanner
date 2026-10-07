@@ -1,3 +1,4 @@
+import { resourceDisplayName } from "./resourceLabels";
 import { useEffect, useMemo, useState } from "react";
 
 import {
@@ -276,7 +277,7 @@ export default function CommunicationsPage() {
                               <small>Aucune ressource avec courriel explicite</small>
                             ) : source.cc_recipients.map((recipient) => (
                               <span key={recipient.email ?? recipient.contact_id ?? recipient.display_name}>
-                                {recipient.display_name} · {recipient.email}
+                                {resourceDisplayName(recipient.display_name)} · {recipient.email}
                               </span>
                             ))}
                           </div>

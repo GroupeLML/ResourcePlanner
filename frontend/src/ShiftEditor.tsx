@@ -1,3 +1,4 @@
+import { resourceDisplayName } from "./resourceLabels";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import { createClientId } from "./clientId";
@@ -830,7 +831,7 @@ export default function ShiftEditor({
           </div>
 
           <div className="dialog-form-grid">
-            <label><span>Ressource du quart</span><select value={resourceId} onChange={(event) => setResourceId(event.target.value)} required>{sortedResources.map((resource) => <option value={resource.id} key={resource.id}>{resource.name}{resource.resource_class ? ` — ${resource.resource_class}` : ""}</option>)}</select></label>
+            <label><span>Ressource du quart</span><select value={resourceId} onChange={(event) => setResourceId(event.target.value)} required>{sortedResources.map((resource) => <option value={resource.id} key={resource.id}>{resourceDisplayName(resource.name)}{resource.resource_class ? ` — ${resource.resource_class}` : ""}</option>)}</select></label>
             <label><span>Date</span><input type="date" value={day} onChange={(event) => setDay(event.target.value)} required /></label>
             <label><span>Heures</span><input type="number" min="0.25" step="0.25" value={hours} onChange={(event) => { setHours(event.target.value); setOverallocationChoice(null); }} required /></label>
             <label><span>Confirmation</span><select value={confirmation} onChange={(event) => setConfirmation(event.target.value as ConfirmationChoice)}><option value="inherit">Héritée du segment</option><option value="Tentative">Tentative</option><option value="Confirmée">Confirmée</option></select></label>
@@ -887,7 +888,7 @@ export default function ShiftEditor({
                     >
                       {sortedResources.map((resource) => (
                         <option value={resource.id} key={resource.id}>
-                          {resource.name}{resource.resource_class ? ` — ${resource.resource_class}` : ""}
+                          {resourceDisplayName(resource.name)}{resource.resource_class ? ` — ${resource.resource_class}` : ""}
                         </option>
                       ))}
                     </select>
@@ -964,7 +965,7 @@ export default function ShiftEditor({
           </div>
 
           <div className="confirmation-help">
-            <strong>Ressource réelle de ce quart : {sortedResources.find((resource) => resource.id === resourceId)?.name || shift.resource_name}</strong>
+            <strong>Ressource réelle de ce quart : {resourceDisplayName(sortedResources.find((resource) => resource.id === resourceId)?.name || shift.resource_name)}</strong>
             <span>Changer cette ressource modifie seulement ce quart; la cible automatique du besoin parent reste distincte.</span>
             <strong>Confirmation effective : {shift.confirmation || "—"}</strong>
             <span>« Héritée » supprime l'override du quart. Tentative ou Confirmée crée un choix explicite au niveau du quart.</span>
