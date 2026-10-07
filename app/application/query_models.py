@@ -299,6 +299,7 @@ class PlanningActionReadModel:
     start_date: date
     end_date: date
     planned_hours: float
+    required_resource_class: str | None = None
     required_competency: str | None = None
     required_competency_id: str | None = None
     priority: str | None = None
