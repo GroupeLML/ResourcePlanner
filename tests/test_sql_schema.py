@@ -67,6 +67,7 @@ EXPECTED_TABLES = {
     "verification_evidence_links",
     "planning_change_history",
     "planning_mutation_state",
+    "planning_resource_user_orders",
     "planning_window_overrides",
     "projects",
     "project_co_managers",

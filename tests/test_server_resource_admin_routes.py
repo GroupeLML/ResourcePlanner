@@ -8,13 +8,14 @@ import unittest
 
 from fastapi.testclient import TestClient
 
-from app.infrastructure.sql import Base, create_sql_engine
-from app.server import create_api_app
-
-
+from app.application.security import AuthPrincipal, ROLE_ADMIN
+from app.infrastructure.sql import AppUser, Base, create_session_factory, create_sql_engine
+from app.server import create_api_app as build_api_app
+from app.server.security import static_auth_resolver
+from tests.approval_test_support import TEST_ADMIN_USER_ID
 from tests.http_test_auth import TEST_ADMIN_AUTH_RESOLVER
 
-create_api_app = partial(create_api_app, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+create_api_app = partial(build_api_app, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
 
 class ServerResourceAdminRouteTests(unittest.TestCase):
     def _database(self, directory: str) -> str:
@@ -354,9 +355,38 @@ class ServerResourceAdminRouteTests(unittest.TestCase):
                 global_holiday = next(row for row in after.json() if row["id"] == rule_id)
                 self.assertEqual(global_holiday["resource_class_codes"], [])
 
-    def test_manual_planning_reorder_persists_normalizes_duplicates_and_is_idempotent(self) -> None:
+    def test_manual_planning_reorder_is_persisted_per_app_user_with_global_fallback(self) -> None:
         with TemporaryDirectory() as directory:
-            app = create_api_app(self._database(directory))
+            database_url = self._database(directory)
+            second_user_id = "00000000-0000-0000-0000-000000000656"
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            with factory.begin() as session:
+                session.add_all(
+                    [
+                        AppUser(
+                            id=TEST_ADMIN_USER_ID,
+                            issuer="urn:resourceplanner:test",
+                            subject="explicit-test-admin",
+                            display_name="Administrateur de test explicite",
+                            email=None,
+                            roles_json='["ADMIN"]',
+                            active=True,
+                        ),
+                        AppUser(
+                            id=second_user_id,
+                            issuer="urn:resourceplanner:test",
+                            subject="issue-656-second-user",
+                            display_name="Deuxième utilisateur 656",
+                            email=None,
+                            roles_json='["ADMIN"]',
+                            active=True,
+                        ),
+                    ]
+                )
+            engine.dispose()
+
+            app = create_api_app(database_url)
             with TestClient(app) as client:
                 def create_resource(name: str, resource_class: str, sort_order: int) -> str:
                     response = client.post(
@@ -370,11 +400,16 @@ class ServerResourceAdminRouteTests(unittest.TestCase):
                     self.assertEqual(response.status_code, 201, response.text)
                     return response.json()["resource_id"]
 
-                alice_id = create_resource("Alice", "PROGRAMMEUR", 0)
-                bob_id = create_resource("Bob", "PROGRAMMEUR", 0)
+                alice_id = create_resource("Alice", "PROGRAMMEUR", 10)
+                bob_id = create_resource("Bob", "PROGRAMMEUR", 20)
                 electrician_id = create_resource("Émile", "ÉLECTRICIEN", 7)
 
-                headers = {"Idempotency-Key": "issue-595-bob-up"}
+                fallback = client.get("/api/v1/planning/resource-order")
+                self.assertEqual(fallback.status_code, 200, fallback.text)
+                self.assertEqual(fallback.json()["positions"][alice_id], 10)
+                self.assertEqual(fallback.json()["positions"][bob_id], 20)
+
+                headers = {"Idempotency-Key": "issue-656-admin-bob-up"}
                 moved = client.post(
                     f"/api/v1/planning/resources/{bob_id}/reorder",
                     json={"direction": "up"},
@@ -382,7 +417,6 @@ class ServerResourceAdminRouteTests(unittest.TestCase):
                 )
                 self.assertEqual(moved.status_code, 200, moved.text)
                 self.assertEqual(moved.json()["action"], "reordered")
-
                 replay = client.post(
                     f"/api/v1/planning/resources/{bob_id}/reorder",
                     json={"direction": "up"},
@@ -391,31 +425,72 @@ class ServerResourceAdminRouteTests(unittest.TestCase):
                 self.assertEqual(replay.status_code, 200, replay.text)
                 self.assertEqual(replay.json(), moved.json())
 
+                personalized = client.get("/api/v1/planning/resource-order").json()["positions"]
+                self.assertEqual(personalized[bob_id], 10)
+                self.assertEqual(personalized[alice_id], 20)
+
+                charlie_id = create_resource("Charlie", "PROGRAMMEUR", 15)
+                with_new_resource = client.get("/api/v1/planning/resource-order").json()["positions"]
+                self.assertEqual(with_new_resource[bob_id], 10)
+                self.assertEqual(with_new_resource[charlie_id], 15)
+                self.assertEqual(with_new_resource[alice_id], 20)
+
                 resources = client.get("/api/v1/resources?active_only=false")
                 self.assertEqual(resources.status_code, 200, resources.text)
-                programmers = sorted(
-                    (
-                        row for row in resources.json()
-                        if row["resource_class"] == "PROGRAMMEUR"
-                    ),
-                    key=lambda row: row["sort_order"],
+                global_order = {row["id"]: row["sort_order"] for row in resources.json()}
+                self.assertEqual(global_order[alice_id], 10)
+                self.assertEqual(global_order[bob_id], 20)
+                self.assertEqual(global_order[charlie_id], 15)
+                self.assertEqual(global_order[electrician_id], 7)
+
+                deactivated = client.post(f"/api/v1/resources/{bob_id}/deactivate")
+                self.assertEqual(deactivated.status_code, 200, deactivated.text)
+                inactive_positions = client.get("/api/v1/planning/resource-order").json()["positions"]
+                self.assertNotIn(bob_id, inactive_positions)
+                reactivated = client.patch(
+                    f"/api/v1/resources/{bob_id}",
+                    json={"active": True},
                 )
-                self.assertEqual(
-                    [(row["id"], row["sort_order"]) for row in programmers],
-                    [(bob_id, 10), (alice_id, 20)],
-                )
-                electrician = next(
-                    row for row in resources.json()
-                    if row["id"] == electrician_id
-                )
-                self.assertEqual(electrician["sort_order"], 7)
+                self.assertEqual(reactivated.status_code, 200, reactivated.text)
+                restored_positions = client.get("/api/v1/planning/resource-order").json()["positions"]
+                self.assertEqual(restored_positions[bob_id], 10)
 
                 invalid = client.post(
                     f"/api/v1/planning/resources/{alice_id}/reorder",
                     json={"direction": "sideways"},
-                    headers={"Idempotency-Key": "issue-595-invalid"},
+                    headers={"Idempotency-Key": "issue-656-invalid"},
                 )
                 self.assertEqual(invalid.status_code, 422, invalid.text)
+
+            second_resolver = static_auth_resolver(
+                AuthPrincipal.from_roles(
+                    local_user_id=second_user_id,
+                    issuer="urn:resourceplanner:test",
+                    subject="issue-656-second-user",
+                    display_name="Deuxième utilisateur 656",
+                    email=None,
+                    roles=(ROLE_ADMIN,),
+                    auth_mode="test",
+                )
+            )
+            second_app = build_api_app(database_url, auth_resolver=second_resolver)
+            with TestClient(second_app) as second_client:
+                second_positions = second_client.get(
+                    "/api/v1/planning/resource-order"
+                ).json()["positions"]
+                self.assertEqual(second_positions[alice_id], 10)
+                self.assertEqual(second_positions[charlie_id], 15)
+                self.assertEqual(second_positions[bob_id], 20)
+
+            reloaded_app = create_api_app(database_url)
+            with TestClient(reloaded_app) as reloaded_client:
+                persisted = reloaded_client.get(
+                    "/api/v1/planning/resource-order"
+                ).json()["positions"]
+                self.assertEqual(persisted[bob_id], 10)
+                self.assertEqual(persisted[charlie_id], 15)
+                self.assertEqual(persisted[alice_id], 20)
+
 
 
 if __name__ == "__main__":

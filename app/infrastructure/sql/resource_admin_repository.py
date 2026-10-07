@@ -11,6 +11,7 @@ from ...application.resource_admin import ResourceAdminRepositoryPort
 from .base import new_id
 from .models import (
     AvailabilityRuleResourceClass,
+    PlanningResourceUserOrder,
     Resource,
     ResourceAvailabilityRule,
     ResourceCompetency,
@@ -243,6 +244,71 @@ class SqlResourceAdminRepository(ResourceAdminRepositoryPort):
             raise KeyError(f"Ressources introuvables pour réordonnancement: {', '.join(missing)}")
         for position, identifier in enumerate(identifiers, start=1):
             rows[identifier].sort_order = position * 10
+        self._session.flush()
+
+    def resource_user_sort_positions(
+        self,
+        user_id: str,
+        resource_ids: Sequence[str],
+    ) -> Mapping[str, int]:
+        owner = _text(user_id)
+        identifiers = tuple(
+            dict.fromkeys(_text(value) for value in resource_ids if _text(value))
+        )
+        if not owner or not identifiers:
+            return {}
+        rows = self._session.execute(
+            select(
+                PlanningResourceUserOrder.resource_id,
+                PlanningResourceUserOrder.position,
+            ).where(
+                PlanningResourceUserOrder.user_id == owner,
+                PlanningResourceUserOrder.resource_id.in_(identifiers),
+            )
+        ).all()
+        return {str(resource_id): int(position) for resource_id, position in rows}
+
+    def replace_user_resource_sort_order(
+        self,
+        user_id: str,
+        ordered_resource_ids: Sequence[str],
+    ) -> None:
+        owner = _text(user_id)
+        identifiers = tuple(
+            dict.fromkeys(_text(value) for value in ordered_resource_ids if _text(value))
+        )
+        if not owner or not identifiers:
+            return
+        resource_ids = set(
+            self._session.scalars(
+                select(Resource.id).where(Resource.id.in_(identifiers))
+            ).all()
+        )
+        missing = tuple(identifier for identifier in identifiers if identifier not in resource_ids)
+        if missing:
+            raise KeyError(
+                f"Ressources introuvables pour réordonnancement personnel: {', '.join(missing)}"
+            )
+        existing = {
+            row.resource_id: row
+            for row in self._session.scalars(
+                select(PlanningResourceUserOrder).where(
+                    PlanningResourceUserOrder.user_id == owner,
+                    PlanningResourceUserOrder.resource_id.in_(identifiers),
+                )
+            ).all()
+        }
+        for position, identifier in enumerate(identifiers, start=1):
+            row = existing.get(identifier)
+            if row is None:
+                row = PlanningResourceUserOrder(
+                    user_id=owner,
+                    resource_id=identifier,
+                    position=position * 10,
+                )
+                self._session.add(row)
+            else:
+                row.position = position * 10
         self._session.flush()
 
     def list_availability_rules(

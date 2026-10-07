@@ -73,6 +73,12 @@ def required_permission(method: str, path: str) -> str | None:
     if verb == "GET":
         return PERMISSION_READ
     if (
+        verb == "POST"
+        and path.startswith("/api/v1/planning/resources/")
+        and path.endswith("/reorder")
+    ):
+        return PERMISSION_READ
+    if (
         path.startswith("/api/v1/assets/")
         and "/approvers/" in path
     ):
