@@ -1058,9 +1058,20 @@ export type DemandPeriodReadModel = {
   hours: number;
   confirmation: "Tentative" | "Confirmée";
   alternative_group: string | null;
+  inheritance_contract_version: number | null;
+  confirmation_mode: "INHERIT_MASTER" | "EXPLICIT" | null;
+  confirmation_explicit: "Tentative" | "Confirmée" | null;
+  confirmation_provenance: string | null;
   proposed_resource_id: string | null;
   proposed_resource: string | null;
+  proposed_resource_mode: "INHERIT_MASTER" | "EXPLICIT" | "SAME_AS_PERIOD" | null;
+  proposed_resource_explicit: string | null;
+  proposed_resource_provenance: string | null;
+  same_as_period_id: string | null;
+  same_as_root_period_id: string | null;
+  same_as_state: string | null;
   resource_count: number;
+  resource_count_provenance: string | null;
   desired_active_days: number | null;
   note: string | null;
   selected: boolean;
@@ -1074,8 +1085,12 @@ export type DemandPeriodWrite = {
   kind: "CUMULATIVE" | "ALTERNATIVE";
   alternative_group: string | null;
   confirmation: "Tentative" | "Confirmée";
+  confirmation_mode: "INHERIT_MASTER" | "EXPLICIT";
   proposed_resource: string | null;
+  proposed_resource_mode: "INHERIT_MASTER" | "EXPLICIT" | "SAME_AS_PERIOD";
+  same_as_period_id: string | null;
   resource_count: number;
+  desired_active_days: number | null;
   note: string;
 };
 
