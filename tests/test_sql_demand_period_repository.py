@@ -5,7 +5,18 @@ import unittest
 
 from sqlalchemy import func, select
 
-from app.domain.demand_periods import PERIOD_KIND_ALTERNATIVE, DemandPeriodDefinition
+from app.domain.demand_periods import (
+    CONFIRMATION_MODE_INHERIT_MASTER,
+    PERIOD_INHERITANCE_CONTRACT_VERSION,
+    PERIOD_KIND_ALTERNATIVE,
+    PERIOD_KIND_CUMULATIVE,
+    PERIOD_PROVENANCE_LEGACY,
+    PERIOD_PROVENANCE_MASTER,
+    PROPOSED_RESOURCE_MODE_EXPLICIT,
+    PROPOSED_RESOURCE_MODE_INHERIT_MASTER,
+    PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD,
+    DemandPeriodDefinition,
+)
 from app.infrastructure.sql import (
     Base,
     Project,
@@ -119,6 +130,136 @@ class SqlDemandPeriodRepositoryTests(unittest.TestCase):
                 )
             ).all()
             self.assertEqual({row.request_line_id for row in physical}, {"D1"})
+
+    def test_master_inheritance_is_dynamic_and_quantity_is_derived(self) -> None:
+        with transactional_session(self.factory) as session:
+            line = session.get(RequestLine, "D1")
+            assert line is not None
+            line.slot_count = 3
+            line.confirmation = "Confirmée"
+            line.proposed_resource_id = "R-A"
+            repository = SqlDemandPeriodRepository(session)
+            rows = repository.replace_for_demand(
+                "DMO-1",
+                (
+                    DemandPeriodDefinition(
+                        period_id="P1",
+                        start_date=DAY_1,
+                        end_date=DAY_2,
+                        hours=12,
+                        kind=PERIOD_KIND_CUMULATIVE,
+                        confirmation="Tentative",
+                        confirmation_mode=CONFIRMATION_MODE_INHERIT_MASTER,
+                        proposed_resource="Technicien B",
+                        proposed_resource_mode=PROPOSED_RESOURCE_MODE_INHERIT_MASTER,
+                        resource_count=99,
+                    ),
+                ),
+            )
+
+            self.assertEqual(rows[0].resource_count, 3)
+            self.assertEqual(rows[0].resource_count_provenance, PERIOD_PROVENANCE_MASTER)
+            self.assertEqual(rows[0].confirmation, "Confirmée")
+            self.assertEqual(rows[0].confirmation_provenance, PERIOD_PROVENANCE_MASTER)
+            self.assertEqual(rows[0].proposed_resource, "Technicien A")
+            self.assertEqual(rows[0].proposed_resource_provenance, PERIOD_PROVENANCE_MASTER)
+            physical = session.scalar(
+                select(WorkforceRequestPeriod).where(
+                    WorkforceRequestPeriod.workforce_request_id == "D1",
+                    WorkforceRequestPeriod.active.is_(True),
+                )
+            )
+            assert physical is not None
+            self.assertEqual(
+                physical.inheritance_contract_version,
+                PERIOD_INHERITANCE_CONTRACT_VERSION,
+            )
+            self.assertEqual(physical.resource_count, 3)
+
+            line.slot_count = 2
+            line.confirmation = "Tentative"
+            line.proposed_resource_id = "R-B"
+            session.flush()
+            refreshed = repository.list_for_demand("DMO-1")
+            self.assertEqual(refreshed[0].resource_count, 2)
+            self.assertEqual(refreshed[0].confirmation, "Tentative")
+            self.assertEqual(refreshed[0].proposed_resource, "Technicien B")
+
+    def test_historical_row_keeps_legacy_period_authority(self) -> None:
+        with transactional_session(self.factory) as session:
+            line = session.get(RequestLine, "D1")
+            assert line is not None
+            line.slot_count = 7
+            line.confirmation = "Confirmée"
+            line.proposed_resource_id = "R-B"
+            session.add(
+                WorkforceRequestPeriod(
+                    period_key="LEGACY-P1",
+                    workforce_request_id="D1",
+                    request_line_id="D1",
+                    sequence=1,
+                    kind=PERIOD_KIND_CUMULATIVE,
+                    start_date=DAY_1,
+                    end_date=DAY_2,
+                    hours=8,
+                    confirmation="Tentative",
+                    proposed_resource_id="R-A",
+                    resource_count=4,
+                    active=True,
+                )
+            )
+            session.flush()
+
+            row = SqlDemandPeriodRepository(session).list_for_demand("DMO-1")[0]
+            self.assertEqual(row.resource_count, 4)
+            self.assertEqual(row.resource_count_provenance, PERIOD_PROVENANCE_LEGACY)
+            self.assertEqual(row.confirmation, "Tentative")
+            self.assertEqual(row.confirmation_provenance, PERIOD_PROVENANCE_LEGACY)
+            self.assertEqual(row.proposed_resource, "Technicien A")
+            self.assertEqual(row.proposed_resource_provenance, PERIOD_PROVENANCE_LEGACY)
+
+    def test_same_as_contract_is_persisted_but_deferred_until_655b(self) -> None:
+        with transactional_session(self.factory) as session:
+            repository = SqlDemandPeriodRepository(session)
+            rows = repository.replace_for_demand(
+                "DMO-1",
+                (
+                    DemandPeriodDefinition(
+                        period_id="P1",
+                        start_date=DAY_1,
+                        end_date=DAY_1,
+                        hours=4,
+                        proposed_resource="Technicien A",
+                        proposed_resource_mode=PROPOSED_RESOURCE_MODE_EXPLICIT,
+                    ),
+                    DemandPeriodDefinition(
+                        period_id="P2",
+                        start_date=DAY_2,
+                        end_date=DAY_2,
+                        hours=4,
+                        proposed_resource_mode=PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD,
+                        same_as_period_id="P1",
+                    ),
+                ),
+            )
+
+            by_id = {row.period_id: row for row in rows}
+            self.assertEqual(by_id["P2"].proposed_resource_mode, "SAME_AS_PERIOD")
+            self.assertEqual(by_id["P2"].same_as_period_id, "P1")
+            self.assertEqual(by_id["P2"].same_as_state, "DEFERRED_655B")
+            self.assertIsNone(by_id["P2"].proposed_resource)
+            physical = session.scalar(
+                select(WorkforceRequestPeriod).where(
+                    WorkforceRequestPeriod.period_key == "P2",
+                    WorkforceRequestPeriod.active.is_(True),
+                )
+            )
+            assert physical is not None
+            self.assertEqual(
+                physical.proposed_resource_mode,
+                PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD,
+            )
+            self.assertEqual(physical.same_as_period_key, "P1")
 
     def test_selection_is_unique_per_group_and_can_switch_options(self) -> None:
         with transactional_session(self.factory) as session:
