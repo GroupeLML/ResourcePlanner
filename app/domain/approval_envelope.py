@@ -12,6 +12,7 @@ from .confirmation import normalize_confirmation
 from .demand_periods import (
     PERIOD_KIND_ALTERNATIVE,
     PERIOD_KIND_CUMULATIVE,
+    PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD,
     VALID_PERIOD_KINDS,
 )
 
@@ -694,6 +695,51 @@ def validate_approval_envelope(envelope: ApprovalEnvelope) -> None:
                 f"L'entrée cumulative {entry.identity.stable_key} ne peut pas "
                 "avoir de groupe alternatif."
             )
+
+    entries_by_identity = {entry.identity: entry for entry in envelope.entries}
+    same_as_edges: dict[EnvelopeEntryIdentity, EnvelopeEntryIdentity] = {}
+    for entry in envelope.entries:
+        if entry.proposed_resource_mode != PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD:
+            continue
+        if entry.line_kind != "WORKFORCE" or entry.kind != PERIOD_KIND_CUMULATIVE:
+            raise ValueError("SAME_AS_PERIOD est limité aux périodes humaines cumulatives.")
+        if entry.group is not None or entry.slot_count != 1:
+            raise ValueError("SAME_AS_PERIOD exige une période cumulative de quantité effective 1.")
+        target_key = _text(entry.same_as_period_key)
+        if not target_key:
+            raise ValueError("SAME_AS_PERIOD exige une période cible.")
+        target_identity = EnvelopeEntryIdentity(
+            line_id=entry.identity.line_id,
+            period_key=target_key,
+        )
+        target = entries_by_identity.get(target_identity)
+        if target is None:
+            raise ValueError(
+                f"SAME_AS_PERIOD référence une période introuvable dans la même ligne: {target_key}."
+            )
+        if target.line_kind != "WORKFORCE" or target.kind != PERIOD_KIND_CUMULATIVE:
+            raise ValueError("La cible SAME_AS_PERIOD doit être une période humaine cumulative.")
+        if target.group is not None or target.slot_count != 1:
+            raise ValueError("La cible SAME_AS_PERIOD doit avoir une quantité effective de 1.")
+        same_as_edges[entry.identity] = target_identity
+
+    visiting: set[EnvelopeEntryIdentity] = set()
+    visited: set[EnvelopeEntryIdentity] = set()
+
+    def visit_same_as(identity: EnvelopeEntryIdentity) -> None:
+        if identity in visited:
+            return
+        if identity in visiting:
+            raise ValueError("Les références SAME_AS_PERIOD ne peuvent pas former de cycle.")
+        visiting.add(identity)
+        target = same_as_edges.get(identity)
+        if target is not None:
+            visit_same_as(target)
+        visiting.remove(identity)
+        visited.add(identity)
+
+    for identity in same_as_edges:
+        visit_same_as(identity)
 
     for group, options in groups.items():
         if len(options) < 2:
