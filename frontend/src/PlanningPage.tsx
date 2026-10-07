@@ -274,6 +274,7 @@ function ShiftCard({
   const confirmation = confirmationKind(shift.confirmation);
   const scopeNeighbor = shift.source === "SCOPE_NEIGHBOR";
   const editable = Boolean(onEdit) && !scopeNeighbor;
+  const draggable = dragEnabled && !scopeNeighbor;
   const emergencyOverride = Boolean((shift as EmergencyShiftReadModel).emergency_override_active);
   const overallocationShift = shift as OverallocationShiftReadModel;
   const excess = Number(overallocationShift.segment_overallocated_hours ?? 0);
@@ -319,12 +320,12 @@ function ShiftCard({
 
   return (
     <article
-      className={`shift-card shift-${confirmation} ${shift.outside_standard_hours ? "shift-outside" : ""} ${excess > 0 ? "shift-overallocated" : ""} ${unplaced > 0 ? "shift-unplaced" : ""} ${dragEnabled ? "is-draggable" : ""}`}
-      draggable={dragEnabled}
+      className={`shift-card shift-${confirmation} ${shift.outside_standard_hours ? "shift-outside" : ""} ${excess > 0 ? "shift-overallocated" : ""} ${unplaced > 0 ? "shift-unplaced" : ""} ${draggable ? "is-draggable" : ""}`}
+      draggable={draggable}
       data-allocation-id={shift.allocation_id}
       data-segment-id={shift.segment_id}
       onDragStart={(event) => {
-        if (!dragEnabled || (event.target as HTMLElement).closest(".shift-asset-action")) {
+        if (!draggable || (event.target as HTMLElement).closest(".shift-asset-action")) {
           event.preventDefault();
           return;
         }
