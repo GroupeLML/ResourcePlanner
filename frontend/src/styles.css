@@ -269,6 +269,39 @@ h1 { font-size: 1.6rem; }
 .recommendation-capacity span { background: #f3f5f8; color: #526073; }
 .recommendation-warning { color: var(--warn); font-size: .62rem; }
 .recommendation-card > button { justify-self: start; }
+.recommendation-context {
+  display: grid;
+  gap: .18rem;
+  margin: -.15rem 0 .8rem;
+  padding: .62rem .72rem;
+  border: 1px solid #cfd9e8;
+  border-radius: 9px;
+  background: #f8faff;
+  color: #526073;
+  font-size: .66rem;
+}
+.recommendation-context strong { color: var(--ink); font-size: .68rem; }
+.recommendation-card.is-preferred { box-shadow: inset 4px 0 0 #5b6fd8; }
+.recommendation-card.is-fallback { border-style: dashed; }
+.recommendation-badges { display: flex; flex-wrap: wrap; gap: .25rem; margin-top: .32rem; }
+.recommendation-badge {
+  display: inline-flex !important;
+  align-items: center;
+  width: fit-content;
+  padding: .12rem .34rem;
+  border-radius: 999px;
+  font-size: .56rem !important;
+  font-weight: 800;
+}
+.is-recommended-badge { background: var(--good-soft); color: var(--good) !important; }
+.is-preferred-badge { background: #eef0ff; color: #4d5fc4 !important; }
+.is-fallback-badge { background: var(--warn-soft); color: var(--warn) !important; }
+.recommendation-confirmation-note {
+  max-width: 680px;
+  color: var(--warn);
+  font-size: .62rem;
+  font-weight: 700;
+}
 
 
 .mt-unlinked-panel { margin-bottom: .8rem; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
