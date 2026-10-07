@@ -45,6 +45,7 @@ SOURCE_MISSING_TABLES = {
     "task_catalog_preferred_resource_audit",
     "availability_rule_resource_classes",
     "planning_window_overrides",
+    "planning_resource_user_orders",
     "verification_scopes",
     "verification_requirements",
     "verification_requirement_revisions",

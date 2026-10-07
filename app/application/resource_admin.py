@@ -35,9 +35,17 @@ def _resource_alpha_key(value: object) -> str:
     return "".join(char for char in text if not unicodedata.combining(char))
 
 
-def _resource_manual_order_key(resource: ResourceReadModel) -> tuple[object, ...]:
+def _resource_manual_order_key(
+    resource: ResourceReadModel,
+    positions: Mapping[str, int] | None = None,
+) -> tuple[object, ...]:
+    manual_position = (
+        int(positions[resource.id])
+        if positions is not None and resource.id in positions
+        else int(resource.sort_order)
+    )
     return (
-        int(resource.sort_order),
+        manual_position,
         _resource_alpha_key(resource.name),
         resource.name.casefold(),
         resource.id,
@@ -226,6 +234,18 @@ class ResourceAdminRepositoryPort(Protocol):
 
     def replace_resource_sort_order(self, ordered_resource_ids: Sequence[str]) -> None: ...
 
+    def resource_user_sort_positions(
+        self,
+        user_id: str,
+        resource_ids: Sequence[str],
+    ) -> Mapping[str, int]: ...
+
+    def replace_user_resource_sort_order(
+        self,
+        user_id: str,
+        ordered_resource_ids: Sequence[str],
+    ) -> None: ...
+
     def get_availability_rule(self, rule_id: str) -> ResourceAvailabilityRuleReadModel | None: ...
 
     def create_availability_rule(self, values: Mapping[str, Any]) -> str: ...
@@ -332,8 +352,14 @@ def _validate_availability_values(
 class ResourceAdminService:
     """Application rules for resource profiles and availability administration."""
 
-    def __init__(self, repository: ResourceAdminRepositoryPort) -> None:
+    def __init__(
+        self,
+        repository: ResourceAdminRepositoryPort,
+        *,
+        current_user_id: str | None = None,
+    ) -> None:
         self._repository = repository
+        self._current_user_id = str(current_user_id or "").strip() or None
 
     def _validated_holiday_class_scope(
         self,
@@ -445,7 +471,40 @@ class ResourceAdminService:
         )
         return ResourceMutationResult(str(identifier), "updated")
 
+    def _resolved_manual_positions(
+        self,
+        resources: Sequence[ResourceReadModel],
+    ) -> dict[str, int]:
+        stored: Mapping[str, int] = {}
+        if self._current_user_id is not None:
+            stored = call_application_port(
+                lambda: self._repository.resource_user_sort_positions(
+                    self._current_user_id or "",
+                    tuple(resource.id for resource in resources),
+                ),
+                code_prefix="resource_user_order_read",
+                context={"user_id": self._current_user_id},
+            )
+        return {
+            resource.id: int(stored.get(resource.id, resource.sort_order))
+            for resource in resources
+        }
+
+    def manual_order_positions(self) -> dict[str, int]:
+        resources = call_application_port(
+            lambda: self._repository.list_resources(active_only=True),
+            code_prefix="resource_read",
+            context={"purpose": "manual_resource_order"},
+        )
+        return self._resolved_manual_positions(resources)
+
     def reorder_resource(self, command: ResourceReorderCommand) -> ResourceMutationResult:
+        if self._current_user_id is None:
+            raise ApplicationValidationError(
+                "Un utilisateur RessourcePlanner identifié est requis pour personnaliser l'ordre manuel.",
+                code="resource_reorder_identity_required",
+                context={"resource_id": command.resource_id},
+            )
         current = call_application_port(
             lambda: self._repository.get_resource(command.resource_id),
             code_prefix="resource_read",
@@ -463,20 +522,16 @@ class ResourceAdminService:
                 code="resource_reorder_inactive",
                 context={"resource_id": command.resource_id},
             )
-
         resources = call_application_port(
             lambda: self._repository.list_resources(active_only=True),
             code_prefix="resource_read",
             context={"resource_id": command.resource_id},
         )
+        positions = self._resolved_manual_positions(resources)
         class_key = current.resource_class or ""
         group = sorted(
-            (
-                resource
-                for resource in resources
-                if (resource.resource_class or "") == class_key
-            ),
-            key=_resource_manual_order_key,
+            (resource for resource in resources if (resource.resource_class or "") == class_key),
+            key=lambda resource: _resource_manual_order_key(resource, positions),
         )
         current_index = next(
             (index for index, resource in enumerate(group) if resource.id == current.id),
@@ -488,21 +543,23 @@ class ResourceAdminService:
                 code="resource_reorder_unavailable",
                 context={"resource_id": command.resource_id},
             )
-
         offset = -1 if command.direction == RESOURCE_ORDER_UP else 1
         target_index = current_index + offset
         if target_index < 0 or target_index >= len(group):
             return ResourceMutationResult(current.id, "unchanged")
-
         group[current_index], group[target_index] = group[target_index], group[current_index]
         ordered_ids = tuple(resource.id for resource in group)
         call_application_port(
-            lambda: self._repository.replace_resource_sort_order(ordered_ids),
-            code_prefix="resource_reorder",
+            lambda: self._repository.replace_user_resource_sort_order(
+                self._current_user_id or "",
+                ordered_ids,
+            ),
+            code_prefix="resource_user_reorder",
             context={
                 "resource_id": command.resource_id,
                 "direction": command.direction,
                 "resource_class": current.resource_class,
+                "user_id": self._current_user_id,
             },
         )
         return ResourceMutationResult(current.id, "reordered")

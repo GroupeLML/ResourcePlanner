@@ -252,7 +252,7 @@ class SecurityPolicyTests(unittest.TestCase):
                 "POST",
                 "/api/v1/planning/resources/R-1/reorder",
             ),
-            PERMISSION_MANAGE_PLANNING,
+            PERMISSION_READ,
         )
         self.assertEqual(
             required_permission(

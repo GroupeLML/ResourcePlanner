@@ -563,6 +563,10 @@ export type ResourceMutationResult = {
   action: string;
 };
 
+export type PlanningResourceOrderReadModel = {
+  positions: Record<string, number>;
+};
+
 export type AvailabilityType = "Horaire standard" | "Vacances" | "Jour férié";
 
 export type ResourceAvailabilityRuleReadModel = {
@@ -2121,6 +2125,10 @@ export function updateResource(resourceId: string, payload: ResourceWrite) {
     "PATCH",
     payload,
   );
+}
+
+export function getPlanningResourceOrder(signal?: AbortSignal) {
+  return getJson<PlanningResourceOrderReadModel>("/api/v1/planning/resource-order", signal);
 }
 
 export function reorderPlanningResource(

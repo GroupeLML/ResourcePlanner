@@ -208,13 +208,19 @@ def build_command_router(
             competencies.assign_resource(resource_id, competency_ids)
         return _payload(result)
 
+    @router.get("/planning/resource-order")
+    def get_planning_resource_order(
+        facade: ApplicationFacade = Depends(facade_dependency),
+    ) -> dict[str, Any]:
+        return {"positions": facade.manual_resource_order_positions()}
+
     @router.post("/planning/resources/{resource_id}/reorder")
     def reorder_planning_resource(
         resource_id: str,
         body: ResourceReorderRequest,
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
         facade: ApplicationFacade = Depends(facade_dependency),
-        idempotency: IdempotentCommandExecutor = Depends(idempotency_dependency),
+        idempotency: IdempotentCommandExecutor = Depends(stable_idempotency),
     ) -> dict[str, Any]:
         def action() -> dict[str, Any]:
             return _payload(
