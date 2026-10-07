@@ -546,6 +546,7 @@ export default function DemandPeriodsPage({
       confirmation_provenance: "MASTER",
       proposed_resource_provenance: "MASTER",
       resource_count_provenance: "MASTER",
+      same_as_root_period_id: null,
       same_as_state: null,
     };
     setPeriods((current) => [
@@ -807,8 +808,8 @@ export default function DemandPeriodsPage({
                   resources={resources}
                   disabled={!canEdit || saving}
                   periods={periods}
-                  masterConfirmation={(selectedLine?.confirmation ?? selectedDemand.confirmation) === "Confirmée" ? "Confirmée" : "Tentative"}
-                  masterProposedResource={selectedLine?.proposed_resource ?? selectedDemand.proposed_resource ?? null}
+                  masterConfirmation={(selectedLine?.confirmation ?? selectedDemand?.confirmation) === "Confirmée" ? "Confirmée" : "Tentative"}
+                  masterProposedResource={selectedLine?.proposed_resource ?? selectedDemand?.proposed_resource ?? null}
                   onChange={(next) => replacePeriod(index, next)}
                   onRemove={() => removePeriod(period.period_id)}
                 />
@@ -845,8 +846,8 @@ export default function DemandPeriodsPage({
                           resources={resources}
                           disabled={!canEdit || saving}
                           periods={periods}
-                          masterConfirmation={(selectedLine?.confirmation ?? selectedDemand.confirmation) === "Confirmée" ? "Confirmée" : "Tentative"}
-                          masterProposedResource={selectedLine?.proposed_resource ?? selectedDemand.proposed_resource ?? null}
+                          masterConfirmation={(selectedLine?.confirmation ?? selectedDemand?.confirmation) === "Confirmée" ? "Confirmée" : "Tentative"}
+                          masterProposedResource={selectedLine?.proposed_resource ?? selectedDemand?.proposed_resource ?? null}
                           onChange={(next) => replacePeriod(index, next)}
                           onRemove={() => removePeriod(period.period_id)}
                         />
