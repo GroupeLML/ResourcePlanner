@@ -40,7 +40,7 @@ test("688 replie les filtres sans perdre leur état ni la navigation semaine", a
 
     await toggle.click();
     await expect(toggle).toHaveAttribute("aria-expanded", "false");
-    await expect(page.locator("#planning-filters")).toHaveCount(0);
+    await expect(page.locator("#planning-filters")).toBeHidden();
     await expect(toggle).toContainText("1 filtre actif");
     await expect(page.getByRole("button", { name: "Aujourd’hui", exact: true })).toBeVisible();
 
