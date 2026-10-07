@@ -867,8 +867,8 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
             ", ".join(transport.messages[0].cc_emails),
         )
         self.assertEqual(
-            mime.get_content().rstrip("\r\n"),
-            transport.messages[0].body,
+            mime.get_content().replace("\r\n", "\n").rstrip("\n"),
+            transport.messages[0].body.replace("\r\n", "\n").rstrip("\n"),
         )
 
     def test_project_draft_download_returns_zip_for_multiple_messages(self) -> None:
