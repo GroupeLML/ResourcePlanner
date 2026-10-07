@@ -114,6 +114,64 @@ def build_workforce_weekly_capacity_by_class(
     return result
 
 
+def build_workforce_weekly_capacity_by_resource(
+    queries: Any,
+    session: Session,
+    *,
+    start: date,
+    end: date,
+) -> dict[date, dict[str, Decimal]]:
+    """Return gross workforce availability by resource and Monday week.
+
+    Availability is evaluated once per resource/day using the resource's real class,
+    so class-scoped holidays keep the ADR-021 semantics when the result is reused by
+    competency analytics.
+    """
+
+    if end < start:
+        start, end = end, start
+    first = start - timedelta(days=start.weekday())
+    last = end - timedelta(days=end.weekday())
+    rules = session.scalars(
+        select(ResourceAvailabilityRule).where(ResourceAvailabilityRule.active == true())
+    ).all()
+    class_codes = availability_class_codes_by_rule(
+        session,
+        tuple(rule.id for rule in rules),
+    )
+    availability_records = tuple(
+        _availability_record(rule, class_codes.get(rule.id, ()))
+        for rule in rules
+    )
+
+    result: dict[date, dict[str, Decimal]] = {}
+    cursor = first
+    while cursor <= last:
+        schedulable = tuple(
+            queries.list_schedulable_resources(
+                start=cursor,
+                end=cursor + timedelta(days=6),
+            )
+        )
+        hours_by_resource: defaultdict[str, float] = defaultdict(float)
+        day = cursor
+        while day <= cursor + timedelta(days=6):
+            for resource in schedulable:
+                hours_by_resource[resource.id] += availability_hours_for_day(
+                    availability_records,
+                    resource.id,
+                    day,
+                    resource_class=resource.resource_class,
+                )
+            day += timedelta(days=1)
+        result[cursor] = {
+            resource.id: _hours_decimal(hours_by_resource.get(resource.id, 0.0))
+            for resource in schedulable
+        }
+        cursor += timedelta(days=7)
+    return result
+
+
 def build_workforce_weekly_capacity(
     queries: Any,
     session: Session,
