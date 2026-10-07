@@ -283,10 +283,6 @@ class SqlRequestPlanPreparer:
                         master_confirmation=line.confirmation,
                         master_proposed_resource=line.proposed_resource_id,
                     )
-                    if resolved.same_as_state is not None:
-                        raise ValueError(
-                            "SAME_AS_PERIOD ne peut pas être matérialisé avant 655B."
-                        )
                     desired = resolved.resource_count
                     split_hours = split_total_workforce_hours(period.hours, desired)
                     base_key = ("PERIOD", line.id, period.period_key)
@@ -427,10 +423,6 @@ class SqlRequestPlanPreparer:
                 master_confirmation=request.confirmation,
                 master_proposed_resource=request.proposed_resource_id,
             )
-            if resolved.same_as_state is not None:
-                raise ValueError(
-                    "SAME_AS_PERIOD ne peut pas être matérialisé avant 655B."
-                )
             desired = resolved.resource_count
             split_hours = split_total_workforce_hours(period.hours, desired)
             base_key = ("PERIOD", line_id, period.period_key)
