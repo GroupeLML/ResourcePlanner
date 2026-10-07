@@ -1325,6 +1325,7 @@ export default function DemandsPage({
                     Override du responsable pour toute la demande
                     <ContactSelect
                       contacts={contacts}
+                      label="Override du responsable pour toute la demande"
                       value={demandContactLink?.operational_responsible_override_contact_id ?? null}
                       onChange={(value) => void changeOperationalOverride(value)}
                       disabled={!canManageDemands || overridePending || saving}

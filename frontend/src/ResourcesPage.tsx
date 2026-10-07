@@ -85,7 +85,7 @@ function RuleEditor({ resourceId, rule, forcedType, resourceClasses, onSaved, on
   const [startDate, setStartDate] = useState(rule?.start_date ?? "");
   const [endDate, setEndDate] = useState(rule?.end_date ?? "");
   const [startTime, setStartTime] = useState(shortTime(rule?.start_time ?? null) || "07:00");
-  const [endTime, setEndTime] = useState(shortTime(rule?.end_time ?? null) || "15:30");
+  const [endTime, setEndTime] = useState(shortTime(rule?.end_time ?? null) || "15:00");
   const [weekdays, setWeekdays] = useState(
     () => new Set((rule?.weekdays ?? DEFAULT_WEEKDAYS).split(",").map((item) => item.trim()).filter(Boolean)),
   );
@@ -669,6 +669,7 @@ export default function ResourcesPage() {
                     Coordonnateur
                     <ContactSelect
                       contacts={contacts}
+                      label="Coordonnateur"
                       value={resourceContactLink?.coordinator_contact_id ?? null}
                       onChange={(value) => void changeCoordinator(value)}
                       disabled={pendingCoordinator}

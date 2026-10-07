@@ -1,0 +1,101 @@
+import { Browser, BrowserContext, Page, expect, test } from "@playwright/test";
+
+const BASE_URL = process.env.RESOURCEPLANNER_E2E_BASE_URL || "http://127.0.0.1:8765";
+
+async function openAdmin(browser: Browser) {
+  const context = await browser.newContext({
+    baseURL: BASE_URL,
+    locale: "fr-CA",
+    extraHTTPHeaders: { "X-E2E-Role": "ADMIN" },
+  });
+  const page = await context.newPage();
+  await page.goto("/");
+  return { context, page };
+}
+
+async function closeContext(context: BrowserContext) {
+  await context.close();
+}
+
+async function navigateMain(page: Page, label: string) {
+  await page.locator(".main-nav").getByRole("button", { name: new RegExp(label, "i") }).click();
+}
+
+async function openResourcesForAlice(page: Page) {
+  await navigateMain(page, "Ressources");
+  const alice = page.locator(".resource-list").getByRole("button", { name: /Alice/i }).first();
+  await expect(alice).toBeVisible();
+  await alice.click();
+  await expect(page.locator(".resource-profile-card")).toContainText("Alice");
+}
+
+test("653 — Ouvrir amène au détail projet et conserve le focus", async ({ browser }) => {
+  const { context, page } = await openAdmin(browser);
+  try {
+    await navigateMain(page, "Projets");
+
+    const open = page.getByRole("button", { name: "Ouvrir", exact: true }).first();
+    await expect(open).toBeVisible();
+    await open.click();
+
+    const projectDetail = page.locator(".project-contact-admin");
+    await expect(projectDetail).toBeVisible();
+    await expect.poll(async () => projectDetail.evaluate((node) => document.activeElement === node)).toBe(true);
+    await expect.poll(async () => projectDetail.evaluate((node) => {
+      const rect = node.getBoundingClientRect();
+      return rect.top >= 0 && rect.top < window.innerHeight;
+    })).toBe(true);
+  } finally {
+    await closeContext(context);
+  }
+});
+
+test("653 — le coordonnateur de ressource est recherchable sans casse", async ({ browser }) => {
+  const { context, page } = await openAdmin(browser);
+  try {
+    await openResourcesForAlice(page);
+
+    const coordinator = page.getByRole("combobox", { name: "Coordonnateur", exact: true });
+    await expect(coordinator).toBeVisible();
+    await coordinator.click();
+    await coordinator.fill("CHARGÉ");
+
+    const coordinatorOptions = page.getByRole("listbox", { name: "Coordonnateur options", exact: true });
+    const projectManager = coordinatorOptions.getByRole("option", { name: /Chargé de projet Démo/i });
+    await expect(projectManager).toBeVisible();
+
+    await coordinator.fill("projet");
+    await expect(projectManager).toBeVisible();
+    await coordinator.press("Escape");
+    await expect(coordinatorOptions).toBeHidden();
+  } finally {
+    await closeContext(context);
+  }
+});
+
+test("653 — une nouvelle règle propose 07:00–15:00", async ({ browser }) => {
+  const { context, page } = await openAdmin(browser);
+  try {
+    await openResourcesForAlice(page);
+
+    const availabilityCard = page.locator(".admin-card").filter({ hasText: "Horaire & absences" });
+    const existingRule = availabilityCard.locator(".availability-rule").filter({ hasText: "08:00 → 16:00" });
+    await expect(existingRule).toBeVisible();
+
+    const addRule = availabilityCard.getByRole("button", { name: "+ Ajouter", exact: true });
+    await expect(addRule).toBeVisible();
+    await addRule.click({ force: true, timeout: 10_000 });
+
+    const newRuleEditor = availabilityCard.locator(".admin-editor");
+    await expect(newRuleEditor).toBeVisible();
+    await expect(newRuleEditor.getByLabel("Début", { exact: true })).toHaveValue("07:00");
+    await expect(newRuleEditor.getByLabel("Fin", { exact: true })).toHaveValue("15:00");
+
+    const closeEditor = newRuleEditor.getByRole("button", { name: "Fermer", exact: true });
+    await expect(closeEditor).toBeVisible();
+    await closeEditor.click({ force: true, timeout: 10_000 });
+    await expect(newRuleEditor).toBeHidden();
+  } finally {
+    await closeContext(context);
+  }
+});
