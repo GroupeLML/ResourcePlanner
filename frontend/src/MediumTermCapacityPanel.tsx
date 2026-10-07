@@ -139,7 +139,7 @@ export default function MediumTermCapacityPanel({
       <header className="mt-capacity-heading">
         <div>
           <span className="eyebrow">Capacité hebdomadaire par classe</span>
-          <h2>Charge WorkPackage / capacité · compétences</h2>
+          <h2>Charge / capacité · utilisation</h2>
         </div>
         <p>
           Les classes comparent la charge WorkPackage à la capacité de classe. Ouvre une classe
