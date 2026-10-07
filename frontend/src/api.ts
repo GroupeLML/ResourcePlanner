@@ -754,7 +754,6 @@ export type DemandDetailAlternativeGroupReadModel = {
 export type DemandDetailLineReadModel = {
   line: DemandLineReadModel;
   periods: DemandPeriodReadModel[];
-  candidate_windows: PendingDemandCandidateWindowReadModel[];
   alternative_groups: DemandDetailAlternativeGroupReadModel[];
   contacts: RequestLineContactResolutionReadModel | null;
 };
@@ -1130,6 +1129,7 @@ export type PendingDemandLoadReadModel = {
   work_package_ref: string | null;
   confirmation: string | null;
   periods: DemandPeriodReadModel[];
+  candidate_windows: PendingDemandCandidateWindowReadModel[];
 };
 
 export type PlanningActionReadModel = {
