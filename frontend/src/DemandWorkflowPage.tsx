@@ -6,6 +6,7 @@ import {
   ApiError,
   type DemandDetailReadModel,
   type DemandReadModel,
+  type ViewScope,
   getDemandDetail,
   getDemands,
   getPlanningSnapshot,
@@ -285,6 +286,7 @@ function unavailableDeltaMessage(reason: string | null): string {
 
 type DemandWorkflowPageProps = {
   demandNumber?: string;
+  viewScope?: ViewScope;
   canonicalDetail?: DemandDetailReadModel | null;
   embedded?: boolean;
   onChanged?: () => void | Promise<void>;
@@ -296,6 +298,7 @@ type DemandWorkflowPageProps = {
 
 export default function DemandWorkflowPage({
   demandNumber,
+  viewScope,
   canonicalDetail,
   embedded = false,
   onChanged,
@@ -339,7 +342,7 @@ export default function DemandWorkflowPage({
 
   async function refresh(number?: string) {
     const rows = demandNumber
-      ? [(await getDemandDetail(demandNumber)).demand]
+      ? [(await getDemandDetail(demandNumber, undefined, viewScope)).demand]
       : await getDemands();
     setDemands(rows);
     const wanted = demandNumber || number || selectedNumber || rows[0]?.number || "";
@@ -351,7 +354,7 @@ export default function DemandWorkflowPage({
       setWorkflowState(null);
       return;
     }
-    const detail = await getDemandDetail(nextNumber);
+    const detail = await getDemandDetail(nextNumber, undefined, viewScope);
     setSelectedDemand(detail.demand);
     setSelectedDetail(detail);
     setWorkflowState(detail.workflow as DemandWorkflowState);
@@ -373,7 +376,7 @@ export default function DemandWorkflowPage({
     setWorkflowState(null);
     setRoutingDiagnostic(null);
     const demandRequest = demandNumber
-      ? getDemandDetail(demandNumber).then((detail) => [detail.demand])
+      ? getDemandDetail(demandNumber, undefined, viewScope).then((detail) => [detail.demand])
       : getDemands();
     demandRequest
       .then(async (rows) => {
@@ -382,7 +385,7 @@ export default function DemandWorkflowPage({
         const first = demandNumber || rows[0]?.number || "";
         setSelectedNumber(first);
         if (first) {
-          const detail = await getDemandDetail(first);
+          const detail = await getDemandDetail(first, undefined, viewScope);
           if (active) {
             setSelectedDemand(detail.demand);
             setSelectedDetail(detail);
@@ -399,14 +402,14 @@ export default function DemandWorkflowPage({
         if (active) setLoading(false);
       });
     return () => { active = false; };
-  }, [demandNumber, refreshToken, canonicalDetail]);
+  }, [demandNumber, refreshToken, canonicalDetail, viewScope]);
 
   useEffect(() => {
     if (canonicalDetail || !selectedNumber || loading) return;
     let active = true;
     setError(null);
     setRoutingDiagnostic(null);
-    getDemandDetail(selectedNumber)
+    getDemandDetail(selectedNumber, undefined, viewScope)
       .then((detail) => {
         if (active) {
           setSelectedDemand(detail.demand);
@@ -418,7 +421,7 @@ export default function DemandWorkflowPage({
         if (active) setError(errorMessage(reason));
       });
     return () => { active = false; };
-  }, [selectedNumber, loading]);
+  }, [selectedNumber, loading, viewScope]);
 
   useEffect(() => {
     if (actionsOnly || !currentDemand) {
@@ -428,7 +431,7 @@ export default function DemandWorkflowPage({
     }
     let active = true;
     setApprovalStateError(null);
-    getDemandApprovalState(currentDemand.number)
+    getDemandApprovalState(currentDemand.number, viewScope)
       .then((state) => {
         if (active) setApprovalState(state);
       })
@@ -439,7 +442,7 @@ export default function DemandWorkflowPage({
         }
       });
     return () => { active = false; };
-  }, [actionsOnly, currentDemand?.number, currentDemand?.version, currentDemand?.status]);
+  }, [actionsOnly, currentDemand?.number, currentDemand?.version, currentDemand?.status, viewScope]);
 
   useEffect(() => {
     if (actionsOnly || !currentDemand || normalStatus(currentDemand.status) !== "soumise") {
@@ -451,7 +454,7 @@ export default function DemandWorkflowPage({
     let active = true;
     setPlanDeltaLoading(true);
     setPlanDeltaError(null);
-    getDemandPlanDelta(currentDemand.number)
+    getDemandPlanDelta(currentDemand.number, viewScope)
       .then((delta) => {
         if (active) setPlanDelta(delta);
       })
@@ -465,7 +468,7 @@ export default function DemandWorkflowPage({
         if (active) setPlanDeltaLoading(false);
       });
     return () => { active = false; };
-  }, [actionsOnly, currentDemand?.number, currentDemand?.status]);
+  }, [actionsOnly, currentDemand?.number, currentDemand?.status, viewScope]);
 
   const actions = useMemo(
     () =>
@@ -502,7 +505,7 @@ export default function DemandWorkflowPage({
       ? currentDemand.desired_end
       : start;
     try {
-      const planning = await getPlanningSnapshot(start, end);
+      const planning = await getPlanningSnapshot(start, end, undefined, viewScope);
       setCancellationPlanningVersion(planning.planning_version);
     } catch (reason: unknown) {
       setCancellationImpactError(errorMessage(reason));

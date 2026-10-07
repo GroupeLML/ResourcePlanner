@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import {
   ApiError,
   type DemandDetailReadModel,
+  type ViewScope,
   getDemandDetail,
 } from "./api";
 import DemandHistoryPage from "./DemandHistoryPage";
@@ -26,6 +27,8 @@ function technicalValue(value: string | number | null | undefined) {
 
 export default function DemandDetail({
   demandNumber,
+  viewScope,
+  readOnly = false,
   onChanged,
   onDirtyChange,
   canonicalDetail,
@@ -33,6 +36,8 @@ export default function DemandDetail({
   compact = false,
 }: {
   demandNumber: string;
+  viewScope?: ViewScope;
+  readOnly?: boolean;
   onChanged?: () => void | Promise<void>;
   onDirtyChange?: (dirty: boolean) => void;
   canonicalDetail?: DemandDetailReadModel | null;
@@ -53,7 +58,7 @@ export default function DemandDetail({
     const controller = new AbortController();
     setLoading(true);
     setError(null);
-    getDemandDetail(demandNumber, controller.signal)
+    getDemandDetail(demandNumber, controller.signal, viewScope)
       .then(setLoadedDetail)
       .catch((reason: unknown) => {
         if (!(reason instanceof DOMException && reason.name === "AbortError")) {
@@ -64,7 +69,7 @@ export default function DemandDetail({
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [demandNumber, refreshKey, canonicalDetail]);
+  }, [demandNumber, refreshKey, canonicalDetail, viewScope]);
 
   const detail = canonicalDetail ?? loadedDetail;
 
@@ -120,6 +125,7 @@ export default function DemandDetail({
         </summary>
         <DemandWorkflowPage
           demandNumber={demandNumber}
+          viewScope={viewScope}
           canonicalDetail={detail}
           hasUnsavedChanges={hasUnsavedChanges}
           embedded
@@ -192,7 +198,7 @@ export default function DemandDetail({
           <span>Historique</span>
           <small>Chronologie auditée de cette demande, sans changer de contexte.</small>
         </summary>
-        <DemandHistoryPage demandNumber={demandNumber} embedded refreshToken={refreshKey} />
+        <DemandHistoryPage demandNumber={demandNumber} viewScope={viewScope} embedded refreshToken={refreshKey} />
       </details>
 
       <details
@@ -210,11 +216,12 @@ export default function DemandDetail({
           </div>
           <DemandPeriodsPage
             demandNumber={demandNumber}
+            viewScope={viewScope}
             canonicalDemand={detail.demand}
             embedded
             onChanged={changed}
             onDirtyChange={onDirtyChange}
-            canEdit={detail.policy.can_edit_periods}
+            canEdit={!readOnly && detail.policy.can_edit_periods}
           />
         </div>
       </details>

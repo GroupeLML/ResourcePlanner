@@ -8,17 +8,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReactIssue656ContractTests(unittest.TestCase):
-    def test_planning_loads_server_personal_order_and_does_not_gate_it_on_manage_planning(self) -> None:
+    def test_planning_loads_server_personal_order_but_gates_mutation_controls_on_manage_planning(self) -> None:
         planning = (ROOT / "frontend" / "src" / "PlanningPage.tsx").read_text(encoding="utf-8")
         api = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
 
         self.assertIn("getPlanningResourceOrder(controller.signal)", planning)
-        self.assertIn("personalOrder.positions", planning)
-        self.assertIn('manualOrder={resourceSortMode === "manual" ? {', planning)
-        self.assertNotIn(
-            'manualOrder={resourceSortMode === "manual" && canManagePlanning ? {',
-            planning,
-        )
+        self.assertIn("setManualResourceOrder(new Map(Object.entries(personalOrder.positions)))", planning)
+        self.assertIn("compareManualResources(left, right, manualResourceOrder)", planning)
+        self.assertIn('manualOrder={canManagePlanning && resourceSortMode === "manual" ? {', planning)
         self.assertIn('"/api/v1/planning/resource-order"', api)
 
     def test_other_sort_modes_remain_independent_from_personal_manual_positions(self) -> None:

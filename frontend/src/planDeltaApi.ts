@@ -1,4 +1,4 @@
-import { ApiError } from "./api";
+import { ApiError, type ViewScope } from "./api";
 
 export type PlanDeltaChange = "ADD" | "MODIFY" | "MOVE" | "CANCEL";
 
@@ -95,9 +95,12 @@ type ApiErrorPayload = {
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 
-async function getReadJson<T>(path: string): Promise<T> {
+async function getReadJson<T>(path: string, scope?: ViewScope): Promise<T> {
+  const params = new URLSearchParams();
+  if (scope) params.set("scope", scope);
+  const query = params.toString();
   const response = await fetch(
-    `${API_BASE}${path}`,
+    `${API_BASE}${path}${query ? `?${query}` : ""}`,
     { headers: { Accept: "application/json" } },
   );
   if (!response.ok) {
@@ -116,14 +119,22 @@ async function getReadJson<T>(path: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export function getDemandApprovalState(number: string): Promise<DemandApprovalState> {
+export function getDemandApprovalState(
+  number: string,
+  scope?: ViewScope,
+): Promise<DemandApprovalState> {
   return getReadJson<DemandApprovalState>(
     `/api/v1/demands/${encodeURIComponent(number)}/approval-state`,
+    scope,
   );
 }
 
-export function getDemandPlanDelta(number: string): Promise<DemandPlanDelta> {
+export function getDemandPlanDelta(
+  number: string,
+  scope?: ViewScope,
+): Promise<DemandPlanDelta> {
   return getReadJson<DemandPlanDelta>(
     `/api/v1/demands/${encodeURIComponent(number)}/plan-delta`,
+    scope,
   );
 }
