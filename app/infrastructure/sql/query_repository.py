@@ -2118,11 +2118,13 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                     confirmation_override=_optional_text(shift.confirmation),
                     load_kind=workload_kind(confirmation),
                     note=_optional_text(shift.note),
+                    demand_id=request.id if request is not None else None,
                     demand_number=(
                         _text(request.legacy_demand_number) or request.id
                         if request is not None
                         else None
                     ),
+                    project_id=requirement.project_id,
                     project_number=_optional_text(project.number),
                     project_name=_optional_text(project.name),
                     project_manager=_optional_text(project.project_manager_name),
