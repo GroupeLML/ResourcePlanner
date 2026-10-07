@@ -15,6 +15,9 @@ class ReactDemandPeriodsContractTests(unittest.TestCase):
         detail = (ROOT / "frontend" / "src" / "DemandDetail.tsx").read_text(
             encoding="utf-8"
         )
+        demands = (ROOT / "frontend" / "src" / "DemandsPage.tsx").read_text(
+            encoding="utf-8"
+        )
         main = (ROOT / "frontend" / "src" / "main.tsx").read_text(encoding="utf-8")
 
         self.assertIn("<DemandsPage />", workspace)
@@ -28,6 +31,8 @@ class ReactDemandPeriodsContractTests(unittest.TestCase):
         self.assertLess(detail.index("Options avancées"), detail.index("<DemandPeriodsPage"))
         self.assertIn("demandNumber={demandNumber}", detail)
         self.assertIn("canonicalDemand={detail.demand}", detail)
+        self.assertIn("resourceCatalog={resources}", detail)
+        self.assertIn("resources={resources}", demands)
         self.assertIn('import "./demand-periods.css"', main)
 
     def test_api_client_uses_existing_period_and_selection_endpoints(self) -> None:
@@ -71,6 +76,8 @@ class ReactDemandPeriodsContractTests(unittest.TestCase):
         self.assertIn("<span>Même ressource que</span>", source)
         self.assertIn("candidate.period_id !== period.period_id", source)
         self.assertIn("proposed_resource_id: selected?.id ?? null", source)
+        self.assertIn("resourceCatalog !== undefined", source)
+        self.assertIn("getResources(true, controller.signal)", source)
         self.assertIn("disabled={!canEdit || saving || dirty || period.selected}", source)
 
     def test_period_save_preserves_backend_authority_and_reapproval_signal(self) -> None:

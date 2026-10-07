@@ -348,6 +348,7 @@ type DemandPeriodsPageProps = {
   demandNumber?: string;
   viewScope?: ViewScope;
   canonicalDemand?: DemandReadModel | null;
+  resourceCatalog?: ResourceReadModel[];
   embedded?: boolean;
   onChanged?: () => void | Promise<void>;
   onDirtyChange?: (dirty: boolean) => void;
@@ -358,13 +359,14 @@ export default function DemandPeriodsPage({
   demandNumber,
   viewScope,
   canonicalDemand,
+  resourceCatalog,
   embedded = false,
   onChanged,
   onDirtyChange,
   canEdit = true,
 }: DemandPeriodsPageProps = {}) {
   const [demands, setDemands] = useState<DemandReadModel[]>([]);
-  const [resources, setResources] = useState<ResourceReadModel[]>([]);
+  const [resources, setResources] = useState<ResourceReadModel[]>(resourceCatalog ?? []);
   const [selectedNumber, setSelectedNumber] = useState("");
   const [selectedLineId, setSelectedLineId] = useState("");
   const [periods, setPeriods] = useState<PeriodDraft[]>([]);
@@ -408,9 +410,11 @@ export default function DemandPeriodsPage({
       : demandNumber
         ? getDemand(demandNumber, controller.signal, viewScope).then((row) => [row])
         : getDemands(controller.signal);
-    const resourceRequest = canEdit
-      ? getResources(true, controller.signal)
-      : Promise.resolve<ResourceReadModel[]>([]);
+    const resourceRequest = resourceCatalog !== undefined
+      ? Promise.resolve(resourceCatalog)
+      : canEdit
+        ? getResources(true, controller.signal)
+        : Promise.resolve<ResourceReadModel[]>([]);
     Promise.all([demandRequest, resourceRequest])
       .then(([demandRows, resourceRows]) => {
         setDemands(demandRows);
@@ -426,7 +430,7 @@ export default function DemandPeriodsPage({
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [demandNumber, canonicalDemand, viewScope, canEdit]);
+  }, [demandNumber, canonicalDemand, viewScope, canEdit, resourceCatalog]);
 
   useEffect(() => {
     onDirtyChange?.(dirty);

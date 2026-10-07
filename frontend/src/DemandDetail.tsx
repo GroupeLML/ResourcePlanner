@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import {
   ApiError,
   type DemandDetailReadModel,
+  type ResourceReadModel,
   type ViewScope,
   getDemandDetail,
 } from "./api";
@@ -32,6 +33,7 @@ export default function DemandDetail({
   onChanged,
   onDirtyChange,
   canonicalDetail,
+  resources,
   hasUnsavedChanges = false,
   compact = false,
 }: {
@@ -41,6 +43,7 @@ export default function DemandDetail({
   onChanged?: () => void | Promise<void>;
   onDirtyChange?: (dirty: boolean) => void;
   canonicalDetail?: DemandDetailReadModel | null;
+  resources?: ResourceReadModel[];
   hasUnsavedChanges?: boolean;
   compact?: boolean;
 }) {
@@ -218,6 +221,7 @@ export default function DemandDetail({
             demandNumber={demandNumber}
             viewScope={viewScope}
             canonicalDemand={detail.demand}
+            resourceCatalog={resources}
             embedded
             onChanged={changed}
             onDirtyChange={onDirtyChange}
