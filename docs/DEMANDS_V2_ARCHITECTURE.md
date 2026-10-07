@@ -1,7 +1,7 @@
 # Architecture actuelle des demandes V2
 
 > Ce document décrit l'architecture V2 actuelle et ses invariants structurants.  
-> Le roadmap maître reste l'issue #55. Les décisions durables sont détaillées dans ADR-001 à ADR-006.
+> Le roadmap maître reste l'issue #55. Les décisions durables sont indexées dans `docs/architecture/README.md` et précisées par les ADR applicables.
 
 ## 1. Chaîne métier canonique
 
@@ -60,6 +60,17 @@ groupe alternatif          → (request_line_id, group_key)
 Les périodes cumulatives s'additionnent. Les options d'un même groupe alternatif sont exclusives.
 
 Les routes et nouvelles surfaces React doivent travailler par ligne. Les anciennes associations à la demande peuvent rester présentes pour compatibilité/navigation, mais ne doivent pas redevenir la frontière métier principale.
+
+ADR-029 complète ce contrat pour #655 :
+
+- la quantité effective d'une période est dérivée du maître applicable et n'est plus une autorité éditable propre à la période;
+- `confirmation` porte explicitement `INHERIT_MASTER | EXPLICIT`;
+- la ressource proposée porte `INHERIT_MASTER | EXPLICIT | SAME_AS_PERIOD`;
+- `SAME_AS_PERIOD` référence le `period_key` logique dans la même ligne, jamais une version SQL physique;
+- dans sa première version, la contrainte est limitée aux périodes `WORKFORCE` cumulatives de quantité effective 1 et impose le même `Shift.resource_id` réel sur toute la composante;
+- cycles, références inter-lignes et alternatives liées sont refusés dans ce premier contrat;
+- les modes, références et valeurs résolues sont conservés dans le contexte approuvé afin qu'une modification candidate du maître ne modifie pas silencieusement le plan actif;
+- les données historiques restent lisibles sans conversion implicite vers l'héritage moderne.
 
 ## 4. Besoin, cible automatique et affectation réelle
 
