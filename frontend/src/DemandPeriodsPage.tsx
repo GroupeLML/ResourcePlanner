@@ -22,8 +22,13 @@ import {
 } from "./api";
 
 type PeriodDraft = DemandPeriodWrite & {
-  desired_active_days: number | null;
   selected: boolean;
+  proposed_resource_id: string | null;
+  inheritance_contract_version: number | null;
+  confirmation_provenance: string | null;
+  proposed_resource_provenance: string | null;
+  resource_count_provenance: string | null;
+  same_as_state: string | null;
 };
 
 function errorMessage(reason: unknown): string {
@@ -37,7 +42,6 @@ function newPeriodId(): string {
 }
 
 function fromRead(row: DemandPeriodReadModel): PeriodDraft {
-  const activeDays = row.desired_active_days ?? null;
   return {
     period_id: row.period_id,
     start_date: row.start_date,
@@ -45,13 +49,31 @@ function fromRead(row: DemandPeriodReadModel): PeriodDraft {
     hours: row.hours,
     kind: row.kind,
     alternative_group: row.alternative_group,
-    confirmation: row.confirmation,
-    proposed_resource: row.proposed_resource,
+    confirmation: row.confirmation_explicit ?? row.confirmation,
+    confirmation_mode: row.confirmation_mode ?? "EXPLICIT",
+    proposed_resource: row.proposed_resource_explicit ?? (row.proposed_resource_mode === "EXPLICIT" ? row.proposed_resource : null),
+    proposed_resource_id: row.proposed_resource_mode === "EXPLICIT" ? row.proposed_resource_id : null,
+    proposed_resource_mode: row.proposed_resource_mode ?? "EXPLICIT",
+    same_as_period_id: row.same_as_period_id,
     resource_count: row.resource_count,
-    desired_active_days: activeDays,
+    desired_active_days: row.desired_active_days ?? null,
     note: row.note ?? "",
     selected: row.selected,
+    inheritance_contract_version: row.inheritance_contract_version,
+    confirmation_provenance: row.confirmation_provenance,
+    proposed_resource_provenance: row.proposed_resource_provenance,
+    resource_count_provenance: row.resource_count_provenance,
+    same_as_state: row.same_as_state,
   };
+}
+
+function provenanceLabel(value: string | null): string {
+  if (value === "MASTER") return "dérivée du besoin maître";
+  if (value === "EXPLICIT") return "surcharge propre à la période";
+  if (value === "SAME_AS_PERIOD") return "contrainte de même personne";
+  if (value === "OPERATIONAL_OVERRIDE") return "choix opérationnel";
+  if (value === "LEGACY") return "valeur historique conservée";
+  return "valeur résolue par le serveur";
 }
 
 function baseDates(
@@ -93,7 +115,9 @@ function validatePeriods(periods: PeriodDraft[]): string | null {
     if (!period.start_date || !period.end_date) return "Chaque période doit avoir une date de début et de fin.";
     if (period.end_date < period.start_date) return "La fin d'une période ne peut pas précéder son début.";
     if (!Number.isFinite(period.hours) || period.hours <= 0) return "Les heures de chaque période doivent être supérieures à zéro.";
-    if (!Number.isInteger(period.resource_count) || period.resource_count < 1) return "Le nombre de ressources doit être un entier supérieur ou égal à 1.";
+    if (period.proposed_resource_mode === "SAME_AS_PERIOD" && !period.same_as_period_id) {
+      return `La période ${period.period_id} doit cibler une autre période cumulative.`;
+    }
     if (period.desired_active_days != null) {
       if (!Number.isInteger(period.desired_active_days) || period.desired_active_days < 1) {
         return "Les jours actifs souhaités doivent être un entier supérieur ou égal à 1.";
@@ -117,21 +141,40 @@ function validatePeriods(periods: PeriodDraft[]): string | null {
 
 function PeriodFields({
   period,
+  periods,
   resources,
   disabled,
-  singleSlot,
+  masterConfirmation,
+  masterProposedResource,
   onChange,
   onRemove,
 }: {
   period: PeriodDraft;
+  periods: PeriodDraft[];
   resources: ResourceReadModel[];
   disabled: boolean;
-  singleSlot: boolean;
+  masterConfirmation: "Tentative" | "Confirmée";
+  masterProposedResource: string | null;
   onChange: (next: PeriodDraft) => void;
   onRemove: () => void;
 }) {
   const change = <K extends keyof PeriodDraft>(field: K, value: PeriodDraft[K]) => {
     onChange({ ...period, [field]: value });
+  };
+  const sameAsTargets = periods.filter(
+    (candidate) => candidate.kind === "CUMULATIVE" && candidate.period_id !== period.period_id,
+  );
+  const confirmationMode = period.confirmation_mode ?? "EXPLICIT";
+  const resourceMode = period.proposed_resource_mode ?? "EXPLICIT";
+
+  const changeResourceMode = (mode: DemandPeriodWrite["proposed_resource_mode"]) => {
+    onChange({
+      ...period,
+      proposed_resource_mode: mode,
+      proposed_resource: mode === "EXPLICIT" ? period.proposed_resource : null,
+      proposed_resource_id: mode === "EXPLICIT" ? period.proposed_resource_id : null,
+      same_as_period_id: mode === "SAME_AS_PERIOD" ? period.same_as_period_id : null,
+    });
   };
 
   return (
@@ -146,6 +189,12 @@ function PeriodFields({
         </button>
       </div>
 
+      {period.inheritance_contract_version == null && (
+        <div className="period-authority-note">
+          Période historique : les valeurs existantes restent explicites si cette définition est enregistrée à nouveau.
+        </div>
+      )}
+
       <div className="period-form-grid">
         <label>
           <span>Début</span>
@@ -158,20 +207,13 @@ function PeriodFields({
         <label>
           <span>Heures totales</span>
           <input type="number" min="0.25" step="0.25" value={period.hours} disabled={disabled} onChange={(event) => change("hours", Number(event.target.value))} />
-          <small>Volume total de main-d’œuvre, toutes ressources confondues.</small>
+          <small>Volume total de main-d’œuvre; la quantité de personnes est dérivée du besoin maître.</small>
         </label>
-        <label>
-          <span>Ressources simultanées</span>
-          <input
-            type="number"
-            min="1"
-            step="1"
-            value={period.resource_count}
-            disabled={disabled || singleSlot}
-            onChange={(event) => change("resource_count", Number(event.target.value))}
-          />
-          <small>{singleSlot ? "Une période de RequestLine représente exactement un slot." : "Parallélisme souhaité; ne multiplie pas les heures."}</small>
-        </label>
+        <div className="period-effective-field">
+          <span>Quantité effective</span>
+          <strong>{period.resource_count} ressource(s)</strong>
+          <small>{provenanceLabel(period.resource_count_provenance)}</small>
+        </div>
         <label>
           <span>Jours actifs souhaités</span>
           <input
@@ -186,22 +228,97 @@ function PeriodFields({
           <small>Cible de répartition; la capacité peut imposer davantage de jours.</small>
         </label>
         <label>
-          <span>Confirmation</span>
-          <select value={period.confirmation} disabled={disabled} onChange={(event) => change("confirmation", event.target.value as PeriodDraft["confirmation"])}>
-            <option value="Tentative">Tentative</option>
-            <option value="Confirmée">Confirmée</option>
+          <span>Mode de confirmation</span>
+          <select
+            value={confirmationMode}
+            disabled={disabled}
+            onChange={(event) => change("confirmation_mode", event.target.value as DemandPeriodWrite["confirmation_mode"])}
+          >
+            <option value="INHERIT_MASTER">Dérivée de la demande maître</option>
+            <option value="EXPLICIT">Valeur propre à la période</option>
           </select>
+          <small>
+            {confirmationMode === "INHERIT_MASTER"
+              ? `Valeur maître actuelle : ${masterConfirmation}.`
+              : `Valeur effective : ${period.confirmation} · ${provenanceLabel(period.confirmation_provenance)}.`}
+          </small>
         </label>
-        <label>
-          <span>Ressource proposée</span>
-          <select value={period.proposed_resource ?? ""} disabled={disabled} onChange={(event) => change("proposed_resource", event.target.value || null)}>
-            <option value="">Aucune</option>
-            {resources.map((resource) => (
-              <option value={resource.name} key={resource.id}>{resourceDisplayName(resource.name)}{resource.resource_class ? ` — ${resource.resource_class}` : ""}</option>
-            ))}
+        {confirmationMode === "EXPLICIT" && (
+          <label>
+            <span>Confirmation propre</span>
+            <select value={period.confirmation} disabled={disabled} onChange={(event) => change("confirmation", event.target.value as PeriodDraft["confirmation"])}>
+              <option value="Tentative">Tentative</option>
+              <option value="Confirmée">Confirmée</option>
+            </select>
+          </label>
+        )}
+        <label className="span-2">
+          <span>Mode de ressource</span>
+          <select
+            value={resourceMode}
+            disabled={disabled}
+            onChange={(event) => changeResourceMode(event.target.value as DemandPeriodWrite["proposed_resource_mode"])}
+          >
+            <option value="INHERIT_MASTER">Dérivée de la demande maître</option>
+            <option value="EXPLICIT">Ressource spécifique</option>
+            {period.kind === "CUMULATIVE" && period.resource_count === 1 && (
+              <option value="SAME_AS_PERIOD">Même ressource qu’une autre période</option>
+            )}
           </select>
-          <small>Si plusieurs ressources sont demandées, cette préférence initialise seulement le premier besoin.</small>
+          <small>
+            {resourceMode === "INHERIT_MASTER"
+              ? `Suggestion maître actuelle : ${masterProposedResource ?? "aucune"}.`
+              : resourceMode === "SAME_AS_PERIOD"
+                ? "Contrainte réelle : les quarts des périodes liées doivent utiliser la même personne."
+                : `Suggestion effective : ${period.proposed_resource ?? "aucune"} · ${provenanceLabel(period.proposed_resource_provenance)}.`}
+          </small>
         </label>
+        {resourceMode === "EXPLICIT" && (
+          <label className="span-2">
+            <span>Ressource spécifique</span>
+            <select
+              value={period.proposed_resource_id ?? ""}
+              disabled={disabled}
+              onChange={(event) => {
+                const selected = resources.find((resource) => resource.id === event.target.value) ?? null;
+                onChange({
+                  ...period,
+                  proposed_resource_id: selected?.id ?? null,
+                  proposed_resource: selected?.name ?? null,
+                  same_as_period_id: null,
+                });
+              }}
+            >
+              <option value="">Aucune</option>
+              {resources.map((resource) => (
+                <option value={resource.id} key={resource.id}>{resourceDisplayName(resource.name)}{resource.resource_class ? ` — ${resource.resource_class}` : ""}</option>
+              ))}
+            </select>
+            <small>Le sélecteur utilise l’identifiant stable de la ressource; la suggestion n’est pas une affectation réelle.</small>
+          </label>
+        )}
+        {resourceMode === "SAME_AS_PERIOD" && (
+          <label className="span-2">
+            <span>Même ressource que</span>
+            <select
+              value={period.same_as_period_id ?? ""}
+              disabled={disabled}
+              onChange={(event) => change("same_as_period_id", event.target.value || null)}
+            >
+              <option value="">Sélectionner une période cumulative…</option>
+              {sameAsTargets.map((target) => (
+                <option value={target.period_id} key={target.period_id}>
+                  {target.period_id} — {target.start_date} → {target.end_date}
+                </option>
+              ))}
+            </select>
+            <small>
+              {period.same_as_period_id
+                ? `Même personne obligatoire que ${period.same_as_period_id}. État serveur : ${period.same_as_state ?? "sera validé à l’enregistrement"}.`
+                : "La cible est une identité logique de période; les cycles sont refusés par le backend."}
+            </small>
+          </label>
+        )}
         {period.kind === "ALTERNATIVE" && (
           <label className="span-2">
             <span>Groupe alternatif</span>
@@ -375,11 +492,20 @@ export default function DemandPeriodsPage({
         kind: "CUMULATIVE",
         alternative_group: null,
         confirmation: ((selectedLine?.confirmation ?? selectedDemand?.confirmation) === "Confirmée" ? "Confirmée" : "Tentative"),
-        proposed_resource: selectedLine?.proposed_resource ?? selectedDemand?.proposed_resource ?? null,
-        resource_count: selectedLine ? 1 : selectedDemand?.resource_count ?? 1,
+        confirmation_mode: "INHERIT_MASTER",
+        proposed_resource: null,
+        proposed_resource_id: null,
+        proposed_resource_mode: "INHERIT_MASTER",
+        same_as_period_id: null,
+        resource_count: selectedLine?.slot_count ?? selectedDemand?.resource_count ?? 1,
         desired_active_days: defaultActiveDays(selectedDemand, selectedLine),
         note: "",
         selected: false,
+        inheritance_contract_version: 1,
+        confirmation_provenance: "MASTER",
+        proposed_resource_provenance: "MASTER",
+        resource_count_provenance: "MASTER",
+        same_as_state: null,
       },
     ]);
     setDirty(true);
@@ -396,11 +522,20 @@ export default function DemandPeriodsPage({
       kind: "ALTERNATIVE",
       alternative_group: group,
       confirmation: ((selectedLine?.confirmation ?? selectedDemand?.confirmation) === "Confirmée" ? "Confirmée" : "Tentative"),
-      proposed_resource: selectedLine?.proposed_resource ?? selectedDemand?.proposed_resource ?? null,
-      resource_count: selectedLine ? 1 : selectedDemand?.resource_count ?? 1,
+      confirmation_mode: "INHERIT_MASTER",
+      proposed_resource: null,
+      proposed_resource_id: null,
+      proposed_resource_mode: "INHERIT_MASTER",
+      same_as_period_id: null,
+      resource_count: selectedLine?.slot_count ?? selectedDemand?.resource_count ?? 1,
       desired_active_days: defaultActiveDays(selectedDemand, selectedLine),
       note: "",
       selected: false,
+      inheritance_contract_version: 1,
+      confirmation_provenance: "MASTER",
+      proposed_resource_provenance: "MASTER",
+      resource_count_provenance: "MASTER",
+      same_as_state: null,
     };
     setPeriods((current) => [
       ...current,
@@ -423,12 +558,21 @@ export default function DemandPeriodsPage({
         hours: existing?.hours ?? 8,
         kind: "ALTERNATIVE",
         alternative_group: group,
-        confirmation: existing?.confirmation ?? "Tentative",
-        proposed_resource: existing?.proposed_resource ?? null,
-        resource_count: existing?.resource_count ?? 1,
+        confirmation: existing?.confirmation ?? ((selectedLine?.confirmation ?? selectedDemand?.confirmation) === "Confirmée" ? "Confirmée" : "Tentative"),
+        confirmation_mode: existing?.confirmation_mode ?? "INHERIT_MASTER",
+        proposed_resource: existing?.proposed_resource_mode === "EXPLICIT" ? existing.proposed_resource : null,
+        proposed_resource_id: existing?.proposed_resource_mode === "EXPLICIT" ? existing.proposed_resource_id : null,
+        proposed_resource_mode: existing?.proposed_resource_mode === "EXPLICIT" ? "EXPLICIT" : "INHERIT_MASTER",
+        same_as_period_id: null,
+        resource_count: selectedLine?.slot_count ?? selectedDemand?.resource_count ?? existing?.resource_count ?? 1,
         desired_active_days: existing?.desired_active_days ?? defaultActiveDays(selectedDemand, selectedLine),
         note: "",
         selected: false,
+        inheritance_contract_version: 1,
+        confirmation_provenance: existing?.confirmation_provenance ?? "MASTER",
+        proposed_resource_provenance: existing?.proposed_resource_provenance ?? "MASTER",
+        resource_count_provenance: "MASTER",
+        same_as_state: null,
       },
     ]);
     setDirty(true);
@@ -446,8 +590,19 @@ export default function DemandPeriodsPage({
     setError(null);
     setNotice(null);
     try {
-      const payload = periods.map(({ selected: _selected, ...row }) => ({
+      const payload: DemandPeriodWrite[] = periods.map(({
+        selected: _selected,
+        proposed_resource_id: _proposedResourceId,
+        inheritance_contract_version: _contractVersion,
+        confirmation_provenance: _confirmationProvenance,
+        proposed_resource_provenance: _resourceProvenance,
+        resource_count_provenance: _countProvenance,
+        same_as_state: _sameAsState,
+        ...row
+      }) => ({
         ...row,
+        proposed_resource: row.proposed_resource_mode === "EXPLICIT" ? row.proposed_resource : null,
+        same_as_period_id: row.proposed_resource_mode === "SAME_AS_PERIOD" ? row.same_as_period_id : null,
         resource_count: selectedLine ? 1 : row.resource_count,
         alternative_group: row.kind === "ALTERNATIVE" ? row.alternative_group?.trim() || null : null,
         note: row.note.trim(),
@@ -597,7 +752,7 @@ export default function DemandPeriodsPage({
           <div><span>Confirmation</span><strong>{selectedLine?.confirmation ?? selectedDemand.confirmation ?? "Confirmée"}</strong></div>
           <div><span>Heures</span><strong>{selectedLine?.estimated_hours ?? selectedDemand.estimated_hours ?? "—"} h totales</strong></div>
           <div><span>Jours</span><strong>{selectedLine?.desired_active_days ?? selectedDemand.estimated_days ?? "—"} jour(s) actif(s)</strong></div>
-          <div><span>Ressources</span><strong>{selectedLine ? 1 : selectedDemand.resource_count || 1} simultanée(s)</strong></div>
+          <div><span>Ressources</span><strong>{selectedLine?.slot_count ?? selectedDemand.resource_count ?? 1} simultanée(s) · maître</strong></div>
           <div><span>Plage moyen terme</span><strong>{selectedDemand.work_package_name || selectedDemand.work_package_ref || "Aucune"}</strong></div>
         </div>
       )}
@@ -638,7 +793,9 @@ export default function DemandPeriodsPage({
                   period={period}
                   resources={resources}
                   disabled={!canEdit || saving}
-                  singleSlot={Boolean(selectedLine)}
+                  periods={periods}
+                  masterConfirmation={(selectedLine?.confirmation ?? selectedDemand.confirmation) === "Confirmée" ? "Confirmée" : "Tentative"}
+                  masterProposedResource={selectedLine?.proposed_resource ?? selectedDemand.proposed_resource ?? null}
                   onChange={(next) => replacePeriod(index, next)}
                   onRemove={() => removePeriod(period.period_id)}
                 />
@@ -674,7 +831,9 @@ export default function DemandPeriodsPage({
                           period={period}
                           resources={resources}
                           disabled={!canEdit || saving}
-                          singleSlot={Boolean(selectedLine)}
+                          periods={periods}
+                          masterConfirmation={(selectedLine?.confirmation ?? selectedDemand.confirmation) === "Confirmée" ? "Confirmée" : "Tentative"}
+                          masterProposedResource={selectedLine?.proposed_resource ?? selectedDemand.proposed_resource ?? null}
                           onChange={(next) => replacePeriod(index, next)}
                           onRemove={() => removePeriod(period.period_id)}
                         />
