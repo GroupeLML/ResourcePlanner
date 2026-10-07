@@ -43,6 +43,10 @@ class ReactDemandPeriodsContractTests(unittest.TestCase):
         self.assertIn("/lines/${encodeURIComponent(lineId)}/periods`,", source)
         self.assertIn("/alternative-groups/${encodeURIComponent(alternativeGroup)}/selection", source)
         self.assertIn("period_id: periodId", source)
+        self.assertIn("confirmation_mode:", source)
+        self.assertIn("proposed_resource_mode:", source)
+        self.assertIn("same_as_period_id:", source)
+        self.assertIn("resource_count_provenance:", source)
 
     def test_editor_models_cumulative_and_exclusive_alternative_periods(self) -> None:
         source = (ROOT / "frontend" / "src" / "DemandPeriodsPage.tsx").read_text(
@@ -58,8 +62,15 @@ class ReactDemandPeriodsContractTests(unittest.TestCase):
         self.assertIn("Retenir cette option", source)
         self.assertIn("Ligne de demande", source)
         self.assertIn("selectedDemand?.line_mode", source)
-        self.assertIn("singleSlot={Boolean(selectedLine)}", source)
-        self.assertIn("Une période de RequestLine représente exactement un slot.", source)
+        self.assertNotIn("<span>Ressources simultanées</span>", source)
+        self.assertIn("<span>Quantité effective</span>", source)
+        self.assertIn("<span>Mode de confirmation</span>", source)
+        self.assertIn('value="INHERIT_MASTER"', source)
+        self.assertIn("<span>Mode de ressource</span>", source)
+        self.assertIn('value="SAME_AS_PERIOD"', source)
+        self.assertIn("<span>Même ressource que</span>", source)
+        self.assertIn("candidate.period_id !== period.period_id", source)
+        self.assertIn("proposed_resource_id: selected?.id ?? null", source)
         self.assertIn("disabled={!canEdit || saving || dirty || period.selected}", source)
 
     def test_period_save_preserves_backend_authority_and_reapproval_signal(self) -> None:
@@ -75,6 +86,8 @@ class ReactDemandPeriodsContractTests(unittest.TestCase):
         self.assertIn("await selectDemandLineAlternative(", source)
         self.assertIn("await onChanged()", source)
         self.assertIn("canonicalDemand", source)
+        self.assertIn('row.proposed_resource_mode === "SAME_AS_PERIOD" ? row.same_as_period_id : null', source)
+        self.assertIn("resource_count: selectedLine ? 1 : row.resource_count", source)
         self.assertNotIn("projected_hours_without_double_counting", source)
 
 
