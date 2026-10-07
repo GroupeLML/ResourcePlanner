@@ -71,6 +71,18 @@ class ServerCommunicationTests(unittest.TestCase):
             "manage_communications",
         )
 
+    def test_technician_cannot_download_project_draft_copy(self) -> None:
+        with TestClient(self._app(ROLE_TECHNICIAN)) as client:
+            response = client.get(
+                "/api/v1/communications/project-batches/missing/draft-download"
+            )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["error"]["code"], "permission_denied")
+        self.assertEqual(
+            response.json()["error"]["context"]["required_permission"],
+            "manage_communications",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
