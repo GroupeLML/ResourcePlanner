@@ -255,6 +255,29 @@ class SameResourcePeriodPlanningTests(unittest.TestCase):
             ).all()
             self.assertEqual({shift.resource_id for shift in shifts}, {"R2"})
 
+    def test_locked_component_rejects_a_conflicting_explicit_retarget(self) -> None:
+        with transactional_session(self.factory) as session:
+            root, child = self._same_as_plan(session, root_target="R1")
+            session.add(
+                Shift(
+                    id="LOCK-A",
+                    resource_requirement_id=root.id,
+                    resource_id="R1",
+                    work_date=D1,
+                    hours=Decimal("4"),
+                    allocation_type="Flexible",
+                    source="MANUAL",
+                    locked=True,
+                )
+            )
+            session.flush()
+
+            with self.assertRaisesRegex(ValueError, "fixe déjà la ressource"):
+                SqlAllocationCommandAdapter(session).assign_segment(child.id, "R2")
+
+            self.assertEqual(root.assigned_resource_id, "R1")
+            self.assertIsNone(child.assigned_resource_id)
+
     def test_contradictory_locked_resources_are_rejected(self) -> None:
         with transactional_session(self.factory) as session:
             root, child = self._same_as_plan(session, root_target=None)
