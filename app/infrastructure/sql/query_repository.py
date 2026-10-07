@@ -907,7 +907,11 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         start: date,
         end: date,
         project_ids: Sequence[str] | None = None,
+        demand_ids: Sequence[str] | None = None,
         include_resource_ids: Sequence[str] = (),
+        shift_resource_ids: Sequence[str] = (),
+        segment_resource_ids: Sequence[str] = (),
+        project_day_keys: Sequence[tuple[str, date]] = (),
     ) -> PlanningCapacityGridReadModel:
         """Return capacity for visible resources using their real organization-wide load.
 
@@ -922,6 +926,18 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         identifiers: tuple[str, ...] | None = None
         if project_ids is not None:
             identifiers = tuple(str(value) for value in project_ids if str(value))
+        demand_identifiers = tuple(
+            str(value) for value in (demand_ids or ()) if str(value)
+        )
+        segment_resource_identifiers = tuple(
+            str(value) for value in segment_resource_ids if str(value)
+        )
+        scope_requested = (
+            project_ids is not None
+            or demand_ids is not None
+            or bool(shift_resource_ids)
+            or bool(project_day_keys)
+        )
 
         rules = self._session.scalars(
             select(ResourceAvailabilityRule).where(ResourceAvailabilityRule.active == true())
@@ -944,13 +960,27 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                 ResourceRequirement.start_date <= end,
             )
         )
-        if identifiers is not None:
+        if scope_requested:
+            requirement_filters = []
             if identifiers:
-                requirement_statement = requirement_statement.where(
+                requirement_filters.append(
                     ResourceRequirement.project_id.in_(identifiers)
                 )
-            else:
-                requirement_statement = requirement_statement.where(False)
+            if demand_identifiers:
+                requirement_filters.append(
+                    ResourceRequirement.workforce_request_id.in_(
+                        demand_identifiers
+                    )
+                )
+            if segment_resource_identifiers:
+                requirement_filters.append(
+                    ResourceRequirement.assigned_resource_id.in_(
+                        segment_resource_identifiers
+                    )
+                )
+            requirement_statement = requirement_statement.where(
+                or_(*requirement_filters) if requirement_filters else False
+            )
         requirements = self._session.execute(
             requirement_statement.order_by(
                 ResourceRequirement.start_date,
@@ -958,19 +988,23 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             )
         ).all()
 
-        if identifiers is None:
+        if not scope_requested:
             resources = self.list_schedulable_resources(start=start, end=end)
             occupied_shifts = self.list_shifts(start=start, end=end)
         else:
             contextual_shifts = self.list_shifts(
                 start=start,
                 end=end,
-                project_ids=identifiers,
+                project_ids=identifiers if project_ids is not None else None,
+                demand_ids=demand_identifiers if demand_ids is not None else None,
+                visible_resource_ids=shift_resource_ids,
+                project_day_keys=project_day_keys,
             )
             pending = self.list_pending_loads(
                 start=start,
                 end=end,
-                project_ids=identifiers,
+                project_ids=identifiers if project_ids is not None else None,
+                demand_ids=demand_identifiers if demand_ids is not None else None,
             )
             all_resources = self.list_resources(active_only=False)
             resource_by_name = {resource.name: resource for resource in all_resources}
