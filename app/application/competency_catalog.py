@@ -6,6 +6,7 @@ from typing import Any, Protocol
 
 from .commands.common import UNSET, UnsetType, required_text
 from .errors import (
+    ApplicationAuthorizationError,
     ApplicationConflictError,
     ApplicationNotFoundError,
     ApplicationValidationError,
@@ -20,6 +21,33 @@ class CompetencyReadModel:
     description: str | None = None
     active: bool = True
     sort_order: int = 0
+    resource_class_code: str | None = None
+    resource_class_label: str | None = None
+    resource_class_active: bool | None = None
+    resource_class_version: int = 1
+
+
+@dataclass(frozen=True, slots=True)
+class CompetencyResourceClassReadModel:
+    code: str
+    label: str
+    active: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CompetencyResourceClassMutationResult:
+    competency_id: str
+    resource_class_code: str | None
+    version: int
+    action: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "competency_id": self.competency_id,
+            "resource_class_code": self.resource_class_code,
+            "version": self.version,
+            "action": self.action,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +132,20 @@ class CompetencyCatalogRepositoryPort(Protocol):
     def create_competency(self, values: Mapping[str, Any]) -> str: ...
 
     def update_competency(self, competency_id: str, values: Mapping[str, Any]) -> str: ...
+
+    def get_resource_class(
+        self,
+        code: str,
+    ) -> CompetencyResourceClassReadModel | None: ...
+
+    def set_competency_resource_class(
+        self,
+        competency_id: str,
+        resource_class_code: str | None,
+        *,
+        actor_user_id: str,
+        expected_version: int,
+    ) -> CompetencyResourceClassMutationResult: ...
 
     def set_resource_competencies(
         self,
@@ -220,6 +262,77 @@ class CompetencyCatalogService:
     def deactivate(self, competency_id: str) -> CompetencyMutationResult:
         return self.update(
             CompetencyUpdateCommand(competency_id=competency_id, active=False)
+        )
+
+    def set_resource_class(
+        self,
+        competency_id: str,
+        resource_class_code: str | None,
+        *,
+        actor_user_id: str | None,
+        expected_version: int,
+    ) -> CompetencyResourceClassMutationResult:
+        current = call_application_port(
+            lambda: self._repository.get_competency(competency_id),
+            code_prefix="competency_read",
+            context={"competency_id": competency_id},
+        )
+        if current is None:
+            raise ApplicationNotFoundError(
+                f"Compétence {competency_id} introuvable.",
+                code="competency_not_found",
+                context={"competency_id": competency_id},
+            )
+        actor = str(actor_user_id or "").strip()
+        if not actor:
+            raise ApplicationAuthorizationError(
+                "Une identité locale authentifiée est requise pour administrer la classe de regroupement.",
+                code="competency_resource_class_actor_required",
+                context={"competency_id": competency_id},
+            )
+        try:
+            expected = int(expected_version)
+        except (TypeError, ValueError) as exc:
+            raise ApplicationValidationError(
+                "La version attendue du rattachement de classe est invalide.",
+                code="competency_resource_class_version_invalid",
+                context={"expected_version": expected_version},
+            ) from exc
+        if expected < 1:
+            raise ApplicationValidationError(
+                "La version attendue du rattachement de classe doit être positive.",
+                code="competency_resource_class_version_invalid",
+                context={"expected_version": expected},
+            )
+        class_code = str(resource_class_code or "").strip() or None
+        if class_code is not None:
+            resource_class = call_application_port(
+                lambda: self._repository.get_resource_class(class_code),
+                code_prefix="resource_class_read",
+                context={"code": class_code},
+            )
+            if resource_class is None:
+                raise ApplicationNotFoundError(
+                    f"Classe {class_code} introuvable.",
+                    code="competency_resource_class_not_found",
+                    context={"code": class_code},
+                )
+            if not resource_class.active:
+                raise ApplicationValidationError(
+                    f"La classe {resource_class.code} est inactive.",
+                    code="competency_resource_class_inactive",
+                    context={"code": resource_class.code},
+                )
+            class_code = resource_class.code
+        return call_application_port(
+            lambda: self._repository.set_competency_resource_class(
+                competency_id,
+                class_code,
+                actor_user_id=actor,
+                expected_version=expected,
+            ),
+            code_prefix="competency_resource_class_update",
+            context={"competency_id": competency_id},
         )
 
     def resolve_selection(
