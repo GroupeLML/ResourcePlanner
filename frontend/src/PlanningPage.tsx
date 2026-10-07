@@ -40,8 +40,11 @@ import {
   savePlanningWeekStart,
 } from "./planningPreferences";
 import { useAuth } from "./AuthContext";
-import { useViewScope } from "./ViewScopeContext";
-import ViewScopeSelector from "./ViewScopeSelector";
+import {
+  getCurrentPlanningViewPolicy,
+  type PlanningViewPolicy,
+  type UserViewScope,
+} from "./auth-api";
 import {
   SegmentDragPayload,
   ShiftDragPayload,
@@ -264,11 +267,13 @@ function ShiftCard({
 }: {
   shift: ShiftReadModel;
   diagnostic: PlanningSegmentCapacityDiagnosticReadModel | null;
-  onEdit: (shift: ShiftReadModel) => void;
+  onEdit?: (shift: ShiftReadModel) => void;
   onAssignAsset?: (shift: ShiftReadModel) => void;
   dragEnabled: boolean;
 }) {
   const confirmation = confirmationKind(shift.confirmation);
+  const scopeNeighbor = shift.source === "SCOPE_NEIGHBOR";
+  const editable = Boolean(onEdit) && !scopeNeighbor;
   const emergencyOverride = Boolean((shift as EmergencyShiftReadModel).emergency_override_active);
   const overallocationShift = shift as OverallocationShiftReadModel;
   const excess = Number(overallocationShift.segment_overallocated_hours ?? 0);
@@ -281,16 +286,26 @@ function ShiftCard({
   const assetDiagnostics = shift.asset_diagnostics ?? [];
   const meta = [
     shift.allocation_type,
-    shift.source !== "AUTO" ? shift.source : null,
+    shift.source !== "AUTO" && !scopeNeighbor ? shift.source : null,
     shift.locked ? "Verrouillé" : null,
     shift.outside_standard_hours ? "Hors horaire" : null,
     emergencyOverride ? "⚠ Dérogation urgente" : null,
     excess > 0 ? `⚠ Surallocation manuelle +${hours(excess)} h` : null,
     unplaced > 0 ? `⚠ ${hours(unplaced)} h non placées` : null,
   ].filter(Boolean);
-  const editLabel = `Modifier le quart ${shift.project_number || shift.project_name || shift.allocation_id}, ${hours(shift.hours)} heures${emergencyOverride ? ", dérogation urgente active" : ""}${excess > 0 ? `, surallocation manuelle de ${hours(excess)} heures` : ""}${unplaced > 0 ? `, ${hours(unplaced)} heures non placées` : ""}`;
+  const editLabel = scopeNeighbor
+    ? `Collègue sur le même projet le même jour, ${hours(shift.hours)} heures, détails hors périmètre`
+    : editable
+      ? `Modifier le quart ${shift.project_number || shift.project_name || shift.allocation_id}, ${hours(shift.hours)} heures${emergencyOverride ? ", dérogation urgente active" : ""}${excess > 0 ? `, surallocation manuelle de ${hours(excess)} heures` : ""}${unplaced > 0 ? `, ${hours(unplaced)} heures non placées` : ""}`
+      : `Quart en lecture seule, ${hours(shift.hours)} heures`;
   const title = [
-    dragEnabled ? "Glisser vers une autre ressource/journée, ou cliquer pour modifier" : "Cliquer pour modifier",
+    scopeNeighbor
+      ? "Même projet et même journée · détails hors périmètre"
+      : dragEnabled
+        ? "Glisser vers une autre ressource/journée, ou cliquer pour modifier"
+        : editable
+          ? "Cliquer pour modifier"
+          : "Lecture seule",
     emergencyOverride ? "⚠ Dérogation d’approbation urgente — régularisation requise" : null,
     excess > 0 ? `⚠ Surallocation manuelle : ${hours(overallocationShift.segment_locked_hours)} h verrouillées pour ${hours(overallocationShift.segment_planned_hours)} h prévues` : null,
     unplaced > 0 ? `⚠ Capacité standard insuffisante : ${hours(unplaced)} h du segment restent à placer` : null,
@@ -324,9 +339,12 @@ function ShiftCard({
       <button
         type="button"
         className="shift-card-main"
-        onClick={() => onEdit(shift)}
+        onClick={() => {
+          if (editable) onEdit?.(shift);
+        }}
         aria-label={editLabel}
         title={title}
+        disabled={!editable}
       >
         <div className="shift-card-heading">
           <div className="shift-project">
@@ -339,24 +357,29 @@ function ShiftCard({
             {confirmationLabel(shift.confirmation)}
           </span>
           {shift.demand_number && <span>#{shift.demand_number}</span>}
+          {scopeNeighbor && <span>Équipe projet · détails hors périmètre</span>}
         </div>
         {meta.length > 0 && <small>{meta.join(" · ")}</small>}
         <small
           className="shift-assets"
           aria-label={
-            asset
-              ? "Actif affecté au quart"
-              : inheritedAssets.length > 0
-                ? "Actif lié ou hérité par le quart"
-                : "Aucun actif affecté au quart"
+            scopeNeighbor
+              ? "Détails d’actifs hors périmètre"
+              : asset
+                ? "Actif affecté au quart"
+                : inheritedAssets.length > 0
+                  ? "Actif lié ou hérité par le quart"
+                  : "Aucun actif affecté au quart"
           }
         >
-          {asset
-            ? `Actif : ${asset.asset_code}${asset.asset_active ? "" : " · inactif"}`
-            : inheritedAssets.length > 0
-              ? `Actif lié : ${inheritedAssets.map((reservation) => reservation.asset_code).join(", ")}`
-              : "Aucun actif"}
-          {assetDiagnostics.length > 0 && (
+          {scopeNeighbor
+            ? "Détails hors périmètre"
+            : asset
+              ? `Actif : ${asset.asset_code}${asset.asset_active ? "" : " · inactif"}`
+              : inheritedAssets.length > 0
+                ? `Actif lié : ${inheritedAssets.map((reservation) => reservation.asset_code).join(", ")}`
+                : "Aucun actif"}
+          {!scopeNeighbor && assetDiagnostics.length > 0 && (
             <span
               className="shift-asset-diagnostic"
               aria-label={assetDiagnostics.map(shiftAssetDiagnosticLabel).join(", ")}
@@ -478,7 +501,7 @@ function ResourceRow({
   capacity: PlanningResourceCapacityReadModel | null;
   pendingLoads: PendingDemandLoadReadModel[];
   diagnostics: Map<string, PlanningSegmentCapacityDiagnosticReadModel>;
-  onEditShift: (shift: ShiftReadModel) => void;
+  onEditShift?: (shift: ShiftReadModel) => void;
   onAssignAsset?: (shift: ShiftReadModel) => void;
   onCreateQuickShift?: (resource: ResourceReadModel, day: string) => void;
   onOpenDemand?: (demandNumber: string) => void;
@@ -642,6 +665,57 @@ function ResourceRow({
   );
 }
 
+function PlanningScopeSelector({
+  policy,
+  scope,
+  loading,
+  error,
+  onChange,
+}: {
+  policy: PlanningViewPolicy | null;
+  scope: UserViewScope | null;
+  loading: boolean;
+  error: string | null;
+  onChange: (scope: UserViewScope) => void;
+}) {
+  if (loading) {
+    return <div className="view-scope-selector is-loading">Périmètre…</div>;
+  }
+  if (error) {
+    return <div className="view-scope-selector is-error">Périmètre indisponible</div>;
+  }
+  if (!policy || !scope) return null;
+  if (policy.available_scopes.length < 2) {
+    return (
+      <div
+        className="view-scope-selector is-locked"
+        role="status"
+        aria-label="Périmètre Planning imposé"
+        title="Périmètre imposé par la politique Planning"
+      >
+        <span>Affichage</span>
+        <strong>{scope === "mine" ? "Mon périmètre" : "Vue globale"}</strong>
+      </div>
+    );
+  }
+
+  return (
+    <div className="view-scope-selector" role="group" aria-label="Périmètre Planning">
+      <span>Affichage</span>
+      {policy.available_scopes.includes("mine") && (
+        <button type="button" className={scope === "mine" ? "active" : ""} onClick={() => onChange("mine")}>
+          Mon périmètre
+        </button>
+      )}
+      {policy.available_scopes.includes("global") && (
+        <button type="button" className={scope === "global" ? "active" : ""} onClick={() => onChange("global")}>
+          Vue globale
+        </button>
+      )}
+    </div>
+  );
+}
+
 export default function PlanningPage({
   onOpenDemands,
   onOpenDemand,
@@ -650,9 +724,22 @@ export default function PlanningPage({
   onOpenDemand?: (demandNumber: string) => void;
 }) {
   const { can, principal } = useAuth();
-  const { scope, loading: scopeLoading, error: scopeError } = useViewScope();
   const canManagePlanning = can("manage_planning");
   const preferenceOwnerId = principal?.local_user_id ?? null;
+  const planningIdentityKey = [
+    principal?.local_user_id ?? "",
+    principal?.issuer ?? "",
+    principal?.subject ?? "",
+    principal?.roles.join(",") ?? "",
+    principal?.permissions.join(",") ?? "",
+  ].join("|");
+  const [planningPolicy, setPlanningPolicy] = useState<PlanningViewPolicy | null>(null);
+  const [planningPolicyOwnerKey, setPlanningPolicyOwnerKey] = useState<string | null>(null);
+  const [scope, setScope] = useState<UserViewScope | null>(null);
+  const [scopeLoading, setScopeLoading] = useState(true);
+  const [scopeError, setScopeError] = useState<string | null>(null);
+  const planningIdentityKeyRef = useRef(planningIdentityKey);
+  const activePlanningRequestKeyRef = useRef("");
   const [loadedPreferenceOwnerId, setLoadedPreferenceOwnerId] = useState<string | null>(preferenceOwnerId);
   const [weekStart, setWeekStart] = useState(() => loadPlanningWeekStart(preferenceOwnerId));
   const [resourceSortMode, setResourceSortMode] = useState<ResourceSortMode>(
@@ -695,6 +782,63 @@ export default function PlanningPage({
   const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
+    planningIdentityKeyRef.current = planningIdentityKey;
+    activePlanningRequestKeyRef.current = "";
+    setPlanningPolicy(null);
+    setPlanningPolicyOwnerKey(null);
+    setScope(null);
+    setScopeLoading(true);
+    setScopeError(null);
+    setSnapshot(null);
+    setCapacityGrid(null);
+    setActions([]);
+    setCatalogResources([]);
+    setManualResourceOrder(new Map());
+    setLoading(true);
+    setError(null);
+    setSearch("");
+    setProject("all");
+    setConfirmation("all");
+    setClassFilter("all");
+    setResourceFilter("all");
+    setOnlyWithCapacity(false);
+    setEditingShift(null);
+    setEditingSegmentId(null);
+    setQuickShiftOpen(false);
+    setQuickShiftSeed(null);
+    setAssetAssignment(null);
+    setManualAllocationOpen(false);
+    setDetailDemandNumber(null);
+    setDetailContextDirty(false);
+    setDropBusy(null);
+    setResourceReorderBusy(null);
+    setDropDialog(null);
+    setDragFeedback(null);
+
+    const controller = new AbortController();
+    getCurrentPlanningViewPolicy(controller.signal)
+      .then((policy) => {
+        if (controller.signal.aborted || planningIdentityKeyRef.current !== planningIdentityKey) return;
+        setPlanningPolicy(policy);
+        setPlanningPolicyOwnerKey(planningIdentityKey);
+        setScope(policy.default_scope);
+        if (!policy.default_scope) setScopeError("La lecture du Planning n’est pas autorisée pour cette identité.");
+      })
+      .catch((reason: unknown) => {
+        if (controller.signal.aborted || planningIdentityKeyRef.current !== planningIdentityKey) return;
+        const message = reason instanceof ApiError
+          ? `${reason.message}${reason.code ? ` (${reason.code})` : ""}`
+          : reason instanceof Error ? reason.message : "Impossible de charger la politique Planning.";
+        setPlanningPolicyOwnerKey(planningIdentityKey);
+        setScopeError(message);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted && planningIdentityKeyRef.current === planningIdentityKey) setScopeLoading(false);
+      });
+    return () => controller.abort();
+  }, [planningIdentityKey]);
+
+  useEffect(() => {
     if (loadedPreferenceOwnerId === preferenceOwnerId) return;
     setWeekStart(loadPlanningWeekStart(preferenceOwnerId));
     setResourceSortMode(loadPlanningResourceSort(preferenceOwnerId));
@@ -729,46 +873,56 @@ export default function PlanningPage({
   const days = useMemo(() => weekDays(weekStart), [weekStart]);
   const start = toIsoDate(weekStart);
   const end = toIsoDate(addDays(weekStart, 6));
-  const snapshotQueryKey = `${start}|${end}|${scope}`;
+  const snapshotQueryKey = `${planningIdentityKey}|${start}|${end}|${scope ?? "unresolved"}`;
   const snapshotQueryKeyRef = useRef("");
   const today = toIsoDate(new Date());
   const quickShiftDefaultDay = today >= start && today <= end ? today : start;
 
   useEffect(() => {
-    if (scopeLoading) return;
+    if (scopeLoading || planningPolicyOwnerKey !== planningIdentityKey) return;
     if (scopeError) {
       setLoading(false);
       setError(scopeError);
       setSnapshot(null);
       setActions([]);
       setCapacityGrid(null);
+      setCatalogResources([]);
+      return;
+    }
+    if (!scope) {
+      setLoading(false);
+      setError("Aucun périmètre Planning autorisé n’est disponible.");
       return;
     }
     const controller = new AbortController();
+    activePlanningRequestKeyRef.current = snapshotQueryKey;
     setLoading(true);
     setError(null);
-    if (snapshotQueryKeyRef.current !== snapshotQueryKey) {
-      setSnapshot(null);
-    }
+    if (snapshotQueryKeyRef.current !== snapshotQueryKey) setSnapshot(null);
     setActions([]);
     setCapacityGrid(null);
     setManualResourceOrder(new Map());
+    const catalogRequest = canManagePlanning
+      ? getResources(true, controller.signal)
+      : Promise.resolve<ResourceReadModel[]>([]);
     Promise.all([
       getPlanningSnapshot(start, end, controller.signal, scope),
       getPlanningActions(start, end, controller.signal, scope),
       getPlanningCapacityGrid(start, end, controller.signal, scope),
-      getResources(true, controller.signal),
+      catalogRequest,
       getPlanningResourceOrder(controller.signal),
     ])
       .then(([planning, planningActions, capacity, resourceRows, personalOrder]) => {
+        if (controller.signal.aborted || planningIdentityKeyRef.current !== planningIdentityKey || activePlanningRequestKeyRef.current !== snapshotQueryKey) return;
         snapshotQueryKeyRef.current = snapshotQueryKey;
         setSnapshot(planning);
         setActions(planningActions);
         setCapacityGrid(capacity);
-        setCatalogResources(resourceRows);
+        setCatalogResources(canManagePlanning ? resourceRows : []);
         setManualResourceOrder(new Map(Object.entries(personalOrder.positions)));
       })
       .catch((reason: unknown) => {
+        if (controller.signal.aborted || planningIdentityKeyRef.current !== planningIdentityKey || activePlanningRequestKeyRef.current !== snapshotQueryKey) return;
         if (reason instanceof DOMException && reason.name === "AbortError") return;
         if (reason instanceof ApiError) {
           setError(`${reason.message}${reason.code ? ` (${reason.code})` : ""}`);
@@ -777,10 +931,10 @@ export default function PlanningPage({
         setError(reason instanceof Error ? reason.message : "Impossible de charger le planning.");
       })
       .finally(() => {
-        if (!controller.signal.aborted) setLoading(false);
+        if (!controller.signal.aborted && planningIdentityKeyRef.current === planningIdentityKey && activePlanningRequestKeyRef.current === snapshotQueryKey) setLoading(false);
       });
     return () => controller.abort();
-  }, [start, end, refreshKey, scope, scopeLoading, scopeError, snapshotQueryKey, preferenceOwnerId]);
+  }, [start, end, refreshKey, scope, scopeLoading, scopeError, snapshotQueryKey, planningIdentityKey, planningPolicyOwnerKey, canManagePlanning]);
 
   const projectOptions = useMemo(() => {
     if (!snapshot) return [];
@@ -809,7 +963,8 @@ export default function PlanningPage({
 
   const manualOrderAvailability = useMemo(() => {
     const groups = new Map<string, ResourceReadModel[]>();
-    catalogResources.forEach((resource) => {
+    const orderResources = canManagePlanning ? catalogResources : (snapshot?.resources ?? []);
+    orderResources.forEach((resource) => {
       const className = resource.resource_class || "Non classé";
       const rows = groups.get(className) ?? [];
       rows.push(resource);
@@ -829,7 +984,7 @@ export default function PlanningPage({
       });
     });
     return result;
-  }, [catalogResources, manualResourceOrder]);
+  }, [canManagePlanning, catalogResources, manualResourceOrder, snapshot]);
 
   const capacityByResource = useMemo(
     () => new Map((capacityGrid?.resources ?? []).map((row) => [row.resource_id, row])),
@@ -1283,6 +1438,22 @@ export default function PlanningPage({
     ? snapshot.shifts.find((shift) => shift.allocation_id === dropDialog.payload.allocation_id) ?? null
     : null;
 
+  function selectPlanningScope(nextScope: UserViewScope) {
+    if (nextScope === scope || !planningPolicy || !planningPolicy.available_scopes.includes(nextScope)) return;
+    setEditingShift(null);
+    setEditingSegmentId(null);
+    setQuickShiftOpen(false);
+    setQuickShiftSeed(null);
+    setAssetAssignment(null);
+    setManualAllocationOpen(false);
+    setDetailDemandNumber(null);
+    setDetailContextDirty(false);
+    setDropDialog(null);
+    setDropBusy(null);
+    setDragFeedback(null);
+    setScope(nextScope);
+  }
+
   return (
     <section className="planning-page">
       <div className="page-heading">
@@ -1292,20 +1463,31 @@ export default function PlanningPage({
           <p>Planning Web V2 alimenté directement par FastAPI. Capacité, indisponibilités et heures non placées sont calculées côté backend.</p>
         </div>
         <div className="page-actions">
-          <ViewScopeSelector />
-          <button className="manual-allocation-button" type="button" onClick={() => setManualAllocationOpen(true)}>
-            + Quart manuel
-          </button>
-          <button
-            className="quick-shift-button"
-            type="button"
-            onClick={() => {
-              setQuickShiftSeed(null);
-              setQuickShiftOpen(true);
-            }}
-          >
-            + Quick Shift
-          </button>
+          <PlanningScopeSelector
+            policy={planningPolicy}
+            scope={scope}
+            loading={scopeLoading}
+            error={scopeError}
+            onChange={selectPlanningScope}
+          />
+          {canManagePlanning && (
+            <button className="manual-allocation-button" type="button" disabled={scopeLoading || loading} onClick={() => setManualAllocationOpen(true)}>
+              + Quart manuel
+            </button>
+          )}
+          {canManagePlanning && (
+            <button
+              className="quick-shift-button"
+              type="button"
+              disabled={scopeLoading || loading}
+              onClick={() => {
+                setQuickShiftSeed(null);
+                setQuickShiftOpen(true);
+              }}
+            >
+              + Quick Shift
+            </button>
+          )}
           <div className="week-navigation" role="group" aria-label="Navigation par semaine">
             <button type="button" onClick={() => setWeekStart((value) => addDays(value, -7))}>← Précédente</button>
             <button type="button" onClick={() => setWeekStart(startOfWeek(new Date()))}>Aujourd’hui</button>
@@ -1318,7 +1500,7 @@ export default function PlanningPage({
         actions={visibleActions}
         loading={loading}
         onOpenDemands={onOpenDemands}
-        onOpenSegment={setEditingSegmentId}
+        onOpenSegment={canManagePlanning ? setEditingSegmentId : undefined}
         onAssigned={() => setRefreshKey((value) => value + 1)}
       />
 
@@ -1431,7 +1613,9 @@ export default function PlanningPage({
                     </span>
                   </div>
                   <strong className="unplaced-hours">{hours(diagnostic.unplaced_hours)} h non placées</strong>
-                  <button type="button" onClick={() => setEditingSegmentId(diagnostic.segment_id)}>Modifier le segment</button>
+                  {canManagePlanning && (
+                    <button type="button" onClick={() => setEditingSegmentId(diagnostic.segment_id)}>Modifier le segment</button>
+                  )}
                 </article>
               );
             })}
@@ -1447,7 +1631,7 @@ export default function PlanningPage({
               <span>{loading ? "Actualisation…" : `${visibleResourceCount} ressource(s)`}</span>
               {scope === "mine" && (
                 <small className="planning-drag-help">
-                  La capacité tient compte de tous les engagements des ressources affichées, y compris ceux hors de votre périmètre.
+                  La capacité tient compte de tous les engagements des ressources affichées, y compris ceux hors de votre périmètre. Les engagements hors périmètre neutralisent la disponibilité sans exposer leur détail.
                 </small>
               )}
               {canManagePlanning && (
@@ -1517,8 +1701,8 @@ export default function PlanningPage({
                         capacity={capacity}
                         pendingLoads={pendingLoads}
                         diagnostics={diagnosticsBySegment}
-                        onEditShift={setEditingShift}
-                        onAssignAsset={(shift) => setAssetAssignment({ shift, mode: "assign" })}
+                        onEditShift={canManagePlanning ? setEditingShift : undefined}
+                        onAssignAsset={canManagePlanning ? (shift) => setAssetAssignment({ shift, mode: "assign" }) : undefined}
                         onCreateQuickShift={canManagePlanning ? (targetResource, day) => {
                           setQuickShiftSeed({ resourceId: targetResource.id, day });
                           setQuickShiftOpen(true);
@@ -1718,6 +1902,7 @@ export default function PlanningPage({
             <div className="demand-detail-modal-body">
               <DemandWorkflowPage
                 demandNumber={detailDemandNumber}
+                viewScope={scope ?? undefined}
                 embedded
                 actionsOnly
                 hasUnsavedChanges={detailContextDirty}
@@ -1725,6 +1910,7 @@ export default function PlanningPage({
               />
               <DemandDetail
                 demandNumber={detailDemandNumber}
+                viewScope={scope ?? undefined}
                 compact
                 onDirtyChange={setDetailContextDirty}
                 onChanged={() => setRefreshKey((value) => value + 1)}
