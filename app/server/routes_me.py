@@ -5,6 +5,10 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, Query, Request
 
+from ..application.planning_visibility import (
+    PlanningViewPolicyReadModel,
+    PlanningVisibilityService,
+)
 from ..application.query_ports import PlannerQueryPort
 from ..application.security import AuthPrincipal
 from ..application.technician_schedule import TechnicianScheduleReadModel, TechnicianScheduleService
@@ -28,6 +32,11 @@ def build_me_router(
         return None
 
     context_dependency = user_view_context_dependency or no_context_repository
+
+    @router.get("/planning-policy")
+    def planning_policy(request: Request) -> PlanningViewPolicyReadModel:
+        principal: AuthPrincipal = request.state.auth_principal
+        return PlanningVisibilityService.view_policy(principal)
 
     @router.get("/schedule")
     def schedule(
