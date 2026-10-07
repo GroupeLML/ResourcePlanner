@@ -51,6 +51,7 @@ EXPECTED_TABLES = {
     "communication_snapshot_lines",
     "communication_deliveries",
     "competencies",
+    "competency_resource_class_audit",
     "delivery_plans",
     "delivery_items",
     "delivery_change_history",

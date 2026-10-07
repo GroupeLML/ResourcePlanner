@@ -119,6 +119,44 @@ def _reshape_as_0048(path: Path) -> None:
             DROP TABLE IF EXISTS project_co_managers;
             DROP TABLE IF EXISTS task_catalog_preferred_resource_audit;
 
+            DROP TABLE IF EXISTS competency_resource_class_audit;
+
+            CREATE TABLE competencies_0048 (
+                id VARCHAR(36) NOT NULL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL UNIQUE,
+                description TEXT,
+                active BOOLEAN DEFAULT 1 NOT NULL,
+                sort_order INTEGER DEFAULT 0 NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+            );
+            INSERT INTO competencies_0048 (
+                id,
+                name,
+                description,
+                active,
+                sort_order,
+                created_at,
+                updated_at
+            )
+            SELECT
+                id,
+                name,
+                description,
+                active,
+                sort_order,
+                created_at,
+                updated_at
+            FROM competencies;
+            DROP TABLE competencies;
+            ALTER TABLE competencies_0048 RENAME TO competencies;
+            CREATE INDEX ix_competencies_active
+                ON competencies (active);
+            CREATE INDEX ix_competencies_active_order
+                ON competencies (active, sort_order);
+            CREATE INDEX ix_competencies_name
+                ON competencies (name);
+
             CREATE TABLE task_catalog_items_0048 (
                 id VARCHAR(36) NOT NULL PRIMARY KEY,
                 project_number VARCHAR(64) NOT NULL,
