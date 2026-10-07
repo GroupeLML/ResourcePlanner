@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import select, true
 from sqlalchemy.orm import Session
 
 from ...domain.demand_periods import (
@@ -206,7 +206,7 @@ class SqlSameResourcePeriodCoordinator:
             for value in self._session.scalars(
                 select(Shift.resource_id).where(
                     Shift.resource_requirement_id.in_(requirement_ids),
-                    Shift.locked.is_(True),
+                    Shift.locked == true(),
                 )
             ).all()
             if _text(value)
