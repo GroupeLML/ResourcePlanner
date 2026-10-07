@@ -175,7 +175,10 @@ function PeriodFields({
       proposed_resource_mode: mode,
       proposed_resource: mode === "EXPLICIT" ? period.proposed_resource : null,
       proposed_resource_id: mode === "EXPLICIT" ? period.proposed_resource_id : null,
+      proposed_resource_provenance: null,
       same_as_period_id: mode === "SAME_AS_PERIOD" ? period.same_as_period_id : null,
+      same_as_root_period_id: null,
+      same_as_state: null,
     });
   };
 
@@ -305,7 +308,12 @@ function PeriodFields({
             <select
               value={period.same_as_period_id ?? ""}
               disabled={disabled}
-              onChange={(event) => change("same_as_period_id", event.target.value || null)}
+              onChange={(event) => onChange({
+                ...period,
+                same_as_period_id: event.target.value || null,
+                same_as_root_period_id: null,
+                same_as_state: null,
+              })}
             >
               <option value="">Sélectionner une période cumulative…</option>
               {sameAsTargets.map((target) => (
