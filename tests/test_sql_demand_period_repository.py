@@ -218,7 +218,7 @@ class SqlDemandPeriodRepositoryTests(unittest.TestCase):
             self.assertEqual(row.proposed_resource, "Technicien A")
             self.assertEqual(row.proposed_resource_provenance, PERIOD_PROVENANCE_LEGACY)
 
-    def test_same_as_contract_is_persisted_but_deferred_until_655b(self) -> None:
+    def test_same_as_contract_is_persisted_for_655b_resolution(self) -> None:
         with transactional_session(self.factory) as session:
             repository = SqlDemandPeriodRepository(session)
             rows = repository.replace_for_demand(
@@ -246,7 +246,7 @@ class SqlDemandPeriodRepositoryTests(unittest.TestCase):
             by_id = {row.period_id: row for row in rows}
             self.assertEqual(by_id["P2"].proposed_resource_mode, "SAME_AS_PERIOD")
             self.assertEqual(by_id["P2"].same_as_period_id, "P1")
-            self.assertEqual(by_id["P2"].same_as_state, "DEFERRED_655B")
+            self.assertEqual(by_id["P2"].same_as_state, "UNRESOLVED")
             self.assertIsNone(by_id["P2"].proposed_resource)
             physical = session.scalar(
                 select(WorkforceRequestPeriod).where(
