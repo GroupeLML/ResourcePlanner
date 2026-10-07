@@ -292,6 +292,33 @@ class Resource(TimestampMixin, Base):
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
 
 
+class PlanningResourceUserOrder(Base):
+    __tablename__ = "planning_resource_user_orders"
+    __table_args__ = (
+        CheckConstraint(
+            "position >= 0",
+            name="planning_resource_user_order_position_non_negative",
+        ),
+        Index(
+            "ix_planning_resource_user_orders_user_position",
+            "user_id",
+            "position",
+        ),
+    )
+
+    user_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("app_users.id"),
+        primary_key=True,
+    )
+    resource_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("resources.id"),
+        primary_key=True,
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class ResourceCompetency(Base):
     __tablename__ = "resource_competencies"
 

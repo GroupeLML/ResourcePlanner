@@ -21,7 +21,7 @@ MIGRATIONS = ROOT / "migrations"
 VERSIONS = MIGRATIONS / "versions"
 BASELINE_FILE = VERSIONS / "0001_v2_production_baseline.py"
 BASELINE_REVISION = "v2_production_baseline"
-HEAD_REVISION = "0018_competency_resource_class"
+HEAD_REVISION = "0019_planning_resource_user_order"
 
 
 def alembic_config(database_path: Path) -> Config:
@@ -87,6 +87,7 @@ class SqlMigrationTests(unittest.TestCase):
                 "0016_task_erp_budget_freshness.py",
                 "0017_task_preferred_resource.py",
                 "0018_competency_resource_class.py",
+                "0019_planning_resource_user_order.py",
             ],
         )
 
@@ -105,6 +106,7 @@ class SqlMigrationTests(unittest.TestCase):
             [revision.revision for revision in script.walk_revisions()],
             [
                 HEAD_REVISION,
+                "0018_competency_resource_class",
                 "0017_task_preferred_resource",
                 "0016_task_erp_budget_freshness",
                 "0015_verification_executions",

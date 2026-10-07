@@ -204,7 +204,10 @@ def build_sql_facade(
         composite_allocations=CompositeAllocationService(composite_allocation_commands),
         planning=PlanningService(planning_commands),
         work_packages=WorkPackageService(work_packages),
-        resource_admin=ResourceAdminService(resources),
+        resource_admin=ResourceAdminService(
+            resources,
+            current_user_id=actor_user_id,
+        ),
         planning_versions=planning_versions,
     )
 

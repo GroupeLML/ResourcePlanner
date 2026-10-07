@@ -56,6 +56,7 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
             "project_manager_audit",
             "availability_rule_resource_classes",
             "planning_window_overrides",
+            "planning_resource_user_orders",
             "verification_scopes",
             "verification_requirements",
             "verification_requirement_revisions",
@@ -195,6 +196,9 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
     "planning_change_history": _keep("Audit métier Planning V2."),
     "planning_mutation_state": _rebuild(
         "Singleton technique de version globale créé par la baseline."
+    ),
+    "planning_resource_user_orders": _keep(
+        "Préférences durables d'ordre Manuel propres à chaque utilisateur RP."
     ),
     "planning_window_overrides": _keep(
         "Dérogations opérationnelles durables de fenêtre Planning liées aux autorisations approuvées."
