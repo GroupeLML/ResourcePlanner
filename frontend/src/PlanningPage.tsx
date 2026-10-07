@@ -833,6 +833,7 @@ export default function PlanningPage({
   const [classFilter, setClassFilter] = useState("all");
   const [resourceFilter, setResourceFilter] = useState("all");
   const [onlyWithCapacity, setOnlyWithCapacity] = useState(false);
+  const [filtersExpanded, setFiltersExpanded] = useState(true);
   const [editingShift, setEditingShift] = useState<ShiftReadModel | null>(null);
   const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null);
   const [quickShiftOpen, setQuickShiftOpen] = useState(false);
@@ -1074,6 +1075,14 @@ export default function PlanningPage({
   );
 
   const query = normalize(search);
+  const activeFilterCount = [
+    Boolean(query),
+    project !== "all",
+    confirmation !== "all",
+    classFilter !== "all",
+    resourceFilter !== "all",
+    onlyWithCapacity,
+  ].filter(Boolean).length;
 
   const shiftsPassingGlobalFilters = useMemo(() => {
     if (!snapshot) return [];
@@ -1618,59 +1627,82 @@ export default function PlanningPage({
             </div>
           </div>
         </div>
-        <div className="filter-bar planning-filter-bar">
-          <label className="search-field">
-            <span>Recherche</span>
-            <input
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="Ressource, projet, demande…"
-            />
-          </label>
-          <label>
-            <span>Classe</span>
-            <select value={classFilter} onChange={(event) => setClassFilter(event.target.value)}>
-              <option value="all">Toutes les classes</option>
-              {classOptions.map((value) => <option value={value} key={value}>{value}</option>)}
-            </select>
-          </label>
-          <label>
-            <span>Ressource</span>
-            <select value={resourceFilter} onChange={(event) => setResourceFilter(event.target.value)}>
-              <option value="all">Toutes les ressources</option>
-              {resourceOptions.map((resource) => <option value={resource.id} key={resource.id}>{resourceDisplayName(resource.name)}</option>)}
-            </select>
-          </label>
-          <label>
-            <span>Projet</span>
-            <select value={project} onChange={(event) => setProject(event.target.value)}>
-              <option value="all">Tous les projets</option>
-              {projectOptions.map(([value, label]) => <option value={value} key={value}>{label}</option>)}
-            </select>
-          </label>
-          <label>
-            <span>Confirmation</span>
-            <select value={confirmation} onChange={(event) => setConfirmation(event.target.value as ConfirmationFilter)}>
-              <option value="all">Confirmée + Tentative</option>
-              <option value="confirmed">Confirmée</option>
-              <option value="tentative">Tentative</option>
-            </select>
-          </label>
-          <label className="planning-resource-sort">
-            <span>Ordre des ressources</span>
-            <select
-              value={resourceSortMode}
-              onChange={(event) => setResourceSortMode(event.target.value as ResourceSortMode)}
-            >
-              <option value="manual">Manuel</option>
-              <option value="availability">Disponibilité</option>
-              <option value="alphabetical">Alphabétique</option>
-            </select>
-          </label>
-          <label className="capacity-filter">
-            <input type="checkbox" checked={onlyWithCapacity} onChange={(event) => setOnlyWithCapacity(event.target.checked)} />
-            <span>Seulement avec capacité</span>
-          </label>
+        <div className="planning-filter-section">
+          <button
+            type="button"
+            className="planning-filter-toggle"
+            aria-expanded={filtersExpanded}
+            aria-controls="planning-filters"
+            onClick={() => setFiltersExpanded((value) => !value)}
+          >
+            <span className="planning-filter-toggle-label">Filtres</span>
+            <span className="planning-filter-toggle-meta">
+              {activeFilterCount > 0 && (
+                <span className="planning-filter-active-badge">
+                  {activeFilterCount} filtre{activeFilterCount > 1 ? "s" : ""} actif{activeFilterCount > 1 ? "s" : ""}
+                </span>
+              )}
+              <span className="planning-filter-toggle-icon" aria-hidden="true">
+                {filtersExpanded ? "−" : "+"}
+              </span>
+            </span>
+          </button>
+          {filtersExpanded && (
+            <div id="planning-filters" className="filter-bar planning-filter-bar">
+              <label className="search-field">
+                <span>Recherche</span>
+                <input
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder="Ressource, projet, demande…"
+                />
+              </label>
+              <label>
+                <span>Classe</span>
+                <select value={classFilter} onChange={(event) => setClassFilter(event.target.value)}>
+                  <option value="all">Toutes les classes</option>
+                  {classOptions.map((value) => <option value={value} key={value}>{value}</option>)}
+                </select>
+              </label>
+              <label>
+                <span>Ressource</span>
+                <select value={resourceFilter} onChange={(event) => setResourceFilter(event.target.value)}>
+                  <option value="all">Toutes les ressources</option>
+                  {resourceOptions.map((resource) => <option value={resource.id} key={resource.id}>{resourceDisplayName(resource.name)}</option>)}
+                </select>
+              </label>
+              <label>
+                <span>Projet</span>
+                <select value={project} onChange={(event) => setProject(event.target.value)}>
+                  <option value="all">Tous les projets</option>
+                  {projectOptions.map(([value, label]) => <option value={value} key={value}>{label}</option>)}
+                </select>
+              </label>
+              <label>
+                <span>Confirmation</span>
+                <select value={confirmation} onChange={(event) => setConfirmation(event.target.value as ConfirmationFilter)}>
+                  <option value="all">Confirmée + Tentative</option>
+                  <option value="confirmed">Confirmée</option>
+                  <option value="tentative">Tentative</option>
+                </select>
+              </label>
+              <label className="planning-resource-sort">
+                <span>Ordre des ressources</span>
+                <select
+                  value={resourceSortMode}
+                  onChange={(event) => setResourceSortMode(event.target.value as ResourceSortMode)}
+                >
+                  <option value="manual">Manuel</option>
+                  <option value="availability">Disponibilité</option>
+                  <option value="alphabetical">Alphabétique</option>
+                </select>
+              </label>
+              <label className="capacity-filter">
+                <input type="checkbox" checked={onlyWithCapacity} onChange={(event) => setOnlyWithCapacity(event.target.checked)} />
+                <span>Seulement avec capacité</span>
+              </label>
+            </div>
+          )}
         </div>
       </div>
 
