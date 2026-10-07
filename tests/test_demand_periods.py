@@ -111,7 +111,7 @@ class DemandPeriodPolicyTests(unittest.TestCase):
         self.assertEqual(resolved.proposed_resource_provenance, PERIOD_PROVENANCE_EXPLICIT)
         self.assertEqual(resolved.resource_count, 2)
 
-    def test_same_as_period_projects_unresolved_until_the_plan_selects_a_resource(self) -> None:
+    def test_same_as_period_contract_is_active_without_inventing_a_resource(self) -> None:
         resolved = resolve_period_authority(
             contract_version=PERIOD_INHERITANCE_CONTRACT_VERSION,
             stored_resource_count=1,
@@ -128,7 +128,7 @@ class DemandPeriodPolicyTests(unittest.TestCase):
         self.assertIsNone(resolved.proposed_resource)
         self.assertEqual(resolved.proposed_resource_provenance, PERIOD_PROVENANCE_SAME_AS)
         self.assertEqual(resolved.same_as_period_id, "P-ROOT")
-        self.assertEqual(resolved.same_as_state, "UNRESOLVED")
+        self.assertEqual(resolved.same_as_state, "ACTIVE")
 
     def test_same_as_period_rejects_missing_target(self) -> None:
         periods = (
