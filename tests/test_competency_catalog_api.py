@@ -7,11 +7,14 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.application.security import AuthPrincipal, ROLE_PROJECT_MANAGER
 from app.infrastructure.sql import (
     Base,
+    CompetencyResourceClassAudit,
     Project,
+    ResourceClassConfig,
     create_session_factory,
     create_sql_engine,
 )
@@ -31,7 +34,10 @@ def project_manager_resolver(_request):
 
 
 from tests.approval_test_support import routed_demand_payload, seed_test_approval_routing
-from tests.http_test_auth import TEST_ADMIN_AUTH_RESOLVER
+from tests.http_test_auth import (
+    TEST_ADMIN_AUTH_RESOLVER,
+    TEST_ADMIN_USER_ID,
+)
 
 create_api_app = partial(create_api_app, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
 
@@ -52,6 +58,24 @@ class CompetencyCatalogApiTests(unittest.TestCase):
                 )
             )
             seed_test_approval_routing(session, map_existing_tasks=True)
+            session.add_all(
+                [
+                    ResourceClassConfig(
+                        code="PROGRAMMEUR",
+                        label="Programmeur",
+                        average_hourly_cost_cad="125.00",
+                        active=True,
+                        version=1,
+                    ),
+                    ResourceClassConfig(
+                        code="HISTORIQUE",
+                        label="Historique",
+                        average_hourly_cost_cad="90.00",
+                        active=False,
+                        version=1,
+                    ),
+                ]
+            )
         engine.dispose()
         return database_url
 
@@ -217,6 +241,167 @@ class CompetencyCatalogApiTests(unittest.TestCase):
                     "competency_inactive",
                 )
 
+    def test_competency_class_grouping_is_nullable_versioned_audited_and_analytic_only(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database_url(directory)
+            app = create_api_app(database_url)
+            with TestClient(app) as client:
+                created = client.post(
+                    "/api/v1/competencies",
+                    json={"name": "Fibre optique", "sort_order": 30},
+                )
+                self.assertEqual(created.status_code, 201, created.text)
+                competency_id = created.json()["competency_id"]
+
+                initial = next(
+                    row
+                    for row in client.get(
+                        "/api/v1/competencies",
+                        params={"active_only": "false"},
+                    ).json()
+                    if row["id"] == competency_id
+                )
+                self.assertIsNone(initial["resource_class_code"])
+                self.assertIsNone(initial["resource_class_label"])
+                self.assertIsNone(initial["resource_class_active"])
+                self.assertEqual(initial["resource_class_version"], 1)
+
+                assigned = client.patch(
+                    f"/api/v1/competencies/{competency_id}/resource-class",
+                    json={
+                        "resource_class_code": "PROGRAMMEUR",
+                        "expected_version": 1,
+                    },
+                )
+                self.assertEqual(assigned.status_code, 200, assigned.text)
+                self.assertEqual(
+                    assigned.json(),
+                    {
+                        "competency_id": competency_id,
+                        "resource_class_code": "PROGRAMMEUR",
+                        "version": 2,
+                        "action": "COMPETENCY_RESOURCE_CLASS_SET",
+                    },
+                )
+
+                stale = client.patch(
+                    f"/api/v1/competencies/{competency_id}/resource-class",
+                    json={
+                        "resource_class_code": None,
+                        "expected_version": 1,
+                    },
+                )
+                self.assertEqual(stale.status_code, 409, stale.text)
+                self.assertEqual(
+                    stale.json()["error"]["code"],
+                    "competency_resource_class_version_conflict",
+                )
+
+                inactive = client.patch(
+                    f"/api/v1/competencies/{competency_id}/resource-class",
+                    json={
+                        "resource_class_code": "HISTORIQUE",
+                        "expected_version": 2,
+                    },
+                )
+                self.assertEqual(inactive.status_code, 422, inactive.text)
+                self.assertEqual(
+                    inactive.json()["error"]["code"],
+                    "competency_resource_class_inactive",
+                )
+
+                missing = client.patch(
+                    f"/api/v1/competencies/{competency_id}/resource-class",
+                    json={
+                        "resource_class_code": "INCONNUE",
+                        "expected_version": 2,
+                    },
+                )
+                self.assertEqual(missing.status_code, 404, missing.text)
+                self.assertEqual(
+                    missing.json()["error"]["code"],
+                    "competency_resource_class_not_found",
+                )
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            with factory.begin() as session:
+                resource_class = session.get(ResourceClassConfig, "PROGRAMMEUR")
+                assert resource_class is not None
+                resource_class.active = False
+            engine.dispose()
+
+            app = create_api_app(database_url)
+            with TestClient(app) as client:
+                historical = next(
+                    row
+                    for row in client.get(
+                        "/api/v1/competencies",
+                        params={"active_only": "false"},
+                    ).json()
+                    if row["id"] == competency_id
+                )
+                self.assertEqual(historical["resource_class_code"], "PROGRAMMEUR")
+                self.assertEqual(historical["resource_class_label"], "Programmeur")
+                self.assertFalse(historical["resource_class_active"])
+                self.assertEqual(historical["resource_class_version"], 2)
+
+                cleared = client.patch(
+                    f"/api/v1/competencies/{competency_id}/resource-class",
+                    json={
+                        "resource_class_code": None,
+                        "expected_version": 2,
+                    },
+                )
+                self.assertEqual(cleared.status_code, 200, cleared.text)
+                self.assertEqual(cleared.json()["version"], 3)
+                self.assertIsNone(cleared.json()["resource_class_code"])
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            with factory() as session:
+                audits = list(
+                    session.scalars(
+                        select(CompetencyResourceClassAudit)
+                        .where(
+                            CompetencyResourceClassAudit.competency_id
+                            == competency_id
+                        )
+                        .order_by(
+                            CompetencyResourceClassAudit.resulting_version
+                        )
+                    ).all()
+                )
+                self.assertEqual(
+                    [
+                        (
+                            row.action,
+                            row.old_resource_class_code,
+                            row.new_resource_class_code,
+                            row.resulting_version,
+                            row.actor_user_id,
+                        )
+                        for row in audits
+                    ],
+                    [
+                        (
+                            "COMPETENCY_RESOURCE_CLASS_SET",
+                            None,
+                            "PROGRAMMEUR",
+                            2,
+                            TEST_ADMIN_USER_ID,
+                        ),
+                        (
+                            "COMPETENCY_RESOURCE_CLASS_CLEARED",
+                            "PROGRAMMEUR",
+                            None,
+                            3,
+                            TEST_ADMIN_USER_ID,
+                        ),
+                    ],
+                )
+            engine.dispose()
+
     def test_catalog_mutations_require_resource_admin_permission(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database_url(directory)
@@ -235,6 +420,19 @@ class CompetencyCatalogApiTests(unittest.TestCase):
                 self.assertEqual(write.status_code, 403)
                 self.assertEqual(
                     write.json()["error"]["context"]["required_permission"],
+                    "manage_resources",
+                )
+
+                grouping = client.patch(
+                    "/api/v1/competencies/any/resource-class",
+                    json={
+                        "resource_class_code": None,
+                        "expected_version": 1,
+                    },
+                )
+                self.assertEqual(grouping.status_code, 403)
+                self.assertEqual(
+                    grouping.json()["error"]["context"]["required_permission"],
                     "manage_resources",
                 )
 

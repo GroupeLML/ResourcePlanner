@@ -264,6 +264,17 @@ export type CompetencyReadModel = {
   description: string | null;
   active: boolean;
   sort_order: number;
+  resource_class_code: string | null;
+  resource_class_label: string | null;
+  resource_class_active: boolean | null;
+  resource_class_version: number;
+};
+
+export type CompetencyResourceClassMutationResult = {
+  competency_id: string;
+  resource_class_code: string | null;
+  version: number;
+  action: string;
 };
 
 export type CompetencyWrite = {
@@ -1967,6 +1978,21 @@ export function updateCompetency(competencyId: string, payload: Partial<Competen
     `/api/v1/competencies/${encodeURIComponent(competencyId)}`,
     "PATCH",
     payload,
+  );
+}
+
+export function setCompetencyResourceClass(
+  competencyId: string,
+  resourceClassCode: string | null,
+  expectedVersion: number,
+) {
+  return sendJson<CompetencyResourceClassMutationResult>(
+    `/api/v1/competencies/${encodeURIComponent(competencyId)}/resource-class`,
+    "PATCH",
+    {
+      resource_class_code: resourceClassCode,
+      expected_version: expectedVersion,
+    },
   );
 }
 

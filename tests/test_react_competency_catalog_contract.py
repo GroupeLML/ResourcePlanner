@@ -20,6 +20,9 @@ class ReactCompetencyCatalogContractTests(unittest.TestCase):
         self.assertIn("createCompetency", api)
         self.assertIn("updateCompetency", api)
         self.assertIn("deactivateCompetency", api)
+        self.assertIn("resource_class_code: string | null", api)
+        self.assertIn("resource_class_version: number", api)
+        self.assertIn("setCompetencyResourceClass", api)
 
     def test_searchable_selector_is_shared_by_resources_demands_and_segments(self) -> None:
         picker = (ROOT / "frontend" / "src" / "CompetencyPicker.tsx").read_text(
@@ -59,6 +62,12 @@ class ReactCompetencyCatalogContractTests(unittest.TestCase):
         self.assertIn("await updateCompetency", panel)
         self.assertIn("await deactivateCompetency", panel)
         self.assertIn("Les IDs restent stables", panel)
+        self.assertIn("getResourceClassOptions", panel)
+        self.assertIn("Regroupement par classe", panel)
+        self.assertIn("setCompetencyResourceClass", panel)
+        self.assertIn("selected.resource_class_version", panel)
+        self.assertIn("Regroupement analytique seulement", panel)
+        self.assertIn('row.active ? "" : " (inactive)"', panel)
 
 
 if __name__ == "__main__":

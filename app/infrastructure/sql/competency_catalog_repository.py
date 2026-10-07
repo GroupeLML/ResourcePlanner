@@ -3,16 +3,23 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from sqlalchemy import delete, select, true
+from sqlalchemy import delete, select, true, update
 from sqlalchemy.orm import Session
 
 from ...application.competency_catalog import (
     CompetencyCatalogRepositoryPort,
     CompetencyReadModel,
+    CompetencyResourceClassMutationResult,
+    CompetencyResourceClassReadModel,
+)
+from ...application.errors import (
+    ApplicationConflictError,
+    ApplicationNotFoundError,
 )
 from .base import new_id
 from .models import (
     Competency,
+    CompetencyResourceClassAudit,
     RequestLine,
     RequestLineCompetency,
     Resource,
@@ -22,6 +29,7 @@ from .models import (
     WorkforceRequest,
     WorkforceRequestCompetency,
 )
+from .resource_class_models import ResourceClassConfig
 
 
 def _text(value: object) -> str:
@@ -33,13 +41,31 @@ def _optional_text(value: object) -> str | None:
     return normalized or None
 
 
-def _model(row: Competency) -> CompetencyReadModel:
+def _model(
+    row: Competency,
+    resource_class: ResourceClassConfig | None = None,
+) -> CompetencyReadModel:
     return CompetencyReadModel(
         id=row.id,
         name=row.name,
         description=_optional_text(row.description),
         active=bool(row.active),
         sort_order=int(row.sort_order or 0),
+        resource_class_code=_optional_text(row.resource_class_code),
+        resource_class_label=(
+            _optional_text(resource_class.label) if resource_class is not None else None
+        ),
+        resource_class_active=(
+            bool(resource_class.active) if resource_class is not None else None
+        ),
+        resource_class_version=int(row.resource_class_version or 1),
+    )
+
+
+def _competency_with_class_statement():
+    return select(Competency, ResourceClassConfig).outerjoin(
+        ResourceClassConfig,
+        Competency.resource_class_code == ResourceClassConfig.code,
     )
 
 
@@ -56,35 +82,48 @@ class SqlCompetencyCatalogRepository(CompetencyCatalogRepositoryPort):
         active_only: bool = True,
         limit: int = 200,
     ) -> tuple[CompetencyReadModel, ...]:
-        statement = select(Competency)
+        statement = _competency_with_class_statement()
         if active_only:
             statement = statement.where(Competency.active == true())
-        rows = self._session.scalars(
+        rows = self._session.execute(
             statement.order_by(Competency.sort_order, Competency.name, Competency.id)
         ).all()
         wanted = _text(query).casefold()
         if wanted:
             rows = [
-                row
-                for row in rows
+                pair
+                for pair in rows
                 if wanted
-                in f"{_text(row.name)} {_text(row.description)}".casefold()
+                in f"{_text(pair[0].name)} {_text(pair[0].description)}".casefold()
             ]
-        return tuple(_model(row) for row in rows[: max(int(limit), 1)])
+        return tuple(
+            _model(row, resource_class)
+            for row, resource_class in rows[: max(int(limit), 1)]
+        )
 
     def get_competency(self, competency_id: str) -> CompetencyReadModel | None:
-        row = self._session.get(Competency, _text(competency_id))
-        return _model(row) if row is not None else None
+        pair = self._session.execute(
+            _competency_with_class_statement().where(
+                Competency.id == _text(competency_id)
+            )
+        ).one_or_none()
+        return _model(pair[0], pair[1]) if pair is not None else None
 
     def find_by_name(self, name: str) -> CompetencyReadModel | None:
         wanted = _text(name).casefold()
         if not wanted:
             return None
-        rows = self._session.scalars(
-            select(Competency).order_by(Competency.sort_order, Competency.name)
+        rows = self._session.execute(
+            _competency_with_class_statement().order_by(
+                Competency.sort_order,
+                Competency.name,
+            )
         ).all()
-        row = next((item for item in rows if _text(item.name).casefold() == wanted), None)
-        return _model(row) if row is not None else None
+        pair = next(
+            (item for item in rows if _text(item[0].name).casefold() == wanted),
+            None,
+        )
+        return _model(pair[0], pair[1]) if pair is not None else None
 
     def create_competency(self, values: Mapping[str, Any]) -> str:
         row = Competency(
@@ -115,6 +154,94 @@ class SqlCompetencyCatalogRepository(CompetencyCatalogRepositoryPort):
         if renamed:
             self._synchronize_linked_snapshots(row.id)
         return row.id
+
+    def get_resource_class(
+        self,
+        code: str,
+    ) -> CompetencyResourceClassReadModel | None:
+        row = self._session.get(ResourceClassConfig, _text(code))
+        if row is None:
+            return None
+        return CompetencyResourceClassReadModel(
+            code=row.code,
+            label=row.label,
+            active=bool(row.active),
+        )
+
+    def set_competency_resource_class(
+        self,
+        competency_id: str,
+        resource_class_code: str | None,
+        *,
+        actor_user_id: str,
+        expected_version: int,
+    ) -> CompetencyResourceClassMutationResult:
+        competency_key = _text(competency_id)
+        class_code = _optional_text(resource_class_code)
+        with self._session.begin_nested():
+            competency = self._session.get(Competency, competency_key)
+            if competency is None:
+                raise ApplicationNotFoundError(
+                    f"Compétence {competency_key} introuvable.",
+                    code="competency_not_found",
+                    context={"competency_id": competency_key},
+                )
+            old_class_code = _optional_text(competency.resource_class_code)
+            result = self._session.execute(
+                update(Competency)
+                .where(
+                    Competency.id == competency_key,
+                    Competency.resource_class_version == expected_version,
+                )
+                .values(
+                    resource_class_code=class_code,
+                    resource_class_version=Competency.resource_class_version + 1,
+                )
+            )
+            if int(result.rowcount or 0) != 1:
+                current = self._session.scalar(
+                    select(Competency.resource_class_version).where(
+                        Competency.id == competency_key
+                    )
+                )
+                if current is None:
+                    raise ApplicationNotFoundError(
+                        f"Compétence {competency_key} introuvable.",
+                        code="competency_not_found",
+                        context={"competency_id": competency_key},
+                    )
+                raise ApplicationConflictError(
+                    "Le rattachement de classe a été modifié depuis sa lecture.",
+                    code="competency_resource_class_version_conflict",
+                    context={
+                        "competency_id": competency_key,
+                        "expected_version": expected_version,
+                        "current_version": int(current),
+                    },
+                )
+            resulting_version = expected_version + 1
+            action = (
+                "COMPETENCY_RESOURCE_CLASS_CLEARED"
+                if class_code is None
+                else "COMPETENCY_RESOURCE_CLASS_SET"
+            )
+            self._session.add(
+                CompetencyResourceClassAudit(
+                    competency_id=competency_key,
+                    actor_user_id=_text(actor_user_id),
+                    action=action,
+                    old_resource_class_code=old_class_code,
+                    new_resource_class_code=class_code,
+                    resulting_version=resulting_version,
+                )
+            )
+            self._session.flush()
+        return CompetencyResourceClassMutationResult(
+            competency_id=competency_key,
+            resource_class_code=class_code,
+            version=resulting_version,
+            action=action,
+        )
 
     def _ordered_competencies(self, competency_ids: Sequence[str]) -> tuple[Competency, ...]:
         result: list[Competency] = []
