@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
+from email import policy
+from email.parser import BytesParser
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from zipfile import ZipFile
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -69,8 +73,10 @@ class FakeSmtpDeliveryClient:
 class FakeProjectDraftTransport:
     def __init__(self) -> None:
         self.messages = ()
+        self.create_calls = 0
 
     def create_drafts(self, messages):
+        self.create_calls += 1
         self.messages = tuple(messages)
         return CommunicationTransportResult(
             provider="fake_graph",
@@ -801,11 +807,42 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     f"/api/v1/communications/project-batches/{batch_id}/approve"
                 )
                 self.assertEqual(approved.status_code, 200, approved.text)
+
+                before_creation = client.get(
+                    f"/api/v1/communications/project-batches/{batch_id}/draft-download"
+                )
+                self.assertEqual(before_creation.status_code, 409, before_creation.text)
+                self.assertEqual(
+                    before_creation.json()["error"]["code"],
+                    "project_communication_drafts_not_created",
+                )
+
                 created = client.post(
                     f"/api/v1/communications/project-batches/{batch_id}/create-drafts"
                 )
                 self.assertEqual(created.status_code, 200, created.text)
+                self.assertIsNotNone(created.json()["drafts_created_at"])
 
+                downloaded = client.get(
+                    f"/api/v1/communications/project-batches/{batch_id}/draft-download"
+                )
+                self.assertEqual(downloaded.status_code, 200, downloaded.text)
+                self.assertTrue(
+                    downloaded.headers["content-type"].startswith("message/rfc822")
+                )
+                self.assertIn(
+                    'filename="projet-P1.eml"',
+                    downloaded.headers["content-disposition"],
+                )
+                self.assertEqual(downloaded.headers["cache-control"], "private, no-store")
+
+                retried = client.get(
+                    f"/api/v1/communications/project-batches/{batch_id}/draft-download"
+                )
+                self.assertEqual(retried.status_code, 200, retried.text)
+                self.assertEqual(retried.content, downloaded.content)
+
+        self.assertEqual(transport.create_calls, 1)
         self.assertEqual(len(transport.messages), 1)
         self.assertEqual(
             transport.messages[0].recipient_email,
@@ -818,6 +855,142 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 "resource-one" + chr(64) + TEST_DOMAIN,
             ),
         )
+
+        mime = BytesParser(policy=policy.default).parsebytes(downloaded.content)
+        self.assertEqual(mime["Subject"], transport.messages[0].subject)
+        self.assertEqual(
+            mime["To"],
+            ", ".join(transport.messages[0].to_emails),
+        )
+        self.assertEqual(
+            mime["Cc"],
+            ", ".join(transport.messages[0].cc_emails),
+        )
+        self.assertEqual(
+            mime.get_content().rstrip("\r\n"),
+            transport.messages[0].body,
+        )
+
+    def test_project_draft_download_returns_zip_for_multiple_messages(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            self._add_second_project(database_url)
+            transport = FakeProjectDraftTransport()
+            app = create_api_app(
+                database_url,
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+                communication_transport=transport,
+            )
+            with TestClient(app) as client:
+                preview = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23"
+                ).json()
+                self.assertEqual(len(preview["drafts"]), 2)
+                prepared = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": preview["snapshot_fingerprint"],
+                        "reviews": [],
+                    },
+                )
+                batch_id = prepared.json()["id"]
+                self.assertEqual(
+                    client.post(
+                        f"/api/v1/communications/project-batches/{batch_id}/approve"
+                    ).status_code,
+                    200,
+                )
+                created = client.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/create-drafts"
+                )
+                self.assertEqual(created.status_code, 200, created.text)
+                downloaded = client.get(
+                    f"/api/v1/communications/project-batches/{batch_id}/draft-download"
+                )
+                self.assertEqual(downloaded.status_code, 200, downloaded.text)
+                self.assertEqual(downloaded.headers["content-type"], "application/zip")
+                self.assertIn(".zip", downloaded.headers["content-disposition"])
+
+        self.assertEqual(transport.create_calls, 1)
+        with ZipFile(BytesIO(downloaded.content)) as archive:
+            self.assertEqual(
+                set(archive.namelist()),
+                {"projet-P1.eml", "projet-P2.eml"},
+            )
+            messages = [
+                BytesParser(policy=policy.default).parsebytes(archive.read(name))
+                for name in archive.namelist()
+            ]
+        self.assertEqual(
+            {str(message["Subject"]) for message in messages},
+            {message.subject for message in transport.messages},
+        )
+        for message in messages:
+            self.assertEqual(
+                message["To"],
+                ", ".join(transport.messages[0].to_emails),
+            )
+
+    def test_project_draft_download_failure_preserves_created_audit_and_is_retryable(self) -> None:
+        with TemporaryDirectory() as directory:
+            transport = FakeProjectDraftTransport()
+            app = create_api_app(
+                self._database(directory),
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+                communication_transport=transport,
+            )
+            with TestClient(app) as client:
+                preview = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23"
+                ).json()
+                prepared = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": preview["snapshot_fingerprint"],
+                        "reviews": [],
+                    },
+                )
+                batch_id = prepared.json()["id"]
+                client.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/approve"
+                )
+                created = client.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/create-drafts"
+                )
+                self.assertEqual(created.status_code, 200, created.text)
+
+                with patch(
+                    "app.application.project_communications._project_message_eml",
+                    side_effect=UnicodeError("synthetic MIME failure"),
+                ):
+                    failed = client.get(
+                        f"/api/v1/communications/project-batches/{batch_id}/draft-download"
+                    )
+                self.assertEqual(failed.status_code, 503, failed.text)
+                self.assertEqual(
+                    failed.json()["error"]["code"],
+                    "project_communication_draft_download_failed",
+                )
+
+                batches = client.get(
+                    "/api/v1/communications/project-batches"
+                    "?week_start=2026-09-23"
+                )
+                persisted = next(
+                    row for row in batches.json() if row["id"] == batch_id
+                )
+                self.assertIsNotNone(persisted["drafts_created_at"])
+
+                retry = client.get(
+                    f"/api/v1/communications/project-batches/{batch_id}/draft-download"
+                )
+                self.assertEqual(retry.status_code, 200, retry.text)
+
+        self.assertEqual(transport.create_calls, 1)
 
     def test_smtp_partial_failure_retries_only_unsent_message(self) -> None:
         with TemporaryDirectory() as directory:
