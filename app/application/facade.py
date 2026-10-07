@@ -200,8 +200,11 @@ class ApplicationFacade:
         self._acquire_planning_version()
         return self._resource_admin_service().update_resource(command)
 
+    def manual_resource_order_positions(self) -> dict[str, int]:
+        return self._resource_admin_service().manual_order_positions()
+
     def reorder_resource(self, command: ResourceReorderCommand) -> ResourceMutationResult:
-        # Manual display order does not change shifts, capacity or planning decisions.
+        # Personal manual display order does not change shifts, capacity or planning decisions.
         return self._resource_admin_service().reorder_resource(command)
 
     def create_availability_rule(

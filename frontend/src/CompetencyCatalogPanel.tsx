@@ -6,8 +6,13 @@ import {
   CompetencyWrite,
   createCompetency,
   deactivateCompetency,
+  setCompetencyResourceClass,
   updateCompetency,
 } from "./api";
+import {
+  getResourceClassOptions,
+  ResourceClassOptionReadModel,
+} from "./resourceClassesApi";
 
 function messageFromError(reason: unknown) {
   if (reason instanceof ApiError) {
@@ -37,8 +42,21 @@ export default function CompetencyCatalogPanel({
   const [draft, setDraft] = useState<CompetencyWrite>(() => draftFrom(null));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [resourceClasses, setResourceClasses] = useState<ResourceClassOptionReadModel[]>([]);
 
   const selected = competencies.find((row) => row.id === selectedId) ?? null;
+
+  useEffect(() => {
+    const controller = new AbortController();
+    getResourceClassOptions(controller.signal)
+      .then(setResourceClasses)
+      .catch((reason: unknown) => {
+        if (!(reason instanceof DOMException && reason.name === "AbortError")) {
+          setError(messageFromError(reason));
+        }
+      });
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     if (creating) return;
@@ -82,6 +100,24 @@ export default function CompetencyCatalogPanel({
       } else if (selectedId) {
         await updateCompetency(selectedId, { ...draft, name });
       }
+      onChanged();
+    } catch (reason: unknown) {
+      setError(messageFromError(reason));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function changeResourceClass(value: string) {
+    if (!selected || saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await setCompetencyResourceClass(
+        selected.id,
+        value || null,
+        selected.resource_class_version,
+      );
       onChanged();
     } catch (reason: unknown) {
       setError(messageFromError(reason));
@@ -148,6 +184,31 @@ export default function CompetencyCatalogPanel({
               <span>Ordre</span>
               <input type="number" min="0" step="1" value={draft.sort_order} onChange={(event) => setDraft((current) => ({ ...current, sort_order: Math.max(Number(event.target.value) || 0, 0) }))} disabled={saving} />
             </label>
+            {!creating && selected && (
+              <label>
+                <span>Regroupement par classe</span>
+                <select
+                  value={selected.resource_class_code ?? ""}
+                  onChange={(event) => void changeResourceClass(event.target.value)}
+                  disabled={saving}
+                >
+                  <option value="">Sans classe</option>
+                  {resourceClasses.map((row) => (
+                    <option
+                      key={row.code}
+                      value={row.code}
+                      disabled={!row.active && row.code !== selected.resource_class_code}
+                    >
+                      {row.code} · {row.label}{row.active ? "" : " (inactive)"}
+                    </option>
+                  ))}
+                </select>
+                <small>
+                  Regroupement analytique seulement : ce choix ne change ni la classe réelle
+                  d’un technicien ni son admissibilité.
+                </small>
+              </label>
+            )}
             {!creating && selected && (
               <label className="checkbox-field">
                 <input type="checkbox" checked={draft.active} onChange={(event) => setDraft((current) => ({ ...current, active: event.target.checked }))} disabled={saving} />

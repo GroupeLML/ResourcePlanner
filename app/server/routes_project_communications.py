@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Callable
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, Field
 
 from ..application.communications import CommunicationBatchRecord
@@ -104,6 +104,22 @@ def build_project_communication_router(
         return service.create_project_drafts(
             batch_id=batch_id,
             actor_name=_actor(request),
+        )
+
+    @router.get("/project-batches/{batch_id}/draft-download")
+    def download_project_drafts(
+        batch_id: str,
+        service: ProjectCommunicationService = Depends(dependency),
+    ) -> Response:
+        artifact = service.project_draft_download(batch_id=batch_id)
+        return Response(
+            content=artifact.content,
+            media_type=artifact.media_type,
+            headers={
+                "Content-Disposition": f'attachment; filename="{artifact.filename}"',
+                "Cache-Control": "private, no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
         )
 
     @router.post("/project-batches/{batch_id}/send-smtp")

@@ -6,6 +6,7 @@ import {
   ProjectCommunicationDraft,
   ProjectCommunicationPreview,
   ProjectCommunicationReview,
+  downloadProjectCommunicationDrafts,
   getProjectCommunicationPreview,
   listProjectCommunicationBatches,
   prepareProjectCommunicationBatch,
@@ -31,6 +32,17 @@ function formatDateTime(value: string | null) {
 
 function kindLabel(kind: string) {
   return kind === "project_confirmation" ? "Confirmation par projet" : "Modification de planning";
+}
+
+function triggerBrowserDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 type DraftState = ProjectCommunicationReview & { source: ProjectCommunicationDraft };
@@ -108,6 +120,32 @@ export default function CommunicationsPage() {
     }
   }
 
+  async function downloadDraftCopies(batchId: string) {
+    const download = await downloadProjectCommunicationDrafts(batchId);
+    triggerBrowserDownload(download.blob, download.filename);
+    return download.filename;
+  }
+
+  async function retryDraftDownload(batch: CommunicationBatch) {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const filename = await downloadDraftCopies(batch.id);
+      setNotice(
+        `Copie des brouillons téléchargée (${filename}) sans recréer de brouillon M365.`,
+      );
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? `Téléchargement des brouillons impossible : ${reason.message}`
+          : "Téléchargement des brouillons impossible.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function batchAction(batch: CommunicationBatch, action: BatchAction) {
     if (action === "create-drafts") {
       const included = batch.messages.filter((message) => message.included).length;
@@ -134,11 +172,26 @@ export default function CommunicationsPage() {
     setNotice(null);
     try {
       const updated = await projectCommunicationBatchAction(batch.id, action);
-      setNotice(
-        action === "approve"
-          ? "Lot projet approuvé. Aucun message n’a été envoyé."
-          : action === "create-drafts"
-            ? `${updated.drafts_created_count} brouillon(s) M365 créé(s). Aucun courriel n’a été envoyé.`
+      if (action === "create-drafts") {
+        try {
+          const filename = await downloadDraftCopies(updated.id);
+          setNotice(
+            `${updated.drafts_created_count} brouillon(s) M365 créé(s). Copie téléchargée : ${filename}. Aucun courriel n’a été envoyé.`,
+          );
+        } catch (downloadReason) {
+          setNotice(
+            `${updated.drafts_created_count} brouillon(s) M365 créé(s). Aucun courriel n’a été envoyé.`,
+          );
+          setError(
+            downloadReason instanceof Error
+              ? `Brouillons M365 créés, mais le téléchargement a échoué : ${downloadReason.message}. Utilisez « Télécharger brouillons » pour réessayer sans les recréer.`
+              : "Brouillons M365 créés, mais le téléchargement a échoué. Utilisez « Télécharger brouillons » pour réessayer sans les recréer.",
+          );
+        }
+      } else {
+        setNotice(
+          action === "approve"
+            ? "Lot projet approuvé. Aucun message n’a été envoyé."
             : action === "send-smtp"
               ? (() => {
                   const deliveries = updated.messages
@@ -150,10 +203,11 @@ export default function CommunicationsPage() {
                     ? `Envoi SMTP complété : ${sent} message(s) envoyé(s). Le lot est communiqué.`
                     : `Envoi SMTP partiel : ${sent} envoyé(s), ${failed} en échec. Un retry ne renverra pas les messages déjà SENT.`;
                 })()
-            : action === "mark-communicated"
-              ? "Lot projet confirmé comme communiqué."
-              : "Lot projet annulé.",
-      );
+              : action === "mark-communicated"
+                ? "Lot projet confirmé comme communiqué."
+                : "Lot projet annulé.",
+        );
+      }
       await reloadBatches();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Action impossible.");
@@ -437,6 +491,16 @@ export default function CommunicationsPage() {
                         Créer brouillons M365
                       </button>
                     )}
+                    {batch.drafts_created_at && (
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={busy}
+                        onClick={() => void retryDraftDownload(batch)}
+                      >
+                        Télécharger brouillons
+                      </button>
+                    )}
                     {batch.status === "APPROVED" && (
                       <button
                         type="button"
@@ -464,9 +528,9 @@ export default function CommunicationsPage() {
         )}
 
         <p className="communications-help">
-          « Créer brouillons M365 » crée seulement des brouillons. « Envoyer par SMTP » transmet
-          réellement les messages après approbation et marque automatiquement le lot communiqué si
-          toutes les livraisons réussissent. Les échecs restent auditables et peuvent être retentés.
+          « Créer brouillons M365 » crée seulement des brouillons puis télécharge leur copie .eml
+          ou ZIP. « Télécharger brouillons » permet de reprendre seulement le téléchargement, sans
+          recréer de draft Graph. « Envoyer par SMTP » reste une action séparée et irréversible.
         </p>
       </section>
     </section>

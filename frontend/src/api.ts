@@ -264,6 +264,17 @@ export type CompetencyReadModel = {
   description: string | null;
   active: boolean;
   sort_order: number;
+  resource_class_code: string | null;
+  resource_class_label: string | null;
+  resource_class_active: boolean | null;
+  resource_class_version: number;
+};
+
+export type CompetencyResourceClassMutationResult = {
+  competency_id: string;
+  resource_class_code: string | null;
+  version: number;
+  action: string;
 };
 
 export type CompetencyWrite = {
@@ -462,6 +473,39 @@ export type MediumTermClassWeekReadModel = {
   diagnostics: string[];
 };
 
+export type MediumTermCompetencyWeekReadModel = {
+  competency_id: string;
+  competency_name: string;
+  competency_active: boolean;
+  resource_class_code: string | null;
+  resource_class_label: string | null;
+  resource_class_active: boolean | null;
+  requested_hours: number | null;
+  capacity_hours: number;
+  utilization: number | null;
+  state: "available" | "warning" | "overloaded" | "unavailable";
+  diagnostics: string[];
+  load_source: "CURRENT_WORKFORCE_DEMAND";
+  capacity_basis: "GROSS_AVAILABILITY";
+  non_additive: boolean;
+  qualifying_resource_count: number;
+};
+
+export type MediumTermCompetencyCombinationWeekReadModel = {
+  competency_ids: string[];
+  competency_names: string[];
+  required_resource_class_code: string | null;
+  requested_hours: number | null;
+  common_capacity_hours: number;
+  utilization: number | null;
+  state: "available" | "warning" | "overloaded" | "unavailable";
+  diagnostics: string[];
+  demand_line_count: number;
+  capacity_basis: "GROSS_AVAILABILITY";
+  non_additive: boolean;
+  advisory_only: boolean;
+};
+
 export type MediumTermWeekReadModel = {
   week_start: string;
   work_package_hours: number | null;
@@ -470,6 +514,9 @@ export type MediumTermWeekReadModel = {
   state: "available" | "warning" | "overloaded" | "unavailable";
   diagnostics: string[];
   classes: MediumTermClassWeekReadModel[];
+  competencies: MediumTermCompetencyWeekReadModel[];
+  competency_combinations: MediumTermCompetencyCombinationWeekReadModel[];
+  competency_diagnostics: string[];
 };
 
 export type MediumTermBudgetReadModel = {
@@ -496,6 +543,7 @@ export type MediumTermBudgetFilters = {
   taskCatalogItemId?: string;
   taskCode?: string;
   resourceClassCode?: string;
+  competencyResourceClassCode?: string;
   includeInactiveProjects?: boolean;
 };
 
@@ -550,6 +598,10 @@ export type ResourceWrite = {
 export type ResourceMutationResult = {
   resource_id: string;
   action: string;
+};
+
+export type PlanningResourceOrderReadModel = {
+  positions: Record<string, number>;
 };
 
 export type AvailabilityType = "Horaire standard" | "Vacances" | "Jour férié";
@@ -1557,6 +1609,9 @@ export function getMediumTermBudget(
   if (filters.resourceClassCode) {
     params.set("resource_class_code", filters.resourceClassCode);
   }
+  if (filters.competencyResourceClassCode) {
+    params.set("competency_resource_class_code", filters.competencyResourceClassCode);
+  }
   return getJson<MediumTermBudgetReadModel>(
     `/api/v1/medium-term/budget?${params.toString()}`,
     signal,
@@ -1970,6 +2025,21 @@ export function updateCompetency(competencyId: string, payload: Partial<Competen
   );
 }
 
+export function setCompetencyResourceClass(
+  competencyId: string,
+  resourceClassCode: string | null,
+  expectedVersion: number,
+) {
+  return sendJson<CompetencyResourceClassMutationResult>(
+    `/api/v1/competencies/${encodeURIComponent(competencyId)}/resource-class`,
+    "PATCH",
+    {
+      resource_class_code: resourceClassCode,
+      expected_version: expectedVersion,
+    },
+  );
+}
+
 export function deactivateCompetency(competencyId: string) {
   return postJson<CompetencyMutationResult>(
     `/api/v1/competencies/${encodeURIComponent(competencyId)}/deactivate`,
@@ -2095,6 +2165,10 @@ export function updateResource(resourceId: string, payload: ResourceWrite) {
     "PATCH",
     payload,
   );
+}
+
+export function getPlanningResourceOrder(signal?: AbortSignal) {
+  return getJson<PlanningResourceOrderReadModel>("/api/v1/planning/resource-order", signal);
 }
 
 export function reorderPlanningResource(

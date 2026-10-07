@@ -35,6 +35,7 @@ SOURCE_MISSING_TABLES = {
     "work_package_audit",
     "work_package_weekly_loads",
     "work_package_load_intervals",
+    "competency_resource_class_audit",
     "asset_type_approval_scope_mappings",
     "asset_approvers",
     "acumatica_project_task_sync_project_results",
@@ -44,6 +45,7 @@ SOURCE_MISSING_TABLES = {
     "task_catalog_preferred_resource_audit",
     "availability_rule_resource_classes",
     "planning_window_overrides",
+    "planning_resource_user_orders",
     "verification_scopes",
     "verification_requirements",
     "verification_requirement_revisions",
@@ -74,6 +76,7 @@ SOURCE_MISSING_COLUMNS = {
     "shifts": {"operational_responsible_override_contact_id"},
     "auth_sessions": {"auth_mode"},
     "communication_messages": {"to_recipients_json"},
+    "competencies": {"resource_class_code", "resource_class_version"},
     "work_packages": {
         "task_catalog_item_id",
         "version",

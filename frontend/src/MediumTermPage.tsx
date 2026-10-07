@@ -508,6 +508,7 @@ export default function MediumTermPage({
   const [projectFilter, setProjectFilter] = useState("");
   const [taskFilter, setTaskFilter] = useState("");
   const [resourceClassFilter, setResourceClassFilter] = useState("");
+  const [competencyResourceClassFilter, setCompetencyResourceClassFilter] = useState("");
   const [includeInactiveProjects, setIncludeInactiveProjects] = useState(false);
   const [budgetMode, setBudgetMode] = useState<BudgetMode>("initial");
   const [collapsedManagers, setCollapsedManagers] = useState<Set<string>>(() => new Set());
@@ -589,6 +590,7 @@ export default function MediumTermPage({
       {
         taskCode: taskFilter || undefined,
         resourceClassCode: resourceClassFilter || undefined,
+        competencyResourceClassCode: competencyResourceClassFilter || undefined,
         includeInactiveProjects,
       },
     )
@@ -616,6 +618,7 @@ export default function MediumTermPage({
     projectFilter,
     taskFilter,
     resourceClassFilter,
+    competencyResourceClassFilter,
     includeInactiveProjects,
     start,
     end,
@@ -638,6 +641,13 @@ export default function MediumTermPage({
       setResourceClassFilter("");
     }
   }, [projection, resourceClassFilter]);
+
+  useEffect(() => {
+    if (!projection || !competencyResourceClassFilter) return;
+    if (!projection.resource_classes.some((resourceClass) => resourceClass.code === competencyResourceClassFilter)) {
+      setCompetencyResourceClassFilter("");
+    }
+  }, [projection, competencyResourceClassFilter]);
 
   const weeks = useMemo(
     () => Array.from({ length: horizonWeeks }, (_, index) => addDays(horizonStart, index * 7)),
@@ -925,12 +935,26 @@ export default function MediumTermPage({
           </select>
         </label>
         <label>
-          <span>Classe de ressource</span>
+          <span>Classe de ressource · Classe métier de la charge</span>
           <select
             value={resourceClassFilter}
             onChange={(event) => setResourceClassFilter(event.target.value)}
           >
-            <option value="">Toutes les classes</option>
+            <option value="">Toutes les classes métier</option>
+            {resourceClassOptions.map((resourceClass) => (
+              <option value={resourceClass.code} key={resourceClass.code}>
+                {resourceClass.label} ({resourceClass.code}){resourceClass.active ? "" : " — inactive"}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>Classe de regroupement des compétences</span>
+          <select
+            value={competencyResourceClassFilter}
+            onChange={(event) => setCompetencyResourceClassFilter(event.target.value)}
+          >
+            <option value="">Toutes les classes de compétences</option>
             {resourceClassOptions.map((resourceClass) => (
               <option value={resourceClass.code} key={resourceClass.code}>
                 {resourceClass.label} ({resourceClass.code}){resourceClass.active ? "" : " — inactive"}

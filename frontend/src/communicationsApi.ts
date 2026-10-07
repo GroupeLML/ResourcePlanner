@@ -107,6 +107,11 @@ export type ProjectCommunicationReview = {
   body: string;
 };
 
+export type CommunicationDraftDownload = {
+  blob: Blob;
+  filename: string;
+};
+
 type ApiErrorPayload = { error?: { message?: string } };
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 
@@ -168,4 +173,39 @@ export function projectCommunicationBatchAction(
     `/api/v1/communications/project-batches/${encodeURIComponent(batchId)}/${action}`,
     { method: "POST" },
   );
+}
+
+export async function downloadProjectCommunicationDrafts(
+  batchId: string,
+): Promise<CommunicationDraftDownload> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/communications/project-batches/${encodeURIComponent(batchId)}/draft-download`,
+    {
+      headers: {
+        Accept: "message/rfc822, application/zip",
+        ...csrfHeaders(),
+      },
+      credentials: "include",
+    },
+  );
+  if (!response.ok) {
+    let payload: ApiErrorPayload | null = null;
+    try {
+      payload = (await response.json()) as ApiErrorPayload;
+    } catch {
+      // Stable fallback for non-JSON server/proxy errors.
+    }
+    throw new Error(payload?.error?.message || `Erreur HTTP ${response.status}`);
+  }
+
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const filenameMatch = /filename="?([^";]+)"?/i.exec(disposition);
+  const contentType = response.headers.get("Content-Type") ?? "";
+  const fallback = contentType.includes("message/rfc822")
+    ? `brouillon-m365-${batchId}.eml`
+    : `brouillons-m365-${batchId}.zip`;
+  return {
+    blob: await response.blob(),
+    filename: filenameMatch?.[1] || fallback,
+  };
 }

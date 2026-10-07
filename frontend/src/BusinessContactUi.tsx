@@ -2,6 +2,7 @@ import type {
   BusinessContactReadModel,
   ContactResolutionReadModel,
 } from "./api";
+import SearchableCombobox, { type ComboboxOption } from "./SearchableCombobox";
 
 export function contactLabel(
   contacts: BusinessContactReadModel[],
@@ -17,28 +18,56 @@ export function ContactSelect({
   contacts,
   value,
   onChange,
+  label,
   disabled = false,
   inheritLabel = "Hériter",
 }: {
   contacts: BusinessContactReadModel[];
   value: string | null;
   onChange: (value: string | null) => void;
+  label: string;
   disabled?: boolean;
   inheritLabel?: string;
 }) {
+  const inheritValue = "__resourceplanner_contact_inherit__";
+  const selectedContact = value
+    ? contacts.find((contact) => contact.id === value) ?? null
+    : null;
+  const options: ComboboxOption[] = [
+    { value: inheritValue, label: inheritLabel },
+    ...contacts
+      .filter((contact) => contact.active)
+      .map((contact) => ({
+        value: contact.id,
+        label: contact.display_name,
+        searchText: [contact.display_name, contact.email, contact.phone]
+          .filter(Boolean)
+          .join(" "),
+      })),
+  ];
+  const historicalOption: ComboboxOption | null = value && (!selectedContact || !selectedContact.active)
+    ? {
+        value,
+        label: selectedContact
+          ? `${selectedContact.display_name} · inactif`
+          : `Référence inconnue · ${value}`,
+        disabled: true,
+      }
+    : null;
+
   return (
-    <select
-      value={value ?? ""}
-      onChange={(event) => onChange(event.target.value || null)}
+    <SearchableCombobox
+      value={value ?? inheritValue}
+      options={options}
+      onChange={(nextValue) => {
+        onChange(!nextValue || nextValue === inheritValue ? null : nextValue);
+      }}
+      label={label}
       disabled={disabled}
-    >
-      <option value="">{inheritLabel}</option>
-      {contacts.map((contact) => (
-        <option key={contact.id} value={contact.id}>
-          {contact.display_name}{contact.active ? "" : " · inactif"}
-        </option>
-      ))}
-    </select>
+      placeholder={inheritLabel}
+      emptyLabel="Aucun contact correspondant"
+      selectedOption={historicalOption}
+    />
   );
 }
 

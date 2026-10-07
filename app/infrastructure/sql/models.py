@@ -210,8 +210,13 @@ class TaskCatalogProjectSyncState(TimestampMixin, Base):
 class Competency(TimestampMixin, Base):
     __tablename__ = "competencies"
     __table_args__ = (
+        CheckConstraint(
+            "resource_class_version >= 1",
+            name="resource_class_version_positive",
+        ),
         UniqueConstraint("name", name="uq_competencies_name"),
         Index("ix_competencies_active_order", "active", "sort_order"),
+        Index("ix_competencies_resource_class_code", "resource_class_code"),
     )
 
     id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True, default=new_id)
@@ -219,6 +224,42 @@ class Competency(TimestampMixin, Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=true(), index=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    resource_class_code: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("resource_class_configs.code"),
+        nullable=True,
+    )
+    resource_class_version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=text("1"),
+    )
+
+
+class CompetencyResourceClassAudit(TimestampMixin, Base):
+    __tablename__ = "competency_resource_class_audit"
+    __table_args__ = (
+        CheckConstraint(
+            "resulting_version >= 1",
+            name="resulting_version_positive",
+        ),
+        Index(
+            "ix_competency_resource_class_audit_competency_created",
+            "competency_id",
+            "created_at",
+        ),
+        Index("ix_competency_resource_class_audit_actor", "actor_user_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True, default=new_id)
+    competency_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH), ForeignKey("competencies.id"), nullable=False
+    )
+    actor_user_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    old_resource_class_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    new_resource_class_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    resulting_version: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
 class Resource(TimestampMixin, Base):
@@ -249,6 +290,33 @@ class Resource(TimestampMixin, Base):
     erp_branch_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     erp_contact_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+
+
+class PlanningResourceUserOrder(Base):
+    __tablename__ = "planning_resource_user_orders"
+    __table_args__ = (
+        CheckConstraint(
+            "position >= 0",
+            name="planning_resource_user_order_position_non_negative",
+        ),
+        Index(
+            "ix_planning_resource_user_orders_user_position",
+            "user_id",
+            "position",
+        ),
+    )
+
+    user_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("app_users.id"),
+        primary_key=True,
+    )
+    resource_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("resources.id"),
+        primary_key=True,
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
 class ResourceCompetency(Base):

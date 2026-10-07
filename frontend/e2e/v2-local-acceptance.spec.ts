@@ -676,6 +676,23 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await expect(page.locator(".shift-card").filter({ hasText: "Tentative" }).first()).toBeVisible();
     await expect(page.locator(".shift-card").filter({ hasText: "Confirmée" }).first()).toBeVisible();
 
+    const demandShift = page.locator(".shift-card").filter({ hasText: demandNumber }).first();
+    await demandShift.locator(".shift-card-main").click();
+    const shiftDialog = page.getByRole("dialog", { name: "Modifier le quart" });
+    await shiftDialog.getByRole("button", { name: `demande ${demandNumber}` }).click();
+
+    const planningDemandDialog = page.getByRole("dialog", {
+      name: `Détail de la demande ${demandNumber}`,
+    });
+    await expect(planningDemandDialog).toBeVisible();
+    await planningDemandDialog.getByRole("button", { name: "Ouvrir dans Demandes" }).click();
+
+    await expect(planningDemandDialog).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Demandes", level: 1 })).toBeVisible();
+    await expect(
+      page.locator(`.demand-detail-context[data-demand-number="${demandNumber}"]`),
+    ).toBeVisible();
+
     await closeContext(context);
   });
 
@@ -833,8 +850,18 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await batch.getByRole("button", { name: "Approuver" }).click();
     await expect(page.locator(".communications-notice")).toContainText("Lot projet approuvé");
     page.once("dialog", (dialog) => dialog.accept());
+    const automaticDownload = page.waitForEvent("download");
     await page.locator(".batch-row").first().getByRole("button", { name: "Créer brouillons M365" }).click();
+    const createdDraftDownload = await automaticDownload;
+    expect(createdDraftDownload.suggestedFilename()).toMatch(/\.eml$/);
     await expect(page.locator(".communications-notice")).toContainText("brouillon(s) M365 créé(s)");
+    await expect(page.locator(".communications-notice")).toContainText("Copie téléchargée");
+
+    const retryDownload = page.waitForEvent("download");
+    await page.locator(".batch-row").first().getByRole("button", { name: "Télécharger brouillons" }).click();
+    const retriedDraftDownload = await retryDownload;
+    expect(retriedDraftDownload.suggestedFilename()).toBe(createdDraftDownload.suggestedFilename());
+    await expect(page.locator(".communications-notice")).toContainText("sans recréer de brouillon M365");
 
     page.once("dialog", (dialog) => dialog.accept());
     await page.locator(".batch-row").first().getByRole("button", { name: "Envoyer par SMTP" }).click();

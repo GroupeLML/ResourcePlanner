@@ -51,6 +51,18 @@ DEMAND_OUTSIDE_UNAVAILABLE = "UNAVAILABLE"
 DEMAND_HOURS_DIAGNOSTIC_UNAVAILABLE = "DEMAND_HOURS_UNAVAILABLE"
 DEMAND_HOURS_DIAGNOSTIC_ALTERNATIVE_UNRESOLVED = "DEMAND_ALTERNATIVE_UNRESOLVED"
 
+COMPETENCY_LOAD_SOURCE_CURRENT_WORKFORCE_DEMAND = "CURRENT_WORKFORCE_DEMAND"
+COMPETENCY_CAPACITY_BASIS_GROSS_AVAILABILITY = "GROSS_AVAILABILITY"
+COMPETENCY_DIAGNOSTIC_REQUESTED_HOURS_UNAVAILABLE = "COMPETENCY_REQUESTED_HOURS_UNAVAILABLE"
+COMPETENCY_DIAGNOSTIC_ALTERNATIVE_UNRESOLVED = "COMPETENCY_ALTERNATIVE_UNRESOLVED"
+COMPETENCY_DIAGNOSTIC_REFERENCE_UNRESOLVED = "COMPETENCY_REFERENCE_UNRESOLVED"
+COMPETENCY_DIAGNOSTIC_GROUP_CLASS_INACTIVE = "COMPETENCY_GROUP_CLASS_INACTIVE"
+COMPETENCY_DIAGNOSTIC_GROUP_CLASS_UNRESOLVED = "COMPETENCY_GROUP_CLASS_UNRESOLVED"
+COMPETENCY_DIAGNOSTIC_CAPACITY_ZERO = "COMPETENCY_CAPACITY_ZERO"
+COMPETENCY_DIAGNOSTIC_CAPACITY_EXCEEDED = "COMPETENCY_CAPACITY_EXCEEDED"
+COMPETENCY_DIAGNOSTIC_COMMON_QUALIFICATION_ZERO = "COMPETENCY_COMMON_QUALIFICATION_ZERO"
+COMPETENCY_DIAGNOSTIC_COMMON_QUALIFICATION_EXCEEDED = "COMPETENCY_COMMON_QUALIFICATION_EXCEEDED"
+
 CANCELLED_WORK_PACKAGE_STATUSES = frozenset(
     {
         "annulé",
@@ -427,6 +439,45 @@ class MediumTermClassWeekReadModel:
 
 
 @dataclass(frozen=True, slots=True)
+class MediumTermCompetencyWeekReadModel:
+    """Non-additive analytical capacity for one competency in one week."""
+
+    competency_id: str
+    competency_name: str
+    competency_active: bool
+    resource_class_code: str | None
+    resource_class_label: str | None
+    resource_class_active: bool | None
+    requested_hours: Decimal | None
+    capacity_hours: Decimal
+    utilization: Decimal | None
+    state: str
+    diagnostics: tuple[str, ...] = ()
+    load_source: str = COMPETENCY_LOAD_SOURCE_CURRENT_WORKFORCE_DEMAND
+    capacity_basis: str = COMPETENCY_CAPACITY_BASIS_GROSS_AVAILABILITY
+    non_additive: bool = True
+    qualifying_resource_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class MediumTermCompetencyCombinationWeekReadModel:
+    """Advisory common-qualification diagnostic for an AND competency requirement."""
+
+    competency_ids: tuple[str, ...]
+    competency_names: tuple[str, ...]
+    required_resource_class_code: str | None
+    requested_hours: Decimal | None
+    common_capacity_hours: Decimal
+    utilization: Decimal | None
+    state: str
+    diagnostics: tuple[str, ...] = ()
+    demand_line_count: int = 0
+    capacity_basis: str = COMPETENCY_CAPACITY_BASIS_GROSS_AVAILABILITY
+    non_additive: bool = True
+    advisory_only: bool = True
+
+
+@dataclass(frozen=True, slots=True)
 class MediumTermWeekReadModel:
     week_start: date
     work_package_hours: Decimal | None
@@ -435,6 +486,9 @@ class MediumTermWeekReadModel:
     state: str = "unavailable"
     diagnostics: tuple[str, ...] = ()
     classes: tuple[MediumTermClassWeekReadModel, ...] = ()
+    competencies: tuple[MediumTermCompetencyWeekReadModel, ...] = ()
+    competency_combinations: tuple[MediumTermCompetencyCombinationWeekReadModel, ...] = ()
+    competency_diagnostics: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

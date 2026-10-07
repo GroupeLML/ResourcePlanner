@@ -14,6 +14,7 @@ import {
   ShiftReadModel,
   getPlanningActions,
   getPlanningCapacityGrid,
+  getPlanningResourceOrder,
   getPlanningSnapshot,
   getResources,
   moveAllocation,
@@ -89,8 +90,13 @@ type ManualResourceOrderControls = {
   onMove: (direction: "up" | "down") => void;
 };
 
-function compareManualResources(left: ResourceReadModel, right: ResourceReadModel) {
-  const manualOrder = left.sort_order - right.sort_order;
+function compareManualResources(
+  left: ResourceReadModel,
+  right: ResourceReadModel,
+  positions?: ReadonlyMap<string, number>,
+) {
+  const manualOrder = (positions?.get(left.id) ?? left.sort_order)
+    - (positions?.get(right.id) ?? right.sort_order);
   if (manualOrder !== 0) return manualOrder;
   const nameOrder = left.name.localeCompare(right.name, "fr-CA", { sensitivity: "base" });
   if (nameOrder !== 0) return nameOrder;
@@ -103,9 +109,10 @@ function compareResourceGroupEntries(
   left: ResourceGroupEntry,
   right: ResourceGroupEntry,
   mode: ResourceSortMode,
+  manualPositions: ReadonlyMap<string, number>,
 ) {
   if (mode === "manual") {
-    return compareManualResources(left.resource, right.resource);
+    return compareManualResources(left.resource, right.resource, manualPositions);
   }
 
   if (mode === "availability") {
@@ -635,7 +642,13 @@ function ResourceRow({
   );
 }
 
-export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => void }) {
+export default function PlanningPage({
+  onOpenDemands,
+  onOpenDemand,
+}: {
+  onOpenDemands?: () => void;
+  onOpenDemand?: (demandNumber: string) => void;
+}) {
   const { can, principal } = useAuth();
   const { scope, loading: scopeLoading, error: scopeError } = useViewScope();
   const canManagePlanning = can("manage_planning");
@@ -652,6 +665,7 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
   const [capacityGrid, setCapacityGrid] = useState<PlanningCapacityGridReadModel | null>(null);
   const [actions, setActions] = useState<PlanningActionReadModel[]>([]);
   const [catalogResources, setCatalogResources] = useState<ResourceReadModel[]>([]);
+  const [manualResourceOrder, setManualResourceOrder] = useState<Map<string, number>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -738,18 +752,21 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
     }
     setActions([]);
     setCapacityGrid(null);
+    setManualResourceOrder(new Map());
     Promise.all([
       getPlanningSnapshot(start, end, controller.signal, scope),
       getPlanningActions(start, end, controller.signal, scope),
       getPlanningCapacityGrid(start, end, controller.signal, scope),
       getResources(true, controller.signal),
+      getPlanningResourceOrder(controller.signal),
     ])
-      .then(([planning, planningActions, capacity, resourceRows]) => {
+      .then(([planning, planningActions, capacity, resourceRows, personalOrder]) => {
         snapshotQueryKeyRef.current = snapshotQueryKey;
         setSnapshot(planning);
         setActions(planningActions);
         setCapacityGrid(capacity);
         setCatalogResources(resourceRows);
+        setManualResourceOrder(new Map(Object.entries(personalOrder.positions)));
       })
       .catch((reason: unknown) => {
         if (reason instanceof DOMException && reason.name === "AbortError") return;
@@ -763,7 +780,7 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [start, end, refreshKey, scope, scopeLoading, scopeError, snapshotQueryKey]);
+  }, [start, end, refreshKey, scope, scopeLoading, scopeError, snapshotQueryKey, preferenceOwnerId]);
 
   const projectOptions = useMemo(() => {
     if (!snapshot) return [];
@@ -785,8 +802,10 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
 
   const resourceOptions = useMemo(() => {
     if (!snapshot) return [];
-    return [...snapshot.resources].sort(compareManualResources);
-  }, [snapshot]);
+    return [...snapshot.resources].sort(
+      (left, right) => compareManualResources(left, right, manualResourceOrder),
+    );
+  }, [snapshot, manualResourceOrder]);
 
   const manualOrderAvailability = useMemo(() => {
     const groups = new Map<string, ResourceReadModel[]>();
@@ -799,7 +818,9 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
 
     const result = new Map<string, { canMoveUp: boolean; canMoveDown: boolean }>();
     groups.forEach((rows) => {
-      const ordered = [...rows].sort(compareManualResources);
+      const ordered = [...rows].sort(
+        (left, right) => compareManualResources(left, right, manualResourceOrder),
+      );
       ordered.forEach((resource, index) => {
         result.set(resource.id, {
           canMoveUp: index > 0,
@@ -808,7 +829,7 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
       });
     });
     return result;
-  }, [catalogResources]);
+  }, [catalogResources, manualResourceOrder]);
 
   const capacityByResource = useMemo(
     () => new Map((capacityGrid?.resources ?? []).map((row) => [row.resource_id, row])),
@@ -877,7 +898,12 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
     return [...groups.entries()]
       .map(([className, rows]) => [
         className,
-        [...rows].sort((left, right) => compareResourceGroupEntries(left, right, resourceSortMode)),
+        [...rows].sort((left, right) => compareResourceGroupEntries(
+          left,
+          right,
+          resourceSortMode,
+          manualResourceOrder,
+        )),
       ] as [string, ResourceGroupEntry[]])
       .sort((left, right) => left[0].localeCompare(right[0], "fr-CA"));
   }, [
@@ -892,6 +918,7 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
     confirmation,
     query,
     resourceSortMode,
+    manualResourceOrder,
   ]);
 
   const visibleShiftHours = shiftsPassingGlobalFilters
@@ -931,7 +958,7 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
     resource: ResourceReadModel,
     direction: "up" | "down",
   ) {
-    if (!canManagePlanning || resourceSortMode !== "manual" || resourceReorderBusy || dropBusy) return;
+    if (resourceSortMode !== "manual" || resourceReorderBusy || dropBusy) return;
     setResourceReorderBusy(resource.id);
     setDragFeedback(null);
     try {
@@ -1498,7 +1525,7 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
                         } : undefined}
                         onOpenDemand={setDetailDemandNumber}
                         dragEnabled={canManagePlanning && !dropBusy}
-                        manualOrder={resourceSortMode === "manual" && canManagePlanning ? {
+                        manualOrder={resourceSortMode === "manual" ? {
                           canMoveUp: manualOrderAvailability.get(resource.id)?.canMoveUp ?? false,
                           canMoveDown: manualOrderAvailability.get(resource.id)?.canMoveDown ?? false,
                           busy: Boolean(resourceReorderBusy || dropBusy),
@@ -1666,13 +1693,27 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
                 <strong>Détail de la demande</strong>
                 <span>{detailDemandNumber}</span>
               </div>
-              <button type="button" onClick={() => {
-                if (detailContextDirty && !window.confirm("Des périodes non enregistrées seront perdues. Fermer le détail?")) return;
-                setDetailDemandNumber(null);
-                setDetailContextDirty(false);
-              }}>
-                Fermer
-              </button>
+              <div className="demand-detail-modal-header-actions">
+                {onOpenDemand && (
+                  <button type="button" onClick={() => {
+                    const demandNumber = detailDemandNumber;
+                    if (!demandNumber) return;
+                    if (detailContextDirty && !window.confirm("Des périodes non enregistrées seront perdues. Fermer le détail?")) return;
+                    setDetailDemandNumber(null);
+                    setDetailContextDirty(false);
+                    onOpenDemand(demandNumber);
+                  }}>
+                    Ouvrir dans Demandes
+                  </button>
+                )}
+                <button type="button" onClick={() => {
+                  if (detailContextDirty && !window.confirm("Des périodes non enregistrées seront perdues. Fermer le détail?")) return;
+                  setDetailDemandNumber(null);
+                  setDetailContextDirty(false);
+                }}>
+                  Fermer
+                </button>
+              </div>
             </header>
             <div className="demand-detail-modal-body">
               <DemandWorkflowPage

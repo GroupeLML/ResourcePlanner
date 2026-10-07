@@ -2,8 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
+from email.message import EmailMessage
+from email.policy import SMTP
 import hashlib
+from io import BytesIO
+import re
 from typing import Protocol, Sequence
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from ..domain.project_communication import (
     ProjectCommunicationAssignment,
@@ -29,6 +34,7 @@ from .communications import (
     STATUS_PREPARED,
     CommunicationBatchRecord,
     CommunicationDeliveryRecord,
+    CommunicationMessageRecord,
     CommunicationTransportMessage,
     CommunicationTransportPort,
 )
@@ -62,6 +68,46 @@ class ProjectCommunicationWorkflowPreview:
     diagnostics: tuple[ProjectMessageDiagnostic, ...]
     has_communicated_baseline: bool
     baseline_fingerprint: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectCommunicationDraftDownload:
+    filename: str
+    media_type: str
+    content: bytes
+
+
+_DOWNLOAD_FILENAME_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _download_filename_fragment(value: str) -> str:
+    cleaned = _DOWNLOAD_FILENAME_UNSAFE.sub("-", str(value or "").strip()).strip("-._")
+    return (cleaned[:80] or "message")
+
+
+def _project_message_download_filename(message: CommunicationMessageRecord) -> str:
+    identity = message.project_id or message.message_key or message.id
+    prefix = "projet" if message.project_id else "message"
+    return f"{prefix}-{_download_filename_fragment(identity)}.eml"
+
+
+def _project_message_eml(message: CommunicationMessageRecord) -> bytes:
+    recipient = str(message.recipient_email or "").strip()
+    to_emails = tuple(message.to_emails) or ((recipient,) if recipient else ())
+    if not to_emails:
+        raise ApplicationValidationError(
+            "Le message projet ne possède aucun destinataire To téléchargeable.",
+            code="project_communication_download_recipient_missing",
+            context={"message_id": message.id},
+        )
+
+    mime = EmailMessage(policy=SMTP)
+    mime["To"] = ", ".join(to_emails)
+    if message.cc_emails:
+        mime["Cc"] = ", ".join(message.cc_emails)
+    mime["Subject"] = message.subject
+    mime.set_content(message.body)
+    return mime.as_bytes(policy=SMTP)
 
 
 class ProjectCommunicationRepositoryPort(Protocol):
@@ -509,6 +555,63 @@ class ProjectCommunicationService:
             provider=result.provider,
             created_count=result.created_count,
             actor_name=actor_name,
+        )
+
+    def project_draft_download(
+        self,
+        *,
+        batch_id: str,
+    ) -> ProjectCommunicationDraftDownload:
+        row = self._project_batch(batch_id)
+        if row.drafts_created_at is None:
+            raise ApplicationConflictError(
+                "Les brouillons M365 doivent être créés avant de télécharger leur copie.",
+                code="project_communication_drafts_not_created",
+            )
+
+        messages = tuple(message for message in row.messages if message.included)
+        if not messages:
+            raise ApplicationValidationError(
+                "Aucun message projet inclus n'est disponible au téléchargement.",
+                code="project_communication_no_included_messages",
+            )
+
+        try:
+            files = tuple(
+                (
+                    _project_message_download_filename(message),
+                    _project_message_eml(message),
+                )
+                for message in messages
+            )
+        except ApplicationValidationError:
+            raise
+        except (TypeError, ValueError, UnicodeError) as exc:
+            raise ApplicationUnavailableError(
+                "Les brouillons M365 existent, mais leur copie téléchargeable n'a pas pu être générée.",
+                code="project_communication_draft_download_failed",
+                context={"batch_id": row.id},
+            ) from exc
+
+        if len(files) == 1:
+            filename, content = files[0]
+            return ProjectCommunicationDraftDownload(
+                filename=filename,
+                media_type="message/rfc822",
+                content=content,
+            )
+
+        archive = BytesIO()
+        with ZipFile(archive, mode="w", compression=ZIP_DEFLATED) as bundle:
+            for filename, content in files:
+                bundle.writestr(filename, content)
+        return ProjectCommunicationDraftDownload(
+            filename=(
+                "brouillons-m365-"
+                f"{row.week_start.isoformat()}-{_download_filename_fragment(row.id)[:12]}.zip"
+            ),
+            media_type="application/zip",
+            content=archive.getvalue(),
         )
 
     def send_project_smtp(

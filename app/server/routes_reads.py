@@ -165,12 +165,7 @@ def _planning_segment_or_404(
     repository: PlanningVisibilityRepositoryPort | None,
     queries: PlannerQueryPort,
     segment_id: str,
-) -> tuple[SegmentReadModel, PlanningVisibilityResolution]:
-    _service, visibility = _planning_visibility(
-        request,
-        scope,
-        repository,
-    )
+) -> tuple[SegmentReadModel, PlanningVisibilityResolution | None]:
     row = queries.get_segment(segment_id)
     if row is None:
         raise ApplicationNotFoundError(
@@ -178,6 +173,14 @@ def _planning_segment_or_404(
             code="segment_not_found",
             context={"segment_id": segment_id},
         )
+    if scope is None:
+        return row, None
+
+    _service, visibility = _planning_visibility(
+        request,
+        scope,
+        repository,
+    )
     if visibility.project_ids is not None:
         visible = queries.list_segments(
             include_cancelled=True,
@@ -192,7 +195,6 @@ def _planning_segment_or_404(
                 context={"segment_id": segment_id},
             )
     return row, visibility
-
 
 def _planning_shift_or_404(
     request: Request,
@@ -321,6 +323,7 @@ def build_read_router(
         task_catalog_item_id: str | None = Query(default=None, min_length=1),
         task_code: str | None = Query(default=None, min_length=1),
         resource_class_code: str | None = Query(default=None, min_length=1),
+        competency_resource_class_code: str | None = Query(default=None, min_length=1),
         include_inactive_projects: bool = Query(default=False),
         start: date | None = Query(default=None),
         end: date | None = Query(default=None),
@@ -340,6 +343,7 @@ def build_read_router(
             task_catalog_item_id=task_catalog_item_id,
             task_code=task_code,
             resource_class_code=resource_class_code,
+            competency_resource_class_code=competency_resource_class_code,
             include_inactive_projects=include_inactive_projects,
             project_ids=project_ids,
             start=start,
@@ -683,6 +687,14 @@ def build_read_router(
         context_repository: Any = Depends(context_dependency),
     ) -> list[SegmentReadModel]:
         _window(start, end)
+        if scope is None:
+            return list(
+                queries.list_segments(
+                    start=start,
+                    end=end,
+                    include_cancelled=include_cancelled,
+                )
+            )
         _service, visibility = _planning_visibility(
             request,
             scope,

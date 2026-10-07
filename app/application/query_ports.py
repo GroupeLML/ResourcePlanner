@@ -53,6 +53,7 @@ class PlannerQueryPort(Protocol):
         task_catalog_item_id: str | None = None,
         task_code: str | None = None,
         resource_class_code: str | None = None,
+        competency_resource_class_code: str | None = None,
         include_inactive_projects: bool = False,
         project_ids: Sequence[str] | None = None,
         start: date | None = None,

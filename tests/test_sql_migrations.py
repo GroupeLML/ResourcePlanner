@@ -21,7 +21,7 @@ MIGRATIONS = ROOT / "migrations"
 VERSIONS = MIGRATIONS / "versions"
 BASELINE_FILE = VERSIONS / "0001_v2_production_baseline.py"
 BASELINE_REVISION = "v2_production_baseline"
-HEAD_REVISION = "0017_task_preferred_resource"
+HEAD_REVISION = "0019_planning_resource_user_order"
 
 
 def alembic_config(database_path: Path) -> Config:
@@ -86,6 +86,8 @@ class SqlMigrationTests(unittest.TestCase):
                 "0015_verification_executions.py",
                 "0016_task_erp_budget_freshness.py",
                 "0017_task_preferred_resource.py",
+                "0018_competency_resource_class.py",
+                "0019_planning_resource_user_order.py",
             ],
         )
 
@@ -104,6 +106,8 @@ class SqlMigrationTests(unittest.TestCase):
             [revision.revision for revision in script.walk_revisions()],
             [
                 HEAD_REVISION,
+                "0018_competency_resource_class",
+                "0017_task_preferred_resource",
                 "0016_task_erp_budget_freshness",
                 "0015_verification_executions",
                 "0014_verification_persistence",
@@ -908,6 +912,46 @@ class SqlMigrationTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_competency_resource_class_migration_preserves_existing_rows_unclassified(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_path = Path(directory) / "competency-class.db"
+            config = alembic_config(database_path)
+            command.upgrade(config, "0017_task_preferred_resource")
+
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "INSERT INTO competencies "
+                        "(id, name, active, sort_order) "
+                        "VALUES ('C-HIST', 'Historique', 1, 0)"
+                    )
+                )
+            engine.dispose()
+
+            command.upgrade(config, "head")
+
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            try:
+                with engine.connect() as connection:
+                    row = connection.execute(
+                        text(
+                            "SELECT resource_class_code, resource_class_version "
+                            "FROM competencies WHERE id = 'C-HIST'"
+                        )
+                    ).one()
+                    self.assertIsNone(row.resource_class_code)
+                    self.assertEqual(row.resource_class_version, 1)
+                    count = connection.execute(
+                        text(
+                            "SELECT COUNT(*) "
+                            "FROM competency_resource_class_audit"
+                        )
+                    ).scalar_one()
+                    self.assertEqual(count, 0)
+            finally:
+                engine.dispose()
+
     def test_head_matches_metadata_columns_constraints_and_indexes(self) -> None:
         with TemporaryDirectory() as directory:
             database_path = Path(directory) / "baseline-parity.db"
@@ -1051,6 +1095,9 @@ class SqlMigrationTests(unittest.TestCase):
             "VERIFICATION_VERSION",
             "SHIFT_AD_HOC",
             "UX_ASSET_REQUIREMENTS_SHIFT_AD_HOC",
+            "CREATE TABLE COMPETENCY_RESOURCE_CLASS_AUDIT",
+            "RESOURCE_CLASS_VERSION",
+            "FK_COMPETENCIES_RESOURCE_CLASS_CODE_RESOURCE_CLASS_CONFIGS",
         ):
             self.assertIn(token, ddl)
         self.assertIn(BASELINE_REVISION.upper(), ddl)

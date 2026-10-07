@@ -226,6 +226,7 @@ export default function OperationalResponsibilityControl({
           )}
           <ContactSelect
             contacts={contacts}
+            label="Override responsable opérationnel"
             value={overrideContactId}
             onChange={(value) => void change(value)}
             disabled={!canManage || saving}

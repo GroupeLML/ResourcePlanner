@@ -336,6 +336,7 @@ def _reshape_source_as_0048(path: Path) -> None:
             DROP TABLE IF EXISTS work_package_load_intervals;
             DROP TABLE IF EXISTS availability_rule_resource_classes;
             DROP TABLE IF EXISTS planning_window_overrides;
+            DROP TABLE IF EXISTS planning_resource_user_orders;
             DROP TABLE IF EXISTS verification_change_history;
             DROP TABLE IF EXISTS verification_retest_requests;
             DROP TABLE IF EXISTS story_verification_decision_requirements;
@@ -344,6 +345,43 @@ def _reshape_source_as_0048(path: Path) -> None:
             DROP TABLE IF EXISTS verification_requirements;
             DROP TABLE IF EXISTS verification_scopes;
 
+            DROP TABLE IF EXISTS competency_resource_class_audit;
+
+            CREATE TABLE competencies_0048 (
+                id VARCHAR(36) NOT NULL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL UNIQUE,
+                description TEXT,
+                active BOOLEAN DEFAULT 1 NOT NULL,
+                sort_order INTEGER DEFAULT 0 NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+            );
+            INSERT INTO competencies_0048 (
+                id,
+                name,
+                description,
+                active,
+                sort_order,
+                created_at,
+                updated_at
+            )
+            SELECT
+                id,
+                name,
+                description,
+                active,
+                sort_order,
+                created_at,
+                updated_at
+            FROM competencies;
+            DROP TABLE competencies;
+            ALTER TABLE competencies_0048 RENAME TO competencies;
+            CREATE INDEX ix_competencies_active
+                ON competencies (active);
+            CREATE INDEX ix_competencies_active_order
+                ON competencies (active, sort_order);
+            CREATE INDEX ix_competencies_name
+                ON competencies (name);
 
             DROP TABLE IF EXISTS acumatica_project_task_sync_project_results;
             DROP TABLE IF EXISTS acumatica_project_task_sync_runs;
@@ -656,6 +694,14 @@ class SqliteV2CutoverTests(unittest.TestCase):
             )
             self.assertIn(
                 ("missing_columns_with_defaults", "work_packages"),
+                adaptations,
+            )
+            self.assertIn(
+                ("missing_table_as_empty", "competency_resource_class_audit"),
+                adaptations,
+            )
+            self.assertIn(
+                ("missing_columns_with_defaults", "competencies"),
                 adaptations,
             )
 

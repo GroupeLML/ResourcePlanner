@@ -47,6 +47,7 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
             "work_package_audit",
             "work_package_weekly_loads",
             "work_package_load_intervals",
+            "competency_resource_class_audit",
             "asset_type_approval_scope_mappings",
             "asset_approvers",
             "acumatica_project_task_sync_runs",
@@ -55,6 +56,7 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
             "project_manager_audit",
             "availability_rule_resource_classes",
             "planning_window_overrides",
+            "planning_resource_user_orders",
             "verification_scopes",
             "verification_requirements",
             "verification_requirement_revisions",
@@ -70,6 +72,10 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
         "missing_columns": {
             "auth_sessions": {
                 "auth_mode": None,
+            },
+            "competencies": {
+                "resource_class_code": None,
+                "resource_class_version": 1,
             },
             "projects": {
                 "co_managers_version": 1,
@@ -171,6 +177,9 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
     "communication_snapshot_lines": _keep("Snapshot métier associé aux communications."),
     "communication_deliveries": _keep("Historique de livraison des communications."),
     "competencies": _keep("Catalogue local de compétences."),
+    "competency_resource_class_audit": _keep(
+        "Audit durable des rattachements compétence → classe et de leur version CAS."
+    ),
     "delivery_plans": _keep("Plans Delivery réellement utilisés."),
     "delivery_items": _keep("Epics/Stories Delivery."),
     "delivery_change_history": _keep("Historique Delivery durable."),
@@ -187,6 +196,9 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
     "planning_change_history": _keep("Audit métier Planning V2."),
     "planning_mutation_state": _rebuild(
         "Singleton technique de version globale créé par la baseline."
+    ),
+    "planning_resource_user_orders": _keep(
+        "Préférences durables d'ordre Manuel propres à chaque utilisateur RP."
     ),
     "planning_window_overrides": _keep(
         "Dérogations opérationnelles durables de fenêtre Planning liées aux autorisations approuvées."
