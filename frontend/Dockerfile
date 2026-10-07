@@ -7,17 +7,17 @@ RUN npm install --no-audit --no-fund
 
 COPY frontend/ ./
 
-ARG VITE_RESOURCEPLANNER_ENVIRONMENT=PROD
-ENV VITE_RESOURCEPLANNER_ENVIRONMENT=${VITE_RESOURCEPLANNER_ENVIRONMENT}
-
 RUN npm run build
 
 FROM nginx:1.28-alpine AS runtime
 
 ENV NGINX_ENVSUBST_FILTER=RESOURCEPLANNER_FRAME_ANCESTORS \
-    RESOURCEPLANNER_FRAME_ANCESTORS="'self'"
+    RESOURCEPLANNER_FRAME_ANCESTORS="'self'" \
+    RESOURCEPLANNER_ENVIRONMENT=PROD
 
 COPY frontend/default.conf.template /etc/nginx/templates/default.conf.template
+COPY frontend/20-resourceplanner-runtime-config.sh /docker-entrypoint.d/20-resourceplanner-runtime-config.sh
+RUN chmod +x /docker-entrypoint.d/20-resourceplanner-runtime-config.sh
 COPY --from=build /src/frontend/dist /usr/share/nginx/html
 
 EXPOSE 8080
