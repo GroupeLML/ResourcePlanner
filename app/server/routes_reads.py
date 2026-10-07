@@ -126,12 +126,7 @@ def _planning_demand_or_404(
     repository: PlanningVisibilityRepositoryPort | None,
     queries: PlannerQueryPort,
     number: str,
-) -> tuple[DemandReadModel, PlanningVisibilityResolution]:
-    _service, visibility = _planning_visibility(
-        request,
-        scope,
-        repository,
-    )
+) -> tuple[DemandReadModel, PlanningVisibilityResolution | None]:
     row = queries.get_demand(number)
     if row is None:
         raise ApplicationNotFoundError(
@@ -139,6 +134,18 @@ def _planning_demand_or_404(
             code="demand_not_found",
             context={"demand_number": number},
         )
+    # The /demands surface is shared with the Demands workspace. 618A only
+    # tightens Planning reads: an explicit scope means the caller is asking for
+    # Planning-authorized publication, while an omitted scope preserves the
+    # existing generic demand read contract.
+    if scope is None:
+        return row, None
+
+    _service, visibility = _planning_visibility(
+        request,
+        scope,
+        repository,
+    )
     if visibility.project_ids is not None:
         visible = queries.list_demands(
             project_ids=visibility.project_ids,
@@ -151,7 +158,6 @@ def _planning_demand_or_404(
                 context={"demand_number": number},
             )
     return row, visibility
-
 
 def _planning_segment_or_404(
     request: Request,
@@ -380,18 +386,16 @@ def build_read_router(
     @router.get("/demands")
     def list_demands(
         request: Request,
-        scope: ViewScope | None = Query(default=None),
+        scope: ViewScope = Query(default=SCOPE_GLOBAL),
         queries: PlannerQueryPort = Depends(query_dependency),
         context_repository: Any = Depends(context_dependency),
         approvals: ApprovalProgressService | None = Depends(approval_dependency),
     ) -> list[DemandReadModel]:
-        _service, visibility = _planning_visibility(
+        project_ids, demand_ids = _demand_scope_context(
             request,
             scope,
             context_repository,
         )
-        project_ids = visibility.project_ids
-        demand_ids = visibility.demand_ids
         combined_reader = getattr(
             queries,
             "list_demands_with_cancellation_materialization",
