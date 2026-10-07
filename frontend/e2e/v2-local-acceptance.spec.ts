@@ -90,6 +90,12 @@ function labelled(scope: Locator, label: string, control: "select" | "input" | "
   return scope.locator("label").filter({ hasText: label }).first().locator(control);
 }
 
+function periodSelect(scope: Locator, label: string) {
+  return scope.locator("label").filter({
+    has: scope.locator("span", { hasText: label }),
+  }).first().locator("select");
+}
+
 function combobox(scope: Locator, label: string) {
   return scope.getByRole("combobox", { name: label, exact: true }).first();
 }
@@ -583,7 +589,7 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await labelled(cumulative, "Mode de confirmation", "select").selectOption("EXPLICIT");
     await labelled(cumulative, "Confirmation propre", "select").selectOption("Tentative");
     await labelled(cumulative, "Mode de ressource", "select").selectOption("EXPLICIT");
-    const aliceResource = labelled(cumulative, "Ressource spécifique", "select");
+    const aliceResource = periodSelect(cumulative, "Ressource spécifique");
     await aliceResource.selectOption("R-ALICE");
     await expect(aliceResource).toHaveValue("R-ALICE");
 
@@ -600,7 +606,7 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
       await labelled(card, "Mode de confirmation", "select").selectOption("EXPLICIT");
       await labelled(card, "Confirmation propre", "select").selectOption(confirmation);
       await labelled(card, "Mode de ressource", "select").selectOption("EXPLICIT");
-      const bobResource = labelled(card, "Ressource spécifique", "select");
+      const bobResource = periodSelect(card, "Ressource spécifique");
       await bobResource.selectOption("R-BOB");
       await expect(bobResource).toHaveValue("R-BOB");
     }
@@ -616,7 +622,7 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await labelled(linked, "Heures totales", "input").fill("1");
     await labelled(linked, "Jours actifs souhaités", "input").fill("1");
     await labelled(linked, "Mode de ressource", "select").selectOption("SAME_AS_PERIOD");
-    await labelled(linked, "Même ressource que", "select").selectOption(rootPeriodId!);
+    await periodSelect(linked, "Même ressource que").selectOption(rootPeriodId!);
 
     await page.getByRole("button", { name: "Enregistrer les périodes" }).click();
     await expect(page.locator(".demand-notice").filter({ hasText: "Périodes enregistrées." })).toHaveText("Périodes enregistrées.");
@@ -2176,7 +2182,7 @@ test("materialized demand cancellation is requested, reviewed, rejected or accep
   await labelled(materializedPeriod, "Mode de confirmation", "select").selectOption("EXPLICIT");
   await labelled(materializedPeriod, "Confirmation propre", "select").selectOption("Confirmée");
   await labelled(materializedPeriod, "Mode de ressource", "select").selectOption("EXPLICIT");
-  const materializedResource = labelled(materializedPeriod, "Ressource spécifique", "select");
+  const materializedResource = periodSelect(materializedPeriod, "Ressource spécifique");
   await materializedResource.selectOption("R-ALICE");
   await expect(materializedResource).toHaveValue("R-ALICE");
   await requester.page.getByRole("button", { name: "Enregistrer les périodes" }).click();
