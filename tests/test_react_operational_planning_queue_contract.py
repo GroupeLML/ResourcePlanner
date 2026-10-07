@@ -63,7 +63,7 @@ class ReactOperationalPlanningQueueContractTests(unittest.TestCase):
         )
 
         self.assertIn("function openDemands()", app)
-        self.assertIn("<PlanningPage onOpenDemands={openDemands} />", app)
+        self.assertIn("<PlanningPage onOpenDemands={openDemands} onOpenDemand={openDemand} />", app)
         self.assertIn("Voir la demande", panel)
 
 
