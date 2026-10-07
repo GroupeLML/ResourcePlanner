@@ -29,7 +29,7 @@ from .demand_period_models import (
     WorkforceRequestPeriodSelection,
 )
 from .medium_term_capacity_query import (
-    build_workforce_weekly_capacity_by_resource,
+    build_workforce_weekly_capacity_details,
     medium_term_capacity_state,
 )
 from .models import (
@@ -46,6 +46,9 @@ from .resource_class_models import ResourceClassConfig
 class MediumTermCompetencyProjection:
     window_start: date | None
     window_end: date | None
+    class_capacity_by_week: Mapping[
+        date, tuple[Decimal, dict[str, Decimal]]
+    ]
     skills_by_week: Mapping[date, tuple[MediumTermCompetencyWeekReadModel, ...]]
     combinations_by_week: Mapping[
         date, tuple[MediumTermCompetencyCombinationWeekReadModel, ...]
@@ -472,6 +475,7 @@ def build_medium_term_competency_projection(
         return MediumTermCompetencyProjection(
             window_start=start,
             window_end=end,
+            class_capacity_by_week={},
             skills_by_week={},
             combinations_by_week={},
             diagnostics_by_week={},
@@ -495,6 +499,7 @@ def build_medium_term_competency_projection(
         return MediumTermCompetencyProjection(
             window_start=effective_start,
             window_end=effective_end,
+            class_capacity_by_week={},
             skills_by_week={},
             combinations_by_week={},
             diagnostics_by_week={},
@@ -535,21 +540,27 @@ def build_medium_term_competency_projection(
         ).all()
     )
     resource_ids_by_competency: defaultdict[str, set[str]] = defaultdict(set)
-    competencies_by_resource: defaultdict[str, set[str]] = defaultdict(set)
     for resource_id, competency_id in relations:
         resource_ids_by_competency[competency_id].add(resource_id)
-        competencies_by_resource[resource_id].add(competency_id)
 
     resources = {
         row.id: row
         for row in session.scalars(select(Resource)).all()
     }
-    capacity_by_week_resource = build_workforce_weekly_capacity_by_resource(
+    capacity_details = build_workforce_weekly_capacity_details(
         queries,
         session,
         start=effective_start,
         end=effective_end,
     )
+    class_capacity_by_week = {
+        week_start: (total, by_class)
+        for week_start, (total, by_class, _by_resource) in capacity_details.items()
+    }
+    capacity_by_week_resource = {
+        week_start: by_resource
+        for week_start, (_total, _by_class, by_resource) in capacity_details.items()
+    }
 
     first_week = effective_start - timedelta(days=effective_start.weekday())
     last_week = effective_end - timedelta(days=effective_end.weekday())
@@ -763,6 +774,7 @@ def build_medium_term_competency_projection(
     return MediumTermCompetencyProjection(
         window_start=effective_start,
         window_end=effective_end,
+        class_capacity_by_week=class_capacity_by_week,
         skills_by_week=skills_by_week,
         combinations_by_week=combinations_by_week,
         diagnostics_by_week=diagnostics_by_week,
