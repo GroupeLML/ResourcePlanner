@@ -1,3 +1,4 @@
+import { resourceDisplayName } from "./resourceLabels";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import { createClientId } from "./clientId";
@@ -250,7 +251,7 @@ export default function ManualAllocationEditor({
                 <option value="">Sélectionner…</option>
                 {sortedResources.map((resource) => (
                   <option value={resource.id} key={resource.id}>
-                    {resource.name}{resource.resource_class ? ` — ${resource.resource_class}` : ""}
+                    {resourceDisplayName(resource.name)}{resource.resource_class ? ` — ${resource.resource_class}` : ""}
                   </option>
                 ))}
               </select>
@@ -285,7 +286,7 @@ export default function ManualAllocationEditor({
             <div className="confirmation-help">
               <strong>{selectedSegment.project_number || "Projet"} · {selectedSegment.segment_id}</strong>
               <span>
-                Cible automatique du reliquat : {selectedSegment.automatic_target_resource_name || "aucune"}.
+                Cible automatique du reliquat : {resourceDisplayName(selectedSegment.automatic_target_resource_name) || "aucune"}.
                 La ressource choisie ici s’applique uniquement au quart manuel.
               </span>
               <span>

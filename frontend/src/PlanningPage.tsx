@@ -1,3 +1,4 @@
+import { resourceDisplayName } from "./resourceLabels";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { createClientId } from "./clientId";
@@ -116,7 +117,7 @@ function compareResourceGroupEntries(
     }
   }
 
-  const nameOrder = left.resource.name.localeCompare(right.resource.name, "fr-CA");
+  const nameOrder = resourceDisplayName(left.resource.name).localeCompare(resourceDisplayName(right.resource.name), "fr-CA");
   if (nameOrder !== 0) return nameOrder;
   return left.resource.id.localeCompare(right.resource.id, "fr-CA");
 }
@@ -365,7 +366,7 @@ function ShiftCard({
           className="shift-asset-action"
           draggable={false}
           onClick={() => onAssignAsset(shift)}
-          aria-label={`Assigner un actif à ${shift.resource_name} pour le quart ${shift.allocation_id}`}
+          aria-label={`Assigner un actif à ${resourceDisplayName(shift.resource_name)} pour le quart ${shift.allocation_id}`}
         >
           Assigner un actif
         </button>
@@ -402,7 +403,7 @@ function PendingLoadCard({
         <span>Demande {load.demand_number}</span>
         <span>{dateLabel}</span>
         {load.required_competencies && <span>{load.required_competencies}</span>}
-        {load.proposed_resource && <span>Proposé : {load.proposed_resource}</span>}
+        {load.proposed_resource && <span>Proposé : {resourceDisplayName(load.proposed_resource)}</span>}
       </div>
       {replacement && (
         <div className="pending-delta">
@@ -439,7 +440,7 @@ function PendingGhostCard({
       className={`pending-ghost-card ${tentative ? "is-tentative" : ""}`}
       onClick={() => onOpenDemand?.(load.demand_number)}
       disabled={!onOpenDemand}
-      title={`Demande ${load.demand_number} · ressource proposée ${load.proposed_resource || "—"} · aucune charge ferme comptabilisée`}
+      title={`Demande ${load.demand_number} · ressource proposée ${resourceDisplayName(load.proposed_resource) || "—"} · aucune charge ferme comptabilisée`}
     >
       <strong>{load.project_number || "Projet"}</strong>
       <span>{load.project_name || load.demand_number}</span>
@@ -506,7 +507,7 @@ function ResourceRow({
           onDropSegment(payload, resource);
         }}
       >
-        <strong>{resource.name}</strong>
+        <strong>{resourceDisplayName(resource.name)}</strong>
         <span>{resource.competencies || resource.resource_class || "Ressource"}</span>
         {capacity ? (
           <>
@@ -520,12 +521,12 @@ function ResourceRow({
           <small>{hours(total)} h affichées</small>
         )}
         {manualOrder && (
-          <div className="resource-reorder-controls" role="group" aria-label={`Ordre manuel de ${resource.name}`}>
+          <div className="resource-reorder-controls" role="group" aria-label={`Ordre manuel de ${resourceDisplayName(resource.name)}`}>
             <button
               type="button"
               onClick={() => manualOrder.onMove("up")}
               disabled={manualOrder.busy || !manualOrder.canMoveUp}
-              aria-label={`Monter ${resource.name}`}
+              aria-label={`Monter ${resourceDisplayName(resource.name)}`}
               title="Monter cette ressource"
             >
               ↑
@@ -534,7 +535,7 @@ function ResourceRow({
               type="button"
               onClick={() => manualOrder.onMove("down")}
               disabled={manualOrder.busy || !manualOrder.canMoveDown}
-              aria-label={`Descendre ${resource.name}`}
+              aria-label={`Descendre ${resourceDisplayName(resource.name)}`}
               title="Descendre cette ressource"
             >
               ↓
@@ -567,7 +568,7 @@ function ResourceRow({
             key={iso}
             data-resource-id={resource.id}
             data-day={iso}
-            title={dragEnabled ? `Déposer un quart sur ${resource.name}, ${iso}` : undefined}
+            title={dragEnabled ? `Déposer un quart sur ${resourceDisplayName(resource.name)}, ${iso}` : undefined}
             onDragOver={(event) => {
               if (!dragEnabled || !hasShiftDrag(event.dataTransfer)) return;
               event.preventDefault();
@@ -589,8 +590,8 @@ function ResourceRow({
                 type="button"
                 className="cell-quick-shift-button"
                 onClick={() => onCreateQuickShift(resource, iso)}
-                aria-label={`Créer un Quick Shift pour ${resource.name} le ${iso}`}
-                title={`Créer un Quick Shift pour ${resource.name} le ${iso}`}
+                aria-label={`Créer un Quick Shift pour ${resourceDisplayName(resource.name)} le ${iso}`}
+                title={`Créer un Quick Shift pour ${resourceDisplayName(resource.name)} le ${iso}`}
               >
                 +
               </button>
@@ -939,13 +940,13 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
         setDragFeedback({
           tone: "info",
           message: direction === "up"
-            ? `${resource.name} est déjà en première position de sa classe.`
-            : `${resource.name} est déjà en dernière position de sa classe.`,
+            ? `${resourceDisplayName(resource.name)} est déjà en première position de sa classe.`
+            : `${resourceDisplayName(resource.name)} est déjà en dernière position de sa classe.`,
         });
       } else {
         setDragFeedback({
           tone: "success",
-          message: `Ordre manuel mis à jour pour ${resource.name}.`,
+          message: `Ordre manuel mis à jour pour ${resourceDisplayName(resource.name)}.`,
         });
         setRefreshKey((value) => value + 1);
       }
@@ -1071,7 +1072,7 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
         await moveAllocation(current.payload.allocation_id, movePayload);
         setDragFeedback({
           tone: "success",
-          message: `Quart déplacé vers ${current.targetResource.name} le ${current.targetDay} et verrouillé comme décision manuelle.`,
+          message: `Quart déplacé vers ${resourceDisplayName(current.targetResource.name)} le ${current.targetDay} et verrouillé comme décision manuelle.`,
         });
       } else if (actionCode === "SPLIT") {
         if (!idempotencyKey || request.transferHours === null) {
@@ -1084,14 +1085,14 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
         );
         setDragFeedback({
           tone: "success",
-          message: `Quart partagé vers ${current.targetResource.name} le ${current.targetDay}.`,
+          message: `Quart partagé vers ${resourceDisplayName(current.targetResource.name)} le ${current.targetDay}.`,
         });
       } else if (actionCode === "DUPLICATE") {
         if (!idempotencyKey) throw new Error("La duplication ne possède pas de clé d’idempotence.");
         await duplicateAllocationAtomic(current.payload.allocation_id, common, idempotencyKey);
         setDragFeedback({
           tone: "success",
-          message: `Quart dupliqué vers ${current.targetResource.name} le ${current.targetDay}.`,
+          message: `Quart dupliqué vers ${resourceDisplayName(current.targetResource.name)} le ${current.targetDay}.`,
         });
       } else if (actionCode === "EXTEND_AND_MOVE") {
         if (!idempotencyKey) throw new Error("L’extension ne possède pas de clé d’idempotence.");
@@ -1102,7 +1103,7 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
         );
         setDragFeedback({
           tone: "success",
-          message: `Période étendue et quart déplacé vers ${current.targetResource.name} le ${current.targetDay}.`,
+          message: `Période étendue et quart déplacé vers ${resourceDisplayName(current.targetResource.name)} le ${current.targetDay}.`,
         });
       } else if (actionCode === "OVERRIDE_WINDOW_AND_MOVE") {
         if (!idempotencyKey || !current.evaluation.approval_revision_id || !request.reason.trim()) {
@@ -1124,7 +1125,7 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
         );
         setDragFeedback({
           tone: "success",
-          message: `Dérogation opérationnelle enregistrée et quart déplacé vers ${current.targetResource.name} le ${current.targetDay}. La demande approuvée reste inchangée.`,
+          message: `Dérogation opérationnelle enregistrée et quart déplacé vers ${resourceDisplayName(current.targetResource.name)} le ${current.targetDay}. La demande approuvée reste inchangée.`,
         });
       } else if (actionCode === "PROPOSE_WINDOW_EXTENSION") {
         if (
@@ -1206,7 +1207,7 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
       await assignSegment(payload.segment_id, targetResource.id);
       setDragFeedback({
         tone: "success",
-        message: `Cible automatique de ${payload.segment_id} définie à ${targetResource.name}; le reliquat a été recalculé.`,
+        message: `Cible automatique de ${payload.segment_id} définie à ${resourceDisplayName(targetResource.name)}; le reliquat a été recalculé.`,
       });
       setRefreshKey((value) => value + 1);
     } catch (reason: unknown) {
@@ -1322,7 +1323,7 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
           <span>Ressource</span>
           <select value={resourceFilter} onChange={(event) => setResourceFilter(event.target.value)}>
             <option value="all">Toutes les ressources</option>
-            {resourceOptions.map((resource) => <option value={resource.id} key={resource.id}>{resource.name}</option>)}
+            {resourceOptions.map((resource) => <option value={resource.id} key={resource.id}>{resourceDisplayName(resource.name)}</option>)}
           </select>
         </label>
         <label>
@@ -1373,7 +1374,7 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
                     <strong>{segment.project_number || "Projet"} — {segment.description || diagnostic.segment_id}</strong>
                     <span>
                       {diagnostic.automatic_target_resource_name
-                        ? `Cible automatique : ${diagnostic.automatic_target_resource_name}`
+                        ? `Cible automatique : ${resourceDisplayName(diagnostic.automatic_target_resource_name)}`
                         : "Aucune cible automatique"} · {hours(diagnostic.allocated_hours)}/{hours(diagnostic.planned_hours)} h placées
                     </span>
                   </div>
@@ -1683,7 +1684,7 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
           setQuickShiftSeed(null);
           setDragFeedback({
             tone: "success",
-            message: `Quick Shift créé pour ${resourceName} le ${day}.`,
+            message: `Quick Shift créé pour ${resourceDisplayName(resourceName)} le ${day}.`,
           });
           setRefreshKey((value) => value + 1);
         }}

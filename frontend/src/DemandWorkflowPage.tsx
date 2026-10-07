@@ -1,3 +1,4 @@
+import { resourceDisplayName } from "./resourceLabels";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { createClientId } from "./clientId";
@@ -254,7 +255,7 @@ function deltaSide(
 ): string {
   if (!day || !resource || hours <= 0) return "—";
   const suffix = outside ? " · hors horaire" : "";
-  return `${day} · ${resource} · ${hours} h${allocationType ? ` · ${allocationType}` : ""}${suffix}`;
+  return `${day} · ${resourceDisplayName(resource)} · ${hours} h${allocationType ? ` · ${allocationType}` : ""}${suffix}`;
 }
 
 function envelopeDecisionLabel(decision: string | null): string {
@@ -1160,7 +1161,7 @@ export default function DemandWorkflowPage({
                               <span>
                                 {requirement.covered_hours} h affectées · {requirement.locked_hours} h verrouillées
                                 {requirement.mobilized_resources.length > 0
-                                  ? ` · ${requirement.mobilized_resources.map((resource) => resource.resource_name).join(", ")}`
+                                  ? ` · ${requirement.mobilized_resources.map((resource) => resourceDisplayName(resource.resource_name)).join(", ")}`
                                   : ""}
                               </span>
                             </div>

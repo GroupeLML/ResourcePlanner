@@ -1,3 +1,4 @@
+import { resourceDisplayName } from "./resourceLabels";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { createClientId } from "./clientId";
@@ -88,7 +89,7 @@ export default function DirectAssetReservationForm({
   const resourceOptions = useMemo(
     () => activeResources.map((row) => ({
       value: row.id,
-      label: row.name,
+      label: resourceDisplayName(row.name),
       searchText: `${row.name} ${row.resource_class ?? ""} ${row.external_id ?? ""}`,
     })),
     [activeResources],

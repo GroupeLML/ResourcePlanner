@@ -1,3 +1,4 @@
+import { resourceDisplayName } from "./resourceLabels";
 import { useEffect, useMemo, useState } from "react";
 
 import { createClientId } from "./clientId";
@@ -195,7 +196,7 @@ function PeriodFields({
           <select value={period.proposed_resource ?? ""} disabled={disabled} onChange={(event) => change("proposed_resource", event.target.value || null)}>
             <option value="">Aucune</option>
             {resources.map((resource) => (
-              <option value={resource.name} key={resource.id}>{resource.name}{resource.resource_class ? ` — ${resource.resource_class}` : ""}</option>
+              <option value={resource.name} key={resource.id}>{resourceDisplayName(resource.name)}{resource.resource_class ? ` — ${resource.resource_class}` : ""}</option>
             ))}
           </select>
           <small>Si plusieurs ressources sont demandées, cette préférence initialise seulement le premier besoin.</small>

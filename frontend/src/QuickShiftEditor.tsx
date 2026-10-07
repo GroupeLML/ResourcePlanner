@@ -1,3 +1,4 @@
+import { resourceDisplayName } from "./resourceLabels";
 import { FormEvent, MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { createClientId } from "./clientId";
@@ -246,7 +247,7 @@ export default function QuickShiftEditor({
                 value={resourceId || null}
                 options={resources.map((row) => ({
                   value: row.id,
-                  label: `${row.name}${row.resource_class ? ` — ${row.resource_class}` : ""}`,
+                  label: `${resourceDisplayName(row.name)}${row.resource_class ? ` — ${row.resource_class}` : ""}`,
                   searchText: [row.name, row.resource_class, row.competencies].filter(Boolean).join(" "),
                 }))}
                 onChange={(value) => setResourceId(value ?? "")}
@@ -265,7 +266,7 @@ export default function QuickShiftEditor({
             <label className="span-2"><span>Note</span><textarea value={note} onChange={(event) => setNote(event.target.value)} disabled={saving} rows={2} placeholder="Note opérationnelle facultative…" /></label>
           </div>
 
-          {selectedResource && <div className="confirmation-help"><strong>{selectedResource.name}</strong><span>{[selectedResource.resource_class, selectedResource.competencies].filter(Boolean).join(" · ") || "Ressource active"}</span></div>}
+          {selectedResource && <div className="confirmation-help"><strong>{resourceDisplayName(selectedResource.name)}</strong><span>{[selectedResource.resource_class, selectedResource.competencies].filter(Boolean).join(" · ") || "Ressource active"}</span></div>}
 
           <div className="dialog-actions">
             <button className="secondary-button" type="button" onClick={onClose} disabled={saving}>Annuler</button>

@@ -1,3 +1,4 @@
+import { resourceDisplayName } from "./resourceLabels";
 import { useMemo, useState } from "react";
 
 import {
@@ -82,8 +83,8 @@ function capacityDiagnostic(candidate: ResourceRecommendationReadModel) {
 
 function preferredContextDiagnostic(candidate: ResourceRecommendationReadModel) {
   const identity = candidate.preferred_resource_name
-    || candidate.preferred_resource_id
-    || "La ressource attitrée";
+    ? resourceDisplayName(candidate.preferred_resource_name)
+    : candidate.preferred_resource_id || "La ressource attitrée";
   switch (candidate.preferred_resource_status) {
     case "NONE":
       return null;
@@ -391,7 +392,7 @@ export default function PlanningActionPanel({
                   >
                     <div className="recommendation-card-heading">
                       <div>
-                        <strong>{candidate.resource_name}</strong>
+                        <strong>{resourceDisplayName(candidate.resource_name)}</strong>
                         <span>{candidate.resource_class || "Non classé"}</span>
                         <div className="recommendation-badges">
                           {candidate.recommended && (

@@ -1,3 +1,4 @@
+import { resourceDisplayName } from "./resourceLabels";
 import { useEffect, useMemo, useState } from "react";
 
 import {
@@ -73,7 +74,7 @@ function SegmentCard({ segment, onOpen }: { segment: SegmentReadModel; onOpen: (
   const plannedDays = Number(planning.planned_active_days ?? 0);
   const activeDayWarning = activeDayTarget != null && planning.active_day_target_met === false;
   const mobilized = segment.mobilized_resources
-    .map((resource) => `${resource.resource_name} ${hours(resource.allocated_hours)} h`)
+    .map((resource) => `${resourceDisplayName(resource.resource_name)} ${hours(resource.allocated_hours)} h`)
     .join(" · ");
   return (
     <button type="button" className={`segment-card ${cancelled ? "segment-card-cancelled" : ""} ${excess > 0 ? "segment-card-overallocated" : ""}`} onClick={onOpen}>
@@ -109,7 +110,7 @@ function SegmentCard({ segment, onOpen }: { segment: SegmentReadModel; onOpen: (
       <div className="segment-card-footer">
         <span>
           {segment.automatic_target_resource_name
-            ? `Cible automatique : ${segment.automatic_target_resource_name}`
+            ? `Cible automatique : ${resourceDisplayName(segment.automatic_target_resource_name)}`
             : "Aucune cible automatique"}
         </span>
         <span>{segment.confirmation || "Confirmation héritée"}</span>

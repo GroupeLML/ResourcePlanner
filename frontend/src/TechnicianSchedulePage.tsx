@@ -1,3 +1,4 @@
+import { resourceDisplayName } from "./resourceLabels";
 import { useEffect, useMemo, useState } from "react";
 
 import { ApiError, ShiftReadModel } from "./api";
@@ -172,7 +173,7 @@ export default function TechnicianSchedulePage() {
           <div className="my-schedule-summary">
             <article>
               <span>Ressource</span>
-              <strong>{schedule.resource.name}</strong>
+              <strong>{resourceDisplayName(schedule.resource.name)}</strong>
               <small>{schedule.resource.resource_class || schedule.resource.competencies || "Profil planifiable"}</small>
             </article>
             <article>
