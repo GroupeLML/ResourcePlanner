@@ -437,6 +437,7 @@ class SqlAssetPlanningQuery:
         start: date,
         end: date,
         project_ids: Sequence[str] | None = None,
+        demand_ids: Sequence[str] | None = None,
         context_resource_ids: Sequence[str] = (),
     ) -> AssetPlanningWindowReadModel:
         type_rows = tuple(
@@ -453,14 +454,23 @@ class SqlAssetPlanningQuery:
             AssetRequirement.start_date <= end,
             AssetRequirement.end_date >= start,
         )
-        if project_ids is not None:
-            identifiers = tuple(_text(value) for value in project_ids if _text(value))
+        if project_ids is not None or demand_ids is not None:
+            identifiers = tuple(
+                _text(value) for value in (project_ids or ()) if _text(value)
+            )
+            demand_identifiers = tuple(
+                _text(value) for value in (demand_ids or ()) if _text(value)
+            )
             context_identifiers = tuple(
                 _text(value) for value in context_resource_ids if _text(value)
             )
             scope_predicates = []
             if identifiers:
                 scope_predicates.append(AssetRequirement.project_id.in_(identifiers))
+            if demand_identifiers:
+                scope_predicates.append(
+                    AssetRequirement.workforce_request_id.in_(demand_identifiers)
+                )
             if context_identifiers:
                 scope_predicates.append(
                     (
