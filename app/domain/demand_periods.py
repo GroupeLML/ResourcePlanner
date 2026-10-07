@@ -154,7 +154,7 @@ def resolve_period_authority(
             raise ValueError("SAME_AS_PERIOD requiert un identifiant logique de période cible.")
         effective_resource = None
         resource_provenance = PERIOD_PROVENANCE_SAME_AS
-        same_as_state = "UNRESOLVED"
+        same_as_state = "ACTIVE"
 
     return PeriodAuthorityResolution(
         resource_count=effective_count,
