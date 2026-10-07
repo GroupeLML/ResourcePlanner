@@ -46,11 +46,10 @@ test("575E relie navigation REQUEST et trois contextes de réservation directe",
 
   try {
     await page.route("**/api/v1/projects?**", async (route) => {
-      const response = await route.fetch();
-      const body = await response.json() as Array<Record<string, unknown>>;
       await route.fulfill({
-        response,
-        json: [
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
           {
             id: "P-575E",
             number: "P-575E",
@@ -58,8 +57,7 @@ test("575E relie navigation REQUEST et trois contextes de réservation directe",
             client: "Client 575E",
             status: "Actif",
           },
-          ...body.filter((row) => row.id !== "P-575E"),
-        ],
+        ]),
       });
     });
 

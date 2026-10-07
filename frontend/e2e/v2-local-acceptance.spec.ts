@@ -850,8 +850,18 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await batch.getByRole("button", { name: "Approuver" }).click();
     await expect(page.locator(".communications-notice")).toContainText("Lot projet approuvé");
     page.once("dialog", (dialog) => dialog.accept());
+    const automaticDownload = page.waitForEvent("download");
     await page.locator(".batch-row").first().getByRole("button", { name: "Créer brouillons M365" }).click();
+    const createdDraftDownload = await automaticDownload;
+    expect(createdDraftDownload.suggestedFilename()).toMatch(/\.eml$/);
     await expect(page.locator(".communications-notice")).toContainText("brouillon(s) M365 créé(s)");
+    await expect(page.locator(".communications-notice")).toContainText("Copie téléchargée");
+
+    const retryDownload = page.waitForEvent("download");
+    await page.locator(".batch-row").first().getByRole("button", { name: "Télécharger brouillons" }).click();
+    const retriedDraftDownload = await retryDownload;
+    expect(retriedDraftDownload.suggestedFilename()).toBe(createdDraftDownload.suggestedFilename());
+    await expect(page.locator(".communications-notice")).toContainText("sans recréer de brouillon M365");
 
     page.once("dialog", (dialog) => dialog.accept());
     await page.locator(".batch-row").first().getByRole("button", { name: "Envoyer par SMTP" }).click();
