@@ -560,12 +560,14 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         start: date,
         end: date,
         project_ids: Sequence[str] | None = None,
+        demand_ids: Sequence[str] | None = None,
         context_resource_ids: Sequence[str] = (),
     ) -> AssetPlanningWindowReadModel:
         return SqlAssetPlanningQuery(self._session).planning_window(
             start=start,
             end=end,
             project_ids=project_ids,
+            demand_ids=demand_ids,
             context_resource_ids=context_resource_ids,
         )
 
@@ -2382,6 +2384,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             start=start,
             end=end,
             project_ids=project_ids,
+            demand_ids=demand_ids,
             context_resource_ids=include_resource_ids,
         )
         return PlanningSnapshotReadModel(
