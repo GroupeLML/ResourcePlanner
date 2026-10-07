@@ -577,10 +577,16 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await labelled(cumulative, "Début", "input").fill(d1);
     await labelled(cumulative, "Fin", "input").fill(d3);
     await labelled(cumulative, "Heures totales", "input").fill("12");
-    await labelled(cumulative, "Ressources simultanées", "input").fill("1");
+    await expect(cumulative.getByText("Quantité effective", { exact: true })).toBeVisible();
+    await expect(cumulative.getByText("Ressources simultanées", { exact: true })).toHaveCount(0);
     await labelled(cumulative, "Jours actifs souhaités", "input").fill("3");
-    await labelled(cumulative, "Confirmation", "select").selectOption("Tentative");
-    await labelled(cumulative, "Ressource proposée", "select").selectOption("Alice");
+    await labelled(cumulative, "Mode de confirmation", "select").selectOption("EXPLICIT");
+    await labelled(cumulative, "Confirmation propre", "select").selectOption("Tentative");
+    await labelled(cumulative, "Mode de ressource", "select").selectOption("EXPLICIT");
+    const aliceResource = labelled(cumulative, "Ressource spécifique", "select");
+    const aliceId = await aliceResource.locator("option").filter({ hasText: "Alice" }).first().getAttribute("value");
+    expect(aliceId).toBeTruthy();
+    await aliceResource.selectOption(aliceId!);
 
     const alternatives = page.locator(".alternative-option");
     await expect(alternatives).toHaveCount(2);
@@ -591,12 +597,48 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
       await labelled(card, "Début", "input").fill(day);
       await labelled(card, "Fin", "input").fill(day);
       await labelled(card, "Heures totales", "input").fill("8");
-      await labelled(card, "Ressources simultanées", "input").fill("1");
       await labelled(card, "Jours actifs souhaités", "input").fill("1");
-      await labelled(card, "Confirmation", "select").selectOption(confirmation);
-      await labelled(card, "Ressource proposée", "select").selectOption("Bob");
+      await labelled(card, "Mode de confirmation", "select").selectOption("EXPLICIT");
+      await labelled(card, "Confirmation propre", "select").selectOption(confirmation);
+      await labelled(card, "Mode de ressource", "select").selectOption("EXPLICIT");
+      const bobResource = labelled(card, "Ressource spécifique", "select");
+      const bobId = await bobResource.locator("option").filter({ hasText: "Bob" }).first().getAttribute("value");
+      expect(bobId).toBeTruthy();
+      await bobResource.selectOption(bobId!);
     }
 
+    const rootPeriodId = (await cumulative.locator(".period-card-heading span").textContent())?.trim();
+    expect(rootPeriodId).toBeTruthy();
+    await page.getByRole("button", { name: /Période cumulative/ }).click();
+    const linked = page.locator(".period-card.cumulative").nth(1);
+    const linkedPeriodId = (await linked.locator(".period-card-heading span").textContent())?.trim();
+    expect(linkedPeriodId).toBeTruthy();
+    await labelled(linked, "Début", "input").fill(d6);
+    await labelled(linked, "Fin", "input").fill(d6);
+    await labelled(linked, "Heures totales", "input").fill("1");
+    await labelled(linked, "Jours actifs souhaités", "input").fill("1");
+    await labelled(linked, "Mode de ressource", "select").selectOption("SAME_AS_PERIOD");
+    await labelled(linked, "Même ressource que", "select").selectOption(rootPeriodId!);
+
+    await page.getByRole("button", { name: "Enregistrer les périodes" }).click();
+    await expect(page.locator(".demand-notice").filter({ hasText: "Périodes enregistrées." })).toHaveText("Périodes enregistrées.");
+    await expect(linked).toContainText(`Même personne obligatoire que ${rootPeriodId}`);
+    const persistedPeriods = await context.request.get(
+      `/api/v1/demands/${encodeURIComponent(demandNumber)}/periods`,
+    );
+    expect(persistedPeriods.ok()).toBeTruthy();
+    const persistedPeriodRows = await persistedPeriods.json() as Array<{
+      period_id: string;
+      proposed_resource_mode: string | null;
+      same_as_period_id: string | null;
+      resource_count_provenance: string | null;
+    }>;
+    const persistedLinked = persistedPeriodRows.find((row) => row.period_id === linkedPeriodId);
+    expect(persistedLinked?.proposed_resource_mode).toBe("SAME_AS_PERIOD");
+    expect(persistedLinked?.same_as_period_id).toBe(rootPeriodId);
+    expect(persistedLinked?.resource_count_provenance).toBe("MASTER");
+
+    await linked.getByRole("button", { name: "Retirer" }).click();
     await page.getByRole("button", { name: "Enregistrer les périodes" }).click();
     await expect(page.locator(".demand-notice").filter({ hasText: "Périodes enregistrées." })).toHaveText("Périodes enregistrées.");
     await alternatives.nth(0).getByRole("button", { name: "Retenir cette option" }).click();
