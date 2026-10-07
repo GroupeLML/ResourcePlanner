@@ -23,8 +23,8 @@ class ReactIssue595ContractTests(unittest.TestCase):
     def test_manual_controls_are_keyboard_native_and_other_modes_do_not_mutate_order(self) -> None:
         page = (ROOT / "frontend" / "src" / "PlanningPage.tsx").read_text(encoding="utf-8")
 
-        self.assertIn('aria-label={`Monter ${resource.name}`}', page)
-        self.assertIn('aria-label={`Descendre ${resource.name}`}', page)
+        self.assertIn('aria-label={`Monter ${resourceDisplayName(resource.name)}`}', page)
+        self.assertIn('aria-label={`Descendre ${resourceDisplayName(resource.name)}`}', page)
         self.assertIn('type="button"', page)
         self.assertIn('<option value="availability">Disponibilité</option>', page)
         self.assertIn('<option value="alphabetical">Alphabétique</option>', page)
