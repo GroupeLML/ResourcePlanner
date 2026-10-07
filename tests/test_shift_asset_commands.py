@@ -33,7 +33,9 @@ from app.infrastructure.sql import (
     create_session_factory,
     create_sql_engine,
 )
+from app.application.security import AuthPrincipal, ROLE_MANAGER
 from app.server import create_api_app
+from app.server.security import static_auth_resolver
 from tests.approval_test_support import (
     map_asset_type_to_test_approval_scope,
     routed_demand_payload,
@@ -728,10 +730,21 @@ class ShiftAssetCommandTests(unittest.TestCase):
             "SATISFIED",
         )
 
+        read_only_global = static_auth_resolver(
+            AuthPrincipal.from_roles(
+                local_user_id=None,
+                issuer="urn:resourceplanner:test",
+                subject="shift-asset-read-only-manager",
+                display_name="Gestionnaire lecture",
+                email=None,
+                roles=(ROLE_MANAGER,),
+                auth_mode="test",
+            )
+        )
         with TestClient(
             create_api_app(
                 self.url,
-                auth_resolver=TEST_PROJECT_MANAGER_AUTH_RESOLVER,
+                auth_resolver=read_only_global,
             ),
             raise_server_exceptions=False,
         ) as reader:

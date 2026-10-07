@@ -216,7 +216,9 @@ class ShiftReadModel:
     load_kind: str = "FIRM"
     note: str | None = None
     requirement_id: str | None = None
+    demand_id: str | None = None
     demand_number: str | None = None
+    project_id: str | None = None
     project_number: str | None = None
     project_name: str | None = None
     project_manager: str | None = None
