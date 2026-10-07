@@ -37,6 +37,25 @@ class WorkforceRequestPeriod(TimestampMixin, Base):
         CheckConstraint("hours IS NULL OR hours > 0", name="request_period_hours_positive"),
         CheckConstraint("resource_count >= 1", name="request_period_resource_count"),
         CheckConstraint(
+            "inheritance_contract_version IS NULL OR inheritance_contract_version = 1",
+            name="request_period_inheritance_contract_version",
+        ),
+        CheckConstraint(
+            "confirmation_mode IS NULL OR confirmation_mode IN ('INHERIT_MASTER', 'EXPLICIT')",
+            name="request_period_confirmation_mode",
+        ),
+        CheckConstraint(
+            "proposed_resource_mode IS NULL OR proposed_resource_mode IN "
+            "('INHERIT_MASTER', 'EXPLICIT', 'SAME_AS_PERIOD')",
+            name="request_period_proposed_resource_mode",
+        ),
+        CheckConstraint(
+            "(proposed_resource_mode = 'SAME_AS_PERIOD' AND same_as_period_key IS NOT NULL) OR "
+            "(proposed_resource_mode IS NULL) OR "
+            "(proposed_resource_mode != 'SAME_AS_PERIOD' AND same_as_period_key IS NULL)",
+            name="request_period_same_as_consistency",
+        ),
+        CheckConstraint(
             "(kind = 'ALTERNATIVE' AND alternative_group IS NOT NULL) OR "
             "(kind = 'CUMULATIVE' AND alternative_group IS NULL)",
             name="request_period_kind_group_consistency",
@@ -82,12 +101,16 @@ class WorkforceRequestPeriod(TimestampMixin, Base):
     start_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     end_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     hours: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    inheritance_contract_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    confirmation_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
     confirmation: Mapped[str] = mapped_column(
         String(32), nullable=False, server_default=text("'Tentative'"), index=True
     )
+    proposed_resource_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
     proposed_resource_id: Mapped[str | None] = mapped_column(
         String(ID_LENGTH), ForeignKey("resources.id"), nullable=True, index=True
     )
+    same_as_period_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     resource_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
     desired_active_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
