@@ -403,6 +403,32 @@ class MediumTermCompetencyCapacityTests(unittest.TestCase):
             second_plc["diagnostics"],
         )
 
+    def test_demand_only_projection_derives_week_window_without_work_package(self) -> None:
+        with TemporaryDirectory() as directory:
+            app = create_api_app(self._database(directory))
+            with TestClient(app) as client:
+                response = client.get(
+                    "/api/v1/medium-term/budget",
+                    params={"project_number": "P-1"},
+                )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["window_start"], MONDAY.isoformat())
+        self.assertEqual(payload["window_end"], NEXT_MONDAY.isoformat())
+        self.assertEqual(
+            [week["week_start"] for week in payload["weeks"]],
+            [MONDAY.isoformat(), NEXT_MONDAY.isoformat()],
+        )
+        self.assertEqual(
+            Decimal(str(payload["weeks"][0]["capacity_hours"])),
+            Decimal("52.00"),
+        )
+        self.assertEqual(
+            Decimal(str(self._skill(payload["weeks"][0], "C-SCADA")["requested_hours"])),
+            Decimal("40.00"),
+        )
+
     def test_business_class_and_competency_group_filters_are_distinct(self) -> None:
         with TemporaryDirectory() as directory:
             app = create_api_app(self._database(directory))
