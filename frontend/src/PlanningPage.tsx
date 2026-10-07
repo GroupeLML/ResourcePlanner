@@ -570,7 +570,7 @@ function ResourceRow({
   days: Date[];
   shifts: ShiftReadModel[];
   capacity: PlanningResourceCapacityReadModel | null;
-  pendingCandidates: PendingDemandLoadReadModel[];
+  pendingCandidates: PendingCandidateEntry[];
   diagnostics: Map<string, PlanningSegmentCapacityDiagnosticReadModel>;
   onEditShift?: (shift: ShiftReadModel) => void;
   onAssignAsset?: (shift: ShiftReadModel) => void;
