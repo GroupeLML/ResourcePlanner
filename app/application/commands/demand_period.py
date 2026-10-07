@@ -23,7 +23,10 @@ class DemandPeriodInput:
     kind: str = "CUMULATIVE"
     alternative_group: str | None = None
     confirmation: str = "Tentative"
+    confirmation_mode: str | None = None
     proposed_resource: str | None = None
+    proposed_resource_mode: str | None = None
+    same_as_period_id: str | None = None
     resource_count: int = 1
     desired_active_days: int | None = None
     note: str = ""
@@ -37,7 +40,10 @@ class DemandPeriodInput:
             kind=self.kind,
             alternative_group=self.alternative_group,
             confirmation=self.confirmation,
+            confirmation_mode=self.confirmation_mode,
             proposed_resource=self.proposed_resource,
+            proposed_resource_mode=self.proposed_resource_mode,
+            same_as_period_id=self.same_as_period_id,
             resource_count=self.resource_count,
             desired_active_days=self.desired_active_days,
             note=self.note,

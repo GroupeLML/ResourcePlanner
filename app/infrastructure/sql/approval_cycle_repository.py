@@ -23,11 +23,13 @@ from ...application.approval_cycles import (
     ApprovalRequirementSnapshot,
 )
 from ...application.errors import ApplicationConflictError
+from ...domain.demand_periods import resolve_period_authority
 from ...domain.approval_cycles import (
     APPROVAL_CYCLE_STATE_COMPLETED,
     APPROVAL_CYCLE_STATE_INVALIDATED,
     APPROVAL_CYCLE_STATE_OPEN,
 )
+from .demand_period_models import WorkforceRequestPeriod
 from .approval_cycle_models import (
     ApprovalDecision,
     ApprovalRequirement,
@@ -184,6 +186,53 @@ class SqlApprovalCycleRepository:
         effective_task_ids = {
             line.id: effective_task_id(line) for line in lines
         }
+        periods = self._session.scalars(
+            select(WorkforceRequestPeriod)
+            .where(
+                WorkforceRequestPeriod.workforce_request_id == _text(request_id),
+                WorkforceRequestPeriod.active == true(),
+            )
+            .order_by(
+                WorkforceRequestPeriod.request_line_id,
+                WorkforceRequestPeriod.sequence,
+                WorkforceRequestPeriod.period_key,
+            )
+        ).all()
+        periods_by_line: dict[str, list[WorkforceRequestPeriod]] = defaultdict(list)
+        for period in periods:
+            if period.request_line_id:
+                periods_by_line[period.request_line_id].append(period)
+
+        period_routing_by_line: dict[str, tuple[tuple[str, str | None], ...]] = {}
+        for line in lines:
+            values: list[tuple[str, str | None]] = []
+            for period in periods_by_line.get(line.id, []):
+                if period.inheritance_contract_version is None:
+                    continue
+                resolved = resolve_period_authority(
+                    contract_version=period.inheritance_contract_version,
+                    stored_resource_count=period.resource_count,
+                    stored_confirmation=period.confirmation,
+                    stored_proposed_resource=period.proposed_resource_id,
+                    confirmation_mode=period.confirmation_mode,
+                    proposed_resource_mode=period.proposed_resource_mode,
+                    same_as_period_id=period.same_as_period_key,
+                    master_resource_count=line.slot_count,
+                    master_confirmation=line.confirmation,
+                    master_proposed_resource=line.proposed_resource_id,
+                )
+                if resolved.same_as_state is not None:
+                    raise ApplicationConflictError(
+                        "SAME_AS_PERIOD ne peut pas participer au routage avant 655B.",
+                        code="approval_cycle_same_as_period_not_active",
+                        context={
+                            "request_line_id": line.id,
+                            "period_key": period.period_key,
+                            "same_as_period_key": resolved.same_as_period_id,
+                        },
+                    )
+                values.append((period.period_key, resolved.proposed_resource))
+            period_routing_by_line[line.id] = tuple(values)
         task_ids = {
             task_id for task_id in effective_task_ids.values() if task_id
         }
@@ -225,6 +274,7 @@ class SqlApprovalCycleRepository:
                     line.proposed_resource_id
                 ),
                 line_kind=_text(line.kind) or "WORKFORCE",
+                period_proposed_resources=period_routing_by_line.get(line.id, ()),
                 asset_type_id=_optional_text(line.asset_type_id),
                 proposed_asset_id=_optional_text(line.proposed_asset_id),
             )

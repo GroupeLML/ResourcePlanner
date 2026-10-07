@@ -19,7 +19,7 @@ from ...domain.operational_contacts import (
 )
 from ...domain.active_days import split_total_workforce_hours
 from ...domain.confirmation import CONFIRMATION_CONFIRMED, normalize_confirmation
-from ...domain.demand_periods import PERIOD_KIND_CUMULATIVE
+from ...domain.demand_periods import PERIOD_KIND_CUMULATIVE, resolve_period_authority
 from .approval_revision_models import (
     APPROVAL_REFERENCE_CAPTURED,
     RequestApprovalRevision,
@@ -463,6 +463,7 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
         period: WorkforceRequestPeriod,
         proposed: Resource | None,
         planned_hours: float,
+        confirmation: str,
     ) -> ResourceRequirement:
         identifier = self._segments.create(
             {
@@ -486,7 +487,7 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                 "HorsHoraireAutorise": False,
                 "OrigineSegment": ORIGIN_REQUEST,
                 "Confirmation": normalize_confirmation(
-                    period.confirmation,
+                    confirmation,
                     default=CONFIRMATION_CONFIRMED,
                 ),
                 "ConfirmationOverride": False,
@@ -540,15 +541,31 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             by_period[period_id].append(requirement)
 
         for period in effective:
-            desired = max(int(period.resource_count or 1), 1)
+            resolved = resolve_period_authority(
+                contract_version=period.inheritance_contract_version,
+                stored_resource_count=period.resource_count,
+                stored_confirmation=period.confirmation,
+                stored_proposed_resource=period.proposed_resource_id,
+                confirmation_mode=period.confirmation_mode,
+                proposed_resource_mode=period.proposed_resource_mode,
+                same_as_period_id=period.same_as_period_key,
+                master_resource_count=request.resource_count,
+                master_confirmation=request.confirmation,
+                master_proposed_resource=request.proposed_resource_id,
+            )
+            if resolved.same_as_state is not None:
+                raise ValueError(
+                    "SAME_AS_PERIOD ne peut pas être matérialisé avant 655B."
+                )
+            desired = resolved.resource_count
             split_hours = split_total_workforce_hours(period.hours, desired)
             rows = by_period.get(period.id, [])
             proposed = (
-                self._session.get(Resource, period.proposed_resource_id)
-                if period.proposed_resource_id
+                self._session.get(Resource, resolved.proposed_resource)
+                if resolved.proposed_resource
                 else None
             )
-            if period.proposed_resource_id and proposed is None:
+            if resolved.proposed_resource and proposed is None:
                 raise KeyError(
                     f"Ressource proposée introuvable pour la période {period.period_key}."
                 )
@@ -562,6 +579,7 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                         period=period,
                         proposed=proposed if index == 0 else None,
                         planned_hours=split_hours[index],
+                        confirmation=resolved.confirmation,
                     )
                 )
 
@@ -589,7 +607,7 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                 ),
             )
             inherited_confirmation = normalize_confirmation(
-                period.confirmation,
+                resolved.confirmation,
                 default=CONFIRMATION_CONFIRMED,
             )
             for index, requirement in enumerate(rows):
@@ -1103,31 +1121,23 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             specs,
             target_project_id=request.project_id,
         )
-        current_by_key = self._current_requirement_keys(current)
-
-        keep: dict[tuple[str, ...], ResourceRequirement | None] = {}
-        desired_by_key = {spec.key: spec for spec in specs}
-        obsolete: list[ResourceRequirement] = []
-
-        for key, rows in current_by_key.items():
-            spec = desired_by_key.get(key)
-            if spec is None:
-                obsolete.extend(rows)
-                continue
-            keep[key] = rows[0]
-            obsolete.extend(rows[1:])
-
+        matches, obsolete_rows = self._plan_preparer.match_current(
+            request,
+            current,
+            specs,
+        )
+        obsolete = list(obsolete_rows)
         for requirement in obsolete:
             requirement.status = "Annulé"
 
         materialized: list[ResourceRequirement] = []
-        for spec in specs:
+        for match in matches:
             materialized.append(
                 self._apply_line_spec(
                     request,
                     project,
-                    keep.get(spec.key),
-                    spec,
+                    match.requirement,
+                    match.spec,
                 )
             )
 

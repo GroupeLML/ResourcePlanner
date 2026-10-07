@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from ...domain.active_days import normalize_active_day_target, split_total_workforce_hours
 from ...domain.approval_envelope import EnvelopeEntryIdentity
 from ...domain.confirmation import CONFIRMATION_CONFIRMED, normalize_confirmation
-from ...domain.demand_periods import PERIOD_KIND_CUMULATIVE
+from ...domain.demand_periods import PERIOD_KIND_CUMULATIVE, resolve_period_authority
 from .demand_period_models import (
     WorkforceRequestPeriod,
     WorkforceRequestPeriodRequirement,
@@ -271,44 +271,64 @@ class SqlRequestPlanPreparer:
                     )
                 ]
                 for period in effective:
-                    base_key = ("PERIOD", line.id, period.period_key)
-                    specs.append(
-                        PreparedRequirementSpec(
-                            key=base_key,
-                            base_key=base_key,
-                            approved_entry_key=EnvelopeEntryIdentity(
-                                line_id=line.id,
-                                period_key=period.period_key,
-                            ).stable_key,
-                            source_request_line_id=line.id,
-                            source_period_id=period.id,
-                            start_date=period.start_date,
-                            end_date=period.end_date,
-                            planned_hours=Decimal(str(period.hours)).quantize(
-                                Decimal("0.01")
-                            ),
-                            desired_active_days=period.desired_active_days,
-                            confirmation=normalize_confirmation(
-                                period.confirmation,
-                                default=CONFIRMATION_CONFIRMED,
-                            ),
-                            proposed_resource_id=(
-                                period.proposed_resource_id
-                                or line.proposed_resource_id
-                            ),
-                            description=(
-                                _text(period.note)
-                                or _text(line.description)
-                                or _text(line.erp_task_label)
-                                or _text(request.description)
-                                or "Période approuvée"
-                            ),
-                            source_effort_id=work_package_refs.get(line.id),
-                            required_resource_class=required_resource_class,
-                            required_competency=required_text,
-                            competency_ids=competency_ids.get(line.id, ()),
-                        )
+                    resolved = resolve_period_authority(
+                        contract_version=period.inheritance_contract_version,
+                        stored_resource_count=period.resource_count,
+                        stored_confirmation=period.confirmation,
+                        stored_proposed_resource=period.proposed_resource_id,
+                        confirmation_mode=period.confirmation_mode,
+                        proposed_resource_mode=period.proposed_resource_mode,
+                        same_as_period_id=period.same_as_period_key,
+                        master_resource_count=line.slot_count,
+                        master_confirmation=line.confirmation,
+                        master_proposed_resource=line.proposed_resource_id,
                     )
+                    if resolved.same_as_state is not None:
+                        raise ValueError(
+                            "SAME_AS_PERIOD ne peut pas être matérialisé avant 655B."
+                        )
+                    desired = resolved.resource_count
+                    split_hours = split_total_workforce_hours(period.hours, desired)
+                    base_key = ("PERIOD", line.id, period.period_key)
+                    entry_key = EnvelopeEntryIdentity(
+                        line_id=line.id,
+                        period_key=period.period_key,
+                    ).stable_key
+                    for index, hours in enumerate(split_hours):
+                        specs.append(
+                            PreparedRequirementSpec(
+                                key=(base_key if desired == 1 else (*base_key, str(index))),
+                                base_key=base_key,
+                                approved_entry_key=entry_key,
+                                source_request_line_id=line.id,
+                                source_period_id=period.id,
+                                start_date=period.start_date,
+                                end_date=period.end_date,
+                                planned_hours=Decimal(str(hours)).quantize(
+                                    Decimal("0.01")
+                                ),
+                                desired_active_days=period.desired_active_days,
+                                confirmation=normalize_confirmation(
+                                    resolved.confirmation,
+                                    default=CONFIRMATION_CONFIRMED,
+                                ),
+                                proposed_resource_id=(
+                                    resolved.proposed_resource if index == 0 else None
+                                ),
+                                description=(
+                                    _text(period.note)
+                                    or _text(line.description)
+                                    or _text(line.erp_task_label)
+                                    or _text(request.description)
+                                    or "Période approuvée"
+                                ),
+                                source_effort_id=work_package_refs.get(line.id),
+                                required_resource_class=required_resource_class,
+                                required_competency=required_text,
+                                competency_ids=competency_ids.get(line.id, ()),
+                                slot_index=index,
+                            )
+                        )
                 continue
 
             if line.desired_start is None:
@@ -395,7 +415,23 @@ class SqlRequestPlanPreparer:
         request_competency_ids = self._request_competencies(request.id)
         specs: list[PreparedRequirementSpec] = []
         for period in effective:
-            desired = max(int(period.resource_count or 1), 1)
+            resolved = resolve_period_authority(
+                contract_version=period.inheritance_contract_version,
+                stored_resource_count=period.resource_count,
+                stored_confirmation=period.confirmation,
+                stored_proposed_resource=period.proposed_resource_id,
+                confirmation_mode=period.confirmation_mode,
+                proposed_resource_mode=period.proposed_resource_mode,
+                same_as_period_id=period.same_as_period_key,
+                master_resource_count=request.resource_count,
+                master_confirmation=request.confirmation,
+                master_proposed_resource=request.proposed_resource_id,
+            )
+            if resolved.same_as_state is not None:
+                raise ValueError(
+                    "SAME_AS_PERIOD ne peut pas être matérialisé avant 655B."
+                )
+            desired = resolved.resource_count
             split_hours = split_total_workforce_hours(period.hours, desired)
             base_key = ("PERIOD", line_id, period.period_key)
             entry_key = EnvelopeEntryIdentity(
@@ -417,11 +453,11 @@ class SqlRequestPlanPreparer:
                         ),
                         desired_active_days=period.desired_active_days,
                         confirmation=normalize_confirmation(
-                            period.confirmation,
+                            resolved.confirmation,
                             default=CONFIRMATION_CONFIRMED,
                         ),
                         proposed_resource_id=(
-                            period.proposed_resource_id
+                            resolved.proposed_resource
                             if index == 0
                             else None
                         ),
@@ -666,7 +702,11 @@ class SqlRequestPlanPreparer:
                     )
                 )
             ).quantize(Decimal("0.01"))
-            slot_count = 1 if line_mode else max(int(row.get("slot_count") or 1), 1)
+            slot_count = (
+                max(int(row.get("slot_count") or 1), 1)
+                if period_key is not None
+                else (1 if line_mode else max(int(row.get("slot_count") or 1), 1))
+            )
             split_hours = split_total_workforce_hours(total_hours, slot_count)
             base_key = (
                 ("PERIOD", line_id, period_key)
@@ -680,7 +720,7 @@ class SqlRequestPlanPreparer:
             for index, hours in enumerate(split_hours):
                 spec_key = (
                     base_key
-                    if line_mode
+                    if line_mode and slot_count == 1
                     else (*base_key, str(index))
                 )
                 specs.append(

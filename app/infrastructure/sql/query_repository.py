@@ -164,7 +164,10 @@ def _period_definition(row: DemandPeriodReadModel) -> DemandPeriodDefinition:
         kind=row.kind,
         alternative_group=row.alternative_group,
         confirmation=row.confirmation,
+        confirmation_mode=row.confirmation_mode,
         proposed_resource=row.proposed_resource,
+        proposed_resource_mode=row.proposed_resource_mode,
+        same_as_period_id=row.same_as_period_id,
         resource_count=row.resource_count,
         note=row.note,
     )

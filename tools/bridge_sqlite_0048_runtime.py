@@ -99,6 +99,12 @@ SOURCE_MISSING_COLUMNS = {
         "preferred_resource_id",
         "preferred_resource_version",
     },
+    "workforce_request_periods": {
+        "inheritance_contract_version",
+        "confirmation_mode",
+        "proposed_resource_mode",
+        "same_as_period_key",
+    },
 }
 
 

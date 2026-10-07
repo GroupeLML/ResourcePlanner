@@ -19,6 +19,7 @@ from app.infrastructure.sql import (
     ResourceRequirement,
     Shift,
     WorkforceRequest,
+    WorkforceRequestPeriod,
     create_session_factory,
     create_sql_engine,
     transactional_session,
@@ -278,6 +279,70 @@ class SharedRequestPlanPreparationTests(unittest.TestCase):
             self.assertEqual(
                 [row.code for row in conflicts],
                 [LOCKED_REQUIREMENT_REMOVAL],
+            )
+
+    def test_modern_period_quantity_and_inherited_values_come_from_line_master(self) -> None:
+        with transactional_session(self.factory) as session:
+            request = WorkforceRequest(
+                id="D-PERIOD-MASTER",
+                legacy_demand_number="DEM-PERIOD-MASTER",
+                project_id="P1",
+                line_mode=True,
+                status="Soumise",
+            )
+            line = RequestLine(
+                id="L-PERIOD-MASTER",
+                workforce_request_id=request.id,
+                position=0,
+                kind="WORKFORCE",
+                slot_count=3,
+                desired_start=D1,
+                desired_end=D2,
+                estimated_hours=Decimal("12"),
+                confirmation="Confirmée",
+                proposed_resource_id="R1",
+                active=True,
+            )
+            session.add(request)
+            session.flush()
+            session.add(line)
+            session.flush()
+            session.add(
+                WorkforceRequestPeriod(
+                    period_key="P1",
+                    workforce_request_id=request.id,
+                    request_line_id=line.id,
+                    sequence=1,
+                    kind="CUMULATIVE",
+                    start_date=D1,
+                    end_date=D2,
+                    hours=Decimal("12"),
+                    inheritance_contract_version=1,
+                    confirmation_mode="INHERIT_MASTER",
+                    confirmation="Tentative",
+                    proposed_resource_mode="INHERIT_MASTER",
+                    proposed_resource_id=None,
+                    resource_count=99,
+                    active=True,
+                )
+            )
+            session.flush()
+
+            plan = SqlRequestPlanPreparer(session).prepare(request)
+
+            self.assertEqual(len(plan.specs), 3)
+            self.assertEqual([row.slot_index for row in plan.specs], [0, 1, 2])
+            self.assertEqual(
+                [row.planned_hours for row in plan.specs],
+                [Decimal("4.00"), Decimal("4.00"), Decimal("4.00")],
+            )
+            self.assertEqual(
+                [row.confirmation for row in plan.specs],
+                ["Confirmée", "Confirmée", "Confirmée"],
+            )
+            self.assertEqual(
+                [row.proposed_resource_id for row in plan.specs],
+                ["R1", None, None],
             )
 
     def test_line_identity_is_preserved_in_shared_spec_and_matching(self) -> None:

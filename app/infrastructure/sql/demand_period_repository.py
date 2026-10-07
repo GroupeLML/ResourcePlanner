@@ -12,7 +12,19 @@ from ...application.repository_ports import DemandPeriodRepositoryPort
 from ...domain.active_days import normalize_active_day_target
 from ...domain.approval_envelope import EnvelopeEntryIdentity, EnvelopeGroupIdentity
 from ...domain.confirmation import normalize_confirmation
-from ...domain.demand_periods import DemandPeriodDefinition, validate_period_definitions
+from ...domain.demand_periods import (
+    CONFIRMATION_MODE_EXPLICIT,
+    CONFIRMATION_MODE_INHERIT_MASTER,
+    PERIOD_INHERITANCE_CONTRACT_VERSION,
+    PROPOSED_RESOURCE_MODE_EXPLICIT,
+    PROPOSED_RESOURCE_MODE_INHERIT_MASTER,
+    PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD,
+    DemandPeriodDefinition,
+    normalized_confirmation_mode,
+    normalized_proposed_resource_mode,
+    resolve_period_authority,
+    validate_period_definitions,
+)
 from .base import utc_now
 from .demand_period_models import (
     WorkforceRequestPeriod,
@@ -168,69 +180,122 @@ class SqlDemandPeriodRepository(DemandPeriodRepositoryPort):
             if request.status == "En planification"
             else None
         )
-        resource_ids = {row.proposed_resource_id for row in periods if row.proposed_resource_id}
+
+        line_ids = {row.request_line_id for row in periods if row.request_line_id}
+        lines = {
+            row.id: row
+            for row in (
+                self._session.scalars(
+                    select(RequestLine).where(RequestLine.id.in_(line_ids))
+                ).all()
+                if line_ids
+                else []
+            )
+        }
+        resolved_rows = []
+        resource_ids: set[str] = set()
+        for row in periods:
+            line = lines.get(row.request_line_id or "")
+            resolved = resolve_period_authority(
+                contract_version=row.inheritance_contract_version,
+                stored_resource_count=row.resource_count,
+                stored_confirmation=row.confirmation,
+                stored_proposed_resource=row.proposed_resource_id,
+                confirmation_mode=row.confirmation_mode,
+                proposed_resource_mode=row.proposed_resource_mode,
+                same_as_period_id=row.same_as_period_key,
+                master_resource_count=(line.slot_count if line is not None else None),
+                master_confirmation=(line.confirmation if line is not None else None),
+                master_proposed_resource=(
+                    line.proposed_resource_id if line is not None else None
+                ),
+            )
+            resolved_rows.append((row, resolved))
+            if resolved.proposed_resource:
+                resource_ids.add(resolved.proposed_resource)
+            if row.proposed_resource_id:
+                resource_ids.add(row.proposed_resource_id)
         resources = (
-            self._session.scalars(select(Resource).where(Resource.id.in_(resource_ids))).all()
+            self._session.scalars(
+                select(Resource).where(Resource.id.in_(resource_ids))
+            ).all()
             if resource_ids
             else []
         )
         resource_names = {row.id: row.name for row in resources}
         business_number = _text(request.legacy_demand_number) or request.id
-        return tuple(
-            DemandPeriodReadModel(
-                period_id=row.period_key,
-                demand_number=business_number,
-                request_line_id=row.request_line_id,
-                sequence=row.sequence,
-                kind=row.kind,
-                alternative_group=row.alternative_group,
-                start_date=row.start_date,
-                end_date=row.end_date,
-                hours=float(row.hours) if row.hours is not None else None,
-                confirmation=(
-                    operational.confirmations.get(
-                        EnvelopeEntryIdentity(
-                            line_id=row.request_line_id or request.id,
-                            period_key=row.period_key,
-                        ).stable_key,
-                        row.confirmation,
-                    )
-                    if operational is not None
-                    else row.confirmation
-                ),
-                proposed_resource=resource_names.get(row.proposed_resource_id),
-                resource_count=row.resource_count,
-                desired_active_days=row.desired_active_days,
-                note=row.note,
-                selected=(
-                    (
-                        bool(row.alternative_group)
-                        and bool(row.request_line_id)
-                        and operational is not None
-                        and operational.selections.get(
-                            EnvelopeGroupIdentity(
-                                line_id=row.request_line_id,
-                                group_key=_text(row.alternative_group),
-                            ).stable_key
+        result: list[DemandPeriodReadModel] = []
+        for row, resolved in resolved_rows:
+            identity = EnvelopeEntryIdentity(
+                line_id=row.request_line_id or request.id,
+                period_key=row.period_key,
+            ).stable_key
+            effective_confirmation = resolved.confirmation
+            confirmation_provenance = resolved.confirmation_provenance
+            if operational is not None and identity in operational.confirmations:
+                effective_confirmation = operational.confirmations[identity]
+                confirmation_provenance = "OPERATIONAL_OVERRIDE"
+            result.append(
+                DemandPeriodReadModel(
+                    period_id=row.period_key,
+                    demand_number=business_number,
+                    request_line_id=row.request_line_id,
+                    sequence=row.sequence,
+                    kind=row.kind,
+                    alternative_group=row.alternative_group,
+                    start_date=row.start_date,
+                    end_date=row.end_date,
+                    hours=float(row.hours) if row.hours is not None else None,
+                    inheritance_contract_version=row.inheritance_contract_version,
+                    confirmation=effective_confirmation,
+                    confirmation_mode=resolved.confirmation_mode,
+                    confirmation_explicit=(
+                        row.confirmation
+                        if resolved.confirmation_mode == CONFIRMATION_MODE_EXPLICIT
+                        else None
+                    ),
+                    confirmation_provenance=confirmation_provenance,
+                    proposed_resource=resource_names.get(resolved.proposed_resource),
+                    proposed_resource_mode=resolved.proposed_resource_mode,
+                    proposed_resource_explicit=(
+                        resource_names.get(row.proposed_resource_id)
+                        if resolved.proposed_resource_mode == PROPOSED_RESOURCE_MODE_EXPLICIT
+                        else None
+                    ),
+                    proposed_resource_provenance=resolved.proposed_resource_provenance,
+                    same_as_period_id=resolved.same_as_period_id,
+                    same_as_root_period_id=resolved.same_as_root_period_id,
+                    same_as_state=resolved.same_as_state,
+                    resource_count=resolved.resource_count,
+                    resource_count_provenance=resolved.resource_count_provenance,
+                    desired_active_days=row.desired_active_days,
+                    note=row.note,
+                    selected=(
+                        (
+                            bool(row.alternative_group)
+                            and bool(row.request_line_id)
+                            and operational is not None
+                            and operational.selections.get(
+                                EnvelopeGroupIdentity(
+                                    line_id=row.request_line_id,
+                                    group_key=_text(row.alternative_group),
+                                ).stable_key
+                            )
+                            == identity
                         )
-                        == EnvelopeEntryIdentity(
-                            line_id=row.request_line_id,
-                            period_key=row.period_key,
-                        ).stable_key
-                    )
-                    if operational is not None
-                    else (
-                        bool(row.alternative_group)
-                        and bool(row.request_line_id)
-                        and selections.get(
-                            (row.request_line_id, _text(row.alternative_group))
+                        if operational is not None
+                        else (
+                            bool(row.alternative_group)
+                            and bool(row.request_line_id)
+                            and selections.get(
+                                (row.request_line_id, _text(row.alternative_group))
+                            )
+                            == row.id
                         )
-                        == row.id
-                    )
-                ),
+                    ),
+                )
             )
-            for row in periods
-        )
+        return tuple(result)
 
     def extend_window(
         self,
@@ -269,13 +334,17 @@ class SqlDemandPeriodRepository(DemandPeriodRepositoryPort):
         *,
         request_line_id: str | None = None,
     ) -> Sequence[DemandPeriodReadModel]:
-        scoped_kind = self._session.scalar(select(RequestLine.kind).where(RequestLine.id == request_line_id)) if request_line_id else None
-        validate_period_definitions(periods, allow_unbudgeted=scoped_kind == "ASSET")
-        if scoped_kind == "ASSET" and any(period.proposed_resource for period in periods):
-            raise ValueError("Une période matérielle ne peut pas proposer un technicien.")
         request = self._request(demand_number)
         scoped_line_id = self._scope_line_id(request, request_line_id)
-
+        line = self._line(request, scoped_line_id)
+        validate_period_definitions(
+            periods,
+            allow_unbudgeted=_text(line.kind).upper() == "ASSET",
+        )
+        if _text(line.kind).upper() == "ASSET" and any(
+            period.proposed_resource for period in periods
+        ):
+            raise ValueError("Une période matérielle ne peut pas proposer un technicien.")
         current = self._session.scalars(
             select(WorkforceRequestPeriod).where(
                 WorkforceRequestPeriod.workforce_request_id == request.id,
@@ -297,7 +366,23 @@ class SqlDemandPeriodRepository(DemandPeriodRepositoryPort):
         self._session.flush()
 
         for sequence, period in enumerate(periods, start=1):
-            resource = self._resource(period.proposed_resource)
+            confirmation_mode = normalized_confirmation_mode(period.confirmation_mode)
+            resource_mode = normalized_proposed_resource_mode(period.proposed_resource_mode)
+            explicit_resource = (
+                self._resource(period.proposed_resource)
+                if resource_mode == PROPOSED_RESOURCE_MODE_EXPLICIT
+                else None
+            )
+            effective_confirmation = (
+                line.confirmation
+                if confirmation_mode == CONFIRMATION_MODE_INHERIT_MASTER
+                else period.confirmation
+            )
+            effective_resource_id = (
+                line.proposed_resource_id
+                if resource_mode == PROPOSED_RESOURCE_MODE_INHERIT_MASTER
+                else explicit_resource.id if explicit_resource is not None else None
+            )
             self._session.add(
                 WorkforceRequestPeriod(
                     period_key=_text(period.period_id),
@@ -309,9 +394,17 @@ class SqlDemandPeriodRepository(DemandPeriodRepositoryPort):
                     start_date=period.start_date,
                     end_date=period.end_date,
                     hours=Decimal(str(period.hours)) if period.hours is not None else None,
-                    confirmation=normalize_confirmation(period.confirmation),
-                    proposed_resource_id=resource.id if resource is not None else None,
-                    resource_count=int(period.resource_count),
+                    inheritance_contract_version=PERIOD_INHERITANCE_CONTRACT_VERSION,
+                    confirmation_mode=confirmation_mode,
+                    confirmation=normalize_confirmation(effective_confirmation),
+                    proposed_resource_mode=resource_mode,
+                    proposed_resource_id=effective_resource_id,
+                    same_as_period_key=(
+                        _text(period.same_as_period_id) or None
+                        if resource_mode == PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD
+                        else None
+                    ),
+                    resource_count=max(int(line.slot_count or 1), 1),
                     desired_active_days=normalize_active_day_target(
                         period.desired_active_days,
                         start=period.start_date,
