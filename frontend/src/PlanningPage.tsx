@@ -495,13 +495,15 @@ function PendingGhostCard({
       type="button"
       className={`pending-ghost-card ${tentative ? "is-tentative" : ""}`}
       data-candidate-key={candidate.candidate_key}
+      draggable={false}
       onClick={() => onOpenDemand?.(load.demand_number)}
       disabled={!onOpenDemand}
-      title={`Demande ${load.demand_number} · besoin candidat non matérialisé · aucun Shift ni aucune affectation implicite`}
+      title={`Demande ${load.demand_number} · besoin candidat non matérialisé · charge potentielle ${hours(candidateHours)} h · aucun Shift ni aucune affectation implicite`}
     >
       <span className="pending-ghost-kicker">Besoin candidat · non matérialisé</span>
       <strong>{load.project_number || "Projet"}</strong>
       <span>{load.project_name || load.demand_number}</span>
+      <span>Demande {load.demand_number}</span>
       {detail && <span>{detail}</span>}
       <small>{confirmationLabel(candidate.confirmation ?? load.confirmation)} · {hours(candidateHours)} h fenêtre</small>
     </button>
