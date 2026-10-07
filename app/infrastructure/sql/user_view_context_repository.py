@@ -284,7 +284,7 @@ class SqlUserViewContextRepository(UserViewContextRepositoryPort):
         if user is None or not user.active:
             return ()
 
-        rows = self._session.execute(
+        actor_rows = self._session.execute(
             select(
                 WorkforceRequest.id,
                 RequestApprovalCycle.id,
@@ -309,13 +309,38 @@ class SqlUserViewContextRepository(UserViewContextRepositoryPort):
             .distinct()
             .order_by(WorkforceRequest.id, RequestApprovalCycle.id)
         ).all()
-        cycles_by_request: dict[str, set[str]] = {}
-        for request_id, cycle_id in rows:
-            cycles_by_request.setdefault(request_id, set()).add(cycle_id)
+        actor_cycles_by_request: dict[str, set[str]] = {}
+        for request_id, cycle_id in actor_rows:
+            actor_cycles_by_request.setdefault(request_id, set()).add(cycle_id)
+        if not actor_cycles_by_request:
+            return ()
+
+        all_open_rows = self._session.execute(
+            select(
+                RequestApprovalCycle.workforce_request_id,
+                RequestApprovalCycle.id,
+            )
+            .where(
+                RequestApprovalCycle.state == APPROVAL_CYCLE_STATE_OPEN,
+                RequestApprovalCycle.workforce_request_id.in_(
+                    tuple(actor_cycles_by_request)
+                ),
+            )
+            .order_by(
+                RequestApprovalCycle.workforce_request_id,
+                RequestApprovalCycle.id,
+            )
+        ).all()
+        all_cycles_by_request: dict[str, set[str]] = {}
+        for request_id, cycle_id in all_open_rows:
+            all_cycles_by_request.setdefault(request_id, set()).add(cycle_id)
+
         return tuple(
             request_id
-            for request_id in sorted(cycles_by_request)
-            if len(cycles_by_request[request_id]) == 1
+            for request_id in sorted(actor_cycles_by_request)
+            if len(all_cycles_by_request.get(request_id, set())) == 1
+            and actor_cycles_by_request[request_id]
+            == all_cycles_by_request[request_id]
         )
 
     def list_shift_project_days(
