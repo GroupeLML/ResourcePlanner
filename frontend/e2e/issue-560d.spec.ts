@@ -9,8 +9,6 @@ async function openCoordinator(browser: Browser) {
     extraHTTPHeaders: { "X-E2E-Role": "COORDINATOR" },
   });
   const page = await context.newPage();
-  await page.goto("/");
-  await expect(page.locator(".sidebar-footer")).toContainText("Coordonnateur E2E");
   return { context, page };
 }
 
@@ -314,6 +312,8 @@ test("560D gère assign/change/release depuis le Shift sans état optimiste mens
   });
 
   try {
+    await page.goto("/");
+    await expect(page.locator(".sidebar-footer")).toContainText("Coordonnateur E2E");
     await navigateMain(page, "Planning opérationnel");
     const card = page.locator('.shift-card[data-allocation-id="SHIFT-560D-E2E"]');
     await expect(card).toBeVisible();
