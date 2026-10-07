@@ -41,6 +41,14 @@ class PlanningDemandVisibility:
 
 
 @dataclass(frozen=True, slots=True)
+class PlanningViewPolicyReadModel:
+    """Frontend-safe Planning scope policy projected from backend authorization."""
+
+    available_scopes: tuple[str, ...]
+    default_scope: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class PlanningVisibilityResolution:
     """Backend-authoritative publication scope for operational Planning."""
 
@@ -120,6 +128,14 @@ class PlanningVisibilityService:
     def default_scope(cls, principal: AuthPrincipal) -> str:
         scopes = cls.available_scopes(principal)
         return SCOPE_GLOBAL if SCOPE_GLOBAL in scopes else SCOPE_MINE
+
+    @classmethod
+    def view_policy(cls, principal: AuthPrincipal) -> PlanningViewPolicyReadModel:
+        scopes = cls.available_scopes(principal)
+        return PlanningViewPolicyReadModel(
+            available_scopes=scopes,
+            default_scope=cls.default_scope(principal) if scopes else None,
+        )
 
     def resolve(
         self,
