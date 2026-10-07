@@ -73,7 +73,11 @@ class DemandLineReadModel:
     description: str | None = None
     active: bool = True
     asset_type_id: str | None = None
+    asset_type_code: str | None = None
+    asset_type_label: str | None = None
     proposed_asset_id: str | None = None
+    proposed_asset_code: str | None = None
+    proposed_asset_label: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
