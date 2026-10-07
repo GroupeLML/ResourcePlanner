@@ -552,6 +552,18 @@ class ApprovalCycleService:
                 if submitted is not None
                 else ()
             )
+            if row.period_proposed_resources:
+                effective_resources = {
+                    resource_id
+                    for _, resource_id in row.period_proposed_resources
+                }
+                proposed_resource_id = (
+                    next(iter(effective_resources))
+                    if len(effective_resources) == 1
+                    else None
+                )
+            else:
+                proposed_resource_id = row.proposed_resource_id
             routing_entries.append(
                 ApprovalSubjectRoutingEntry(
                     request_line_id=row.request_line_id,
@@ -563,7 +575,7 @@ class ApprovalCycleService:
                         else row.approval_scope_ids
                     ),
                     source_kinds=source_kinds,
-                    proposed_resource_id=row.proposed_resource_id,
+                    proposed_resource_id=proposed_resource_id,
                     proposed_asset_id=row.proposed_asset_id,
                     period_proposed_resources=row.period_proposed_resources,
                 )
