@@ -186,6 +186,7 @@ export default function ProjectsPage() {
   const [projects, setProjects] = useState<ProjectReadModel[]>([]);
   const [contacts, setContacts] = useState<BusinessContactReadModel[]>([]);
   const [selectedProjectNumber, setSelectedProjectNumber] = useState<string | null>(null);
+  const projectDetailRef = useRef<HTMLElement>(null);
   const [projectManagers, setProjectManagers] = useState<ProjectManagersReadModel | null>(null);
   const [coManagerContacts, setCoManagerContacts] = useState<BusinessContactReadModel[]>([]);
   const [coManagerSearch, setCoManagerSearch] = useState("");
@@ -213,6 +214,16 @@ export default function ProjectsPage() {
   const [globalTaskSyncRun, setGlobalTaskSyncRun] = useState<GlobalProjectTaskSyncResult | null>(null);
   const [globalTaskSyncMessage, setGlobalTaskSyncMessage] = useState<string | null>(null);
   const [globalTaskSyncError, setGlobalTaskSyncError] = useState<string | null>(null);
+
+  function openProjectDetail(projectNumber: string) {
+    setSelectedProjectNumber(projectNumber);
+    window.requestAnimationFrame(() => {
+      const detail = projectDetailRef.current;
+      if (!detail) return;
+      detail.scrollIntoView({ behavior: "smooth", block: "start" });
+      detail.focus({ preventScroll: true });
+    });
+  }
   const [globalTaskSyncTrackingError, setGlobalTaskSyncTrackingError] = useState<string | null>(null);
   const [taskSyncing, setTaskSyncing] = useState(false);
   const [taskSyncMessage, setTaskSyncMessage] = useState<string | null>(null);
@@ -909,7 +920,7 @@ export default function ProjectsPage() {
                       <button
                         className="quiet-button"
                         type="button"
-                        onClick={() => setSelectedProjectNumber(project.number)}
+                        onClick={() => openProjectDetail(project.number)}
                       >
                         Ouvrir
                       </button>
@@ -922,7 +933,7 @@ export default function ProjectsPage() {
         )}
       </div>
       {selectedProjectNumber && (
-        <section className="admin-card project-contact-admin">
+        <section className="admin-card project-contact-admin" ref={projectDetailRef} tabIndex={-1}>
           <div className="panel-heading">
             <div>
               <span className="eyebrow">Détail projet</span>
@@ -1241,6 +1252,7 @@ export default function ProjectsPage() {
                           <td>
                             <ContactSelect
                               contacts={contacts}
+                              label={`Responsable opérationnel ${task.code}`}
                               value={task.operational_responsible_contact_id}
                               onChange={(value) => void changeTaskContact(task, "operational_responsible_contact_id", value)}
                               disabled={contactPending || !task.id}
@@ -1250,6 +1262,7 @@ export default function ProjectsPage() {
                           <td>
                             <ContactSelect
                               contacts={contacts}
+                              label={`Coordonnateur ${task.code}`}
                               value={task.coordinator_contact_id}
                               onChange={(value) => void changeTaskContact(task, "coordinator_contact_id", value)}
                               disabled={contactPending || !task.id}
