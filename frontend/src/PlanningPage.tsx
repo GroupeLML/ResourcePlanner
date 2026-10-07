@@ -1709,7 +1709,7 @@ export default function PlanningPage({
                         } : undefined}
                         onOpenDemand={setDetailDemandNumber}
                         dragEnabled={canManagePlanning && !dropBusy}
-                        manualOrder={resourceSortMode === "manual" ? {
+                        manualOrder={canManagePlanning && resourceSortMode === "manual" ? {
                           canMoveUp: manualOrderAvailability.get(resource.id)?.canMoveUp ?? false,
                           canMoveDown: manualOrderAvailability.get(resource.id)?.canMoveDown ?? false,
                           busy: Boolean(resourceReorderBusy || dropBusy),
@@ -1905,12 +1905,14 @@ export default function PlanningPage({
                 viewScope={scope ?? undefined}
                 embedded
                 actionsOnly
+                showActions={canManagePlanning}
                 hasUnsavedChanges={detailContextDirty}
                 onChanged={() => setRefreshKey((value) => value + 1)}
               />
               <DemandDetail
                 demandNumber={detailDemandNumber}
                 viewScope={scope ?? undefined}
+                readOnly={!canManagePlanning}
                 compact
                 onDirtyChange={setDetailContextDirty}
                 onChanged={() => setRefreshKey((value) => value + 1)}
