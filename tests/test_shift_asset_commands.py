@@ -1618,6 +1618,31 @@ class ShiftAssetCommandTests(unittest.TestCase):
         # per asset relation or qualification.
         self.assertLessEqual(statements, 9)
 
+    def test_capacity_grid_reads_shift_with_asset_assignment(self) -> None:
+        assigned = self._set_asset(
+            asset_id="ASSET-A",
+            version=self._version(),
+            key="capacity-grid-asset-691",
+        )
+        self.assertEqual(assigned.status_code, 200, assigned.text)
+
+        response = self.client.get(
+            "/api/v1/planning/capacity-grid",
+            params={
+                "start": DAY.isoformat(),
+                "end": DAY.isoformat(),
+                "scope": "global",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        skilled = next(
+            row
+            for row in response.json()["resources"]
+            if row["resource_id"] == "RESOURCE-SKILLED"
+        )
+        self.assertEqual(skilled["confirmed_hours"], 8.0)
+
     def test_manage_planning_permission_is_required(self) -> None:
         with TestClient(
             create_api_app(
