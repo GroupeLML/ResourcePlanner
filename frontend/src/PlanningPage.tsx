@@ -1642,13 +1642,19 @@ export default function PlanningPage({
                   {activeFilterCount} filtre{activeFilterCount > 1 ? "s" : ""} actif{activeFilterCount > 1 ? "s" : ""}
                 </span>
               )}
+              <span className="planning-filter-toggle-action">
+                {filtersExpanded ? "Réduire" : "Développer"}
+              </span>
               <span className="planning-filter-toggle-icon" aria-hidden="true">
                 {filtersExpanded ? "−" : "+"}
               </span>
             </span>
           </button>
-          {filtersExpanded && (
-            <div id="planning-filters" className="filter-bar planning-filter-bar">
+            <div
+              id="planning-filters"
+              className="filter-bar planning-filter-bar"
+              hidden={!filtersExpanded}
+            >
               <label className="search-field">
                 <span>Recherche</span>
                 <input
@@ -1702,7 +1708,6 @@ export default function PlanningPage({
                 <span>Seulement avec capacité</span>
               </label>
             </div>
-          )}
         </div>
       </div>
 
