@@ -1,10 +1,26 @@
-import { Fragment } from "react";
-import { MediumTermClassWeekReadModel, MediumTermWeekReadModel } from "./api";
+import { Fragment, useState } from "react";
+import {
+  MediumTermClassWeekReadModel,
+  MediumTermCompetencyWeekReadModel,
+  MediumTermWeekReadModel,
+} from "./api";
 import { formatWeekRange, parseIsoDate } from "./dates";
 
 const WEEK_DIAGNOSTIC_LABELS: Record<string, string> = {
   WORK_PACKAGE_LOAD_INCOMPLETE: "Charge WorkPackage non disponible",
   WORKFORCE_CAPACITY_ZERO: "Capacité workforce nulle",
+};
+
+const COMPETENCY_DIAGNOSTIC_LABELS: Record<string, string> = {
+  COMPETENCY_REQUESTED_HOURS_UNAVAILABLE: "Heures demandées incomplètes",
+  COMPETENCY_ALTERNATIVE_UNRESOLVED: "Alternative non sélectionnée : enveloppe prudente",
+  COMPETENCY_REFERENCE_UNRESOLVED: "Référence de compétence historique non résolue",
+  COMPETENCY_GROUP_CLASS_INACTIVE: "Classe de regroupement inactive",
+  COMPETENCY_GROUP_CLASS_UNRESOLVED: "Classe de regroupement introuvable",
+  COMPETENCY_CAPACITY_ZERO: "Capacité théorique nulle",
+  COMPETENCY_CAPACITY_EXCEEDED: "Heures demandées supérieures à la capacité théorique",
+  COMPETENCY_COMMON_QUALIFICATION_ZERO: "Aucune capacité avec toutes les compétences requises",
+  COMPETENCY_COMMON_QUALIFICATION_EXCEEDED: "Qualification commune insuffisante",
 };
 
 const PROJECTION_DIAGNOSTIC_LABELS: Record<string, string> = {
@@ -28,6 +44,11 @@ function loadHours(value: number | null) {
   return `${number(value)} h`;
 }
 
+function requestedHours(value: number | null) {
+  if (value == null) return "Heures demandées inconnues";
+  return `${number(value)} h demandées`;
+}
+
 function capacityHours(value: number) {
   return `${number(value)} h`;
 }
@@ -41,9 +62,25 @@ function diagnosticLabel(code: string) {
   return WEEK_DIAGNOSTIC_LABELS[code] || code;
 }
 
-function classKey(row: MediumTermClassWeekReadModel) {
+function competencyDiagnosticLabel(code: string) {
+  return COMPETENCY_DIAGNOSTIC_LABELS[code] || code;
+}
+
+function classKey(row: { resource_class_code: string | null }) {
   return row.resource_class_code || "__UNCLASSIFIED__";
 }
+
+type CapacityClassGroup = {
+  key: string;
+  code: string | null;
+  label: string;
+};
+
+type CompetencyIdentity = {
+  id: string;
+  name: string;
+  active: boolean;
+};
 
 export default function MediumTermCapacityPanel({
   weeks,
@@ -54,17 +91,48 @@ export default function MediumTermCapacityPanel({
   diagnostics: string[];
   loading: boolean;
 }) {
-  const classes = new Map<string, { code: string | null; label: string }>();
+  const [expandedClasses, setExpandedClasses] = useState<Set<string>>(() => new Set());
+
+  const classes = new Map<string, CapacityClassGroup>();
+  const competenciesByClass = new Map<string, Map<string, CompetencyIdentity>>();
   weeks.forEach((week) => {
     week.classes.forEach((row) => {
-      classes.set(classKey(row), {
+      const key = classKey(row);
+      classes.set(key, {
+        key,
         code: row.resource_class_code,
         label: row.resource_class_label,
       });
     });
+    (week.competencies ?? []).forEach((row) => {
+      const key = classKey(row);
+      if (!classes.has(key)) {
+        classes.set(key, {
+          key,
+          code: row.resource_class_code,
+          label: row.resource_class_label || row.resource_class_code || "Sans classe de regroupement",
+        });
+      }
+      const classCompetencies = competenciesByClass.get(key) ?? new Map<string, CompetencyIdentity>();
+      classCompetencies.set(row.competency_id, {
+        id: row.competency_id,
+        name: row.competency_name,
+        active: row.competency_active,
+      });
+      competenciesByClass.set(key, classCompetencies);
+    });
   });
-  const classRows = [...classes.entries()];
-  const template = `minmax(190px, 1.15fr) repeat(${Math.max(weeks.length, 1)}, minmax(132px, 1fr))`;
+  const classRows = [...classes.values()];
+  const template = `minmax(220px, 1.2fr) repeat(${Math.max(weeks.length, 1)}, minmax(150px, 1fr))`;
+
+  function toggleClass(key: string) {
+    setExpandedClasses((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
 
   return (
     <section className={`mt-capacity-panel ${loading ? "is-loading" : ""}`}>
@@ -74,10 +142,18 @@ export default function MediumTermCapacityPanel({
           <h2>Charge / capacité · utilisation</h2>
         </div>
         <p>
-          Une ligne par classe. Charge, capacité, utilisation, état et diagnostics proviennent
-          directement de FastAPI; React ne recalcule aucune règle de capacité.
+          Les classes comparent la charge WorkPackage à la capacité de classe. Ouvre une classe
+          pour voir les heures demandées et la capacité théorique de chaque compétence.
         </p>
       </header>
+
+      <div className="mt-competency-non-additive" role="note">
+        <strong>Compétences non additives.</strong>
+        <span>
+          Une même demande et une même ressource peuvent apparaître dans plusieurs compétences.
+          Ne somme pas les lignes de compétences pour obtenir une charge ou une capacité globale.
+        </span>
+      </div>
 
       {diagnostics.length > 0 && (
         <div className="mt-capacity-diagnostics" role="status">
@@ -94,62 +170,174 @@ export default function MediumTermCapacityPanel({
       ) : (
         <div className="mt-capacity-scroll">
           <div className="mt-capacity-grid is-compact" style={{ gridTemplateColumns: template }}>
-            <div className="mt-capacity-corner">Classe</div>
+            <div className="mt-capacity-corner">Classe / compétence</div>
             {weeks.map((week) => (
               <div className="mt-capacity-week" key={week.week_start}>
                 <strong>{formatWeekRange(parseIsoDate(week.week_start))}</strong>
               </div>
             ))}
 
-            {classRows.map(([key, resourceClass]) => (
-              <Fragment key={key}>
-                <div className="mt-capacity-label is-class" key={`label-${key}`}>
-                  <strong>{resourceClass.label}</strong>
-                  {resourceClass.code == null && (
-                    <span>Non classé · aucune classe canonique déduite</span>
-                  )}
-                </div>
-                {weeks.map((week) => {
-                  const bucket = week.classes.find((row) => classKey(row) === key);
-                  const diagnosticsText = bucket?.diagnostics.map(diagnosticLabel).join(" · ") || "";
-                  return (
-                    <div
-                      className={`mt-capacity-cell is-compact ${bucket ? `is-${bucket.state}` : "is-unavailable"}`}
-                      key={`${key}-${week.week_start}`}
-                      title={diagnosticsText || undefined}
+            {classRows.map((resourceClass) => {
+              const key = resourceClass.key;
+              const expanded = expandedClasses.has(key);
+              const competencies = [...(competenciesByClass.get(key)?.values() ?? [])]
+                .sort((left, right) => left.name.localeCompare(right.name, "fr-CA"));
+
+              return (
+                <Fragment key={key}>
+                  <div className="mt-capacity-label is-class" key={`label-${key}`}>
+                    <button
+                      className="mt-capacity-class-toggle"
+                      type="button"
+                      aria-expanded={expanded}
+                      onClick={() => toggleClass(key)}
                     >
-                      {bucket ? (
-                        <>
-                          <div className="mt-capacity-main">
-                            <strong>
-                              {loadHours(bucket.work_package_hours)} / {capacityHours(bucket.capacity_hours)}
-                            </strong>
-                            <span>· {percent(bucket.utilization)}</span>
-                          </div>
-                          <small>
-                            {STATE_LABELS[bucket.state]}
-                            {bucket.work_package_hours == null ? " · ⚑ Charge inconnue — pas 0 h" : ""}
-                          </small>
-                          {bucket.diagnostics.length > 0 && (
-                            <div className="mt-capacity-detail">
-                              {bucket.diagnostics.map((code) => (
-                                <span key={code}>{diagnosticLabel(code)}</span>
-                              ))}
+                      <strong>{expanded ? "▼" : "▶"} {resourceClass.label}</strong>
+                      <span>
+                        {competencies.length} compétence(s)
+                        {resourceClass.code == null ? " · aucune classe canonique" : ""}
+                      </span>
+                    </button>
+                  </div>
+                  {weeks.map((week) => {
+                    const bucket = week.classes.find((row) => classKey(row) === key);
+                    const diagnosticsText = bucket?.diagnostics.map(diagnosticLabel).join(" · ") || "";
+                    return (
+                      <div
+                        className={`mt-capacity-cell is-compact ${bucket ? `is-${bucket.state}` : "is-unavailable"}`}
+                        key={`${key}-${week.week_start}`}
+                        title={diagnosticsText || undefined}
+                      >
+                        {bucket ? (
+                          <>
+                            <div className="mt-capacity-main">
+                              <strong>
+                                {loadHours(bucket.work_package_hours)} / {capacityHours(bucket.capacity_hours)} capacité de classe
+                              </strong>
+                              <span>· {percent(bucket.utilization)}</span>
                             </div>
-                          )}
-                        </>
-                      ) : (
-                        <div className="mt-capacity-main">
-                          <strong>Indisponible</strong>
-                          <span>· Non calculable</span>
+                            <small>
+                              {STATE_LABELS[bucket.state]}
+                              {bucket.work_package_hours == null ? " · ⚑ Charge inconnue — pas 0 h" : ""}
+                            </small>
+                            {bucket.diagnostics.length > 0 && (
+                              <div className="mt-capacity-detail">
+                                {bucket.diagnostics.map((code) => (
+                                  <span key={code}>{diagnosticLabel(code)}</span>
+                                ))}
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          <div className="mt-capacity-main">
+                            <strong>Aucune mesure de classe</strong>
+                            <span>· Non calculable</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  {expanded && competencies.length === 0 && (
+                    <>
+                      <div className="mt-capacity-label is-competency is-empty">
+                        <span>Aucune compétence rattachée à cette classe.</span>
+                      </div>
+                      {weeks.map((week) => (
+                        <div className="mt-capacity-cell is-competency is-unavailable" key={`${key}-empty-${week.week_start}`}>
+                          <small>—</small>
                         </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </Fragment>
-            ))}
+                      ))}
+                    </>
+                  )}
+
+                  {expanded && competencies.map((competency) => (
+                    <Fragment key={`${key}-${competency.id}`}>
+                      <div className="mt-capacity-label is-competency">
+                        <strong>{competency.name}</strong>
+                        <span>
+                          Heures demandées / capacité théorique
+                          {!competency.active ? " · compétence inactive" : ""}
+                        </span>
+                      </div>
+                      {weeks.map((week) => {
+                        const bucket = (week.competencies ?? []).find(
+                          (row: MediumTermCompetencyWeekReadModel) => row.competency_id === competency.id,
+                        );
+                        const diagnosticsText = bucket?.diagnostics
+                          .map(competencyDiagnosticLabel)
+                          .join(" · ") || "";
+                        return (
+                          <div
+                            className={`mt-capacity-cell is-competency ${bucket ? `is-${bucket.state}` : "is-unavailable"}`}
+                            key={`${competency.id}-${week.week_start}`}
+                            title={diagnosticsText || undefined}
+                          >
+                            {bucket ? (
+                              <>
+                                <div className="mt-capacity-main">
+                                  <strong>
+                                    {requestedHours(bucket.requested_hours)} / {capacityHours(bucket.capacity_hours)} capacité théorique
+                                  </strong>
+                                  <span>· {percent(bucket.utilization)}</span>
+                                </div>
+                                <small>
+                                  {STATE_LABELS[bucket.state]} · {bucket.qualifying_resource_count} ressource(s) qualifiée(s)
+                                  {bucket.non_additive ? " · non additive" : ""}
+                                </small>
+                                {bucket.diagnostics.length > 0 && (
+                                  <div className="mt-capacity-detail">
+                                    {bucket.diagnostics.map((code) => (
+                                      <span key={code}>{competencyDiagnosticLabel(code)}</span>
+                                    ))}
+                                  </div>
+                                )}
+                              </>
+                            ) : (
+                              <div className="mt-capacity-main">
+                                <strong>Aucune mesure de compétence</strong>
+                                <span>· Non calculable</span>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </Fragment>
+                  ))}
+                </Fragment>
+              );
+            })}
           </div>
+        </div>
+      )}
+
+      {weeks.some((week) => (
+        (week.competency_diagnostics ?? []).length > 0
+        || (week.competency_combinations ?? []).some((row) => row.diagnostics.length > 0)
+      )) && (
+        <div className="mt-competency-advisories" role="status">
+          <strong>Diagnostics compétences</strong>
+          {weeks.map((week) => {
+            const weekDiagnostics = week.competency_diagnostics ?? [];
+            const combinations = (week.competency_combinations ?? [])
+              .filter((row) => row.diagnostics.length > 0);
+            if (weekDiagnostics.length === 0 && combinations.length === 0) return null;
+            return (
+              <div className="mt-competency-advisory-week" key={`diagnostic-${week.week_start}`}>
+                <span>{formatWeekRange(parseIsoDate(week.week_start))}</span>
+                {weekDiagnostics.map((code) => (
+                  <small key={code}>⚑ {competencyDiagnosticLabel(code)}</small>
+                ))}
+                {combinations.map((row) => (
+                  <small key={`${row.competency_ids.join("-")}-${row.required_resource_class_code || "all"}`}>
+                    ⚑ Qualification commune {row.competency_names.join(" + ")} :
+                    {" "}{requestedHours(row.requested_hours)} / {capacityHours(row.common_capacity_hours)} capacité commune.
+                    {" "}Diagnostic indicatif et non additif.
+                  </small>
+                ))}
+              </div>
+            );
+          })}
         </div>
       )}
     </section>

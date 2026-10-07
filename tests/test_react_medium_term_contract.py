@@ -55,7 +55,8 @@ class ReactMediumTermContractTests(unittest.TestCase):
         self.assertIn("current && projectRows.some((project) => project.number === current)", page)
         self.assertIn('<option value="">Tous les projets</option>', page)
         self.assertIn('<option value="">Toutes les tâches</option>', page)
-        self.assertIn('<option value="">Toutes les classes</option>', page)
+        self.assertIn('<option value="">Toutes les classes métier</option>', page)
+        self.assertIn('<option value="">Toutes les classes de compétences</option>', page)
         self.assertIn("task.task_catalog_item_id", page)
         self.assertIn("resourceClass.code", page)
         self.assertNotIn('project.status === "Terminé"', page)
@@ -224,6 +225,54 @@ class ReactMediumTermContractTests(unittest.TestCase):
         self.assertIn("diagnostics={projection?.weekly_diagnostics ?? []}", page)
         self.assertNotIn("work_package_hours /", panel)
         self.assertNotIn("capacity_hours -", panel)
+        self.assertNotIn("* 100", panel)
+        self.assertNotIn(">= 0.85", panel)
+        self.assertNotIn("> 1", panel)
+
+    def test_issue_619c_renders_collapsible_non_additive_competency_rows(self) -> None:
+        panel = (ROOT / "frontend" / "src" / "MediumTermCapacityPanel.tsx").read_text(
+            encoding="utf-8"
+        )
+        page = (ROOT / "frontend" / "src" / "MediumTermPage.tsx").read_text(
+            encoding="utf-8"
+        )
+        api = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
+
+        self.assertIn("MediumTermCompetencyWeekReadModel", api)
+        self.assertIn("MediumTermCompetencyCombinationWeekReadModel", api)
+        self.assertIn("competencies: MediumTermCompetencyWeekReadModel[]", api)
+        self.assertIn(
+            "competency_combinations: MediumTermCompetencyCombinationWeekReadModel[]",
+            api,
+        )
+        self.assertIn("competency_diagnostics: string[]", api)
+        self.assertIn("competencyResourceClassCode?: string", api)
+        self.assertIn(
+            'params.set("competency_resource_class_code", filters.competencyResourceClassCode)',
+            api,
+        )
+
+        self.assertIn("competencyResourceClassFilter", page)
+        self.assertIn("competencyResourceClassCode: competencyResourceClassFilter || undefined", page)
+        self.assertIn("Classe métier de la charge", page)
+        self.assertIn("Classe de regroupement des compétences", page)
+
+        self.assertIn("expandedClasses", panel)
+        self.assertIn("aria-expanded={expanded}", panel)
+        self.assertIn("week.competencies ?? []", panel)
+        self.assertIn("bucket.requested_hours", panel)
+        self.assertIn("bucket.capacity_hours", panel)
+        self.assertIn("bucket.utilization", panel)
+        self.assertIn("bucket.qualifying_resource_count", panel)
+        self.assertIn("bucket.non_additive", panel)
+        self.assertIn("Compétences non additives.", panel)
+        self.assertIn("Ne somme pas les lignes de compétences", panel)
+        self.assertIn("capacité théorique", panel)
+        self.assertIn("Qualification commune", panel)
+        self.assertIn("Diagnostic indicatif et non additif.", panel)
+
+        self.assertNotIn("bucket.requested_hours / bucket.capacity_hours", panel)
+        self.assertNotIn("bucket.capacity_hours -", panel)
         self.assertNotIn("* 100", panel)
         self.assertNotIn(">= 0.85", panel)
         self.assertNotIn("> 1", panel)
