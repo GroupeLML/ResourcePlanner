@@ -583,7 +583,6 @@ function ResourceRow({
   onEditShift,
   onAssignAsset,
   onCreateQuickShift,
-  onOpenDemand,
   dragEnabled,
   manualOrder,
   onDropShift,
@@ -597,7 +596,6 @@ function ResourceRow({
   onEditShift?: (shift: ShiftReadModel) => void;
   onAssignAsset?: (shift: ShiftReadModel) => void;
   onCreateQuickShift?: (resource: ResourceReadModel, day: string) => void;
-  onOpenDemand?: (demandNumber: string) => void;
   dragEnabled: boolean;
   manualOrder?: ManualResourceOrderControls;
   onDropShift: (payload: ShiftDragPayload, resource: ResourceReadModel, day: string) => void;
@@ -1034,9 +1032,7 @@ export default function PlanningPage({
     return [...new Set([
       ...snapshot.resources.map((resource) => resource.resource_class || "Non classé"),
       ...snapshot.pending_loads.flatMap((load) => (
-        load.candidate_windows
-          .map((candidate) => candidate.required_resource_class)
-          .filter((value): value is string => Boolean(value))
+        load.candidate_windows.map((candidate) => candidate.required_resource_class || "Non classé")
       )),
       ...actions
         .filter((action) => action.kind === "ASSIGNMENT")
@@ -1901,7 +1897,6 @@ export default function PlanningPage({
                           setQuickShiftSeed({ resourceId: targetResource.id, day });
                           setQuickShiftOpen(true);
                         } : undefined}
-                        onOpenDemand={setDetailDemandNumber}
                         dragEnabled={canManagePlanning && !dropBusy}
                         manualOrder={canManagePlanning && resourceSortMode === "manual" ? {
                           canMoveUp: manualOrderAvailability.get(resource.id)?.canMoveUp ?? false,
