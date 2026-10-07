@@ -90,6 +90,10 @@ function labelled(scope: Locator, label: string, control: "select" | "input" | "
   return scope.locator("label").filter({ hasText: label }).first().locator(control);
 }
 
+function periodSelect(scope: Locator, label: string) {
+  return scope.locator("span", { hasText: label }).first().locator("..").locator("select");
+}
+
 function combobox(scope: Locator, label: string) {
   return scope.getByRole("combobox", { name: label, exact: true }).first();
 }
@@ -577,10 +581,15 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await labelled(cumulative, "Début", "input").fill(d1);
     await labelled(cumulative, "Fin", "input").fill(d3);
     await labelled(cumulative, "Heures totales", "input").fill("12");
-    await labelled(cumulative, "Ressources simultanées", "input").fill("1");
+    await expect(cumulative.getByText("Quantité effective", { exact: true })).toBeVisible();
+    await expect(cumulative.getByText("Ressources simultanées", { exact: true })).toHaveCount(0);
     await labelled(cumulative, "Jours actifs souhaités", "input").fill("3");
-    await labelled(cumulative, "Confirmation", "select").selectOption("Tentative");
-    await labelled(cumulative, "Ressource proposée", "select").selectOption("Alice");
+    await labelled(cumulative, "Mode de confirmation", "select").selectOption("EXPLICIT");
+    await labelled(cumulative, "Confirmation propre", "select").selectOption("Tentative");
+    await labelled(cumulative, "Mode de ressource", "select").selectOption("EXPLICIT");
+    const aliceResource = periodSelect(cumulative, "Ressource spécifique");
+    await aliceResource.selectOption("R-ALICE");
+    await expect(aliceResource).toHaveValue("R-ALICE");
 
     const alternatives = page.locator(".alternative-option");
     await expect(alternatives).toHaveCount(2);
@@ -591,12 +600,47 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
       await labelled(card, "Début", "input").fill(day);
       await labelled(card, "Fin", "input").fill(day);
       await labelled(card, "Heures totales", "input").fill("8");
-      await labelled(card, "Ressources simultanées", "input").fill("1");
       await labelled(card, "Jours actifs souhaités", "input").fill("1");
-      await labelled(card, "Confirmation", "select").selectOption(confirmation);
-      await labelled(card, "Ressource proposée", "select").selectOption("Bob");
+      await labelled(card, "Mode de confirmation", "select").selectOption("EXPLICIT");
+      await labelled(card, "Confirmation propre", "select").selectOption(confirmation);
+      await labelled(card, "Mode de ressource", "select").selectOption("EXPLICIT");
+      const bobResource = periodSelect(card, "Ressource spécifique");
+      await bobResource.selectOption("R-BOB");
+      await expect(bobResource).toHaveValue("R-BOB");
     }
 
+    const rootPeriodId = (await cumulative.locator(".period-card-heading span").textContent())?.trim();
+    expect(rootPeriodId).toBeTruthy();
+    await page.getByRole("button", { name: /Période cumulative/ }).click();
+    const linked = page.locator(".period-card.cumulative").nth(1);
+    const linkedPeriodId = (await linked.locator(".period-card-heading span").textContent())?.trim();
+    expect(linkedPeriodId).toBeTruthy();
+    await labelled(linked, "Début", "input").fill(d6);
+    await labelled(linked, "Fin", "input").fill(d6);
+    await labelled(linked, "Heures totales", "input").fill("1");
+    await labelled(linked, "Jours actifs souhaités", "input").fill("1");
+    await labelled(linked, "Mode de ressource", "select").selectOption("SAME_AS_PERIOD");
+    await periodSelect(linked, "Même ressource que").selectOption(rootPeriodId!);
+
+    await page.getByRole("button", { name: "Enregistrer les périodes" }).click();
+    await expect(page.locator(".demand-notice").filter({ hasText: "Périodes enregistrées." })).toHaveText("Périodes enregistrées.");
+    await expect(linked).toContainText(`Même personne obligatoire que ${rootPeriodId}`);
+    const persistedPeriods = await context.request.get(
+      `/api/v1/demands/${encodeURIComponent(demandNumber)}/periods`,
+    );
+    expect(persistedPeriods.ok()).toBeTruthy();
+    const persistedPeriodRows = await persistedPeriods.json() as Array<{
+      period_id: string;
+      proposed_resource_mode: string | null;
+      same_as_period_id: string | null;
+      resource_count_provenance: string | null;
+    }>;
+    const persistedLinked = persistedPeriodRows.find((row) => row.period_id === linkedPeriodId);
+    expect(persistedLinked?.proposed_resource_mode).toBe("SAME_AS_PERIOD");
+    expect(persistedLinked?.same_as_period_id).toBe(rootPeriodId);
+    expect(persistedLinked?.resource_count_provenance).toBe("MASTER");
+
+    await linked.getByRole("button", { name: "Retirer" }).click();
     await page.getByRole("button", { name: "Enregistrer les périodes" }).click();
     await expect(page.locator(".demand-notice").filter({ hasText: "Périodes enregistrées." })).toHaveText("Périodes enregistrées.");
     await alternatives.nth(0).getByRole("button", { name: "Retenir cette option" }).click();
@@ -1327,7 +1371,7 @@ test("coordinator splits and duplicates a shift atomically from React", async ({
   await navigateMain(page, "Planning opérationnel");
   await page.getByRole("button", { name: /Suivante/ }).click();
 
-  await page.getByRole("button", { name: /Quick Shift/ }).click();
+  await page.getByRole("button", { name: "+ Quick Shift", exact: true }).click();
   const quickShift = page.getByRole("dialog", { name: "Créer un Quick Shift" });
   await chooseCombobox(quickShift, "Projet", "251", "P-251");
   await chooseCombobox(quickShift, "Technicien", "ALI", "Alice");
@@ -1590,8 +1634,9 @@ test("multi-line demand editor generates independent RequestLines and materializ
   await labelled(linePeriod, "Début", "input").fill(d1);
   await labelled(linePeriod, "Fin", "input").fill(d1);
   await labelled(linePeriod, "Heures totales", "input").fill("8");
-  await expect(labelled(linePeriod, "Ressources simultanées", "input")).toBeDisabled();
-  await expect(labelled(linePeriod, "Ressources simultanées", "input")).toHaveValue("1");
+  await expect(linePeriod.getByText("Quantité effective", { exact: true })).toBeVisible();
+  await expect(linePeriod).toContainText("1 ressource(s)");
+  await expect(linePeriod.getByText("Ressources simultanées", { exact: true })).toHaveCount(0);
   await projectManager.page.getByRole("button", { name: "Enregistrer les périodes" }).click();
   await expect(projectManager.page.locator(".demand-notice").filter({ hasText: "Périodes enregistrées." })).toHaveText("Périodes enregistrées.");
 
@@ -1603,7 +1648,9 @@ test("multi-line demand editor generates independent RequestLines and materializ
   await labelled(linePeriod, "Début", "input").fill(d2);
   await labelled(linePeriod, "Fin", "input").fill(d2);
   await labelled(linePeriod, "Heures totales", "input").fill("8");
-  await expect(labelled(linePeriod, "Ressources simultanées", "input")).toBeDisabled();
+  await expect(linePeriod.getByText("Quantité effective", { exact: true })).toBeVisible();
+  await expect(linePeriod).toContainText("1 ressource(s)");
+  await expect(linePeriod.getByText("Ressources simultanées", { exact: true })).toHaveCount(0);
   await projectManager.page.getByRole("button", { name: "Enregistrer les périodes" }).click();
   await expect(projectManager.page.locator(".demand-notice").filter({ hasText: "Périodes enregistrées." })).toHaveText("Périodes enregistrées.");
 
@@ -2127,10 +2174,15 @@ test("materialized demand cancellation is requested, reviewed, rejected or accep
   await labelled(materializedPeriod, "Début", "input").fill(d5);
   await labelled(materializedPeriod, "Fin", "input").fill(d5);
   await labelled(materializedPeriod, "Heures totales", "input").fill("8");
-  await labelled(materializedPeriod, "Ressources simultanées", "input").fill("1");
+  await expect(materializedPeriod.getByText("Quantité effective", { exact: true })).toBeVisible();
+  await expect(materializedPeriod.getByText("Ressources simultanées", { exact: true })).toHaveCount(0);
   await labelled(materializedPeriod, "Jours actifs souhaités", "input").fill("1");
-  await labelled(materializedPeriod, "Confirmation", "select").selectOption("Confirmée");
-  await labelled(materializedPeriod, "Ressource proposée", "select").selectOption("Alice");
+  await labelled(materializedPeriod, "Mode de confirmation", "select").selectOption("EXPLICIT");
+  await labelled(materializedPeriod, "Confirmation propre", "select").selectOption("Confirmée");
+  await labelled(materializedPeriod, "Mode de ressource", "select").selectOption("EXPLICIT");
+  const materializedResource = periodSelect(materializedPeriod, "Ressource spécifique");
+  await materializedResource.selectOption("R-ALICE");
+  await expect(materializedResource).toHaveValue("R-ALICE");
   await requester.page.getByRole("button", { name: "Enregistrer les périodes" }).click();
   await expect(
     requester.page.locator(".demand-notice").filter({ hasText: "Périodes enregistrées." }).first(),

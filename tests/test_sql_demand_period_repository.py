@@ -240,14 +240,25 @@ class SqlDemandPeriodRepositoryTests(unittest.TestCase):
                         proposed_resource_mode=PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD,
                         same_as_period_id="P1",
                     ),
+                    DemandPeriodDefinition(
+                        period_id="P3",
+                        start_date=DAY_2,
+                        end_date=DAY_2,
+                        hours=4,
+                        proposed_resource_mode=PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD,
+                        same_as_period_id="P2",
+                    ),
                 ),
             )
 
             by_id = {row.period_id: row for row in rows}
             self.assertEqual(by_id["P2"].proposed_resource_mode, "SAME_AS_PERIOD")
             self.assertEqual(by_id["P2"].same_as_period_id, "P1")
+            self.assertEqual(by_id["P2"].same_as_root_period_id, "P1")
             self.assertEqual(by_id["P2"].same_as_state, "ACTIVE")
             self.assertIsNone(by_id["P2"].proposed_resource)
+            self.assertEqual(by_id["P3"].same_as_period_id, "P2")
+            self.assertEqual(by_id["P3"].same_as_root_period_id, "P1")
             physical = session.scalar(
                 select(WorkforceRequestPeriod).where(
                     WorkforceRequestPeriod.period_key == "P2",

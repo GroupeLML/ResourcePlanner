@@ -295,7 +295,7 @@ jobs:
   sqlserver-live-573e:
     name: SQL Server live 363F / 573E / 594D
     needs: changes
-    if: ${{ startsWith(github.event.pull_request.title, '363F') || startsWith(github.event.pull_request.title, '573E') || startsWith(github.event.pull_request.title, '594D') }}
+    if: ${{ startsWith(github.event.pull_request.title, '363F') || startsWith(github.event.pull_request.title, '573E') || startsWith(github.event.pull_request.title, '594D') || startsWith(github.event.pull_request.title, '655C') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -391,6 +391,7 @@ jobs:
                 tests.test_project_manager_legacy_diagnostic \
                 tests.test_operational_responsibility_sqlserver_concurrency \
                 tests.test_planning_window_override_sqlserver_concurrency \
+                tests.test_same_resource_periods \
                 tests.test_verification_execution_sqlserver_concurrency &&
               python tools/diagnose_project_manager_legacy_links.py --json
             '
