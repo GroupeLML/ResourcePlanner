@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from datetime import date, timedelta
 import unicodedata
 
-from sqlalchemy import or_, select, true
+from sqlalchemy import case, false, or_, select, true
 from sqlalchemy.orm import Session, aliased
 
 from ...application.query_models import (
@@ -118,6 +118,11 @@ def _optional_text(value: object) -> str | None:
 def _normalized_text(value: object) -> str:
     text = unicodedata.normalize("NFKD", _text(value)).encode("ascii", "ignore").decode("ascii")
     return " ".join(text.casefold().split())
+
+
+def _boolean_projection(expression):
+    """Project a SQL predicate as a portable scalar boolean value."""
+    return case((expression, true()), else_=false())
 
 
 def _split_competencies(value: object) -> tuple[str, ...]:
@@ -2065,7 +2070,9 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                     ResourceCompetency.competency_id.label(
                         "held_required_competency_id"
                     ),
-                    qualification_exists.label("human_compatible"),
+                    _boolean_projection(qualification_exists).label(
+                        "human_compatible"
+                    ),
                 )
                 .outerjoin(
                     AssetAllocation,
