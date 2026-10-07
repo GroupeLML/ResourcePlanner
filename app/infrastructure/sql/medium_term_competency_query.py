@@ -328,8 +328,9 @@ def _load_demand_units(
             continue
 
         if demand.line_mode:
-            for line in demand.lines:
-                if not line.active or _text(line.kind).upper() != "WORKFORCE":
+            active_lines = tuple(line for line in demand.lines if line.active)
+            for line in active_lines:
+                if _text(line.kind).upper() != "WORKFORCE":
                     continue
                 raw_line = line_by_id.get(line.line_id)
                 if not _matches_task_filter(
@@ -373,7 +374,18 @@ def _load_demand_units(
                             if line.estimated_hours is not None
                             else None
                         ),
-                        periods=tuple(periods_by_line.get(line.line_id, ())),
+                        periods=(
+                            tuple(periods_by_line.get(line.line_id, ()))
+                            or (
+                                tuple(
+                                    row
+                                    for row in periods_by_request.get(request.id, ())
+                                    if row.request_line_id in (None, line.line_id)
+                                )
+                                if len(active_lines) == 1
+                                else ()
+                            )
+                        ),
                     )
                 )
             continue
@@ -454,6 +466,15 @@ def build_medium_term_competency_projection(
     allowed_task_codes_by_project: Mapping[str, frozenset[str]] | None = None,
 ) -> MediumTermCompetencyProjection:
     """Build the ADR-028 non-additive weekly skill analytics."""
+
+    if not project_ids:
+        return MediumTermCompetencyProjection(
+            window_start=start,
+            window_end=end,
+            skills_by_week={},
+            combinations_by_week={},
+            diagnostics_by_week={},
+        )
 
     units, selected_period_ids = _load_demand_units(
         session,
