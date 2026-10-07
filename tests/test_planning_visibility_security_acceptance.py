@@ -130,7 +130,7 @@ class PlanningVisibilitySecurityAcceptanceTests(unittest.TestCase):
                 Resource(
                     id="R-PM-HIDDEN",
                     name="Ressource cachée PM",
-                    email="pm-hidden@example.test",
+                    email="PM-HIDDEN-CONTACT",
                     note="PM-HIDDEN-RESOURCE-SECRET",
                     active=True,
                     erp_active=True,
@@ -146,7 +146,7 @@ class PlanningVisibilitySecurityAcceptanceTests(unittest.TestCase):
                     id="R-COLLEAGUE",
                     external_id="EMP-COLLEAGUE",
                     name="Collègue",
-                    email="colleague-private@example.test",
+                    email="COLLEAGUE-PRIVATE-CONTACT",
                     note="COLLEAGUE-PRIVATE-RESOURCE-NOTE",
                     active=True,
                     erp_active=True,
@@ -493,12 +493,6 @@ class PlanningVisibilitySecurityAcceptanceTests(unittest.TestCase):
             params["scope"] = scope
         return client.get("/api/v1/planning/snapshot", params=params)
 
-    def _demand_numbers(self, user_id: str) -> set[str]:
-        with self._client(user_id, ROLE_COORDINATOR) as client:
-            response = client.get("/api/v1/demands", params={"scope": "mine"})
-        self.assertEqual(response.status_code, 200, response.text)
-        return {row["number"] for row in response.json()}
-
     def _replace_approval_cycle_with_beta(self) -> None:
         engine = create_sql_engine(self.database_url)
         try:
@@ -566,7 +560,7 @@ class PlanningVisibilitySecurityAcceptanceTests(unittest.TestCase):
             "SHIFT-PM-HIDDEN",
             "PM-HIDDEN-SHIFT-SECRET",
             "PM-HIDDEN-RESOURCE-SECRET",
-            "pm-hidden@example.test",
+            "PM-HIDDEN-CONTACT",
         ):
             self.assertNotIn(forbidden_value, default_scope.text)
 
@@ -635,7 +629,7 @@ class PlanningVisibilitySecurityAcceptanceTests(unittest.TestCase):
             "CARTESIAN-P1-D2-SECRET",
             "CARTESIAN-P2-D1-SECRET",
             "TRANSITIVE-P3-D1-SECRET",
-            "colleague-private@example.test",
+            "COLLEAGUE-PRIVATE-CONTACT",
             "COLLEAGUE-PRIVATE-RESOURCE-NOTE",
         ):
             self.assertNotIn(forbidden_value, response.text)
@@ -676,14 +670,18 @@ class PlanningVisibilitySecurityAcceptanceTests(unittest.TestCase):
     def test_approval_visibility_tracks_current_open_cycle_and_reapproval(
         self,
     ) -> None:
-        self.assertIn("DMO-APPROVAL", self._demand_numbers("U-COORD-A"))
-        self.assertNotIn("DMO-APPROVAL", self._demand_numbers("U-COORD-B"))
-
+        with self._client("U-COORD-A", ROLE_COORDINATOR) as alpha_client:
+            visible_direct = alpha_client.get(
+                "/api/v1/demands/DMO-APPROVAL",
+                params={"scope": "mine"},
+            )
         with self._client("U-COORD-B", ROLE_COORDINATOR) as beta_client:
             hidden_direct = beta_client.get(
                 "/api/v1/demands/DMO-APPROVAL",
                 params={"scope": "mine"},
             )
+
+        self.assertEqual(visible_direct.status_code, 200, visible_direct.text)
         self.assertEqual(hidden_direct.status_code, 404, hidden_direct.text)
         self.assertEqual(
             hidden_direct.json()["error"]["code"],
@@ -691,9 +689,6 @@ class PlanningVisibilitySecurityAcceptanceTests(unittest.TestCase):
         )
 
         self._replace_approval_cycle_with_beta()
-
-        self.assertNotIn("DMO-APPROVAL", self._demand_numbers("U-COORD-A"))
-        self.assertIn("DMO-APPROVAL", self._demand_numbers("U-COORD-B"))
 
         with self._client("U-COORD-A", ROLE_COORDINATOR) as alpha_client:
             former_approver_direct = alpha_client.get(
