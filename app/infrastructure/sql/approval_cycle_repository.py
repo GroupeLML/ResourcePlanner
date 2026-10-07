@@ -207,6 +207,8 @@ class SqlApprovalCycleRepository:
         for line in lines:
             values: list[tuple[str, str | None]] = []
             for period in periods_by_line.get(line.id, []):
+                if period.inheritance_contract_version is None:
+                    continue
                 resolved = resolve_period_authority(
                     contract_version=period.inheritance_contract_version,
                     stored_resource_count=period.resource_count,
