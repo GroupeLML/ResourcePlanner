@@ -29,6 +29,7 @@ class ApprovalSubjectRoutingEntry:
     source_kinds: tuple[str, ...]
     proposed_resource_id: str | None = None
     proposed_asset_id: str | None = None
+    period_proposed_resources: tuple[tuple[str, str | None], ...] = ()
 
     def canonical_payload(self) -> dict[str, object]:
         sources = tuple(sorted({str(value) for value in self.source_kinds if str(value)}))
@@ -52,6 +53,19 @@ class ApprovalSubjectRoutingEntry:
         }
         # ASSET_TYPE is emitted only by new #534 cycles. Omitting this key for older
         # cycles preserves their historical fingerprint instead of forcing a backfill.
+        if self.period_proposed_resources:
+            payload["period_proposed_resources"] = [
+                {
+                    "period_key": str(period_key),
+                    "proposed_resource_id": (
+                        str(resource_id) if resource_id is not None else None
+                    ),
+                }
+                for period_key, resource_id in sorted(
+                    self.period_proposed_resources,
+                    key=lambda row: (str(row[0]), str(row[1] or "")),
+                )
+            ]
         if "ASSET_TYPE" in sources:
             payload["proposed_asset_id"] = (
                 str(self.proposed_asset_id)
