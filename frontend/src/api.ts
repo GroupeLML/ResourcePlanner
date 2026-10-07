@@ -1159,6 +1159,7 @@ export type PlanningActionReadModel = {
   start_date: string;
   end_date: string;
   planned_hours: number;
+  required_resource_class: string | null;
   required_competency: string | null;
   required_competency_id: string | null;
   priority: string | null;
