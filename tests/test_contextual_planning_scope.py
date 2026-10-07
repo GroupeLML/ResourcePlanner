@@ -238,6 +238,48 @@ class ContextualPlanningScopeTests(unittest.TestCase):
             {"P-100"},
         )
 
+    def test_project_manager_defaults_to_mine_and_global_is_forbidden(self) -> None:
+        window = {
+            "start": DAY.isoformat(),
+            "end": DAY.isoformat(),
+        }
+        with self.client_for("EMP-PM") as client:
+            default_scope = client.get(
+                "/api/v1/planning/snapshot",
+                params=window,
+            )
+            forbidden_global = client.get(
+                "/api/v1/planning/snapshot",
+                params={**window, "scope": "global"},
+            )
+
+        self.assertEqual(default_scope.status_code, 200, default_scope.text)
+        self.assertEqual(
+            {row["project_number"] for row in default_scope.json()["shifts"]},
+            {"P-100"},
+        )
+        self.assertEqual(forbidden_global.status_code, 403, forbidden_global.text)
+        self.assertEqual(
+            forbidden_global.json()["error"]["code"],
+            "planning_scope_not_authorized",
+        )
+
+    def test_hidden_segment_detail_does_not_leak_outside_project_scope(self) -> None:
+        with self.client_for("EMP-PM") as client:
+            visible = client.get(
+                "/api/v1/segments/SEG-MINE",
+                params={"scope": "mine"},
+            )
+            hidden = client.get(
+                "/api/v1/segments/SEG-OUT",
+                params={"scope": "mine"},
+            )
+
+        self.assertEqual(visible.status_code, 200, visible.text)
+        self.assertEqual(visible.json()["project_number"], "P-100")
+        self.assertEqual(hidden.status_code, 404, hidden.text)
+        self.assertEqual(hidden.json()["error"]["code"], "segment_not_found")
+
     def test_contextual_capacity_keeps_outside_project_occupation(self) -> None:
         params = {
             "start": DAY.isoformat(),
