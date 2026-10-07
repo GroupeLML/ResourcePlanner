@@ -471,16 +471,6 @@ def build_medium_term_competency_projection(
 ) -> MediumTermCompetencyProjection:
     """Build the ADR-028 non-additive weekly skill analytics."""
 
-    if not project_ids:
-        return MediumTermCompetencyProjection(
-            window_start=start,
-            window_end=end,
-            class_capacity_by_week={},
-            skills_by_week={},
-            combinations_by_week={},
-            diagnostics_by_week={},
-        )
-
     units, selected_period_ids = _load_demand_units(
         session,
         demands=demands,
