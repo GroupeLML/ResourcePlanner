@@ -28,6 +28,11 @@ export type DevUserSwitcherState = {
 
 export type UserViewScope = "mine" | "global";
 
+export type PlanningViewPolicy = {
+  available_scopes: UserViewScope[];
+  default_scope: UserViewScope | null;
+};
+
 export type UserViewContext = {
   resource: {
     id: string | null;
@@ -101,6 +106,18 @@ export async function getCurrentUserViewContext(
   });
   if (!response.ok) throw await apiError(response);
   return response.json() as Promise<UserViewContext>;
+}
+
+export async function getCurrentPlanningViewPolicy(
+  signal?: AbortSignal,
+): Promise<PlanningViewPolicy> {
+  const response = await fetch(`${API_BASE}/api/v1/me/planning-policy`, {
+    headers: { Accept: "application/json", ...csrfHeaders() },
+    credentials: "include",
+    signal,
+  });
+  if (!response.ok) throw await apiError(response);
+  return response.json() as Promise<PlanningViewPolicy>;
 }
 
 export async function logoutCurrentSession(): Promise<void> {
