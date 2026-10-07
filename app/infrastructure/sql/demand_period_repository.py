@@ -342,6 +342,17 @@ class SqlDemandPeriodRepository(DemandPeriodRepositoryPort):
             periods,
             allow_unbudgeted=_text(line.kind).upper() == "ASSET",
         )
+        has_same_as = any(
+            normalized_proposed_resource_mode(period.proposed_resource_mode)
+            == PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD
+            for period in periods
+        )
+        if has_same_as and _text(line.kind).upper() != "WORKFORCE":
+            raise ValueError("SAME_AS_PERIOD est limité aux périodes humaines.")
+        if has_same_as and max(int(line.slot_count or 1), 1) != 1:
+            raise ValueError(
+                "SAME_AS_PERIOD exige une quantité effective de 1 sur la ligne."
+            )
         if _text(line.kind).upper() == "ASSET" and any(
             period.proposed_resource for period in periods
         ):

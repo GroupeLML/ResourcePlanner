@@ -37,6 +37,7 @@ from .models import (
 from .planning_repository import SqlPlanningReadRepository
 from .planning_version import SqlPlanningMutationVersionRepository
 from .segment_repository import SqlSegmentRepository
+from .same_resource_periods import SqlSameResourcePeriodCoordinator
 
 
 INACTIVE_REQUIREMENT_STATUSES = {"Annulé", "Terminé"}
@@ -99,6 +100,8 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
 
     def rebuild(self) -> Mapping[str, Any]:
         self._versioning.acquire()
+        same_resource = SqlSameResourcePeriodCoordinator(self._session)
+        same_resource_summary = same_resource.enforce_targets()
         snapshot = SqlPlanningReadRepository(self._session).capture()
         calculation = project_planning_snapshot(snapshot)
         if calculation.unsupported_segment_ids:
@@ -176,6 +179,7 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
                 )
             )
         self._session.flush()
+        same_resource.assert_shift_invariant()
 
         persisted_protected = (
             set(
@@ -204,6 +208,8 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
             "overtime_hours": round(result.overtime_hours, 2),
             "unallocated_hours": round(result.unallocated_hours, 2),
             "planning_engine": "pure",
+            "same_resource_groups": same_resource_summary.group_count,
+            "same_resource_unresolved_groups": same_resource_summary.unresolved_group_count,
         }
 
 
@@ -476,9 +482,14 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
         self._versioning.acquire()
         requirement = self._requirement(segment_id)
         resource = self._resource(technician)
-        requirement.assigned_resource_id = resource.id
-        requirement.status = "Planifié"
-        self._session.flush()
+        grouped = SqlSameResourcePeriodCoordinator(self._session).retarget_component(
+            requirement.id,
+            resource.id,
+        )
+        if not grouped:
+            requirement.assigned_resource_id = resource.id
+            requirement.status = "Planifié"
+            self._session.flush()
         return self._planning.rebuild()
 
 

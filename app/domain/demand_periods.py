@@ -154,7 +154,7 @@ def resolve_period_authority(
             raise ValueError("SAME_AS_PERIOD requiert un identifiant logique de période cible.")
         effective_resource = None
         resource_provenance = PERIOD_PROVENANCE_SAME_AS
-        same_as_state = "DEFERRED_655B"
+        same_as_state = "ACTIVE"
 
     return PeriodAuthorityResolution(
         resource_count=effective_count,
@@ -227,6 +227,42 @@ def validate_period_definitions(periods: Sequence[DemandPeriodDefinition], *, al
             raise ValueError(
                 f"La période cumulative {identifier} ne peut pas avoir de groupe alternatif."
             )
+
+    period_by_id = {_text(period.period_id): period for period in periods}
+    same_as_edges: dict[str, str] = {}
+    for period in periods:
+        identifier = _text(period.period_id)
+        if normalized_proposed_resource_mode(period.proposed_resource_mode) != PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD:
+            continue
+        target_id = _text(period.same_as_period_id)
+        target = period_by_id.get(target_id)
+        if target is None:
+            raise ValueError(
+                f"La période {identifier} référence une période SAME_AS_PERIOD introuvable: {target_id}."
+            )
+        if _text(period.kind).upper() != PERIOD_KIND_CUMULATIVE or _text(target.kind).upper() != PERIOD_KIND_CUMULATIVE:
+            raise ValueError("SAME_AS_PERIOD est limité aux périodes cumulatives.")
+        if _text(period.alternative_group) or _text(target.alternative_group):
+            raise ValueError("SAME_AS_PERIOD ne peut pas relier des périodes alternatives.")
+        same_as_edges[identifier] = target_id
+
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(identifier: str) -> None:
+        if identifier in visited:
+            return
+        if identifier in visiting:
+            raise ValueError("Les références SAME_AS_PERIOD ne peuvent pas former de cycle.")
+        visiting.add(identifier)
+        target_id = same_as_edges.get(identifier)
+        if target_id is not None:
+            visit(target_id)
+        visiting.remove(identifier)
+        visited.add(identifier)
+
+    for identifier in same_as_edges:
+        visit(identifier)
 
     singleton_groups = sorted(group for group, count in group_counts.items() if count < 2)
     if singleton_groups:

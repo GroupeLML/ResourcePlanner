@@ -24,6 +24,7 @@ from app.domain.approval_envelope import (
 from app.domain.demand_periods import (
     PERIOD_KIND_ALTERNATIVE,
     PERIOD_KIND_CUMULATIVE,
+    PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD,
 )
 
 
@@ -159,6 +160,98 @@ class ApprovalEnvelopeNormalizationTests(unittest.TestCase):
             sum((entry.hours for entry in envelope.entries), Decimal("0")),
             Decimal("118.00"),
         )
+
+    def test_same_as_period_chain_is_part_of_the_authorized_topology(self) -> None:
+        line = EnvelopeLineDefinition(
+            line_id="LINE-SAME",
+            project_id="PROJECT-1",
+            slot_count=1,
+            periods=(
+                EnvelopePeriodDefinition(
+                    period_key="A",
+                    start_date=DAY_1,
+                    end_date=DAY_1,
+                    hours=4,
+                    kind=PERIOD_KIND_CUMULATIVE,
+                ),
+                EnvelopePeriodDefinition(
+                    period_key="B",
+                    start_date=DAY_2,
+                    end_date=DAY_2,
+                    hours=4,
+                    kind=PERIOD_KIND_CUMULATIVE,
+                    proposed_resource_mode=PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD,
+                    same_as_period_key="A",
+                ),
+                EnvelopePeriodDefinition(
+                    period_key="C",
+                    start_date=DAY_3,
+                    end_date=DAY_3,
+                    hours=4,
+                    kind=PERIOD_KIND_CUMULATIVE,
+                    proposed_resource_mode=PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD,
+                    same_as_period_key="B",
+                ),
+            ),
+        )
+
+        envelope = normalize_approval_envelope((line,))
+
+        self.assertEqual(
+            [entry.same_as_period_key for entry in envelope.entries],
+            [None, "A", "B"],
+        )
+
+    def test_same_as_period_rejects_target_outside_the_line(self) -> None:
+        line = EnvelopeLineDefinition(
+            line_id="LINE-SAME",
+            project_id="PROJECT-1",
+            slot_count=1,
+            periods=(
+                EnvelopePeriodDefinition(
+                    period_key="B",
+                    start_date=DAY_2,
+                    end_date=DAY_2,
+                    hours=4,
+                    kind=PERIOD_KIND_CUMULATIVE,
+                    proposed_resource_mode=PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD,
+                    same_as_period_key="OTHER-LINE-PERIOD",
+                ),
+            ),
+        )
+
+        with self.assertRaisesRegex(ValueError, "même ligne"):
+            normalize_approval_envelope((line,))
+
+    def test_same_as_period_rejects_multi_slot_line(self) -> None:
+        line = EnvelopeLineDefinition(
+            line_id="LINE-SAME",
+            project_id="PROJECT-1",
+            slot_count=2,
+            periods=(
+                EnvelopePeriodDefinition(
+                    period_key="A",
+                    start_date=DAY_1,
+                    end_date=DAY_1,
+                    hours=4,
+                    resource_count=2,
+                    kind=PERIOD_KIND_CUMULATIVE,
+                ),
+                EnvelopePeriodDefinition(
+                    period_key="B",
+                    start_date=DAY_2,
+                    end_date=DAY_2,
+                    hours=4,
+                    resource_count=2,
+                    kind=PERIOD_KIND_CUMULATIVE,
+                    proposed_resource_mode=PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD,
+                    same_as_period_key="A",
+                ),
+            ),
+        )
+
+        with self.assertRaisesRegex(ValueError, "quantité effective 1"):
+            normalize_approval_envelope((line,))
 
     def test_alternative_group_rejects_two_active_selections(self) -> None:
         line = EnvelopeLineDefinition(

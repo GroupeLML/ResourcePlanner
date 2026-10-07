@@ -111,7 +111,7 @@ class DemandPeriodPolicyTests(unittest.TestCase):
         self.assertEqual(resolved.proposed_resource_provenance, PERIOD_PROVENANCE_EXPLICIT)
         self.assertEqual(resolved.resource_count, 2)
 
-    def test_same_as_period_is_only_projected_until_655b(self) -> None:
+    def test_same_as_period_contract_is_active_without_inventing_a_resource(self) -> None:
         resolved = resolve_period_authority(
             contract_version=PERIOD_INHERITANCE_CONTRACT_VERSION,
             stored_resource_count=1,
@@ -128,7 +128,43 @@ class DemandPeriodPolicyTests(unittest.TestCase):
         self.assertIsNone(resolved.proposed_resource)
         self.assertEqual(resolved.proposed_resource_provenance, PERIOD_PROVENANCE_SAME_AS)
         self.assertEqual(resolved.same_as_period_id, "P-ROOT")
-        self.assertEqual(resolved.same_as_state, "DEFERRED_655B")
+        self.assertEqual(resolved.same_as_state, "ACTIVE")
+
+    def test_same_as_period_rejects_missing_target(self) -> None:
+        periods = (
+            DemandPeriodDefinition(
+                period_id="P2",
+                start_date=DAY_2,
+                end_date=DAY_2,
+                hours=4,
+                proposed_resource_mode=PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD,
+                same_as_period_id="P1",
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "introuvable"):
+            validate_period_definitions(periods)
+
+    def test_same_as_period_rejects_transitive_cycle(self) -> None:
+        periods = (
+            DemandPeriodDefinition(
+                period_id="P1",
+                start_date=DAY_1,
+                end_date=DAY_1,
+                hours=4,
+                proposed_resource_mode=PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD,
+                same_as_period_id="P2",
+            ),
+            DemandPeriodDefinition(
+                period_id="P2",
+                start_date=DAY_2,
+                end_date=DAY_2,
+                hours=4,
+                proposed_resource_mode=PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD,
+                same_as_period_id="P1",
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "cycle"):
+            validate_period_definitions(periods)
 
     def test_unresolved_alternative_group_materializes_neither_option(self) -> None:
         periods = self.alternatives()

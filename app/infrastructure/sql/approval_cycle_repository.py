@@ -205,11 +205,12 @@ class SqlApprovalCycleRepository:
 
         period_routing_by_line: dict[str, tuple[tuple[str, str | None], ...]] = {}
         for line in lines:
-            values: list[tuple[str, str | None]] = []
-            for period in periods_by_line.get(line.id, []):
+            line_periods = periods_by_line.get(line.id, [])
+            resolved_by_key = {}
+            for period in line_periods:
                 if period.inheritance_contract_version is None:
                     continue
-                resolved = resolve_period_authority(
+                resolved_by_key[period.period_key] = resolve_period_authority(
                     contract_version=period.inheritance_contract_version,
                     stored_resource_count=period.resource_count,
                     stored_confirmation=period.confirmation,
@@ -221,18 +222,41 @@ class SqlApprovalCycleRepository:
                     master_confirmation=line.confirmation,
                     master_proposed_resource=line.proposed_resource_id,
                 )
-                if resolved.same_as_state is not None:
+
+            routing_cache: dict[str, str | None] = {}
+            visiting: set[str] = set()
+
+            def routing_resource(period_key: str) -> str | None:
+                if period_key in routing_cache:
+                    return routing_cache[period_key]
+                if period_key in visiting:
                     raise ApplicationConflictError(
-                        "SAME_AS_PERIOD ne peut pas participer au routage avant 655B.",
-                        code="approval_cycle_same_as_period_not_active",
-                        context={
-                            "request_line_id": line.id,
-                            "period_key": period.period_key,
-                            "same_as_period_key": resolved.same_as_period_id,
-                        },
+                        "Les références SAME_AS_PERIOD forment un cycle.",
+                        code="approval_cycle_same_as_period_cycle",
+                        context={"request_line_id": line.id, "period_key": period_key},
                     )
-                values.append((period.period_key, resolved.proposed_resource))
-            period_routing_by_line[line.id] = tuple(values)
+                resolved = resolved_by_key.get(period_key)
+                if resolved is None:
+                    raise ApplicationConflictError(
+                        "La période SAME_AS_PERIOD cible est introuvable pour le routage.",
+                        code="approval_cycle_same_as_period_target_missing",
+                        context={"request_line_id": line.id, "period_key": period_key},
+                    )
+                if resolved.same_as_state is None:
+                    routing_cache[period_key] = resolved.proposed_resource
+                    return resolved.proposed_resource
+                target_key = _text(resolved.same_as_period_id)
+                visiting.add(period_key)
+                resource_id = routing_resource(target_key)
+                visiting.remove(period_key)
+                routing_cache[period_key] = resource_id
+                return resource_id
+
+            period_routing_by_line[line.id] = tuple(
+                (period.period_key, routing_resource(period.period_key))
+                for period in line_periods
+                if period.period_key in resolved_by_key
+            )
         task_ids = {
             task_id for task_id in effective_task_ids.values() if task_id
         }
