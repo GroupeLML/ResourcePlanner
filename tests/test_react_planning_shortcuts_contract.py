@@ -66,7 +66,7 @@ class ReactPlanningShortcutContractTests(unittest.TestCase):
         planning = (ROOT / "frontend" / "src" / "PlanningPage.tsx").read_text(encoding="utf-8")
         styles = (ROOT / "frontend" / "src" / "styles.css").read_text(encoding="utf-8")
 
-        shift_card = planning[planning.index("function ShiftCard({"):planning.index("function PendingLoadCard(")]
+        shift_card = planning[planning.index("function ShiftCard({"):planning.index("function PendingGhostCard(")]
         self.assertIn("<article", shift_card)
         self.assertIn('className="shift-card-main"', shift_card)
         self.assertIn('className="shift-asset-action"', shift_card)

@@ -53,6 +53,7 @@ import {
   hasShiftDrag,
   readSegmentDrag,
   readShiftDrag,
+  writeSegmentDrag,
   writeShiftDrag,
 } from "./planningDragDrop";
 import { assignSegment } from "./segments-api";
