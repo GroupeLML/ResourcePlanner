@@ -16,6 +16,12 @@ async function openRole(browser: Browser, role: "ADMIN" | "PROJECT_MANAGER", exp
 
 async function navigatePlanning(page: Page) {
   await page.locator(".main-nav").getByRole("button", { name: /Planning opérationnel/i }).click();
+  // PROJECT_MANAGER defaults to "Mon périmètre". This acceptance compares the
+  // same global resource catalog across identities, independently of view scope.
+  const globalScope = page.getByRole("button", { name: "Vue globale", exact: true });
+  if (await globalScope.isVisible()) {
+    await globalScope.click();
+  }
   await expect(page.getByLabel("Ordre des ressources")).toHaveValue("manual");
 }
 
