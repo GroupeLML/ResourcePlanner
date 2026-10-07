@@ -215,6 +215,7 @@ class PlannerQueryPort(Protocol):
         end: date | None = None,
         resource_name: str | None = None,
         resource_id: str | None = None,
+        allocation_id: str | None = None,
         project_ids: Sequence[str] | None = None,
         demand_ids: Sequence[str] | None = None,
         visible_resource_ids: Sequence[str] = (),
