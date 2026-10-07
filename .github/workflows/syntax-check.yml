@@ -262,11 +262,19 @@ jobs:
 
           auth = load("/tmp/auth.json")
           assert auth["auth_mode"] == "local", auth
-          assert auth["local_user_id"] is None, auth
+          assert auth["local_user_id"] is not None, auth
           assert "ADMIN" in auth["roles"], auth
 
+          users = load("/tmp/users.json")
+          assert len(users) == 1, users
+          bootstrap = users[0]
+          assert bootstrap["user_id"] == auth["local_user_id"], (bootstrap, auth)
+          assert bootstrap["issuer"] == auth["issuer"] == "urn:resourceplanner:local", (bootstrap, auth)
+          assert bootstrap["subject"] == auth["subject"] == "local-user", (bootstrap, auth)
+          assert bootstrap["active"] is True, bootstrap
+          assert "ADMIN" in bootstrap["roles"], bootstrap
+
           for path in (
-              "/tmp/users.json",
               "/tmp/projects.json",
               "/tmp/tasks.json",
               "/tmp/work-packages.json",
