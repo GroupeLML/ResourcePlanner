@@ -336,7 +336,10 @@ class DemandService:
             period.kind,
             period.alternative_group,
             period.confirmation,
+            period.confirmation_mode,
             period.proposed_resource,
+            period.proposed_resource_mode,
+            period.same_as_period_id,
             int(period.resource_count),
             period.desired_active_days,
             period.note,
@@ -916,18 +919,6 @@ class DemandService:
                     "request_line_id": request_line_id,
                 },
             ) from exc
-
-        if request_line_id is not None and any(
-            int(row.resource_count) != 1 for row in definitions
-        ):
-            raise ApplicationValidationError(
-                "Une période rattachée à une RequestLine représente exactement un slot.",
-                code="demand_line_period_resource_count_invalid",
-                context={
-                    "demand_number": number,
-                    "request_line_id": request_line_id,
-                },
-            )
 
         current = call_application_port(
             lambda: (
