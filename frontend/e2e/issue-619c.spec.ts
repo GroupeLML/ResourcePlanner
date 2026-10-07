@@ -125,7 +125,7 @@ test("#619C replie les classes et expose les compétences non additives", async 
     await expect(page.getByText("Compétences non additives.")).toBeVisible();
     await expect(page.locator(".mt-capacity-label.is-competency")).toHaveCount(0);
 
-    const classToggle = page.getByRole("button", { name: /Automatisation.*2 compétence/i });
+    const classToggle = page.locator(".mt-capacity-class-toggle").filter({ hasText: "Automatisation" }).first();
     await expect(classToggle).toHaveAttribute("aria-expanded", "false");
     await classToggle.click();
     await expect(classToggle).toHaveAttribute("aria-expanded", "true");
