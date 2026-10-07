@@ -4,11 +4,22 @@ from datetime import date
 import unittest
 
 from app.domain.demand_periods import (
+    CONFIRMATION_MODE_EXPLICIT,
+    CONFIRMATION_MODE_INHERIT_MASTER,
+    PERIOD_INHERITANCE_CONTRACT_VERSION,
     PERIOD_KIND_ALTERNATIVE,
     PERIOD_KIND_CUMULATIVE,
+    PERIOD_PROVENANCE_EXPLICIT,
+    PERIOD_PROVENANCE_LEGACY,
+    PERIOD_PROVENANCE_MASTER,
+    PERIOD_PROVENANCE_SAME_AS,
+    PROPOSED_RESOURCE_MODE_EXPLICIT,
+    PROPOSED_RESOURCE_MODE_INHERIT_MASTER,
+    PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD,
     DemandPeriodDefinition,
     effective_period_ids,
     projected_hours_without_double_counting,
+    resolve_period_authority,
     validate_period_definitions,
 )
 
@@ -39,6 +50,85 @@ class DemandPeriodPolicyTests(unittest.TestCase):
                 proposed_resource="Technicien B",
             ),
         )
+
+    def test_legacy_resolution_preserves_period_authority(self) -> None:
+        resolved = resolve_period_authority(
+            contract_version=None,
+            stored_resource_count=3,
+            stored_confirmation="Tentative",
+            stored_proposed_resource="R-OLD",
+            confirmation_mode=None,
+            proposed_resource_mode=None,
+            same_as_period_id=None,
+            master_resource_count=9,
+            master_confirmation="Confirmée",
+            master_proposed_resource="R-MASTER",
+        )
+
+        self.assertEqual(resolved.resource_count, 3)
+        self.assertEqual(resolved.confirmation, "Tentative")
+        self.assertEqual(resolved.proposed_resource, "R-OLD")
+        self.assertEqual(resolved.resource_count_provenance, PERIOD_PROVENANCE_LEGACY)
+        self.assertEqual(resolved.confirmation_provenance, PERIOD_PROVENANCE_LEGACY)
+        self.assertEqual(resolved.proposed_resource_provenance, PERIOD_PROVENANCE_LEGACY)
+
+    def test_modern_inheritance_derives_master_authority(self) -> None:
+        resolved = resolve_period_authority(
+            contract_version=PERIOD_INHERITANCE_CONTRACT_VERSION,
+            stored_resource_count=99,
+            stored_confirmation="Tentative",
+            stored_proposed_resource="R-STALE",
+            confirmation_mode=CONFIRMATION_MODE_INHERIT_MASTER,
+            proposed_resource_mode=PROPOSED_RESOURCE_MODE_INHERIT_MASTER,
+            same_as_period_id=None,
+            master_resource_count=4,
+            master_confirmation="Confirmée",
+            master_proposed_resource="R-MASTER",
+        )
+
+        self.assertEqual(resolved.resource_count, 4)
+        self.assertEqual(resolved.confirmation, "Confirmée")
+        self.assertEqual(resolved.proposed_resource, "R-MASTER")
+        self.assertEqual(resolved.resource_count_provenance, PERIOD_PROVENANCE_MASTER)
+        self.assertEqual(resolved.confirmation_provenance, PERIOD_PROVENANCE_MASTER)
+        self.assertEqual(resolved.proposed_resource_provenance, PERIOD_PROVENANCE_MASTER)
+
+    def test_explicit_none_resource_does_not_inherit_master(self) -> None:
+        resolved = resolve_period_authority(
+            contract_version=PERIOD_INHERITANCE_CONTRACT_VERSION,
+            stored_resource_count=1,
+            stored_confirmation="Tentative",
+            stored_proposed_resource=None,
+            confirmation_mode=CONFIRMATION_MODE_EXPLICIT,
+            proposed_resource_mode=PROPOSED_RESOURCE_MODE_EXPLICIT,
+            same_as_period_id=None,
+            master_resource_count=2,
+            master_confirmation="Confirmée",
+            master_proposed_resource="R-MASTER",
+        )
+
+        self.assertIsNone(resolved.proposed_resource)
+        self.assertEqual(resolved.proposed_resource_provenance, PERIOD_PROVENANCE_EXPLICIT)
+        self.assertEqual(resolved.resource_count, 2)
+
+    def test_same_as_period_is_only_projected_until_655b(self) -> None:
+        resolved = resolve_period_authority(
+            contract_version=PERIOD_INHERITANCE_CONTRACT_VERSION,
+            stored_resource_count=1,
+            stored_confirmation="Tentative",
+            stored_proposed_resource=None,
+            confirmation_mode=CONFIRMATION_MODE_EXPLICIT,
+            proposed_resource_mode=PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD,
+            same_as_period_id="P-ROOT",
+            master_resource_count=1,
+            master_confirmation="Tentative",
+            master_proposed_resource="R-MASTER",
+        )
+
+        self.assertIsNone(resolved.proposed_resource)
+        self.assertEqual(resolved.proposed_resource_provenance, PERIOD_PROVENANCE_SAME_AS)
+        self.assertEqual(resolved.same_as_period_id, "P-ROOT")
+        self.assertEqual(resolved.same_as_state, "DEFERRED_655B")
 
     def test_unresolved_alternative_group_materializes_neither_option(self) -> None:
         periods = self.alternatives()
