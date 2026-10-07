@@ -255,6 +255,7 @@ class SqlDemandPeriodRepository(DemandPeriodRepositoryPort):
                         else None
                     ),
                     confirmation_provenance=confirmation_provenance,
+                    proposed_resource_id=resolved.proposed_resource,
                     proposed_resource=resource_names.get(resolved.proposed_resource),
                     proposed_resource_mode=resolved.proposed_resource_mode,
                     proposed_resource_explicit=(

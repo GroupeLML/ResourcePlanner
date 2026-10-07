@@ -234,6 +234,28 @@ class ShiftReadModel:
 
 
 @dataclass(frozen=True, slots=True)
+class PendingDemandCandidateWindowReadModel:
+    """One backend-authoritative, non-materialized Planning candidate window."""
+
+    candidate_key: str
+    start_date: date
+    end_date: date
+    projected_hours: float | None
+    window_hours: float
+    proposed_resource_id: str | None = None
+    proposed_resource: str | None = None
+    task_code: str | None = None
+    task_label: str | None = None
+    required_resource_class: str | None = None
+    required_competencies: str | None = None
+    confirmation: str | None = None
+    resource_count: int = 1
+    period_kind: str | None = None
+    alternative_group: str | None = None
+    selected: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class PendingDemandLoadReadModel:
     """Read-only workload proposed by a submitted, not-yet-approved request.
 
@@ -259,6 +281,7 @@ class PendingDemandLoadReadModel:
     work_package_ref: str | None = None
     confirmation: str | None = None
     periods: tuple[DemandPeriodReadModel, ...] = ()
+    candidate_windows: tuple[PendingDemandCandidateWindowReadModel, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
