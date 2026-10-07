@@ -139,6 +139,7 @@ class PlannerQueryPort(Protocol):
         start: date,
         end: date,
         project_ids: Sequence[str] | None = None,
+        demand_ids: Sequence[str] | None = None,
         context_resource_ids: Sequence[str] = (),
     ) -> AssetPlanningWindowReadModel: ...
 
