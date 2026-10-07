@@ -50,6 +50,11 @@ from ..application.demand_workflow_policy import (
     demand_workflow_state,
 )
 from ..application.query_models import PlanningHistoryReadModel
+from ..application.planning_visibility import (
+    PlanningVisibilityRepositoryPort,
+    PlanningVisibilityResolution,
+    PlanningVisibilityService,
+)
 from ..application.security import AuthPrincipal, PERMISSION_MANAGE_PLANNING
 from ..application.user_view_context import (
     SCOPE_GLOBAL,
@@ -92,25 +97,27 @@ def _demand_scope_context(
     return resolution.project_ids, resolution.demand_ids
 
 
-def _planning_scope_context(
+def _planning_visibility(
     request: Request,
-    scope: ViewScope,
-    repository: UserViewContextRepositoryPort | None,
-) -> tuple[tuple[str, ...] | None, tuple[str, ...]]:
+    scope: ViewScope | None,
+    repository: PlanningVisibilityRepositoryPort | None,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+) -> tuple[PlanningVisibilityService, PlanningVisibilityResolution]:
     if repository is None:
-        return None, ()
+        raise ApplicationOperationError(
+            "Le contexte d'autorisation du Planning est indisponible.",
+            code="planning_visibility_context_unavailable",
+        )
     principal: AuthPrincipal = request.state.auth_principal
-    service = UserViewContextService(repository)
-    resolution = service.resolve_project_scope(principal, scope)
-    if resolution.project_ids is None:
-        return None, ()
-    relations = service.resolve_relations(principal)
-    personal_resource_ids = (
-        (relations.resource.id,)
-        if relations.resource is not None
-        else ()
+    service = PlanningVisibilityService(repository)
+    return service, service.resolve(
+        principal,
+        scope,
+        start=start,
+        end=end,
     )
-    return resolution.project_ids, personal_resource_ids
 
 
 def _window(start: date | None, end: date | None) -> None:
@@ -517,13 +524,19 @@ def build_read_router(
         start: date | None = Query(default=None),
         end: date | None = Query(default=None),
         include_cancelled: bool = False,
-        scope: ViewScope = Query(default=SCOPE_GLOBAL),
+        scope: ViewScope | None = Query(default=None),
         queries: PlannerQueryPort = Depends(query_dependency),
         context_repository: Any = Depends(context_dependency),
     ) -> list[SegmentReadModel]:
         _window(start, end)
-        project_ids = _project_ids_for_scope(request, scope, context_repository)
-        if project_ids is None:
+        _service, visibility = _planning_visibility(
+            request,
+            scope,
+            context_repository,
+            start=start,
+            end=end,
+        )
+        if visibility.project_ids is None:
             return list(
                 queries.list_segments(
                     start=start,
@@ -536,7 +549,9 @@ def build_read_router(
                 start=start,
                 end=end,
                 include_cancelled=include_cancelled,
-                project_ids=project_ids,
+                project_ids=visibility.project_ids,
+                demand_ids=visibility.demand_ids,
+                resource_ids=visibility.segment_resource_ids,
             )
         )
 
@@ -573,34 +588,41 @@ def build_read_router(
         start: date | None = Query(default=None),
         end: date | None = Query(default=None),
         resource_name: str | None = Query(default=None),
-        scope: ViewScope = Query(default=SCOPE_GLOBAL),
+        scope: ViewScope | None = Query(default=None),
         queries: PlannerQueryPort = Depends(query_dependency),
         context_repository: Any = Depends(context_dependency),
     ) -> list[ShiftReadModel]:
         _window(start, end)
-        project_ids = _project_ids_for_scope(request, scope, context_repository)
+        service, visibility = _planning_visibility(
+            request,
+            scope,
+            context_repository,
+            start=start,
+            end=end,
+        )
         principal: AuthPrincipal = request.state.auth_principal
         can_manage_planning = principal.has_permission(
             PERMISSION_MANAGE_PLANNING
         )
-        if project_ids is None:
-            return list(
-                queries.list_shifts(
-                    start=start,
-                    end=end,
-                    resource_name=resource_name,
-                    can_manage_planning=can_manage_planning,
-                )
-            )
-        return list(
-            queries.list_shifts(
+        if visibility.project_ids is None:
+            rows = queries.list_shifts(
                 start=start,
                 end=end,
                 resource_name=resource_name,
-                project_ids=project_ids,
                 can_manage_planning=can_manage_planning,
             )
-        )
+        else:
+            rows = queries.list_shifts(
+                start=start,
+                end=end,
+                resource_name=resource_name,
+                project_ids=visibility.project_ids,
+                demand_ids=visibility.demand_ids,
+                visible_resource_ids=visibility.shift_resource_ids,
+                project_day_keys=visibility.project_day_keys,
+                can_manage_planning=can_manage_planning,
+            )
+        return [service.project_shift(row, visibility) for row in rows]
 
     @router.get("/shifts/{allocation_id}/history")
     def list_shift_history(
@@ -640,23 +662,44 @@ def build_read_router(
         request: Request,
         start: date = Query(),
         end: date = Query(),
-        scope: ViewScope = Query(default=SCOPE_GLOBAL),
+        scope: ViewScope | None = Query(default=None),
         queries: PlannerQueryPort = Depends(query_dependency),
         context_repository: Any = Depends(context_dependency),
     ) -> PlanningCapacityGridReadModel:
         _window(start, end)
-        project_ids, personal_resource_ids = _planning_scope_context(
+        service, visibility = _planning_visibility(
             request,
             scope,
             context_repository,
-        )
-        if project_ids is None:
-            return queries.planning_capacity_grid(start=start, end=end)
-        return queries.planning_capacity_grid(
             start=start,
             end=end,
-            project_ids=project_ids,
-            include_resource_ids=personal_resource_ids,
+        )
+        if visibility.project_ids is None:
+            return queries.planning_capacity_grid(start=start, end=end)
+        grid = queries.planning_capacity_grid(
+            start=start,
+            end=end,
+            project_ids=visibility.project_ids,
+            demand_ids=visibility.demand_ids,
+            include_resource_ids=visibility.include_resource_ids,
+            shift_resource_ids=visibility.shift_resource_ids,
+            segment_resource_ids=visibility.segment_resource_ids,
+            project_day_keys=visibility.project_day_keys,
+        )
+        scoped_shifts = tuple(
+            queries.list_shifts(
+                start=start,
+                end=end,
+                project_ids=visibility.project_ids,
+                demand_ids=visibility.demand_ids,
+                visible_resource_ids=visibility.shift_resource_ids,
+                project_day_keys=visibility.project_day_keys,
+            )
+        )
+        return service.project_capacity(
+            grid,
+            scoped_shifts=scoped_shifts,
+            resolution=visibility,
         )
 
     @router.get("/planning/actions")
@@ -664,19 +707,27 @@ def build_read_router(
         request: Request,
         start: date = Query(),
         end: date = Query(),
-        scope: ViewScope = Query(default=SCOPE_GLOBAL),
+        scope: ViewScope | None = Query(default=None),
         queries: PlannerQueryPort = Depends(query_dependency),
         context_repository: Any = Depends(context_dependency),
     ) -> list[PlanningActionReadModel]:
         _window(start, end)
-        project_ids = _project_ids_for_scope(request, scope, context_repository)
-        if project_ids is None:
+        _service, visibility = _planning_visibility(
+            request,
+            scope,
+            context_repository,
+            start=start,
+            end=end,
+        )
+        if visibility.project_ids is None:
             return list(queries.list_planning_actions(start=start, end=end))
         return list(
             queries.list_planning_actions(
                 start=start,
                 end=end,
-                project_ids=project_ids,
+                project_ids=visibility.project_ids,
+                demand_ids=visibility.demand_ids,
+                resource_ids=visibility.segment_resource_ids,
             )
         )
 
@@ -698,32 +749,39 @@ def build_read_router(
         request: Request,
         start: date = Query(),
         end: date = Query(),
-        scope: ViewScope = Query(default=SCOPE_GLOBAL),
+        scope: ViewScope | None = Query(default=None),
         queries: PlannerQueryPort = Depends(query_dependency),
         context_repository: Any = Depends(context_dependency),
     ) -> PlanningSnapshotReadModel:
         _window(start, end)
-        project_ids, personal_resource_ids = _planning_scope_context(
+        service, visibility = _planning_visibility(
             request,
             scope,
             context_repository,
+            start=start,
+            end=end,
         )
         principal: AuthPrincipal = request.state.auth_principal
         can_manage_planning = principal.has_permission(
             PERMISSION_MANAGE_PLANNING
         )
-        if project_ids is None:
+        if visibility.project_ids is None:
             return queries.planning_snapshot(
                 start=start,
                 end=end,
                 can_manage_planning=can_manage_planning,
             )
-        return queries.planning_snapshot(
+        snapshot = queries.planning_snapshot(
             start=start,
             end=end,
-            project_ids=project_ids,
-            include_resource_ids=personal_resource_ids,
+            project_ids=visibility.project_ids,
+            demand_ids=visibility.demand_ids,
+            include_resource_ids=visibility.include_resource_ids,
+            shift_resource_ids=visibility.shift_resource_ids,
+            segment_resource_ids=visibility.segment_resource_ids,
+            project_day_keys=visibility.project_day_keys,
             can_manage_planning=can_manage_planning,
         )
+        return service.project_snapshot(snapshot, visibility)
 
     return router
