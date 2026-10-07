@@ -28,6 +28,9 @@ from .errors import (
 from .security import PERMISSION_APPROVE_DEMANDS
 
 
+_PROPOSED_RESOURCE_UNSET = object()
+
+
 @dataclass(frozen=True, slots=True)
 class ApprovalScopeRecord:
     id: str
@@ -593,6 +596,7 @@ class ApprovalScopeService:
         line_id: str,
         *,
         resource_approver_user_ids: Sequence[str] = (),
+        proposed_resource_id_override: object = _PROPOSED_RESOURCE_UNSET,
     ) -> RequestLineApprovalResolution:
         identifier = _required(line_id, "request_line_id")
         line = call_application_port(
@@ -634,6 +638,8 @@ class ApprovalScopeService:
         )
         proposed_resource_id = (
             str(line.proposed_resource_id or "").strip() or None
+            if proposed_resource_id_override is _PROPOSED_RESOURCE_UNSET
+            else str(proposed_resource_id_override or "").strip() or None
         )
         effective_class_code = explicit_class_code
         routing_sources: list[str] = (

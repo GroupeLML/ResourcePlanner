@@ -56,6 +56,7 @@ class ApprovalCycleRoutingInput:
     approval_scope_ids: tuple[str, ...]
     proposed_resource_id: str | None
     line_kind: str = "WORKFORCE"
+    period_proposed_resources: tuple[tuple[str, str | None], ...] = ()
     asset_type_id: str | None = None
     proposed_asset_id: str | None = None
 
@@ -222,6 +223,181 @@ class ApprovalCycleService:
             routing_entries=routing_entries,
         )
 
+    def _resource_approvers(
+        self,
+        *,
+        line_id: str,
+        proposed_resource_id: str | None,
+    ) -> tuple[str, ...]:
+        if self._resource_authority is None or proposed_resource_id is None:
+            return ()
+        return call_application_port(
+            lambda: self._resource_authority.list_approver_user_ids(
+                proposed_resource_id
+            ),
+            code_prefix="approval_cycle_resource_authority_read",
+            context={
+                "request_line_id": line_id,
+                "proposed_resource_id": proposed_resource_id,
+            },
+        )
+
+    @staticmethod
+    def _assert_resolved_routing(
+        resolved: object,
+        *,
+        routing: ApprovalCycleRoutingInput,
+        proposed_resource_id: str | None,
+        period_key: str | None,
+    ) -> None:
+        resolution = resolved.resolution
+        if (
+            not resolution.blocked
+            and resolution.approval_scope_id
+            and resolution.eligible_approvers
+        ):
+            return
+        resolved_scope = next(
+            (
+                scope
+                for scope in resolved.approval_scope_candidates
+                if scope.id == resolution.approval_scope_id
+            ),
+            None,
+        )
+        raise ApplicationValidationError(
+            "Le routage d’approbation de la ligne est incomplet ou ambigu.",
+            code="approval_cycle_routing_blocked",
+            context={
+                "request_line_id": resolved.request_line_id,
+                "request_line_position": resolved.line_position,
+                "period_key": period_key,
+                "task_catalog_item_id": resolved.task_catalog_item_id,
+                "task_code": resolved.task_code,
+                "task_label": resolved.task_label,
+                "required_resource_class": resolved.required_resource_class,
+                "effective_resource_class": resolved.effective_resource_class,
+                "routing_sources": list(resolved.routing_sources),
+                "approval_scope": (
+                    {
+                        "id": resolved_scope.id,
+                        "code": resolved_scope.code,
+                        "label": resolved_scope.label,
+                        "active": resolved_scope.active,
+                    }
+                    if resolved_scope is not None
+                    else None
+                ),
+                "approval_scope_candidates": [
+                    {
+                        "id": scope.id,
+                        "code": scope.code,
+                        "label": scope.label,
+                        "active": scope.active,
+                    }
+                    for scope in resolved.approval_scope_candidates
+                ],
+                "suggested_scope_code": resolved.suggested_scope_code,
+                "proposed_resource_id": proposed_resource_id,
+                "period_proposed_resources": [
+                    [key, resource_id]
+                    for key, resource_id in routing.period_proposed_resources
+                ],
+                "line_kind": resolved.line_kind,
+                "asset_type_id": resolved.asset_type_id,
+                "asset_type_code": resolved.asset_type_code,
+                "asset_type_label": resolved.asset_type_label,
+                "proposed_asset_id": resolved.proposed_asset_id,
+                "proposed_asset_code": resolved.proposed_asset_code,
+                "proposed_asset_label": resolved.proposed_asset_label,
+                "diagnostics": list(resolution.diagnostics),
+            },
+        )
+
+    def _resolve_line_routing(
+        self,
+        line_id: str,
+        routing: ApprovalCycleRoutingInput,
+    ) -> tuple[object, tuple[ApprovalApproverSnapshot, ...], tuple[str, ...], str | None]:
+        variants = (
+            routing.period_proposed_resources
+            if routing.period_proposed_resources
+            else (("", routing.proposed_resource_id),)
+        )
+        resolved_variants: list[object] = []
+        approver_sources: dict[str, set[str]] = {}
+        routing_sources: set[str] = set()
+        for period_key, proposed_resource_id in variants:
+            resource_approvers = self._resource_approvers(
+                line_id=line_id,
+                proposed_resource_id=proposed_resource_id,
+            )
+            resolved = self._approval_scopes.resolve_request_line(
+                line_id,
+                resource_approver_user_ids=resource_approvers,
+                proposed_resource_id_override=proposed_resource_id,
+            )
+            self._assert_resolved_routing(
+                resolved,
+                routing=routing,
+                proposed_resource_id=proposed_resource_id,
+                period_key=period_key or None,
+            )
+            resolved_variants.append(resolved)
+            routing_sources.update(resolved.routing_sources)
+            for candidate in resolved.resolution.eligible_approvers:
+                approver_sources.setdefault(candidate.user_id, set()).update(
+                    candidate.sources
+                )
+
+        scope_ids = {
+            resolved.resolution.approval_scope_id
+            for resolved in resolved_variants
+        }
+        if len(scope_ids) != 1:
+            raise ApplicationValidationError(
+                "Les propositions effectives des périodes conduisent à des périmètres d’approbation incompatibles.",
+                code="approval_cycle_period_routing_incompatible",
+                context={
+                    "request_line_id": line_id,
+                    "approval_scope_ids": sorted(
+                        str(value) for value in scope_ids if value
+                    ),
+                    "period_proposed_resources": [
+                        [period_key, resource_id]
+                        for period_key, resource_id in routing.period_proposed_resources
+                    ],
+                },
+            )
+
+        resolved = resolved_variants[0]
+        approvers = tuple(
+            ApprovalApproverSnapshot(
+                app_user_id=user_id,
+                sources=tuple(sorted(sources)),
+            )
+            for user_id, sources in sorted(approver_sources.items())
+        )
+        source_kinds_set = {
+            source
+            for approver in approvers
+            for source in approver.sources
+        }
+        if resolved.task_catalog_item_id is None:
+            source_kinds_set.update(routing_sources)
+        if routing.line_kind == "ASSET":
+            source_kinds_set.add(ROUTING_SOURCE_ASSET_TYPE)
+        source_kinds = tuple(sorted(source_kinds_set))
+
+        if routing.period_proposed_resources:
+            resources = {resource_id for _, resource_id in variants}
+            snapshot_resource_id = (
+                next(iter(resources)) if len(resources) == 1 else None
+            )
+        else:
+            snapshot_resource_id = routing.proposed_resource_id
+        return resolved, approvers, source_kinds, snapshot_resource_id
+
     def initialize_cycle(
         self,
         request_id: str,
@@ -292,112 +468,14 @@ class ApprovalCycleService:
                     context={"request_line_id": line_id},
                 )
 
-            resource_approvers: tuple[str, ...] = ()
-            if (
-                self._resource_authority is not None
-                and routing.proposed_resource_id is not None
-            ):
-                resource_approvers = call_application_port(
-                    lambda resource_id=routing.proposed_resource_id: (
-                        self._resource_authority.list_approver_user_ids(resource_id)
-                    ),
-                    code_prefix="approval_cycle_resource_authority_read",
-                    context={
-                        "request_line_id": line_id,
-                        "proposed_resource_id": routing.proposed_resource_id,
-                    },
-                )
-
-            resolved = self._approval_scopes.resolve_request_line(
-                line_id,
-                resource_approver_user_ids=resource_approvers,
+            resolved, approvers, source_kinds, snapshot_resource_id = (
+                self._resolve_line_routing(line_id, routing)
             )
-            if (
-                resolved.resolution.blocked
-                or not resolved.resolution.approval_scope_id
-                or not resolved.resolution.eligible_approvers
-            ):
-                resolved_scope = next(
-                    (
-                        scope
-                        for scope in resolved.approval_scope_candidates
-                        if scope.id == resolved.resolution.approval_scope_id
-                    ),
-                    None,
-                )
-                raise ApplicationValidationError(
-                    "Le routage d'approbation de la ligne est incomplet ou ambigu.",
-                    code="approval_cycle_routing_blocked",
-                    context={
-                        "request_line_id": line_id,
-                        "request_line_position": resolved.line_position,
-                        "task_catalog_item_id": resolved.task_catalog_item_id,
-                        "task_code": resolved.task_code,
-                        "task_label": resolved.task_label,
-                        "required_resource_class": (
-                            resolved.required_resource_class
-                        ),
-                        "effective_resource_class": (
-                            resolved.effective_resource_class
-                        ),
-                        "routing_sources": list(resolved.routing_sources),
-                        "approval_scope": (
-                            {
-                                "id": resolved_scope.id,
-                                "code": resolved_scope.code,
-                                "label": resolved_scope.label,
-                                "active": resolved_scope.active,
-                            }
-                            if resolved_scope is not None
-                            else None
-                        ),
-                        "approval_scope_candidates": [
-                            {
-                                "id": scope.id,
-                                "code": scope.code,
-                                "label": scope.label,
-                                "active": scope.active,
-                            }
-                            for scope in resolved.approval_scope_candidates
-                        ],
-                        "suggested_scope_code": resolved.suggested_scope_code,
-                        "proposed_resource_id": routing.proposed_resource_id,
-                        "line_kind": resolved.line_kind,
-                        "asset_type_id": resolved.asset_type_id,
-                        "asset_type_code": resolved.asset_type_code,
-                        "asset_type_label": resolved.asset_type_label,
-                        "proposed_asset_id": resolved.proposed_asset_id,
-                        "proposed_asset_code": resolved.proposed_asset_code,
-                        "proposed_asset_label": resolved.proposed_asset_label,
-                        "diagnostics": list(resolved.resolution.diagnostics),
-                    },
-                )
-
-            approvers = tuple(
-                ApprovalApproverSnapshot(
-                    app_user_id=row.user_id,
-                    sources=tuple(sorted(set(row.sources))),
-                )
-                for row in sorted(
-                    resolved.resolution.eligible_approvers,
-                    key=lambda candidate: candidate.user_id,
-                )
-            )
-            source_kinds_set = {
-                source
-                for approver in approvers
-                for source in approver.sources
-            }
-            if resolved.task_catalog_item_id is None:
-                source_kinds_set.update(resolved.routing_sources)
-            if routing.line_kind == "ASSET":
-                source_kinds_set.add(ROUTING_SOURCE_ASSET_TYPE)
-            source_kinds = tuple(sorted(source_kinds_set))
             requirement = ApprovalRequirementSnapshot(
                 request_line_id=line_id,
                 task_catalog_item_id=resolved.task_catalog_item_id,
                 approval_scope_id=resolved.resolution.approval_scope_id,
-                proposed_resource_id=routing.proposed_resource_id,
+                proposed_resource_id=snapshot_resource_id,
                 routing_sources=source_kinds,
                 approvers=approvers,
                 asset_type_id=routing.asset_type_id,
@@ -412,8 +490,9 @@ class ApprovalCycleService:
                         resolved.resolution.approval_scope_id,
                     ),
                     source_kinds=source_kinds,
-                    proposed_resource_id=routing.proposed_resource_id,
+                    proposed_resource_id=snapshot_resource_id,
                     proposed_asset_id=routing.proposed_asset_id,
+                    period_proposed_resources=routing.period_proposed_resources,
                 )
             )
 
@@ -473,6 +552,18 @@ class ApprovalCycleService:
                 if submitted is not None
                 else ()
             )
+            if row.period_proposed_resources:
+                effective_resources = {
+                    resource_id
+                    for _, resource_id in row.period_proposed_resources
+                }
+                proposed_resource_id = (
+                    next(iter(effective_resources))
+                    if len(effective_resources) == 1
+                    else None
+                )
+            else:
+                proposed_resource_id = row.proposed_resource_id
             routing_entries.append(
                 ApprovalSubjectRoutingEntry(
                     request_line_id=row.request_line_id,
@@ -484,8 +575,9 @@ class ApprovalCycleService:
                         else row.approval_scope_ids
                     ),
                     source_kinds=source_kinds,
-                    proposed_resource_id=row.proposed_resource_id,
+                    proposed_resource_id=proposed_resource_id,
                     proposed_asset_id=row.proposed_asset_id,
+                    period_proposed_resources=row.period_proposed_resources,
                 )
             )
         return self._fingerprint(

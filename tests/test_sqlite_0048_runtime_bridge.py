@@ -122,6 +122,107 @@ def _reshape_as_0048(path: Path) -> None:
 
             DROP TABLE IF EXISTS competency_resource_class_audit;
 
+            DROP TABLE IF EXISTS workforce_request_periods_0048;
+            CREATE TABLE workforce_request_periods_0048 (
+                id VARCHAR(36) NOT NULL PRIMARY KEY,
+                period_key VARCHAR(128) NOT NULL,
+                workforce_request_id VARCHAR(36) NOT NULL,
+                request_line_id VARCHAR(36),
+                sequence INTEGER DEFAULT 0 NOT NULL,
+                kind VARCHAR(32) DEFAULT 'CUMULATIVE' NOT NULL,
+                alternative_group VARCHAR(64),
+                start_date DATE NOT NULL,
+                end_date DATE NOT NULL,
+                hours NUMERIC(12, 2),
+                confirmation VARCHAR(32) DEFAULT 'Tentative' NOT NULL,
+                proposed_resource_id VARCHAR(36),
+                resource_count INTEGER DEFAULT 1 NOT NULL,
+                desired_active_days INTEGER,
+                note TEXT,
+                active BOOLEAN DEFAULT 1 NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                CONSTRAINT request_period_kind_group_consistency
+                    CHECK (
+                        (kind = 'ALTERNATIVE' AND alternative_group IS NOT NULL)
+                        OR (kind = 'CUMULATIVE' AND alternative_group IS NULL)
+                    ),
+                CONSTRAINT request_period_date_window CHECK (end_date >= start_date),
+                CONSTRAINT request_period_hours_positive CHECK (hours IS NULL OR hours > 0),
+                CONSTRAINT request_period_resource_count CHECK (resource_count >= 1),
+                FOREIGN KEY(proposed_resource_id) REFERENCES resources (id),
+                FOREIGN KEY(request_line_id) REFERENCES request_lines (id),
+                FOREIGN KEY(workforce_request_id) REFERENCES workforce_requests (id)
+            );
+            INSERT INTO workforce_request_periods_0048 (
+                id,
+                period_key,
+                workforce_request_id,
+                request_line_id,
+                sequence,
+                kind,
+                alternative_group,
+                start_date,
+                end_date,
+                hours,
+                confirmation,
+                proposed_resource_id,
+                resource_count,
+                desired_active_days,
+                note,
+                active,
+                created_at,
+                updated_at
+            )
+            SELECT
+                id,
+                period_key,
+                workforce_request_id,
+                request_line_id,
+                sequence,
+                kind,
+                alternative_group,
+                start_date,
+                end_date,
+                hours,
+                confirmation,
+                proposed_resource_id,
+                resource_count,
+                desired_active_days,
+                note,
+                active,
+                created_at,
+                updated_at
+            FROM workforce_request_periods;
+            DROP TABLE workforce_request_periods;
+            ALTER TABLE workforce_request_periods_0048 RENAME TO workforce_request_periods;
+            CREATE INDEX ix_request_periods_request_active
+                ON workforce_request_periods (workforce_request_id, active);
+            CREATE INDEX ix_request_periods_request_key_active
+                ON workforce_request_periods (workforce_request_id, period_key, active);
+            CREATE INDEX ix_request_periods_request_kind_group
+                ON workforce_request_periods (workforce_request_id, kind, alternative_group);
+            CREATE INDEX ix_workforce_request_periods_active
+                ON workforce_request_periods (active);
+            CREATE INDEX ix_workforce_request_periods_alternative_group
+                ON workforce_request_periods (alternative_group);
+            CREATE INDEX ix_workforce_request_periods_confirmation
+                ON workforce_request_periods (confirmation);
+            CREATE INDEX ix_workforce_request_periods_end_date
+                ON workforce_request_periods (end_date);
+            CREATE INDEX ix_workforce_request_periods_kind
+                ON workforce_request_periods (kind);
+            CREATE INDEX ix_workforce_request_periods_period_key
+                ON workforce_request_periods (period_key);
+            CREATE INDEX ix_workforce_request_periods_proposed_resource_id
+                ON workforce_request_periods (proposed_resource_id);
+            CREATE INDEX ix_workforce_request_periods_request_line_id
+                ON workforce_request_periods (request_line_id);
+            CREATE INDEX ix_workforce_request_periods_start_date
+                ON workforce_request_periods (start_date);
+            CREATE INDEX ix_workforce_request_periods_workforce_request_id
+                ON workforce_request_periods (workforce_request_id);
+
             CREATE TABLE competencies_0048 (
                 id VARCHAR(36) NOT NULL PRIMARY KEY,
                 name VARCHAR(255) NOT NULL UNIQUE,

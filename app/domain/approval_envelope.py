@@ -133,8 +133,11 @@ class EnvelopePeriodDefinition:
     kind: str = PERIOD_KIND_CUMULATIVE
     group_key: str | None = None
     confirmation: str = "Tentative"
+    confirmation_mode: str | None = None
     selected: bool = False
     proposed_resource_id: str | None = None
+    proposed_resource_mode: str | None = None
+    same_as_period_key: str | None = None
     desired_active_days: int | None = None
 
 
@@ -187,6 +190,9 @@ class ApprovalEnvelopeEntry:
     asset_type_id: str | None = None
     occupancy_policy: str | None = None
     proposed_asset_id: str | None = None
+    confirmation_mode: str | None = None
+    proposed_resource_mode: str | None = None
+    same_as_period_key: str | None = None
 
     def authorization_payload(self) -> dict[str, object]:
         payload = {
@@ -206,6 +212,11 @@ class ApprovalEnvelopeEntry:
             "kind": self.kind,
             "group": self.group.stable_key if self.group else None,
         }
+        if self.confirmation_mode is not None:
+            payload["confirmation_mode"] = self.confirmation_mode
+        if self.proposed_resource_mode is not None:
+            payload["proposed_resource_mode"] = self.proposed_resource_mode
+            payload["same_as_period_key"] = self.same_as_period_key
         if self.line_kind == "ASSET":
             payload.update(asset_type_id=self.asset_type_id, occupancy_policy=self.occupancy_policy)
         return payload
@@ -216,8 +227,11 @@ class ApprovalEnvelopeEntry:
             {
                 "source_period_id": self.source_period_id,
                 "confirmation": self.confirmation,
+                "confirmation_mode": self.confirmation_mode,
                 "selected": self.selected,
                 "proposed_resource_id": self.proposed_resource_id,
+                "proposed_resource_mode": self.proposed_resource_mode,
+                "same_as_period_key": self.same_as_period_key,
                 "desired_active_days": self.desired_active_days,
             }
         )
@@ -243,7 +257,15 @@ class ApprovalEnvelope:
 
     def to_snapshot_payload(self) -> dict[str, object]:
         return {
-            "format_version": 2 if any(entry.line_kind == "ASSET" for entry in self.entries) else 1,
+            "format_version": (
+                3
+                if any(
+                    entry.confirmation_mode is not None
+                    or entry.proposed_resource_mode is not None
+                    for entry in self.entries
+                )
+                else 2 if any(entry.line_kind == "ASSET" for entry in self.entries) else 1
+            ),
             "authorization_fingerprint": self.authorization_fingerprint,
             "entries": [entry.snapshot_payload() for entry in self.entries],
         }
@@ -333,8 +355,11 @@ def approval_envelope_from_snapshot_payload(
             group=group,
             source_period_id=_optional_text(raw.get("source_period_id")),
             confirmation=normalize_confirmation(raw.get("confirmation")),
+            confirmation_mode=_optional_text(raw.get("confirmation_mode")),
             selected=bool(raw.get("selected")),
             proposed_resource_id=_optional_text(raw.get("proposed_resource_id")),
+            proposed_resource_mode=_optional_text(raw.get("proposed_resource_mode")),
+            same_as_period_key=_optional_text(raw.get("same_as_period_key")),
             desired_active_days=(
                 int(raw["desired_active_days"])
                 if raw.get("desired_active_days") is not None
@@ -546,10 +571,13 @@ def normalize_approval_envelope(
                         source_period_id=_optional_text(period.source_period_id),
                         slot_count=int(period.resource_count),
                         confirmation=confirmation,
+                        confirmation_mode=_optional_text(period.confirmation_mode),
                         selected=bool(period.selected),
                         proposed_resource_id=_optional_text(
                             period.proposed_resource_id
                         ),
+                        proposed_resource_mode=_optional_text(period.proposed_resource_mode),
+                        same_as_period_key=_optional_text(period.same_as_period_key),
                         desired_active_days=period.desired_active_days,
                         **common,
                     )
@@ -599,10 +627,13 @@ def normalize_approval_envelope(
                 source_period_id=None,
                 slot_count=int(raw_line.slot_count),
                 confirmation=normalize_confirmation(raw_line.confirmation),
+                confirmation_mode=None,
                 selected=True,
                 proposed_resource_id=_optional_text(
                     raw_line.proposed_resource_id
                 ),
+                proposed_resource_mode=None,
+                same_as_period_key=None,
                 desired_active_days=raw_line.desired_active_days,
                 **common,
             )
@@ -850,6 +881,19 @@ def compare_approval_envelopes(
                 EnvelopeChange(
                     code=REASON_TOPOLOGY_CHANGED,
                     entry_key=identity.stable_key,
+                )
+            )
+        if (
+            reference.confirmation_mode != proposed.confirmation_mode
+            or reference.proposed_resource_mode != proposed.proposed_resource_mode
+            or reference.same_as_period_key != proposed.same_as_period_key
+        ):
+            requires_reapproval = True
+            changes.append(
+                EnvelopeChange(
+                    code=REASON_TOPOLOGY_CHANGED,
+                    entry_key=identity.stable_key,
+                    detail="Le mode d'héritage de période a changé.",
                 )
             )
 

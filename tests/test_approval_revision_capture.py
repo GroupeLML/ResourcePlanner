@@ -173,7 +173,7 @@ class ApprovalRevisionCaptureTests(unittest.TestCase):
                     )
                     self.assertEqual(revision.approved_by_name, "Administrateur de test explicite")
                     payload = json.loads(revision.payload_text)
-                    self.assertEqual(payload["format_version"], 1)
+                    self.assertEqual(payload["format_version"], 3)
                     self.assertEqual(
                         payload["request"]["request_id"],
                         request.id,
@@ -189,6 +189,14 @@ class ApprovalRevisionCaptureTests(unittest.TestCase):
                     self.assertFalse(by_period["OPT-B"]["selected"])
                     self.assertEqual(by_period["OPT-A"]["slot_count"], 1)
                     self.assertEqual(by_period["OPT-B"]["slot_count"], 1)
+                    self.assertEqual(
+                        by_period["OPT-A"]["confirmation_mode"],
+                        "EXPLICIT",
+                    )
+                    self.assertEqual(
+                        by_period["OPT-A"]["proposed_resource_mode"],
+                        "EXPLICIT",
+                    )
                     self.assertEqual(
                         by_period["OPT-A"]["location"],
                         "Zone 1",

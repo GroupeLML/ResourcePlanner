@@ -12,6 +12,7 @@ from ...domain.operational_contacts import (
     PROVENANCE_APPROVAL_CAPTURE,
     RESPONSIBILITY_CONTEXT_VERSION,
 )
+from ...domain.demand_periods import resolve_period_authority
 from ...domain.approval_envelope import (
     EnvelopeEntryIdentity,
     EnvelopeLineDefinition,
@@ -45,7 +46,7 @@ from .models import (
 )
 
 
-APPROVAL_SNAPSHOT_FORMAT_VERSION = 2
+APPROVAL_SNAPSHOT_FORMAT_VERSION = 3
 APPROVAL_PROVENANCE_STANDARD = "APPROVAL"
 
 
@@ -216,6 +217,9 @@ class SqlRequestApprovalRevisionRepository:
                             request.id,
                             period,
                             selections=selections,
+                            master_resource_count=request.resource_count,
+                            master_confirmation=request.confirmation,
+                            master_proposed_resource_id=request.proposed_resource_id,
                         )
                         for period in periods_by_line.get(request.id, [])
                     ),
@@ -259,6 +263,9 @@ class SqlRequestApprovalRevisionRepository:
                             line.id,
                             period,
                             selections=selections,
+                            master_resource_count=line.slot_count,
+                            master_confirmation=line.confirmation,
+                            master_proposed_resource_id=line.proposed_resource_id,
                         )
                         for period in periods_by_line.get(line.id, [])
                     ),
@@ -272,11 +279,26 @@ class SqlRequestApprovalRevisionRepository:
         period: WorkforceRequestPeriod,
         *,
         selections: dict[tuple[str, str], str],
+        master_resource_count: int,
+        master_confirmation: str,
+        master_proposed_resource_id: str | None,
     ) -> EnvelopePeriodDefinition:
         group = _optional_text(period.alternative_group)
         selected = bool(
             group
             and selections.get((line_id, group)) == period.id
+        )
+        resolved = resolve_period_authority(
+            contract_version=period.inheritance_contract_version,
+            stored_resource_count=period.resource_count,
+            stored_confirmation=period.confirmation,
+            stored_proposed_resource=period.proposed_resource_id,
+            confirmation_mode=period.confirmation_mode,
+            proposed_resource_mode=period.proposed_resource_mode,
+            same_as_period_id=period.same_as_period_key,
+            master_resource_count=master_resource_count,
+            master_confirmation=master_confirmation,
+            master_proposed_resource=master_proposed_resource_id,
         )
         return EnvelopePeriodDefinition(
             period_key=period.period_key,
@@ -284,12 +306,15 @@ class SqlRequestApprovalRevisionRepository:
             start_date=period.start_date,
             end_date=period.end_date,
             hours=period.hours,
-            resource_count=max(int(period.resource_count or 1), 1),
+            resource_count=resolved.resource_count,
             kind=period.kind,
             group_key=group,
-            confirmation=period.confirmation,
+            confirmation=resolved.confirmation,
+            confirmation_mode=resolved.confirmation_mode,
             selected=selected,
-            proposed_resource_id=_optional_text(period.proposed_resource_id),
+            proposed_resource_id=resolved.proposed_resource,
+            proposed_resource_mode=resolved.proposed_resource_mode,
+            same_as_period_key=resolved.same_as_period_id,
             desired_active_days=period.desired_active_days,
         )
 

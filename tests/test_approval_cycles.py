@@ -56,6 +56,7 @@ from app.infrastructure.sql import (
     TaskCatalogEntry,
     WorkforceRequest,
     WorkforceRequestHistory,
+    WorkforceRequestPeriod,
 )
 from app.infrastructure.sql.request_version import acquire_request_aggregate_version
 
@@ -353,6 +354,162 @@ class ApprovalCycleTests(unittest.TestCase):
             self.assertIn(
                 "PROPOSED_RESOURCE_CLASS",
                 by_line["L3"].routing_sources,
+            )
+
+    def test_period_resources_with_same_scope_keep_one_line_quorum(self) -> None:
+        with self.factory() as session:
+            line = session.get(RequestLine, "L1")
+            assert line is not None
+            line.task_catalog_item_id = None
+            line.required_resource_class = None
+            line.proposed_resource_id = None
+            session.add(
+                Resource(
+                    id="R2",
+                    name="Deuxième ressource AUT",
+                    resource_class="AUT",
+                    active=True,
+                )
+            )
+            session.flush()
+            session.add_all(
+                [
+                    WorkforceRequestPeriod(
+                        period_key="P-A",
+                        workforce_request_id="D1",
+                        request_line_id="L1",
+                        sequence=1,
+                        kind="CUMULATIVE",
+                        start_date=DAY,
+                        end_date=DAY,
+                        hours=8,
+                        inheritance_contract_version=1,
+                        confirmation_mode="EXPLICIT",
+                        confirmation="Tentative",
+                        proposed_resource_mode="EXPLICIT",
+                        proposed_resource_id="R1",
+                        resource_count=1,
+                        active=True,
+                    ),
+                    WorkforceRequestPeriod(
+                        period_key="P-B",
+                        workforce_request_id="D1",
+                        request_line_id="L1",
+                        sequence=2,
+                        kind="CUMULATIVE",
+                        start_date=DAY,
+                        end_date=DAY,
+                        hours=8,
+                        inheritance_contract_version=1,
+                        confirmation_mode="EXPLICIT",
+                        confirmation="Tentative",
+                        proposed_resource_mode="EXPLICIT",
+                        proposed_resource_id="R2",
+                        resource_count=1,
+                        active=True,
+                    ),
+                ]
+            )
+            session.flush()
+
+            service = self._service(session)
+            cycle = service.initialize_cycle("D1", expected_version=1)
+            session.commit()
+
+            line_requirements = [
+                row for row in cycle.requirements if row.request_line_id == "L1"
+            ]
+            self.assertEqual(len(line_requirements), 1)
+            self.assertEqual(line_requirements[0].approval_scope_id, "S1")
+            self.assertIsNone(line_requirements[0].proposed_resource_id)
+            self.assertEqual(service.validate_active_cycle("D1").id, cycle.id)
+
+            period = session.scalar(
+                select(WorkforceRequestPeriod).where(
+                    WorkforceRequestPeriod.period_key == "P-B"
+                )
+            )
+            assert period is not None
+            period.proposed_resource_id = "R1"
+            session.commit()
+            with self.assertRaises(ApplicationConflictError) as context:
+                service.validate_active_cycle("D1")
+            self.assertEqual(
+                context.exception.code,
+                "approval_cycle_subject_changed",
+            )
+
+    def test_period_resources_with_incompatible_scopes_block_cycle(self) -> None:
+        with self.factory() as session:
+            line = session.get(RequestLine, "L1")
+            assert line is not None
+            line.task_catalog_item_id = None
+            line.required_resource_class = None
+            line.proposed_resource_id = None
+            session.add(
+                Resource(
+                    id="R2",
+                    name="Ressource ELEC",
+                    resource_class="ELEC",
+                    active=True,
+                )
+            )
+            session.flush()
+            session.add_all(
+                [
+                    WorkforceRequestPeriod(
+                        period_key="P-A",
+                        workforce_request_id="D1",
+                        request_line_id="L1",
+                        sequence=1,
+                        kind="CUMULATIVE",
+                        start_date=DAY,
+                        end_date=DAY,
+                        hours=8,
+                        inheritance_contract_version=1,
+                        confirmation_mode="EXPLICIT",
+                        confirmation="Tentative",
+                        proposed_resource_mode="EXPLICIT",
+                        proposed_resource_id="R1",
+                        resource_count=1,
+                        active=True,
+                    ),
+                    WorkforceRequestPeriod(
+                        period_key="P-B",
+                        workforce_request_id="D1",
+                        request_line_id="L1",
+                        sequence=2,
+                        kind="CUMULATIVE",
+                        start_date=DAY,
+                        end_date=DAY,
+                        hours=8,
+                        inheritance_contract_version=1,
+                        confirmation_mode="EXPLICIT",
+                        confirmation="Tentative",
+                        proposed_resource_mode="EXPLICIT",
+                        proposed_resource_id="R2",
+                        resource_count=1,
+                        active=True,
+                    ),
+                ]
+            )
+            session.flush()
+
+            with self.assertRaises(ApplicationValidationError) as context:
+                self._service(session).initialize_cycle(
+                    "D1",
+                    expected_version=1,
+                )
+            self.assertEqual(
+                context.exception.code,
+                "approval_cycle_period_routing_incompatible",
+            )
+            self.assertIsNone(
+                session.scalar(
+                    select(RequestApprovalCycle).where(
+                        RequestApprovalCycle.workforce_request_id == "D1"
+                    )
+                )
             )
 
     def test_unroutable_taskless_line_prevents_partial_cycle_creation(self) -> None:

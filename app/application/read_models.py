@@ -238,8 +238,19 @@ class DemandPeriodReadModel:
     confirmation: str
     request_line_id: str | None = None
     alternative_group: str | None = None
+    inheritance_contract_version: int | None = None
+    confirmation_mode: str | None = None
+    confirmation_explicit: str | None = None
+    confirmation_provenance: str | None = None
     proposed_resource: str | None = None
+    proposed_resource_mode: str | None = None
+    proposed_resource_explicit: str | None = None
+    proposed_resource_provenance: str | None = None
+    same_as_period_id: str | None = None
+    same_as_root_period_id: str | None = None
+    same_as_state: str | None = None
     resource_count: int = 1
+    resource_count_provenance: str | None = None
     desired_active_days: int | None = None
     note: str | None = None
     selected: bool = False

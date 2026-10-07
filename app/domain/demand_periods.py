@@ -12,6 +12,24 @@ PERIOD_KIND_CUMULATIVE = "CUMULATIVE"
 PERIOD_KIND_ALTERNATIVE = "ALTERNATIVE"
 VALID_PERIOD_KINDS = {PERIOD_KIND_CUMULATIVE, PERIOD_KIND_ALTERNATIVE}
 
+PERIOD_INHERITANCE_CONTRACT_VERSION = 1
+CONFIRMATION_MODE_INHERIT_MASTER = "INHERIT_MASTER"
+CONFIRMATION_MODE_EXPLICIT = "EXPLICIT"
+VALID_CONFIRMATION_MODES = {CONFIRMATION_MODE_INHERIT_MASTER, CONFIRMATION_MODE_EXPLICIT}
+PROPOSED_RESOURCE_MODE_INHERIT_MASTER = "INHERIT_MASTER"
+PROPOSED_RESOURCE_MODE_EXPLICIT = "EXPLICIT"
+PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD = "SAME_AS_PERIOD"
+VALID_PROPOSED_RESOURCE_MODES = {
+    PROPOSED_RESOURCE_MODE_INHERIT_MASTER,
+    PROPOSED_RESOURCE_MODE_EXPLICIT,
+    PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD,
+}
+PERIOD_PROVENANCE_MASTER = "MASTER"
+PERIOD_PROVENANCE_EXPLICIT = "EXPLICIT"
+PERIOD_PROVENANCE_LEGACY = "LEGACY_PERIOD"
+PERIOD_PROVENANCE_SAME_AS = "SAME_AS_PERIOD"
+
+
 
 @dataclass(frozen=True, slots=True)
 class DemandPeriodDefinition:
@@ -29,7 +47,10 @@ class DemandPeriodDefinition:
     kind: str = PERIOD_KIND_CUMULATIVE
     alternative_group: str | None = None
     confirmation: str = "Tentative"
+    confirmation_mode: str | None = None
     proposed_resource: str | None = None
+    proposed_resource_mode: str | None = None
+    same_as_period_id: str | None = None
     resource_count: int = 1
     desired_active_days: int | None = None
     note: str | None = None
@@ -37,6 +58,117 @@ class DemandPeriodDefinition:
 
 def _text(value: object) -> str:
     return str(value or "").strip()
+
+
+def normalized_confirmation_mode(value: object) -> str:
+    mode = _text(value).upper() or CONFIRMATION_MODE_EXPLICIT
+    if mode not in VALID_CONFIRMATION_MODES:
+        raise ValueError(f"Mode de confirmation de période non supporté: {value}")
+    return mode
+
+
+def normalized_proposed_resource_mode(value: object) -> str:
+    mode = _text(value).upper() or PROPOSED_RESOURCE_MODE_EXPLICIT
+    if mode not in VALID_PROPOSED_RESOURCE_MODES:
+        raise ValueError(f"Mode de ressource proposée non supporté: {value}")
+    return mode
+
+
+@dataclass(frozen=True, slots=True)
+class PeriodAuthorityResolution:
+    resource_count: int
+    resource_count_provenance: str
+    confirmation: str
+    confirmation_mode: str | None
+    confirmation_provenance: str
+    proposed_resource: str | None
+    proposed_resource_mode: str | None
+    proposed_resource_provenance: str
+    same_as_period_id: str | None = None
+    same_as_root_period_id: str | None = None
+    same_as_state: str | None = None
+
+
+def resolve_period_authority(
+    *,
+    contract_version: int | None,
+    stored_resource_count: int,
+    stored_confirmation: str,
+    stored_proposed_resource: str | None,
+    confirmation_mode: str | None,
+    proposed_resource_mode: str | None,
+    same_as_period_id: str | None,
+    master_resource_count: int | None,
+    master_confirmation: str | None,
+    master_proposed_resource: str | None,
+) -> PeriodAuthorityResolution:
+    """Resolve one period without inventing inheritance for historical rows.
+
+    Rows without a contract version predate ADR-029 and keep their own values.
+    Modern rows derive quantity from the applicable master. SAME_AS_PERIOD is
+    only projected here; 655B owns graph resolution and Shift enforcement.
+    """
+    if contract_version is None:
+        return PeriodAuthorityResolution(
+            resource_count=max(int(stored_resource_count or 1), 1),
+            resource_count_provenance=PERIOD_PROVENANCE_LEGACY,
+            confirmation=normalize_confirmation(stored_confirmation),
+            confirmation_mode=None,
+            confirmation_provenance=PERIOD_PROVENANCE_LEGACY,
+            proposed_resource=stored_proposed_resource,
+            proposed_resource_mode=None,
+            proposed_resource_provenance=PERIOD_PROVENANCE_LEGACY,
+        )
+    if int(contract_version) != PERIOD_INHERITANCE_CONTRACT_VERSION:
+        raise ValueError(f"Version de contrat de période non supportée: {contract_version}")
+    if master_resource_count is None:
+        raise ValueError("Le maître de période est requis pour résoudre la quantité moderne.")
+
+    effective_count = max(int(master_resource_count or 1), 1)
+    c_mode = normalized_confirmation_mode(confirmation_mode)
+    if c_mode == CONFIRMATION_MODE_INHERIT_MASTER:
+        if master_confirmation is None:
+            raise ValueError("La confirmation maître est requise pour une période héritée.")
+        effective_confirmation = normalize_confirmation(master_confirmation)
+        confirmation_provenance = PERIOD_PROVENANCE_MASTER
+    else:
+        effective_confirmation = normalize_confirmation(stored_confirmation)
+        confirmation_provenance = PERIOD_PROVENANCE_EXPLICIT
+
+    r_mode = normalized_proposed_resource_mode(proposed_resource_mode)
+    target = _text(same_as_period_id) or None
+    if r_mode == PROPOSED_RESOURCE_MODE_INHERIT_MASTER:
+        if target is not None:
+            raise ValueError("Une ressource héritée ne peut pas référencer une autre période.")
+        effective_resource = master_proposed_resource
+        resource_provenance = PERIOD_PROVENANCE_MASTER
+        same_as_state = None
+    elif r_mode == PROPOSED_RESOURCE_MODE_EXPLICIT:
+        if target is not None:
+            raise ValueError("Une ressource explicite ne peut pas référencer une autre période.")
+        effective_resource = stored_proposed_resource
+        resource_provenance = PERIOD_PROVENANCE_EXPLICIT
+        same_as_state = None
+    else:
+        if not target:
+            raise ValueError("SAME_AS_PERIOD requiert un identifiant logique de période cible.")
+        effective_resource = None
+        resource_provenance = PERIOD_PROVENANCE_SAME_AS
+        same_as_state = "DEFERRED_655B"
+
+    return PeriodAuthorityResolution(
+        resource_count=effective_count,
+        resource_count_provenance=PERIOD_PROVENANCE_MASTER,
+        confirmation=effective_confirmation,
+        confirmation_mode=c_mode,
+        confirmation_provenance=confirmation_provenance,
+        proposed_resource=effective_resource,
+        proposed_resource_mode=r_mode,
+        proposed_resource_provenance=resource_provenance,
+        same_as_period_id=target,
+        same_as_root_period_id=None,
+        same_as_state=same_as_state,
+    )
 
 
 def validate_period_definitions(periods: Sequence[DemandPeriodDefinition], *, allow_unbudgeted: bool = False) -> None:
@@ -66,6 +198,20 @@ def validate_period_definitions(periods: Sequence[DemandPeriodDefinition], *, al
             field=f"Les jours actifs de la période {identifier}",
         )
         normalize_confirmation(period.confirmation)
+        normalized_confirmation_mode(period.confirmation_mode)
+        resource_mode = normalized_proposed_resource_mode(period.proposed_resource_mode)
+        same_as_period_id = _text(period.same_as_period_id)
+        if resource_mode == PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD:
+            if not same_as_period_id:
+                raise ValueError(
+                    f"La période {identifier} doit référencer une période pour SAME_AS_PERIOD."
+                )
+            if same_as_period_id == identifier:
+                raise ValueError(f"La période {identifier} ne peut pas se référencer elle-même.")
+        elif same_as_period_id:
+            raise ValueError(
+                f"La période {identifier} ne peut définir same_as_period_id sans SAME_AS_PERIOD."
+            )
 
         kind = _text(period.kind).upper()
         if kind not in VALID_PERIOD_KINDS:
