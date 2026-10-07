@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import {
   ApiError,
   type DemandDetailReadModel,
+  type ViewScope,
   getDemandDetail,
 } from "./api";
 import DemandHistoryPage from "./DemandHistoryPage";
@@ -26,6 +27,7 @@ function technicalValue(value: string | number | null | undefined) {
 
 export default function DemandDetail({
   demandNumber,
+  viewScope,
   onChanged,
   onDirtyChange,
   canonicalDetail,
@@ -33,6 +35,7 @@ export default function DemandDetail({
   compact = false,
 }: {
   demandNumber: string;
+  viewScope?: ViewScope;
   onChanged?: () => void | Promise<void>;
   onDirtyChange?: (dirty: boolean) => void;
   canonicalDetail?: DemandDetailReadModel | null;
@@ -53,7 +56,7 @@ export default function DemandDetail({
     const controller = new AbortController();
     setLoading(true);
     setError(null);
-    getDemandDetail(demandNumber, controller.signal)
+    getDemandDetail(demandNumber, controller.signal, viewScope)
       .then(setLoadedDetail)
       .catch((reason: unknown) => {
         if (!(reason instanceof DOMException && reason.name === "AbortError")) {
@@ -64,7 +67,7 @@ export default function DemandDetail({
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [demandNumber, refreshKey, canonicalDetail]);
+  }, [demandNumber, refreshKey, canonicalDetail, viewScope]);
 
   const detail = canonicalDetail ?? loadedDetail;
 
@@ -120,6 +123,7 @@ export default function DemandDetail({
         </summary>
         <DemandWorkflowPage
           demandNumber={demandNumber}
+          viewScope={viewScope}
           canonicalDetail={detail}
           hasUnsavedChanges={hasUnsavedChanges}
           embedded
