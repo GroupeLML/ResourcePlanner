@@ -28,6 +28,7 @@ type PeriodDraft = DemandPeriodWrite & {
   confirmation_provenance: string | null;
   proposed_resource_provenance: string | null;
   resource_count_provenance: string | null;
+  same_as_root_period_id: string | null;
   same_as_state: string | null;
 };
 
@@ -63,6 +64,7 @@ function fromRead(row: DemandPeriodReadModel): PeriodDraft {
     confirmation_provenance: row.confirmation_provenance,
     proposed_resource_provenance: row.proposed_resource_provenance,
     resource_count_provenance: row.resource_count_provenance,
+    same_as_root_period_id: row.same_as_root_period_id,
     same_as_state: row.same_as_state,
   };
 }
@@ -314,7 +316,7 @@ function PeriodFields({
             </select>
             <small>
               {period.same_as_period_id
-                ? `Même personne obligatoire que ${period.same_as_period_id}. État serveur : ${period.same_as_state ?? "sera validé à l’enregistrement"}.`
+                ? `Même personne obligatoire que ${period.same_as_period_id}${period.same_as_root_period_id && period.same_as_root_period_id !== period.same_as_period_id ? ` · racine ${period.same_as_root_period_id}` : ""}. État serveur : ${period.same_as_state ?? "sera validé à l’enregistrement"}.`
                 : "La cible est une identité logique de période; les cycles sont refusés par le backend."}
             </small>
           </label>
@@ -505,6 +507,7 @@ export default function DemandPeriodsPage({
         confirmation_provenance: "MASTER",
         proposed_resource_provenance: "MASTER",
         resource_count_provenance: "MASTER",
+        same_as_root_period_id: null,
         same_as_state: null,
       },
     ]);
@@ -572,6 +575,7 @@ export default function DemandPeriodsPage({
         confirmation_provenance: existing?.confirmation_provenance ?? "MASTER",
         proposed_resource_provenance: existing?.proposed_resource_provenance ?? "MASTER",
         resource_count_provenance: "MASTER",
+        same_as_root_period_id: null,
         same_as_state: null,
       },
     ]);
@@ -597,6 +601,7 @@ export default function DemandPeriodsPage({
         confirmation_provenance: _confirmationProvenance,
         proposed_resource_provenance: _resourceProvenance,
         resource_count_provenance: _countProvenance,
+        same_as_root_period_id: _sameAsRootPeriodId,
         same_as_state: _sameAsState,
         ...row
       }) => ({
