@@ -20,7 +20,7 @@ from ...application.read_models import DemandLineReadModel, DemandReadModel
 from ...application.repository_ports import DemandRepositoryPort
 from ...domain.planning_engine import MISSING_ALLOCATION_TYPE
 from ...domain.reservable_assets import AssetRequirementOrigin
-from .asset_models import AssetAllocation, AssetRequirement
+from .asset_models import Asset, AssetAllocation, AssetRequirement, AssetType
 from .base import new_id, utc_now
 from .request_version import acquire_request_aggregate_version
 from .planning_window_override_repository import SqlPlanningWindowOverrideRepository
@@ -515,7 +515,47 @@ class SqlDemandRepository(DemandRepositoryPort):
             if resource_class_codes
             else {}
         )
+        asset_type_ids = tuple(
+            sorted(
+                {
+                    asset_type_id
+                    for _, line, _, _ in ordered_line_rows
+                    if (asset_type_id := _optional_text(line.asset_type_id)) is not None
+                }
+            )
+        )
+        asset_types = (
+            {
+                asset_type.id: asset_type
+                for asset_type in self._session.scalars(
+                    select(AssetType).where(AssetType.id.in_(asset_type_ids))
+                )
+            }
+            if asset_type_ids
+            else {}
+        )
+        proposed_asset_ids = tuple(
+            sorted(
+                {
+                    asset_id
+                    for _, line, _, _ in ordered_line_rows
+                    if (asset_id := _optional_text(line.proposed_asset_id)) is not None
+                }
+            )
+        )
+        proposed_assets = (
+            {
+                asset.id: asset
+                for asset in self._session.scalars(
+                    select(Asset).where(Asset.id.in_(proposed_asset_ids))
+                )
+            }
+            if proposed_asset_ids
+            else {}
+        )
         for request_id, line, work_package, resource in ordered_line_rows:
+            asset_type = asset_types.get(_optional_text(line.asset_type_id) or "")
+            proposed_asset = proposed_assets.get(_optional_text(line.proposed_asset_id) or "")
             grouped_lines.setdefault(request_id, []).append(
                 DemandLineReadModel(
                     line_id=line.id,
@@ -570,7 +610,23 @@ class SqlDemandRepository(DemandRepositoryPort):
                     description=_optional_text(line.description),
                     active=bool(line.active),
                     asset_type_id=_optional_text(line.asset_type_id),
+                    asset_type_code=(
+                        _optional_text(asset_type.code) if asset_type is not None else None
+                    ),
+                    asset_type_label=(
+                        _optional_text(asset_type.label) if asset_type is not None else None
+                    ),
                     proposed_asset_id=_optional_text(line.proposed_asset_id),
+                    proposed_asset_code=(
+                        _optional_text(proposed_asset.code)
+                        if proposed_asset is not None
+                        else None
+                    ),
+                    proposed_asset_label=(
+                        _optional_text(proposed_asset.label)
+                        if proposed_asset is not None
+                        else None
+                    ),
                 )
             )
 
@@ -999,7 +1055,6 @@ class SqlDemandRepository(DemandRepositoryPort):
             asset_type_id = _optional_text(raw.get("asset_type_id"))
             proposed_asset_id = _optional_text(raw.get("proposed_asset_id"))
             if kind == "ASSET":
-                from .asset_models import Asset, AssetType
                 asset_type = self._session.get(AssetType, asset_type_id) if asset_type_id else None
                 if asset_type is None or not asset_type.active:
                     raise ValueError("Le type d'actif est introuvable ou inactif.")
