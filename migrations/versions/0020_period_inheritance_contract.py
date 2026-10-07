@@ -15,46 +15,46 @@ branch_labels: str | None = None
 depends_on: str | None = None
 
 
-def _create_constraints(operations) -> None:
-    operations.create_check_constraint(
-        "request_period_inheritance_contract_version",
-        "inheritance_contract_version IS NULL OR inheritance_contract_version = 1",
+def _create_constraints(operations, *, table_name: str | None = None) -> None:
+    constraints = (
+        (
+            "request_period_inheritance_contract_version",
+            "inheritance_contract_version IS NULL OR inheritance_contract_version = 1",
+        ),
+        (
+            "request_period_confirmation_mode",
+            "confirmation_mode IS NULL OR confirmation_mode IN ('INHERIT_MASTER', 'EXPLICIT')",
+        ),
+        (
+            "request_period_proposed_resource_mode",
+            "proposed_resource_mode IS NULL OR proposed_resource_mode IN "
+            "('INHERIT_MASTER', 'EXPLICIT', 'SAME_AS_PERIOD')",
+        ),
+        (
+            "request_period_same_as_consistency",
+            "(proposed_resource_mode = 'SAME_AS_PERIOD' AND same_as_period_key IS NOT NULL) OR "
+            "(proposed_resource_mode IS NULL) OR "
+            "(proposed_resource_mode != 'SAME_AS_PERIOD' AND same_as_period_key IS NULL)",
+        ),
     )
-    operations.create_check_constraint(
-        "request_period_confirmation_mode",
-        "confirmation_mode IS NULL OR confirmation_mode IN ('INHERIT_MASTER', 'EXPLICIT')",
-    )
-    operations.create_check_constraint(
-        "request_period_proposed_resource_mode",
-        "proposed_resource_mode IS NULL OR proposed_resource_mode IN "
-        "('INHERIT_MASTER', 'EXPLICIT', 'SAME_AS_PERIOD')",
-    )
-    operations.create_check_constraint(
+    for name, condition in constraints:
+        if table_name is None:
+            operations.create_check_constraint(name, condition)
+        else:
+            operations.create_check_constraint(name, table_name, condition)
+
+
+def _drop_constraints(operations, *, table_name: str | None = None) -> None:
+    for name in (
         "request_period_same_as_consistency",
-        "(proposed_resource_mode = 'SAME_AS_PERIOD' AND same_as_period_key IS NOT NULL) OR "
-        "(proposed_resource_mode IS NULL) OR "
-        "(proposed_resource_mode != 'SAME_AS_PERIOD' AND same_as_period_key IS NULL)",
-    )
-
-
-def _drop_constraints(operations) -> None:
-    operations.drop_constraint(
-        "request_period_same_as_consistency",
-        type_="check",
-    )
-    operations.drop_constraint(
         "request_period_proposed_resource_mode",
-        type_="check",
-    )
-    operations.drop_constraint(
         "request_period_confirmation_mode",
-        type_="check",
-    )
-    operations.drop_constraint(
         "request_period_inheritance_contract_version",
-        type_="check",
-    )
-
+    ):
+        if table_name is None:
+            operations.drop_constraint(name, type_="check")
+        else:
+            operations.drop_constraint(name, table_name, type_="check")
 
 def upgrade() -> None:
     for column in (
@@ -73,7 +73,7 @@ def upgrade() -> None:
         ) as batch_op:
             _create_constraints(batch_op)
     else:
-        _create_constraints(op)
+        _create_constraints(op, table_name="workforce_request_periods")
 
 
 def downgrade() -> None:
@@ -85,7 +85,7 @@ def downgrade() -> None:
         ) as batch_op:
             _drop_constraints(batch_op)
     else:
-        _drop_constraints(op)
+        _drop_constraints(op, table_name="workforce_request_periods")
 
     op.drop_column("workforce_request_periods", "same_as_period_key")
     op.drop_column("workforce_request_periods", "proposed_resource_mode")
