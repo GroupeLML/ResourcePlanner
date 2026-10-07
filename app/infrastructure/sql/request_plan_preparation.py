@@ -702,7 +702,11 @@ class SqlRequestPlanPreparer:
                     )
                 )
             ).quantize(Decimal("0.01"))
-            slot_count = 1 if line_mode else max(int(row.get("slot_count") or 1), 1)
+            slot_count = (
+                max(int(row.get("slot_count") or 1), 1)
+                if period_key is not None
+                else (1 if line_mode else max(int(row.get("slot_count") or 1), 1))
+            )
             split_hours = split_total_workforce_hours(total_hours, slot_count)
             base_key = (
                 ("PERIOD", line_id, period_key)
@@ -716,7 +720,7 @@ class SqlRequestPlanPreparer:
             for index, hours in enumerate(split_hours):
                 spec_key = (
                     base_key
-                    if line_mode
+                    if line_mode and slot_count == 1
                     else (*base_key, str(index))
                 )
                 specs.append(
