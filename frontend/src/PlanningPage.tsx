@@ -1441,6 +1441,13 @@ export default function PlanningPage({
 
   function selectPlanningScope(nextScope: UserViewScope) {
     if (nextScope === scope || !planningPolicy || !planningPolicy.available_scopes.includes(nextScope)) return;
+    activePlanningRequestKeyRef.current = "";
+    snapshotQueryKeyRef.current = "";
+    setSnapshot(null);
+    setActions([]);
+    setCapacityGrid(null);
+    setCatalogResources([]);
+    setManualResourceOrder(new Map());
     setEditingShift(null);
     setEditingSegmentId(null);
     setQuickShiftOpen(false);
@@ -1453,6 +1460,16 @@ export default function PlanningPage({
     setDropBusy(null);
     setDragFeedback(null);
     setScope(nextScope);
+  }
+
+  if (planningPolicyOwnerKey !== planningIdentityKey) {
+    return (
+      <section className="planning-page">
+        <div className="planning-loading" role="status">
+          Chargement du périmètre Planning…
+        </div>
+      </section>
+    );
   }
 
   return (
