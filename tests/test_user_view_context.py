@@ -294,8 +294,13 @@ class UserViewContextTests(unittest.TestCase):
 
         with TestClient(app) as client:
             response = client.get("/api/v1/me/context")
+            planning_policy = client.get("/api/v1/me/planning-policy")
 
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(planning_policy.status_code, 200)
+        planning_payload = planning_policy.json()
+        self.assertEqual(planning_payload["default_scope"], SCOPE_MINE)
+        self.assertEqual(planning_payload["available_scopes"], [SCOPE_MINE])
         payload = response.json()
         self.assertEqual(payload["resource"]["id"], "R-MULTI")
         self.assertEqual(payload["resource"]["link_status"], LINK_STATUS_LINKED)
