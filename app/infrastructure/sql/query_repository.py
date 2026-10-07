@@ -1353,11 +1353,9 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             demand_ids=demand_ids,
             resource_ids=resource_ids,
         ):
-            if segment.resource_name:
-                continue
-            if segment.automatic_rebuild_hours <= 0.01:
-                # The budget is already covered by locked real shifts; no automatic
-                # target is required until some of those decisions are released.
+            if segment.remaining_hours <= 0.01:
+                # #693: the work queue follows actual counted Shift coverage, not the
+                # automatic target nor the replaceable/locked split.
                 continue
             if _normalized_text(segment.status) in {"annule", "termine"}:
                 continue
@@ -1382,7 +1380,8 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                     task_label=demand.task_label if demand is not None else None,
                     start_date=segment.start_date,
                     end_date=segment.end_date,
-                    planned_hours=float(segment.automatic_rebuild_hours),
+                    planned_hours=float(segment.remaining_hours),
+                    required_resource_class=segment.required_resource_class,
                     required_competency=segment.required_competency,
                     required_competency_id=segment.required_competency_id,
                     priority=segment.priority,
