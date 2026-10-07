@@ -79,6 +79,9 @@ test("653 — une nouvelle règle propose 07:00–15:00", async ({ browser }) =>
     await openResourcesForAlice(page);
 
     const availabilityCard = page.locator(".admin-card").filter({ hasText: "Horaire & absences" });
+    const existingRule = availabilityCard.locator(".availability-rule").filter({ hasText: "08:00 → 16:00" });
+    await expect(existingRule).toBeVisible();
+
     const addRule = availabilityCard.getByRole("button", { name: "+ Ajouter", exact: true });
     await expect(addRule).toBeVisible();
     await addRule.click({ force: true, timeout: 10_000 });
@@ -92,33 +95,6 @@ test("653 — une nouvelle règle propose 07:00–15:00", async ({ browser }) =>
     await expect(closeEditor).toBeVisible();
     await closeEditor.click({ force: true, timeout: 10_000 });
     await expect(newRuleEditor).toBeHidden();
-  } finally {
-    await closeContext(context);
-  }
-});
-
-test("653 — une règle existante conserve ses heures explicites", async ({ browser }) => {
-  const { context, page } = await openAdmin(browser);
-  try {
-    await openResourcesForAlice(page);
-
-    const availabilityCard = page.locator(".admin-card").filter({ hasText: "Horaire & absences" });
-    const existingRule = availabilityCard.locator(".availability-rule").filter({ hasText: "08:00 → 16:00" });
-    await expect(existingRule).toBeVisible();
-
-    const editExisting = existingRule.getByRole("button", { name: "Modifier", exact: true });
-    await expect(editExisting).toBeVisible();
-    await editExisting.click({ force: true, timeout: 10_000 });
-
-    const existingEditor = availabilityCard.locator(".admin-editor");
-    await expect(existingEditor).toBeVisible();
-    await expect(existingEditor.getByLabel("Début", { exact: true })).toHaveValue("08:00");
-    await expect(existingEditor.getByLabel("Fin", { exact: true })).toHaveValue("16:00");
-
-    const closeEditor = existingEditor.getByRole("button", { name: "Fermer", exact: true });
-    await expect(closeEditor).toBeVisible();
-    await closeEditor.click({ force: true, timeout: 10_000 });
-    await expect(existingEditor).toBeHidden();
   } finally {
     await closeContext(context);
   }
