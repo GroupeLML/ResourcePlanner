@@ -57,6 +57,9 @@ class MediumTermCompetencyCapacityTests(unittest.TestCase):
                 ),
             ]
         )
+        # Competency.resource_class_code is an FK without an ORM relationship
+        # that would order these pending inserts for this fixture.
+        session.flush()
         session.add(
             TaskCatalogEntry(
                 id="T1",
