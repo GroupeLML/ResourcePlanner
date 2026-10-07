@@ -24,8 +24,9 @@ class ReactOperationalPlanningQueueContractTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("En attente d’approbation", panel)
-        self.assertIn("Travaux à planifier", panel)
+        self.assertIn("<strong>À approuver</strong>", panel)
+        self.assertIn("<strong>À planifier</strong>", panel)
+        self.assertIn("Approuvé · reliquat à couvrir", panel)
         self.assertIn("Trouver une ressource", panel)
         self.assertIn("Compétences requises satisfaites", panel)
         self.assertIn("libres prudentes", panel)
