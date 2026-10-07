@@ -612,7 +612,11 @@ export type DemandLineReadModel = {
   description: string | null;
   active: boolean;
   asset_type_id: string | null;
+  asset_type_code: string | null;
+  asset_type_label: string | null;
   proposed_asset_id: string | null;
+  proposed_asset_code: string | null;
+  proposed_asset_label: string | null;
 };
 
 export type DemandRequesterReadModel = {

@@ -987,6 +987,31 @@ export default function PlanningPage({ onOpenDemands }: { onOpenDemands?: () => 
         outside_standard_hours: false,
         include_planning_window_override_options: true,
       });
+      const automaticExtension = evaluation.actions.find(
+        (action) => action.code === "EXTEND_AND_MOVE" && action.enabled && action.auto_execute,
+      );
+      if (automaticExtension && evaluation.warnings.length === 0) {
+        await extendAndMoveAllocationAtomic(
+          payload.allocation_id,
+          {
+            resource_id: targetResource.id,
+            day: targetDay,
+            expected_planning_version: evaluation.planning_version,
+            outside_standard_hours: false,
+            overallocation_policy: null,
+            expected_approval_revision_id: null,
+            expected_operational_version: null,
+            confirm_window_extension: false,
+          },
+          createClientId(),
+        );
+        setDragFeedback({
+          tone: "success",
+          message: `Fenêtre du besoin étendue automatiquement et quart déplacé vers ${targetResource.name} le ${targetDay}.`,
+        });
+        setRefreshKey((value) => value + 1);
+        return;
+      }
       setDropDialog({
         payload,
         targetResource,

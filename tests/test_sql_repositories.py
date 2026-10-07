@@ -11,6 +11,8 @@ from sqlalchemy import func, select
 from app.application.demand_service import DemandService
 from app.application.segment_service import SegmentService
 from app.infrastructure.sql import (
+    Asset,
+    AssetType,
     Base,
     ORIGIN_QUICK_SHIFT,
     Project,
@@ -183,6 +185,75 @@ class SqlRepositoryTests(unittest.TestCase):
             self.assertIsNotNone(persisted)
             assert persisted is not None
             self.assertEqual(persisted.status, "Soumise")
+
+    def test_demand_line_projection_resolves_asset_business_labels_for_mixed_request(self) -> None:
+        with transactional_session(self.factory) as session:
+            session.add(
+                AssetType(
+                    id="AT-LIFT",
+                    code="LIFT",
+                    label="Nacelle",
+                    category="EQUIPMENT",
+                )
+            )
+            session.flush()
+            session.add(
+                Asset(
+                    id="A-LIFT-63",
+                    code="LIFT-63",
+                    label="Nacelle #63",
+                    asset_type_id="AT-LIFT",
+                )
+            )
+            session.flush()
+            repository = SqlDemandRepository(session, actor_name="Jean")
+            number = repository.create(
+                {
+                    "NumeroProjet": "P-1",
+                    "RequestLines": [
+                        {
+                            "position": 0,
+                            "kind": "WORKFORCE",
+                            "required_resource_class": "PROGRAMMEUR",
+                            "desired_start": date(2026, 10, 12),
+                            "desired_end": date(2026, 10, 12),
+                            "estimated_hours": 8,
+                            "description": "Programmation",
+                        },
+                        {
+                            "position": 1,
+                            "kind": "ASSET",
+                            "asset_type_id": "AT-LIFT",
+                            "proposed_asset_id": "A-LIFT-63",
+                            "desired_start": date(2026, 10, 12),
+                            "desired_end": date(2026, 10, 12),
+                            "description": "Nacelle proposée",
+                        },
+                        {
+                            "position": 2,
+                            "kind": "ASSET",
+                            "asset_type_id": "AT-LIFT",
+                            "desired_start": date(2026, 10, 13),
+                            "desired_end": date(2026, 10, 13),
+                            "description": "Nacelle à assigner",
+                        },
+                    ],
+                }
+            )
+
+            created = repository.get(number)
+            self.assertIsNotNone(created)
+            assert created is not None
+            self.assertEqual([line.kind for line in created.lines], ["WORKFORCE", "ASSET", "ASSET"])
+            self.assertEqual(created.lines[0].required_resource_class_label, "Programmeur")
+            self.assertEqual(created.lines[1].asset_type_code, "LIFT")
+            self.assertEqual(created.lines[1].asset_type_label, "Nacelle")
+            self.assertEqual(created.lines[1].proposed_asset_code, "LIFT-63")
+            self.assertEqual(created.lines[1].proposed_asset_label, "Nacelle #63")
+            self.assertEqual(created.lines[2].asset_type_code, "LIFT")
+            self.assertEqual(created.lines[2].asset_type_label, "Nacelle")
+            self.assertIsNone(created.lines[2].proposed_asset_code)
+            self.assertIsNone(created.lines[2].proposed_asset_label)
 
     def test_segment_service_links_request_project_and_resource(self) -> None:
         planning = _Planning()

@@ -14,6 +14,7 @@ from app.infrastructure.sql import (
     Base,
     BusinessContact,
     ORIGIN_AD_HOC,
+    ORIGIN_QUICK_SHIFT,
     PlanningChangeHistory,
     Project,
     Resource,
@@ -32,11 +33,17 @@ from tests.http_test_auth import TEST_ADMIN_AUTH_RESOLVER
 
 DAY = date(2026, 9, 22)
 NEXT_DAY = DAY + timedelta(days=1)
+NEXT_WEEK = DAY + timedelta(days=7)
 
 
 class PlanningDropWindowExtensionTests(unittest.TestCase):
     @staticmethod
-    def _database(directory: str, *, with_adhoc: bool = True) -> str:
+    def _database(
+        directory: str,
+        *,
+        with_adhoc: bool = True,
+        origin: str = ORIGIN_AD_HOC,
+    ) -> str:
         path = Path(directory) / "planning-drop-333.db"
         url = f"sqlite:///{path.as_posix()}"
         engine = create_sql_engine(url)
@@ -84,7 +91,7 @@ class PlanningDropWindowExtensionTests(unittest.TestCase):
                         status="Planifié",
                         planning_type="Flexible",
                         confirmation="Confirmée",
-                        origin=ORIGIN_AD_HOC,
+                        origin=origin,
                     )
                 )
                 session.flush()
@@ -128,6 +135,9 @@ class PlanningDropWindowExtensionTests(unittest.TestCase):
                 [action["code"] for action in payload["actions"]],
                 ["EXTEND_AND_MOVE", "CANCEL"],
             )
+            extension = payload["actions"][0]
+            self.assertTrue(extension["auto_execute"])
+            self.assertEqual(extension["required_parameters"], [])
 
             engine = create_sql_engine(url)
             factory = create_session_factory(engine)
@@ -138,6 +148,71 @@ class PlanningDropWindowExtensionTests(unittest.TestCase):
                 self.assertEqual(requirement.end_date, DAY)
                 self.assertEqual(shift.work_date, DAY)
                 self.assertEqual(shift.resource_id, "R1")
+            engine.dispose()
+
+    def test_adhoc_extend_and_move_auto_expands_minimally_without_confirmation(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            app = create_api_app(url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+            with TestClient(app, raise_server_exceptions=False) as client:
+                response = client.post(
+                    "/api/v1/allocations/ALLOC-1/extend-and-move",
+                    json={
+                        "resource_id": "R2",
+                        "day": NEXT_WEEK.isoformat(),
+                        "expected_planning_version": 1,
+                        "confirm_window_extension": False,
+                    },
+                    headers={"Idempotency-Key": "extend-move-659a-auto"},
+                )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["operation"], "EXTEND_AND_MOVE")
+
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            with factory() as session:
+                requirement = session.get(ResourceRequirement, "REQ1")
+                shift = session.get(Shift, "SHIFT-1")
+                assert requirement is not None and shift is not None
+                self.assertEqual(requirement.start_date, DAY)
+                self.assertEqual(requirement.end_date, NEXT_WEEK)
+                self.assertEqual(float(requirement.planned_hours), 8.0)
+                self.assertEqual(shift.work_date, NEXT_WEEK)
+                self.assertEqual(shift.resource_id, "R2")
+                self.assertEqual(float(shift.hours), 8.0)
+                self.assertTrue(shift.locked)
+            engine.dispose()
+
+    def test_quick_shift_edit_auto_expands_window_without_changing_hours(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory, origin=ORIGIN_QUICK_SHIFT)
+            app = create_api_app(url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+            with TestClient(app, raise_server_exceptions=False) as client:
+                response = client.put(
+                    "/api/v1/allocations/ALLOC-1",
+                    json={
+                        "resource_id": "R2",
+                        "day": NEXT_WEEK.isoformat(),
+                        "hours": 8,
+                        "outside_standard_hours": False,
+                        "note": "659A edit",
+                        "confirmation": "Confirmée",
+                    },
+                )
+            self.assertEqual(response.status_code, 200, response.text)
+
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            with factory() as session:
+                requirement = session.get(ResourceRequirement, "REQ1")
+                shift = session.get(Shift, "SHIFT-1")
+                assert requirement is not None and shift is not None
+                self.assertEqual(requirement.start_date, DAY)
+                self.assertEqual(requirement.end_date, NEXT_WEEK)
+                self.assertEqual(float(requirement.planned_hours), 8.0)
+                self.assertEqual(shift.work_date, NEXT_WEEK)
+                self.assertEqual(shift.resource_id, "R2")
+                self.assertEqual(float(shift.hours), 8.0)
             engine.dispose()
 
     def test_extend_and_move_is_atomic_idempotent_and_audited(self) -> None:
@@ -283,6 +358,24 @@ class PlanningDropWindowExtensionTests(unittest.TestCase):
             self.assertIsNotNone(payload["approval_revision_id"])
             self.assertIsNotNone(payload["approved_entry_key"])
             self.assertIsNotNone(payload["request_version"])
+
+            with TestClient(app, raise_server_exceptions=False) as client:
+                direct = client.post(
+                    f"/api/v1/allocations/{allocation_id}/extend-and-move",
+                    json={
+                        "resource_id": "R2",
+                        "day": NEXT_DAY.isoformat(),
+                        "expected_planning_version": payload["planning_version"],
+                        "confirm_window_extension": False,
+                        "expected_approval_revision_id": payload["approval_revision_id"],
+                    },
+                    headers={"Idempotency-Key": "request-auto-extension-refused-659a"},
+                )
+            self.assertEqual(direct.status_code, 422, direct.text)
+            self.assertEqual(
+                direct.json()["error"]["code"],
+                "allocation_window_extension_confirmation_required",
+            )
 
 
     def test_outside_request_proposal_changes_candidate_and_approval_but_never_moves_shift(self) -> None:
