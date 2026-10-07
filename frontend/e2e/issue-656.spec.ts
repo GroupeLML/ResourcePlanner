@@ -2,7 +2,7 @@ import { Browser, Page, expect, test } from "@playwright/test";
 
 const BASE_URL = process.env.RESOURCEPLANNER_E2E_BASE_URL || "http://127.0.0.1:8765";
 
-async function openRole(browser: Browser, role: "ADMIN" | "PROJECT_MANAGER", expectedName: string) {
+async function openRole(browser: Browser, role: "ADMIN" | "COORDINATOR", expectedName: string) {
   const context = await browser.newContext({
     baseURL: BASE_URL,
     locale: "fr-CA",
@@ -16,8 +16,8 @@ async function openRole(browser: Browser, role: "ADMIN" | "PROJECT_MANAGER", exp
 
 async function navigatePlanning(page: Page) {
   await page.locator(".main-nav").getByRole("button", { name: /Planning opérationnel/i }).click();
-  // PROJECT_MANAGER defaults to "Mon périmètre". This acceptance compares the
-  // same global resource catalog across identities, independently of view scope.
+  // #656 validates identity-owned ordering on identities that are actually
+  // authorized for the global Planning catalog under ADR-027.
   const globalScope = page.getByRole("button", { name: "Vue globale", exact: true });
   if (await globalScope.isVisible()) {
     await globalScope.click();
@@ -54,15 +54,15 @@ async function expectGlobalFallback(page: Page) {
 
 test("ordre Manuel des ressources est propre à chaque AppUser et survit à une nouvelle session", async ({ browser }) => {
   test.setTimeout(90_000);
-  const projectManager = await openRole(browser, "PROJECT_MANAGER", "Chargé E2E");
+  const coordinator = await openRole(browser, "COORDINATOR", "Coordonnateur E2E");
   try {
-    await expectGlobalFallback(projectManager.page);
-    await navigatePlanning(projectManager.page);
-    await expect.poll(() => programmerNames(projectManager.page)).toEqual(["Alice", "Bob"]);
-    await projectManager.page.getByRole("button", { name: "Monter Bob", exact: true }).click();
-    await expect.poll(() => programmerNames(projectManager.page)).toEqual(["Bob", "Alice"]);
+    await expectGlobalFallback(coordinator.page);
+    await navigatePlanning(coordinator.page);
+    await expect.poll(() => programmerNames(coordinator.page)).toEqual(["Alice", "Bob"]);
+    await coordinator.page.getByRole("button", { name: "Monter Bob", exact: true }).click();
+    await expect.poll(() => programmerNames(coordinator.page)).toEqual(["Bob", "Alice"]);
   } finally {
-    await projectManager.context.close();
+    await coordinator.context.close();
   }
 
   const admin = await openRole(browser, "ADMIN", "Administrateur E2E");
@@ -74,19 +74,19 @@ test("ordre Manuel des ressources est propre à chaque AppUser et survit à une 
     await admin.context.close();
   }
 
-  const projectManagerReloaded = await openRole(browser, "PROJECT_MANAGER", "Chargé E2E");
+  const coordinatorReloaded = await openRole(browser, "COORDINATOR", "Coordonnateur E2E");
   try {
-    await navigatePlanning(projectManagerReloaded.page);
-    await expect.poll(() => programmerNames(projectManagerReloaded.page)).toEqual(["Bob", "Alice"]);
-    await projectManagerReloaded.page.getByLabel("Ordre des ressources").selectOption("alphabetical");
-    await expect.poll(() => programmerNames(projectManagerReloaded.page)).toEqual(["Alice", "Bob"]);
-    await projectManagerReloaded.page.getByLabel("Ordre des ressources").selectOption("manual");
-    await expect.poll(() => programmerNames(projectManagerReloaded.page)).toEqual(["Bob", "Alice"]);
+    await navigatePlanning(coordinatorReloaded.page);
+    await expect.poll(() => programmerNames(coordinatorReloaded.page)).toEqual(["Bob", "Alice"]);
+    await coordinatorReloaded.page.getByLabel("Ordre des ressources").selectOption("alphabetical");
+    await expect.poll(() => programmerNames(coordinatorReloaded.page)).toEqual(["Alice", "Bob"]);
+    await coordinatorReloaded.page.getByLabel("Ordre des ressources").selectOption("manual");
+    await expect.poll(() => programmerNames(coordinatorReloaded.page)).toEqual(["Bob", "Alice"]);
 
     // Restore this user's canonical fixture order for the remaining serial E2E suite.
-    await projectManagerReloaded.page.getByRole("button", { name: "Descendre Bob", exact: true }).click();
-    await expect.poll(() => programmerNames(projectManagerReloaded.page)).toEqual(["Alice", "Bob"]);
+    await coordinatorReloaded.page.getByRole("button", { name: "Descendre Bob", exact: true }).click();
+    await expect.poll(() => programmerNames(coordinatorReloaded.page)).toEqual(["Alice", "Bob"]);
   } finally {
-    await projectManagerReloaded.context.close();
+    await coordinatorReloaded.context.close();
   }
 });

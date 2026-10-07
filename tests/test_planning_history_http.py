@@ -6,7 +6,8 @@ import unittest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.application.query_models import PlanningHistoryReadModel
+from app.application.query_models import PlanningHistoryReadModel, ShiftReadModel
+from app.application.security import ROLE_MANAGER, AuthPrincipal
 from app.application.read_models import SegmentReadModel
 from app.server.routes_reads import build_read_router
 
@@ -27,6 +28,22 @@ class _Queries:
             status="À assigner",
         )
 
+    def list_shifts(self, *, allocation_id: str | None = None, **_kwargs):
+        if allocation_id != "MAN-AUDIT-1":
+            return ()
+        return (
+            ShiftReadModel(
+                allocation_id="MAN-AUDIT-1",
+                segment_id="SEG-2026-9001",
+                resource_id="RES-1",
+                resource_name="Ressource Test",
+                work_date=date(2026, 9, 16),
+                hours=8.0,
+                project_id="PROJ-1",
+                project_number="P-100",
+            ),
+        )
+
     def list_planning_history(self, entity_type: str, reference: str):
         return (
             PlanningHistoryReadModel(
@@ -45,7 +62,26 @@ class PlanningHistoryHttpTests(unittest.TestCase):
     def setUp(self) -> None:
         queries = _Queries()
         app = FastAPI()
-        app.include_router(build_read_router(lambda: queries))
+
+        @app.middleware("http")
+        async def inject_principal(request, call_next):
+            request.state.auth_principal = AuthPrincipal.from_roles(
+                local_user_id="USER-1",
+                issuer="urn:test",
+                subject="manager",
+                display_name="Gestionnaire",
+                email=None,
+                roles=(ROLE_MANAGER,),
+                auth_mode="test",
+            )
+            return await call_next(request)
+
+        app.include_router(
+            build_read_router(
+                lambda: queries,
+                lambda: object(),
+            )
+        )
         self.client = TestClient(app)
 
     def test_segment_history_endpoint_returns_backend_audit(self) -> None:

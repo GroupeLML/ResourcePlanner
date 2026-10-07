@@ -50,6 +50,11 @@ from ..application.demand_workflow_policy import (
     demand_workflow_state,
 )
 from ..application.query_models import PlanningHistoryReadModel
+from ..application.planning_visibility import (
+    PlanningVisibilityRepositoryPort,
+    PlanningVisibilityResolution,
+    PlanningVisibilityService,
+)
 from ..application.security import AuthPrincipal, PERMISSION_MANAGE_PLANNING
 from ..application.user_view_context import (
     SCOPE_GLOBAL,
@@ -92,25 +97,141 @@ def _demand_scope_context(
     return resolution.project_ids, resolution.demand_ids
 
 
-def _planning_scope_context(
+def _planning_visibility(
     request: Request,
-    scope: ViewScope,
-    repository: UserViewContextRepositoryPort | None,
-) -> tuple[tuple[str, ...] | None, tuple[str, ...]]:
+    scope: ViewScope | None,
+    repository: PlanningVisibilityRepositoryPort | None,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+) -> tuple[PlanningVisibilityService, PlanningVisibilityResolution]:
     if repository is None:
-        return None, ()
+        raise ApplicationOperationError(
+            "Le contexte d'autorisation du Planning est indisponible.",
+            code="planning_visibility_context_unavailable",
+        )
     principal: AuthPrincipal = request.state.auth_principal
-    service = UserViewContextService(repository)
-    resolution = service.resolve_project_scope(principal, scope)
-    if resolution.project_ids is None:
-        return None, ()
-    relations = service.resolve_relations(principal)
-    personal_resource_ids = (
-        (relations.resource.id,)
-        if relations.resource is not None
-        else ()
+    service = PlanningVisibilityService(repository)
+    return service, service.resolve(
+        principal,
+        scope,
+        start=start,
+        end=end,
     )
-    return resolution.project_ids, personal_resource_ids
+
+
+def _planning_demand_or_404(
+    request: Request,
+    scope: ViewScope | None,
+    repository: PlanningVisibilityRepositoryPort | None,
+    queries: PlannerQueryPort,
+    number: str,
+) -> tuple[DemandReadModel, PlanningVisibilityResolution | None]:
+    row = queries.get_demand(number)
+    if row is None:
+        raise ApplicationNotFoundError(
+            f"Demande {number} introuvable",
+            code="demand_not_found",
+            context={"demand_number": number},
+        )
+    # The /demands surface is shared with the Demands workspace. 618A only
+    # tightens Planning reads: an explicit scope means the caller is asking for
+    # Planning-authorized publication, while an omitted scope preserves the
+    # existing generic demand read contract.
+    if scope is None:
+        return row, None
+
+    _service, visibility = _planning_visibility(
+        request,
+        scope,
+        repository,
+    )
+    if visibility.project_ids is not None:
+        visible = queries.list_demands(
+            project_ids=visibility.project_ids,
+            demand_ids=visibility.demand_ids,
+        )
+        if not any(candidate.number == row.number for candidate in visible):
+            raise ApplicationNotFoundError(
+                f"Demande {number} introuvable",
+                code="demand_not_found",
+                context={"demand_number": number},
+            )
+    return row, visibility
+
+def _planning_segment_or_404(
+    request: Request,
+    scope: ViewScope | None,
+    repository: PlanningVisibilityRepositoryPort | None,
+    queries: PlannerQueryPort,
+    segment_id: str,
+) -> tuple[SegmentReadModel, PlanningVisibilityResolution | None]:
+    row = queries.get_segment(segment_id)
+    if row is None:
+        raise ApplicationNotFoundError(
+            f"Segment {segment_id} introuvable",
+            code="segment_not_found",
+            context={"segment_id": segment_id},
+        )
+    if scope is None:
+        return row, None
+
+    _service, visibility = _planning_visibility(
+        request,
+        scope,
+        repository,
+    )
+    if visibility.project_ids is not None:
+        visible = queries.list_segments(
+            include_cancelled=True,
+            project_ids=visibility.project_ids,
+            demand_ids=visibility.demand_ids,
+            resource_ids=visibility.segment_resource_ids,
+        )
+        if not any(candidate.segment_id == row.segment_id for candidate in visible):
+            raise ApplicationNotFoundError(
+                f"Segment {segment_id} introuvable",
+                code="segment_not_found",
+                context={"segment_id": segment_id},
+            )
+    return row, visibility
+
+def _planning_shift_or_404(
+    request: Request,
+    scope: ViewScope | None,
+    repository: PlanningVisibilityRepositoryPort | None,
+    queries: PlannerQueryPort,
+    allocation_id: str,
+) -> tuple[ShiftReadModel, PlanningVisibilityResolution]:
+    service, visibility = _planning_visibility(
+        request,
+        scope,
+        repository,
+    )
+    if visibility.project_ids is None:
+        rows = tuple(
+            queries.list_shifts(
+                allocation_id=allocation_id,
+            )
+        )
+    else:
+        rows = tuple(
+            queries.list_shifts(
+                allocation_id=allocation_id,
+                project_ids=visibility.project_ids,
+                demand_ids=visibility.demand_ids,
+                visible_resource_ids=visibility.shift_resource_ids,
+                project_day_keys=visibility.project_day_keys,
+            )
+        )
+    row = rows[0] if rows else None
+    if row is None or not service.can_read_shift_details(row, visibility):
+        raise ApplicationNotFoundError(
+            f"Quart {allocation_id} introuvable",
+            code="shift_not_found",
+            context={"allocation_id": allocation_id},
+        )
+    return row, visibility
 
 
 def _window(start: date | None, end: date | None) -> None:
@@ -373,8 +494,17 @@ def build_read_router(
     def get_demand(
         number: str,
         request: Request,
+        scope: ViewScope | None = Query(default=None),
         queries: PlannerQueryPort = Depends(query_dependency),
+        context_repository: Any = Depends(context_dependency),
     ) -> DemandReadModel:
+        scoped_row, _visibility = _planning_demand_or_404(
+            request,
+            scope,
+            context_repository,
+            queries,
+            number,
+        )
         combined_reader = getattr(
             queries,
             "get_demand_with_cancellation_materialization",
@@ -384,14 +514,8 @@ def build_read_router(
         if combined is not None:
             row, materialization = combined
         else:
-            row = queries.get_demand(number)
+            row = scoped_row
             materialization = None
-        if row is None:
-            raise ApplicationNotFoundError(
-                f"Demande {number} introuvable",
-                code="demand_not_found",
-                context={"demand_number": number},
-            )
         principal: AuthPrincipal = request.state.auth_principal
         return _with_cancellation_policy(
             row,
@@ -405,7 +529,9 @@ def build_read_router(
         def get_demand_detail(
             number: str,
             request: Request,
+            scope: ViewScope | None = Query(default=None),
             queries: PlannerQueryPort = Depends(query_dependency),
+            context_repository: Any = Depends(context_dependency),
             contacts: OperationalContactService = Depends(
                 operational_contact_dependency
             ),
@@ -413,6 +539,13 @@ def build_read_router(
                 approval_dependency
             ),
         ) -> DemandDetailReadModel:
+            _planning_demand_or_404(
+                request,
+                scope,
+                context_repository,
+                queries,
+                number,
+            )
             principal: AuthPrincipal = request.state.auth_principal
             return DemandDetailService(queries, contacts, approvals).get(
                 number,
@@ -423,28 +556,35 @@ def build_read_router(
     @router.get("/demands/{number}/history")
     def list_demand_history(
         number: str,
+        request: Request,
+        scope: ViewScope | None = Query(default=None),
         queries: PlannerQueryPort = Depends(query_dependency),
+        context_repository: Any = Depends(context_dependency),
     ) -> list[DemandHistoryReadModel]:
-        if queries.get_demand(number) is None:
-            raise ApplicationNotFoundError(
-                f"Demande {number} introuvable",
-                code="demand_not_found",
-                context={"demand_number": number},
-            )
+        _planning_demand_or_404(
+            request,
+            scope,
+            context_repository,
+            queries,
+            number,
+        )
         return list(queries.list_demand_history(number))
 
     @router.get("/demands/{number}/periods")
     def list_demand_periods(
         number: str,
+        request: Request,
+        scope: ViewScope | None = Query(default=None),
         queries: PlannerQueryPort = Depends(query_dependency),
+        context_repository: Any = Depends(context_dependency),
     ) -> list[DemandPeriodReadModel]:
-        demand = queries.get_demand(number)
-        if demand is None:
-            raise ApplicationNotFoundError(
-                f"Demande {number} introuvable",
-                code="demand_not_found",
-                context={"demand_number": number},
-            )
+        demand, _visibility = _planning_demand_or_404(
+            request,
+            scope,
+            context_repository,
+            queries,
+            number,
+        )
         if demand.line_mode:
             raise ApplicationConflictError(
                 "Les périodes d'une demande multi-lignes doivent être lues par ligne.",
@@ -457,15 +597,18 @@ def build_read_router(
     def list_demand_line_periods(
         number: str,
         line_id: str,
+        request: Request,
+        scope: ViewScope | None = Query(default=None),
         queries: PlannerQueryPort = Depends(query_dependency),
+        context_repository: Any = Depends(context_dependency),
     ) -> list[DemandPeriodReadModel]:
-        demand = queries.get_demand(number)
-        if demand is None:
-            raise ApplicationNotFoundError(
-                f"Demande {number} introuvable",
-                code="demand_not_found",
-                context={"demand_number": number},
-            )
+        demand, _visibility = _planning_demand_or_404(
+            request,
+            scope,
+            context_repository,
+            queries,
+            number,
+        )
         if not demand.line_mode:
             raise ApplicationConflictError(
                 "Les demandes historiques à une ligne utilisent l'endpoint de périodes de la demande.",
@@ -488,8 +631,18 @@ def build_read_router(
     @router.get("/demands/{number}/approval-state")
     def demand_approval_state(
         number: str,
+        request: Request,
+        scope: ViewScope | None = Query(default=None),
         queries: PlannerQueryPort = Depends(query_dependency),
+        context_repository: Any = Depends(context_dependency),
     ) -> DemandApprovalStateReadModel:
+        _planning_demand_or_404(
+            request,
+            scope,
+            context_repository,
+            queries,
+            number,
+        )
         row = queries.demand_approval_state(number)
         if row is None:
             raise ApplicationNotFoundError(
@@ -502,8 +655,18 @@ def build_read_router(
     @router.get("/demands/{number}/plan-delta")
     def demand_plan_delta(
         number: str,
+        request: Request,
+        scope: ViewScope | None = Query(default=None),
         queries: PlannerQueryPort = Depends(query_dependency),
+        context_repository: Any = Depends(context_dependency),
     ) -> DemandPlanDeltaReadModel:
+        _planning_demand_or_404(
+            request,
+            scope,
+            context_repository,
+            queries,
+            number,
+        )
         row = queries.demand_plan_delta(number)
         if row is None:
             raise ApplicationNotFoundError(
@@ -519,13 +682,27 @@ def build_read_router(
         start: date | None = Query(default=None),
         end: date | None = Query(default=None),
         include_cancelled: bool = False,
-        scope: ViewScope = Query(default=SCOPE_GLOBAL),
+        scope: ViewScope | None = Query(default=None),
         queries: PlannerQueryPort = Depends(query_dependency),
         context_repository: Any = Depends(context_dependency),
     ) -> list[SegmentReadModel]:
         _window(start, end)
-        project_ids = _project_ids_for_scope(request, scope, context_repository)
-        if project_ids is None:
+        if scope is None:
+            return list(
+                queries.list_segments(
+                    start=start,
+                    end=end,
+                    include_cancelled=include_cancelled,
+                )
+            )
+        _service, visibility = _planning_visibility(
+            request,
+            scope,
+            context_repository,
+            start=start,
+            end=end,
+        )
+        if visibility.project_ids is None:
             return list(
                 queries.list_segments(
                     start=start,
@@ -538,35 +715,44 @@ def build_read_router(
                 start=start,
                 end=end,
                 include_cancelled=include_cancelled,
-                project_ids=project_ids,
+                project_ids=visibility.project_ids,
+                demand_ids=visibility.demand_ids,
+                resource_ids=visibility.segment_resource_ids,
             )
         )
 
     @router.get("/segments/{segment_id}")
     def get_segment(
         segment_id: str,
+        request: Request,
+        scope: ViewScope | None = Query(default=None),
         queries: PlannerQueryPort = Depends(query_dependency),
+        context_repository: Any = Depends(context_dependency),
     ) -> SegmentReadModel:
-        row = queries.get_segment(segment_id)
-        if row is None:
-            raise ApplicationNotFoundError(
-                f"Segment {segment_id} introuvable",
-                code="segment_not_found",
-                context={"segment_id": segment_id},
-            )
+        row, _visibility = _planning_segment_or_404(
+            request,
+            scope,
+            context_repository,
+            queries,
+            segment_id,
+        )
         return row
 
     @router.get("/segments/{segment_id}/history")
     def list_segment_history(
         segment_id: str,
+        request: Request,
+        scope: ViewScope | None = Query(default=None),
         queries: PlannerQueryPort = Depends(query_dependency),
+        context_repository: Any = Depends(context_dependency),
     ) -> list[PlanningHistoryReadModel]:
-        if queries.get_segment(segment_id) is None:
-            raise ApplicationNotFoundError(
-                f"Segment {segment_id} introuvable",
-                code="segment_not_found",
-                context={"segment_id": segment_id},
-            )
+        _planning_segment_or_404(
+            request,
+            scope,
+            context_repository,
+            queries,
+            segment_id,
+        )
         return list(queries.list_planning_history("SEGMENT", segment_id))
 
     @router.get("/shifts")
@@ -575,40 +761,57 @@ def build_read_router(
         start: date | None = Query(default=None),
         end: date | None = Query(default=None),
         resource_name: str | None = Query(default=None),
-        scope: ViewScope = Query(default=SCOPE_GLOBAL),
+        scope: ViewScope | None = Query(default=None),
         queries: PlannerQueryPort = Depends(query_dependency),
         context_repository: Any = Depends(context_dependency),
     ) -> list[ShiftReadModel]:
         _window(start, end)
-        project_ids = _project_ids_for_scope(request, scope, context_repository)
+        service, visibility = _planning_visibility(
+            request,
+            scope,
+            context_repository,
+            start=start,
+            end=end,
+        )
         principal: AuthPrincipal = request.state.auth_principal
         can_manage_planning = principal.has_permission(
             PERMISSION_MANAGE_PLANNING
         )
-        if project_ids is None:
-            return list(
-                queries.list_shifts(
-                    start=start,
-                    end=end,
-                    resource_name=resource_name,
-                    can_manage_planning=can_manage_planning,
-                )
-            )
-        return list(
-            queries.list_shifts(
+        if visibility.project_ids is None:
+            rows = queries.list_shifts(
                 start=start,
                 end=end,
                 resource_name=resource_name,
-                project_ids=project_ids,
                 can_manage_planning=can_manage_planning,
             )
-        )
+        else:
+            rows = queries.list_shifts(
+                start=start,
+                end=end,
+                resource_name=resource_name,
+                project_ids=visibility.project_ids,
+                demand_ids=visibility.demand_ids,
+                visible_resource_ids=visibility.shift_resource_ids,
+                project_day_keys=visibility.project_day_keys,
+                can_manage_planning=can_manage_planning,
+            )
+        return [service.project_shift(row, visibility) for row in rows]
 
     @router.get("/shifts/{allocation_id}/history")
     def list_shift_history(
         allocation_id: str,
+        request: Request,
+        scope: ViewScope | None = Query(default=None),
         queries: PlannerQueryPort = Depends(query_dependency),
+        context_repository: Any = Depends(context_dependency),
     ) -> list[PlanningHistoryReadModel]:
+        _planning_shift_or_404(
+            request,
+            scope,
+            context_repository,
+            queries,
+            allocation_id,
+        )
         return list(queries.list_planning_history("SHIFT", allocation_id))
 
     @router.get("/medium-term/unlinked-segments")
@@ -642,23 +845,44 @@ def build_read_router(
         request: Request,
         start: date = Query(),
         end: date = Query(),
-        scope: ViewScope = Query(default=SCOPE_GLOBAL),
+        scope: ViewScope | None = Query(default=None),
         queries: PlannerQueryPort = Depends(query_dependency),
         context_repository: Any = Depends(context_dependency),
     ) -> PlanningCapacityGridReadModel:
         _window(start, end)
-        project_ids, personal_resource_ids = _planning_scope_context(
+        service, visibility = _planning_visibility(
             request,
             scope,
             context_repository,
-        )
-        if project_ids is None:
-            return queries.planning_capacity_grid(start=start, end=end)
-        return queries.planning_capacity_grid(
             start=start,
             end=end,
-            project_ids=project_ids,
-            include_resource_ids=personal_resource_ids,
+        )
+        if visibility.project_ids is None:
+            return queries.planning_capacity_grid(start=start, end=end)
+        grid = queries.planning_capacity_grid(
+            start=start,
+            end=end,
+            project_ids=visibility.project_ids,
+            demand_ids=visibility.demand_ids,
+            include_resource_ids=visibility.include_resource_ids,
+            shift_resource_ids=visibility.shift_resource_ids,
+            segment_resource_ids=visibility.segment_resource_ids,
+            project_day_keys=visibility.project_day_keys,
+        )
+        scoped_shifts = tuple(
+            queries.list_shifts(
+                start=start,
+                end=end,
+                project_ids=visibility.project_ids,
+                demand_ids=visibility.demand_ids,
+                visible_resource_ids=visibility.shift_resource_ids,
+                project_day_keys=visibility.project_day_keys,
+            )
+        )
+        return service.project_capacity(
+            grid,
+            scoped_shifts=scoped_shifts,
+            resolution=visibility,
         )
 
     @router.get("/planning/actions")
@@ -666,33 +890,45 @@ def build_read_router(
         request: Request,
         start: date = Query(),
         end: date = Query(),
-        scope: ViewScope = Query(default=SCOPE_GLOBAL),
+        scope: ViewScope | None = Query(default=None),
         queries: PlannerQueryPort = Depends(query_dependency),
         context_repository: Any = Depends(context_dependency),
     ) -> list[PlanningActionReadModel]:
         _window(start, end)
-        project_ids = _project_ids_for_scope(request, scope, context_repository)
-        if project_ids is None:
+        _service, visibility = _planning_visibility(
+            request,
+            scope,
+            context_repository,
+            start=start,
+            end=end,
+        )
+        if visibility.project_ids is None:
             return list(queries.list_planning_actions(start=start, end=end))
         return list(
             queries.list_planning_actions(
                 start=start,
                 end=end,
-                project_ids=project_ids,
+                project_ids=visibility.project_ids,
+                demand_ids=visibility.demand_ids,
+                resource_ids=visibility.segment_resource_ids,
             )
         )
 
     @router.get("/segments/{segment_id}/resource-recommendations")
     def resource_recommendations(
         segment_id: str,
+        request: Request,
+        scope: ViewScope | None = Query(default=None),
         queries: PlannerQueryPort = Depends(query_dependency),
+        context_repository: Any = Depends(context_dependency),
     ) -> list[ResourceRecommendationReadModel]:
-        if queries.get_segment(segment_id) is None:
-            raise ApplicationNotFoundError(
-                f"Segment {segment_id} introuvable",
-                code="segment_not_found",
-                context={"segment_id": segment_id},
-            )
+        _planning_segment_or_404(
+            request,
+            scope,
+            context_repository,
+            queries,
+            segment_id,
+        )
         return list(queries.recommend_resources(segment_id))
 
     @router.get("/planning/snapshot")
@@ -700,32 +936,39 @@ def build_read_router(
         request: Request,
         start: date = Query(),
         end: date = Query(),
-        scope: ViewScope = Query(default=SCOPE_GLOBAL),
+        scope: ViewScope | None = Query(default=None),
         queries: PlannerQueryPort = Depends(query_dependency),
         context_repository: Any = Depends(context_dependency),
     ) -> PlanningSnapshotReadModel:
         _window(start, end)
-        project_ids, personal_resource_ids = _planning_scope_context(
+        service, visibility = _planning_visibility(
             request,
             scope,
             context_repository,
+            start=start,
+            end=end,
         )
         principal: AuthPrincipal = request.state.auth_principal
         can_manage_planning = principal.has_permission(
             PERMISSION_MANAGE_PLANNING
         )
-        if project_ids is None:
+        if visibility.project_ids is None:
             return queries.planning_snapshot(
                 start=start,
                 end=end,
                 can_manage_planning=can_manage_planning,
             )
-        return queries.planning_snapshot(
+        snapshot = queries.planning_snapshot(
             start=start,
             end=end,
-            project_ids=project_ids,
-            include_resource_ids=personal_resource_ids,
+            project_ids=visibility.project_ids,
+            demand_ids=visibility.demand_ids,
+            include_resource_ids=visibility.include_resource_ids,
+            shift_resource_ids=visibility.shift_resource_ids,
+            segment_resource_ids=visibility.segment_resource_ids,
+            project_day_keys=visibility.project_day_keys,
             can_manage_planning=can_manage_planning,
         )
+        return service.project_snapshot(snapshot, visibility)
 
     return router
