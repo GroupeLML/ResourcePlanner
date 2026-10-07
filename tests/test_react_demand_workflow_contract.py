@@ -127,6 +127,23 @@ class ReactDemandWorkflowContractTests(unittest.TestCase):
             page,
         )
 
+    def test_approval_progress_prefers_asset_unit_then_type_then_line_fallback(self) -> None:
+        api = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
+        page = (ROOT / "frontend" / "src" / "DemandWorkflowPage.tsx").read_text(
+            encoding="utf-8"
+        )
+
+        for field in (
+            "asset_type_code: string | null",
+            "asset_type_label: string | null",
+            "proposed_asset_code: string | null",
+            "proposed_asset_label: string | null",
+        ):
+            self.assertIn(field, api)
+        self.assertIn('line?.kind === "ASSET"', page)
+        self.assertIn("proposedAssetLabel || assetTypeLabel || fallbackLineNumber", page)
+        self.assertIn('line?.kind !== "ASSET" && line?.task_code', page)
+
     def test_workflow_separates_approval_from_confirmation(self) -> None:
         source = (ROOT / "frontend" / "src" / "DemandWorkflowPage.tsx").read_text(
             encoding="utf-8"
