@@ -288,7 +288,10 @@ class DemandPeriodRequest(StrictRequest):
     kind: Literal["CUMULATIVE", "ALTERNATIVE"] = "CUMULATIVE"
     alternative_group: str | None = None
     confirmation: str = "Tentative"
+    confirmation_mode: Literal["INHERIT_MASTER", "EXPLICIT"] | None = None
     proposed_resource: str | None = None
+    proposed_resource_mode: Literal["INHERIT_MASTER", "EXPLICIT", "SAME_AS_PERIOD"] | None = None
+    same_as_period_id: str | None = Field(default=None, min_length=1)
     resource_count: int = Field(default=1, ge=1)
     desired_active_days: int | None = Field(default=None, ge=1)
     note: str = ""
