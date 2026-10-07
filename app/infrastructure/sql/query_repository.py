@@ -575,15 +575,24 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         start: date,
         end: date,
         project_ids: Sequence[str] | None = None,
+        demand_ids: Sequence[str] | None = None,
     ) -> tuple[PendingDemandLoadReadModel, ...]:
         """Project submitted requests without mutating or double-counting approved work."""
 
         statement = select(WorkforceRequest).where(WorkforceRequest.status == "Soumise")
+        scope_filters = []
         if project_ids is not None:
             identifiers = tuple(str(value) for value in project_ids if str(value))
-            if not identifiers:
+            if identifiers:
+                scope_filters.append(WorkforceRequest.project_id.in_(identifiers))
+        if demand_ids is not None:
+            demand_identifiers = tuple(str(value) for value in demand_ids if str(value))
+            if demand_identifiers:
+                scope_filters.append(WorkforceRequest.id.in_(demand_identifiers))
+        if project_ids is not None or demand_ids is not None:
+            if not scope_filters:
                 return ()
-            statement = statement.where(WorkforceRequest.project_id.in_(identifiers))
+            statement = statement.where(or_(*scope_filters))
         requests = self._session.scalars(
             statement.order_by(
                 WorkforceRequest.desired_start,
@@ -594,7 +603,10 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         result: list[PendingDemandLoadReadModel] = []
         demands_by_number = {
             demand.number: demand
-            for demand in self._demands.list(project_ids=project_ids)
+            for demand in self._demands.list(
+                project_ids=project_ids,
+                demand_ids=demand_ids,
+            )
         }
 
         for request in requests:
@@ -1119,6 +1131,8 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         start: date,
         end: date,
         project_ids: Sequence[str] | None = None,
+        demand_ids: Sequence[str] | None = None,
+        resource_ids: Sequence[str] = (),
     ) -> tuple[PlanningActionReadModel, ...]:
         """Return the coordinator inbox that historically sat above NiceGUI planning."""
 
@@ -1126,7 +1140,10 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             start, end = end, start
         demands = {
             row.number: row
-            for row in self.list_demands(project_ids=project_ids)
+            for row in self.list_demands(
+                project_ids=project_ids,
+                demand_ids=demand_ids,
+            )
         }
         result: list[PlanningActionReadModel] = []
 
@@ -1134,6 +1151,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             start=start,
             end=end,
             project_ids=project_ids,
+            demand_ids=demand_ids,
         ):
             demand = demands.get(pending.demand_number)
             if demand is None:
@@ -1176,6 +1194,8 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             end=end,
             include_cancelled=False,
             project_ids=project_ids,
+            demand_ids=demand_ids,
+            resource_ids=resource_ids,
         ):
             if segment.resource_name:
                 continue
@@ -1534,25 +1554,63 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         end: date | None = None,
         include_cancelled: bool = False,
         project_ids: Sequence[str] | None = None,
+        demand_ids: Sequence[str] | None = None,
+        resource_ids: Sequence[str] = (),
     ) -> tuple[SegmentReadModel, ...]:
-        if project_ids is not None:
-            identifiers = tuple(str(value) for value in project_ids if str(value))
-            if not identifiers:
-                return ()
-            allowed_project_numbers = set(
-                self._session.scalars(
-                    select(Project.number).where(Project.id.in_(identifiers))
-                ).all()
+        scope_requested = (
+            project_ids is not None
+            or demand_ids is not None
+            or bool(resource_ids)
+        )
+        allowed_segment_refs: set[str] | None = None
+        if scope_requested:
+            predicates = []
+            project_identifiers = tuple(
+                str(value) for value in (project_ids or ()) if str(value)
             )
-        else:
-            allowed_project_numbers = None
+            demand_identifiers = tuple(
+                str(value) for value in (demand_ids or ()) if str(value)
+            )
+            resource_identifiers = tuple(
+                str(value) for value in resource_ids if str(value)
+            )
+            if project_identifiers:
+                predicates.append(
+                    ResourceRequirement.project_id.in_(project_identifiers)
+                )
+            if demand_identifiers:
+                predicates.append(
+                    ResourceRequirement.workforce_request_id.in_(
+                        demand_identifiers
+                    )
+                )
+            if resource_identifiers:
+                predicates.append(
+                    ResourceRequirement.assigned_resource_id.in_(
+                        resource_identifiers
+                    )
+                )
+            if not predicates:
+                return ()
+            refs = self._session.execute(
+                select(
+                    ResourceRequirement.id,
+                    ResourceRequirement.legacy_segment_id,
+                ).where(or_(*predicates))
+            ).all()
+            allowed_segment_refs = {
+                str(value)
+                for row in refs
+                for value in (row.id, row.legacy_segment_id)
+                if value
+            }
 
         rows = self._segments.list(include_cancelled=include_cancelled)
         result: list[SegmentReadModel] = []
         for row in rows:
             if (
-                allowed_project_numbers is not None
-                and row.project_number not in allowed_project_numbers
+                allowed_segment_refs is not None
+                and row.segment_id not in allowed_segment_refs
             ):
                 continue
             if start is not None and row.end_date is not None and row.end_date < start:
@@ -1573,6 +1631,9 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         resource_name: str | None = None,
         resource_id: str | None = None,
         project_ids: Sequence[str] | None = None,
+        demand_ids: Sequence[str] | None = None,
+        visible_resource_ids: Sequence[str] = (),
+        project_day_keys: Sequence[tuple[str, date]] = (),
         can_manage_planning: bool = False,
     ) -> tuple[ShiftReadModel, ...]:
         asset_context_marker = (
@@ -1647,11 +1708,45 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             statement = statement.where(Shift.work_date >= start)
         if end is not None:
             statement = statement.where(Shift.work_date <= end)
-        if project_ids is not None:
-            identifiers = tuple(str(value) for value in project_ids if str(value))
-            if not identifiers:
+        scope_requested = (
+            project_ids is not None
+            or demand_ids is not None
+            or bool(visible_resource_ids)
+            or bool(project_day_keys)
+        )
+        if scope_requested:
+            scope_filters = []
+            identifiers = tuple(
+                str(value) for value in (project_ids or ()) if str(value)
+            )
+            if identifiers:
+                scope_filters.append(
+                    ResourceRequirement.project_id.in_(identifiers)
+                )
+            demand_identifiers = tuple(
+                str(value) for value in (demand_ids or ()) if str(value)
+            )
+            if demand_identifiers:
+                scope_filters.append(
+                    ResourceRequirement.workforce_request_id.in_(
+                        demand_identifiers
+                    )
+                )
+            resource_identifiers = tuple(
+                str(value) for value in visible_resource_ids if str(value)
+            )
+            if resource_identifiers:
+                scope_filters.append(Resource.id.in_(resource_identifiers))
+            pair_filters = [
+                (ResourceRequirement.project_id == str(project_id))
+                & (Shift.work_date == work_date)
+                for project_id, work_date in project_day_keys
+                if str(project_id)
+            ]
+            scope_filters.extend(pair_filters)
+            if not scope_filters:
                 return ()
-            statement = statement.where(ResourceRequirement.project_id.in_(identifiers))
+            statement = statement.where(or_(*scope_filters))
         wanted_resource = _text(resource_name)
         if wanted_resource:
             statement = statement.where(Resource.name == wanted_resource)
@@ -2151,32 +2246,45 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         start: date,
         end: date,
         project_ids: Sequence[str] | None = None,
+        demand_ids: Sequence[str] | None = None,
         include_resource_ids: Sequence[str] = (),
+        shift_resource_ids: Sequence[str] = (),
+        segment_resource_ids: Sequence[str] = (),
+        project_day_keys: Sequence[tuple[str, date]] = (),
         can_manage_planning: bool = False,
     ) -> PlanningSnapshotReadModel:
         """Read one planning window while keeping capacity semantics separate from scope."""
 
         demands = tuple(
             row
-            for row in self.list_demands(project_ids=project_ids)
+            for row in self.list_demands(
+                project_ids=project_ids,
+                demand_ids=demand_ids,
+            )
             if _demand_overlaps(row, start, end)
         )
         shifts = self.list_shifts(
             start=start,
             end=end,
             project_ids=project_ids,
+            demand_ids=demand_ids,
+            visible_resource_ids=shift_resource_ids,
+            project_day_keys=project_day_keys,
             can_manage_planning=can_manage_planning,
         )
         pending_loads = self.list_pending_loads(
             start=start,
             end=end,
             project_ids=project_ids,
+            demand_ids=demand_ids,
         )
         segments = self.list_segments(
             start=start,
             end=end,
             include_cancelled=False,
             project_ids=project_ids,
+            demand_ids=demand_ids,
+            resource_ids=segment_resource_ids,
         )
 
         if project_ids is None:
