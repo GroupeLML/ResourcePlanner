@@ -497,6 +497,26 @@ def build_medium_term_competency_projection(
     if effective_end < effective_start:
         effective_start, effective_end = effective_end, effective_start
 
+    capacity_details = build_workforce_weekly_capacity_details(
+        queries,
+        session,
+        start=effective_start,
+        end=effective_end,
+    )
+    class_capacity_by_week = {
+        week_start: (total, by_class)
+        for week_start, (total, by_class, _by_resource) in capacity_details.items()
+    }
+    if not project_ids:
+        return MediumTermCompetencyProjection(
+            window_start=effective_start,
+            window_end=effective_end,
+            class_capacity_by_week=class_capacity_by_week,
+            skills_by_week={},
+            combinations_by_week={},
+            diagnostics_by_week={},
+        )
+
     competency_rows = tuple(
         session.execute(
             select(Competency, ResourceClassConfig)
@@ -536,16 +556,6 @@ def build_medium_term_competency_projection(
     resources = {
         row.id: row
         for row in session.scalars(select(Resource)).all()
-    }
-    capacity_details = build_workforce_weekly_capacity_details(
-        queries,
-        session,
-        start=effective_start,
-        end=effective_end,
-    )
-    class_capacity_by_week = {
-        week_start: (total, by_class)
-        for week_start, (total, by_class, _by_resource) in capacity_details.items()
     }
     capacity_by_week_resource = {
         week_start: by_resource
