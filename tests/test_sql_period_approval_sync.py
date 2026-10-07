@@ -10,6 +10,8 @@ from app.domain.demand_periods import (
     DemandPeriodDefinition,
     PERIOD_KIND_ALTERNATIVE,
     PERIOD_KIND_CUMULATIVE,
+    PROPOSED_RESOURCE_MODE_EXPLICIT,
+    PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD,
 )
 from app.infrastructure.sql import (
     Base,
@@ -24,6 +26,7 @@ from app.infrastructure.sql import (
     create_sql_engine,
     transactional_session,
 )
+from app.infrastructure.sql.same_resource_periods import SqlSameResourcePeriodCoordinator
 
 
 D1 = date(2026, 9, 7)
@@ -158,6 +161,45 @@ class SqlPeriodApprovalSyncTests(unittest.TestCase):
             self.assertEqual(len(active), 2)
             self.assertEqual([(row.start_date, float(row.planned_hours)) for row in active], [(D1, 4.0), (D2, 8.0)])
             self.assertEqual(sum(float(row.planned_hours) for row in active), 12.0)
+
+    def test_same_as_period_materialization_can_be_resolved_collectively(self) -> None:
+        with transactional_session(self.factory) as session:
+            periods = SqlDemandPeriodRepository(session, actor_name="coord-test-user")
+            periods.replace_for_demand(
+                "DEM-1",
+                (
+                    DemandPeriodDefinition(
+                        period_id="ROOT",
+                        start_date=D1,
+                        end_date=D1,
+                        hours=4,
+                        kind=PERIOD_KIND_CUMULATIVE,
+                        proposed_resource="Alice",
+                        proposed_resource_mode=PROPOSED_RESOURCE_MODE_EXPLICIT,
+                    ),
+                    DemandPeriodDefinition(
+                        period_id="FOLLOW",
+                        start_date=D2,
+                        end_date=D2,
+                        hours=4,
+                        kind=PERIOD_KIND_CUMULATIVE,
+                        proposed_resource_mode=PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD,
+                        same_as_period_id="ROOT",
+                    ),
+                ),
+            )
+
+            SqlPeriodAwareApprovedDemandSyncAdapter(session).sync_approved("DEM-1")
+            active = sorted(self._active_requirements(session), key=lambda row: row.start_date)
+            self.assertEqual(len(active), 2)
+            self.assertEqual(active[0].assigned_resource_id, "R1")
+            self.assertIsNone(active[1].assigned_resource_id)
+
+            summary = SqlSameResourcePeriodCoordinator(session).enforce_targets()
+
+            self.assertEqual(summary.group_count, 1)
+            self.assertEqual(summary.unresolved_group_count, 0)
+            self.assertEqual({row.assigned_resource_id for row in active}, {"R1"})
 
     def test_request_without_detailed_periods_preserves_legacy_sync(self) -> None:
         with transactional_session(self.factory) as session:
