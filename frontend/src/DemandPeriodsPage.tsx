@@ -9,6 +9,7 @@ import {
   type DemandReadModel,
   type DemandLineReadModel,
   type ResourceReadModel,
+  type ViewScope,
   getDemand,
   getDemandLinePeriods,
   getDemandPeriods,
@@ -218,6 +219,7 @@ function PeriodFields({
 
 type DemandPeriodsPageProps = {
   demandNumber?: string;
+  viewScope?: ViewScope;
   canonicalDemand?: DemandReadModel | null;
   embedded?: boolean;
   onChanged?: () => void | Promise<void>;
@@ -227,6 +229,7 @@ type DemandPeriodsPageProps = {
 
 export default function DemandPeriodsPage({
   demandNumber,
+  viewScope,
   canonicalDemand,
   embedded = false,
   onChanged,
@@ -276,9 +279,12 @@ export default function DemandPeriodsPage({
     const demandRequest = canonicalDemand
       ? Promise.resolve([canonicalDemand])
       : demandNumber
-        ? getDemand(demandNumber, controller.signal).then((row) => [row])
+        ? getDemand(demandNumber, controller.signal, viewScope).then((row) => [row])
         : getDemands(controller.signal);
-    Promise.all([demandRequest, getResources(true, controller.signal)])
+    const resourceRequest = canEdit
+      ? getResources(true, controller.signal)
+      : Promise.resolve<ResourceReadModel[]>([]);
+    Promise.all([demandRequest, resourceRequest])
       .then(([demandRows, resourceRows]) => {
         setDemands(demandRows);
         setResources(resourceRows);
@@ -293,7 +299,7 @@ export default function DemandPeriodsPage({
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [demandNumber, canonicalDemand]);
+  }, [demandNumber, canonicalDemand, viewScope, canEdit]);
 
   useEffect(() => {
     onDirtyChange?.(dirty);
@@ -316,8 +322,8 @@ export default function DemandPeriodsPage({
     setError(null);
     setNotice(null);
     const request = selectedDemand?.line_mode
-      ? getDemandLinePeriods(selectedNumber, selectedLineId, controller.signal)
-      : getDemandPeriods(selectedNumber, controller.signal);
+      ? getDemandLinePeriods(selectedNumber, selectedLineId, controller.signal, viewScope)
+      : getDemandPeriods(selectedNumber, controller.signal, viewScope);
     request
       .then((rows) => {
         setPeriods(rows.map(fromRead));
@@ -330,7 +336,7 @@ export default function DemandPeriodsPage({
         if (!controller.signal.aborted) setPeriodLoading(false);
       });
     return () => controller.abort();
-  }, [selectedNumber, selectedDemand?.line_mode, selectedLineId]);
+  }, [selectedNumber, selectedDemand?.line_mode, selectedLineId, viewScope]);
 
   const cumulative = periods.filter((row) => row.kind === "CUMULATIVE");
   const alternativeGroups = useMemo(() => {
@@ -430,7 +436,7 @@ export default function DemandPeriodsPage({
   }
 
   async function savePeriods() {
-    if (!selectedDemand || saving) return;
+    if (!canEdit || !selectedDemand || saving) return;
     const validation = validatePeriods(periods);
     if (validation) {
       setError(validation);
@@ -450,13 +456,13 @@ export default function DemandPeriodsPage({
         ? await replaceDemandLinePeriods(selectedDemand.number, selectedLine.line_id, payload, selectedDemand.version)
         : await replaceDemandPeriods(selectedDemand.number, payload, selectedDemand.version);
       const refreshed = selectedLine
-        ? await getDemandLinePeriods(selectedDemand.number, selectedLine.line_id)
-        : await getDemandPeriods(selectedDemand.number);
+        ? await getDemandLinePeriods(selectedDemand.number, selectedLine.line_id, undefined, viewScope)
+        : await getDemandPeriods(selectedDemand.number, undefined, viewScope);
       if (onChanged) {
         await onChanged();
       } else {
         const demandRows = demandNumber
-          ? [await getDemand(demandNumber)]
+          ? [await getDemand(demandNumber, undefined, viewScope)]
           : await getDemands();
         setDemands(demandRows);
       }
@@ -475,7 +481,7 @@ export default function DemandPeriodsPage({
   }
 
   async function chooseAlternative(group: string, periodId: string) {
-    if (!selectedDemand || saving || dirty) return;
+    if (!canEdit || !selectedDemand || saving || dirty) return;
     setSaving(true);
     setError(null);
     setNotice(null);
@@ -491,13 +497,13 @@ export default function DemandPeriodsPage({
         await selectDemandAlternative(selectedDemand.number, group, periodId);
       }
       const refreshed = selectedLine
-        ? await getDemandLinePeriods(selectedDemand.number, selectedLine.line_id)
-        : await getDemandPeriods(selectedDemand.number);
+        ? await getDemandLinePeriods(selectedDemand.number, selectedLine.line_id, undefined, viewScope)
+        : await getDemandPeriods(selectedDemand.number, undefined, viewScope);
       if (onChanged) {
         await onChanged();
       } else {
         const demandRows = demandNumber
-          ? [await getDemand(demandNumber)]
+          ? [await getDemand(demandNumber, undefined, viewScope)]
           : await getDemands();
         setDemands(demandRows);
       }

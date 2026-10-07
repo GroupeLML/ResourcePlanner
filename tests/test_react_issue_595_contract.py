@@ -17,7 +17,8 @@ class ReactIssue595ContractTests(unittest.TestCase):
         self.assertIn('"Idempotency-Key": idempotencyKey', api)
         self.assertIn("await reorderPlanningResource(resource.id, direction, createClientId())", page)
         self.assertIn('resourceSortMode === "manual"', page)
-        self.assertIn("catalogResources.forEach", page)
+        self.assertIn("const orderResources = canManagePlanning ? catalogResources : (snapshot?.resources ?? [])", page)
+        self.assertIn("orderResources.forEach", page)
         self.assertIn("manualOrderAvailability.get(resource.id)", page)
 
     def test_manual_controls_are_keyboard_native_and_other_modes_do_not_mutate_order(self) -> None:

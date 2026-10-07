@@ -110,6 +110,19 @@ class PlanningVisibilityPolicyTests(unittest.TestCase):
 
         self.assertEqual(caught.exception.code, "planning_scope_not_authorized")
 
+    def test_frontend_policy_projection_uses_same_authorized_scopes(self) -> None:
+        project_manager_policy = PlanningVisibilityService.view_policy(
+            _principal(ROLE_PROJECT_MANAGER)
+        )
+        coordinator_policy = PlanningVisibilityService.view_policy(
+            _principal(ROLE_COORDINATOR)
+        )
+
+        self.assertEqual(project_manager_policy.available_scopes, ("mine",))
+        self.assertEqual(project_manager_policy.default_scope, "mine")
+        self.assertEqual(coordinator_policy.available_scopes, ("mine", "global"))
+        self.assertEqual(coordinator_policy.default_scope, "global")
+
     def test_manager_defaults_to_global_scope(self) -> None:
         resolution = self.service.resolve(_principal(ROLE_MANAGER), None)
 

@@ -164,7 +164,7 @@ function ActionCard({
       </div>
 
       <div className="planning-action-buttons">
-        {assignment && (
+        {assignment && canDragAssignment && (
           <button type="button" className="primary-action" onClick={() => onRecommend(action)}>
             Trouver une ressource
           </button>

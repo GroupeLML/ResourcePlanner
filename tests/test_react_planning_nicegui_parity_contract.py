@@ -58,7 +58,7 @@ class ReactPlanningNiceGuiParityContractTests(unittest.TestCase):
 
         self.assertIn("Modifier le segment", panel)
         self.assertIn("onOpenSegment", panel)
-        self.assertIn("onOpenSegment={setEditingSegmentId}", planning)
+        self.assertIn("onOpenSegment={canManagePlanning ? setEditingSegmentId : undefined}", planning)
 
     def test_react_does_not_reimplement_availability_engine(self) -> None:
         page = (ROOT / "frontend" / "src" / "PlanningPage.tsx").read_text(encoding="utf-8")
