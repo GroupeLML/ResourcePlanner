@@ -73,7 +73,26 @@ test("653 — le coordonnateur de ressource est recherchable sans casse", async 
   }
 });
 
-test("653 — nouvelle règle 07:00–15:00 et règle existante préservée", async ({ browser }) => {
+test("653 — une nouvelle règle propose 07:00–15:00", async ({ browser }) => {
+  const { context, page } = await openAdmin(browser);
+  try {
+    await openResourcesForAlice(page);
+
+    const availabilityCard = page.locator(".admin-card").filter({ hasText: "Horaire & absences" });
+    const addRule = availabilityCard.getByRole("button", { name: "+ Ajouter", exact: true });
+    await expect(addRule).toBeVisible();
+    await addRule.click();
+
+    const newRuleEditor = availabilityCard.locator(".admin-editor");
+    await expect(newRuleEditor).toBeVisible();
+    await expect(newRuleEditor.getByLabel("Début", { exact: true })).toHaveValue("07:00");
+    await expect(newRuleEditor.getByLabel("Fin", { exact: true })).toHaveValue("15:00");
+  } finally {
+    await closeContext(context);
+  }
+});
+
+test("653 — une règle existante conserve ses heures explicites", async ({ browser }) => {
   const { context, page } = await openAdmin(browser);
   try {
     await openResourcesForAlice(page);
@@ -82,21 +101,12 @@ test("653 — nouvelle règle 07:00–15:00 et règle existante préservée", as
     const existingRule = availabilityCard.locator(".availability-rule").filter({ hasText: "08:00 → 16:00" });
     await expect(existingRule).toBeVisible();
 
-    const addRule = availabilityCard.getByRole("button", { name: "+ Ajouter", exact: true });
-    await expect(addRule).toBeVisible();
-    await addRule.click();
-
-    const newRuleEditor = availabilityCard.locator(".admin-editor");
-    await expect(newRuleEditor.getByLabel("Début", { exact: true })).toHaveValue("07:00");
-    await expect(newRuleEditor.getByLabel("Fin", { exact: true })).toHaveValue("15:00");
-    await newRuleEditor.getByRole("button", { name: "Fermer", exact: true }).click();
-
-    await expect(existingRule).toBeVisible();
     const editExisting = existingRule.getByRole("button", { name: "Modifier", exact: true });
     await expect(editExisting).toBeVisible();
     await editExisting.click();
 
     const existingEditor = availabilityCard.locator(".admin-editor");
+    await expect(existingEditor).toBeVisible();
     await expect(existingEditor.getByLabel("Début", { exact: true })).toHaveValue("08:00");
     await expect(existingEditor.getByLabel("Fin", { exact: true })).toHaveValue("16:00");
   } finally {
