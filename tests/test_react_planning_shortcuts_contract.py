@@ -27,11 +27,11 @@ class ReactPlanningShortcutContractTests(unittest.TestCase):
         self.assertNotIn("La date doit être comprise dans la semaine affichée.", editor)
 
         self.assertIn('className="cell-quick-shift-button"', planning)
-        self.assertIn("Créer un Quick Shift pour ${resource.name} le ${iso}", planning)
+        self.assertIn("Créer un Quick Shift pour ${resourceDisplayName(resource.name)} le ${iso}", planning)
         self.assertIn("setQuickShiftSeed({ resourceId: targetResource.id, day })", planning)
         self.assertIn("initialResourceId={quickShiftSeed?.resourceId ?? null}", planning)
         self.assertIn("defaultDay={quickShiftSeed?.day ?? quickShiftDefaultDay}", planning)
-        self.assertIn("Quick Shift créé pour ${resourceName} le ${day}.", planning)
+        self.assertIn("Quick Shift créé pour ${resourceDisplayName(resourceName)} le ${day}.", planning)
 
     def test_shift_asset_shortcut_consumes_canonical_560c_contracts(self) -> None:
         planning = (ROOT / "frontend" / "src" / "PlanningPage.tsx").read_text(encoding="utf-8")
