@@ -87,7 +87,6 @@ from .planning_audit import PlanningChangeHistory
 from .capacity_query_repository import SqlPlannerQueryRepository
 from .medium_term_capacity_query import (
     UNCLASSIFIED,
-    build_workforce_weekly_capacity_by_class,
     medium_term_capacity_state,
 )
 from .medium_term_competency_query import (
@@ -1135,12 +1134,7 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
         if effective_start is not None and effective_end is not None:
             first_week = effective_start - timedelta(days=effective_start.weekday())
             last_week = effective_end - timedelta(days=effective_end.weekday())
-            capacity_by_week = build_workforce_weekly_capacity_by_class(
-                self,
-                self._web_session,
-                start=effective_start,
-                end=effective_end,
-            )
+            capacity_by_week = competency_projection.class_capacity_by_week
             cursor = first_week
             any_capacity_zero = False
             while cursor <= last_week:
