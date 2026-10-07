@@ -246,7 +246,7 @@ class SqlDemandPeriodRepositoryTests(unittest.TestCase):
             by_id = {row.period_id: row for row in rows}
             self.assertEqual(by_id["P2"].proposed_resource_mode, "SAME_AS_PERIOD")
             self.assertEqual(by_id["P2"].same_as_period_id, "P1")
-            self.assertEqual(by_id["P2"].same_as_state, "UNRESOLVED")
+            self.assertEqual(by_id["P2"].same_as_state, "ACTIVE")
             self.assertIsNone(by_id["P2"].proposed_resource)
             physical = session.scalar(
                 select(WorkforceRequestPeriod).where(
