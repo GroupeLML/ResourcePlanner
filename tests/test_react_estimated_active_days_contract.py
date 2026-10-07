@@ -28,9 +28,10 @@ class ReactEstimatedActiveDaysContractTests(unittest.TestCase):
 
         self.assertIn("desired_active_days", source)
         self.assertIn("Heures totales", source)
-        self.assertIn("Ressources simultanées", source)
+        self.assertNotIn("<span>Ressources simultanées</span>", source)
+        self.assertIn("Quantité effective", source)
         self.assertIn("Jours actifs souhaités", source)
-        self.assertIn("ne multiplie pas les heures", source)
+        self.assertIn("la quantité de personnes est dérivée du besoin maître", source)
         self.assertIn("Cible de répartition", source)
         self.assertIn("await replaceDemandPeriods(selectedDemand.number, payload, selectedDemand.version)", source)
 
