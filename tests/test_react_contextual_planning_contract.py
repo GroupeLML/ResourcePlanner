@@ -34,6 +34,8 @@ class ReactContextualPlanningContractTests(unittest.TestCase):
         self.assertIn("principal?.subject", page)
         self.assertIn("activePlanningRequestKeyRef", page)
         self.assertIn("planningIdentityKeyRef.current !== planningIdentityKey", page)
+        self.assertIn("if (planningPolicyOwnerKey !== planningIdentityKey)", page)
+        self.assertIn("Chargement du périmètre Planning…", page)
         self.assertIn("return () => controller.abort()", page)
 
     def test_identity_change_clears_sensitive_planning_state(self) -> None:
@@ -63,6 +65,8 @@ class ReactContextualPlanningContractTests(unittest.TestCase):
         self.assertIn("setCatalogResources(canManagePlanning ? resourceRows : [])", page)
         self.assertIn("onEditShift={canManagePlanning ? setEditingShift : undefined}", page)
         self.assertIn("onOpenSegment={canManagePlanning ? setEditingSegmentId : undefined}", page)
+        self.assertIn('manualOrder={canManagePlanning && resourceSortMode === "manual"', page)
+        self.assertIn("readOnly={!canManagePlanning}", page)
         self.assertIn("assignment && canDragAssignment", panel)
 
     def test_contextual_capacity_distinguishes_hidden_commitments_from_availability(self) -> None:
@@ -79,6 +83,7 @@ class ReactContextualPlanningContractTests(unittest.TestCase):
         page = (FRONTEND / "PlanningPage.tsx").read_text(encoding="utf-8")
 
         self.assertIn('shift.source === "SCOPE_NEIGHBOR"', page)
+        self.assertIn("const draggable = dragEnabled && !scopeNeighbor", page)
         self.assertIn("détails hors périmètre", page)
         self.assertIn("disabled={!editable}", page)
         self.assertIn("Détails d’actifs hors périmètre", page)
@@ -87,11 +92,16 @@ class ReactContextualPlanningContractTests(unittest.TestCase):
         page = (FRONTEND / "PlanningPage.tsx").read_text(encoding="utf-8")
         detail = (FRONTEND / "DemandDetail.tsx").read_text(encoding="utf-8")
         workflow = (FRONTEND / "DemandWorkflowPage.tsx").read_text(encoding="utf-8")
+        history = (FRONTEND / "DemandHistoryPage.tsx").read_text(encoding="utf-8")
+        periods = (FRONTEND / "DemandPeriodsPage.tsx").read_text(encoding="utf-8")
 
         self.assertIn("viewScope={scope ?? undefined}", page)
         self.assertIn("getDemandDetail(demandNumber, controller.signal, viewScope)", detail)
         self.assertIn("viewScope={viewScope}", detail)
         self.assertIn("getDemandDetail(demandNumber, undefined, viewScope)", workflow)
+        self.assertIn("getDemandApprovalState(currentDemand.number, viewScope)", workflow)
+        self.assertIn("getDemandHistory(selectedNumber, controller.signal, viewScope)", history)
+        self.assertIn("getDemandPeriods(selectedNumber, controller.signal, viewScope)", periods)
 
 
 if __name__ == "__main__":
