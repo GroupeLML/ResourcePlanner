@@ -13,6 +13,7 @@ from app.domain.approval_envelope import (
     REASON_BUDGET_INCREASE,
     REASON_DELEGATED_TOLERANCE,
     REASON_OPERATIONAL_ONLY,
+    REASON_TOPOLOGY_CHANGED,
     REASON_WINDOW_CHANGED,
     ROLE_PROJECT_MANAGER,
     EnvelopeLineDefinition,
@@ -204,6 +205,41 @@ class ApprovalEnvelopeComparisonTests(unittest.TestCase):
         self.assertEqual(decision.reason, REASON_OPERATIONAL_ONLY)
         self.assertIn(CHANGE_CONFIRMATION, {row.code for row in decision.changes})
         self.assertEqual(
+            approved.authorization_fingerprint,
+            candidate.authorization_fingerprint,
+        )
+
+    def test_period_inheritance_mode_change_requires_reapproval(self) -> None:
+        def envelope(mode: str):
+            return normalize_approval_envelope(
+                (
+                    EnvelopeLineDefinition(
+                        line_id="LINE-INHERIT",
+                        project_id="PROJECT-1",
+                        start_date=DAY_1,
+                        end_date=DAY_2,
+                        periods=(
+                            EnvelopePeriodDefinition(
+                                period_key="P1",
+                                start_date=DAY_1,
+                                end_date=DAY_2,
+                                hours=8,
+                                confirmation="Tentative",
+                                confirmation_mode=mode,
+                                proposed_resource_mode="EXPLICIT",
+                            ),
+                        ),
+                    ),
+                )
+            )
+
+        approved = envelope("INHERIT_MASTER")
+        candidate = envelope("EXPLICIT")
+        decision = compare_approval_envelopes(approved, candidate)
+
+        self.assertEqual(decision.decision, DECISION_REAPPROVAL_REQUIRED)
+        self.assertIn(REASON_TOPOLOGY_CHANGED, {row.code for row in decision.changes})
+        self.assertNotEqual(
             approved.authorization_fingerprint,
             candidate.authorization_fingerprint,
         )
