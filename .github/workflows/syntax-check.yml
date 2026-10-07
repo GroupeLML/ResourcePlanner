@@ -293,7 +293,7 @@ jobs:
         run: docker compose down -v --remove-orphans
 
   sqlserver-live-573e:
-    name: SQL Server live 363F / 573E / 594D / 655C
+    name: SQL Server live 363F / 573E / 594D
     needs: changes
     if: ${{ startsWith(github.event.pull_request.title, '363F') || startsWith(github.event.pull_request.title, '573E') || startsWith(github.event.pull_request.title, '594D') || startsWith(github.event.pull_request.title, '655C') }}
     runs-on: ubuntu-latest
