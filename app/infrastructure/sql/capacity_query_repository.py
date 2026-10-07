@@ -20,6 +20,9 @@ class SqlPlannerQueryRepository(_BaseSqlPlannerQueryRepository):
         resource_name: str | None = None,
         resource_id: str | None = None,
         project_ids: Sequence[str] | None = None,
+        demand_ids: Sequence[str] | None = None,
+        visible_resource_ids: Sequence[str] = (),
+        project_day_keys: Sequence[tuple[str, date]] = (),
         can_manage_planning: bool = False,
     ) -> tuple[ShiftReadModel, ...]:
         return super().list_shifts(
@@ -28,6 +31,9 @@ class SqlPlannerQueryRepository(_BaseSqlPlannerQueryRepository):
             resource_name=resource_name,
             resource_id=resource_id,
             project_ids=project_ids,
+            demand_ids=demand_ids,
+            visible_resource_ids=visible_resource_ids,
+            project_day_keys=project_day_keys,
             can_manage_planning=can_manage_planning,
         )
 
@@ -37,14 +43,22 @@ class SqlPlannerQueryRepository(_BaseSqlPlannerQueryRepository):
         start: date,
         end: date,
         project_ids: Sequence[str] | None = None,
+        demand_ids: Sequence[str] | None = None,
         include_resource_ids: Sequence[str] = (),
+        shift_resource_ids: Sequence[str] = (),
+        segment_resource_ids: Sequence[str] = (),
+        project_day_keys: Sequence[tuple[str, date]] = (),
         can_manage_planning: bool = False,
     ) -> PlanningSnapshotReadModel:
         snapshot = super().planning_snapshot(
             start=start,
             end=end,
             project_ids=project_ids,
+            demand_ids=demand_ids,
             include_resource_ids=include_resource_ids,
+            shift_resource_ids=shift_resource_ids,
+            segment_resource_ids=segment_resource_ids,
+            project_day_keys=project_day_keys,
             can_manage_planning=can_manage_planning,
         )
         # Medium-term capacity remains an organization-wide reference. The contextual
