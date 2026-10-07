@@ -1664,6 +1664,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         end: date | None = None,
         resource_name: str | None = None,
         resource_id: str | None = None,
+        allocation_id: str | None = None,
         project_ids: Sequence[str] | None = None,
         demand_ids: Sequence[str] | None = None,
         visible_resource_ids: Sequence[str] = (),
@@ -1787,6 +1788,14 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         wanted_resource_id = _text(resource_id)
         if wanted_resource_id:
             statement = statement.where(Resource.id == wanted_resource_id)
+        wanted_allocation_id = _text(allocation_id)
+        if wanted_allocation_id:
+            statement = statement.where(
+                or_(
+                    Shift.id == wanted_allocation_id,
+                    Shift.legacy_allocation_id == wanted_allocation_id,
+                )
+            )
 
         rows = self._session.execute(
             statement.order_by(
