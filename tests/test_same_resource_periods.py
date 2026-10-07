@@ -560,6 +560,7 @@ class SameResourcePeriodSqlServerAcceptanceTests(unittest.TestCase):
                 self.assertEqual(by_id["ROOT"].resource_count_provenance, "MASTER")
                 self.assertEqual(by_id["FOLLOW"].proposed_resource_mode, "SAME_AS_PERIOD")
                 self.assertEqual(by_id["FOLLOW"].same_as_period_id, "ROOT")
+                self.assertEqual(by_id["FOLLOW"].same_as_root_period_id, "ROOT")
                 self.assertEqual(by_id["FOLLOW"].same_as_state, "ACTIVE")
 
                 summary = SqlPlanningCommandAdapter(session).rebuild()
