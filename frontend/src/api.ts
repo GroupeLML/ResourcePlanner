@@ -1662,9 +1662,10 @@ export function getPlanningSnapshot(
   start: string,
   end: string,
   signal?: AbortSignal,
-  scope: ViewScope = "global",
+  scope?: ViewScope,
 ) {
-  const params = new URLSearchParams({ start, end, scope });
+  const params = new URLSearchParams({ start, end });
+  if (scope) params.set("scope", scope);
   return getJson<PlanningSnapshotReadModel>(`/api/v1/planning/snapshot?${params.toString()}`, signal);
 }
 
@@ -1672,9 +1673,10 @@ export function getPlanningCapacityGrid(
   start: string,
   end: string,
   signal?: AbortSignal,
-  scope: ViewScope = "global",
+  scope?: ViewScope,
 ) {
-  const params = new URLSearchParams({ start, end, scope });
+  const params = new URLSearchParams({ start, end });
+  if (scope) params.set("scope", scope);
   return getJson<PlanningCapacityGridReadModel>(
     `/api/v1/planning/capacity-grid?${params.toString()}`,
     signal,
@@ -1685,9 +1687,10 @@ export function getPlanningActions(
   start: string,
   end: string,
   signal?: AbortSignal,
-  scope: ViewScope = "global",
+  scope?: ViewScope,
 ) {
-  const params = new URLSearchParams({ start, end, scope });
+  const params = new URLSearchParams({ start, end });
+  if (scope) params.set("scope", scope);
   return getJson<PlanningActionReadModel[]>(`/api/v1/planning/actions?${params.toString()}`, signal);
 }
 
@@ -2254,9 +2257,16 @@ export function getDemand(number: string, signal?: AbortSignal) {
   return getJson<DemandReadModel>(`/api/v1/demands/${encodeURIComponent(number)}`, signal);
 }
 
-export function getDemandDetail(number: string, signal?: AbortSignal) {
+export function getDemandDetail(
+  number: string,
+  signal?: AbortSignal,
+  scope?: ViewScope,
+) {
+  const params = new URLSearchParams();
+  if (scope) params.set("scope", scope);
+  const query = params.toString();
   return getJson<DemandDetailReadModel>(
-    `/api/v1/demands/${encodeURIComponent(number)}/detail`,
+    `/api/v1/demands/${encodeURIComponent(number)}/detail${query ? `?${query}` : ""}`,
     signal,
   );
 }
