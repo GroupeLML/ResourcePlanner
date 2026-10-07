@@ -584,9 +584,8 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await labelled(cumulative, "Confirmation propre", "select").selectOption("Tentative");
     await labelled(cumulative, "Mode de ressource", "select").selectOption("EXPLICIT");
     const aliceResource = labelled(cumulative, "Ressource spécifique", "select");
-    const aliceId = await aliceResource.locator("option").filter({ hasText: "Alice" }).first().getAttribute("value");
-    expect(aliceId).toBeTruthy();
-    await aliceResource.selectOption(aliceId!);
+    await aliceResource.selectOption("R-ALICE");
+    await expect(aliceResource).toHaveValue("R-ALICE");
 
     const alternatives = page.locator(".alternative-option");
     await expect(alternatives).toHaveCount(2);
@@ -602,9 +601,8 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
       await labelled(card, "Confirmation propre", "select").selectOption(confirmation);
       await labelled(card, "Mode de ressource", "select").selectOption("EXPLICIT");
       const bobResource = labelled(card, "Ressource spécifique", "select");
-      const bobId = await bobResource.locator("option").filter({ hasText: "Bob" }).first().getAttribute("value");
-      expect(bobId).toBeTruthy();
-      await bobResource.selectOption(bobId!);
+      await bobResource.selectOption("R-BOB");
+      await expect(bobResource).toHaveValue("R-BOB");
     }
 
     const rootPeriodId = (await cumulative.locator(".period-card-heading span").textContent())?.trim();
@@ -1632,8 +1630,9 @@ test("multi-line demand editor generates independent RequestLines and materializ
   await labelled(linePeriod, "Début", "input").fill(d1);
   await labelled(linePeriod, "Fin", "input").fill(d1);
   await labelled(linePeriod, "Heures totales", "input").fill("8");
-  await expect(labelled(linePeriod, "Ressources simultanées", "input")).toBeDisabled();
-  await expect(labelled(linePeriod, "Ressources simultanées", "input")).toHaveValue("1");
+  await expect(linePeriod.getByText("Quantité effective", { exact: true })).toBeVisible();
+  await expect(linePeriod).toContainText("1 ressource(s)");
+  await expect(linePeriod.getByText("Ressources simultanées", { exact: true })).toHaveCount(0);
   await projectManager.page.getByRole("button", { name: "Enregistrer les périodes" }).click();
   await expect(projectManager.page.locator(".demand-notice").filter({ hasText: "Périodes enregistrées." })).toHaveText("Périodes enregistrées.");
 
@@ -1645,7 +1644,9 @@ test("multi-line demand editor generates independent RequestLines and materializ
   await labelled(linePeriod, "Début", "input").fill(d2);
   await labelled(linePeriod, "Fin", "input").fill(d2);
   await labelled(linePeriod, "Heures totales", "input").fill("8");
-  await expect(labelled(linePeriod, "Ressources simultanées", "input")).toBeDisabled();
+  await expect(linePeriod.getByText("Quantité effective", { exact: true })).toBeVisible();
+  await expect(linePeriod).toContainText("1 ressource(s)");
+  await expect(linePeriod.getByText("Ressources simultanées", { exact: true })).toHaveCount(0);
   await projectManager.page.getByRole("button", { name: "Enregistrer les périodes" }).click();
   await expect(projectManager.page.locator(".demand-notice").filter({ hasText: "Périodes enregistrées." })).toHaveText("Périodes enregistrées.");
 
@@ -2169,10 +2170,15 @@ test("materialized demand cancellation is requested, reviewed, rejected or accep
   await labelled(materializedPeriod, "Début", "input").fill(d5);
   await labelled(materializedPeriod, "Fin", "input").fill(d5);
   await labelled(materializedPeriod, "Heures totales", "input").fill("8");
-  await labelled(materializedPeriod, "Ressources simultanées", "input").fill("1");
+  await expect(materializedPeriod.getByText("Quantité effective", { exact: true })).toBeVisible();
+  await expect(materializedPeriod.getByText("Ressources simultanées", { exact: true })).toHaveCount(0);
   await labelled(materializedPeriod, "Jours actifs souhaités", "input").fill("1");
-  await labelled(materializedPeriod, "Confirmation", "select").selectOption("Confirmée");
-  await labelled(materializedPeriod, "Ressource proposée", "select").selectOption("Alice");
+  await labelled(materializedPeriod, "Mode de confirmation", "select").selectOption("EXPLICIT");
+  await labelled(materializedPeriod, "Confirmation propre", "select").selectOption("Confirmée");
+  await labelled(materializedPeriod, "Mode de ressource", "select").selectOption("EXPLICIT");
+  const materializedResource = labelled(materializedPeriod, "Ressource spécifique", "select");
+  await materializedResource.selectOption("R-ALICE");
+  await expect(materializedResource).toHaveValue("R-ALICE");
   await requester.page.getByRole("button", { name: "Enregistrer les périodes" }).click();
   await expect(
     requester.page.locator(".demand-notice").filter({ hasText: "Périodes enregistrées." }).first(),
