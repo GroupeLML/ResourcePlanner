@@ -956,7 +956,7 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await navigateMain(page, "Planning opérationnel");
     await page.getByRole("button", { name: /Suivante/ }).click();
 
-    await page.getByRole("button", { name: "+ Quick Shift", exact: true }).click();
+    await page.getByRole("button", { name: /Quick Shift/ }).click();
     const quickShift = page.getByRole("dialog", { name: "Créer un Quick Shift" });
     await chooseCombobox(quickShift, "Projet", "251", "P-251");
     await chooseCombobox(quickShift, "Technicien", "lic", "Alice");
@@ -1327,7 +1327,7 @@ test("coordinator splits and duplicates a shift atomically from React", async ({
   await navigateMain(page, "Planning opérationnel");
   await page.getByRole("button", { name: /Suivante/ }).click();
 
-  await page.getByRole("button", { name: "+ Quick Shift", exact: true }).click();
+  await page.getByRole("button", { name: /Quick Shift/ }).click();
   const quickShift = page.getByRole("dialog", { name: "Créer un Quick Shift" });
   await chooseCombobox(quickShift, "Projet", "251", "P-251");
   await chooseCombobox(quickShift, "Technicien", "ALI", "Alice");
