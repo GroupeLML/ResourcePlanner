@@ -219,6 +219,13 @@ class PlanningVisibilityService:
             return True
         return False
 
+    def can_read_shift_details(
+        self,
+        row: ShiftReadModel,
+        resolution: PlanningVisibilityResolution,
+    ) -> bool:
+        return self._has_full_shift_context(row, resolution)
+
     def project_shift(
         self,
         row: ShiftReadModel,
@@ -234,10 +241,16 @@ class PlanningVisibilityService:
         # demand, segment, notes, assets, or mutation/navigation identifiers.
         return replace(
             row,
+            allocation_id=(
+                "scope-neighbor:"
+                f"{row.resource_id}:{row.work_date.isoformat()}:"
+                f"{row.project_number or ''}"
+            ),
             segment_id="",
             requirement_id=None,
             demand_id=None,
             demand_number=None,
+            project_id=None,
             allocation_type=None,
             source="SCOPE_NEIGHBOR",
             locked=False,
