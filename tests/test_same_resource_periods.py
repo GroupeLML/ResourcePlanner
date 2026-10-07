@@ -189,6 +189,44 @@ class SameResourcePeriodPlanningTests(unittest.TestCase):
             self.assertEqual(summary["same_resource_groups"], 1)
             self.assertEqual(summary["same_resource_unresolved_groups"], 0)
 
+    def test_unassigned_component_remains_unresolved_without_inventing_a_resource(self) -> None:
+        with transactional_session(self.factory) as session:
+            root, child = self._same_as_plan(session, root_target=None)
+
+            summary = SqlPlanningCommandAdapter(session).rebuild()
+
+            self.assertIsNone(root.assigned_resource_id)
+            self.assertIsNone(child.assigned_resource_id)
+            self.assertEqual(summary["same_resource_groups"], 1)
+            self.assertEqual(summary["same_resource_unresolved_groups"], 1)
+            shifts = session.scalars(
+                select(Shift).where(
+                    Shift.resource_requirement_id.in_((root.id, child.id))
+                )
+            ).all()
+            self.assertEqual(shifts, [])
+
+    def test_overlapping_periods_share_capacity_on_the_common_resource(self) -> None:
+        with transactional_session(self.factory) as session:
+            root, child = self._same_as_plan(session, root_target="R1")
+            child.start_date = D1
+            child.end_date = D1
+            session.flush()
+
+            summary = SqlPlanningCommandAdapter(session).rebuild()
+
+            self.assertEqual(root.assigned_resource_id, "R1")
+            self.assertEqual(child.assigned_resource_id, "R1")
+            self.assertEqual(summary["requested_hours"], 16.0)
+            self.assertEqual(summary["allocated_hours"], 8.0)
+            self.assertEqual(summary["unallocated_hours"], 8.0)
+            shifts = session.scalars(
+                select(Shift).where(
+                    Shift.resource_requirement_id.in_((root.id, child.id))
+                )
+            ).all()
+            self.assertEqual({shift.resource_id for shift in shifts}, {"R1"})
+
     def test_locked_shift_fixes_the_resource_for_the_whole_component(self) -> None:
         with transactional_session(self.factory) as session:
             root, child = self._same_as_plan(session, root_target="R1")
