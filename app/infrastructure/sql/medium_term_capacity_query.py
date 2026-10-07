@@ -162,27 +162,6 @@ def build_workforce_weekly_capacity_by_class(
     }
 
 
-def build_workforce_weekly_capacity_by_resource(
-    queries: Any,
-    session: Session,
-    *,
-    start: date,
-    end: date,
-) -> dict[date, dict[str, Decimal]]:
-    """Return gross workforce availability by resource and Monday week."""
-
-    return {
-        week_start: by_resource
-        for week_start, (_total, _by_class, by_resource) in (
-            build_workforce_weekly_capacity_details(
-                queries,
-                session,
-                start=start,
-                end=end,
-            ).items()
-        )
-    }
-
 def build_workforce_weekly_capacity(
     queries: Any,
     session: Session,
