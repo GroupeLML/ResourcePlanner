@@ -184,15 +184,15 @@ class ApprovalEnvelopeEntry:
     group: EnvelopeGroupIdentity | None
     source_period_id: str | None
     confirmation: str
-    confirmation_mode: str | None
     selected: bool
     proposed_resource_id: str | None
-    proposed_resource_mode: str | None
-    same_as_period_key: str | None
     desired_active_days: int | None
     asset_type_id: str | None = None
     occupancy_policy: str | None = None
     proposed_asset_id: str | None = None
+    confirmation_mode: str | None = None
+    proposed_resource_mode: str | None = None
+    same_as_period_key: str | None = None
 
     def authorization_payload(self) -> dict[str, object]:
         payload = {
