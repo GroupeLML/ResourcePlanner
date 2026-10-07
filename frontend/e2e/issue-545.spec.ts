@@ -124,6 +124,31 @@ test("Planning mémorise semaine, tri et classes repliées tout en utilisant la 
   }
 });
 
+
+test("654 garde la semaine, le périmètre et le tri visibles pendant le défilement Planning", async ({ browser }) => {
+  const { context, page } = await openCoordinator(browser);
+
+  try {
+    await navigateMain(page, "Planning opérationnel");
+    const sticky = page.locator(".planning-sticky-controls");
+    await expect(sticky).toHaveCSS("position", "sticky");
+    await expect(page.getByRole("button", { name: "Aujourd’hui", exact: true })).toBeVisible();
+    await expect(page.getByLabel("Ordre des ressources")).toBeVisible();
+    await expect(page.locator(".view-scope-selector")).toBeVisible();
+
+    const before = await sticky.boundingBox();
+    expect(before).not.toBeNull();
+    await page.locator(".planning-board-scroll").evaluate((element) => {
+      element.scrollTop = 320;
+    });
+    const after = await sticky.boundingBox();
+    expect(after).not.toBeNull();
+    expect(Math.abs((after?.y ?? 0) - (before?.y ?? 0))).toBeLessThan(2);
+  } finally {
+    await closeContext(context);
+  }
+});
+
 test("Planning ignore des préférences navigateur corrompues", async ({ browser }) => {
   const currentWeekStart = startOfWeek(new Date());
   const { context, page } = await openCoordinator(browser);
