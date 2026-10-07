@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 from sqlalchemy import exists, or_, select, true
 from sqlalchemy.orm import Session
 
@@ -320,9 +322,9 @@ class SqlUserViewContextRepository(UserViewContextRepositoryPort):
         self,
         resource_id: str,
         *,
-        start=None,
-        end=None,
-    ) -> tuple[tuple[str, object], ...]:
+        start: date | None = None,
+        end: date | None = None,
+    ) -> tuple[tuple[str, date], ...]:
         wanted = str(resource_id or "").strip()
         if not wanted:
             return ()
