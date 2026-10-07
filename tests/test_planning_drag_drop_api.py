@@ -230,7 +230,7 @@ class PlanningDragDropApiTests(unittest.TestCase):
             self.assertEqual(sum(row["hours"] for row in final_auto), 8.0)
             self.assertTrue(all(row["resource_id"] == "R-CAROL-275" for row in final_auto))
 
-    def test_quick_shift_move_cannot_leave_its_single_day_segment(self) -> None:
+    def test_quick_shift_move_auto_extends_its_single_day_segment(self) -> None:
         with TemporaryDirectory() as directory:
             app = create_api_app(self._database(directory))
             with TestClient(app) as client:
@@ -255,23 +255,29 @@ class PlanningDragDropApiTests(unittest.TestCase):
                 segment = client.get(f"/api/v1/segments/{segment_id}").json()
                 self.assertEqual(segment["start_date"], "2026-09-24")
                 self.assertEqual(segment["end_date"], "2026-09-24")
+                self.assertEqual(float(segment["planned_hours"]), 2.0)
 
                 response = client.post(
                     f"/api/v1/allocations/{allocation_id}/move",
                     json={"technician": "Bob DnD", "day": "2026-09-25"},
                 )
-                self.assertEqual(response.status_code, 422, response.text)
-                self.assertIn("fenêtre du segment", response.json()["error"]["message"])
+                self.assertEqual(response.status_code, 200, response.text)
+
+                extended_segment = client.get(f"/api/v1/segments/{segment_id}").json()
+                self.assertEqual(extended_segment["start_date"], "2026-09-24")
+                self.assertEqual(extended_segment["end_date"], "2026-09-25")
+                self.assertEqual(float(extended_segment["planned_hours"]), 2.0)
 
                 shifts = client.get(
                     "/api/v1/shifts",
                     params={"start": "2026-09-21", "end": "2026-09-27"},
                 ).json()
 
-            original = next(row for row in shifts if row["allocation_id"] == allocation_id)
-            self.assertEqual(original["resource_name"], "Alice DnD")
-            self.assertEqual(original["work_date"], "2026-09-24")
-            self.assertTrue(original["locked"])
+            moved = next(row for row in shifts if row["allocation_id"] == allocation_id)
+            self.assertEqual(moved["resource_name"], "Bob DnD")
+            self.assertEqual(moved["work_date"], "2026-09-25")
+            self.assertEqual(float(moved["hours"]), 2.0)
+            self.assertTrue(moved["locked"])
 
     def test_move_rejected_outside_standard_schedule_rolls_back(self) -> None:
         with TemporaryDirectory() as directory:

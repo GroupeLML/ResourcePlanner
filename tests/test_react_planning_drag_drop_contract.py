@@ -33,6 +33,8 @@ class ReactPlanningDragDropContractTests(unittest.TestCase):
         self.assertIn("planning-drop-day", page)
         self.assertIn("writeShiftDrag", page)
         self.assertIn("setRefreshKey", page)
+        self.assertIn("action.auto_execute", page)
+        self.assertIn("confirm_window_extension: false", page)
         self.assertNotIn("setSnapshot((current)", page)
 
     def test_context_dialog_reuses_existing_commands_and_preserves_idempotent_retries(self) -> None:
@@ -117,6 +119,8 @@ class ReactPlanningDragDropContractTests(unittest.TestCase):
 
         self.assertIn('can("manage_planning")', page)
         self.assertIn("dragEnabled={canManagePlanning && !dropBusy}", page)
+        self.assertIn("action.auto_execute", page)
+        self.assertNotIn('evaluation.origin === "QUICK_SHIFT"', page)
         self.assertNotIn("availability_hours_for_day", page)
         self.assertNotIn("manual_overallocation_impact", page)
 

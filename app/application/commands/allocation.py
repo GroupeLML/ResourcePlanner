@@ -290,11 +290,6 @@ class AllocationExtendMoveCommand:
             field="allocation_resource",
             message="Une ressource cible est requise.",
         )
-        if not self.confirm_window_extension:
-            raise ApplicationValidationError(
-                "L'élargissement de fenêtre doit être confirmé explicitement.",
-                code="allocation_window_extension_confirmation_required",
-            )
         if int(self.expected_planning_version) < 1:
             raise ApplicationValidationError(
                 "La version attendue du planning doit être au moins 1.",
