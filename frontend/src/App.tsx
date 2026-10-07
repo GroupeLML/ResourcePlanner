@@ -294,7 +294,7 @@ export default function App() {
               onOpenPlanning={() => setView("planning")}
             />
           ) : view === "planning" ? (
-            <PlanningPage onOpenDemands={openDemands} />
+            <PlanningPage onOpenDemands={openDemands} onOpenDemand={openDemand} />
           ) : view === "medium-term" ? (
             <MediumTermPage
               onOpenDemands={openDemands}

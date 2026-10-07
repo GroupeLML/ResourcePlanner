@@ -173,6 +173,13 @@
   font-size: .64rem;
 }
 
+.demand-detail-modal-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: .5rem;
+}
+
 .demand-detail-modal-header button {
   border: 1px solid var(--border);
   border-radius: 8px;
