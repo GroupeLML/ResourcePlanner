@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createClientId } from "./clientId";
 import {
   ApiError,
+  PendingDemandCandidateWindowReadModel,
   PendingDemandLoadReadModel,
   PlanningActionReadModel,
   PlanningCapacityGridReadModel,
@@ -79,11 +80,16 @@ import ShiftAssetAssignmentDialog, { ShiftAssetAssignmentMode } from "./ShiftAss
 import ShiftEditor from "./ShiftEditor";
 
 type ConfirmationFilter = "all" | "confirmed" | "tentative";
+type PendingCandidateEntry = {
+  load: PendingDemandLoadReadModel;
+  candidate: PendingDemandCandidateWindowReadModel;
+};
+
 type ResourceGroupEntry = {
   resource: ResourceReadModel;
   shifts: ShiftReadModel[];
   capacity: PlanningResourceCapacityReadModel | null;
-  pendingLoads: PendingDemandLoadReadModel[];
+  pendingCandidates: PendingCandidateEntry[];
 };
 
 type ManualResourceOrderControls = {
@@ -231,6 +237,13 @@ function pendingText(load: PendingDemandLoadReadModel) {
     load.project_name,
     load.required_competencies,
     load.proposed_resource,
+    ...load.candidate_windows.flatMap((candidate) => [
+      candidate.task_code,
+      candidate.task_label,
+      candidate.required_resource_class,
+      candidate.required_competencies,
+      candidate.proposed_resource,
+    ]),
   ].filter(Boolean).join(" "));
 }
 
@@ -458,25 +471,82 @@ function PendingLoadCard({
 }
 
 function PendingGhostCard({
-  load,
+  entry,
   onOpenDemand,
 }: {
-  load: PendingDemandLoadReadModel;
+  entry: PendingCandidateEntry;
   onOpenDemand?: (demandNumber: string) => void;
 }) {
-  const tentative = confirmationKind(load.confirmation) === "tentative";
+  const { load, candidate } = entry;
+  const tentative = confirmationKind(candidate.confirmation ?? load.confirmation) === "tentative";
+  const candidateHours = candidate.window_hours || candidate.projected_hours || 0;
+  const optionLabel = candidate.alternative_group
+    ? candidate.selected ? "Option retenue" : "Option candidate"
+    : null;
+  const detail = [
+    candidate.task_code,
+    candidate.task_label,
+    candidate.required_resource_class,
+    optionLabel,
+  ].filter(Boolean).join(" · ");
+
   return (
     <button
       type="button"
       className={`pending-ghost-card ${tentative ? "is-tentative" : ""}`}
+      data-candidate-key={candidate.candidate_key}
       onClick={() => onOpenDemand?.(load.demand_number)}
       disabled={!onOpenDemand}
-      title={`Demande ${load.demand_number} · ressource proposée ${resourceDisplayName(load.proposed_resource) || "—"} · aucune charge ferme comptabilisée`}
+      title={`Demande ${load.demand_number} · besoin candidat non matérialisé · aucun Shift ni aucune affectation implicite`}
     >
+      <span className="pending-ghost-kicker">Besoin candidat · non matérialisé</span>
       <strong>{load.project_number || "Projet"}</strong>
       <span>{load.project_name || load.demand_number}</span>
-      <small>{confirmationLabel(load.confirmation)} · en attente d’approbation · 0 h</small>
+      {detail && <span>{detail}</span>}
+      <small>{confirmationLabel(candidate.confirmation ?? load.confirmation)} · {hours(candidateHours)} h fenêtre</small>
     </button>
+  );
+}
+
+function UnplannedCandidateRow({
+  days,
+  candidates,
+  onOpenDemand,
+}: {
+  days: Date[];
+  candidates: PendingCandidateEntry[];
+  onOpenDemand?: (demandNumber: string) => void;
+}) {
+  return (
+    <div className="resource-row unplanned-candidate-row">
+      <div className="resource-cell resource-identity unplanned-candidate-identity">
+        <strong>À planifier</strong>
+        <span>Besoins candidats sans ressource proposée</span>
+        <small>{candidates.length} fenêtre(s) candidate(s)</small>
+      </div>
+      {days.map((day) => {
+        const iso = toIsoDate(day);
+        const dayCandidates = candidates.filter(({ candidate }) => (
+          candidate.start_date <= iso && candidate.end_date >= iso
+        ));
+        return (
+          <div
+            className={`resource-cell planning-day-cell unplanned-candidate-day ${isToday(day) ? "today-column" : ""}`}
+            data-day={iso}
+            key={iso}
+          >
+            {dayCandidates.map((entry) => (
+              <PendingGhostCard
+                entry={entry}
+                onOpenDemand={onOpenDemand}
+                key={`unplanned-${entry.candidate.candidate_key}-${iso}`}
+              />
+            ))}
+            {dayCandidates.length === 0 && <span className="empty-day">—</span>}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -485,7 +555,7 @@ function ResourceRow({
   days,
   shifts,
   capacity,
-  pendingLoads,
+  pendingCandidates,
   diagnostics,
   onEditShift,
   onAssignAsset,
@@ -500,7 +570,7 @@ function ResourceRow({
   days: Date[];
   shifts: ShiftReadModel[];
   capacity: PlanningResourceCapacityReadModel | null;
-  pendingLoads: PendingDemandLoadReadModel[];
+  pendingCandidates: PendingDemandLoadReadModel[];
   diagnostics: Map<string, PlanningSegmentCapacityDiagnosticReadModel>;
   onEditShift?: (shift: ShiftReadModel) => void;
   onAssignAsset?: (shift: ShiftReadModel) => void;
@@ -579,11 +649,10 @@ function ResourceRow({
         const iso = toIsoDate(day);
         const dayShifts = shifts.filter((shift) => sameIsoDate(shift.work_date, day));
         const cellCapacity = dayCapacity.get(iso) ?? null;
-        const ghosts = pendingLoads.filter((load) => (
-          load.proposed_resource === resource.name
-          && load.start_date <= iso
-          && load.end_date >= iso
-          && (cellCapacity?.available ?? true)
+        const ghosts = pendingCandidates.filter(({ candidate }) => (
+          candidate.proposed_resource_id === resource.id
+          && candidate.start_date <= iso
+          && candidate.end_date >= iso
         ));
         const cellClass = [
           "resource-cell",
@@ -651,11 +720,11 @@ function ResourceRow({
                 key={shift.allocation_id}
               />
             ))}
-            {ghosts.map((load) => (
+            {ghosts.map((entry) => (
               <PendingGhostCard
-                load={load}
+                entry={entry}
                 onOpenDemand={onOpenDemand}
-                key={`ghost-${load.demand_number}-${iso}`}
+                key={`ghost-${entry.candidate.candidate_key}-${iso}`}
               />
             ))}
             {dayShifts.length === 0 && ghosts.length === 0 && !cellCapacity && <span className="empty-day">—</span>}
@@ -951,8 +1020,14 @@ export default function PlanningPage({
 
   const classOptions = useMemo(() => {
     if (!snapshot) return [];
-    return [...new Set(snapshot.resources.map((resource) => resource.resource_class || "Non classé"))]
-      .sort((left, right) => left.localeCompare(right, "fr-CA"));
+    return [...new Set([
+      ...snapshot.resources.map((resource) => resource.resource_class || "Non classé"),
+      ...snapshot.pending_loads.flatMap((load) => (
+        load.candidate_windows
+          .map((candidate) => candidate.required_resource_class)
+          .filter((value): value is string => Boolean(value))
+      )),
+    ])].sort((left, right) => left.localeCompare(right, "fr-CA"));
   }, [snapshot]);
 
   const resourceOptions = useMemo(() => {
@@ -1024,6 +1099,31 @@ export default function PlanningPage({
     });
   }, [snapshot, project, confirmation, query]);
 
+  const visiblePendingCandidates = useMemo<PendingCandidateEntry[]>(() => {
+    if (!snapshot) return [];
+    return snapshot.pending_loads.flatMap((load) => {
+      if (project !== "all" && load.project_number !== project) return [];
+      if (query && !pendingText(load).includes(query)) return [];
+      return load.candidate_windows
+        .filter((candidate) => (
+          confirmation === "all"
+          || confirmationKind(candidate.confirmation ?? load.confirmation) === confirmation
+        ))
+        .map((candidate) => ({ load, candidate }));
+    });
+  }, [snapshot, project, confirmation, query]);
+
+  const visibleUnplannedCandidates = useMemo(() => {
+    if (resourceFilter !== "all" || onlyWithCapacity) return [];
+    return visiblePendingCandidates.filter(({ candidate }) => (
+      !candidate.proposed_resource_id
+      && (
+        classFilter === "all"
+        || candidate.required_resource_class === classFilter
+      )
+    ));
+  }, [visiblePendingCandidates, resourceFilter, onlyWithCapacity, classFilter]);
+
   const visibleResourceGroups = useMemo(() => {
     if (!snapshot) return [];
     const groups = new Map<string, ResourceGroupEntry[]>();
@@ -1040,14 +1140,16 @@ export default function PlanningPage({
         if (!query || resourceMatches) return true;
         return shiftText(shift).includes(query);
       });
-      const pendingLoads = visiblePendingLoads.filter((load) => load.proposed_resource === resource.name);
+      const pendingCandidates = visiblePendingCandidates.filter(
+        ({ candidate }) => candidate.proposed_resource_id === resource.id,
+      );
       const restrictiveProjectConfirmation = project !== "all" || confirmation !== "all";
-      if (query && !resourceMatches && shifts.length === 0 && pendingLoads.length === 0) return;
-      if (restrictiveProjectConfirmation && shifts.length === 0 && pendingLoads.length === 0) return;
+      if (query && !resourceMatches && shifts.length === 0 && pendingCandidates.length === 0) return;
+      if (restrictiveProjectConfirmation && shifts.length === 0 && pendingCandidates.length === 0) return;
 
       const className = resource.resource_class || "Non classé";
       const entries = groups.get(className) ?? [];
-      entries.push({ resource, shifts, capacity, pendingLoads });
+      entries.push({ resource, shifts, capacity, pendingCandidates });
       groups.set(className, entries);
     });
 
@@ -1069,7 +1171,7 @@ export default function PlanningPage({
     resourceFilter,
     onlyWithCapacity,
     shiftsPassingGlobalFilters,
-    visiblePendingLoads,
+    visiblePendingCandidates,
     project,
     confirmation,
     query,
@@ -1474,43 +1576,99 @@ export default function PlanningPage({
 
   return (
     <section className="planning-page">
-      <div className="page-heading">
-        <div>
-          <span className="eyebrow">Planification opérationnelle</span>
-          <h1>Semaine du {formatWeekRange(weekStart)}</h1>
-          <p>Planning Web V2 alimenté directement par FastAPI. Capacité, indisponibilités et heures non placées sont calculées côté backend.</p>
-        </div>
-        <div className="page-actions">
-          <PlanningScopeSelector
-            policy={planningPolicy}
-            scope={scope}
-            loading={scopeLoading}
-            error={scopeError}
-            onChange={selectPlanningScope}
-          />
-          {canManagePlanning && (
-            <button className="manual-allocation-button" type="button" disabled={scopeLoading || loading} onClick={() => setManualAllocationOpen(true)}>
-              + Quart manuel
-            </button>
-          )}
-          {canManagePlanning && (
-            <button
-              className="quick-shift-button"
-              type="button"
-              disabled={scopeLoading || loading}
-              onClick={() => {
-                setQuickShiftSeed(null);
-                setQuickShiftOpen(true);
-              }}
-            >
-              + Quick Shift
-            </button>
-          )}
-          <div className="week-navigation" role="group" aria-label="Navigation par semaine">
-            <button type="button" onClick={() => setWeekStart((value) => addDays(value, -7))}>← Précédente</button>
-            <button type="button" onClick={() => setWeekStart(startOfWeek(new Date()))}>Aujourd’hui</button>
-            <button type="button" onClick={() => setWeekStart((value) => addDays(value, 7))}>Suivante →</button>
+      <div className="planning-sticky-controls">
+        <div className="page-heading planning-sticky-heading">
+          <div>
+            <span className="eyebrow">Planification opérationnelle</span>
+            <h1>Semaine du {formatWeekRange(weekStart)}</h1>
+            <p>Planning Web V2 alimenté directement par FastAPI. Capacité, indisponibilités et heures non placées sont calculées côté backend.</p>
           </div>
+          <div className="page-actions">
+            <PlanningScopeSelector
+              policy={planningPolicy}
+              scope={scope}
+              loading={scopeLoading}
+              error={scopeError}
+              onChange={selectPlanningScope}
+            />
+            {canManagePlanning && (
+              <button className="manual-allocation-button" type="button" disabled={scopeLoading || loading} onClick={() => setManualAllocationOpen(true)}>
+                + Quart manuel
+              </button>
+            )}
+            {canManagePlanning && (
+              <button
+                className="quick-shift-button"
+                type="button"
+                disabled={scopeLoading || loading}
+                onClick={() => {
+                  setQuickShiftSeed(null);
+                  setQuickShiftOpen(true);
+                }}
+              >
+                + Quick Shift
+              </button>
+            )}
+            <div className="week-navigation" role="group" aria-label="Navigation par semaine">
+              <button type="button" onClick={() => setWeekStart((value) => addDays(value, -7))}>← Précédente</button>
+              <button type="button" onClick={() => setWeekStart(startOfWeek(new Date()))}>Aujourd’hui</button>
+              <button type="button" onClick={() => setWeekStart((value) => addDays(value, 7))}>Suivante →</button>
+            </div>
+          </div>
+        </div>
+        <div className="filter-bar planning-filter-bar">
+          <label className="search-field">
+            <span>Recherche</span>
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Ressource, projet, demande…"
+            />
+          </label>
+          <label>
+            <span>Classe</span>
+            <select value={classFilter} onChange={(event) => setClassFilter(event.target.value)}>
+              <option value="all">Toutes les classes</option>
+              {classOptions.map((value) => <option value={value} key={value}>{value}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>Ressource</span>
+            <select value={resourceFilter} onChange={(event) => setResourceFilter(event.target.value)}>
+              <option value="all">Toutes les ressources</option>
+              {resourceOptions.map((resource) => <option value={resource.id} key={resource.id}>{resourceDisplayName(resource.name)}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>Projet</span>
+            <select value={project} onChange={(event) => setProject(event.target.value)}>
+              <option value="all">Tous les projets</option>
+              {projectOptions.map(([value, label]) => <option value={value} key={value}>{label}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>Confirmation</span>
+            <select value={confirmation} onChange={(event) => setConfirmation(event.target.value as ConfirmationFilter)}>
+              <option value="all">Confirmée + Tentative</option>
+              <option value="confirmed">Confirmée</option>
+              <option value="tentative">Tentative</option>
+            </select>
+          </label>
+          <label className="planning-resource-sort">
+            <span>Ordre des ressources</span>
+            <select
+              value={resourceSortMode}
+              onChange={(event) => setResourceSortMode(event.target.value as ResourceSortMode)}
+            >
+              <option value="manual">Manuel</option>
+              <option value="availability">Disponibilité</option>
+              <option value="alphabetical">Alphabétique</option>
+            </select>
+          </label>
+          <label className="capacity-filter">
+            <input type="checkbox" checked={onlyWithCapacity} onChange={(event) => setOnlyWithCapacity(event.target.checked)} />
+            <span>Seulement avec capacité</span>
+          </label>
         </div>
       </div>
 
@@ -1555,49 +1713,7 @@ export default function PlanningPage({
         </article>
       </div>
 
-      <div className="filter-bar planning-filter-bar">
-        <label className="search-field">
-          <span>Recherche</span>
-          <input
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="Ressource, projet, demande…"
-          />
-        </label>
-        <label>
-          <span>Classe</span>
-          <select value={classFilter} onChange={(event) => setClassFilter(event.target.value)}>
-            <option value="all">Toutes les classes</option>
-            {classOptions.map((value) => <option value={value} key={value}>{value}</option>)}
-          </select>
-        </label>
-        <label>
-          <span>Ressource</span>
-          <select value={resourceFilter} onChange={(event) => setResourceFilter(event.target.value)}>
-            <option value="all">Toutes les ressources</option>
-            {resourceOptions.map((resource) => <option value={resource.id} key={resource.id}>{resourceDisplayName(resource.name)}</option>)}
-          </select>
-        </label>
-        <label>
-          <span>Projet</span>
-          <select value={project} onChange={(event) => setProject(event.target.value)}>
-            <option value="all">Tous les projets</option>
-            {projectOptions.map(([value, label]) => <option value={value} key={value}>{label}</option>)}
-          </select>
-        </label>
-        <label>
-          <span>Confirmation</span>
-          <select value={confirmation} onChange={(event) => setConfirmation(event.target.value as ConfirmationFilter)}>
-            <option value="all">Confirmée + Tentative</option>
-            <option value="confirmed">Confirmée</option>
-            <option value="tentative">Tentative</option>
-          </select>
-        </label>
-        <label className="capacity-filter">
-          <input type="checkbox" checked={onlyWithCapacity} onChange={(event) => setOnlyWithCapacity(event.target.checked)} />
-          <span>Seulement avec capacité</span>
-        </label>
-      </div>
+
 
       {error && (
         <div className="error-panel">
@@ -1660,22 +1776,11 @@ export default function PlanningPage({
               )}
             </div>
             <div className="planning-board-options">
-              <label className="planning-resource-sort">
-                <span>Ordre des ressources</span>
-                <select
-                  value={resourceSortMode}
-                  onChange={(event) => setResourceSortMode(event.target.value as ResourceSortMode)}
-                >
-                  <option value="manual">Manuel</option>
-                  <option value="availability">Disponibilité</option>
-                  <option value="alphabetical">Alphabétique</option>
-                </select>
-              </label>
               <div className="legend">
                 <span><i className="legend-dot confirmed" />Confirmée</span>
                 <span><i className="legend-dot tentative" />Tentative</span>
                 <span><i className="legend-dot outside" />Hors horaire</span>
-                <span><i className="legend-dot ghost" />Attente d’approbation</span>
+                <span><i className="legend-dot ghost" />Besoin candidat</span>
                 <span><i className="legend-dot unavailable" />Indisponible</span>
               </div>
             </div>
@@ -1691,8 +1796,16 @@ export default function PlanningPage({
                 </div>
               ))}
 
-              {!loading && visibleResourceGroups.length === 0 && (
+              {!loading && visibleResourceGroups.length === 0 && visibleUnplannedCandidates.length === 0 && (
                 <div className="planning-empty">Aucune ressource ou aucun quart ne correspond aux filtres.</div>
+              )}
+
+              {visibleUnplannedCandidates.length > 0 && (
+                <UnplannedCandidateRow
+                  days={days}
+                  candidates={visibleUnplannedCandidates}
+                  onOpenDemand={setDetailDemandNumber}
+                />
               )}
 
               {visibleResourceGroups.map(([className, rows]) => {
@@ -1711,13 +1824,13 @@ export default function PlanningPage({
                       </span>
                       <span>{rows.length} ressource(s)</span>
                     </button>
-                    {!collapsed && rows.map(({ resource, shifts, capacity, pendingLoads }) => (
+                    {!collapsed && rows.map(({ resource, shifts, capacity, pendingCandidates }) => (
                       <ResourceRow
                         resource={resource}
                         days={days}
                         shifts={shifts}
                         capacity={capacity}
-                        pendingLoads={pendingLoads}
+                        pendingCandidates={pendingCandidates}
                         diagnostics={diagnosticsBySegment}
                         onEditShift={canManagePlanning ? setEditingShift : undefined}
                         onAssignAsset={canManagePlanning ? (shift) => setAssetAssignment({ shift, mode: "assign" }) : undefined}

@@ -754,6 +754,7 @@ export type DemandDetailAlternativeGroupReadModel = {
 export type DemandDetailLineReadModel = {
   line: DemandLineReadModel;
   periods: DemandPeriodReadModel[];
+  candidate_windows: PendingDemandCandidateWindowReadModel[];
   alternative_groups: DemandDetailAlternativeGroupReadModel[];
   contacts: RequestLineContactResolutionReadModel | null;
 };
@@ -1058,6 +1059,7 @@ export type DemandPeriodReadModel = {
   hours: number;
   confirmation: "Tentative" | "Confirmée";
   alternative_group: string | null;
+  proposed_resource_id: string | null;
   proposed_resource: string | null;
   resource_count: number;
   desired_active_days: number | null;
@@ -1089,6 +1091,25 @@ export type DemandAlternativeSelectionResult = {
   demand_number: string;
   alternative_group: string;
   period_id: string;
+};
+
+export type PendingDemandCandidateWindowReadModel = {
+  candidate_key: string;
+  start_date: string;
+  end_date: string;
+  projected_hours: number | null;
+  window_hours: number;
+  proposed_resource_id: string | null;
+  proposed_resource: string | null;
+  task_code: string | null;
+  task_label: string | null;
+  required_resource_class: string | null;
+  required_competencies: string | null;
+  confirmation: string | null;
+  resource_count: number;
+  period_kind: string | null;
+  alternative_group: string | null;
+  selected: boolean;
 };
 
 export type PendingDemandLoadReadModel = {
