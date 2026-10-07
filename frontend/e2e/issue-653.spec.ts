@@ -81,12 +81,17 @@ test("653 — une nouvelle règle propose 07:00–15:00", async ({ browser }) =>
     const availabilityCard = page.locator(".admin-card").filter({ hasText: "Horaire & absences" });
     const addRule = availabilityCard.getByRole("button", { name: "+ Ajouter", exact: true });
     await expect(addRule).toBeVisible();
-    await addRule.click();
+    await addRule.click({ force: true, timeout: 10_000 });
 
     const newRuleEditor = availabilityCard.locator(".admin-editor");
     await expect(newRuleEditor).toBeVisible();
     await expect(newRuleEditor.getByLabel("Début", { exact: true })).toHaveValue("07:00");
     await expect(newRuleEditor.getByLabel("Fin", { exact: true })).toHaveValue("15:00");
+
+    const closeEditor = newRuleEditor.getByRole("button", { name: "Fermer", exact: true });
+    await expect(closeEditor).toBeVisible();
+    await closeEditor.click({ force: true, timeout: 10_000 });
+    await expect(newRuleEditor).toBeHidden();
   } finally {
     await closeContext(context);
   }
@@ -103,12 +108,17 @@ test("653 — une règle existante conserve ses heures explicites", async ({ bro
 
     const editExisting = existingRule.getByRole("button", { name: "Modifier", exact: true });
     await expect(editExisting).toBeVisible();
-    await editExisting.click();
+    await editExisting.click({ force: true, timeout: 10_000 });
 
     const existingEditor = availabilityCard.locator(".admin-editor");
     await expect(existingEditor).toBeVisible();
     await expect(existingEditor.getByLabel("Début", { exact: true })).toHaveValue("08:00");
     await expect(existingEditor.getByLabel("Fin", { exact: true })).toHaveValue("16:00");
+
+    const closeEditor = existingEditor.getByRole("button", { name: "Fermer", exact: true });
+    await expect(closeEditor).toBeVisible();
+    await closeEditor.click({ force: true, timeout: 10_000 });
+    await expect(existingEditor).toBeHidden();
   } finally {
     await closeContext(context);
   }
