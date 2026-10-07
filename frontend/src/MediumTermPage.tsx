@@ -935,7 +935,7 @@ export default function MediumTermPage({
           </select>
         </label>
         <label>
-          <span>Classe métier de la charge</span>
+          <span>Classe de ressource · Classe métier de la charge</span>
           <select
             value={resourceClassFilter}
             onChange={(event) => setResourceClassFilter(event.target.value)}
