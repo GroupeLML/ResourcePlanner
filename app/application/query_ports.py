@@ -170,6 +170,7 @@ class PlannerQueryPort(Protocol):
         demand_ids: Sequence[str] | None = None,
         include_resource_ids: Sequence[str] = (),
         shift_resource_ids: Sequence[str] = (),
+        segment_resource_ids: Sequence[str] = (),
         project_day_keys: Sequence[tuple[str, date]] = (),
     ) -> PlanningCapacityGridReadModel: ...
 
