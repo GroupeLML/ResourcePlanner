@@ -215,6 +215,35 @@ class SqlDemandPeriodRepository(DemandPeriodRepositoryPort):
                 resource_ids.add(resolved.proposed_resource)
             if row.proposed_resource_id:
                 resource_ids.add(row.proposed_resource_id)
+
+        resolved_by_key = {
+            row.period_key: resolved
+            for row, resolved in resolved_rows
+        }
+
+        def same_as_root(period_key: str) -> str | None:
+            resolved = resolved_by_key.get(period_key)
+            if resolved is None or resolved.same_as_state is None:
+                return None
+            target = _text(resolved.same_as_period_id)
+            visited = {period_key}
+            while target:
+                if target in visited:
+                    return None
+                visited.add(target)
+                target_resolved = resolved_by_key.get(target)
+                if target_resolved is None:
+                    return None
+                if target_resolved.same_as_state is None:
+                    return target
+                target = _text(target_resolved.same_as_period_id)
+            return None
+
+        same_as_roots = {
+            row.period_key: same_as_root(row.period_key)
+            for row, resolved in resolved_rows
+            if resolved.same_as_state is not None
+        }
         resources = (
             self._session.scalars(
                 select(Resource).where(Resource.id.in_(resource_ids))
@@ -265,7 +294,7 @@ class SqlDemandPeriodRepository(DemandPeriodRepositoryPort):
                     ),
                     proposed_resource_provenance=resolved.proposed_resource_provenance,
                     same_as_period_id=resolved.same_as_period_id,
-                    same_as_root_period_id=resolved.same_as_root_period_id,
+                    same_as_root_period_id=same_as_roots.get(row.period_key),
                     same_as_state=resolved.same_as_state,
                     resource_count=resolved.resource_count,
                     resource_count_provenance=resolved.resource_count_provenance,
