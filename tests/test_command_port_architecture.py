@@ -104,28 +104,6 @@ class CommandPortArchitectureTests(unittest.TestCase):
                 f"{filename} must not own adapter-error translation policy",
             )
 
-    def test_runtime_services_has_no_direct_versioned_bridge_or_callback_composition(self) -> None:
-        source = (APPLICATION / "runtime_services.py").read_text(encoding="utf-8")
-        for token in (
-            "app.v13",
-            "app.v14",
-            "app.v15",
-            "app.v16",
-            "app.v17",
-            "app.v18",
-            "v15_engine",
-            "v15_refinements",
-            "_sync_segments_to_approved_demand",
-            "rebuild_planning=lambda",
-            "sync_approved_demand=lambda",
-            "from_repository_port",
-        ):
-            self.assertNotIn(token, source)
-        self.assertIn("DemandService(", source)
-        self.assertIn("SegmentService(", source)
-        self.assertIn("ExcelPlanningCommandAdapter", source)
-        self.assertIn("ExcelApprovedDemandSyncAdapter", source)
-
     def test_demand_and_segment_services_store_ports_not_repository_context(self) -> None:
         demand = (APPLICATION / "demand_service.py").read_text(encoding="utf-8")
         segment = (APPLICATION / "segment_service.py").read_text(encoding="utf-8")
@@ -138,21 +116,6 @@ class CommandPortArchitectureTests(unittest.TestCase):
         self.assertIn("PlanningCommandPort", demand)
         self.assertIn("SegmentRepositoryPort", segment)
         self.assertIn("PlanningCommandPort", segment)
-
-    def test_quick_shift_ui_no_longer_calls_v15_engine_directly(self) -> None:
-        source = (APP / "quick_shift_ui.py").read_text(encoding="utf-8")
-        self.assertNotIn("v15_engine", source)
-        self.assertIn("excel_allocation_commands", source)
-        self.assertIn("ExcelSegmentRepository", source)
-
-    def test_v1_dependencies_are_confined_to_excel_command_adapter(self) -> None:
-        source = (
-            APP / "infrastructure" / "excel" / "command_adapters.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn('import_module("app.v15_engine")', source)
-        self.assertIn('import_module("app.v15_refinements")', source)
-        self.assertIn('import_module("app.v13")', source)
-
 
 if __name__ == "__main__":
     unittest.main()

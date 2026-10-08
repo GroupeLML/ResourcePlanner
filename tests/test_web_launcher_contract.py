@@ -39,15 +39,11 @@ class WebLauncherContractTests(unittest.TestCase):
         self.assertIn('if "%LOCAL_SQLITE_MODE%"=="1"', launcher)
         self.assertIn('".venv-web\\Scripts\\python.exe" -m alembic upgrade head', launcher)
 
-    def test_old_application_launcher_is_an_explicit_legacy_alias(self) -> None:
-        alias = (ROOT / "Lancer_Application.bat").read_text(encoding="utf-8")
-        legacy = (ROOT / "Lancer_Application_Legacy.bat").read_text(encoding="utf-8")
 
-        self.assertIn("LEGACY", alias)
-        self.assertIn("Lancer_Web.bat", alias)
-        self.assertIn("Lancer_Application_Legacy.bat", alias)
-        self.assertIn("main.py", legacy)
-        self.assertIn("LEGACY NiceGUI / Excel", legacy)
+    def test_v1_desktop_launchers_are_absent(self) -> None:
+        self.assertFalse((ROOT / "Lancer_Application.bat").exists())
+        self.assertFalse((ROOT / "Lancer_Application_Legacy.bat").exists())
+        self.assertFalse((ROOT / "main.py").exists())
 
 
 if __name__ == "__main__":

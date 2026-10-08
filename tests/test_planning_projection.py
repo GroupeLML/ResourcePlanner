@@ -11,7 +11,6 @@ from app.domain.planning_projection import (
     project_planning_snapshot,
 )
 from app.domain.planning_snapshot import PlanningSnapshot
-from app.planning_shadow import build_shadow_report_from_calculation
 
 
 D1 = date(2026, 8, 17)  # lundi
@@ -206,32 +205,7 @@ class PlanningProjectionTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             calculation.capacity_by_resource_day[("R1", D1)] = 99  # type: ignore[index]
 
-    def test_typed_calculation_drives_engine_without_source_rows(self) -> None:
-        calculation = project_planning_snapshot(self._source_snapshot())
-        report = build_shadow_report_from_calculation(calculation)
 
-        self.assertEqual(report.shadow_result.segment_count, 1)
-        self.assertEqual(report.shadow_result.locked_allocation_count, 2)
-        self.assertEqual(report.shadow_result.requested_hours, 12.0)
-        self.assertEqual(report.shadow_result.allocated_hours, 12.0)
-        self.assertEqual(report.shadow_result.unallocated_hours, 0.0)
-        self.assertEqual(report.unsupported_segment_ids, ("S-BAD",))
-
-    def test_planning_shadow_contains_no_source_row_parsing(self) -> None:
-        source = (APP / "planning_shadow.py").read_text(encoding="utf-8")
-
-        for token in (
-            'row.get("NoDemande")',
-            'row.get("Technicien")',
-            'row.get("HeuresPrevues")',
-            'row.get("Verrouillee")',
-            "availability_hours_for_day",
-            "has_standard_schedule",
-            "date_from_value",
-        ):
-            self.assertNotIn(token, source)
-        self.assertIn("project_planning_snapshot(snapshot)", source)
-        self.assertIn("build_shadow_report_from_calculation", source)
 
     def test_projection_module_is_storage_and_ui_neutral(self) -> None:
         source = (APP / "domain" / "planning_projection.py").read_text(encoding="utf-8")

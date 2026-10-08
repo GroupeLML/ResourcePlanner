@@ -29,12 +29,10 @@ class ServerDependencyProfileTests(unittest.TestCase):
         self.assertTrue({"fastapi", "uvicorn", "sqlalchemy", "alembic", "httpx"} <= packages)
         self.assertEqual(packages & FORBIDDEN_SERVER_PACKAGES, set())
 
-    def test_legacy_profile_extends_server_and_keeps_v1_packages(self) -> None:
-        text = (ROOT / "requirements-legacy.txt").read_text(encoding="utf-8")
-        packages = _direct_packages(ROOT / "requirements-legacy.txt")
 
-        self.assertIn("-r requirements-server.txt", text)
-        self.assertEqual(packages & FORBIDDEN_SERVER_PACKAGES, FORBIDDEN_SERVER_PACKAGES)
+    def test_v1_dependency_profile_and_installer_are_removed(self) -> None:
+        self.assertFalse((ROOT / "requirements-legacy.txt").exists())
+        self.assertFalse((ROOT / "Installer.bat").exists())
 
     def test_aggregate_profile_remains_backward_compatible_but_not_server_target(self) -> None:
         text = (ROOT / "requirements.txt").read_text(encoding="utf-8")
@@ -44,11 +42,6 @@ class ServerDependencyProfileTests(unittest.TestCase):
         self.assertEqual(packages & FORBIDDEN_SERVER_PACKAGES, FORBIDDEN_SERVER_PACKAGES)
         self.assertIn("Le serveur Web/SQL utilise requirements-server.txt", text)
 
-    def test_v1_installer_uses_explicit_legacy_profile(self) -> None:
-        installer = (ROOT / "Installer.bat").read_text(encoding="utf-8")
-
-        self.assertIn("requirements-legacy.txt", installer)
-        self.assertNotIn("pip install -r requirements.txt", installer)
 
     def test_ci_has_server_only_isolation_job(self) -> None:
         workflow = (ROOT / ".github/workflows/syntax-check.yml").read_text(encoding="utf-8")

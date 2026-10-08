@@ -24,7 +24,7 @@ from app.infrastructure.sql import (
     create_sql_engine,
     transactional_session,
 )
-from app.performance_diagnostics import read_performance_samples
+from app.server.performance import read_performance_samples
 from app.server import create_api_app
 from tests.sqlite_test_template import SqliteDatabaseTemplate
 

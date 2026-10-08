@@ -7,10 +7,11 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator
 from weakref import WeakSet
 
 from fastapi import Request
@@ -388,3 +389,98 @@ def install_sql_performance_instrumentation(engine: Engine) -> None:
             return
         context.record_query(exception_context.statement or "", perf_counter() - started)
         execution_context._resourceplanner_perf_started = None
+
+
+def read_performance_samples(
+    *,
+    path: Path | None = None,
+    limit: int = 20,
+    backups: int = _PERFORMANCE_LOG_BACKUPS,
+) -> list[dict[str, Any]]:
+    """Read recent technical samples across the active JSONL file and rotations."""
+
+    target = path or _default_performance_log_path()
+    if limit <= 0:
+        return []
+
+    # Rotation uses .1 as the newest archived file. Read oldest -> newest so
+    # slicing the tail preserves chronological order across a rotation boundary.
+    candidates = [
+        target.with_name(f"{target.name}.{index}")
+        for index in range(max(int(backups), 0), 0, -1)
+    ]
+    candidates.append(target)
+
+    lines: list[str] = []
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        try:
+            lines.extend(candidate.read_text(encoding="utf-8").splitlines())
+        except OSError:
+            continue
+
+    result: list[dict[str, Any]] = []
+    for line in lines:
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            result.append(parsed)
+    return result[-limit:]
+
+
+def _percentile(values: Iterable[object], percentile: float) -> float:
+    numeric = sorted(_seconds(value) for value in values)
+    if not numeric:
+        return 0.0
+    if len(numeric) == 1:
+        return numeric[0]
+    rank = (len(numeric) - 1) * min(max(float(percentile), 0.0), 1.0)
+    lower = math.floor(rank)
+    upper = math.ceil(rank)
+    if lower == upper:
+        return numeric[lower]
+    weight = rank - lower
+    return round(numeric[lower] * (1.0 - weight) + numeric[upper] * weight, 6)
+
+
+def format_http_percentile_report(samples: Iterable[dict[str, Any]]) -> str:
+    """Aggregate safe HTTP latency percentiles by route template."""
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for row in samples:
+        operation = str(row.get("operation") or "")
+        if not operation.startswith("http "):
+            continue
+        groups.setdefault(operation, []).append(row)
+    if not groups:
+        return ""
+
+    lines = [
+        "FastAPI V2 — percentiles HTTP",
+        "operation | n | p50 | p95 | p99 | auth p95 | api p95 | db p95 | compute p95 | serialization p95 | external p95 | db queries p95 | n+1 suspect",
+    ]
+    for operation in sorted(groups):
+        rows = groups[operation]
+        total = [row.get("total_seconds", 0.0) for row in rows]
+        lines.append(
+            "{operation} | {count} | {p50:.3f}s | {p95:.3f}s | {p99:.3f}s | "
+            "{auth:.3f}s | {api:.3f}s | {db:.3f}s | {compute:.3f}s | {serialization:.3f}s | "
+            "{external:.3f}s | {queries:.1f} | {n_plus_one}".format(
+                operation=operation,
+                count=len(rows),
+                p50=_percentile(total, 0.50),
+                p95=_percentile(total, 0.95),
+                p99=_percentile(total, 0.99),
+                auth=_percentile((row.get("auth_seconds", 0.0) for row in rows), 0.95),
+                api=_percentile((row.get("api_seconds", 0.0) for row in rows), 0.95),
+                db=_percentile((row.get("db_seconds", 0.0) for row in rows), 0.95),
+                compute=_percentile((row.get("compute_seconds", 0.0) for row in rows), 0.95),
+                serialization=_percentile((row.get("serialization_seconds", 0.0) for row in rows), 0.95),
+                external=_percentile((row.get("external_seconds", 0.0) for row in rows), 0.95),
+                queries=_percentile((row.get("db_query_count", 0.0) for row in rows), 0.95),
+                n_plus_one=sum(bool(row.get("db_n_plus_one_suspected")) for row in rows),
+            )
+        )
+    return "\n".join(lines)
