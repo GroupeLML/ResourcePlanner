@@ -396,9 +396,20 @@ class RequestLinePeriodApiTests(unittest.TestCase):
                     json=self._alternatives("RBAC"),
                 )
 
-            self.assertEqual(read.status_code, 200, read.text)
+            # ADR-030: reading demand periods requires read_demands.
+            self.assertEqual(read.status_code, 403, read.text)
+            self.assertEqual(read.json()["error"]["code"], "permission_denied")
             self.assertEqual(write.status_code, 403, write.text)
             self.assertEqual(write.json()["error"]["code"], "permission_denied")
+
+            with TestClient(
+                create_api_app(database_url, actor_name="coord"),
+                raise_server_exceptions=False,
+            ) as admin:
+                allowed_read = admin.get(
+                    f"/api/v1/demands/{number}/lines/{line_a}/periods"
+                )
+            self.assertEqual(allowed_read.status_code, 200, allowed_read.text)
 
 
 if __name__ == "__main__":

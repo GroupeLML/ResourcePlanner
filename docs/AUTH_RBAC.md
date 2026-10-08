@@ -81,6 +81,8 @@ retourne notamment :
 - synchronisation de projets Acumatica exige `sync_projects`;
 - une future mutation API non classifiée est refusée par défaut jusqu'à ce qu'une permission explicite lui soit assignée.
 
+Depuis **706A / ADR-030**, `read` seul ne suffit plus pour les lectures complètes des modules : `read_demands`, `read_projects` et `read_work_packages` sont des capacités positives additionnelles, vérifiées avant la recherche de données, y compris sur les accès indirects (Moyen terme, Delivery, actifs, historiques et exports). Un technicien seul conserve `read` pour Mon horaire et les projections Planning réduites par ADR-027, mais aucune de ces trois capacités. Les droits d'un utilisateur multirôle sont l'union de ses rôles explicites; `DELIVERY_CONTRIBUTOR` conserve les lectures Projets/WorkPackages nécessaires à Delivery. Une capacité absente produit `403 permission_denied`; les contrôles de périmètre restent appliqués ensuite.
+
 `/health` et les fichiers statiques du frontend restent publics afin de permettre le health check et le chargement de l'application. Les données métier restent derrière `/api/v1`.
 
 ## Modèle SQL
