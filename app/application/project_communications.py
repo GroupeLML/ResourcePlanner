@@ -82,7 +82,7 @@ class ProjectCommunicationDraftDownload:
 
 
 _DOWNLOAD_FILENAME_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
-_GENERATOR_EMAIL_PATTERN = re.compile(r"^[^@\\s<>;,]+@[^@\\s<>;,]+\\.[^@\\s<>;,]+$")
+_GENERATOR_EMAIL_PATTERN = re.compile(r"^[^@\s<>;,]+@[^@\s<>;,]+\.[^@\s<>;,]+$")
 
 
 def _download_filename_fragment(value: str) -> str:
