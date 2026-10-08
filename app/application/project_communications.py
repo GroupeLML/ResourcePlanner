@@ -11,6 +11,7 @@ from typing import Protocol, Sequence
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from ..domain.project_communication import (
+    ProjectCommunicationParticipant,
     ProjectCommunicationAssignment,
     ProjectCommunicationProjection,
     build_project_communication_projection,
@@ -38,6 +39,7 @@ from .communications import (
     CommunicationTransportMessage,
     CommunicationTransportPort,
 )
+from .security import AuthPrincipal
 from .smtp_settings import SmtpConfigurationService
 from .errors import (
     ApplicationConflictError,
@@ -68,6 +70,8 @@ class ProjectCommunicationWorkflowPreview:
     diagnostics: tuple[ProjectMessageDiagnostic, ...]
     has_communicated_baseline: bool
     baseline_fingerprint: str | None = None
+    add_generator_cc: bool = False
+    generator_identity_fingerprint: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +82,7 @@ class ProjectCommunicationDraftDownload:
 
 
 _DOWNLOAD_FILENAME_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
+_GENERATOR_EMAIL_PATTERN = re.compile(r"^[^@\\s<>;,]+@[^@\\s<>;,]+\\.[^@\\s<>;,]+$")
 
 
 def _download_filename_fragment(value: str) -> str:
@@ -240,11 +245,64 @@ class ProjectCommunicationService:
             assignments=tuple(assignments),
         )
 
+    @staticmethod
+    def _generator_context(principal: AuthPrincipal | None) -> tuple[str, str]:
+        # Only the server-resolved authenticated principal can supply this address.
+        email = str(principal.email or "").strip() if principal is not None else ""
+        if not _GENERATOR_EMAIL_PATTERN.fullmatch(email):
+            raise ApplicationValidationError(
+                "Le compte authentifié ne possède pas de courriel valide pour la copie CC.",
+                code="project_communication_generator_email_invalid",
+            )
+        assert principal is not None
+        identity = hashlib.sha256(
+            "\0".join(
+                (
+                    "project-communication-generator-cc-v1",
+                    principal.issuer,
+                    principal.subject,
+                    principal.local_user_id or "",
+                    email.casefold(),
+                )
+            ).encode("utf-8")
+        ).hexdigest()
+        return email, identity
+
+    @staticmethod
+    def _with_generator_cc(
+        draft: ProjectCommunicationDraft,
+        principal: AuthPrincipal,
+        email: str,
+    ) -> ProjectCommunicationDraft:
+        existing = {
+            str(recipient.email or "").strip().casefold()
+            for recipient in (*draft.to_recipients, *draft.cc_recipients)
+        }
+        if email.casefold() in existing:
+            return draft
+        generator = ProjectCommunicationParticipant(
+            contact_id=None,
+            user_id=principal.local_user_id,
+            display_name=principal.display_name or email,
+            email=email,
+            phone=None,
+            active=True,
+        )
+        return replace(draft, cc_recipients=(*draft.cc_recipients, generator))
+
     def project_preview(
         self,
         *,
         week_start: date,
+        add_generator_cc: bool = False,
+        generator_principal: AuthPrincipal | None = None,
     ) -> ProjectCommunicationWorkflowPreview:
+        generator_email: str | None = None
+        generator_identity: str | None = None
+        if add_generator_cc:
+            generator_email, generator_identity = self._generator_context(
+                generator_principal
+            )
         projection = self.project_projection(week_start=week_start)
         current_fingerprint = project_projection_fingerprint(projection)
         repository = self._workflow_repository
@@ -274,12 +332,21 @@ class ProjectCommunicationService:
             week_start=projection.week_start,
             mode=mode,
             snapshot_fingerprint=current_fingerprint,
-            drafts=batch.drafts,
+            drafts=(
+                tuple(
+                    self._with_generator_cc(draft, generator_principal, generator_email)
+                    for draft in batch.drafts
+                )
+                if generator_email is not None and generator_principal is not None
+                else batch.drafts
+            ),
             diagnostics=batch.diagnostics,
             has_communicated_baseline=baseline is not None,
             baseline_fingerprint=(
                 baseline[0] if baseline is not None else None
             ),
+            add_generator_cc=add_generator_cc,
+            generator_identity_fingerprint=generator_identity,
         )
 
     @staticmethod
@@ -317,6 +384,9 @@ class ProjectCommunicationService:
         expected_fingerprint: str,
         reviews: Sequence[ProjectCommunicationReviewInput],
         actor_name: str,
+        add_generator_cc: bool = False,
+        generator_principal: AuthPrincipal | None = None,
+        expected_generator_identity_fingerprint: str | None = None,
     ) -> CommunicationBatchRecord:
         repository = self._workflow()
         preview = self.project_preview(week_start=week_start)
@@ -324,6 +394,21 @@ class ProjectCommunicationService:
             raise ApplicationConflictError(
                 "Le planning projet a changé depuis la prévisualisation.",
                 code="project_communication_preview_stale",
+            )
+        generator_email: str | None = None
+        if add_generator_cc:
+            generator_email, generator_identity = self._generator_context(
+                generator_principal
+            )
+            if expected_generator_identity_fingerprint != generator_identity:
+                raise ApplicationConflictError(
+                    "Le compte générateur a changé depuis la prévisualisation; régénérez-la.",
+                    code="project_communication_generator_changed",
+                )
+        elif expected_generator_identity_fingerprint is not None:
+            raise ApplicationValidationError(
+                "La prévisualisation et l'option CC ne correspondent pas.",
+                code="project_communication_generator_option_mismatch",
             )
         if not preview.drafts:
             raise ApplicationValidationError(
@@ -355,6 +440,10 @@ class ProjectCommunicationService:
             )
             if included:
                 included_count += 1
+                if generator_email is not None and generator_principal is not None:
+                    reviewed = self._with_generator_cc(
+                        reviewed, generator_principal, generator_email
+                    )
                 if not reviewed.approvable:
                     blocked.append(reviewed.message_key)
                 if not reviewed.subject.strip() or not reviewed.body.strip():
