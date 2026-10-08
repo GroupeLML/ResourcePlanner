@@ -29,7 +29,10 @@ from app.infrastructure.sql import (
 )
 from app.infrastructure.sql.same_resource_periods import SqlSameResourcePeriodCoordinator
 from app.infrastructure.sql.query_repository import SqlPlannerQueryRepository
-from tools.repair_legacy_simple_resource_class import repair_request_class
+from tools.repair_legacy_simple_resource_class import (
+    repair_all_request_classes,
+    repair_request_class,
+)
 
 
 D1 = date(2026, 9, 7)
@@ -297,6 +300,112 @@ class SqlPeriodApprovalSyncTests(unittest.TestCase):
             )
             self.assertTrue(all(row.assigned_resource_id is None for row in requirements))
             self.assertEqual(sum(float(row.planned_hours) for row in requirements), 8.0)
+
+    def test_bulk_repair_only_updates_active_approval_proven_missing_classes(self) -> None:
+        with transactional_session(self.factory) as session:
+            self._set_legacy_resource_class(session, "INSTALL_ELEC")
+            second = WorkforceRequest(
+                id="D2",
+                legacy_demand_number="DEM-2",
+                project_id="P1",
+                desired_start=D1,
+                desired_end=D3,
+                estimated_hours=Decimal("8"),
+                resource_count=1,
+                status="En planification",
+                approved_by_name="coord-test-user",
+            )
+            third = WorkforceRequest(
+                id="D3",
+                legacy_demand_number="DEM-3",
+                project_id="P1",
+                desired_start=D1,
+                desired_end=D3,
+                estimated_hours=Decimal("8"),
+                resource_count=1,
+                status="En planification",
+            )
+            session.add_all((second, third))
+            session.flush()
+            session.add(
+                RequestLine(
+                    id="D2",
+                    workforce_request_id="D2",
+                    position=0,
+                    kind="WORKFORCE",
+                    required_resource_class="PROGRAMMEUR",
+                    desired_start=D1,
+                    desired_end=D3,
+                    estimated_hours=Decimal("8"),
+                    active=True,
+                )
+            )
+            # Historical requirement without trustworthy active approval is
+            # always reported for manual review rather than guessed.
+            session.add(
+                ResourceRequirement(
+                    id="REQ-NO-AUTH",
+                    project_id="P1",
+                    workforce_request_id="D3",
+                    start_date=D1,
+                    end_date=D3,
+                    planned_hours=Decimal("8"),
+                    status="À assigner",
+                    origin="REQUEST",
+                )
+            )
+            session.flush()
+            sync = SqlPeriodAwareApprovedDemandSyncAdapter(session)
+            sync.sync_approved("DEM-1")
+            sync.sync_approved("DEM-2")
+            requirements = {
+                request_id: self._active_requirements(session)[0]
+                if request_id == "D1"
+                else session.scalar(
+                    select(ResourceRequirement).where(
+                        ResourceRequirement.workforce_request_id == request_id,
+                        ResourceRequirement.status != "Annulé",
+                    )
+                )
+                for request_id in ("D1", "D2")
+            }
+            ids_before = {key: req.id for key, req in requirements.items()}
+            revisions_before = {
+                key: req.approval_revision_id for key, req in requirements.items()
+            }
+            for req in requirements.values():
+                req.required_resource_class = None
+            session.flush()
+
+            preview = repair_all_request_classes(session)
+            self.assertEqual(preview["requests_scanned"], 3)
+            self.assertEqual(preview["requests_corrected"], 2)
+            self.assertEqual(preview["requirements_corrected"], 2)
+            self.assertEqual(preview["requests_needing_review"], 1)
+            self.assertEqual(
+                {row["demand_number"] for row in preview["changed_requests"]},
+                {"DEM-1", "DEM-2"},
+            )
+            self.assertTrue(all(req.required_resource_class is None for req in requirements.values()))
+
+            applied = repair_all_request_classes(session, apply=True)
+            self.assertEqual(applied["requests_corrected"], 2)
+            self.assertEqual(applied["requirements_corrected"], 2)
+            self.assertEqual(requirements["D1"].required_resource_class, "INSTALL_ELEC")
+            self.assertEqual(requirements["D2"].required_resource_class, "PROGRAMMEUR")
+            self.assertEqual(
+                {key: req.id for key, req in requirements.items()},
+                ids_before,
+            )
+            self.assertEqual(
+                {key: req.approval_revision_id for key, req in requirements.items()},
+                revisions_before,
+            )
+            self.assertIsNone(session.get(ResourceRequirement, "REQ-NO-AUTH").required_resource_class)
+
+            again = repair_all_request_classes(session)
+            self.assertEqual(again["requests_corrected"], 0)
+            self.assertEqual(again["requests_needing_review"], 1)
 
     def test_request_without_detailed_periods_preserves_legacy_sync(self) -> None:
         with transactional_session(self.factory) as session:
