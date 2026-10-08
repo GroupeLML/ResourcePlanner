@@ -37,7 +37,8 @@ def test_693_react_has_one_side_queue_and_one_class_work_projection() -> None:
     assert "Approuvé · prêt à planifier" in page
     assert "Reliquat {hours(action.planned_hours)} h" in page
     assert "Besoin candidat · en attente d’approbation · non matérialisé" in page
-    assert "candidate.proposed_resource_id === resource.id" not in page
+    assert "visibleCandidateRowsByResource" in page
+    assert "entry.candidate.proposed_resource_id && visibleCandidateRowsByResource.has(entry.candidate.proposed_resource_id)" in page
     assert "draggable={false}" in page
     assert 'writeSegmentDrag(event.dataTransfer, { kind: "SEGMENT", segment_id: action.segment_id })' in page
     assert "<strong>À approuver</strong>" in panel
