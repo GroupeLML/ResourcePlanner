@@ -1,5 +1,5 @@
 import { sortProjectsRecentFirst } from "./projectRecency";
-import { resourceDisplayName } from "./resourceLabels";
+import { compareResourcesByDisplayName, resourceDisplayName } from "./resourceLabels";
 import { FormEvent, MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { createClientId } from "./clientId";
@@ -88,9 +88,7 @@ export default function QuickShiftEditor({
     ])
       .then(([projectRows, resourceRows]) => {
         const sortedProjects = sortProjectsRecentFirst(projectRows);
-        const sortedResources = [...resourceRows].sort((left, right) =>
-          left.sort_order - right.sort_order || left.name.localeCompare(right.name, "fr-CA"),
-        );
+        const sortedResources = [...resourceRows].sort(compareResourcesByDisplayName);
         setProjects(sortedProjects);
         setResources(sortedResources);
         setProjectId(

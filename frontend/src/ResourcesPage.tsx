@@ -1,4 +1,4 @@
-import { resourceDisplayName } from "./resourceLabels";
+import { compareResourcesByDisplayName, resourceDisplayName } from "./resourceLabels";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { createClientId } from "./clientId";
@@ -374,7 +374,7 @@ export default function ResourcesPage() {
         .join(" ")
         .toLocaleLowerCase("fr-CA")
         .includes(query);
-    });
+    }).sort(compareResourcesByDisplayName);
   }, [resources, search, statusFilter]);
 
   function selectResource(resource: ResourceReadModel) {

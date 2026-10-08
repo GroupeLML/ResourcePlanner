@@ -1,3 +1,4 @@
+import { compareResourcesByDisplayName } from "./resourceLabels";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { createClientId } from "./clientId";
@@ -1322,7 +1323,7 @@ export default function ProjectsPage() {
                                     {missing && <option value={task.preferred_resource_id!}>Ressource historique introuvable</option>}
                                     {resources.filter((resource) =>
                                       (resource.active && resource.erp_active) || resource.id === task.preferred_resource_id
-                                    ).sort((left, right) => left.name.localeCompare(right.name, "fr-CA")).map((resource) => (
+                                    ).sort(compareResourcesByDisplayName).map((resource) => (
                                       <option key={resource.id} value={resource.id} disabled={!resource.active || !resource.erp_active}>
                                         {resource.name}{(!resource.active || !resource.erp_active) ? " (inactive — non admissible)" : ""}
                                       </option>
