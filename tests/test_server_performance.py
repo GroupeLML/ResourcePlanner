@@ -10,12 +10,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
-from app.performance_diagnostics import (
-    format_http_percentile_report,
-    read_performance_samples,
-)
 from app.server import create_api_app
 from app.server.performance import (
+    format_http_percentile_report,
+    read_performance_samples,
     InstrumentedJSONResponse,
     install_performance_middleware,
     install_sql_performance_instrumentation,
