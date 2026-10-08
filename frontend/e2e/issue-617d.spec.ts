@@ -1,21 +1,6 @@
-import { Browser, Page, expect, test } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 
 const BASE_URL = process.env.RESOURCEPLANNER_E2E_BASE_URL || "http://127.0.0.1:8765";
-
-async function openProject(browser: Browser, role: string) {
-  const context = await browser.newContext({
-    baseURL: BASE_URL,
-    locale: "fr-CA",
-    extraHTTPHeaders: { "X-E2E-Role": role },
-  });
-  const page = await context.newPage();
-  await page.goto("/");
-  await page.locator(".main-nav").getByRole("button", { name: /Projets/i }).click();
-  const row = page.locator(".projects-table tbody tr").filter({ hasText: "P-251" }).first();
-  await expect(row).toBeVisible();
-  await row.getByRole("button", { name: "Ouvrir" }).click();
-  return { context, page };
-}
 
 test("617D choisit, remplace et retire une ressource attitrée avec CAS", async ({ browser }) => {
   let chosen: string | null = null;
