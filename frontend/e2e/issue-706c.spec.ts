@@ -63,6 +63,18 @@ test("706C — browser/API reject module details and indirect JSON for a technic
         }
       }
     }
+    // Mutating requests are denied by FastAPI, not merely absent from React.
+    for (const [method, path] of [
+      ["POST", "/api/v1/demands"],
+      ["PATCH", "/api/v1/demands/UNKNOWN"],
+      ["POST", "/api/v1/work-packages"],
+      ["PATCH", "/api/v1/work-packages/UNKNOWN"],
+      ["DELETE", "/api/v1/projects/P-251-ID/co-managers/UNKNOWN"],
+    ]) {
+      const response = await context.request.fetch(path, { method, data: {} });
+      expect(response.status(), method + " " + path).toBe(403);
+      expect((await response.json()).error.code).toBe("permission_denied");
+    }
     const allowed = await context.request.get("/api/v1/me/schedule?start=2026-10-05&end=2026-10-11");
     expect(allowed.status()).toBe(200);
   } finally {
