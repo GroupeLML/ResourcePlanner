@@ -241,11 +241,11 @@ class SqlPeriodApprovalSyncTests(unittest.TestCase):
             self.assertEqual(unplanned[0].required_resource_class, "INSTALL_ELEC")
             self.assertEqual(unplanned[0].planned_hours, 8.0)
 
-            # A previously materialized legacy need may have lost the class.
-            # A controlled approval synchronisation repairs the same requirement.
+            # Restore an already approved requirement from its immutable approval
+            # rather than silently reapproving the current editable request.
             requirement.required_resource_class = None
             session.flush()
-            sync.sync_approved("DEM-1")
+            sync.sync_operational_choices("DEM-1")
             repaired = self._active_requirements(session)
             self.assertEqual(len(repaired), 1)
             self.assertEqual(repaired[0].id, requirement.id)
