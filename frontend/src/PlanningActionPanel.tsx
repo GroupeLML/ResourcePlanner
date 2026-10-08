@@ -1,5 +1,6 @@
 import { resourceDisplayName } from "./resourceLabels";
 import { useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 
 import {
   ApiError,
@@ -343,7 +344,7 @@ export default function PlanningActionPanel({
         )}
       </section>
 
-      {selectedAction && (
+      {selectedAction && createPortal(
         <div className="recommendation-backdrop" role="presentation" onMouseDown={closeRecommendations}>
           <section
             className="recommendation-dialog"
@@ -483,7 +484,8 @@ export default function PlanningActionPanel({
               </div>
             )}
           </section>
-        </div>
+        </div>,
+        document.body,
       )}
     </>
   );
