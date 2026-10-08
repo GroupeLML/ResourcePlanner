@@ -306,7 +306,7 @@ class ProjectManagerAdminApiTests(unittest.TestCase):
 
             principal = _principal(
                 local_user_id="U-CO",
-                roles=(ROLE_TECHNICIAN,),
+                roles=(ROLE_PROJECT_MANAGER,),
             )
             app = create_api_app(
                 database_url,
@@ -325,6 +325,27 @@ class ProjectManagerAdminApiTests(unittest.TestCase):
             self.assertEqual(visible.status_code, 200, visible.text)
             self.assertEqual(hidden.status_code, 404, hidden.text)
             self.assertEqual(hidden.json()["error"]["code"], "project_not_found")
+
+            # ADR-030: even a project co-manager with only TECHNICIAN
+            # cannot retrieve full project metadata by ID or scope.
+            technician = _principal(
+                local_user_id="U-CO",
+                roles=(ROLE_TECHNICIAN,),
+            )
+            technician_app = create_api_app(
+                database_url,
+                auth_resolver=static_auth_resolver(technician),
+            )
+            with TestClient(technician_app) as client:
+                for project in ("P-1", "P-2"):
+                    denied = client.get(
+                        f"/api/v1/projects/{project}/managers",
+                        params={"scope": "mine"},
+                    )
+                    self.assertEqual(denied.status_code, 403, denied.text)
+                    self.assertEqual(
+                        denied.json()["error"]["code"], "permission_denied"
+                    )
 
     def test_add_is_cas_audited_idempotent_and_uses_authenticated_actor(self) -> None:
         with TemporaryDirectory() as directory:
