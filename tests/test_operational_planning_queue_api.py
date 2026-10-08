@@ -259,7 +259,30 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
 
     def test_queue_restores_approval_and_unassigned_work(self) -> None:
         with TemporaryDirectory() as directory:
-            app = create_api_app(self._database(directory))
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            with factory.begin() as session:
+                target = session.get(ResourceRequirement, "REQ-TARGET")
+                assert target is not None
+                # #693: a target resource is not real coverage. A replaceable real
+                # Shift does count, so only the actual uncovered residual is queued.
+                target.assigned_resource_id = "R-ALICE"
+                session.add(
+                    Shift(
+                        id="SHIFT-TARGET-AUTO",
+                        resource_requirement_id=target.id,
+                        resource_id="R-ALICE",
+                        work_date=date(2026, 9, 23),
+                        hours=Decimal("4"),
+                        source="AUTO",
+                        locked=False,
+                        outside_standard_hours=False,
+                    )
+                )
+            engine.dispose()
+
+            app = create_api_app(url)
             with TestClient(app) as client:
                 response = client.get(
                     "/api/v1/planning/actions",
@@ -283,8 +306,9 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
             assignment = assignments[0]
             self.assertEqual(assignment["demand_number"], "DMO-2026-0274")
             self.assertEqual(assignment["task_code"], "310")
+            self.assertEqual(assignment["required_resource_class"], "Programmation")
             self.assertEqual(assignment["required_competency_id"], "C-PLC")
-            self.assertEqual(assignment["planned_hours"], 16.0)
+            self.assertEqual(assignment["planned_hours"], 12.0)
 
     def test_recommendations_prioritize_competency_then_capacity(self) -> None:
         with TemporaryDirectory() as directory:

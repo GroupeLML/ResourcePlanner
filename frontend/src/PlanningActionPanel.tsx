@@ -1,5 +1,6 @@
 import { resourceDisplayName } from "./resourceLabels";
 import { useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 
 import {
   ApiError,
@@ -16,6 +17,7 @@ type Props = {
   loading: boolean;
   onAssigned: () => void;
   onOpenDemands?: () => void;
+  onOpenDemand?: (demandNumber: string) => void;
   onOpenSegment?: (segmentId: string) => void;
 };
 
@@ -109,12 +111,14 @@ function ActionCard({
   action,
   onRecommend,
   onOpenDemands,
+  onOpenDemand,
   onOpenSegment,
   canDragAssignment,
 }: {
   action: PlanningActionReadModel;
   onRecommend: (action: PlanningActionReadModel) => void;
   onOpenDemands?: () => void;
+  onOpenDemand?: (demandNumber: string) => void;
   onOpenSegment?: (segmentId: string) => void;
   canDragAssignment: boolean;
 }) {
@@ -141,7 +145,7 @@ function ActionCard({
       <div className="planning-action-card-heading">
         <div>
           <span className="planning-action-kicker">
-            {assignment ? "Cible automatique à définir" : "Approbation requise"}
+            {assignment ? "Approuvé · reliquat à couvrir" : "À approuver"}
           </span>
           <strong>
             {action.project_number || "Projet"}
@@ -156,6 +160,7 @@ function ActionCard({
         {action.segment_id && <span>{action.segment_id}</span>}
         {task && <span>{task}</span>}
         <span>{dateRange(action)}</span>
+        {action.required_resource_class && <span>Classe : {action.required_resource_class}</span>}
         {action.required_competency && <span>Compétence : {action.required_competency}</span>}
         {action.priority && <span>Priorité : {action.priority}</span>}
         {action.confirmation && <span>{action.confirmation}</span>}
@@ -174,8 +179,14 @@ function ActionCard({
             Modifier le segment
           </button>
         )}
-        {action.demand_number && onOpenDemands && (
-          <button type="button" onClick={onOpenDemands}>
+        {action.demand_number && (onOpenDemand || onOpenDemands) && (
+          <button
+            type="button"
+            onClick={() => {
+              if (onOpenDemand && action.demand_number) onOpenDemand(action.demand_number);
+              else onOpenDemands?.();
+            }}
+          >
             Voir la demande
           </button>
         )}
@@ -189,6 +200,7 @@ export default function PlanningActionPanel({
   loading,
   onAssigned,
   onOpenDemands,
+  onOpenDemand,
   onOpenSegment,
 }: Props) {
   const { can } = useAuth();
@@ -270,8 +282,8 @@ export default function PlanningActionPanel({
       <section className="planning-action-panel" aria-label="Éléments de planification à traiter">
         <div className="planning-action-panel-heading">
           <div>
-            <span className="eyebrow">À traiter</span>
-            <strong>Approbations et travaux à planifier</strong>
+            <span className="eyebrow">File de travail</span>
+            <strong>À approuver et à planifier</strong>
           </div>
           <div className="planning-action-counts">
             <span>{approvals.length} à approuver</span>
@@ -287,7 +299,7 @@ export default function PlanningActionPanel({
           <div className="planning-action-columns">
             <div>
               <div className="planning-action-section-title">
-                <strong>En attente d’approbation</strong>
+                <strong>À approuver</strong>
                 <span>{approvals.length}</span>
               </div>
               <div className="planning-action-list">
@@ -298,6 +310,7 @@ export default function PlanningActionPanel({
                       action={action}
                       onRecommend={openRecommendations}
                       onOpenDemands={onOpenDemands}
+                      onOpenDemand={onOpenDemand}
                       onOpenSegment={onOpenSegment}
                       canDragAssignment={canAssign}
                     />
@@ -308,7 +321,7 @@ export default function PlanningActionPanel({
 
             <div>
               <div className="planning-action-section-title">
-                <strong>Travaux à planifier</strong>
+                <strong>À planifier</strong>
                 <span>{assignments.length}</span>
               </div>
               <div className="planning-action-list">
@@ -319,18 +332,19 @@ export default function PlanningActionPanel({
                       action={action}
                       onRecommend={openRecommendations}
                       onOpenDemands={onOpenDemands}
+                      onOpenDemand={onOpenDemand}
                       onOpenSegment={onOpenSegment}
                       canDragAssignment={canAssign}
                     />
                   ))
-                  : <div className="planning-action-empty compact">Tous les reliquats automatiques ont une cible.</div>}
+                  : <div className="planning-action-empty compact">Tous les besoins approuvés sont couverts.</div>}
               </div>
             </div>
           </div>
         )}
       </section>
 
-      {selectedAction && (
+      {selectedAction && createPortal(
         <div className="recommendation-backdrop" role="presentation" onMouseDown={closeRecommendations}>
           <section
             className="recommendation-dialog"
@@ -470,7 +484,8 @@ export default function PlanningActionPanel({
               </div>
             )}
           </section>
-        </div>
+        </div>,
+        document.body,
       )}
     </>
   );

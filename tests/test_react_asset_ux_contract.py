@@ -56,7 +56,7 @@ class ReactAssetUxContractTests(unittest.TestCase):
         asset_panel = source.index("<AssetPlanningPanel", human)
         self.assertLess(human, asset_panel)
         self.assertIn("Ressources et quarts", source[human:asset_panel])
-        self.assertIn("Demandes en attente", source[human:asset_panel])
+        self.assertIn('className="pending-panel planning-work-queue"', source[human:asset_panel])
 
         self.assertIn("asset_assignment: ShiftAssetReservationReadModel | null", api)
         self.assertIn("related_asset_reservations: ShiftAssetReservationReadModel[]", api)

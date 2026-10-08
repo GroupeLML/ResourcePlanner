@@ -58,8 +58,13 @@ async function dragWithDataTransfer(page: Page, source: Locator, target: Locator
 }
 
 async function moveWeeks(page: Page, count: number) {
+  const aliceRow = page.locator(".resource-row").filter({ hasText: "Alice" }).first();
   for (let index = 0; index < count; index += 1) {
     await page.getByRole("button", { name: /Suivante/ }).click();
+    // Wait for the navigated week's real data before requesting another week.
+    // This only synchronizes Playwright; the application is unchanged.
+    await expect(page.locator(".planning-board-scroll")).not.toHaveClass(/is-loading/);
+    await expect(aliceRow).toBeVisible();
   }
 }
 
