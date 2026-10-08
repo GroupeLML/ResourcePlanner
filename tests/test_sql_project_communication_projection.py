@@ -871,6 +871,132 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
             transport.messages[0].body.replace("\r\n", "\n").rstrip("\n"),
         )
 
+
+    def test_project_batch_subset_excludes_unchecked_messages_from_graph_and_smtp(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            self._add_second_project(database_url)
+            transport = FakeProjectDraftTransport()
+            smtp = FakeSmtpDeliveryClient()
+            app = create_api_app(
+                database_url,
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+                communication_transport=transport,
+                smtp_client=smtp,
+            )
+            with TestClient(app) as client:
+                preview = client.get(
+                    "/api/v1/communications/project-preview?week_start=2026-09-23"
+                ).json()
+                self.assertEqual(len(preview["drafts"]), 2)
+                keys = {
+                    draft["project_id"]: draft["message_key"]
+                    for draft in preview["drafts"]
+                }
+                excluded = [
+                    {"message_key": key, "include": False}
+                    for key in keys.values()
+                ]
+                empty = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": preview["snapshot_fingerprint"],
+                        "reviews": excluded,
+                    },
+                )
+                self.assertEqual(empty.status_code, 422, empty.text)
+                self.assertEqual(
+                    empty.json()["error"]["code"],
+                    "project_communication_no_included_messages",
+                )
+                stale = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": "0" * 64,
+                        "reviews": [{"message_key": keys["P2"], "include": False}],
+                    },
+                )
+                self.assertEqual(stale.status_code, 409, stale.text)
+                self.assertEqual(
+                    stale.json()["error"]["code"],
+                    "project_communication_preview_stale",
+                )
+
+                prepared = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": preview["snapshot_fingerprint"],
+                        "reviews": [
+                            {"message_key": keys["P1"], "include": True},
+                            {"message_key": keys["P2"], "include": False},
+                        ],
+                    },
+                )
+                self.assertEqual(prepared.status_code, 201, prepared.text)
+                batch = prepared.json()
+                self.assertEqual(
+                    {message["project_id"]: message["included"] for message in batch["messages"]},
+                    {"P1": True, "P2": False},
+                )
+                batch_id = batch["id"]
+                reloaded = client.get(
+                    "/api/v1/communications/project-batches?week_start=2026-09-23"
+                ).json()
+                self.assertEqual(
+                    {message["project_id"]: message["included"] for message in reloaded[0]["messages"]},
+                    {"P1": True, "P2": False},
+                )
+                approved = client.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/approve"
+                )
+                self.assertEqual(approved.status_code, 200, approved.text)
+                created = client.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/create-drafts"
+                )
+                self.assertEqual(created.status_code, 200, created.text)
+                self.assertEqual(created.json()["drafts_created_count"], 1)
+                downloaded = client.get(
+                    f"/api/v1/communications/project-batches/{batch_id}/draft-download"
+                )
+                self.assertEqual(downloaded.status_code, 200, downloaded.text)
+                self.assertTrue(downloaded.headers["content-type"].startswith("message/rfc822"))
+                self.assertIn('filename="projet-P1.eml"', downloaded.headers["content-disposition"])
+
+                configured = client.put(
+                    "/api/v1/admin/settings/smtp",
+                    json={
+                        "host": "smtp.example.invalid",
+                        "port": 587,
+                        "security": "STARTTLS",
+                        "username": None,
+                        "password": None,
+                        "clear_password": False,
+                        "from_email": "planning" + chr(64) + TEST_DOMAIN,
+                        "from_name": "RessourcePlanner",
+                        "reply_to": None,
+                        "timeout_seconds": 20,
+                        "enabled": True,
+                    },
+                )
+                self.assertEqual(configured.status_code, 200, configured.text)
+                sent = client.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/send-smtp"
+                )
+                self.assertEqual(sent.status_code, 200, sent.text)
+                self.assertEqual(sent.json()["status"], "COMMUNICATED")
+                self.assertEqual(
+                    next(message for message in sent.json()["messages"] if message["project_id"] == "P2")["deliveries"],
+                    [],
+                )
+            self.assertEqual(transport.create_calls, 1)
+            self.assertEqual(len(transport.messages), 1)
+            self.assertIn("1000", transport.messages[0].subject)
+            self.assertEqual(len(smtp.attempt_subjects), 1)
+            self.assertIn("1000", smtp.attempt_subjects[0])
+
     def test_project_draft_download_returns_zip_for_multiple_messages(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)

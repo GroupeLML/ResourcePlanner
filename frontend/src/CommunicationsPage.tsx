@@ -57,8 +57,12 @@ export default function CommunicationsPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
+  const selectedCount = useMemo(
+    () => drafts.filter((draft) => draft.include).length,
+    [drafts],
+  );
   const hasBlockingDraft = useMemo(
-    () => drafts.some((draft) => !draft.source.approvable),
+    () => drafts.some((draft) => draft.include && !draft.source.approvable),
     [drafts],
   );
 
@@ -81,15 +85,23 @@ export default function CommunicationsPage() {
     setNotice(null);
     try {
       const row = await getProjectCommunicationPreview(weekStart);
+      // A same-version refresh must not discard the coordinator's current review.
+      const previous = preview?.week_start === row.week_start
+        && preview.snapshot_fingerprint === row.snapshot_fingerprint
+        ? new Map(drafts.map(({ source: _source, ...review }) => [review.message_key, review]))
+        : new Map<string, ProjectCommunicationReview>();
       setPreview(row);
       setDrafts(
-        row.drafts.map((draft) => ({
-          message_key: draft.message_key,
-          include: true,
-          subject: draft.subject,
-          body: draft.body,
-          source: draft,
-        })),
+        row.drafts.map((draft) => {
+          const review = previous.get(draft.message_key);
+          return {
+            message_key: draft.message_key,
+            include: review?.include ?? true,
+            subject: review?.subject ?? draft.subject,
+            body: review?.body ?? draft.body,
+            source: draft,
+          };
+        }),
       );
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Prévisualisation impossible.");
@@ -269,6 +281,7 @@ export default function CommunicationsPage() {
             <div className="preview-summary">
               <strong>{kindLabel(preview.mode)}</strong>
               <span>{preview.drafts.length} projet(s) à communiquer</span>
+              <span>{selectedCount}/{drafts.length} courriel(s) sélectionné(s)</span>
               <span>
                 {preview.has_communicated_baseline
                   ? "Snapshot communiqué trouvé"
@@ -291,7 +304,7 @@ export default function CommunicationsPage() {
                     : [source.to_recipient];
                   return (
                     <article
-                      className={`draft-card ${source.approvable ? "" : "is-blocked"}`}
+                      className={`draft-card ${!draft.include ? "is-excluded" : source.approvable ? "" : "is-blocked"}`}
                       key={source.message_key}
                       data-message-key={source.message_key}
                     >
@@ -300,8 +313,20 @@ export default function CommunicationsPage() {
                           <strong>Projet {source.project_number}</strong>
                           <small>{source.message_key}</small>
                         </div>
-                        <span className={source.approvable ? "draft-ready" : "draft-blocked"}>
-                          {source.approvable ? "Prêt à préparer" : "Destinataire bloquant"}
+                        <label className="draft-include">
+                          <input
+                            type="checkbox"
+                            checked={draft.include}
+                            onChange={(event) => setDrafts((rows) => rows.map((row) =>
+                              row.message_key === draft.message_key
+                                ? { ...row, include: event.target.checked }
+                                : row
+                            ))}
+                          />
+                          <span>Inclure le courriel du projet {source.project_number}</span>
+                        </label>
+                        <span className={!draft.include ? "draft-excluded" : source.approvable ? "draft-ready" : "draft-blocked"}>
+                          {!draft.include ? "Exclu du lot" : source.approvable ? "Prêt à préparer" : "Destinataire bloquant"}
                         </span>
                       </div>
 
@@ -360,6 +385,7 @@ export default function CommunicationsPage() {
                         <input
                           className="draft-subject"
                           value={draft.subject}
+                          disabled={!draft.include}
                           onChange={(event) => setDrafts((rows) => rows.map((row, rowIndex) =>
                             rowIndex === index ? { ...row, subject: event.target.value } : row
                           ))}
@@ -370,6 +396,7 @@ export default function CommunicationsPage() {
                         <textarea
                           rows={11}
                           value={draft.body}
+                          disabled={!draft.include}
                           onChange={(event) => setDrafts((rows) => rows.map((row, rowIndex) =>
                             rowIndex === index ? { ...row, body: event.target.value } : row
                           ))}
@@ -386,7 +413,7 @@ export default function CommunicationsPage() {
                 type="button"
                 disabled={
                   busy
-                  || drafts.length === 0
+                  || selectedCount === 0
                   || hasBlockingDraft
                 }
                 onClick={() => void prepare()}
@@ -394,9 +421,11 @@ export default function CommunicationsPage() {
                 Préparer le lot
               </button>
               <small>
-                {hasBlockingDraft
-                  ? "Un projet contient un blocage de destinataire."
-                  : "Cette action persiste la révision. Elle n’envoie rien."}
+                {selectedCount === 0
+                  ? "Sélectionnez au moins un courriel pour préparer le lot."
+                  : hasBlockingDraft
+                    ? "Un courriel sélectionné contient un blocage de destinataire."
+                    : "Cette action persiste la révision. Elle n’envoie rien."}
               </small>
             </div>
           </>
@@ -433,8 +462,11 @@ export default function CommunicationsPage() {
                     {batch.stale && <small className="stale-label">Le planning a changé depuis ce lot.</small>}
                     <div className="batch-message-list">
                       {batch.messages.map((message) => (
-                        <div key={message.id}>
-                          <strong>{message.message_key ?? message.project_id ?? message.id}</strong>
+                        <div key={message.id} className={message.included ? "" : "is-excluded"}>
+                          <strong>
+                            {message.message_key ?? message.project_id ?? message.id}
+                            {!message.included && " · Exclu du lot"}
+                          </strong>
                           <span>Sujet : {message.subject}</span>
                           <span>
                             To : {
