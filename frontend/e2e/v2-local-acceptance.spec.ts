@@ -880,6 +880,8 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await expect(page.getByRole("button", { name: "Préparer le lot" })).toBeDisabled();
     await expect(page.locator(".communications-actions")).toContainText("Sélectionnez au moins un courriel");
     await expect(draft).toContainText("Exclu du lot");
+    await page.getByRole("button", { name: "Générer la prévisualisation" }).click();
+    await expect(inclusion).not.toBeChecked(); // Same snapshot: preserve the review.
     await inclusion.check();
     await expect(page.getByRole("button", { name: "Préparer le lot" })).toBeEnabled();
     await expect(draft.locator(".draft-recipients")).toContainText(testEmail("pm"));
