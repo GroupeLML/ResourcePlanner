@@ -1323,7 +1323,7 @@ export default function ProjectsPage() {
                                     {resources.filter((resource) =>
                                       (resource.active && resource.erp_active) || resource.id === task.preferred_resource_id
                                     ).sort((left, right) => left.name.localeCompare(right.name, "fr-CA")).map((resource) => (
-                                      <option key={resource.id} value={resource.id}>
+                                      <option key={resource.id} value={resource.id} disabled={!resource.active || !resource.erp_active}>
                                         {resource.name}{(!resource.active || !resource.erp_active) ? " (inactive — non admissible)" : ""}
                                       </option>
                                     ))}
