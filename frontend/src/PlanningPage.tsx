@@ -350,6 +350,13 @@ function ShiftCard({
       draggable={draggable}
       data-allocation-id={shift.allocation_id}
       data-segment-id={shift.segment_id}
+      onClick={(event) => {
+        // The manager marker is outside the main button, but the whole card
+        // must remain clickable for shift editing (including its padding).
+        if (editable && !(event.target as HTMLElement).closest("button")) {
+          onEdit?.(shift);
+        }
+      }}
       onDragStart={(event) => {
         if (!draggable || (event.target as HTMLElement).closest(".shift-asset-action")) {
           event.preventDefault();
