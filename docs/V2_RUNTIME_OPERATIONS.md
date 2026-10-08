@@ -1,6 +1,6 @@
 # V2 — exploitation locale, diagnostic et rollback
 
-Ce runbook prépare l'exploitation interne du runtime React + FastAPI avant le cutover SQL Server réel.
+Ce runbook décrit les procédures d'exploitation après le cutover SQL Server autoritaire. Le runtime de production est React/Nginx + FastAPI sous Docker Compose; les anciennes commandes BAT ne sont plus supportées.
 
 ## 1. Modèle de probes
 
@@ -33,58 +33,51 @@ Si une de ces conditions échoue, le probe retourne HTTP 503 avec une raison tec
 
 Acumatica et M365 sont optionnels pour les fonctions locales. Leur panne ne doit pas empêcher la consultation et la planification locales. OIDC est nécessaire à l'authentification lorsqu'il est choisi, mais son accès réseau est validé par un smoke d'authentification séparé plutôt que par le probe de readiness.
 
-## 2. Installation sur un poste ou une VM propre
+## 2. Installation et construction
 
-Prérequis de build/runtime local :
+Le runtime autoritaire est construit et déployé avec Docker Compose, sur la VM cible. Avant toute mise en service, configurer l'URL SQL Server, les secrets et le réseau **hors Git** selon [DEPLOYMENT_UBUNTU_VM.md](DEPLOYMENT_UBUNTU_VM.md).
 
-- Windows;
-- Python 3.11 ou 3.12;
-- Node.js 22 avec npm;
-- accès aux dépôts de paquets pendant l'installation.
-
-Exécuter :
-
-```bat
-Installer_Web.bat
+```bash
+docker compose config
+docker compose up -d --build
 ```
 
-L'installateur crée `.venv-web`, installe `requirements-server.txt` avec les contraintes de release et construit React. Il ne doit pas installer NiceGUI, xlwings ou openpyxl.
+Pour un poste de développement hors Docker (Python 3.12, Node 22), installer le profil serveur dans un environnement Python isolé et construire React :
 
-La CI `server-isolation` valide en parallèle que le serveur démarre avec le profil serveur seul, sans dépendances V1.
-
-Après l'installation, le contrôle local de l'environnement est :
-
-```bat
-.venv-web\Scripts\python.exe tools\check_installed_web.py
+```bash
+python -m pip install -r requirements-server.txt -c constraints-release.txt
+cd frontend
+npm install --no-audit --no-fund
+npm run build
+cd ..
+python tools/check_installed_web.py
 ```
 
-Un statut `legacy_dependencies_present` indique que l'environnement Web n'est pas isolé comme attendu.
+Le profil `requirements-server.txt` ne doit pas installer NiceGUI, xlwings ni openpyxl. Le chemin natif n'est pas le déploiement de production.
 
 ## 3. Démarrage
 
-### SQLite local implicite
+### Exploitation Compose
 
-```bat
-Lancer_Web.bat
+```bash
+docker compose up -d --build
+docker compose ps
 ```
 
-Sans `RESOURCEPLANNER_DATABASE_URL`, le lanceur utilise `resourceplanner_server.db` et exécute `alembic upgrade head`.
+Le service `migrate` exécute Alembic avant le backend. Sur SQL Server, préparer et approuver toute migration et une sauvegarde restaurable **avant** le déploiement. Aucun seed de démonstration n'est exécuté au démarrage normal.
 
-### Base explicitement configurée
+### CLI de développement : base explicitement choisie
 
-Lorsque `RESOURCEPLANNER_DATABASE_URL` existe, le lanceur **ne migre jamais automatiquement** la base. Les migrations doivent être une étape d'exploitation explicite :
+Définir `RESOURCEPLANNER_DATABASE_URL` pour la base locale visée. Une base SQLite de **développement** peut être configurée en PowerShell :
 
-```bat
-.venv-web\Scripts\python.exe -m alembic upgrade head
+```powershell
+$env:RESOURCEPLANNER_DATABASE_URL = "sqlite:///./resourceplanner_server.db"
+python -m alembic upgrade head
+python tools/check_server_runtime.py
+python -m app.server
 ```
 
-Dans les deux modes, `Lancer_Web.bat` exécute ensuite :
-
-```bat
-.venv-web\Scripts\python.exe tools\check_server_runtime.py
-```
-
-Le serveur ne démarre que si le préflight est vert.
+Pour servir le build React en plus de l'API, définir `RESOURCEPLANNER_FRONTEND_DIST` vers le chemin absolu de `frontend/dist` avant de démarrer FastAPI. Sans cette variable, l'API seule reste disponible. Il n'existe plus de fallback SQLite implicite; les migrations SQL Server sont toujours une étape d'exploitation explicite.
 
 ## 4. Diagnostics de démarrage
 
@@ -103,36 +96,22 @@ En mode OIDC, le préflight n'essaie pas de simuler une session utilisateur et n
 
 ## 5. Smoke après installation et démarrage
 
-Lancer d'abord le serveur :
+Pour vérifier un build React local hors Docker :
 
-```bat
-Lancer_Web.bat
+```bash
+python tools/check_installed_web.py
+python tools/check_web_runtime.py
 ```
 
-Dans une deuxième console :
+Le premier contrôle vérifie le profil serveur et le build; le second exerce `/`, les assets, `/health`, `/ready` et l'isolation du namespace API avec une base de test.
 
-```bat
-Verifier_Web.bat
+Contre une instance déjà démarrée, exécuter :
+
+```bash
+python tools/smoke_running_web.py --base-url http://127.0.0.1:8080
 ```
 
-Le vérificateur contrôle :
-
-1. Python supporté;
-2. dépendances serveur présentes;
-3. absence de NiceGUI/xlwings/openpyxl dans `.venv-web`;
-4. build React présent;
-5. `/health` = vivant;
-6. `/ready` = prêt;
-7. `/` = frontend HTML servi.
-
-Pour une autre origine :
-
-```bat
-set RESOURCEPLANNER_BASE_URL=https://adresse-interne
-Verifier_Web.bat
-```
-
-Le smoke n'a besoin d'aucune identité utilisateur : il ne teste que les endpoints publics d'exploitation.
+Utiliser `http://127.0.0.1:8000` pour une instance FastAPI locale servant le frontend. `RESOURCEPLANNER_BASE_URL` peut également être fourni au script. Aucun compte utilisateur n'est nécessaire pour les probes publics; l'authentification et les mutations sont validées séparément.
 
 ## 6. Logs et métriques techniques
 
@@ -154,17 +133,13 @@ Politique actuelle :
 
 Le schéma contient uniquement des données techniques : route **template**, statuts, durées, compteurs SQL, fingerprints unidirectionnels, compteurs externes et type d'erreur. Les paramètres SQL, identifiants métier, noms de ressource, numéros de projet et payloads externes ne doivent jamais être écrits dans ce journal.
 
-Lecture locale :
-
-```bat
-.venv-web\Scripts\python.exe tools\performance_report.py
-```
+Pour les diagnostics courants sous Compose, consulter `docker compose logs --tail=100 backend` et la collecte de logs configurée. Les outils historiques de lecture de performances NiceGUI ont été retirés; ne pas les recréer dans le chemin supporté.
 
 ## 7. Sauvegarde SQLite locale
 
 Pour une sauvegarde de développement cohérente :
 
-1. arrêter `Lancer_Web.bat`;
+1. arrêter le serveur local (`python -m app.server`), sans écriture concurrente;
 2. créer un répertoire de sauvegarde hors du fichier actif;
 3. utiliser l'API de backup SQLite, même si une simple copie fonctionnerait normalement après arrêt;
 4. vérifier l'intégrité de la sauvegarde;
@@ -198,7 +173,7 @@ Le résultat attendu du second appel est `ok`.
 .venv-web\Scripts\python.exe tools\check_server_runtime.py
 ```
 
-7. démarrer puis exécuter `Verifier_Web.bat`.
+7. démarrer la CLI locale puis lancer `python tools/smoke_running_web.py --base-url http://127.0.0.1:8000`.
 
 Ne jamais écraser une base active pendant qu'Uvicorn l'utilise.
 
@@ -217,73 +192,43 @@ Procédure :
 7. exécuter `tools\check_server_runtime.py`;
 8. exécuter les smokes SQL Server lecture seule et rollback;
 9. migrer/importer les données métier selon la procédure de cutover, séparément du schéma;
-10. démarrer l'application et exécuter `Verifier_Web.bat`.
+10. démarrer l'application puis exécuter `python tools/smoke_running_web.py --base-url <origine-deployee>`.
 
 Voir aussi `V2_SQLSERVER_READINESS.md`.
 
 ## 10. Mise à jour applicative
 
-Séquence recommandée pour une release interne :
+Séquence recommandée :
 
-1. annoncer la fenêtre et empêcher les modifications;
-2. arrêter le runtime;
-3. sauvegarder la base;
-4. relever le commit/release actuellement déployé;
-5. déployer le nouveau commit/release;
-6. relancer `Installer_Web.bat`;
-7. pour une base explicitement configurée, exécuter `alembic upgrade head`;
-8. exécuter `check_server_runtime.py`;
-9. démarrer avec `Lancer_Web.bat`;
-10. exécuter `Verifier_Web.bat`;
-11. confirmer les parcours métier essentiels.
+1. annoncer la fenêtre, stopper les écritures et identifier le tag d'image / commit déployé;
+2. sauvegarder la base SQL Server et vérifier que la restauration est possible;
+3. valider les changements Alembic, les permissions et l'absence de seed dev;
+4. déployer l'image versionnée via Compose (`docker compose config`, puis `docker compose up -d --build`);
+5. vérifier `/ready`, `/health`, les logs techniques, l'authentification et les parcours métier;
+6. confirmer le go/no-go avant de rouvrir les écritures.
+
+Éviter `docker compose down -v` sur des volumes à conserver. Les builds CLI locaux ne constituent pas une procédure de release.
 
 ## 11. Rollback
 
-Le rollback applicatif est volontairement séparé du rollback de données.
+Le rollback applicatif et celui des données doivent rester coordonnés. Si le schéma et les écritures restent compatibles, revenir au tag applicatif précédent et réexécuter les probes. Si la migration a rendu le schéma ou les données incompatibles, arrêter, restaurer **ensemble** l'ancienne application et la sauvegarde SQL Server correspondante, vérifier Alembic puis les smokes.
 
-Si la nouvelle version échoue **avant toute migration destructive ou écriture incompatible** :
-
-1. arrêter;
-2. revenir au commit/release précédent validé;
-3. reconstruire avec `Installer_Web.bat`;
-4. exécuter le préflight;
-5. démarrer et smokes.
-
-Si la migration de schéma/données rend l'ancienne application incompatible :
-
-1. arrêter;
-2. restaurer la sauvegarde prise avant la release;
-3. revenir au commit/release précédent;
-4. vérifier Alembic;
-5. préflight;
-6. démarrer;
-7. smoke.
-
-Ne pas utiliser `alembic downgrade` automatiquement comme stratégie de rollback. Une migration doit être évaluée explicitement; la restauration d'une sauvegarde cohérente reste la voie sûre lorsque le schéma n'est pas rétrocompatible.
+Ne pas utiliser `alembic downgrade` automatiquement comme stratégie de rollback; évaluer chaque migration avant la fenêtre de déploiement.
 
 ## 12. Checklist de mise en production interne
 
-Avant ouverture aux utilisateurs :
+- [ ] version d'image/tag/commit identifiée, PR et CI requise vertes;
+- [ ] Docker Compose configuré sans profil démo;
+- [ ] `requirements-server.txt` isolé du runtime V1;
+- [ ] `RESOURCEPLANNER_DATABASE_URL` cible SQL Server réelle et driver ODBC validés;
+- [ ] secrets et identifiants de production stockés hors Git;
+- [ ] authentification OIDC et procédure break-glass validées;
+- [ ] sauvegarde restaurable prise avant les migrations;
+- [ ] révision `alembic current` conforme à `alembic heads`;
+- [ ] `/health` et `/ready` retournent 200;
+- [ ] smoke `tools/smoke_running_web.py` vert sur l'origine déployée;
+- [ ] parcours de lecture/mutation/rollback SQL Server vérifiés;
+- [ ] logs sans PII ni secrets et procédure de rollback connue;
+- [ ] responsable go/no-go identifié.
 
-- [ ] commit/release identifié et CI verte;
-- [ ] `Installer_Web.bat` exécuté sans profil legacy;
-- [ ] `check_installed_web.py` vert;
-- [ ] variables d'environnement renseignées selon `ENVIRONMENT_VARIABLES.md`;
-- [ ] secrets stockés hors Git;
-- [ ] mode d'authentification choisi explicitement;
-- [ ] exposition réseau locale interdite en auth locale sauf décision explicite;
-- [ ] sauvegarde pré-déploiement créée et testée;
-- [ ] `alembic current` correspond à `alembic heads`;
-- [ ] `check_server_runtime.py` vert;
-- [ ] `/health` répond 200;
-- [ ] `/ready` répond 200;
-- [ ] `Verifier_Web.bat` vert;
-- [ ] comportement sans Acumatica/M365 confirmé pour les fonctions locales;
-- [ ] logs techniques accessibles et rotation vérifiée;
-- [ ] procédure de rollback connue avant la fenêtre de déploiement;
-- [ ] pour SQL Server : smokes lecture seule + transaction rollback verts;
-- [ ] pour OIDC réel : login/logout/callback validés séparément;
-- [ ] pour embedding réel : CSP/cookies validés séparément;
-- [ ] responsable de décision go/no-go identifié.
-
-Le critère de sortie de cette tranche est que #208 n'ait plus à inventer les procédures d'exploitation; les valeurs réelles et validations des systèmes cibles restent à compléter.
+Voir [SQL_CUTOVER_RUNBOOK.md](SQL_CUTOVER_RUNBOOK.md), [BREAK_GLASS_ADMIN.md](BREAK_GLASS_ADMIN.md) et ADR-011/ADR-014.
