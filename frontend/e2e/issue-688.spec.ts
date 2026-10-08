@@ -31,6 +31,10 @@ test("688 replie les filtres sans perdre leur état ni la navigation semaine", a
     const sticky = page.locator(".planning-sticky-controls");
     const toggle = page.getByRole("button", { name: /^Filtres/ });
     await expect(sticky).toHaveCSS("position", "sticky");
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(page.locator("#planning-filters")).toBeHidden();
+
+    await toggle.click();
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
     await expect(page.locator("#planning-filters")).toBeVisible();
 

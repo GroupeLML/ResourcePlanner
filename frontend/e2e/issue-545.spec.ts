@@ -81,6 +81,7 @@ test("Planning mémorise semaine, tri et classes repliées tout en utilisant la 
     await quickShift.getByRole("button", { name: "Créer le Quick Shift" }).click();
     await expect(quickShift).toBeHidden();
 
+    await page.getByRole("button", { name: /^Filtres/ }).click();
     const sort = page.getByLabel("Ordre des ressources");
     await expect(sort).toHaveValue("manual");
     await sort.selectOption("availability");
@@ -133,7 +134,8 @@ test("654 garde la semaine, le périmètre et le tri visibles pendant le défile
     const sticky = page.locator(".planning-sticky-controls");
     await expect(sticky).toHaveCSS("position", "sticky");
     await expect(page.getByRole("button", { name: "Aujourd’hui", exact: true })).toBeVisible();
-    await expect(page.getByLabel("Ordre des ressources")).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Filtres/ })).toBeVisible();
+    await expect(page.getByLabel("Ordre des ressources")).toBeHidden();
     await expect(page.locator(".view-scope-selector")).toBeVisible();
 
     const before = await sticky.boundingBox();

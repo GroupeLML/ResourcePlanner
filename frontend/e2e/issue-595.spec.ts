@@ -32,6 +32,7 @@ test("595 — le mode Manuel réordonne, persiste et reste cohérent sous filtre
 
   try {
     await navigateMain(page, "Planning opérationnel");
+    await page.getByRole("button", { name: /^Filtres/ }).click();
     const sort = page.getByLabel("Ordre des ressources");
     await sort.selectOption("manual");
 
@@ -46,6 +47,7 @@ test("595 — le mode Manuel réordonne, persiste et reste cohérent sous filtre
     await page.reload();
     await expect(page.locator(".sidebar-footer")).toContainText("Coordonnateur E2E");
     await navigateMain(page, "Planning opérationnel");
+    await page.getByRole("button", { name: /^Filtres/ }).click();
     const restoredGroup = page.locator(".resource-group").filter({ hasText: "PROGRAMMEUR" }).first();
     await expect(page.getByLabel("Ordre des ressources")).toHaveValue("manual");
     await expect.poll(() => resourceNames(restoredGroup)).toEqual(["Bob", "Alice"]);
