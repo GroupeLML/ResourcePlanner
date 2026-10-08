@@ -5,6 +5,7 @@ from decimal import Decimal
 import unittest
 
 from sqlalchemy import select
+from sqlalchemy.dialects import mssql
 
 from app.domain.demand_periods import (
     DemandPeriodDefinition,
@@ -30,6 +31,7 @@ from app.infrastructure.sql import (
 )
 from app.infrastructure.sql.same_resource_periods import SqlSameResourcePeriodCoordinator
 from tools.repair_legacy_simple_resource_class import (
+    _unclassified_request_ids_statement,
     repair_all_request_classes,
     repair_request_class,
 )
@@ -300,6 +302,16 @@ class SqlPeriodApprovalSyncTests(unittest.TestCase):
             )
             self.assertTrue(all(row.assigned_resource_id is None for row in requirements))
             self.assertEqual(sum(float(row.planned_hours) for row in requirements), 8.0)
+
+    def test_bulk_repair_candidate_query_uses_sql_server_compatible_boolean(self) -> None:
+        sql = str(
+            _unclassified_request_ids_statement().compile(
+                dialect=mssql.dialect(),
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+        self.assertIn("workforce_requests.line_mode = 0", sql)
+        self.assertNotIn("line_mode IS 0", sql)
 
     def test_bulk_repair_only_updates_active_approval_proven_missing_classes(self) -> None:
         with transactional_session(self.factory) as session:
