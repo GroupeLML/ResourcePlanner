@@ -1,8 +1,8 @@
 """Application-service layer for RessourcePlanner.
 
-This package exposes the stable transport-neutral application surface. NiceGUI today
-and FastAPI later should depend on commands/results/facade rather than persistence or
-historical implementation modules.
+This package exposes the stable transport-neutral application surface. FastAPI
+and other supported consumers depend on commands/results/facade rather than
+persistence or historical implementation modules.
 """
 
 from .allocation_service import AllocationService

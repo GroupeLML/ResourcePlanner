@@ -2,15 +2,11 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
-import sys
-from types import ModuleType
 import unittest
-from unittest.mock import patch
 
 from app.application.commands import PlanningRebuildCommand
 from app.application.errors import ApplicationOperationError
 from app.application.planning_service import PlanningService
-from app.application.runtime_services import planning_service
 
 
 class _PlanningCommands:
@@ -52,23 +48,6 @@ class PlanningServiceTests(unittest.TestCase):
         self.assertEqual(str(raised.exception), "planning failed")
         self.assertEqual(raised.exception.code, "planning_rebuild_failed")
 
-    def test_runtime_adapter_resolves_selected_engine_at_execution_time(self) -> None:
-        repository = object()
-        service = planning_service(repository)
-        calls: list[str] = []
-        fake_engine = ModuleType("app.v15_engine")
-
-        def selected_engine(repo: object):
-            self.assertIs(repo, repository)
-            calls.append("selected")
-            return {"allocated_hours": 12.0, "engine": "selected"}
-
-        fake_engine.rebuild_allocations = selected_engine  # type: ignore[attr-defined]
-        with patch.dict(sys.modules, {"app.v15_engine": fake_engine}):
-            result = service.rebuild()
-
-        self.assertEqual(calls, ["selected"])
-        self.assertEqual(result["engine"], "selected")
 
     def test_application_service_has_no_ui_storage_or_v1_import(self) -> None:
         path = Path(__file__).resolve().parents[1] / "app" / "application" / "planning_service.py"
@@ -97,19 +76,10 @@ class PlanningServiceTests(unittest.TestCase):
                 f"planning_service.py must stay transport/storage agnostic; found import {module}",
             )
 
-    def test_runtime_services_contains_no_direct_v1_bridge(self) -> None:
-        path = Path(__file__).resolve().parents[1] / "app" / "application" / "runtime_services.py"
-        source = path.read_text(encoding="utf-8")
 
-        for token in (
-            "app.v15_engine",
-            "app.v15_refinements",
-            "_sync_segments_to_approved_demand",
-            "rebuild_allocations",
-        ):
-            self.assertNotIn(token, source)
-        self.assertIn("ExcelPlanningCommandAdapter", source)
-        self.assertIn("ExcelApprovedDemandSyncAdapter", source)
+    def test_v1_runtime_bridge_is_absent(self) -> None:
+        path = Path(__file__).resolve().parents[1] / "app/application/runtime_services.py"
+        self.assertFalse(path.exists())
 
 
 if __name__ == "__main__":

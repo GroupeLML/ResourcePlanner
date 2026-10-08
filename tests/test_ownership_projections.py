@@ -15,7 +15,6 @@ from sqlalchemy import select
 
 from app.application.commands import DemandCreateCommand, DemandUpdateCommand
 from app.application.security import AuthPrincipal, ROLE_COORDINATOR, ROLE_PROJECT_MANAGER
-from app.infrastructure.excel.segment_repository import ExcelSegmentRepository
 from app.infrastructure.sql import (
     Base,
     Project,
@@ -243,75 +242,7 @@ class OwnershipProjectionTests(unittest.TestCase):
             self.assertEqual(shifts[0]["project_manager"], "Responsable A")
             self.assertEqual(shifts[0]["requester"], "Marie")
 
-    def test_excel_segment_projection_uses_project_master_and_quick_shift_creator(self) -> None:
-        class FakeRepo:
-            def demands(self):
-                return [
-                    {
-                        "NoDemande": "DMO-1",
-                        "Demandeur": "Marie",
-                        "ChargeProjet": "Ancien responsable",
-                    }
-                ]
 
-            def projects(self, active_only=False):
-                return [
-                    {
-                        "Numéro de Projet": 5096,
-                        "Chargé de projet": "Responsable maître",
-                    }
-                ]
-
-        rows = [
-            {
-                "IDSegment": "SEG-1",
-                "NoDemande": "DMO-1",
-                "NumeroProjet": "5096.0",
-                "DateDebut": DAY,
-                "DateFin": DAY,
-                "HeuresPrevues": 4,
-                "Statut": "Planifié",
-            },
-            {
-                "IDSegment": "SEG-QS",
-                "NoDemande": None,
-                "NumeroProjet": "5096",
-                "DateDebut": DAY,
-                "DateFin": DAY,
-                "HeuresPrevues": 2,
-                "Statut": "Planifié",
-                "OrigineSegment": "QUICK_SHIFT",
-                "CreePar": "Coordonnateur",
-            },
-        ]
-        fake_segment_module = SimpleNamespace(
-            segment_records=lambda repo, include_cancelled=True: list(rows)
-        )
-
-        with patch(
-            "app.infrastructure.excel.segment_repository.import_module",
-            return_value=fake_segment_module,
-        ):
-            projected = ExcelSegmentRepository(FakeRepo()).list()
-
-        self.assertEqual(projected[0].project_manager, "Responsable maître")
-        self.assertEqual(projected[0].requester, "Marie")
-        self.assertEqual(projected[1].project_manager, "Responsable maître")
-        self.assertEqual(projected[1].requester, "Coordonnateur")
-
-    def test_v1_views_show_projected_owner_and_requester_without_segment_columns(self) -> None:
-        demand_editor = (APP / "demand_editor_ui.py").read_text(encoding="utf-8")
-        demand_page = (APP / "demand_requests_page.py").read_text(encoding="utf-8")
-        segment_page = (APP / "segments_page.py").read_text(encoding="utf-8")
-        planning_row = (APP / "operational_planning_resource_row.py").read_text(
-            encoding="utf-8"
-        )
-
-        self.assertIn('"Demandeur": requester.value', demand_editor)
-        self.assertIn('"Responsable projet"', demand_page)
-        self.assertIn('demand.get("Demandeur") or row.get("CreePar")', segment_page)
-        self.assertIn('f"Resp. : {manager}"', planning_row)
-        self.assertIn('f"Demandeur : {requester}"', planning_row)
 
 
 if __name__ == "__main__":

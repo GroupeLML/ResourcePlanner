@@ -11,8 +11,6 @@ from app.application.commands import DemandUpdateCommand, SegmentCreateCommand
 from app.application.demand_service import DemandService
 from app.application.read_models import DemandReadModel, SegmentReadModel
 from app.application.segment_service import SegmentService
-from app.infrastructure.excel.demand_repository import ExcelDemandRepository
-from app.infrastructure.excel.segment_repository import ExcelSegmentRepository
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -176,43 +174,7 @@ class RepositoryPortTests(unittest.TestCase):
         self.assertEqual(summary["engine"], "pure")
         self.assertEqual(writes[-1], ("update", "SEG-NEW", {"Statut": "Annulé"}))
 
-    def test_excel_demand_adapter_is_the_only_row_translation_boundary(self) -> None:
-        class FakeExcel:
-            def __init__(self):
-                self.rows = [{"NoDemande": "DMO-1", "Statut": "Brouillon"}]
-                self.writes: list[object] = []
 
-            def demands(self):
-                return list(self.rows)
-
-            def create_demand(self, values, submit=False):
-                self.writes.append(("create", values, submit))
-                return "DMO-2"
-
-            def update_demand(self, number, updates, *, action, comment):
-                self.writes.append(("update", number, updates, action, comment))
-
-        excel = FakeExcel()
-        adapter = ExcelDemandRepository(excel)
-
-        self.assertIsInstance(adapter.get("DMO-1"), DemandReadModel)
-        self.assertEqual(adapter.create({"NumeroProjet": "P-1"}), "DMO-2")
-        adapter.update("DMO-1", {"Statut": "Soumise"}, action="Soumission")
-        self.assertEqual(excel.writes[-1][0], "update")
-
-    def test_excel_segment_adapter_keeps_v1_modules_lazy(self) -> None:
-        fake_v13 = SimpleNamespace(
-            add_segment=lambda repo, values: "SEG-2",
-            update_segment=lambda repo, identifier, values: None,
-        )
-        adapter = ExcelSegmentRepository(object())
-
-        with patch(
-            "app.infrastructure.excel.segment_repository.import_module",
-            return_value=fake_v13,
-        ):
-            self.assertEqual(adapter.create({"NoDemande": "DMO-1"}), "SEG-2")
-            adapter.update("SEG-2", {"Statut": "Annulé"})
 
     def test_application_repository_contracts_are_storage_neutral(self) -> None:
         forbidden_roots = {"xlwings", "sqlalchemy", "nicegui", "app.excel_repository"}
@@ -234,38 +196,7 @@ class RepositoryPortTests(unittest.TestCase):
             }
             self.assertEqual(offenders, set(), f"{filename}: {offenders}")
 
-    def test_runtime_and_excel_adapters_remain_import_light(self) -> None:
-        for filename in (
-            "application/runtime_services.py",
-            "infrastructure/excel/demand_repository.py",
-            "infrastructure/excel/segment_repository.py",
-            "infrastructure/excel/command_adapters.py",
-        ):
-            imports = imported_modules(APP / filename)
-            self.assertNotIn("xlwings", imports, filename)
-            self.assertNotIn("app.excel_repository", imports, filename)
 
-        segment_source = (
-            APP / "infrastructure" / "excel" / "segment_repository.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn('import_module("app.segment_repository")', segment_source)
-        self.assertIn('import_module("app.v13")', segment_source)
-
-    def test_runtime_services_use_ports_not_excel_rows_or_callbacks(self) -> None:
-        source = (APP / "application" / "runtime_services.py").read_text(encoding="utf-8")
-
-        self.assertIn("ExcelDemandRepository(repository)", source)
-        self.assertIn("ExcelSegmentRepository(repository)", source)
-        self.assertIn("ExcelPlanningCommandAdapter(repository)", source)
-        self.assertIn("ExcelApprovedDemandSyncAdapter(repository, demands)", source)
-        self.assertIn("return DemandService(", source)
-        self.assertIn("return SegmentService(", source)
-        self.assertNotIn("from_repository_port", source)
-        self.assertNotIn("rebuild_planning=lambda", source)
-        self.assertNotIn("sync_approved_demand=lambda", source)
-        self.assertNotIn("repository.update_demand(", source)
-        self.assertNotIn("repository.create_demand(", source)
-        self.assertNotIn("for row in repository.demands()", source)
 
 
 if __name__ == "__main__":
