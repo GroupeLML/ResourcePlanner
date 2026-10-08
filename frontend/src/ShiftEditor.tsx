@@ -547,7 +547,7 @@ export default function ShiftEditor({
             <p>
               {shift.project_number || "Projet"}
               {shift.project_name ? ` — ${shift.project_name}` : ""}
-              {shift.demand_number ? (
+              {shift.demand_number && can("read_demands") ? (
                 <>
                   {" · "}
                   <button
