@@ -19,16 +19,16 @@ import { useViewScope } from "./ViewScopeContext";
 
 type View = "my-schedule" | "coordinator-dashboard" | "planning" | "medium-term" | "demands" | "projects" | "delivery" | "resources" | "users" | "communications" | "configuration";
 
-type NavItem = { key: View; label: string; eyebrow: string; shortLabel: string; permission?: string; role?: string };
+type NavItem = { key: View; label: string; eyebrow: string; shortLabel: string; permission?: string; alsoRequires?: string; role?: string };
 
 const navItems: NavItem[] = [
   { key: "my-schedule", label: "Mon horaire", eyebrow: "Personnel", shortLabel: "MH" },
   { key: "coordinator-dashboard", label: "Coordonnateur", eyebrow: "Pilotage", shortLabel: "TC", role: "COORDINATOR" },
   { key: "planning", label: "Planning opérationnel", eyebrow: "Semaine", shortLabel: "PL" },
-  { key: "medium-term", label: "Moyen terme", eyebrow: "Capacité", shortLabel: "MT" },
-  { key: "demands", label: "Demandes", eyebrow: "Main-d’œuvre", shortLabel: "DE" },
-  { key: "projects", label: "Projets", eyebrow: "Portefeuille", shortLabel: "PR" },
-  { key: "delivery", label: "Delivery", eyebrow: "WorkPackages", shortLabel: "DL" },
+  { key: "medium-term", label: "Moyen terme", eyebrow: "Capacité", shortLabel: "MT", permission: "read_work_packages", alsoRequires: "read_demands" },
+  { key: "demands", label: "Demandes", eyebrow: "Main-d’œuvre", shortLabel: "DE", permission: "read_demands" },
+  { key: "projects", label: "Projets", eyebrow: "Portefeuille", shortLabel: "PR", permission: "read_projects" },
+  { key: "delivery", label: "Delivery", eyebrow: "WorkPackages", shortLabel: "DL", permission: "read_work_packages" },
   { key: "communications", label: "Communications", eyebrow: "Révision", shortLabel: "CO", permission: "manage_communications" },
   { key: "resources", label: "Ressources", eyebrow: "Administration", shortLabel: "RE", permission: "manage_resources" },
   { key: "users", label: "Utilisateurs", eyebrow: "Sécurité", shortLabel: "UT", permission: "admin_users" },
@@ -41,6 +41,16 @@ declare global {
       environment?: string;
     };
   }
+}
+
+// Deep links may be supplied by bookmarks or external pages even though the shell uses tabs.
+function requestedViewFromUrl(): View | null {
+  const query = new URLSearchParams(window.location.search).get("view");
+  const hash = window.location.hash.replace(/^#\/?/, "").split("/")[0];
+  const path = window.location.pathname.split("/").filter(Boolean)[0];
+  const requested = query || hash || path;
+  if (requested === "work-packages") return "medium-term";
+  return navItems.find((item) => item.key === requested)?.key ?? null;
 }
 
 const SIDEBAR_COMPACT_STORAGE_KEY = "resourceplanner.sidebar.compact";
@@ -78,7 +88,7 @@ export default function App() {
     logout,
   } = useAuth();
   const { setScope } = useViewScope();
-  const [view, setView] = useState<View>("planning");
+  const [view, setView] = useState<View>(() => requestedViewFromUrl() ?? "planning");
   const [demandToOpen, setDemandToOpen] = useState<string | null>(null);
   const [demandCreateContext, setDemandCreateContext] = useState<DemandCreateContext | null>(null);
   const [initialViewResolved, setInitialViewResolved] = useState(false);
@@ -93,7 +103,7 @@ export default function App() {
 
   useEffect(() => {
     if (!principal || initialViewResolved) return;
-    if (principal.roles.length === 1 && principal.roles.includes("TECHNICIAN")) {
+    if (!requestedViewFromUrl() && principal.roles.length === 1 && principal.roles.includes("TECHNICIAN")) {
       setView("my-schedule");
     }
     setInitialViewResolved(true);
@@ -110,6 +120,7 @@ export default function App() {
   const visibleNavItems = useMemo(
     () => navItems.filter((item) => (
       (!item.permission || can(item.permission))
+      && (!item.alsoRequires || can(item.alsoRequires))
       && (!item.role || Boolean(principal?.roles.includes(item.role)))
     )),
     [can, principal?.roles],
@@ -157,6 +168,7 @@ export default function App() {
   const currentItem = navItems.find((item) => item.key === view);
 
   function openDemand(number: string) {
+    if (!can("read_demands")) return;
     setScope("global");
     setDemandCreateContext(null);
     setDemandToOpen(number);
@@ -164,12 +176,14 @@ export default function App() {
   }
 
   function openDemands() {
+    if (!can("read_demands")) return;
     setDemandToOpen(null);
     setDemandCreateContext(null);
     setView("demands");
   }
 
   function createDemandFromWorkPackage(context: DemandCreateContext) {
+    if (!can("read_demands") || !can("manage_demands")) return;
     setDemandToOpen(null);
     setDemandCreateContext(context);
     setView("demands");
@@ -285,7 +299,12 @@ export default function App() {
         </header>
 
         <main className="main-content">
-          {view === "my-schedule" ? (
+          {!visibleNavItems.some((item) => item.key === view) ? (
+              <section className="error-panel" role="alert">
+                <strong>Accès refusé</strong>
+                <span>Vous ne disposez pas des permissions nécessaires pour ouvrir cette section.</span>
+              </section>
+            ) : view === "my-schedule" ? (
             <TechnicianSchedulePage />
           ) : view === "coordinator-dashboard" && principal.roles.includes("COORDINATOR") ? (
             <CoordinatorDashboardPage
