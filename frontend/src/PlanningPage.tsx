@@ -1,5 +1,5 @@
 import { compareProjectNumbersRecentFirst } from "./projectRecency";
-import { resourceDisplayName } from "./resourceLabels";
+import { compareResourcesByDisplayName, resourceDisplayName } from "./resourceLabels";
 import { getResourceClassOptions, type ResourceClassOptionReadModel } from "./resourceClassesApi";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -140,9 +140,7 @@ function compareResourceGroupEntries(
     }
   }
 
-  const nameOrder = resourceDisplayName(left.resource.name).localeCompare(resourceDisplayName(right.resource.name), "fr-CA");
-  if (nameOrder !== 0) return nameOrder;
-  return left.resource.id.localeCompare(right.resource.id, "fr-CA");
+  return compareResourcesByDisplayName(left.resource, right.resource);
 }
 
 type EmergencyShiftReadModel = ShiftReadModel & { emergency_override_active?: boolean };
@@ -1070,10 +1068,8 @@ export default function PlanningPage({
 
   const resourceOptions = useMemo(() => {
     if (!snapshot) return [];
-    return [...snapshot.resources].sort(
-      (left, right) => compareManualResources(left, right, manualResourceOrder),
-    );
-  }, [snapshot, manualResourceOrder]);
+    return [...snapshot.resources].sort(compareResourcesByDisplayName);
+  }, [snapshot]);
 
   const manualOrderAvailability = useMemo(() => {
     const groups = new Map<string, ResourceReadModel[]>();
