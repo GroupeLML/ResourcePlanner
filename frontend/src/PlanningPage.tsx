@@ -841,7 +841,7 @@ export default function PlanningPage({
   const [classFilter, setClassFilter] = useState("all");
   const [resourceFilter, setResourceFilter] = useState("all");
   const [onlyWithCapacity, setOnlyWithCapacity] = useState(false);
-  const [filtersExpanded, setFiltersExpanded] = useState(true);
+  const [filtersExpanded, setFiltersExpanded] = useState(false);
   const [editingShift, setEditingShift] = useState<ShiftReadModel | null>(null);
   const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null);
   const [quickShiftOpen, setQuickShiftOpen] = useState(false);
