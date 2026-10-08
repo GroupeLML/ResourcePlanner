@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import re
 import unittest
 
 
@@ -36,14 +35,14 @@ class SupportedWebWorkflowsTests(unittest.TestCase):
         self.assertIn("npm run build", frontend)
         self.assertIn("/usr/share/nginx/html", frontend)
         for legacy in ("nicegui", "xlwings", "openpyxl"):
-            self.assertNotRegex(requirements, rf"(?m)^\\s*{legacy}(?:[=<>~!]|\\s|$)")
+            self.assertNotRegex(requirements, rf"(?m)^\s*{legacy}(?:[=<>~!]|\s|$)")
 
     def test_compose_imports_and_demo_remain_explicit(self) -> None:
         compose = source("docker-compose.yml")
-        self.assertRegex(compose, r'(?m)^  seed-dev:\\n    profiles: \\["demo"\\]')
+        self.assertIn('  seed-dev:\n    profiles: ["demo"]', compose)
         self.assertIn('"--confirm-dev-only"', compose)
-        self.assertRegex(compose, r'(?m)^  import-projects:\\n    profiles: \\["tools"\\]')
-        self.assertRegex(compose, r'(?m)^  import-tasks:\\n    profiles: \\["tools"\\]')
+        self.assertIn('  import-projects:\n    profiles: ["tools"]', compose)
+        self.assertIn('  import-tasks:\n    profiles: ["tools"]', compose)
         self.assertIn("Dockerfile.importer", compose)
         self.assertIn("tools/import_erp_projects.py", source("Dockerfile.importer"))
         self.assertIn("tools/import_erp_tasks.py", source("Dockerfile.importer"))
