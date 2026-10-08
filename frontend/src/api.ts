@@ -255,6 +255,8 @@ export type TaskCatalogItemReadModel = {
   expenses_enabled: boolean | null;
   operational_responsible_contact_id: string | null;
   coordinator_contact_id: string | null;
+  preferred_resource_id: string | null;
+  preferred_resource_version: number;
   resource_class_code: string | null;
 };
 
@@ -2040,6 +2042,20 @@ export function getTaskCatalog(
   return getJson<TaskCatalogItemReadModel[]>(
     `/api/v1/task-catalog?${params.toString()}`,
     signal,
+  );
+}
+
+export type TaskPreferredResourceMutationResult = {
+  task_catalog_item_id: string;
+  preferred_resource_id: string | null;
+  version: number;
+  action: string;
+};
+export function setTaskPreferredResource(taskId: string, resourceId: string | null, expectedVersion: number) {
+  return sendJson<TaskPreferredResourceMutationResult>(
+    `/api/v1/task-catalog/${encodeURIComponent(taskId)}/preferred-resource`,
+    "PATCH",
+    { resource_id: resourceId, expected_version: expectedVersion },
   );
 }
 

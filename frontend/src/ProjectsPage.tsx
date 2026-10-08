@@ -12,6 +12,7 @@ import {
   MediumTermBudgetReadModel,
   ProjectManagersReadModel,
   ProjectReadModel,
+  ResourceReadModel,
   ProjectTaskSyncMetadata,
   TaskCatalogItemReadModel,
   getAcumaticaIntegrationStatus,
@@ -24,9 +25,11 @@ import {
   getProjectManagerCandidateContacts,
   getProjectManagers,
   getProjects,
+  getResources,
   getTaskCatalog,
   removeProjectCoManager,
   setTaskBusinessContacts,
+  setTaskPreferredResource,
   syncAcumaticaActiveProjectTasks,
   syncAcumaticaProjectTasks,
   syncAcumaticaProjects,
@@ -196,6 +199,11 @@ export default function ProjectsPage() {
   const [coManagerError, setCoManagerError] = useState<string | null>(null);
   const coManagerIntentKeys = useRef(new Map<string, string>());
   const [projectTasks, setProjectTasks] = useState<TaskCatalogItemReadModel[]>([]);
+  const [resources, setResources] = useState<ResourceReadModel[]>([]);
+  const [resourceLoading, setResourceLoading] = useState(true);
+  const [preferredPendingId, setPreferredPendingId] = useState<string | null>(null);
+  const [preferredErrors, setPreferredErrors] = useState<Record<string, string>>({});
+  const [preferredMessages, setPreferredMessages] = useState<Record<string, string>>({});
   const [projectBudget, setProjectBudget] = useState<MediumTermBudgetReadModel | null>(null);
   const [projectBudgetLoading, setProjectBudgetLoading] = useState(false);
   const [projectBudgetError, setProjectBudgetError] = useState<string | null>(null);
@@ -267,18 +275,20 @@ export default function ProjectsPage() {
       getProjects(false, controller.signal, scope),
       getAcumaticaIntegrationStatus(controller.signal),
       getBusinessContacts(false, controller.signal),
+      getResources(false, controller.signal),
     ])
-      .then(([projectRows, status, contactRows]) => {
+      .then(([projectRows, status, contactRows, resourceRows]) => {
         setProjects(projectRows);
         setIntegration(status);
         setContacts(contactRows);
+        setResources(resourceRows);
       })
       .catch((reason: unknown) => {
         if (reason instanceof DOMException && reason.name === "AbortError") return;
         setError(apiErrorMessage(reason, "Impossible de charger les projets."));
       })
       .finally(() => {
-        if (!controller.signal.aborted) setLoading(false);
+        if (!controller.signal.aborted) { setLoading(false); setResourceLoading(false); }
       });
     return () => controller.abort();
   }, [refreshKey, scope, scopeLoading]);
@@ -379,14 +389,14 @@ export default function ProjectsPage() {
     setCoManagerMessage(null);
     setCoManagerError(null);
     setSelectedCoManagerId("");
+    setPreferredErrors({});
+    setPreferredMessages({});
     Promise.all([
       getProjectManagers(selectedProject.number, controller.signal, scope),
       canManageContacts
         ? getProjectManagerCandidateContacts(controller.signal)
         : Promise.resolve([]),
-      canManageContacts
-        ? getTaskCatalog(selectedProject.number, "", false, controller.signal)
-        : Promise.resolve([]),
+      getTaskCatalog(selectedProject.number, "", false, controller.signal),
       canSyncProjects
         ? getAcumaticaProjectTaskSyncMetadata(selectedProject.id, controller.signal)
         : Promise.resolve(null),
@@ -639,6 +649,33 @@ export default function ProjectsPage() {
     } finally {
       setContactPending(false);
     }
+  }
+
+  async function changeTaskPreferredResource(task: TaskCatalogItemReadModel, resourceId: string | null) {
+    if (!task.id || !canManageContacts || preferredPendingId || resourceLoading) return;
+    const id = task.id;
+    setPreferredPendingId(id);
+    setPreferredErrors((current) => ({ ...current, [id]: "" }));
+    setPreferredMessages((current) => ({ ...current, [id]: "" }));
+    try {
+      const updated = await setTaskPreferredResource(id, resourceId, task.preferred_resource_version);
+      setProjectTasks((current) => current.map((row) => row.id === id
+        ? { ...row, preferred_resource_id: updated.preferred_resource_id, preferred_resource_version: updated.version } : row));
+      setPreferredMessages((current) => ({ ...current, [id]: "Ressource attitrée enregistrée." }));
+    } catch (reason) {
+      if (reason instanceof ApiError && reason.code === "task_preferred_resource_version_conflict") {
+        try {
+          const serverRows = await getTaskCatalog(task.project_number, "", false);
+          setProjectTasks((current) => current.map((row) =>
+            row.id === id ? (serverRows.find((item) => item.id === id) ?? row) : row));
+          setPreferredErrors((current) => ({ ...current, [id]: "Conflit : nomination modifiée ailleurs. Valeur serveur rechargée; confirmez à nouveau votre choix." }));
+        } catch {
+          setPreferredErrors((current) => ({ ...current, [id]: "Conflit : rechargez le projet avant de réessayer." }));
+        }
+      } else {
+        setPreferredErrors((current) => ({ ...current, [id]: apiErrorMessage(reason, "Enregistrement impossible.") }));
+      }
+    } finally { setPreferredPendingId(null); }
   }
 
   async function synchronize() {
@@ -1231,11 +1268,10 @@ export default function ProjectsPage() {
             )}
           </div>
 
-          {canManageContacts && (
-            <div className="project-task-contact-list">
+          <div className="project-task-contact-list">
               <div className="projects-table-header">
                 <strong>Tâches ERP</strong>
-                <span>Responsable opérationnel et coordonnateur sont deux fonctions distinctes.</span>
+                <span>Responsable opérationnel, coordonnateur et ressource attitrée sont distincts.</span>
               </div>
               {projectTasks.length === 0 ? (
                 <p className="projects-empty">Aucune tâche ERP pour ce projet.</p>
@@ -1243,7 +1279,7 @@ export default function ProjectsPage() {
                 <div className="projects-table-scroll">
                   <table className="projects-table">
                     <thead>
-                      <tr><th>Tâche</th><th>Responsable opérationnel</th><th>Coordonnateur</th></tr>
+                      <tr><th>Tâche</th><th>Responsable opérationnel</th><th>Coordonnateur</th><th>Ressource attitrée</th></tr>
                     </thead>
                     <tbody>
                       {projectTasks.map((task) => (
@@ -1255,7 +1291,7 @@ export default function ProjectsPage() {
                               label={`Responsable opérationnel ${task.code}`}
                               value={task.operational_responsible_contact_id}
                               onChange={(value) => void changeTaskContact(task, "operational_responsible_contact_id", value)}
-                              disabled={contactPending || !task.id}
+                              disabled={contactPending || !task.id || !canManageContacts}
                               inheritLabel="Hériter du chargé de projet ERP"
                             />
                           </td>
@@ -1265,9 +1301,43 @@ export default function ProjectsPage() {
                               label={`Coordonnateur ${task.code}`}
                               value={task.coordinator_contact_id}
                               onChange={(value) => void changeTaskContact(task, "coordinator_contact_id", value)}
-                              disabled={contactPending || !task.id}
+                              disabled={contactPending || !task.id || !canManageContacts}
                               inheritLabel="Aucun coordonnateur de tâche"
                             />
+                          </td>
+                          <td>
+                            {(() => {
+                              const current = resources.find((resource) => resource.id === task.preferred_resource_id);
+                              const missing = Boolean(task.preferred_resource_id && !current);
+                              const inactive = current && (!current.active || !current.erp_active);
+                              return (
+                                <>
+                                  <select
+                                    aria-label={`Ressource attitrée ${task.code}`}
+                                    value={task.preferred_resource_id ?? ""}
+                                    disabled={!canManageContacts || !task.id || resourceLoading || preferredPendingId !== null}
+                                    onChange={(event) => void changeTaskPreferredResource(task, event.target.value || null)}
+                                  >
+                                    <option value="">Aucune ressource attitrée</option>
+                                    {missing && <option value={task.preferred_resource_id!}>Ressource historique introuvable</option>}
+                                    {resources.filter((resource) =>
+                                      (resource.active && resource.erp_active) || resource.id === task.preferred_resource_id
+                                    ).sort((left, right) => left.name.localeCompare(right.name, "fr-CA")).map((resource) => (
+                                      <option key={resource.id} value={resource.id} disabled={!resource.active || !resource.erp_active}>
+                                        {resource.name}{(!resource.active || !resource.erp_active) ? " (inactive — non admissible)" : ""}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  {resourceLoading && <small role="status">Chargement…</small>}
+                                  {inactive && <small role="status">Nomination historique inactive {current.active ? "dans l’ERP" : "localement"}; non admissible à une nouvelle nomination.</small>}
+                                  {missing && <small role="status">La ressource enregistrée n’existe plus dans le catalogue.</small>}
+                                  {!canManageContacts && <small>Lecture seule : permission manage_resources requise.</small>}
+                                  {preferredPendingId === task.id && <small role="status">Enregistrement…</small>}
+                                  {task.id && preferredMessages[task.id] && <small role="status">{preferredMessages[task.id]}</small>}
+                                  {task.id && preferredErrors[task.id] && <small role="alert">{preferredErrors[task.id]}</small>}
+                                </>
+                              );
+                            })()}
                           </td>
                         </tr>
                       ))}
@@ -1276,7 +1346,6 @@ export default function ProjectsPage() {
                 </div>
               )}
             </div>
-          )}
         </section>
       )}
 
