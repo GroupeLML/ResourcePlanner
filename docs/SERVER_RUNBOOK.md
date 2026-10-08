@@ -10,7 +10,7 @@ Ce document décrit la frontière serveur canonique de RessourcePlanner. Le back
 Deux modes utilisent le même backend :
 
 1. **API seule** : `python -m app.server`, sans frontend si `RESOURCEPLANNER_FRONTEND_DIST` est absente;
-2. **Web autonome** : `Lancer_Web.bat`, qui sert le build React et l'API sur la même origine.
+2. **Web déployé** : React/Nginx + FastAPI via Docker Compose; en CLI locale, `python -m app.server` peut servir React avec `RESOURCEPLANNER_FRONTEND_DIST`.
 
 Deux modes d'identité sont disponibles :
 
@@ -31,13 +31,7 @@ python -m pip install -r requirements-server.txt -c constraints-release.txt
 
 `requirements-server.txt` reste indépendant de NiceGUI, xlwings et openpyxl. Il inclut `pyodbc==5.3.0`, version validée sur la VM Ubuntu cible. L'image backend installe `msodbcsql18` depuis le dépôt Debian officiel Microsoft; la sous-version système exacte n'est pas figée dans Git afin de rester compatible avec la version Debian portée par `python:3.12-slim`.
 
-Pour une installation Web Windows reproductible, utiliser plutôt :
-
-```bat
-Installer_Web.bat
-```
-
-L'installateur crée `.venv-web` et construit `frontend\dist` avec Node.js 22.
+Pour une installation hors Docker, créer un environnement Python isolé, installer le profil ci-dessus, puis dans `frontend/` exécuter `npm install --no-audit --no-fund` et `npm run build`. Aucun installeur BAT n'est requis (voir [REACT_V2_DEV.md](REACT_V2_DEV.md)).
 
 ## 2. Configuration par variables d'environnement
 
@@ -134,9 +128,7 @@ Après le premier go-live, cette baseline devient immuable et toute évolution d
 
 Le contrat détaillé est documenté dans [`SQL_CUTOVER_RUNBOOK.md`](SQL_CUTOVER_RUNBOOK.md).
 
-`Lancer_Web.bat` et `Lancer_Serveur.bat` conservent une exception de commodité **uniquement pour leur fallback SQLite local**, lorsque `RESOURCEPLANNER_DATABASE_URL` n'était pas définie avant le lancement.
-
-Avec une base explicitement configurée — notamment SQL Server — les migrations restent toujours explicites.
+Les anciens fallbacks SQLite des launchers BAT ont été retirés. Configurer `RESOURCEPLANNER_DATABASE_URL` explicitement et appliquer les migrations via `python -m alembic upgrade head` seulement dans l'environnement prévu. En production SQL Server, la migration requiert la procédure et la sauvegarde d'exploitation.
 
 ## 6. Démarrage API seul
 
@@ -158,23 +150,9 @@ Dans ce mode, `/` retourne 404 si aucun build frontend n'est configuré.
 
 ## 7. Démarrage Web autonome
 
-Après :
+Le runtime normal utilise `docker compose up -d --build` (React/Nginx + FastAPI). En CLI locale, après le build `frontend/dist`, définir `RESOURCEPLANNER_FRONTEND_DIST` sur son chemin absolu et exécuter `python -m app.server` avec une base configurée et les migrations explicitement appliquées. Sans cette variable, le serveur est API seule; un build explicitement demandé mais absent empêche le démarrage.
 
-```bat
-Installer_Web.bat
-```
-
-lancer :
-
-```bat
-Lancer_Web.bat
-```
-
-Le lanceur définit `RESOURCEPLANNER_FRONTEND_DIST` vers `frontend\dist`, vérifie le build, puis démarre le même `app.server`. L'interface est disponible par défaut à `http://127.0.0.1:8000/`.
-
-Le runtime Web refuse de démarrer si le build React demandé est absent ou incomplet; il ne retombe pas silencieusement en API seule.
-
-En mode OIDC, une requête sans session vers `/api/v1/auth/me` retourne `authentication_required`; React propose alors la connexion via `/api/v1/auth/login`. La déconnexion passe par `POST /api/v1/auth/logout`, qui révoque la session SQL avant de supprimer le cookie.
+En mode OIDC, `/api/v1/auth/me` retourne `authentication_required` sans session. La connexion passe par `/api/v1/auth/login`, la déconnexion par `POST /api/v1/auth/logout`.
 
 ## 8. Préflights et smokes
 
@@ -229,7 +207,7 @@ L'accès au serveur SQL cible est disponible depuis le 2026-09-29. #162 est main
 3. tester une URL SQLAlchemy SQL Server sans l'inscrire dans Git;
 4. exécuter `alembic upgrade head` sur une base de développement dédiée;
 5. exécuter `python tools\check_server_runtime.py`;
-6. démarrer le runtime Web dans la **VM Ubuntu cible via Docker Compose**; `Lancer_Web.bat` reste un chemin local Windows, pas le mode de production privilégié;
+6. démarrer le runtime Web sur la **VM Ubuntu cible via Docker Compose**; aucun launcher BAT Windows n'est requis;
 7. valider `/`, `/health`, les lectures et au moins une mutation métier;
 8. épingler le driver retenu après validation.
 
@@ -278,6 +256,4 @@ Voir [`DEPLOYMENT_UBUNTU_VM.md`](DEPLOYMENT_UBUNTU_VM.md) pour la procédure dé
 
 ## 12. Runtime V1 legacy
 
-`Lancer_Application.bat` est conservé comme alias de compatibilité explicite vers `Lancer_Application_Legacy.bat`.
-
-La V1 utilise `.venv`, `main.py`, NiceGUI et Excel. Elle reste disponible uniquement pour la transition et n'est plus le mode cible.
+Le runtime NiceGUI/Excel V1 et ses anciens launchers Windows ont été retirés en 336B. Les commandes supportées sont Compose et la CLI FastAPI/Vite documentées ci-dessus.

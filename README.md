@@ -224,71 +224,52 @@ Sur la VM Ubuntu de production, ne pas activer le profil `dev-tools` et ne pas p
 
 Voir [`dev-cockpit/README.md`](dev-cockpit/README.md) pour l'architecture, la logique `STALLED`, les tests et le développement hors Docker.
 
-## Runtime Web Windows
+## Runtime Web local et développement HMR
 
-Pour le développement ou un runtime local Windows hors Docker :
+Le runtime supporté en exploitation est **Docker Compose** (voir « Démarrage rapide avec Docker »). Les anciens lanceurs et installateurs BAT sont retirés. Pour un environnement Python 3.12 + Node 22 local hors Docker :
 
-### Prérequis
-
-- Python 3.12 recommandé;
-- Node.js 22 avec npm.
-
-Installation :
-
-```bat
-Installer_Web.bat
+```bash
+python -m pip install -r requirements-server.txt -c constraints-release.txt
+cd frontend
+npm install --no-audit --no-fund
+npm run build
+cd ..
 ```
 
-L’installateur crée `.venv-web`, installe le profil serveur Web/SQL et construit React.
+Configurer `RESOURCEPLANNER_DATABASE_URL` explicitement, puis exécuter `python -m alembic upgrade head` (base de développement), `python tools/check_server_runtime.py` et `python -m app.server`. Pour servir React sur le même port, définir `RESOURCEPLANNER_FRONTEND_DIST` vers le chemin **absolu** de `frontend/dist`.
 
-Le démarrage normal ne nécessite aucune donnée de démonstration. Pour charger volontairement le jeu de démo SQLite, utiliser l’outil opt-in :
+Exemple PowerShell **SQLite de développement seulement**, après le build :
 
-```bat
-Charger_Donnees_Demo.bat
+```powershell
+$env:RESOURCEPLANNER_DATABASE_URL = "sqlite:///./resourceplanner_server.db"
+python -m alembic upgrade head
+$env:RESOURCEPLANNER_FRONTEND_DIST = (Resolve-Path .\frontend\dist).Path
+python tools/check_server_runtime.py
+python -m app.server
 ```
 
-Pour lancer React + FastAPI en same-origin :
+La production SQL Server n'utilise ni fallback SQLite, ni migration implicite, ni seed. Pour une démo SQLite opt-in :
 
-```bat
-Lancer_Web.bat
+```bash
+docker compose --profile demo run --rm seed-dev
 ```
 
-L’application est alors disponible par défaut sur :
+### Vite / HMR
 
-```text
-http://127.0.0.1:8000/
+Lancer FastAPI en mode API seule (`RESOURCEPLANNER_FRONTEND_DIST` non définie), après migration locale :
+
+```bash
+python -m app.server
 ```
 
-Voir [`docs/WEB_RUNTIME.md`](docs/WEB_RUNTIME.md) et [`docs/V2_RUNTIME_OPERATIONS.md`](docs/V2_RUNTIME_OPERATIONS.md).
-
----
-
-## Développement React avec HMR
-
-Pour travailler sur le frontend avec Vite :
-
-Terminal 1 :
-
-```bat
-Lancer_Serveur.bat
-```
-
-Terminal 2 :
+Dans un second terminal :
 
 ```bash
 cd frontend
 npm run dev
 ```
 
-Ouvrir ensuite :
-
-```text
-http://127.0.0.1:5173/
-```
-
-Vite relaie les appels API vers FastAPI localement.
-
-Voir [`docs/REACT_V2_DEV.md`](docs/REACT_V2_DEV.md).
+Ouvrir `http://127.0.0.1:5173/`. Vite relaie `/api` et `/health` vers le port 8000. Voir [`docs/REACT_V2_DEV.md`](docs/REACT_V2_DEV.md), [`docs/WEB_RUNTIME.md`](docs/WEB_RUNTIME.md) et [`docs/V2_RUNTIME_OPERATIONS.md`](docs/V2_RUNTIME_OPERATIONS.md).
 
 ---
 

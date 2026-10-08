@@ -31,7 +31,7 @@ def attach_frontend(
     if not index.is_file():
         if required:
             raise FrontendBuildError(
-                f"Build React introuvable: {index}. Lance Installer_Web.bat ou npm run build."
+                f"Build React introuvable: {index}. Construis frontend/dist avec npm run build."
             )
         return False
 

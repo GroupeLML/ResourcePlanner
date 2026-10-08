@@ -6,12 +6,12 @@ Ce document inventorie les variables du runtime Web. Il indique **quoi configure
 
 | Variable | Usage | Requise |
 | --- | --- | --- |
-| `RESOURCEPLANNER_DATABASE_URL` | URL SQLAlchemy de la base | Oui pour `python -m app.server`; `Lancer_Web.bat` fournit SQLite local si absente |
+| `RESOURCEPLANNER_DATABASE_URL` | URL SQLAlchemy de la base | À configurer explicitement en CLI; Compose fournit la valeur selon l'environnement. Aucun fallback SQLite implicite en production |
 | `RESOURCEPLANNER_HOST` | Adresse d'écoute | Non, défaut `127.0.0.1` |
 | `RESOURCEPLANNER_PORT` | Port HTTP | Non, défaut `8000` |
 | `RESOURCEPLANNER_LOG_LEVEL` | Niveau Uvicorn | Non, défaut `info` |
 | `RESOURCEPLANNER_ACTOR_NAME` | Nom technique de l'acteur local | Non |
-| `RESOURCEPLANNER_FRONTEND_DIST` | Build React servi par FastAPI | Défini automatiquement par `Lancer_Web.bat` |
+| `RESOURCEPLANNER_FRONTEND_DIST` | Build React servi par FastAPI | Optionnel en CLI pour servir `frontend/dist` par FastAPI; Compose sert React par Nginx |
 
 ## Authentification locale
 
@@ -130,7 +130,7 @@ Aucun wildcard n'est accepté pour `frame-ancestors`. Hors localhost, les origin
 
 ## Outils de vérification
 
-`Verifier_Web.bat` utilise aussi :
+Le smoke CLI `python tools/smoke_running_web.py --base-url <URL>` utilise :
 
 | Variable | Usage |
 | --- | --- |
