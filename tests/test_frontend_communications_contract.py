@@ -39,6 +39,19 @@ class FrontendCommunicationsContractTests(unittest.TestCase):
         self.assertIn("Aucun message n’a été envoyé", page)
         self.assertIn("source.approvable", page)
 
+    def test_727_generator_cc_is_optional_and_bound_to_preview_identity(self) -> None:
+        page = PAGE.read_text(encoding="utf-8")
+        api = API.read_text(encoding="utf-8")
+        self.assertIn("M'ajouter en CC dans les communications", page)
+        self.assertIn("useState(false)", page)
+        self.assertIn("setAddGeneratorCc(false)", page)
+        self.assertIn("preview.generator_identity_fingerprint", page)
+        self.assertIn("getProjectCommunicationPreview(weekStart, addGeneratorCc)", page)
+        self.assertIn("add_generator_cc", api)
+        self.assertIn("expected_generator_identity_fingerprint", api)
+        self.assertNotIn("generator_email:", api)
+        self.assertNotIn("generator_email:", page)
+
     def test_page_no_longer_edits_legacy_communication_contacts(self) -> None:
         page = PAGE.read_text(encoding="utf-8")
         self.assertIn("Destinataires gérés dans Utilisateurs", page)
