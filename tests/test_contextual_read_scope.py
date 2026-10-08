@@ -243,15 +243,28 @@ class ContextualReadScopeTests(unittest.TestCase):
         )
 
     def test_empty_mine_scope_never_falls_back_to_global(self) -> None:
-        principal = self.principal("EMP-UNKNOWN", (ROLE_TECHNICIAN,))
+        # For a permitted module reader without a project, scope stays empty.
+        principal = self.principal("EMP-UNKNOWN", (ROLE_PROJECT_MANAGER,))
         with self.client_for(principal) as client:
             projects = client.get("/api/v1/projects", params={"scope": "mine"})
             demands = client.get("/api/v1/demands", params={"scope": "mine"})
             packages = client.get("/api/v1/work-packages", params={"scope": "mine"})
 
-        self.assertEqual(projects.json(), [])
-        self.assertEqual(demands.json(), [])
-        self.assertEqual(packages.json(), [])
+        for response in (projects, demands, packages):
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json(), [])
+
+        # ADR-030: missing module capability takes priority over a mine scope.
+        technician = self.principal("EMP-UNKNOWN", (ROLE_TECHNICIAN,))
+        with self.client_for(technician) as client:
+            denied = (
+                client.get("/api/v1/projects", params={"scope": "mine"}),
+                client.get("/api/v1/demands", params={"scope": "mine"}),
+                client.get("/api/v1/work-packages", params={"scope": "mine"}),
+            )
+        for response in denied:
+            self.assertEqual(response.status_code, 403, response.text)
+            self.assertEqual(response.json()["error"]["code"], "permission_denied")
 
     def test_project_number_and_mine_scope_are_intersected(self) -> None:
         principal = self.principal(
