@@ -64,6 +64,10 @@ test("704 affiche une candidate sous la ressource proposée sans créer de quart
 
   try {
     await page.goto("/");
+    // The Planning snapshot is loaded asynchronously after the initial document.
+    // Capture stable fixture IDs before constructing the resource/day locator.
+    await expect.poll(() => resourceId).not.toBe("");
+    await expect.poll(() => day).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     const candidate = page.locator(`.planning-day-cell[data-resource-id="${resourceId}"][data-day="${day}"] .pending-ghost-card`)
       .filter({ hasText: "DMO-704" });
     await expect(candidate).toBeVisible();
