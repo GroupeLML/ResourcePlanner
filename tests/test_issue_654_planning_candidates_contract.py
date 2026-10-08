@@ -18,7 +18,9 @@ def test_654_candidates_use_backend_windows_and_stable_resource_ids() -> None:
     assert "draggable={false}" in source
     assert "<span>Demande {load.demand_number}</span>" in source
     assert "load.proposed_resource === resource.name" not in source
-    assert "candidate.proposed_resource_id === resource.id" not in source
+    assert "visibleCandidateRowsByResource" in source
+    assert "candidates={visibleCandidateRowsByResource.get(resource.id) ?? []}" in source
+    assert "dayCandidates.map((entry)" in source
 
 
 
