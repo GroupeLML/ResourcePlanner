@@ -30,6 +30,10 @@ class PrepareProjectBatchBody(BaseModel):
     week_start: date
     expected_fingerprint: str = Field(min_length=64, max_length=64)
     reviews: list[ProjectReviewBody] = Field(default_factory=list)
+    add_generator_cc: bool = False
+    expected_generator_identity_fingerprint: str | None = Field(
+        default=None, min_length=64, max_length=64
+    )
 
 
 def _actor(request: Request) -> str:
@@ -52,9 +56,15 @@ def build_project_communication_router(
     @router.get("/project-preview")
     def project_preview(
         week_start: date,
+        request: Request,
+        add_generator_cc: bool = False,
         service: ProjectCommunicationService = Depends(dependency),
     ) -> ProjectCommunicationWorkflowPreview:
-        return service.project_preview(week_start=week_start)
+        return service.project_preview(
+            week_start=week_start,
+            add_generator_cc=add_generator_cc,
+            generator_principal=getattr(request.state, "auth_principal", None),
+        )
 
     @router.post("/project-batches", status_code=201)
     def prepare_project_batch(
@@ -75,6 +85,11 @@ def build_project_communication_router(
                 for row in body.reviews
             ),
             actor_name=_actor(request),
+            add_generator_cc=body.add_generator_cc,
+            expected_generator_identity_fingerprint=(
+                body.expected_generator_identity_fingerprint
+            ),
+            generator_principal=getattr(request.state, "auth_principal", None),
         )
 
     @router.get("/project-batches")
