@@ -253,23 +253,28 @@ test("617C exige une confirmation explicite avant un repli à compétences incom
     await expect(fallback).toContainText("Repli à confirmer");
     await expect(fallback).toContainText("confirmation explicite");
 
-    opened.page.once("dialog", async (confirmation) => {
-      expect(confirmation.type()).toBe("confirm");
-      expect(confirmation.message()).toContain("C-SCADA");
-      await confirmation.dismiss();
-    });
-    await fallback.getByRole("button", { name: "Confirmer ce repli" }).click();
+    const fallbackButton = fallback.getByRole("button", { name: "Confirmer ce repli" });
+    // Subscribe before the click: a native confirm pauses the page until handled.
+    const rejectedDialog = opened.page.waitForEvent("dialog", { timeout: 10_000 });
+    const rejectedClick = fallbackButton.click();
+    const rejection = await rejectedDialog;
+    expect(rejection.type()).toBe("confirm");
+    expect(rejection.message()).toContain("C-SCADA");
+    await rejection.dismiss();
+    await rejectedClick;
     await expect.poll(opened.assignmentPosts).toBe(0);
 
-    opened.page.once("dialog", async (confirmation) => {
-      expect(confirmation.type()).toBe("confirm");
-      await confirmation.accept();
-    });
     const assigned = opened.page.waitForResponse((response) => (
       response.request().method() === "POST"
       && new URL(response.url()).pathname === "/api/v1/segments/SEG-617C/assign"
-    ));
-    await fallback.getByRole("button", { name: "Confirmer ce repli" }).click();
+    ), { timeout: 15_000 });
+    const acceptedDialog = opened.page.waitForEvent("dialog", { timeout: 10_000 });
+    const acceptedClick = fallbackButton.click();
+    const acceptance = await acceptedDialog;
+    expect(acceptance.type()).toBe("confirm");
+    expect(acceptance.message()).toContain("C-SCADA");
+    await acceptance.accept();
+    await acceptedClick;
     expect((await assigned).status()).toBe(200);
     await expect.poll(opened.assignmentPosts).toBe(1);
     expect(opened.assignedResourceId()).toBe("R-BOB");
