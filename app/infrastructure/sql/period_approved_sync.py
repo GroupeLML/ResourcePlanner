@@ -513,6 +513,8 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
         self,
         request: WorkforceRequest,
         periods: list[WorkforceRequestPeriod],
+        *,
+        required_resource_class: str | None,
     ) -> None:
         project = self._session.get(Project, request.project_id)
         if project is None:
@@ -626,6 +628,7 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                     or ""
                 )
                 requirement.required_competency = request.required_competencies
+                requirement.required_resource_class = required_resource_class
                 requirement.priority = request.priority or "Normale"
                 requirement.origin = ORIGIN_REQUEST
                 legacy_line = self._session.get(RequestLine, request.id)
@@ -1347,6 +1350,11 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                 else ()
             )
             for requirement in materialized:
+                requirement.required_resource_class = (
+                    prepared.specs[0].required_resource_class
+                    if prepared.specs
+                    else None
+                )
                 requirement.required_competency_id = (
                     legacy_competency_ids[0]
                     if len(legacy_competency_ids) == 1
@@ -1376,7 +1384,15 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             )
             self._session.flush()
         else:
-            self._sync_legacy_periods(request, periods)
+            self._sync_legacy_periods(
+                request,
+                periods,
+                required_resource_class=(
+                    prepared.specs[0].required_resource_class
+                    if prepared.specs
+                    else None
+                ),
+            )
 
         if revision is not None:
             from .asset_plan import SqlAssetPlanSynchronizer
