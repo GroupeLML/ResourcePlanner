@@ -17,7 +17,7 @@ test("706B — technicien : navigation restreinte et aucun montage des modules i
   const forbiddenRequests: string[] = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
-    if (/^\\/api\\/v1\\/(?:demands|projects|work-packages|medium-term)(?:\\/|$)/.test(url.pathname)) {
+    if (/^\/api\/v1\/(?:demands|projects|work-packages|medium-term)(?:\/|$)/.test(url.pathname)) {
       forbiddenRequests.push(url.pathname);
     }
   });
