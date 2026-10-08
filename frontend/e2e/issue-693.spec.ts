@@ -129,7 +129,7 @@ test("693 projette le même besoin par classe et dans la file jusqu'à couvertur
     await expect(candidate).toBeVisible();
     await expect(candidate).toContainText("en attente d’approbation");
     await expect(candidate).toHaveAttribute("draggable", "false");
-    await expect(page.locator(".resource-group-heading").filter({ hasText: "PROGRAMMATION" })).toBeVisible();
+    await expect(page.locator('.resource-group[data-resource-class="PROGRAMMATION"] .resource-group-heading')).toBeVisible();
 
     phase = "partial";
     await page.reload();
@@ -141,7 +141,7 @@ test("693 projette le même besoin par classe et dans la file jusqu'à couvertur
     await expect(approved).toHaveAttribute("draggable", "true");
     await expect(workQueue).toContainText("Approuvé · reliquat à couvrir");
 
-    const classHeading = page.locator(".resource-group-heading").filter({ hasText: "PROGRAMMATION" });
+    const classHeading = page.locator('.resource-group[data-resource-class="PROGRAMMATION"] .resource-group-heading');
     await classHeading.click();
     await expect(approved).toBeHidden();
     await classHeading.click();

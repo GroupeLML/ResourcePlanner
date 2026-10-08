@@ -67,7 +67,7 @@ test("Planning mémorise semaine, tri et classes repliées tout en utilisant la 
       await page.getByRole("button", { name: /Suivante/ }).click();
     }
 
-    const programmeurGroup = page.locator(".resource-group").filter({ hasText: "PROGRAMMEUR" }).first();
+    const programmeurGroup = page.locator('.resource-group[data-resource-class="PROGRAMMEUR"]').first();
     const groupHeading = programmeurGroup.locator(".resource-group-heading");
     await expect(groupHeading).toHaveAttribute("aria-expanded", "true");
     await expect.poll(() => resourceNames(programmeurGroup)).toEqual(["Alice", "Bob"]);
@@ -102,7 +102,7 @@ test("Planning mémorise semaine, tri et classes repliées tout en utilisant la 
     await navigateMain(page, "Projets");
     await navigateMain(page, "Planning opérationnel");
 
-    const restoredGroup = page.locator(".resource-group").filter({ hasText: "PROGRAMMEUR" }).first();
+    const restoredGroup = page.locator('.resource-group[data-resource-class="PROGRAMMEUR"]').first();
     const restoredHeading = restoredGroup.locator(".resource-group-heading");
     await expect(page.getByLabel("Ordre des ressources")).toHaveValue("availability");
     await expect(page.getByRole("heading", { level: 1 })).toHaveText(rememberedHeading);
