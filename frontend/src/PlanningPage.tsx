@@ -1,3 +1,4 @@
+import { compareProjectNumbersRecentFirst } from "./projectRecency";
 import { resourceDisplayName } from "./resourceLabels";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -1038,7 +1039,7 @@ export default function PlanningPage({
         ? `${item.project_number} — ${item.project_name}`
         : item.project_number);
     });
-    return [...values.entries()].sort((left, right) => left[1].localeCompare(right[1], "fr-CA"));
+    return [...values.entries()].sort((left, right) => compareProjectNumbersRecentFirst(left[0], right[0]));
   }, [snapshot, actions]);
 
   const classOptions = useMemo(() => {

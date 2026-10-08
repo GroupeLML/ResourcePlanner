@@ -1,3 +1,4 @@
+import { sortProjectsRecentFirst } from "./projectRecency";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import { getProjects, type ProjectReadModel } from "./api";
@@ -64,7 +65,7 @@ export default function ResourceClassesPanel() {
       .then(([classRows, standardRows, projectRows]) => {
         setClasses(sortClasses(classRows));
         setStandards(sortStandards(standardRows));
-        setProjects(projectRows);
+        setProjects(sortProjectsRecentFirst(projectRows));
         setStandardClassCode((current) => current || classRows.find((row) => row.active)?.code || "");
         setSelectedProjectId((current) => current || projectRows[0]?.id || "");
       })

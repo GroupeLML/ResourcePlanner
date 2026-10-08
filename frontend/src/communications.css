@@ -126,6 +126,25 @@
   background: #fffafa;
 }
 
+.draft-card.is-excluded,
+.batch-message-list > div.is-excluded {
+  background: #f2f4f7;
+  opacity: 0.75;
+}
+
+.draft-card.is-excluded .draft-field {
+  opacity: 0.75;
+}
+
+.communications-card .draft-include input[type="checkbox"] {
+  width: 1.1rem;
+  height: 1.1rem;
+  margin: 0;
+  padding: 0;
+  accent-color: #175cd3;
+  cursor: pointer;
+}
+
 .draft-heading > div {
   display: grid;
   gap: 0.12rem;
@@ -144,8 +163,14 @@
   font-weight: 700;
 }
 
+.draft-include {
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
 .draft-ready,
-.draft-blocked {
+.draft-blocked,
+.draft-excluded {
   padding: 0.24rem 0.5rem;
   border-radius: 999px;
   font-size: 0.68rem;
@@ -160,6 +185,11 @@
 .draft-blocked {
   background: #fff1f0;
   color: #b42318;
+}
+
+.draft-excluded {
+  background: #e4e7ec;
+  color: #344054;
 }
 
 .draft-recipients {
@@ -333,6 +363,10 @@
 
   .draft-recipients {
     grid-template-columns: 1fr;
+  }
+
+  .draft-heading {
+    flex-wrap: wrap;
   }
 
   .batch-actions {

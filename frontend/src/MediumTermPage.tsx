@@ -1,3 +1,4 @@
+import { sortProjectsRecentFirst } from "./projectRecency";
 import { CSSProperties, useEffect, useMemo, useState } from "react";
 
 import {
@@ -655,7 +656,7 @@ export default function MediumTermPage({
   );
 
   const projectOptions = useMemo(
-    () => [...projects].sort((left, right) => left.number.localeCompare(right.number, "fr-CA")),
+    () => sortProjectsRecentFirst(projects),
     [projects],
   );
 
