@@ -23,7 +23,7 @@ class ReactIssue656ContractTests(unittest.TestCase):
 
         self.assertIn('if (mode === "manual")', planning)
         self.assertIn('if (mode === "availability")', planning)
-        self.assertIn('resourceDisplayName(left.resource.name).localeCompare', planning)
+        self.assertIn("compareResourcesByDisplayName(left.resource, right.resource)", planning)
         self.assertIn("manualResourceOrder", planning)
 
 

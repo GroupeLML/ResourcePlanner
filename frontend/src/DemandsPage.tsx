@@ -1,5 +1,5 @@
 import { sortProjectsRecentFirst } from "./projectRecency";
-import { resourceDisplayName } from "./resourceLabels";
+import { compareResourcesByDisplayName, resourceDisplayName } from "./resourceLabels";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { createClientId } from "./clientId";
@@ -390,7 +390,7 @@ export default function DemandsPage({
       .then(([demandRows, projectRows, resourceRows, competencyRows, classRows, assetCatalog, contactRows, requesterRows]) => {
         setDemands(demandRows);
         setProjects(projectRows);
-        setResources(resourceRows);
+        setResources([...resourceRows].sort(compareResourcesByDisplayName));
         setCompetencies(competencyRows);
         setResourceClasses(classRows);
         setAssetTypes(assetCatalog.types);

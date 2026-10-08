@@ -1,4 +1,4 @@
-import { resourceDisplayName } from "./resourceLabels";
+import { compareResourcesByDisplayName, resourceDisplayName } from "./resourceLabels";
 import { useMemo } from "react";
 
 import { createClientId } from "./clientId";
@@ -564,7 +564,7 @@ export default function DemandLinesEditor({
                   <span>Ressource proposée</span>
                   <SearchableCombobox
                     value={line.proposed_resource_id || null}
-                    options={resources.map((resource) => ({
+                    options={[...resources].sort(compareResourcesByDisplayName).map((resource) => ({
                       value: resource.id,
                       label: `${resourceDisplayName(resource.name)}${resource.resource_class ? ` — ${resource.resource_class}` : ""}`,
                       searchText: [resource.name, resource.resource_class, resource.competencies].filter(Boolean).join(" "),

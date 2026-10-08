@@ -1,4 +1,4 @@
-import { resourceDisplayName } from "./resourceLabels";
+import { compareResourcesByDisplayName, resourceDisplayName } from "./resourceLabels";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import { createClientId } from "./clientId";
@@ -183,7 +183,7 @@ export default function ShiftEditor({
   }, [onClose, saving, segmentOpen, canManagePlanning]);
 
   const sortedResources = useMemo(
-    () => [...resources].sort((left, right) => left.sort_order - right.sort_order || left.name.localeCompare(right.name, "fr-CA")),
+    () => [...resources].sort(compareResourcesByDisplayName),
     [resources],
   );
 
