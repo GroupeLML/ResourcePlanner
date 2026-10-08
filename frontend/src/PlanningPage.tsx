@@ -1,5 +1,6 @@
 import { compareProjectNumbersRecentFirst } from "./projectRecency";
 import { resourceDisplayName } from "./resourceLabels";
+import { getResourceClassOptions, type ResourceClassOptionReadModel } from "./resourceClassesApi";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { createClientId } from "./clientId";
@@ -845,6 +846,7 @@ export default function PlanningPage({
   const [capacityGrid, setCapacityGrid] = useState<PlanningCapacityGridReadModel | null>(null);
   const [actions, setActions] = useState<PlanningActionReadModel[]>([]);
   const [catalogResources, setCatalogResources] = useState<ResourceReadModel[]>([]);
+  const [resourceClasses, setResourceClasses] = useState<ResourceClassOptionReadModel[]>([]);
   const [manualResourceOrder, setManualResourceOrder] = useState<Map<string, number>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -887,6 +889,7 @@ export default function PlanningPage({
     setCapacityGrid(null);
     setActions([]);
     setCatalogResources([]);
+    setResourceClasses([]);
     setManualResourceOrder(new Map());
     setLoading(true);
     setError(null);
@@ -981,6 +984,7 @@ export default function PlanningPage({
       setActions([]);
       setCapacityGrid(null);
       setCatalogResources([]);
+    setResourceClasses([]);
       return;
     }
     if (!scope) {
@@ -1005,14 +1009,17 @@ export default function PlanningPage({
       getPlanningCapacityGrid(start, end, controller.signal, scope),
       catalogRequest,
       getPlanningResourceOrder(controller.signal),
+      // Labels are optional presentation data: never block Planning when the catalog is unavailable.
+      getResourceClassOptions(controller.signal).catch(() => [] as ResourceClassOptionReadModel[]),
     ])
-      .then(([planning, planningActions, capacity, resourceRows, personalOrder]) => {
+      .then(([planning, planningActions, capacity, resourceRows, personalOrder, classRows]) => {
         if (controller.signal.aborted || planningIdentityKeyRef.current !== planningIdentityKey || activePlanningRequestKeyRef.current !== snapshotQueryKey) return;
         snapshotQueryKeyRef.current = snapshotQueryKey;
         setSnapshot(planning);
         setActions(planningActions);
         setCapacityGrid(capacity);
         setCatalogResources(canManagePlanning ? resourceRows : []);
+        setResourceClasses(classRows);
         setManualResourceOrder(new Map(Object.entries(personalOrder.positions)));
       })
       .catch((reason: unknown) => {
@@ -1041,6 +1048,11 @@ export default function PlanningPage({
     });
     return [...values.entries()].sort((left, right) => compareProjectNumbersRecentFirst(left[0], right[0]));
   }, [snapshot, actions]);
+
+  const classLabels = useMemo(
+    () => new Map(resourceClasses.map(({ code, label }) => [code, label.trim()])),
+    [resourceClasses],
+  );
 
   const classOptions = useMemo(() => {
     if (!snapshot) return [];
@@ -1637,6 +1649,7 @@ export default function PlanningPage({
     setActions([]);
     setCapacityGrid(null);
     setCatalogResources([]);
+    setResourceClasses([]);
     setManualResourceOrder(new Map());
     setEditingShift(null);
     setEditingSegmentId(null);
@@ -1744,7 +1757,7 @@ export default function PlanningPage({
                 <span>Classe</span>
                 <select value={classFilter} onChange={(event) => setClassFilter(event.target.value)}>
                   <option value="all">Toutes les classes</option>
-                  {classOptions.map((value) => <option value={value} key={value}>{value}</option>)}
+                  {classOptions.map((value) => <option value={value} key={value}>{classLabels.get(value) || "Non classé"}</option>)}
                 </select>
               </label>
               <label>
@@ -1913,7 +1926,7 @@ export default function PlanningPage({
                 const classWork = visibleClassWork.get(className) ?? { candidates: [], assignments: [] };
                 const workCount = classWork.candidates.length + classWork.assignments.length;
                 return (
-                  <div className="resource-group" key={className}>
+                  <div className="resource-group" key={className} data-resource-class={className}>
                     <button
                       type="button"
                       className="resource-group-heading"
@@ -1922,7 +1935,7 @@ export default function PlanningPage({
                     >
                       <span className="resource-group-title">
                         <span aria-hidden="true">{collapsed ? "▶" : "▼"}</span>
-                        <strong>{className}</strong>
+                        <strong>{classLabels.get(className) || "Non classé"}</strong>
                       </span>
                       <span>{rows.length} ressource(s){workCount > 0 ? ` · ${workCount} à planifier` : ""}</span>
                     </button>
