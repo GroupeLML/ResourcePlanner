@@ -7,6 +7,8 @@ import unicodedata
 from sqlalchemy import case, false, or_, select, true
 from sqlalchemy.orm import Session, aliased
 
+from ...application.project_manager_color import project_manager_color_marker
+from ...application.project_managers import ProjectManagerResolutionService
 from ...application.query_models import (
     AssetPlanningWindowReadModel,
     AssetRequirementReadModel,
@@ -92,6 +94,7 @@ from .models import (
 )
 from .segment_repository import SqlSegmentRepository
 from .planning_version import SqlPlanningMutationVersionRepository
+from .project_manager_resolution_repository import SqlProjectManagerResolutionRepository
 
 
 INACTIVE_PROJECT_STATUSES = {
@@ -1957,6 +1960,16 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                 for _shift, requirement, _resource, _project, _request, _marker in rows
             )
         )
+        # Resolve once for the visible projects, not once per Shift.  Only the
+        # effective principal (or a deterministic co-manager fallback) owns the
+        # decorative marker; no legacy name/contact join is authoritative.
+        resolved_managers = ProjectManagerResolutionService(
+            SqlProjectManagerResolutionRepository(self._session)
+        ).resolve_projects(list(visible_project_ids))
+        manager_markers = {
+            project_id: project_manager_color_marker(resolved_managers.get(project_id))
+            for project_id in visible_project_ids
+        }
         visible_start = min(shift.work_date for shift, *_rest in rows)
         visible_end = max(shift.work_date for shift, *_rest in rows)
         asset_scope = [
@@ -2389,6 +2402,12 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                     project_number=_optional_text(project.number),
                     project_name=_optional_text(project.name),
                     project_manager=_optional_text(project.project_manager_name),
+                    project_manager_color_id=manager_markers.get(
+                        requirement.project_id, (None, None)
+                    )[0],
+                    project_manager_color_label=manager_markers.get(
+                        requirement.project_id, (None, None)
+                    )[1],
                     requester=(
                         _optional_text(request.requester_name)
                         if request is not None

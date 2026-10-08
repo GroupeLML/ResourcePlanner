@@ -222,6 +222,8 @@ class ShiftReadModel:
     project_number: str | None = None
     project_name: str | None = None
     project_manager: str | None = None
+    project_manager_color_id: str | None = None
+    project_manager_color_label: str | None = None
     requester: str | None = None
     emergency_override_active: bool = False
     segment_planned_hours: float = 0.0

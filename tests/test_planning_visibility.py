@@ -188,6 +188,8 @@ class PlanningVisibilityPolicyTests(unittest.TestCase):
             confirmation="Confirmée",
             note="Note privée",
             requester="Demandeur privé",
+            project_manager_color_id="private-stable-token",
+            project_manager_color_label="Chargé privé",
         )
 
         projected = self.service.project_shift(neighbor, resolution)
@@ -205,6 +207,8 @@ class PlanningVisibilityPolicyTests(unittest.TestCase):
         self.assertIsNone(projected.demand_number)
         self.assertIsNone(projected.note)
         self.assertIsNone(projected.requester)
+        self.assertIsNone(projected.project_manager_color_id)
+        self.assertIsNone(projected.project_manager_color_label)
         self.assertFalse(
             self.service.can_read_shift_details(neighbor, resolution)
         )
