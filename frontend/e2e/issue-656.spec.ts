@@ -22,6 +22,7 @@ async function navigatePlanning(page: Page) {
   if (await globalScope.isVisible()) {
     await globalScope.click();
   }
+  await page.getByRole("button", { name: /^Filtres/ }).click();
   await expect(page.getByLabel("Ordre des ressources")).toHaveValue("manual");
 }
 
