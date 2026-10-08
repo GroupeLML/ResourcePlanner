@@ -27,7 +27,7 @@ async function navigatePlanning(page: Page) {
 }
 
 async function programmerNames(page: Page) {
-  const group = page.locator(".resource-group").filter({ hasText: "PROGRAMMEUR" }).first();
+  const group = page.locator('.resource-group[data-resource-class="PROGRAMMEUR"]').first();
   await expect(group).toBeVisible();
   const names = await group.locator(".resource-identity > strong").allTextContents();
   return names.filter((name) => name === "Alice" || name === "Bob");
