@@ -93,7 +93,7 @@ def repair_request_class(
         session.flush()
 
     return {
-        "demand_number": demand_number,
+        "demand_number": request.legacy_demand_number or request.id,
         "approval_revision_id": approved.approval_revision_id,
         "preview": not apply,
         "repaired_count": len(updates),
