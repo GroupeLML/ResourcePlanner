@@ -14,6 +14,8 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app.application.communications import CommunicationTransportResult
+from app.application.security import AuthPrincipal, ROLE_ADMIN
+from app.server.security import static_auth_resolver
 from app.domain.planning_engine import MISSING_ALLOCATION_TYPE
 from app.application.operational_contacts import OperationalContactService
 from app.application.project_communications import ProjectCommunicationService
@@ -57,6 +59,7 @@ TEST_DOMAIN = "example.test"
 class FakeSmtpDeliveryClient:
     def __init__(self) -> None:
         self.attempt_subjects: list[str] = []
+        self.attempt_cc: list[tuple[str, ...]] = []
         self._failed_once = False
 
     def test_connection(self, configuration) -> None:
@@ -64,6 +67,7 @@ class FakeSmtpDeliveryClient:
 
     def send_message(self, configuration, message, *, message_id: str) -> str:
         self.attempt_subjects.append(message.subject)
+        self.attempt_cc.append(tuple(message.cc_emails))
         if "2000" in message.subject and not self._failed_once:
             self._failed_once = True
             raise RuntimeError("synthetic smtp failure")
@@ -648,6 +652,219 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
         inactive = next(row for row in resources if row.resource_id == "R2")
         self.assertFalse(inactive.contact.active)
         self.assertIn(DIAGNOSTIC_RESOURCE_ERP_INACTIVE, inactive.diagnostics)
+
+
+    @staticmethod
+    def _generator_resolver(email: str | None, subject: str):
+        return static_auth_resolver(
+            AuthPrincipal.from_roles(
+                local_user_id="U-GENERATOR",
+                issuer="urn:resourceplanner:test",
+                subject=subject,
+                display_name="Générateur explicite",
+                email=email,
+                roles=(ROLE_ADMIN,),
+                auth_mode="test",
+            )
+        )
+
+    def test_727_generator_cc_is_persisted_for_included_messages_and_transports(self) -> None:
+        generator = "generator" + chr(64) + TEST_DOMAIN
+        reviewer = "reviewer" + chr(64) + TEST_DOMAIN
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            self._add_second_project(url)
+            transport = FakeProjectDraftTransport()
+            smtp = FakeSmtpDeliveryClient()
+            generator_app = create_api_app(
+                url,
+                auth_resolver=self._generator_resolver(generator, "generator-A"),
+            )
+            reviewer_app = create_api_app(
+                url,
+                auth_resolver=self._generator_resolver(reviewer, "reviewer-B"),
+                communication_transport=transport,
+                smtp_client=smtp,
+            )
+            with TestClient(generator_app) as origin, TestClient(reviewer_app) as approver:
+                default = origin.get(
+                    "/api/v1/communications/project-preview?week_start=2026-09-23"
+                )
+                self.assertEqual(default.status_code, 200, default.text)
+                self.assertFalse(default.json()["add_generator_cc"])
+                self.assertIsNone(default.json()["generator_identity_fingerprint"])
+                self.assertTrue(all(
+                    generator not in [r["email"] for r in draft["cc_recipients"]]
+                    for draft in default.json()["drafts"]
+                ))
+
+                preview_response = origin.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&add_generator_cc=true"
+                )
+                self.assertEqual(preview_response.status_code, 200, preview_response.text)
+                preview = preview_response.json()
+                self.assertTrue(preview["add_generator_cc"])
+                self.assertEqual(len(preview["drafts"]), 2)
+                self.assertEqual(
+                    preview["snapshot_fingerprint"], default.json()["snapshot_fingerprint"]
+                )
+                self.assertTrue(preview["generator_identity_fingerprint"])
+                self.assertTrue(all(
+                    [r["email"] for r in draft["cc_recipients"]].count(generator) == 1
+                    for draft in preview["drafts"]
+                ))
+                keys = {
+                    draft["project_id"]: draft["message_key"]
+                    for draft in preview["drafts"]
+                }
+                body = {
+                    "week_start": "2026-09-23",
+                    "expected_fingerprint": preview["snapshot_fingerprint"],
+                    "expected_generator_identity_fingerprint": (
+                        preview["generator_identity_fingerprint"]
+                    ),
+                    "add_generator_cc": True,
+                    "reviews": [
+                        {"message_key": keys["P1"], "include": True},
+                        {"message_key": keys["P2"], "include": False},
+                    ],
+                }
+                switched = approver.post("/api/v1/communications/project-batches", json=body)
+                self.assertEqual(switched.status_code, 409, switched.text)
+                self.assertEqual(
+                    switched.json()["error"]["code"],
+                    "project_communication_generator_changed",
+                )
+                prepared = origin.post("/api/v1/communications/project-batches", json=body)
+                self.assertEqual(prepared.status_code, 201, prepared.text)
+                messages = {
+                    row["project_id"]: row for row in prepared.json()["messages"]
+                }
+                self.assertEqual(messages["P1"]["cc_emails"].count(generator), 1)
+                self.assertNotIn(generator, messages["P2"]["cc_emails"])
+                self.assertFalse(messages["P2"]["included"])
+                self.assertEqual(smtp.attempt_subjects, [])
+
+                batch_id = prepared.json()["id"]
+                reloaded = approver.get(
+                    "/api/v1/communications/project-batches?week_start=2026-09-23"
+                ).json()
+                self.assertIn(generator, reloaded[0]["messages"][0]["cc_emails"])
+                self.assertEqual(
+                    approver.post(
+                        f"/api/v1/communications/project-batches/{batch_id}/approve"
+                    ).status_code,
+                    200,
+                )
+                created = approver.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/create-drafts"
+                )
+                self.assertEqual(created.status_code, 200, created.text)
+                self.assertEqual(len(transport.messages), 1)
+                self.assertIn(generator, transport.messages[0].cc_emails)
+                self.assertNotIn(reviewer, transport.messages[0].cc_emails)
+                downloaded = approver.get(
+                    f"/api/v1/communications/project-batches/{batch_id}/draft-download"
+                )
+                self.assertEqual(downloaded.status_code, 200, downloaded.text)
+                eml = BytesParser(policy=policy.default).parsebytes(downloaded.content)
+                self.assertIn(generator, str(eml["Cc"]))
+                self.assertNotIn(reviewer, str(eml["Cc"]))
+
+                configured = approver.put(
+                    "/api/v1/admin/settings/smtp",
+                    json={
+                        "host": "smtp.example.invalid",
+                        "port": 587,
+                        "security": "STARTTLS",
+                        "username": None,
+                        "password": None,
+                        "clear_password": False,
+                        "from_email": "planning" + chr(64) + TEST_DOMAIN,
+                        "from_name": "RessourcePlanner",
+                        "reply_to": None,
+                        "timeout_seconds": 20,
+                        "enabled": True,
+                    },
+                )
+                self.assertEqual(configured.status_code, 200, configured.text)
+                sent = approver.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/send-smtp"
+                )
+                self.assertEqual(sent.status_code, 200, sent.text)
+                self.assertEqual(sent.json()["status"], "COMMUNICATED")
+                self.assertEqual(len(smtp.attempt_cc), 1)
+                self.assertIn(generator, smtp.attempt_cc[0])
+                self.assertNotIn(reviewer, smtp.attempt_cc[0])
+
+                engine = create_sql_engine(url)
+                factory = create_session_factory(engine)
+                try:
+                    with factory.begin() as session:
+                        shift = session.get(Shift, "S1")
+                        assert shift is not None
+                        shift.hours = Decimal("6")
+                finally:
+                    engine.dispose()
+                delta = origin.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&add_generator_cc=true"
+                )
+                self.assertEqual(delta.status_code, 200, delta.text)
+                self.assertEqual(delta.json()["mode"], "project_planning_change")
+                self.assertTrue(all(
+                    generator in [r["email"] for r in draft["cc_recipients"]]
+                    for draft in delta.json()["drafts"]
+                ))
+
+    def test_727_cc_requires_explicit_valid_authenticated_email(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            for invalid in (None, "invalid", "two@@example.test", "a b@example.test"):
+                with self.subTest(invalid=invalid):
+                    app = create_api_app(
+                        url,
+                        auth_resolver=self._generator_resolver(invalid, "invalid-generator"),
+                    )
+                    with TestClient(app) as client:
+                        unchanged = client.get(
+                            "/api/v1/communications/project-preview?week_start=2026-09-23"
+                        )
+                        self.assertEqual(unchanged.status_code, 200, unchanged.text)
+                        invalid_preview = client.get(
+                            "/api/v1/communications/project-preview"
+                            "?week_start=2026-09-23&add_generator_cc=true"
+                        )
+                        self.assertEqual(invalid_preview.status_code, 422, invalid_preview.text)
+                        self.assertEqual(
+                            invalid_preview.json()["error"]["code"],
+                            "project_communication_generator_email_invalid",
+                        )
+
+    def test_727_generator_already_in_to_or_cc_is_not_duplicated(self) -> None:
+        for generator in (
+            "PM" + chr(64) + TEST_DOMAIN,
+            "RESOURCE-ONE" + chr(64) + TEST_DOMAIN,
+        ):
+            with self.subTest(generator=generator), TemporaryDirectory() as directory:
+                app = create_api_app(
+                    self._database(directory),
+                    auth_resolver=self._generator_resolver(generator, "generator"),
+                )
+                with TestClient(app) as client:
+                    response = client.get(
+                        "/api/v1/communications/project-preview"
+                        "?week_start=2026-09-23&add_generator_cc=true"
+                    )
+                self.assertEqual(response.status_code, 200, response.text)
+                draft = response.json()["drafts"][0]
+                recipients = draft["to_recipients"] + draft["cc_recipients"]
+                values = [
+                    row["email"].casefold()
+                    for row in recipients if row["email"]
+                ]
+                self.assertEqual(values.count(generator.casefold()), 1)
 
     def test_http_preview_exposes_one_project_message_with_to_cc_and_diagnostics(self) -> None:
         with TemporaryDirectory() as directory:
