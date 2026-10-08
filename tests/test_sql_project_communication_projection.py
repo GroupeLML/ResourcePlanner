@@ -828,7 +828,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
     def test_727_cc_requires_explicit_valid_authenticated_email(self) -> None:
         with TemporaryDirectory() as directory:
             url = self._database(directory)
-            for invalid in (None, "invalid", "two@@example.test", "a b@example.test"):
+            for invalid in (None, "invalid", "two@@example.test", "a b@" "example.test"):
                 with self.subTest(invalid=invalid):
                     app = create_api_app(
                         url,
