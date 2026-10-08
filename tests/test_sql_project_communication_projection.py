@@ -750,7 +750,14 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 reloaded = approver.get(
                     "/api/v1/communications/project-batches?week_start=2026-09-23"
                 ).json()
-                self.assertIn(generator, reloaded[0]["messages"][0]["cc_emails"])
+                self.assertIn(
+                    generator,
+                    next(
+                        message["cc_emails"]
+                        for message in reloaded[0]["messages"]
+                        if message["project_id"] == "P1"
+                    ),
+                )
                 self.assertEqual(
                     approver.post(
                         f"/api/v1/communications/project-batches/{batch_id}/approve"
