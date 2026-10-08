@@ -999,11 +999,12 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await expect(page.locator(".main-nav").getByText("Utilisateurs", { exact: true })).toHaveCount(0);
     await expect(page.locator(".main-nav").getByText("Configuration", { exact: true })).toHaveCount(0);
 
-    await navigateMain(page, "Demandes");
-    await expect(page.getByRole("button", { name: "Segments", exact: true })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: /Périodes & alternatives/ })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Workflow", exact: true })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Urgence", exact: true })).toHaveCount(0);
+    for (const label of ["Demandes", "Projets", "Moyen terme", "Delivery"]) {
+      await expect(page.locator(".main-nav").getByRole("button", { name: label, exact: true })).toHaveCount(0);
+    }
+    await page.goto("/?view=demands");
+    await expect(page.getByText("Accès refusé", { exact: true })).toBeVisible();
+    await expect(page.locator(".demands-workspace")).toHaveCount(0);
 
     await closeContext(context);
   });
