@@ -41,7 +41,7 @@ from app.performance_baseline import (
     compare_baselines,
     format_baseline_report,
 )
-from app.performance_diagnostics import read_performance_samples
+from app.server.performance import read_performance_samples
 from app.server import create_api_app
 from app.server.security import static_auth_resolver
 

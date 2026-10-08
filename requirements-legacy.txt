@@ -1,5 +1,0 @@
-# Runtime V1 historique. Temporaire jusqu'au cutover #208.
--r requirements-server.txt
-nicegui==3.16.0
-xlwings==0.36.14
-openpyxl==3.1.5

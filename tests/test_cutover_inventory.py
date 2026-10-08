@@ -15,45 +15,35 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class CutoverInventoryTests(unittest.TestCase):
-    def test_current_canonical_boundary_debt_is_explicit_and_has_no_regression(self) -> None:
+    def test_retired_v1_runtime_has_no_canonical_boundary_debt(self) -> None:
         inventory = build_inventory(REPO_ROOT)
-
         self.assertEqual(inventory.unexpected_boundary_violations, ())
-        self.assertGreaterEqual(len(inventory.known_boundary_debt), 1)
-        self.assertEqual(
-            {item.path for item in inventory.known_boundary_debt},
-            {"app/application/runtime_services.py"},
-        )
-        self.assertTrue(
-            all(
-                item.imported_module.startswith("app.infrastructure.excel")
-                for item in inventory.known_boundary_debt
-            )
-        )
+        self.assertEqual(inventory.known_boundary_debt, ())
 
-    def test_current_inventory_keeps_runtime_and_migration_debt_visible(self) -> None:
+    def test_removed_runtime_stays_removed_without_erasing_erp_import(self) -> None:
         inventory = build_inventory(REPO_ROOT)
-
-        self.assertIn("main.py", inventory.legacy_entrypoints)
-        self.assertIn("Lancer_Application.bat", inventory.legacy_entrypoints)
-        self.assertIn("Installer.bat", inventory.legacy_entrypoints)
-        self.assertIn("tools/cutover_excel_to_sql.py", inventory.migration_tools)
+        self.assertEqual(inventory.legacy_entrypoints, ())
+        self.assertEqual(inventory.migration_tools, ())
+        self.assertEqual(inventory.versioned_modules, ())
+        self.assertEqual(inventory.compatibility_modules, ())
+        self.assertEqual(inventory.ui_modules, ())
+        self.assertEqual(inventory.excel_modules, ())
+        # Aggregate CI dependencies remain until the separate 336D cleanup.
         self.assertEqual(set(inventory.legacy_requirements), LEGACY_REQUIREMENTS)
-        self.assertIn("app/v13.py", inventory.versioned_modules)
-        self.assertIn("app/v18.py", inventory.versioned_modules)
-        self.assertIn("app/v172_nicegui_compat.py", inventory.compatibility_modules)
-        self.assertIn("app/ui.py", inventory.ui_modules)
-        self.assertIn("app/excel_repository.py", inventory.excel_modules)
-
-    def test_runtime_composition_is_counted_and_classified(self) -> None:
-        inventory = build_inventory(REPO_ROOT)
-        steps = dict(inventory.runtime_steps)
-
-        self.assertGreater(len(steps), 20)
-        self.assertEqual(steps.get("nicegui_compat"), "compatibility")
-        self.assertEqual(steps.get("features"), "legacy")
-        self.assertEqual(steps.get("operational_planning_page"), "application")
-        self.assertEqual(steps.get("communication_ui"), "communications")
+        for obsolete in (
+            "main.py",
+            "app/application/runtime_services.py",
+            "app/runtime_composition.py",
+            "app/infrastructure/excel",
+            "app/infrastructure/migration",
+            "requirements-legacy.txt",
+            ".github/workflows/windows-release.yml",
+        ):
+            with self.subTest(path=obsolete):
+                self.assertFalse((REPO_ROOT / obsolete).exists())
+        self.assertTrue(
+            (REPO_ROOT / "app/infrastructure/erp_export/excel_project_source.py").is_file()
+        )
 
     def test_forbidden_external_dependency_is_detected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

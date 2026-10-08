@@ -21,7 +21,6 @@ from app.application.errors import (
     ApplicationValidationError,
 )
 from app.application.read_models import DemandPeriodReadModel, DemandReadModel
-from app.application.runtime_services import demand_service
 from app.domain.demand_periods import DemandPeriodDefinition
 
 
@@ -392,53 +391,6 @@ class DemandServiceTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "demand_correction_comment_required")
         self.assertEqual(events, [])
 
-    def test_runtime_adapter_uses_excel_command_adapters_and_rebuilds_once(self) -> None:
-        events: list[object] = []
-
-        class FakeRepository:
-            current_user = "coordinator"
-
-            @contextmanager
-            def batch_update(self, label: str):
-                events.append(("batch-enter", label))
-                try:
-                    yield self
-                finally:
-                    events.append(("batch-exit", label))
-
-            def update_demand(self, number, updates, *, action, comment):
-                events.append(("update", number, updates, action, comment))
-
-            def demands(self):
-                return [{"NoDemande": "DMO-3", "Statut": "Soumise"}]
-
-        repository = FakeRepository()
-        refinements = ModuleType("app.v15_refinements")
-        engine = ModuleType("app.v15_engine")
-
-        def sync(repo, demand):
-            self.assertIs(repo, repository)
-            events.append(("sync", demand["NoDemande"]))
-
-        def rebuild(repo):
-            self.assertIs(repo, repository)
-            events.append(("rebuild",))
-            return {"allocated_hours": 32.0}
-
-        refinements._sync_segments_to_approved_demand = sync  # type: ignore[attr-defined]
-        engine.rebuild_allocations = rebuild  # type: ignore[attr-defined]
-
-        with patch.dict(
-            sys.modules,
-            {"app.v15_refinements": refinements, "app.v15_engine": engine},
-        ):
-            result = demand_service(repository).approve("DMO-3", "approved")
-
-        self.assertEqual(
-            [event[0] for event in events],
-            ["batch-enter", "update", "sync", "rebuild", "batch-exit"],
-        )
-        self.assertEqual(result["allocated_hours"], 32.0)
 
     def test_application_service_has_only_port_and_command_dependencies(self) -> None:
         source = (

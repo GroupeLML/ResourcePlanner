@@ -213,21 +213,5 @@ class SegmentServiceTests(unittest.TestCase):
         self.assertNotIn("repository_context", source)
         self.assertNotIn("rebuild_planning", source)
 
-    def test_runtime_composition_uses_excel_ports_not_callbacks(self) -> None:
-        root = Path(__file__).resolve().parents[1]
-        runtime_source = (root / "app" / "application" / "runtime_services.py").read_text(
-            encoding="utf-8"
-        )
-        adapter_source = (
-            root / "app" / "infrastructure" / "excel" / "segment_repository.py"
-        ).read_text(encoding="utf-8")
-
-        self.assertIn("ExcelSegmentRepository(repository)", runtime_source)
-        self.assertIn("ExcelPlanningCommandAdapter(repository)", runtime_source)
-        self.assertIn("return SegmentService(", runtime_source)
-        self.assertNotIn("rebuild_planning=lambda", runtime_source)
-        self.assertIn('import_module("app.v13")', adapter_source)
-
-
 if __name__ == "__main__":
     unittest.main()

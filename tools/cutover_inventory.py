@@ -50,13 +50,9 @@ LEGACY_ENTRYPOINTS = ("main.py", "Lancer_Application.bat", "Installer.bat")
 MIGRATION_TOOLS = ("tools/cutover_excel_to_sql.py",)
 VERSIONED_MODULE = re.compile(r"^app/v\d.*\.py$", re.IGNORECASE)
 
-# Ratchet, not an architecture exemption. This exact bridge already existed before #208
-# and is intentionally visible until its NiceGUI callers are retired/moved. No new
-# canonical file or imported prefix may be added here casually: removing this baseline
-# is one of the explicit cutover goals.
-KNOWN_BOUNDARY_DEBT: dict[str, tuple[str, ...]] = {
-    "app/application/runtime_services.py": ("app.infrastructure.excel",),
-}
+# 336B: no historical V1 bridge or canonical boundary-debt exemption remains.
+# New regressions must fail the existing architecture guard.
+KNOWN_BOUNDARY_DEBT: dict[str, tuple[str, ...]] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,7 +274,10 @@ def build_inventory(root: Path) -> Inventory:
     excel = sorted(
         rel
         for path, rel in relative.items()
-        if "excel" in path.name.casefold() or "/infrastructure/excel/" in f"/{rel.casefold()}/"
+        if (
+            ("excel" in path.name.casefold() or "/infrastructure/excel/" in f"/{rel.casefold()}/")
+            and not rel.startswith("app/infrastructure/erp_export/")
+        )
     )
 
     return Inventory(

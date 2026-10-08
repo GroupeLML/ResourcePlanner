@@ -4,10 +4,6 @@ on:
   pull_request:
     paths:
       - "AGENTS.md"
-      - "main.py"
-      - "Lancer_Application.bat"
-      - "Lancer_Application_Legacy.bat"
-      - "Installer.bat"
       - "Installer_Web.bat"
       - "Lancer_Serveur.bat"
       - "Lancer_Web.bat"
@@ -140,7 +136,7 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Compile Python sources
         if: env.RUN_PYTHON_VERIFICATION == 'true'
-        run: python -m compileall -q app tests tools migrations main.py
+        run: python -m compileall -q app tests tools migrations
       - name: Run verification suite shard
         if: env.RUN_PYTHON_VERIFICATION == 'true'
         run: >-

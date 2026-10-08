@@ -6,12 +6,6 @@ import unittest
 from app.application.commands import QuickShiftCreateCommand
 from app.application.errors import ApplicationValidationError
 from app.application.quick_shift_service import QuickShiftService
-from app.segment_repository import (
-    QUICK_SHIFT_ORIGIN,
-    SEGMENT_HEADERS,
-    SEGMENT_ORIGIN_FIELD,
-    ensure_segment_fields,
-)
 
 
 class _Segments:
@@ -86,7 +80,7 @@ class QuickShiftServiceTests(unittest.TestCase):
         self.assertEqual(segments.created["DateFin"], date(2026, 8, 26))
         self.assertEqual(segments.created["HeuresPrevues"], 7.5)
         self.assertEqual(segments.created["TypePlanification"], "Fixe")
-        self.assertEqual(segments.created[SEGMENT_ORIGIN_FIELD], QUICK_SHIFT_ORIGIN)
+        self.assertEqual(segments.created[QuickShiftService.ORIGIN_FIELD], QuickShiftService.ORIGIN_QUICK_SHIFT)
         self.assertEqual(
             allocations.calls,
             [
@@ -149,34 +143,6 @@ class QuickShiftServiceTests(unittest.TestCase):
 
         self.assertEqual(segments.created, {})
         self.assertEqual(allocations.calls, [])
-
-
-class SegmentFieldExtensionTests(unittest.TestCase):
-    def test_optional_field_is_appended_without_reordering_existing_headers(self) -> None:
-        original = list(SEGMENT_HEADERS)
-
-        class FakeRepository:
-            def __init__(self) -> None:
-                self.headers: list[str] = []
-                self.save_count = 0
-
-            def _ensure_sheet_table(self, _sheet: str, headers: list[str], _table: str) -> None:
-                self.headers = list(headers)
-
-            def save(self) -> None:
-                self.save_count += 1
-
-        repo = FakeRepository()
-        try:
-            ensure_segment_fields(repo, [SEGMENT_ORIGIN_FIELD])  # type: ignore[arg-type]
-            ensure_segment_fields(repo, [SEGMENT_ORIGIN_FIELD])  # type: ignore[arg-type]
-
-            self.assertEqual(SEGMENT_HEADERS[:-1], original)
-            self.assertEqual(SEGMENT_HEADERS[-1], SEGMENT_ORIGIN_FIELD)
-            self.assertEqual(SEGMENT_HEADERS.count(SEGMENT_ORIGIN_FIELD), 1)
-            self.assertEqual(repo.headers, SEGMENT_HEADERS)
-        finally:
-            SEGMENT_HEADERS[:] = original
 
 
 if __name__ == "__main__":

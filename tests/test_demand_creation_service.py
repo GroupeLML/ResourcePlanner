@@ -8,7 +8,6 @@ import unittest
 from app.application.commands import DemandCreateCommand
 from app.application.demand_service import DemandService
 from app.application.errors import ApplicationValidationError
-from app.application.runtime_services import demand_service
 
 
 class _Demands:
@@ -175,36 +174,7 @@ class DemandCreationServiceTests(unittest.TestCase):
             [("enter", "create demand"), ("create", False), ("exit", "create demand")],
         )
 
-    def test_runtime_adapter_uses_existing_repository_creation_semantics(self) -> None:
-        calls: list[object] = []
 
-        class FakeRepository:
-            def create_demand(self, values: dict[str, object], submit: bool = False) -> str:
-                calls.append((values, submit))
-                return "DMO-2026-0046"
-
-        number = demand_service(FakeRepository()).create(
-            {
-                "NumeroProjet": "P-500",
-                "DateDebutSouhaitee": "2026-08-24",
-                "Confirmation": "Tentative",
-                "TempsEstimeHeures": 8,
-            },
-            submit=True,
-        )
-
-        self.assertEqual(number, "DMO-2026-0046")
-        self.assertEqual(calls[0][1], True)
-        self.assertEqual(calls[0][0]["Confirmation"], "Tentative")
-        self.assertEqual(calls[0][0]["DateDebutSouhaitee"], date(2026, 8, 24))
-
-    def test_editor_creation_crosses_demand_service_boundary(self) -> None:
-        root = Path(__file__).resolve().parents[1]
-        source = (root / "app" / "demand_editor_ui.py").read_text(encoding="utf-8")
-
-        self.assertIn("demand_service(self.repo).create(payload(), submit=False)", source)
-        self.assertIn("demand_service(self.repo).create(payload(), submit=True)", source)
-        self.assertNotIn("self.repo.create_demand(", source)
 
 
 if __name__ == "__main__":
