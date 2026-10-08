@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 import sys
 
-from sqlalchemy import select
+from sqlalchemy import false, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -104,6 +104,25 @@ def repair_request_class(
     }
 
 
+def _unclassified_request_ids_statement():
+    """Portable predicate: SQL Server requires `= 0`, not `IS 0`."""
+    return (
+        select(WorkforceRequest.id)
+        .join(
+            ResourceRequirement,
+            ResourceRequirement.workforce_request_id == WorkforceRequest.id,
+        )
+        .where(
+            WorkforceRequest.line_mode == false(),
+            WorkforceRequest.status == "En planification",
+            ResourceRequirement.status.not_in(("Annulé", "Terminé")),
+            ResourceRequirement.required_resource_class.is_(None),
+        )
+        .distinct()
+        .order_by(WorkforceRequest.id)
+    )
+
+
 def repair_all_request_classes(
     session: Session,
     *,
@@ -119,21 +138,7 @@ def repair_all_request_classes(
         # change the scanned requirements while the repair is running.
         SqlPlanningMutationVersionRepository(session).acquire()
 
-    request_ids = session.scalars(
-        select(WorkforceRequest.id)
-        .join(
-            ResourceRequirement,
-            ResourceRequirement.workforce_request_id == WorkforceRequest.id,
-        )
-        .where(
-            WorkforceRequest.line_mode.is_(False),
-            WorkforceRequest.status == "En planification",
-            ResourceRequirement.status.not_in(("Annulé", "Terminé")),
-            ResourceRequirement.required_resource_class.is_(None),
-        )
-        .distinct()
-        .order_by(WorkforceRequest.id)
-    ).all()
+    request_ids = session.scalars(_unclassified_request_ids_statement()).all()
     changed: list[dict[str, object]] = []
     skipped: list[dict[str, str]] = []
     unchanged = 0
