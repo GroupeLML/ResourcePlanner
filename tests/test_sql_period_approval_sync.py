@@ -29,6 +29,7 @@ from app.infrastructure.sql import (
 )
 from app.infrastructure.sql.same_resource_periods import SqlSameResourcePeriodCoordinator
 from app.infrastructure.sql.query_repository import SqlPlannerQueryRepository
+from tools.repair_legacy_simple_resource_class import repair_request_class
 
 
 D1 = date(2026, 9, 7)
@@ -241,8 +242,20 @@ class SqlPeriodApprovalSyncTests(unittest.TestCase):
             self.assertEqual(unplanned[0].required_resource_class, "INSTALL_ELEC")
             self.assertEqual(unplanned[0].planned_hours, 8.0)
 
-            # Restore an already approved requirement from its immutable approval
-            # rather than silently reapproving the current editable request.
+            # The request can change after approval: repair must use the immutable
+            # active authorization, never the current editable RequestLine class.
+            requirement.required_resource_class = None
+            session.get(RequestLine, "D1").required_resource_class = "PROGRAMMEUR"
+            session.flush()
+            preview = repair_request_class(session, "DEM-1")
+            self.assertEqual(preview["repaired_count"], 1)
+            self.assertEqual(preview["changes"][0]["class_code"], "INSTALL_ELEC")
+            self.assertIsNone(requirement.required_resource_class)
+            applied = repair_request_class(session, "DEM-1", apply=True)
+            self.assertEqual(applied["repaired_count"], 1)
+            self.assertEqual(requirement.required_resource_class, "INSTALL_ELEC")
+
+            # A subsequent operational rebuild also derives class from approval.
             requirement.required_resource_class = None
             session.flush()
             sync.sync_operational_choices("DEM-1")
