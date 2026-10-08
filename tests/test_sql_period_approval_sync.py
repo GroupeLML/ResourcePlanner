@@ -21,6 +21,7 @@ from app.infrastructure.sql import (
     ResourceRequirement,
     SqlDemandPeriodRepository,
     SqlPeriodAwareApprovedDemandSyncAdapter,
+    SqlPlannerQueryRepositoryWithLoadProfiles,
     WorkforceRequest,
     WorkforceRequestPeriodRequirement,
     create_session_factory,
@@ -28,7 +29,6 @@ from app.infrastructure.sql import (
     transactional_session,
 )
 from app.infrastructure.sql.same_resource_periods import SqlSameResourcePeriodCoordinator
-from app.infrastructure.sql.query_repository import SqlPlannerQueryRepository
 from tools.repair_legacy_simple_resource_class import (
     repair_all_request_classes,
     repair_request_class,
@@ -237,7 +237,7 @@ class SqlPeriodApprovalSyncTests(unittest.TestCase):
             self.assertIsNone(requirement.assigned_resource_id)
             self.assertEqual(requirement.required_resource_class, "INSTALL_ELEC")
 
-            actions = SqlPlannerQueryRepository(session).list_planning_actions(
+            actions = SqlPlannerQueryRepositoryWithLoadProfiles(session).list_planning_actions(
                 start=D1, end=D3,
             )
             unplanned = [action for action in actions if action.kind == "ASSIGNMENT"]
