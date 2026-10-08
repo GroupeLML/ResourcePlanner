@@ -84,6 +84,16 @@
   gap: 1rem;
 }
 
+.preview-card > .communications-card-heading {
+  flex-wrap: wrap;
+}
+
+.preview-card > .communications-card-heading .draft-include {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .draft-list,
 .batch-list {
   display: grid;
