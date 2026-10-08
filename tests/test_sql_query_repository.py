@@ -220,7 +220,7 @@ class SqlPlannerQueryRepositoryTests(unittest.TestCase):
             project.project_manager_name = "Nom historique"
 
         with self.factory() as session:
-            shifts = SqlPlannerQueryRepository(session).list_shifts(start=D1, end=D2)
+            shifts = SqlPlannerQueryRepository(session).list_shifts(start=D1, end=D2, include_manager_colors=True)
         self.assertEqual(len(shifts), 2)
         marker = shifts[0].project_manager_color_id
         self.assertTrue(marker)
@@ -232,7 +232,7 @@ class SqlPlannerQueryRepositoryTests(unittest.TestCase):
             assert project is not None
             project.project_manager_name = "Nom renommé"
         with self.factory() as session:
-            renamed = SqlPlannerQueryRepository(session).list_shifts(start=D1, end=D1)[0]
+            renamed = SqlPlannerQueryRepository(session).list_shifts(start=D1, end=D1, include_manager_colors=True)[0]
         self.assertEqual(renamed.project_manager_color_id, marker)
         self.assertEqual(renamed.project_manager_color_label, "Nom renommé")
 
@@ -260,7 +260,7 @@ class SqlPlannerQueryRepositoryTests(unittest.TestCase):
                 )
             )
         with self.factory() as session:
-            shifts = SqlPlannerQueryRepository(session).list_shifts(start=D1, end=D2)
+            shifts = SqlPlannerQueryRepository(session).list_shifts(start=D1, end=D2, include_manager_colors=True)
         self.assertEqual(len(shifts), 2)
         self.assertTrue(shifts[0].project_manager_color_id)
         self.assertEqual(shifts[0].project_manager_color_label, "Co chargé RP")
@@ -270,7 +270,7 @@ class SqlPlannerQueryRepositoryTests(unittest.TestCase):
 
     def test_shift_without_effective_manager_has_neutral_marker(self) -> None:
         with self.factory() as session:
-            shift = SqlPlannerQueryRepository(session).list_shifts(start=D1, end=D1)[0]
+            shift = SqlPlannerQueryRepository(session).list_shifts(start=D1, end=D1, include_manager_colors=True)[0]
         self.assertIsNone(shift.project_manager_color_id)
         self.assertIsNone(shift.project_manager_color_label)
 

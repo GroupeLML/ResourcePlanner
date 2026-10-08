@@ -1794,6 +1794,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         visible_resource_ids: Sequence[str] = (),
         project_day_keys: Sequence[tuple[str, date]] = (),
         can_manage_planning: bool = False,
+        include_manager_colors: bool = False,
     ) -> tuple[ShiftReadModel, ...]:
         asset_context_marker = (
             select(AssetRequirement.id)
@@ -1963,13 +1964,15 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         # Resolve once for the visible projects, not once per Shift.  Only the
         # effective principal (or a deterministic co-manager fallback) owns the
         # decorative marker; no legacy name/contact join is authoritative.
-        resolved_managers = ProjectManagerResolutionService(
-            SqlProjectManagerResolutionRepository(self._session)
-        ).resolve_projects(list(visible_project_ids))
-        manager_markers = {
-            project_id: project_manager_color_marker(resolved_managers.get(project_id))
-            for project_id in visible_project_ids
-        }
+        manager_markers: dict[str, tuple[str | None, str | None]] = {}
+        if include_manager_colors:
+            resolved_managers = ProjectManagerResolutionService(
+                SqlProjectManagerResolutionRepository(self._session)
+            ).resolve_projects(list(visible_project_ids))
+            manager_markers = {
+                project_id: project_manager_color_marker(resolved_managers.get(project_id))
+                for project_id in visible_project_ids
+            }
         visible_start = min(shift.work_date for shift, *_rest in rows)
         visible_end = max(shift.work_date for shift, *_rest in rows)
         asset_scope = [
@@ -2456,6 +2459,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             visible_resource_ids=shift_resource_ids,
             project_day_keys=project_day_keys,
             can_manage_planning=can_manage_planning,
+            include_manager_colors=True,
         )
         pending_loads = self.list_pending_loads(
             start=start,
