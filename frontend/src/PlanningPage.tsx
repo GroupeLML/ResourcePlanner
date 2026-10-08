@@ -984,7 +984,7 @@ export default function PlanningPage({
       setActions([]);
       setCapacityGrid(null);
       setCatalogResources([]);
-    setResourceClasses([]);
+      setResourceClasses([]);
       return;
     }
     if (!scope) {
