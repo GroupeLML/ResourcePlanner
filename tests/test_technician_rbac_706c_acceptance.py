@@ -102,6 +102,19 @@ class TechnicianRbac706CAcceptanceTests(unittest.TestCase):
         ):
             self.assertNotIn(secret, response.text)
 
+    def test_seeded_entities_are_really_visible_to_authorized_admin(self) -> None:
+        # A denial for a non-existent object alone would be a vacuous IDOR test.
+        with self.client(ROLE_ADMIN) as client:
+            for path, token in (
+                ("/api/v1/projects", "Projet technicien jour 1"),
+                ("/api/v1/demands", "DMO-APPROVAL"),
+                ("/api/v1/work-packages", "WP-SECRET-706C"),
+            ):
+                with self.subTest(path=path):
+                    response = client.get(path)
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertIn(token, response.text)
+
     def test_direct_and_indirect_reads_reject_real_and_unknown_ids_all_scopes(self) -> None:
         paths = (
             "/api/v1/projects",
