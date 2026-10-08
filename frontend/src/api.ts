@@ -1042,6 +1042,8 @@ export type ShiftReadModel = {
   project_number: string | null;
   project_name: string | null;
   project_manager: string | null;
+  project_manager_color_id?: string | null;
+  project_manager_color_label?: string | null;
   requester: string | null;
   asset_assignment: ShiftAssetReservationReadModel | null;
   related_asset_reservations: ShiftAssetReservationReadModel[];

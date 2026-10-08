@@ -274,6 +274,8 @@ class PlanningVisibilityService:
             confirmation_override=None,
             note=None,
             project_manager=None,
+            project_manager_color_id=None,
+            project_manager_color_label=None,
             requester=None,
             emergency_override_active=False,
             segment_planned_hours=0.0,
