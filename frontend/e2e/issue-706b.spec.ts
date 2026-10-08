@@ -1,4 +1,4 @@
-import { Browser, BrowserContext, expect, test } from "@playwright/test";
+import { Browser, expect, test } from "@playwright/test";
 
 const BASE_URL = process.env.RESOURCEPLANNER_E2E_BASE_URL || "http://127.0.0.1:8765";
 
