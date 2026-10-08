@@ -53,6 +53,7 @@ export default function CommunicationsPage() {
   const [batches, setBatches] = useState<CommunicationBatch[]>([]);
   const [preview, setPreview] = useState<ProjectCommunicationPreview | null>(null);
   const [drafts, setDrafts] = useState<DraftState[]>([]);
+  const [addGeneratorCc, setAddGeneratorCc] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -73,6 +74,7 @@ export default function CommunicationsPage() {
   useEffect(() => {
     setPreview(null);
     setDrafts([]);
+    setAddGeneratorCc(false);
     setError(null);
     void reloadBatches().catch((reason: unknown) => {
       setError(reason instanceof Error ? reason.message : "Impossible de charger les communications.");
@@ -84,10 +86,12 @@ export default function CommunicationsPage() {
     setError(null);
     setNotice(null);
     try {
-      const row = await getProjectCommunicationPreview(weekStart);
+      const row = await getProjectCommunicationPreview(weekStart, addGeneratorCc);
       // A same-version refresh must not discard the coordinator's current review.
       const previous = preview?.week_start === row.week_start
         && preview.snapshot_fingerprint === row.snapshot_fingerprint
+        && preview.add_generator_cc === row.add_generator_cc
+        && preview.generator_identity_fingerprint === row.generator_identity_fingerprint
         ? new Map(drafts.map(({ source: _source, ...review }) => [review.message_key, review]))
         : new Map<string, ProjectCommunicationReview>();
       setPreview(row);
@@ -120,10 +124,13 @@ export default function CommunicationsPage() {
         preview.week_start,
         preview.snapshot_fingerprint,
         drafts.map(({ source: _source, ...review }) => review),
+        preview.add_generator_cc,
+        preview.generator_identity_fingerprint,
       );
       setNotice("Lot projet préparé. Aucun message n’a été envoyé.");
       setPreview(null);
       setDrafts([]);
+      setAddGeneratorCc(false);
       await reloadBatches();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Préparation impossible.");
@@ -269,6 +276,19 @@ export default function CommunicationsPage() {
             <span className="eyebrow">Planning courant</span>
             <h3>Prévisualisation par projet</h3>
           </div>
+          <label className="draft-include">
+            <input
+              type="checkbox"
+              checked={addGeneratorCc}
+              disabled={busy}
+              onChange={(event) => {
+                setAddGeneratorCc(event.target.checked);
+                setPreview(null);
+                setDrafts([]);
+              }}
+            />
+            <span>M'ajouter en CC dans les communications</span>
+          </label>
           <button type="button" disabled={busy} onClick={() => void runPreview()}>
             Générer la prévisualisation
           </button>

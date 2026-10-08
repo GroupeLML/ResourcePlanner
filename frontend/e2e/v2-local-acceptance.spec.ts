@@ -868,6 +868,15 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await expect(page.getByText("Destinataires gérés dans Utilisateurs")).toBeVisible();
     await expect(page.locator(".contact-row")).toHaveCount(0);
 
+    const addGeneratorCc = page.getByRole("checkbox", {
+      name: "M'ajouter en CC dans les communications",
+    });
+    await expect(addGeneratorCc).not.toBeChecked();
+    await addGeneratorCc.check();
+    await expect(addGeneratorCc).toBeChecked();
+    await addGeneratorCc.uncheck();
+    await expect(addGeneratorCc).not.toBeChecked();
+
     await page.getByLabel("Semaine du").fill(d1);
     await page.getByRole("button", { name: "Générer la prévisualisation" }).click();
 
@@ -895,6 +904,7 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
 
     await page.getByRole("button", { name: "Préparer le lot" }).click();
     await expect(page.locator(".communications-notice")).toContainText("Lot projet préparé");
+    await expect(addGeneratorCc).not.toBeChecked();
 
     const batch = page.locator(".batch-row").first();
     await expect(batch).toContainText("Sujet : Confirmation E2E — P-251");
