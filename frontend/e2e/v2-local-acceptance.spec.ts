@@ -715,6 +715,7 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
 
     await navigateMain(page, "Planning opérationnel");
     await page.getByRole("button", { name: /Suivante/ }).click();
+    await page.getByRole("button", { name: /^Filtres/ }).click();
     await page.getByLabel("Recherche").fill(demandNumber);
     await expect(page.locator(".shift-card")).toHaveCount(4);
     await expect(page.locator(".shift-card").filter({ hasText: "Tentative" }).first()).toBeVisible();
@@ -807,6 +808,7 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     const { context, page } = await openAs(browser, "COORDINATOR");
     await navigateMain(page, "Planning opérationnel");
     await page.getByRole("button", { name: /Suivante/ }).click();
+    await page.getByRole("button", { name: /^Filtres/ }).click();
     await page.getByLabel("Recherche").fill(demandNumber);
 
     const bobRow = page.locator(".resource-row").filter({ hasText: "Bob" });
@@ -2199,6 +2201,7 @@ test("materialized demand cancellation is requested, reviewed, rejected or accep
   await expect(approver.page.locator(".demand-notice").filter({ hasText: "Demande approuvée" }).first()).toContainText("Demande approuvée");
   await navigateMain(approver.page, "Planning opérationnel");
   await approver.page.getByRole("button", { name: /Suivante/ }).click();
+  await approver.page.getByRole("button", { name: /^Filtres/ }).click();
   await approver.page.getByLabel("Recherche").fill(cancellationDemand);
   await expect(approver.page.locator(".shift-card")).not.toHaveCount(0);
   await closeContext(approver.context);
@@ -2261,6 +2264,7 @@ test("materialized demand cancellation is requested, reviewed, rejected or accep
 
   await navigateMain(coordinator.page, "Planning opérationnel");
   await coordinator.page.getByRole("button", { name: /Suivante/ }).click();
+  await coordinator.page.getByRole("button", { name: /^Filtres/ }).click();
   await coordinator.page.getByLabel("Recherche").fill(cancellationDemand);
   await expect(coordinator.page.locator(".shift-card")).not.toHaveCount(0);
 
@@ -2282,6 +2286,7 @@ test("materialized demand cancellation is requested, reviewed, rejected or accep
 
   await navigateMain(coordinator.page, "Planning opérationnel");
   await coordinator.page.getByRole("button", { name: /Suivante/ }).click();
+  await coordinator.page.getByRole("button", { name: /^Filtres/ }).click();
   await coordinator.page.getByLabel("Recherche").fill(cancellationDemand);
   await expect(coordinator.page.locator(".shift-card")).toHaveCount(0);
 
