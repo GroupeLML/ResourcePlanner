@@ -580,6 +580,8 @@ function ResourceRow({
   resource,
   days,
   shifts,
+  candidates,
+  onOpenDemand,
   capacity,
   diagnostics,
   onEditShift,
@@ -593,6 +595,8 @@ function ResourceRow({
   resource: ResourceReadModel;
   days: Date[];
   shifts: ShiftReadModel[];
+  candidates: PendingCandidateEntry[];
+  onOpenDemand?: (demandNumber: string) => void;
   capacity: PlanningResourceCapacityReadModel | null;
   diagnostics: Map<string, PlanningSegmentCapacityDiagnosticReadModel>;
   onEditShift?: (shift: ShiftReadModel) => void;
@@ -670,6 +674,7 @@ function ResourceRow({
       {days.map((day) => {
         const iso = toIsoDate(day);
         const dayShifts = shifts.filter((shift) => sameIsoDate(shift.work_date, day));
+        const dayCandidates = candidates.filter(({ candidate }) => candidate.start_date <= iso && candidate.end_date >= iso);
         const cellCapacity = dayCapacity.get(iso) ?? null;
         const cellClass = [
           "resource-cell",
@@ -737,7 +742,14 @@ function ResourceRow({
                 key={shift.allocation_id}
               />
             ))}
-            {dayShifts.length === 0 && !cellCapacity && <span className="empty-day">—</span>}
+            {dayCandidates.map((entry) => (
+              <PendingGhostCard
+                entry={entry}
+                onOpenDemand={onOpenDemand}
+                key={`resource-candidate-${entry.candidate.candidate_key}-${iso}`}
+              />
+            ))}
+            {dayShifts.length === 0 && dayCandidates.length === 0 && !cellCapacity && <span className="empty-day">—</span>}
           </div>
         );
       })}
@@ -1140,6 +1152,30 @@ export default function PlanningPage({
     [visibleActions],
   );
 
+  // A proposed resource is a display anchor only: candidate needs stay outside
+  // real shifts and capacity until the approval is materialized by the backend.
+  const visibleCandidateRowsByResource = useMemo(() => {
+    const grouped = new Map<string, PendingCandidateEntry[]>();
+    const resourceClasses = new Map((snapshot?.resources ?? []).map((resource) => [
+      resource.id,
+      resource.resource_class || "Non classé",
+    ]));
+    visiblePendingCandidates.forEach((entry) => {
+      const resourceId = entry.candidate.proposed_resource_id;
+      if (!resourceId || !resourceClasses.has(resourceId)) return;
+      // With a class filter, a candidate must match both the selected need
+      // class and the displayed resource group; otherwise keep the fallback.
+      if (classFilter !== "all" && (
+        resourceClasses.get(resourceId) !== classFilter
+        || (entry.candidate.required_resource_class || "Non classé") !== classFilter
+      )) return;
+      const entries = grouped.get(resourceId) ?? [];
+      entries.push(entry);
+      grouped.set(resourceId, entries);
+    });
+    return grouped;
+  }, [snapshot, visiblePendingCandidates, classFilter]);
+
   const visibleClassWork = useMemo(() => {
     const groups = new Map<string, ClassPlanningWork>();
     if (resourceFilter !== "all" || onlyWithCapacity) return groups;
@@ -1155,6 +1191,9 @@ export default function PlanningPage({
     visiblePendingCandidates.forEach((entry) => {
       const className = entry.candidate.required_resource_class || "Non classé";
       if (classFilter !== "all" && className !== classFilter) return;
+      // One candidate has one calendar anchor, never duplicate it in the
+      // unplanned lane when its proposed resource has a visible row.
+      if (entry.candidate.proposed_resource_id && visibleCandidateRowsByResource.has(entry.candidate.proposed_resource_id)) return;
       ensure(className).candidates.push(entry);
     });
     visiblePlanningAssignments.forEach((action) => {
@@ -1165,6 +1204,7 @@ export default function PlanningPage({
     return groups;
   }, [
     visiblePendingCandidates,
+    visibleCandidateRowsByResource,
     visiblePlanningAssignments,
     resourceFilter,
     onlyWithCapacity,
@@ -1182,14 +1222,15 @@ export default function PlanningPage({
       if (onlyWithCapacity && (!capacity || capacity.prudent_free <= 0.01)) return;
 
       const resourceMatches = !query || normalize(`${resource.name} ${resource.resource_class ?? ""} ${resource.competencies ?? ""}`).includes(query);
+      const candidateRows = visibleCandidateRowsByResource.get(resource.id) ?? [];
       const shifts = shiftsPassingGlobalFilters.filter((shift) => {
         if (shift.resource_id !== resource.id) return false;
         if (!query || resourceMatches) return true;
         return shiftText(shift).includes(query);
       });
       const restrictiveProjectConfirmation = project !== "all" || confirmation !== "all";
-      if (query && !resourceMatches && shifts.length === 0) return;
-      if (restrictiveProjectConfirmation && shifts.length === 0) return;
+      if (query && !resourceMatches && shifts.length === 0 && candidateRows.length === 0) return;
+      if (restrictiveProjectConfirmation && shifts.length === 0 && candidateRows.length === 0) return;
 
       const className = resource.resource_class || "Non classé";
       const entries = groups.get(className) ?? [];
@@ -1222,6 +1263,7 @@ export default function PlanningPage({
     resourceSortMode,
     manualResourceOrder,
     visibleClassWork,
+    visibleCandidateRowsByResource,
   ]);
 
   const visibleShiftHours = shiftsPassingGlobalFilters
@@ -1898,6 +1940,8 @@ export default function PlanningPage({
                         resource={resource}
                         days={days}
                         shifts={shifts}
+                        candidates={visibleCandidateRowsByResource.get(resource.id) ?? []}
+                        onOpenDemand={setDetailDemandNumber}
                         capacity={capacity}
                         diagnostics={diagnosticsBySegment}
                         onEditShift={canManagePlanning ? setEditingShift : undefined}
