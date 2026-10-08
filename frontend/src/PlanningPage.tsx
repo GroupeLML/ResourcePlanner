@@ -304,6 +304,13 @@ function ShiftCard({
     reservation.association_kind.startsWith("INHERITED_"),
   );
   const assetDiagnostics = shift.asset_diagnostics ?? [];
+  const managerColorId = shift.project_manager_color_id;
+  // The server hashes a canonical identity, never a name, to produce this token.
+  const managerColor = managerColorId
+    ? `hsl(${Number.parseInt(managerColorId.slice(0, 8), 16) % 360} 70% 34%)`
+    : null;
+  const managerLabel = shift.project_manager_color_label || "Non désigné";
+  const managerTooltip = `Chargé de projet : ${managerLabel}`;
   const meta = [
     shift.allocation_type,
     shift.source !== "AUTO" && !scopeNeighbor ? shift.source : null,
@@ -343,6 +350,13 @@ function ShiftCard({
       draggable={draggable}
       data-allocation-id={shift.allocation_id}
       data-segment-id={shift.segment_id}
+      onClick={(event) => {
+        // The manager marker is outside the main button, but the whole card
+        // must remain clickable for shift editing (including its padding).
+        if (editable && !(event.target as HTMLElement).closest("button")) {
+          onEdit?.(shift);
+        }
+      }}
       onDragStart={(event) => {
         if (!draggable || (event.target as HTMLElement).closest(".shift-asset-action")) {
           event.preventDefault();
@@ -410,6 +424,22 @@ function ShiftCard({
           )}
         </small>
       </button>
+      {!scopeNeighbor && (
+        <span
+          className="shift-pm-marker"
+          tabIndex={0}
+          title={managerTooltip}
+          aria-label={managerTooltip}
+          style={managerColor ? { borderInlineStartColor: managerColor } : undefined}
+        >
+          <i
+            className="shift-pm-dot"
+            aria-hidden="true"
+            style={managerColor ? { backgroundColor: managerColor } : undefined}
+          />
+          Chargé : {managerLabel}
+        </span>
+      )}
       {!asset && shift.asset_actions?.assign.allowed && onAssignAsset && (
         <button
           type="button"

@@ -5,8 +5,11 @@ from decimal import Decimal
 import unittest
 
 from app.infrastructure.sql import (
+    AppUser,
     Base,
+    BusinessContact,
     Project,
+    ProjectCoManager,
     Resource,
     ResourceAvailabilityRule,
     ResourceRequirement,
@@ -208,6 +211,68 @@ class SqlPlannerQueryRepositoryTests(unittest.TestCase):
             self.assertEqual(rows[0].hours, 4.0)
 
             self.assertEqual(queries.list_shifts(resource_name="Unknown"), ())
+
+    def test_shift_manager_marker_tracks_stable_erp_identity_not_display_name(self) -> None:
+        with transactional_session(self.factory) as session:
+            project = session.get(Project, "P1")
+            assert project is not None
+            project.project_manager_external_id = "EMP-709A"
+            project.project_manager_name = "Nom historique"
+
+        with self.factory() as session:
+            shifts = SqlPlannerQueryRepository(session).list_shifts(start=D1, end=D2, include_manager_colors=True)
+        self.assertEqual(len(shifts), 2)
+        marker = shifts[0].project_manager_color_id
+        self.assertTrue(marker)
+        self.assertEqual(shifts[1].project_manager_color_id, marker)
+        self.assertEqual(shifts[0].project_manager_color_label, "Nom historique")
+
+        with transactional_session(self.factory) as session:
+            project = session.get(Project, "P1")
+            assert project is not None
+            project.project_manager_name = "Nom renommé"
+        with self.factory() as session:
+            renamed = SqlPlannerQueryRepository(session).list_shifts(start=D1, end=D1, include_manager_colors=True)[0]
+        self.assertEqual(renamed.project_manager_color_id, marker)
+        self.assertEqual(renamed.project_manager_color_label, "Nom renommé")
+
+    def test_shift_manager_marker_falls_back_to_canonical_co_manager(self) -> None:
+        with transactional_session(self.factory) as session:
+            session.add(BusinessContact(id="BC-709A", display_name="Co chargé RP", active=True))
+            session.flush()
+            session.add(
+                AppUser(
+                    id="U-709A",
+                    display_name="Co chargé RP",
+                    email=None,
+                    employee_external_id="EMP-CO-709A",
+                    business_contact_id="BC-709A",
+                    roles_json='["PROJECT_MANAGER"]',
+                    active=True,
+                )
+            )
+            session.flush()
+            session.add(
+                ProjectCoManager(
+                    project_id="P1",
+                    business_contact_id="BC-709A",
+                    created_by_user_id="U-709A",
+                )
+            )
+        with self.factory() as session:
+            shifts = SqlPlannerQueryRepository(session).list_shifts(start=D1, end=D2, include_manager_colors=True)
+        self.assertEqual(len(shifts), 2)
+        self.assertTrue(shifts[0].project_manager_color_id)
+        self.assertEqual(shifts[0].project_manager_color_label, "Co chargé RP")
+        self.assertEqual(
+            shifts[0].project_manager_color_id, shifts[1].project_manager_color_id
+        )
+
+    def test_shift_without_effective_manager_has_neutral_marker(self) -> None:
+        with self.factory() as session:
+            shift = SqlPlannerQueryRepository(session).list_shifts(start=D1, end=D1, include_manager_colors=True)[0]
+        self.assertIsNone(shift.project_manager_color_id)
+        self.assertIsNone(shift.project_manager_color_label)
 
     def test_planning_snapshot_is_canonical_and_window_scoped(self) -> None:
         with self.factory() as session:

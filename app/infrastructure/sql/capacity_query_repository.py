@@ -25,6 +25,7 @@ class SqlPlannerQueryRepository(_BaseSqlPlannerQueryRepository):
         visible_resource_ids: Sequence[str] = (),
         project_day_keys: Sequence[tuple[str, date]] = (),
         can_manage_planning: bool = False,
+        include_manager_colors: bool = False,
     ) -> tuple[ShiftReadModel, ...]:
         return super().list_shifts(
             start=start,
@@ -37,6 +38,7 @@ class SqlPlannerQueryRepository(_BaseSqlPlannerQueryRepository):
             visible_resource_ids=visible_resource_ids,
             project_day_keys=project_day_keys,
             can_manage_planning=can_manage_planning,
+            include_manager_colors=include_manager_colors,
         )
 
     def planning_snapshot(
