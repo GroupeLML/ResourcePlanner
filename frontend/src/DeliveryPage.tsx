@@ -1,3 +1,4 @@
+import { sortProjectsRecentFirst } from "./projectRecency";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import { useAuth } from "./AuthContext";
@@ -399,11 +400,12 @@ export default function DeliveryPage() {
     setLoading(true);
     getProjects(false, controller.signal, scope)
       .then((rows) => {
-        setProjects(rows);
+        const sortedProjects = sortProjectsRecentFirst(rows);
+        setProjects(sortedProjects);
         setProjectNumber((current) => (
-          current && rows.some((project) => project.number === current)
+          current && sortedProjects.some((project) => project.number === current)
             ? current
-            : rows[0]?.number ?? ""
+            : sortedProjects[0]?.number ?? ""
         ));
       })
       .catch((reason) => {

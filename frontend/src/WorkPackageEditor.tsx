@@ -1,3 +1,4 @@
+import { sortProjectsRecentFirst } from "./projectRecency";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import {
@@ -224,7 +225,7 @@ export default function WorkPackageEditor({
   }, []);
 
   const projectOptions = useMemo(
-    () => [...projects].sort((left, right) => left.number.localeCompare(right.number, "fr-CA")),
+    () => sortProjectsRecentFirst(projects),
     [projects],
   );
 
