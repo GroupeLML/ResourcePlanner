@@ -4,7 +4,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 
 import App from "./App";
-import { AuthProvider } from "./AuthContext";
+import { AuthProvider, useAuth } from "./AuthContext";
 import { ViewScopeProvider } from "./ViewScopeContext";
 import "./styles.css";
 import "./shift-editor.css";
@@ -29,12 +29,29 @@ import "./configuration.css";
 import "./planning-history.css";
 import "./overallocation.css";
 
+// A change of server-resolved identity invalidates every view, dialog and in-flight
+// request owned by the former user (not only the visible navigation tab).
+function SessionScopedApp() {
+  const { principal } = useAuth();
+  const identityKey = JSON.stringify(principal && [
+    principal.local_user_id,
+    principal.issuer,
+    principal.subject,
+    principal.auth_mode,
+    principal.roles,
+    principal.permissions,
+  ]);
+  return (
+    <ViewScopeProvider key={identityKey}>
+      <App />
+    </ViewScopeProvider>
+  );
+}
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <AuthProvider>
-      <ViewScopeProvider>
-        <App />
-      </ViewScopeProvider>
+      <SessionScopedApp />
     </AuthProvider>
   </React.StrictMode>,
 );

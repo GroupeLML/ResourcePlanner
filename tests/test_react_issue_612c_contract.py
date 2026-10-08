@@ -41,7 +41,7 @@ class ReactIssue612CContractTests(unittest.TestCase):
         self.assertIn("Ouvrir dans Demandes", planning)
         self.assertIn("const demandNumber = detailDemandNumber;", planning)
         self.assertIn("onOpenDemand(demandNumber);", planning)
-        self.assertIn("shift.demand_number ? (", shift)
+        self.assertIn('shift.demand_number && can("read_demands") ? (', shift)
 
     def test_medium_term_demand_gantt_opens_unified_detail_with_canonical_actions(self) -> None:
         medium = (FRONTEND / "MediumTermPage.tsx").read_text(encoding="utf-8")

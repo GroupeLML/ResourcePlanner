@@ -819,6 +819,7 @@ export default function PlanningPage({
 }) {
   const { can, principal } = useAuth();
   const canManagePlanning = can("manage_planning");
+  const canReadDemands = can("read_demands");
   const preferenceOwnerId = principal?.local_user_id ?? null;
   const planningIdentityKey = [
     principal?.local_user_id ?? "",
@@ -1944,7 +1945,7 @@ export default function PlanningPage({
                         days={days}
                         candidates={classWork.candidates}
                         assignments={classWork.assignments}
-                        onOpenDemand={setDetailDemandNumber}
+                        onOpenDemand={canReadDemands ? setDetailDemandNumber : undefined}
                         onOpenSegment={canManagePlanning ? setEditingSegmentId : undefined}
                         dragEnabled={canManagePlanning && !dropBusy}
                       />
@@ -1955,7 +1956,7 @@ export default function PlanningPage({
                         days={days}
                         shifts={shifts}
                         candidates={visibleCandidateRowsByResource.get(resource.id) ?? []}
-                        onOpenDemand={setDetailDemandNumber}
+                        onOpenDemand={canReadDemands ? setDetailDemandNumber : undefined}
                         capacity={capacity}
                         diagnostics={diagnosticsBySegment}
                         onEditShift={canManagePlanning ? setEditingShift : undefined}
@@ -1987,8 +1988,8 @@ export default function PlanningPage({
           <PlanningActionPanel
             actions={visibleActions}
             loading={loading}
-            onOpenDemands={onOpenDemands}
-            onOpenDemand={setDetailDemandNumber}
+            onOpenDemands={canReadDemands ? onOpenDemands : undefined}
+            onOpenDemand={canReadDemands ? setDetailDemandNumber : undefined}
             onOpenSegment={canManagePlanning ? setEditingSegmentId : undefined}
             onAssigned={() => setRefreshKey((value) => value + 1)}
           />
@@ -2000,7 +2001,7 @@ export default function PlanningPage({
           snapshot={snapshot}
           canManage={canManagePlanning && !loading}
           onRefresh={() => setRefreshKey((value) => value + 1)}
-          onOpenDemand={setDetailDemandNumber}
+          onOpenDemand={canReadDemands ? setDetailDemandNumber : undefined}
         />
       )}
 
@@ -2050,6 +2051,7 @@ export default function PlanningPage({
             setRefreshKey((value) => value + 1);
           }}
           onOpenDemand={(demandNumber) => {
+            if (!canReadDemands) return;
             setEditingShift(null);
             setDetailDemandNumber(demandNumber);
           }}
@@ -2071,10 +2073,10 @@ export default function PlanningPage({
             setEditingSegmentId(null);
             setRefreshKey((value) => value + 1);
           }}
-          onOpenDemand={(demandNumber) => {
+          onOpenDemand={canReadDemands ? (demandNumber) => {
             setEditingSegmentId(null);
             setDetailDemandNumber(demandNumber);
-          }}
+          } : undefined}
           planningVersion={snapshot.planning_version}
           onStale={() => {
             setEditingSegmentId(null);
@@ -2102,7 +2104,7 @@ export default function PlanningPage({
         />
       )}
 
-      {detailDemandNumber && (
+      {canReadDemands && detailDemandNumber && (
         <div
           className="demand-detail-modal-backdrop"
           role="presentation"
