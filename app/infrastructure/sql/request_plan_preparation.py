@@ -146,6 +146,16 @@ class SqlRequestPlanPreparer:
             ).all()
         )
 
+    def _legacy_required_resource_class(
+        self,
+        request: WorkforceRequest,
+    ) -> str | None:
+        """Use the class explicitly recorded on the transitional simple-request line."""
+        line = self._session.get(RequestLine, request.id)
+        if line is None or not line.active or _text(line.kind) != "WORKFORCE":
+            return None
+        return _text(line.required_resource_class) or None
+
     def _request_competencies(
         self,
         request_id: str,
@@ -409,6 +419,7 @@ class SqlRequestPlanPreparer:
         )
 
         request_competency_ids = self._request_competencies(request.id)
+        required_resource_class = self._legacy_required_resource_class(request)
         specs: list[PreparedRequirementSpec] = []
         for period in effective:
             resolved = resolve_period_authority(
@@ -460,7 +471,7 @@ class SqlRequestPlanPreparer:
                             or "Période approuvée"
                         ),
                         source_effort_id=None,
-                        required_resource_class=None,
+                        required_resource_class=required_resource_class,
                         required_competency=(
                             _text(request.required_competencies) or None
                         ),
@@ -502,6 +513,7 @@ class SqlRequestPlanPreparer:
                 )
 
         request_competency_ids = self._request_competencies(request.id)
+        required_resource_class = self._legacy_required_resource_class(request)
         target_days = normalize_active_day_target(
             request.estimated_days,
             start=request.desired_start,
@@ -535,7 +547,7 @@ class SqlRequestPlanPreparer:
                     or "Ressource additionnelle"
                 ),
                 source_effort_id=None,
-                required_resource_class=None,
+                required_resource_class=required_resource_class,
                 required_competency=(
                     _text(request.required_competencies) or None
                 ),
