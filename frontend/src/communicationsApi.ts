@@ -43,6 +43,8 @@ export type ProjectCommunicationPreview = {
   diagnostics: ProjectMessageDiagnostic[];
   has_communicated_baseline: boolean;
   baseline_fingerprint: string | null;
+  add_generator_cc: boolean;
+  generator_identity_fingerprint: string | null;
 };
 
 export type CommunicationDelivery = {
@@ -138,9 +140,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export function getProjectCommunicationPreview(weekStart: string) {
+export function getProjectCommunicationPreview(weekStart: string, addGeneratorCc = false) {
   return request<ProjectCommunicationPreview>(
-    `/api/v1/communications/project-preview?week_start=${encodeURIComponent(weekStart)}`,
+    `/api/v1/communications/project-preview?week_start=${encodeURIComponent(weekStart)}&add_generator_cc=${addGeneratorCc}`,
   );
 }
 
@@ -148,6 +150,8 @@ export function prepareProjectCommunicationBatch(
   weekStart: string,
   expectedFingerprint: string,
   reviews: ProjectCommunicationReview[],
+  addGeneratorCc = false,
+  expectedGeneratorIdentityFingerprint: string | null = null,
 ) {
   return request<CommunicationBatch>("/api/v1/communications/project-batches", {
     method: "POST",
@@ -155,6 +159,8 @@ export function prepareProjectCommunicationBatch(
       week_start: weekStart,
       expected_fingerprint: expectedFingerprint,
       reviews,
+      add_generator_cc: addGeneratorCc,
+      expected_generator_identity_fingerprint: expectedGeneratorIdentityFingerprint,
     }),
   });
 }
