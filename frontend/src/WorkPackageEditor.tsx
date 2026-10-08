@@ -259,6 +259,8 @@ export default function WorkPackageEditor({
               expenses_enabled: null,
               operational_responsible_contact_id: null,
               coordinator_contact_id: null,
+              preferred_resource_id: null,
+              preferred_resource_version: 1,
               resource_class_code: workPackage.task_resource_class_code,
             } satisfies TaskCatalogItemReadModel]
           : [];
