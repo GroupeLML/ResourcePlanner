@@ -1,3 +1,4 @@
+import { sortProjectsRecentFirst } from "./projectRecency";
 import { resourceDisplayName } from "./resourceLabels";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -79,7 +80,7 @@ export default function DirectAssetReservationForm({
   }, [assetId, compatibleAssets]);
 
   const projectOptions = useMemo(
-    () => projects.map((row) => ({
+    () => sortProjectsRecentFirst(projects).map((row) => ({
       value: row.id,
       label: `${row.number} — ${row.name}`,
       searchText: `${row.number} ${row.name} ${row.client ?? ""}`,

@@ -1,3 +1,4 @@
+import { sortProjectsRecentFirst } from "./projectRecency";
 import { resourceDisplayName } from "./resourceLabels";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
@@ -508,6 +509,8 @@ export default function DemandsPage({
     );
   }, [demands, search, statusFilter, projectFilter, includeTerminated, sortOrder]);
 
+  const projectOptions = useMemo(() => sortProjectsRecentFirst(projects), [projects]);
+
   const selectedProject = useMemo(
     () => projects.find((row) => row.number === form.project_number) ?? null,
     [projects, form.project_number],
@@ -563,7 +566,7 @@ export default function DemandsPage({
 
   function beginCreate(context: DemandCreateContext | null = null) {
     if (!confirmDiscardChanges()) return;
-    const firstProject = context?.project_number ?? projects[0]?.number ?? "";
+    const firstProject = context?.project_number ?? projectOptions[0]?.number ?? "";
     setDetailLoading(false);
     setCreating(true);
     setSelectedNumber(null);
@@ -851,7 +854,7 @@ export default function DemandsPage({
           <span>Projet</span>
           <SearchableCombobox
             value={projects.find((project) => project.number === projectFilter)?.id ?? null}
-            options={projects.map((project) => ({
+            options={projectOptions.map((project) => ({
               value: project.id,
               label: `${project.number} — ${project.name}`,
               searchText: [project.number, project.name, project.client].filter(Boolean).join(" "),
@@ -967,7 +970,7 @@ export default function DemandsPage({
                       selectedProject?.id
                       ?? (form.project_number ? historicalIdentity("project", form.project_number) : null)
                     }
-                    options={projects.map((project) => ({
+                    options={projectOptions.map((project) => ({
                       value: project.id,
                       label: `${project.number} — ${project.name}`,
                       searchText: [project.number, project.name, project.client].filter(Boolean).join(" "),
