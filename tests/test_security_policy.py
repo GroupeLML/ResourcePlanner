@@ -17,6 +17,9 @@ from app.application.security import (
     PERMISSION_MANAGE_RESOURCES,
     PERMISSION_MANAGE_WORK_PACKAGES,
     PERMISSION_READ,
+    PERMISSION_READ_DEMANDS,
+    PERMISSION_READ_PROJECTS,
+    PERMISSION_READ_WORK_PACKAGES,
     PERMISSION_SYNC_PROJECTS,
     ROLE_ADMIN,
     ROLE_COORDINATOR,
@@ -27,7 +30,7 @@ from app.application.security import (
     AuthPrincipal,
     permissions_for_roles,
 )
-from app.server.security import required_permission
+from app.server.security import required_module_read_permissions, required_permission
 
 
 class SecurityPolicyTests(unittest.TestCase):
@@ -37,6 +40,9 @@ class SecurityPolicyTests(unittest.TestCase):
             permissions,
             {
                 PERMISSION_READ,
+                PERMISSION_READ_DEMANDS,
+                PERMISSION_READ_PROJECTS,
+                PERMISSION_READ_WORK_PACKAGES,
                 PERMISSION_MANAGE_DEMANDS,
                 PERMISSION_APPROVE_DEMANDS,
                 PERMISSION_MANAGE_PLANNING,
@@ -61,6 +67,10 @@ class SecurityPolicyTests(unittest.TestCase):
         coordinator = set(permissions_for_roles((ROLE_COORDINATOR,)))
 
         self.assertEqual(technician, {PERMISSION_READ})
+        for cap in (PERMISSION_READ_DEMANDS, PERMISSION_READ_PROJECTS, PERMISSION_READ_WORK_PACKAGES):
+            self.assertNotIn(cap, technician)
+            for allowed in (manager, coordinator, project_manager):
+                self.assertIn(cap, allowed)
         self.assertIn(PERMISSION_APPROVE_DEMANDS, manager)
         self.assertNotIn(PERMISSION_MANAGE_DEMANDS, manager)
         self.assertIn(PERMISSION_MANAGE_DEMANDS, project_manager)
@@ -86,11 +96,42 @@ class SecurityPolicyTests(unittest.TestCase):
             delivery_contributor,
             {
                 PERMISSION_READ,
+                PERMISSION_READ_PROJECTS,
+                PERMISSION_READ_WORK_PACKAGES,
                 PERMISSION_CONTRIBUTE_DELIVERY,
                 PERMISSION_MANAGE_VERIFICATION,
                 PERMISSION_EXECUTE_VERIFICATION,
             },
         )
+
+    def test_delivery_multirole_preserves_read_without_demands(self) -> None:
+        permissions = set(permissions_for_roles((ROLE_TECHNICIAN, ROLE_DELIVERY_CONTRIBUTOR)))
+        self.assertIn(PERMISSION_READ_PROJECTS, permissions)
+        self.assertIn(PERMISSION_READ_WORK_PACKAGES, permissions)
+        self.assertNotIn(PERMISSION_READ_DEMANDS, permissions)
+
+    def test_full_module_routes_require_explicit_capabilities(self) -> None:
+        paths = {
+            "/api/v1/projects": (PERMISSION_READ_PROJECTS,),
+            "/api/v1/projects/P/managers": (PERMISSION_READ_PROJECTS,),
+            "/api/v1/task-catalog": (PERMISSION_READ_PROJECTS,),
+            "/api/v1/demands/D/detail": (PERMISSION_READ_DEMANDS,),
+            "/api/v1/demands/D/workflow-actions": (PERMISSION_READ_DEMANDS,),
+            "/api/v1/work-packages/WP/weekly-loads": (PERMISSION_READ_WORK_PACKAGES,),
+            "/api/v1/medium-term/budget": (PERMISSION_READ_PROJECTS, PERMISSION_READ_WORK_PACKAGES, PERMISSION_READ_DEMANDS),
+            "/api/v1/delivery/plans/PLAN": (PERMISSION_READ_PROJECTS, PERMISSION_READ_WORK_PACKAGES),
+            "/api/v1/verification/work-packages/WP/documents/traceability.csv": (PERMISSION_READ_PROJECTS, PERMISSION_READ_WORK_PACKAGES),
+            "/api/v1/assets/requirements": (PERMISSION_READ_PROJECTS, PERMISSION_READ_DEMANDS),
+            "/api/v1/segments/S/history": (PERMISSION_READ_DEMANDS,),
+            "/api/v1/shifts/S/history": (PERMISSION_READ_DEMANDS,),
+            "/api/v1/allocations/S/operational-responsibility": (PERMISSION_READ_DEMANDS,),
+        }
+        for path, expected in paths.items():
+            with self.subTest(path=path):
+                self.assertEqual(required_module_read_permissions("GET", path), expected)
+                self.assertEqual(required_module_read_permissions("POST", path), ())
+        for path in ("/api/v1/me/schedule", "/api/v1/planning/snapshot", "/api/v1/shifts"):
+            self.assertEqual(required_module_read_permissions("GET", path), ())
 
     def test_invalid_role_is_rejected(self) -> None:
         with self.assertRaises(ValueError):

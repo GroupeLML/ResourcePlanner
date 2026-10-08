@@ -636,12 +636,12 @@ class PlanningVisibilitySecurityAcceptanceTests(unittest.TestCase):
 
         self.assertEqual(
             direct_neighbor_history.status_code,
-            404,
+            403,
             direct_neighbor_history.text,
         )
         self.assertEqual(
             direct_neighbor_history.json()["error"]["code"],
-            "shift_not_found",
+            "permission_denied",
         )
 
     def test_two_coordinators_have_distinct_mine_resources_even_without_shifts(

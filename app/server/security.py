@@ -21,6 +21,9 @@ from ..application.security import (
     PERMISSION_MANAGE_RESOURCES,
     PERMISSION_MANAGE_WORK_PACKAGES,
     PERMISSION_READ,
+    PERMISSION_READ_DEMANDS,
+    PERMISSION_READ_PROJECTS,
+    PERMISSION_READ_WORK_PACKAGES,
     PERMISSION_SYNC_PROJECTS,
 )
 from .performance import performance_phase
@@ -46,6 +49,47 @@ _PUBLIC_PATHS = {
     "/api/v1/auth/callback",
     "/api/v1/auth/break-glass",
 }
+
+
+def required_module_read_permissions(method: str, path: str) -> tuple[str, ...]:
+    """Positive capabilities for full or indirectly exposed module data (ADR-030).
+
+    Personal schedules and minimal Planning reads remain governed by ADR-027.
+    Classify exposed data rather than denying all routes by verb or prefix.
+    """
+    if str(method).upper() not in {"GET", "HEAD"} or not path.startswith("/api/v1/"):
+        return ()
+
+    def under(prefix: str) -> bool:
+        return path == prefix or path.startswith(prefix + "/")
+
+    if under("/api/v1/demands") or under("/api/v1/coordinator-dashboard"):
+        return (PERMISSION_READ_DEMANDS,)
+    if (
+        under("/api/v1/projects")
+        or under("/api/v1/task-catalog")
+        or under("/api/v1/business-contacts")
+        or under("/api/v1/integrations/acumatica/projects")
+    ):
+        return (PERMISSION_READ_PROJECTS,)
+    if under("/api/v1/work-packages"):
+        return (PERMISSION_READ_WORK_PACKAGES,)
+    if under("/api/v1/medium-term"):
+        # Project budgets, WorkPackage load and demand/segment information.
+        return (PERMISSION_READ_PROJECTS, PERMISSION_READ_WORK_PACKAGES, PERMISSION_READ_DEMANDS)
+    if under("/api/v1/delivery") or under("/api/v1/verification/work-packages"):
+        # plan_id and export links must not bypass their WorkPackage context.
+        return (PERMISSION_READ_PROJECTS, PERMISSION_READ_WORK_PACKAGES)
+    if under("/api/v1/assets/requirements") or under("/api/v1/assets/shifts"):
+        return (PERMISSION_READ_PROJECTS, PERMISSION_READ_DEMANDS)
+    if under("/api/v1/segments"):
+        # Raw segments and their history are not minimal Planning shift projections.
+        return (PERMISSION_READ_DEMANDS,)
+    if under("/api/v1/shifts") and path.endswith("/history"):
+        return (PERMISSION_READ_DEMANDS,)
+    if under("/api/v1/allocations") and path.endswith("/operational-responsibility"):
+        return (PERMISSION_READ_DEMANDS,)
+    return ()
 
 
 def required_permission(method: str, path: str) -> str | None:
@@ -225,6 +269,14 @@ def install_authorization_middleware(
                     "Vous n'avez pas la permission requise pour cette opération.",
                     context={"required_permission": permission},
                 )
+            for module_permission in required_module_read_permissions(request.method, path):
+                if not principal.has_permission(module_permission):
+                    return _error(
+                        403,
+                        "permission_denied",
+                        "Vous n\'avez pas la permission requise pour cette opération.",
+                        context={"required_permission": module_permission},
+                    )
             if (
                 csrf_guard is not None
                 and principal.auth_mode in {"oidc", "break_glass"}
