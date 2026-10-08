@@ -1,12 +1,13 @@
-"""Repair one already approved legacy simple request's missing planning class.
+"""Restore missing workforce class on one or all approved legacy simple requests.
 
-Dry-run is the default. Only the immutable active approval may supply the class;
-candidate edits, resource names, ERP task defaults and automatic assignments are
-never used as fallback sources.
+Dry-run is the default. Only the immutable active approval may supply a class;
+candidate edits, resource names, ERP task defaults and automatic assignments
+are never used as fallback sources. No shifts or approval records are changed.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import sys
@@ -103,15 +104,87 @@ def repair_request_class(
     }
 
 
+def repair_all_request_classes(
+    session: Session,
+    *,
+    apply: bool = False,
+) -> dict[str, object]:
+    """Inspect every active simple request with an unclassified active need.
+
+    All safe updates run under one transaction and planning CAS on apply.
+    Unverifiable requests are reported for review and left unchanged.
+    """
+    if apply:
+        # Acquire before querying, so a concurrent planning mutation cannot
+        # change the scanned requirements while the repair is running.
+        SqlPlanningMutationVersionRepository(session).acquire()
+
+    request_ids = session.scalars(
+        select(WorkforceRequest.id)
+        .join(
+            ResourceRequirement,
+            ResourceRequirement.workforce_request_id == WorkforceRequest.id,
+        )
+        .where(
+            WorkforceRequest.line_mode.is_(False),
+            WorkforceRequest.status == "En planification",
+            ResourceRequirement.status.not_in(("Annulé", "Terminé")),
+            ResourceRequirement.required_resource_class.is_(None),
+        )
+        .distinct()
+        .order_by(WorkforceRequest.id)
+    ).all()
+    changed: list[dict[str, object]] = []
+    skipped: list[dict[str, str]] = []
+    unchanged = 0
+
+    for request_id in request_ids:
+        try:
+            report = repair_request_class(session, request_id, apply=apply)
+        except ValueError as exc:
+            # A missing/ambiguous approval is never a reason to infer a class.
+            # Errors in one historic request must not modify that request.
+            skipped.append({"request_id": request_id, "reason": str(exc)})
+            continue
+        if report["repaired_count"]:
+            changed.append(report)
+        else:
+            unchanged += 1
+
+    return {
+        "preview": not apply,
+        "requests_scanned": len(request_ids),
+        "requests_corrected": len(changed),
+        "requirements_corrected": sum(
+            int(row["repaired_count"]) for row in changed
+        ),
+        "requests_unchanged": unchanged,
+        "requests_needing_review": len(skipped),
+        "changed_requests": changed,
+        "skipped_requests": skipped,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Réparer la classe d'un besoin simple depuis sa révision approuvée active."
+        description="Restaurer la classe des besoins simples depuis les révisions approuvées actives."
     )
-    parser.add_argument("--demand-number", required=True)
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("--demand-number", help="Réparer une demande précise.")
+    target.add_argument(
+        "--all",
+        action="store_true",
+        help="Examiner toutes les demandes simples approuvées ayant un besoin sans classe.",
+    )
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="Appliquer le changement après une prévisualisation et une sauvegarde DB.",
+        help="Appliquer les corrections prouvées après prévisualisation et sauvegarde DB.",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Sortie structurée avec demandes ignorées et raisons.",
     )
     args = parser.parse_args(argv)
     database_url = os.getenv("RESOURCEPLANNER_DATABASE_URL", "").strip()
@@ -123,17 +196,37 @@ def main(argv: list[str] | None = None) -> int:
     try:
         with Session(engine) as session:
             with session.begin():
-                report = repair_request_class(
-                    session,
-                    args.demand_number,
-                    apply=args.apply,
+                report = (
+                    repair_all_request_classes(session, apply=args.apply)
+                    if args.all
+                    else repair_request_class(
+                        session,
+                        args.demand_number,
+                        apply=args.apply,
+                    )
                 )
-        print(
-            ("Appliqué" if args.apply else "Prévisualisation")
-            + f" : {report['repaired_count']} besoin(s) à corriger."
-        )
-        for row in report["changes"]:
-            print(f"- {row['requirement_id']} : {row['class_code']}")
+        if args.json:
+            print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+        elif args.all:
+            print(
+                ("Appliqué" if args.apply else "Prévisualisation")
+                + f" : {report['requests_scanned']} demande(s) examinée(s), "
+                + f"{report['requests_corrected']} demande(s) et "
+                + f"{report['requirements_corrected']} besoin(s) corrigible(s), "
+                + f"{report['requests_unchanged']} sans modification, "
+                + f"{report['requests_needing_review']} à vérifier manuellement."
+            )
+            for row in report["changed_requests"]:
+                print(f"- {row['demand_number']} : {row['repaired_count']} besoin(s)")
+            for row in report["skipped_requests"]:
+                print(f"! {row['request_id']} : {row['reason']}")
+        else:
+            print(
+                ("Appliqué" if args.apply else "Prévisualisation")
+                + f" : {report['repaired_count']} besoin(s) à corriger."
+            )
+            for row in report["changes"]:
+                print(f"- {row['requirement_id']} : {row['class_code']}")
         return 0
     except (ValueError, SQLAlchemyError) as exc:
         # Avoid printing SQLAlchemy exception details (may contain credentials).
