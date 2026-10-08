@@ -1,5 +1,5 @@
 import { sortProjectsRecentFirst } from "./projectRecency";
-import { resourceDisplayName } from "./resourceLabels";
+import { compareResourcesByDisplayName, resourceDisplayName } from "./resourceLabels";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { createClientId } from "./clientId";
@@ -73,7 +73,7 @@ export default function DirectAssetReservationForm({
   const compatibleAssets = snapshot.assets.filter(
     (row) => row.active && row.asset_type_id === assetTypeId,
   );
-  const activeResources = snapshot.resources.filter((row) => row.active);
+  const activeResources = snapshot.resources.filter((row) => row.active).sort(compareResourcesByDisplayName);
 
   useEffect(() => {
     if (!compatibleAssets.some((row) => row.id === assetId)) setAssetId("");

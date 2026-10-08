@@ -1,4 +1,4 @@
-import { resourceDisplayName } from "./resourceLabels";
+import { compareResourcesByDisplayName, resourceDisplayName } from "./resourceLabels";
 import { useEffect, useMemo, useState } from "react";
 
 import { createClientId } from "./clientId";
@@ -295,7 +295,7 @@ function PeriodFields({
               }}
             >
               <option value="">Aucune</option>
-              {resources.map((resource) => (
+              {[...resources].sort(compareResourcesByDisplayName).map((resource) => (
                 <option value={resource.id} key={resource.id}>{resourceDisplayName(resource.name)}{resource.resource_class ? ` — ${resource.resource_class}` : ""}</option>
               ))}
             </select>
@@ -418,7 +418,7 @@ export default function DemandPeriodsPage({
     Promise.all([demandRequest, resourceRequest])
       .then(([demandRows, resourceRows]) => {
         setDemands(demandRows);
-        setResources(resourceRows);
+        setResources([...resourceRows].sort(compareResourcesByDisplayName));
         setSelectedNumber((current) =>
           demandNumber || current || demandRows[0]?.number || "",
         );
