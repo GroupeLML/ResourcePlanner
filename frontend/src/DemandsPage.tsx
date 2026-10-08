@@ -357,7 +357,8 @@ export default function DemandsPage({
     if (
       initialCreateApplied.current
       || !initialCreateContext
-      || projects.length === 0
+      || scopeLoading
+      || loading
     ) return;
     initialCreateApplied.current = true;
     if (!projects.some((row) => row.number === initialCreateContext.project_number)) {
@@ -365,7 +366,7 @@ export default function DemandsPage({
       return;
     }
     beginCreate(initialCreateContext);
-  }, [initialCreateContext, projects, principal?.local_user_id]);
+  }, [initialCreateContext, projects, principal?.local_user_id, scopeLoading, loading]);
 
   useEffect(() => {
     if (scopeLoading) return;
@@ -374,7 +375,9 @@ export default function DemandsPage({
     setError(null);
     Promise.all([
       getDemands(controller.signal, scope),
-      getProjects(true, controller.signal, scope),
+      // WorkPackages from Moyen terme may belong to visible but inactive projects.
+      // Keep the normal new-demand picker active-only; include history for this handoff.
+      getProjects(!initialCreateContext, controller.signal, scope),
       getResources(true, controller.signal),
       getCompetencies("", false, controller.signal),
       getResourceClassOptions(controller.signal),
@@ -407,7 +410,7 @@ export default function DemandsPage({
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [scope, scopeLoading, canManageDemands]);
+  }, [scope, scopeLoading, canManageDemands, initialCreateContext]);
 
   useEffect(() => {
     if (creating || !selectedNumber) return;
@@ -1376,7 +1379,7 @@ export default function DemandsPage({
                     setSelectedNumber(demands[0]?.number ?? null);
                   }} disabled={saving}>Annuler</button>
                 )}
-                <button type="submit" className="primary-button" disabled={saving || detailLoading}>
+                <button type="submit" className="primary-button" disabled={saving || (!creating && detailLoading)}>
                   {saving ? "Enregistrement…" : creating ? "Créer le brouillon" : "Enregistrer les modifications"}
                 </button>
               </div>
