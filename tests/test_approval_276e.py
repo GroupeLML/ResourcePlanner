@@ -474,46 +474,56 @@ class Approval276ERoutingTests(unittest.TestCase):
             resolved.resolution.diagnostics,
         )
 
-    def test_explicit_task_override_has_priority_and_preserves_historical_mapping(self) -> None:
+    def test_selected_class_overrides_task_scope_without_mutating_erp_class(self) -> None:
         with self.factory() as session, session.begin():
-            session.add(
-                TaskApprovalScopeMapping(
-                    task_catalog_item_id="T216",
-                    approval_scope_id="S-ELEC",
-                )
-            )
-            session.add(
-                TaskApprovalScopeMapping(
-                    task_catalog_item_id="T-NO-CLASS",
-                    approval_scope_id="S-AUTO",
-                )
-            )
-
-        with self.factory() as session, session.begin():
-            line = session.get(RequestLine, "L-T216")
-            # Historical/free-form class values must not supersede the explicit
-            # TaskCatalogEntry -> ApprovalScope authority override from ADR-010.
-            line.required_resource_class = "LEGACY_FREE_FORM"
+            session.add(TaskApprovalScopeMapping(
+                task_catalog_item_id="T216", approval_scope_id="S-AUTO",
+            ))
+            session.add(TaskApprovalScopeMapping(
+                task_catalog_item_id="T-NO-CLASS", approval_scope_id="S-AUTO",
+            ))
+            session.get(RequestLine, "L-T216").required_resource_class = "INSTALLATEUR_ELECTRIQUE"
 
         overridden = self._resolve("L-T216")
-        historical = self._resolve("L-T-NO-CLASS")
-        self.assertEqual(
-            overridden.effective_resource_class,
-            "LEGACY_FREE_FORM",
-        )
-        self.assertEqual(
-            overridden.resolution.approval_scope_id,
-            "S-ELEC",
-        )
+        self.assertFalse(overridden.resolution.blocked)
+        self.assertEqual(overridden.effective_resource_class, "INSTALLATEUR_ELECTRIQUE")
+        self.assertEqual(overridden.resolution.approval_scope_id, "S-ELEC")
         self.assertEqual(
             [row.user_id for row in overridden.resolution.eligible_approvers],
             ["U-ELEC"],
         )
+        with self.factory() as session:
+            self.assertEqual(session.get(TaskCatalogEntry, "T216").resource_class_code, "PROGRAMMEUR")
+            self.assertEqual(session.get(RequestLine, "L-T216").task_catalog_item_id, "T216")
+
+        historical = self._resolve("L-T-NO-CLASS")
         self.assertFalse(historical.resolution.blocked)
-        self.assertEqual(
-            historical.resolution.approval_scope_id,
-            "S-AUTO",
-        )
+        self.assertEqual(historical.resolution.approval_scope_id, "S-AUTO")
+
+    def test_proposed_resource_keeps_task_scope_without_explicit_class(self) -> None:
+        with self.factory() as session, session.begin():
+            session.add(TaskApprovalScopeMapping(
+                task_catalog_item_id="T216", approval_scope_id="S-AUTO",
+            ))
+            line = session.get(RequestLine, "L-T216")
+            line.required_resource_class = None
+            line.proposed_resource_id = "R-ELEC"
+
+        resolved = self._resolve("L-T216")
+        self.assertFalse(resolved.resolution.blocked)
+        self.assertEqual(resolved.resolution.approval_scope_id, "S-AUTO")
+
+    def test_selected_class_missing_scope_blocks_even_with_task_scope(self) -> None:
+        with self.factory() as session, session.begin():
+            session.add(TaskApprovalScopeMapping(
+                task_catalog_item_id="T216", approval_scope_id="S-AUTO",
+            ))
+            session.get(RequestLine, "L-T216").required_resource_class = "NO_SCOPE"
+
+        resolution = self._resolve("L-T216")
+        self.assertTrue(resolution.resolution.blocked)
+        self.assertEqual(resolution.effective_resource_class, "NO_SCOPE")
+        self.assertIn(DIAGNOSTIC_SCOPE_UNMAPPED, resolution.resolution.diagnostics)
 
     def test_missing_class_mapping_is_blocking(self) -> None:
         resolved = self._resolve("L-T-NO-SCOPE")

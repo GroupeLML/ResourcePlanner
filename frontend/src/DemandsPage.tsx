@@ -1128,18 +1128,11 @@ export default function DemandsPage({
                       }
                       onChange={(value) => {
                         const task = tasks.find((row) => taskIdentity(row) === value);
-                        const suggestedClass = task?.resource_class_code
-                          && resourceClasses.some(
-                            (row) => row.active && row.code === task.resource_class_code,
-                          )
-                          ? task.resource_class_code
-                          : null;
+                        // A task's class is a backend fallback, not an explicit
+                        // class selection. Preserve only what the user selected.
                         setForm((current) => ({
                           ...current,
                           task_code: task?.code ?? "",
-                          required_resource_class: current.required_resource_class.trim()
-                            ? current.required_resource_class
-                            : suggestedClass ?? "",
                         }));
                         setEditorDirty(true);
                       }}

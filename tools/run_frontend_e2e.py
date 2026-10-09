@@ -47,6 +47,7 @@ from app.infrastructure.sql.approval_scope_models import (
     ApprovalScope,
     ApprovalScopeApprover,
     TaskApprovalScopeMapping,
+    ResourceClassApprovalScopeMapping,
 )
 from app.infrastructure.sql.resource_class_repository import SqlResourceClassRepository
 from app.infrastructure.sql import (
@@ -292,6 +293,8 @@ def _seed(database_url: str) -> None:
             for code, label, average_cost in (
                 ("INSTALLATEUR_ELECTRIQUE", "Installateur électrique", "100.00"),
                 ("PROGRAMMEUR", "Programmeur", "125.00"),
+                ("AUTOMATION", "Automatisation", "125.00"),
+                ("ELECTRICAL", "Électricité", "100.00"),
                 (
                     "INSTALLATEUR_AUTOMATISATION",
                     "Installateur automatisation",
@@ -494,6 +497,19 @@ def _seed(database_url: str) -> None:
                     approval_scope_id="SCOPE-P251-ELECTRICAL",
                 )
             )
+
+            # Approval routing for explicit workforce classes uses the class
+            # mappings, not the ERP task mappings.
+            for class_code, scope_id in (
+                ("PROGRAMMEUR", "SCOPE-P251-AUTOMATION"),
+                ("AUTOMATION", "SCOPE-P251-AUTOMATION"),
+                ("ELECTRICAL", "SCOPE-P251-ELECTRICAL"),
+                ("INSTALLATEUR_ELECTRIQUE", "SCOPE-P251-ELECTRICAL"),
+                ("INSTALLATEUR_AUTOMATISATION", "SCOPE-P251-AUTOMATION"),
+            ):
+                session.add(ResourceClassApprovalScopeMapping(
+                    resource_class_code=class_code, approval_scope_id=scope_id,
+                ))
 
             project = session.get(Project, "P-251-ID")
             assert project is not None
