@@ -27,7 +27,9 @@ from .models import (
     Competency,
     RequestLine,
     RequestLineCompetency,
+    Resource,
     ResourceRequirement,
+    TaskCatalogEntry,
     Shift,
     WorkforceRequest,
     WorkforceRequestCompetency,
@@ -146,6 +148,21 @@ class SqlRequestPlanPreparer:
             ).all()
         )
 
+    def _effective_line_class(self, line: RequestLine) -> str | None:
+        """Resolve class without changing the ERP task's master classification."""
+        explicit = _text(line.required_resource_class)
+        if explicit:
+            return explicit
+        if line.proposed_resource_id:
+            resource = self._session.get(Resource, line.proposed_resource_id)
+            if resource is not None and _text(resource.resource_class):
+                return _text(resource.resource_class)
+        if line.task_catalog_item_id:
+            task = self._session.get(TaskCatalogEntry, line.task_catalog_item_id)
+            if task is not None:
+                return _text(task.resource_class_code) or None
+        return None
+
     def _legacy_required_resource_class(
         self,
         request: WorkforceRequest,
@@ -154,7 +171,7 @@ class SqlRequestPlanPreparer:
         line = self._session.get(RequestLine, request.id)
         if line is None or not line.active or _text(line.kind) != "WORKFORCE":
             return None
-        return _text(line.required_resource_class) or None
+        return self._effective_line_class(line)
 
     def _request_competencies(
         self,
@@ -255,7 +272,7 @@ class SqlRequestPlanPreparer:
                 )
             line_periods = periods_by_line.get(line.id, [])
             required_text = _text(line.required_competencies_snapshot) or None
-            required_resource_class = _text(line.required_resource_class) or None
+            required_resource_class = self._effective_line_class(line)
 
             if line_periods:
                 groups = {
