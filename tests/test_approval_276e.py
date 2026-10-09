@@ -500,6 +500,19 @@ class Approval276ERoutingTests(unittest.TestCase):
         self.assertFalse(historical.resolution.blocked)
         self.assertEqual(historical.resolution.approval_scope_id, "S-AUTO")
 
+    def test_proposed_resource_keeps_task_scope_without_explicit_class(self) -> None:
+        with self.factory() as session, session.begin():
+            session.add(TaskApprovalScopeMapping(
+                task_catalog_item_id="T216", approval_scope_id="S-AUTO",
+            ))
+            line = session.get(RequestLine, "L-T216")
+            line.required_resource_class = None
+            line.proposed_resource_id = "R-ELEC"
+
+        resolved = self._resolve("L-T216")
+        self.assertFalse(resolved.resolution.blocked)
+        self.assertEqual(resolved.resolution.approval_scope_id, "S-AUTO")
+
     def test_selected_class_missing_scope_blocks_even_with_task_scope(self) -> None:
         with self.factory() as session, session.begin():
             session.add(TaskApprovalScopeMapping(
