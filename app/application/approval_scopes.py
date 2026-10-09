@@ -738,23 +738,26 @@ class ApprovalScopeService:
                     or None
                 )
                 if effective_class_code is None:
-                    return self._blocked_resolution(
-                        request_line_id=identifier,
-                        task_catalog_item_id=task_id,
-                        suggested_scope_code=(
-                            suggested_approval_scope_code(task.code)
-                            if task is not None
-                            else None
-                        ),
-                        diagnostic=DIAGNOSTIC_RESOURCE_CLASS_MISSING,
-                        line_position=line.position,
-                        task=task,
-                        task_code=line.erp_task_code,
-                        task_label=line.erp_task_label,
-                        required_resource_class=explicit_class_code,
-                        proposed_resource_id=proposed_resource_id,
-                        routing_sources=routing_sources,
-                    )
+                    # A classless proposed resource does not mask a usable
+                    # ERP-task fallback; keep the existing taskless diagnostic.
+                    if task is not None:
+                        effective_class_code = (
+                            str(task.resource_class_code or "").strip() or None
+                        )
+                    else:
+                        return self._blocked_resolution(
+                            request_line_id=identifier,
+                            task_catalog_item_id=task_id,
+                            suggested_scope_code=None,
+                            diagnostic=DIAGNOSTIC_RESOURCE_CLASS_MISSING,
+                            line_position=line.position,
+                            task=task,
+                            task_code=line.erp_task_code,
+                            task_label=line.erp_task_label,
+                            required_resource_class=explicit_class_code,
+                            proposed_resource_id=proposed_resource_id,
+                            routing_sources=routing_sources,
+                        )
             elif task is not None:
                 effective_class_code = (
                     str(task.resource_class_code or "").strip() or None
