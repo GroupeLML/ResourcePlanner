@@ -14,7 +14,8 @@ class ReactIssue535ContractTests(unittest.TestCase):
         self.assertIn("required_resource_class: string;", source)
         self.assertIn('label="Classe de ressource"', source)
         self.assertIn("<SearchableCombobox", source)
-        self.assertIn("task?.resource_class_code", source)
+        self.assertNotIn("required_resource_class: current.required_resource_class.trim()", source)
+        self.assertIn("task_code: task?.code ?? \"\"", source)
         self.assertIn("historique/inactive", source)
         self.assertIn(
             'required_resource_class: form.required_resource_class || proposed?.resource_class || ""',
