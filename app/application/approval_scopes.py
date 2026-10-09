@@ -648,9 +648,9 @@ class ApprovalScopeService:
             else []
         )
 
-        # 707B: the selected workforce class (or proposed resource class)
-        # determines approval scope before ERP task mappings. ERP task scope
-        # remains a fallback only when the line supplies neither source.
+        # An explicitly selected class overrides a task-specific approval
+        # scope. Without an explicit class, preserve the existing task-scope
+        # authority even when a resource is proposed (#562 / ADR-010).
         scopes: tuple[ApprovalScopeRecord, ...] = ()
         if (
             task is not None
@@ -658,7 +658,6 @@ class ApprovalScopeService:
             and line.active
             and task_scopes
             and explicit_class_code is None
-            and proposed_resource_id is None
         ):
             active_task_scopes = tuple(
                 scope for scope in task_scopes if scope.active
