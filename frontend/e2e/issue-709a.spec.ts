@@ -76,14 +76,12 @@ test("709A — repère PM lisible au clavier et statut Shift inchangé", async (
     await navigatePlanning(page);
     const card = page.locator(`.shift-card[data-allocation-id="${SHIFT_ID}"]`);
     await expect(card).toBeVisible();
-    const marker = card.locator(".shift-pm-marker");
-    await expect(marker).toContainText("Chargé : Chargé E2E");
-    await expect(marker).toHaveAttribute("aria-label", /Chargé de projet :/);
-    await expect(marker).toHaveAttribute("tabindex", "0");
-    await marker.focus();
-    await expect(marker).toBeFocused();
+    const marker = card.locator(".shift-project-number .shift-pm-dot");
+    await expect(marker).toBeVisible();
+    await expect(card.locator(".shift-pm-marker")).toHaveCount(0);
+    await expect(card.getByText("Chargé E2E", { exact: true })).toHaveCount(0);
 
-    const color = await marker.locator(".shift-pm-dot").evaluate(
+    const color = await marker.evaluate(
       (dot) => getComputedStyle(dot).backgroundColor,
     );
     expect(color).not.toBe("rgb(100, 116, 139)");
@@ -92,8 +90,9 @@ test("709A — repère PM lisible au clavier et statut Shift inchangé", async (
     await navigatePlanning(page);
 
     const restored = page.locator(`.shift-card[data-allocation-id="${SHIFT_ID}"]`);
-    await expect(restored.locator(".shift-pm-marker")).toBeVisible();
-    expect(await restored.locator(".shift-pm-dot").evaluate(
+    const restoredMarker = restored.locator(".shift-project-number .shift-pm-dot");
+    await expect(restoredMarker).toBeVisible();
+    expect(await restoredMarker.evaluate(
       (dot) => getComputedStyle(dot).backgroundColor,
     )).toBe(color);
     expect(await restored.locator(".confirmation-badge").textContent()).toBe(status);
