@@ -95,6 +95,7 @@ from .routes_integrations import build_integration_router
 from .routes_me import build_me_router
 from .routes_operational_responsibility import build_operational_responsibility_router
 from .routes_reads import build_read_router
+from .routes_signal import build_signal_router
 from .routes_resource_classes import (
     build_operational_resource_class_router,
     build_resource_class_router,
@@ -709,6 +710,7 @@ def create_api_app(
         }
 
     app.include_router(build_auth_router(oidc_runtime))
+    app.include_router(build_signal_router())
     app.include_router(build_break_glass_router(break_glass_runtime))
     if dev_user_switcher_runtime is not None:
         app.include_router(build_dev_user_switcher_router(dev_user_switcher_runtime))
