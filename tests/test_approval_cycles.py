@@ -922,6 +922,8 @@ class ApprovalCycleTests(unittest.TestCase):
 
     def test_ambiguous_or_empty_routing_blocks_snapshot(self) -> None:
         with self.factory() as session:
+            # Exercise the task-scope ambiguity without an explicit class.
+            session.get(RequestLine, "L1").required_resource_class = None
             session.add(
                 TaskApprovalScopeMapping(
                     task_catalog_item_id="T1",
@@ -965,6 +967,8 @@ class ApprovalCycleTests(unittest.TestCase):
 
     def test_blocked_routing_error_exposes_structured_line_task_and_scope_context(self) -> None:
         with self.factory() as session:
+            # Exercise the task-scope ambiguity without an explicit class.
+            session.get(RequestLine, "L1").required_resource_class = None
             session.add(
                 TaskApprovalScopeMapping(
                     task_catalog_item_id="T1",
