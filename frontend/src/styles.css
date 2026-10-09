@@ -827,15 +827,14 @@ h1 { font-size: 1.6rem; }
 .shift-outside { box-shadow: inset 0 -3px 0 #7653a7; }
 .shift-card-heading { display: flex; justify-content: space-between; gap: .35rem; align-items: flex-start; }
 .shift-project { min-width: 0; }
+.shift-project-number { display: flex; align-items: center; gap: .24rem; min-width: 0; }
 .shift-project strong, .shift-project span { display: block; }
 .shift-project strong { font-size: .68rem; }
 .shift-project span { margin-top: .08rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #5f6672; font-size: .58rem; }
 .shift-hours { flex: 0 0 auto; font-size: .67rem; }
 .shift-badges { display: flex; flex-wrap: wrap; gap: .22rem; margin-top: .34rem; }
 .shift-badges span { padding: .13rem .28rem; border-radius: 999px; background: rgba(255,255,255,.7); color: #586170; font-size: .54rem; }
-.shift-pm-marker { display: inline-flex; align-items: center; gap: .28rem; margin: .28rem .52rem .45rem; padding: .15rem .4rem; max-width: calc(100% - 1.04rem); border: 1px solid #d3dbe4; border-inline-start: 3px solid #64748b; border-radius: 5px; background: #fff; color: #263445; font-size: .6rem; font-weight: 650; overflow-wrap: anywhere; }
-.shift-pm-marker:focus-visible { outline: 2px solid #1d4ed8; outline-offset: 2px; }
-.shift-pm-dot { display: inline-block; flex: 0 0 .5rem; width: .5rem; height: .5rem; border-radius: 50%; background: #64748b; }
+.shift-pm-dot { display: inline-block; flex: 0 0 .4rem; width: .4rem; height: .4rem; border-radius: 50%; background: #64748b; opacity: .82; }
 .confirmation-badge { font-weight: 800; }
 .shift-card small { display: block; margin-top: .3rem; color: #687181; font-size: .55rem; line-height: 1.2; }
 .planning-empty { grid-column: 1 / -1; padding: 2.5rem; color: var(--muted); text-align: center; font-size: .8rem; }
