@@ -648,10 +648,18 @@ class ApprovalScopeService:
             else []
         )
 
-        # ADR-010 keeps an explicit TaskCatalogEntry -> ApprovalScope mapping as
-        # the authority override. #562 changes only the class fallback underneath it.
+        # 707B: the selected workforce class (or proposed resource class)
+        # determines approval scope before ERP task mappings. ERP task scope
+        # remains a fallback only when the line supplies neither source.
         scopes: tuple[ApprovalScopeRecord, ...] = ()
-        if task is not None and task.active and line.active and task_scopes:
+        if (
+            task is not None
+            and task.active
+            and line.active
+            and task_scopes
+            and explicit_class_code is None
+            and proposed_resource_id is None
+        ):
             active_task_scopes = tuple(
                 scope for scope in task_scopes if scope.active
             )
