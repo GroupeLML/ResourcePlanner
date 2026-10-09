@@ -73,6 +73,8 @@ test("709A — repère PM lisible au clavier et statut Shift inchangé", async (
       });
     });
 
+    // Planning is the default view: force a fresh snapshot after installing the route.
+    await page.reload();
     await navigatePlanning(page);
     const card = page.locator(`.shift-card[data-allocation-id="${SHIFT_ID}"]`);
     await expect(card).toBeVisible();
