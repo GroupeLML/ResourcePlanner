@@ -11,9 +11,11 @@ from app.infrastructure.sql.approval_scope_models import (
     ApprovalScopeApprover,
     AssetTypeApprovalScopeMapping,
     TaskApprovalScopeMapping,
+    ResourceClassApprovalScopeMapping,
 )
 from app.infrastructure.sql.identity_models import AppUser
 from app.infrastructure.sql.models import Project, TaskCatalogEntry
+from app.infrastructure.sql.resource_class_models import ResourceClassConfig
 
 
 TEST_ADMIN_USER_ID = "TEST-ADMIN-APP-USER"
@@ -145,6 +147,25 @@ def seed_test_approval_routing(
                     approval_scope_id=TEST_APPROVAL_SCOPE_ID,
                 )
             )
+    # Historical integration fixtures use localized class labels. Explicit
+    # 707B routing requires these to exist as canonical codes with a scope.
+    for code in (
+        "Programmation", "Automatisation", "Électricité",
+        "AUTOMATION", "ELECTRICAL",
+    ):
+        if session.get(ResourceClassConfig, code) is None:
+            session.add(ResourceClassConfig(
+                code=code, label=code, active=True, version=1,
+            ))
+        session.flush()
+        if session.get(
+            ResourceClassApprovalScopeMapping,
+            (code, TEST_APPROVAL_SCOPE_ID),
+        ) is None:
+            session.add(ResourceClassApprovalScopeMapping(
+                resource_class_code=code,
+                approval_scope_id=TEST_APPROVAL_SCOPE_ID,
+            ))
     session.flush()
 
 
