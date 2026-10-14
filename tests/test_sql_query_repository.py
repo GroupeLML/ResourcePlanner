@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, time
 from decimal import Decimal
 import unittest
 
@@ -178,6 +178,81 @@ class SqlPlannerQueryRepositoryTests(unittest.TestCase):
         self.assertEqual(active_master, {"Alice", "Ancien", "Futur"})
         self.assertEqual([row.name for row in displayed], ["Alice"])
         self.assertEqual([row.name for row in historic], ["Ancien"])
+
+    def test_global_planning_projects_all_active_resources_even_without_window_schedule(self) -> None:
+        with transactional_session(self.factory) as session:
+            session.add_all(
+                [
+                    Resource(
+                        id="R-ELEC-1",
+                        name="Électricien A",
+                        resource_class="INSTALL_ELEC",
+                        active=True,
+                        erp_active=True,
+                        sort_order=31,
+                    ),
+                    Resource(
+                        id="R-ELEC-2",
+                        name="Électricien B",
+                        resource_class="INSTALL_ELEC",
+                        active=True,
+                        erp_active=True,
+                        sort_order=32,
+                    ),
+                    Resource(
+                        id="R-ELEC-3",
+                        name="Électricien C",
+                        resource_class="INSTALL_ELEC",
+                        active=True,
+                        erp_active=True,
+                        sort_order=33,
+                    ),
+                ]
+            )
+            session.flush()
+            session.add(
+                ResourceAvailabilityRule(
+                    id="SCH-R-ELEC-1",
+                    resource_id="R-ELEC-1",
+                    availability_type="Horaire standard",
+                    start_date=D1,
+                    end_date=D2,
+                    weekdays="Lun,Mar",
+                    start_time=time(8, 0),
+                    end_time=time(16, 0),
+                    active=True,
+                )
+            )
+
+        with self.factory() as session:
+            queries = SqlPlannerQueryRepository(session)
+            snapshot = queries.planning_snapshot(start=D1, end=D2)
+            capacity = queries.planning_capacity_grid(start=D1, end=D2)
+
+        elec_resources = [
+            row.name
+            for row in snapshot.resources
+            if row.resource_class == "INSTALL_ELEC"
+        ]
+        self.assertEqual(
+            elec_resources,
+            ["Électricien A", "Électricien B", "Électricien C"],
+        )
+        capacity_by_id = {row.resource_id: row for row in capacity.resources}
+        self.assertEqual(
+            {"R-ELEC-1", "R-ELEC-2", "R-ELEC-3"},
+            {"R-ELEC-1", "R-ELEC-2", "R-ELEC-3"}.intersection(capacity_by_id),
+        )
+        self.assertGreater(capacity_by_id["R-ELEC-1"].capacity_hours, 0)
+        self.assertEqual(capacity_by_id["R-ELEC-2"].capacity_hours, 0)
+        self.assertEqual(capacity_by_id["R-ELEC-3"].capacity_hours, 0)
+        self.assertTrue(
+            all(
+                day.reason == "Aucun horaire standard"
+                for resource_id in ("R-ELEC-2", "R-ELEC-3")
+                for day in capacity_by_id[resource_id].days
+            )
+        )
 
     def test_demands_and_segments_use_canonical_read_models(self) -> None:
         with self.factory() as session:
