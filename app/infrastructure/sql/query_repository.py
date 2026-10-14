@@ -1114,10 +1114,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         ).all()
 
         if not scope_requested:
-            # Keep the global capacity projection aligned with the Planning resource
-            # catalog. Resources without a standard schedule remain visible with
-            # zero/unavailable capacity ("Aucun horaire standard").
-            resources = self.list_resources(active_only=True)
+            resources = self.list_schedulable_resources(start=start, end=end)
             occupied_shifts = self.list_shifts(start=start, end=end)
         else:
             contextual_shifts = self.list_shifts(
@@ -2480,10 +2477,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         )
 
         if project_ids is None:
-            # Planning's global resource rows come from the active resource master.
-            # A missing/out-of-window standard schedule affects capacity, not whether
-            # an otherwise valid resource silently disappears from its class group.
-            resources = self.list_resources(active_only=True)
+            resources = self.list_schedulable_resources(start=start, end=end)
         else:
             all_resources = self.list_resources(active_only=False)
             resource_by_name = {resource.name: resource for resource in all_resources}
