@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, time
+from datetime import date, time, timedelta
 from decimal import Decimal
 import unittest
 
@@ -179,80 +179,147 @@ class SqlPlannerQueryRepositoryTests(unittest.TestCase):
         self.assertEqual([row.name for row in displayed], ["Alice"])
         self.assertEqual([row.name for row in historic], ["Ancien"])
 
-    def test_global_planning_projects_all_active_resources_even_without_window_schedule(self) -> None:
+    @staticmethod
+    def _schedule_753(resource_id: str, **overrides) -> ResourceAvailabilityRule:
+        values = {
+            "id": f"STD-{resource_id}",
+            "resource_id": resource_id,
+            "availability_type": "Horaire standard",
+            "start_date": D1,
+            "end_date": D2,
+            "weekdays": "Lun,Mar,Mer,Jeu,Ven",
+            "start_time": time(8, 0),
+            "end_time": time(16, 0),
+            "active": True,
+        }
+        values.update(overrides)
+        return ResourceAvailabilityRule(**values)
+
+    def test_753_global_planning_requires_schedule_before_class_membership(self) -> None:
+        classes = {
+            "R-753-E1": "INSTALL_ELEC",
+            "R-753-E2": "INSTALL_ELEC",
+            "R-753-E3": "INSTALL_ELEC",
+            "R-753-X1": "INSTALL_EXC",
+            "R-753-X2": "INSTALL_EXC",
+        }
         with transactional_session(self.factory) as session:
             session.add_all(
-                [
-                    Resource(
-                        id="R-ELEC-1",
-                        name="Électricien A",
-                        resource_class="INSTALL_ELEC",
-                        active=True,
-                        erp_active=True,
-                        sort_order=31,
-                    ),
-                    Resource(
-                        id="R-ELEC-2",
-                        name="Électricien B",
-                        resource_class="INSTALL_ELEC",
-                        active=True,
-                        erp_active=True,
-                        sort_order=32,
-                    ),
-                    Resource(
-                        id="R-ELEC-3",
-                        name="Électricien C",
-                        resource_class="INSTALL_ELEC",
-                        active=True,
-                        erp_active=True,
-                        sort_order=33,
-                    ),
-                ]
+                Resource(
+                    id=identifier, name=identifier, resource_class=code,
+                    active=True, erp_active=True,
+                )
+                for identifier, code in classes.items()
             )
             session.flush()
-            session.add(
-                ResourceAvailabilityRule(
-                    id="SCH-R-ELEC-1",
-                    resource_id="R-ELEC-1",
-                    availability_type="Horaire standard",
-                    start_date=D1,
-                    end_date=D2,
-                    weekdays="Lun,Mar",
-                    start_time=time(8, 0),
-                    end_time=time(16, 0),
-                    active=True,
-                )
-            )
+            session.add_all(self._schedule_753(identifier) for identifier in (
+                "R-753-E1", "R-753-E2",
+            ))
 
         with self.factory() as session:
             queries = SqlPlannerQueryRepository(session)
+            master = {row.id for row in queries.list_resources()}
             snapshot = queries.planning_snapshot(start=D1, end=D2)
-            capacity = queries.planning_capacity_grid(start=D1, end=D2)
+            grid = queries.planning_capacity_grid(start=D1, end=D2)
+        self.assertTrue(set(classes).issubset(master))
+        expected = {"R1", "R-753-E1", "R-753-E2"}
+        self.assertEqual({row.id for row in snapshot.resources}, expected)
+        self.assertEqual({row.resource_id for row in grid.resources}, expected)
+        self.assertNotIn("INSTALL_EXC", {row.resource_class for row in snapshot.resources})
 
-        elec_resources = [
-            row.name
-            for row in snapshot.resources
-            if row.resource_class == "INSTALL_ELEC"
-        ]
+        # Only configure schedules: the same IDs/classes need no Shift, login,
+        # ResourceProfile or master-class edit to become globally schedulable.
+        with transactional_session(self.factory) as session:
+            session.add_all(self._schedule_753(identifier) for identifier in (
+                "R-753-E3", "R-753-X1", "R-753-X2",
+            ))
+        with self.factory() as session:
+            queries = SqlPlannerQueryRepository(session)
+            snapshot = queries.planning_snapshot(start=D1, end=D2)
+            grid = queries.planning_capacity_grid(start=D1, end=D2)
+            schedulable = queries.list_schedulable_resources(start=D1, end=D2)
+        expected = {"R1", *classes}
+        self.assertEqual({row.id for row in snapshot.resources}, expected)
+        self.assertEqual(len(snapshot.resources), len(expected))
+        self.assertEqual({row.id for row in schedulable}, expected)
+        self.assertEqual({row.resource_id for row in grid.resources}, expected)
+        self.assertEqual(len(grid.resources), len(expected))
         self.assertEqual(
-            elec_resources,
-            ["Électricien A", "Électricien B", "Électricien C"],
+            {row.id: row.resource_class for row in snapshot.resources if row.id in classes},
+            classes,
         )
-        capacity_by_id = {row.resource_id: row for row in capacity.resources}
         self.assertEqual(
-            {"R-ELEC-1", "R-ELEC-2", "R-ELEC-3"},
-            {"R-ELEC-1", "R-ELEC-2", "R-ELEC-3"}.intersection(capacity_by_id),
+            len([row for row in snapshot.resources if row.resource_class == "INSTALL_ELEC"]),
+            3,
         )
-        self.assertGreater(capacity_by_id["R-ELEC-1"].capacity_hours, 0)
-        self.assertEqual(capacity_by_id["R-ELEC-2"].capacity_hours, 0)
-        self.assertEqual(capacity_by_id["R-ELEC-3"].capacity_hours, 0)
-        self.assertTrue(
-            all(
-                day.reason == "Aucun horaire standard"
-                for resource_id in ("R-ELEC-2", "R-ELEC-3")
-                for day in capacity_by_id[resource_id].days
+        for row in grid.resources:
+            if row.resource_id in classes:
+                self.assertEqual(row.capacity_hours, 16.0)
+        self.assertEqual({row.resource_id for row in snapshot.shifts}, {"R1"})
+
+    def test_753_global_planning_excludes_non_applicable_schedules(self) -> None:
+        cases = {
+            "missing": None,
+            "expired": {"start_date": D1 - timedelta(days=10), "end_date": D1 - timedelta(days=1)},
+            "future": {"start_date": D2 + timedelta(days=1), "end_date": None},
+            "disabled": {"active": False},
+            "vacation_only": {"availability_type": "Vacances"},
+            "inactive_resource": {},
+            "erp_inactive_resource": {},
+        }
+        with transactional_session(self.factory) as session:
+            session.add_all(
+                Resource(
+                    id=f"R-753-{case}", name=f"Resource {case}",
+                    resource_class="INSTALL_EXC",
+                    active=case != "inactive_resource",
+                    erp_active=case != "erp_inactive_resource",
+                )
+                for case in cases
             )
-        )
+            session.flush()
+            session.add_all(
+                self._schedule_753(f"R-753-{case}", **overrides)
+                for case, overrides in cases.items() if overrides is not None
+            )
+        with self.factory() as session:
+            queries = SqlPlannerQueryRepository(session)
+            snapshot = queries.planning_snapshot(start=D1, end=D2)
+            grid = queries.planning_capacity_grid(start=D1, end=D2)
+        self.assertEqual([row.id for row in snapshot.resources], ["R1"])
+        self.assertEqual([row.resource_id for row in grid.resources], ["R1"])
+
+    def test_753_schedule_envelope_is_not_a_positive_daily_capacity_filter(self) -> None:
+        # Preserve the established envelope contract: vacation/weekend capacity
+        # is not a new reason to remove a resource that has an applicable schedule.
+        with transactional_session(self.factory) as session:
+            session.add(Resource(
+                id="R-753-X", name="Scheduled excavation", resource_class="INSTALL_EXC",
+                active=True, erp_active=True,
+            ))
+            session.flush()
+            session.add(self._schedule_753("R-753-X"))
+            session.add(self._schedule_753(
+                "R-753-X", id="VAC-753-X", availability_type="Vacances",
+            ))
+        with self.factory() as session:
+            queries = SqlPlannerQueryRepository(session)
+            snapshot = queries.planning_snapshot(start=D1, end=D2)
+            grid = queries.planning_capacity_grid(start=D1, end=D2)
+        self.assertIn("R-753-X", {row.id for row in snapshot.resources})
+        capacity = next(row for row in grid.resources if row.resource_id == "R-753-X")
+        self.assertEqual(capacity.capacity_hours, 0.0)
+        self.assertTrue(all(day.reason == "Vacances" for day in capacity.days))
+
+    def test_753_empty_authorized_scope_does_not_fall_back_to_global(self) -> None:
+        with self.factory() as session:
+            queries = SqlPlannerQueryRepository(session)
+            self.assertTrue(queries.list_schedulable_resources(start=D1, end=D2))
+            snapshot = queries.planning_snapshot(start=D1, end=D2, project_ids=())
+            grid = queries.planning_capacity_grid(start=D1, end=D2, project_ids=())
+        self.assertEqual(snapshot.resources, ())
+        self.assertEqual(snapshot.shifts, ())
+        self.assertEqual(grid.resources, ())
 
     def test_demands_and_segments_use_canonical_read_models(self) -> None:
         with self.factory() as session:

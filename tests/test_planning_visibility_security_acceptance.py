@@ -154,23 +154,6 @@ class PlanningVisibilitySecurityAcceptanceTests(unittest.TestCase):
                 Resource(
                     id="R-COORD-A",
                     name="Ressource coordonnée Alpha sans quart",
-                    resource_class="INSTALL_ELEC",
-                    coordinator_contact_id="C-COORD-A",
-                    active=True,
-                    erp_active=True,
-                ),
-                Resource(
-                    id="R-COORD-A-2",
-                    name="Ressource coordonnée Alpha élec 2",
-                    resource_class="INSTALL_ELEC",
-                    coordinator_contact_id="C-COORD-A",
-                    active=True,
-                    erp_active=True,
-                ),
-                Resource(
-                    id="R-COORD-A-3",
-                    name="Ressource coordonnée Alpha élec 3",
-                    resource_class="INSTALL_ELEC",
                     coordinator_contact_id="C-COORD-A",
                     active=True,
                     erp_active=True,
@@ -673,23 +656,7 @@ class PlanningVisibilitySecurityAcceptanceTests(unittest.TestCase):
         self.assertEqual(beta.status_code, 200, beta.text)
         self.assertEqual(
             {row["name"] for row in alpha.json()["resources"]},
-            {
-                "Ressource coordonnée Alpha sans quart",
-                "Ressource coordonnée Alpha élec 2",
-                "Ressource coordonnée Alpha élec 3",
-            },
-        )
-        self.assertEqual(
-            {
-                row["name"]
-                for row in alpha.json()["resources"]
-                if row["resource_class"] == "INSTALL_ELEC"
-            },
-            {
-                "Ressource coordonnée Alpha sans quart",
-                "Ressource coordonnée Alpha élec 2",
-                "Ressource coordonnée Alpha élec 3",
-            },
+            {"Ressource coordonnée Alpha sans quart"},
         )
         self.assertEqual(
             {row["name"] for row in beta.json()["resources"]},
