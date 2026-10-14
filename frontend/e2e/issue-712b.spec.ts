@@ -79,3 +79,96 @@ test("712B conserve les groupes distincts et Non classé si classe absente ou no
     await context.close();
   }
 });
+
+const classes750 = [
+  { code: "INSTALL_EXC", label: "Installation excavation", active: true },
+  { code: "INSTALL_ELEC", label: "Installation \u00e9lectrique", active: true },
+  { code: "EMPTY_750", label: "Classe sans ressource", active: true },
+];
+const resources750 = [
+  { id: "R-750-EXC-A", name: "Excavation Alpha", resource_class: "INSTALL_EXC" },
+  { id: "R-750-EXC-B", name: "Excavation Beta", resource_class: "INSTALL_EXC" },
+  { id: "R-750-EXC-C", name: "Excavation Gamma", resource_class: "INSTALL_EXC" },
+  { id: "R-750-ELEC", name: "Installation controle", resource_class: "INSTALL_ELEC" },
+];
+
+async function project750Resources(page: Page, visible: typeof resources750) {
+  // Browser contract only. SQL/API authorization and the no-schedule regression
+  // are exercised without mocks in test_planning_excavation_750.py.
+  await page.route("**/api/v1/planning/snapshot?**", async (route) => {
+    const response = await route.fetch();
+    const snapshot = await response.json();
+    const template = snapshot.resources[0];
+    if (!template) throw new Error("Fixture Planning 750: ressource de reference requise");
+    await route.fulfill({ response, json: {
+      ...snapshot,
+      resources: visible.map((resource) => ({ ...template, ...resource })),
+      shifts: [], segments: [], demands: [], pending_loads: [],
+    } });
+  });
+  await page.route("**/api/v1/planning/actions?**", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/v1/planning/capacity-grid?**", async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({ response, json: {
+      ...await response.json(), resources: [], segment_diagnostics: [],
+    } });
+  });
+  await page.route("**/api/v1/resources?**", async (route) => {
+    const response = await route.fetch();
+    const catalog = await response.json();
+    if (!catalog[0]) throw new Error("Fixture Planning 750: catalogue de reference requis");
+    // An editor's broader resource catalog is NOT the source for visible groups.
+    await route.fulfill({ response, json: resources750.map((resource) => ({ ...catalog[0], ...resource })) });
+  });
+}
+
+test("750 affiche Installation excavation et toutes ses ressources sans creer de groupes vides", async ({ browser }) => {
+  const { context, page } = await openPlanning(browser, classes750);
+  try {
+    await project750Resources(page, resources750);
+    await showPlanning(page);
+    const excavation = page.locator('.resource-group[data-resource-class="INSTALL_EXC"]');
+    const electrical = page.locator('.resource-group[data-resource-class="INSTALL_ELEC"]');
+    await expect(excavation).toHaveCount(1);
+    await expect(excavation.locator(".resource-group-title strong")).toHaveText("Installation excavation");
+    await expect(excavation.locator(".resource-identity > strong")).toHaveText([
+      "Excavation Alpha", "Excavation Beta", "Excavation Gamma",
+    ]);
+    for (const resource of resources750.filter((row) => row.resource_class === "INSTALL_EXC")) {
+      await expect(excavation.locator(`.resource-identity[data-resource-id="${resource.id}"]`)).toHaveCount(1);
+    }
+    await expect(electrical).toHaveCount(1);
+    await expect(electrical.locator(".resource-group-title strong")).toHaveText("Installation \u00e9lectrique");
+    await expect(electrical.locator(".resource-identity > strong")).toHaveText(["Installation controle"]);
+    await expect(page.locator('.resource-group[data-resource-class="EMPTY_750"]')).toHaveCount(0);
+
+    await page.getByRole("button", { name: /^Filtres/ }).click();
+    const filter = page.getByLabel("Classe");
+    await expect(filter.locator('option[value="INSTALL_EXC"]')).toHaveText("Installation excavation");
+    await expect(filter.locator('option[value="EMPTY_750"]')).toHaveCount(0);
+    await filter.selectOption("INSTALL_EXC");
+    await expect(excavation).toBeVisible();
+    await expect(electrical).toHaveCount(0);
+    await filter.selectOption("all");
+    await expect(electrical).toBeVisible();
+  } finally {
+    await context.close();
+  }
+});
+
+test("750 ne fabrique pas Installation excavation depuis les catalogues hors projection autorisee", async ({ browser }) => {
+  const { context, page } = await openPlanning(browser, classes750);
+  try {
+    await project750Resources(page, resources750.filter((row) => row.resource_class === "INSTALL_ELEC"));
+    await showPlanning(page);
+    const electrical = page.locator('.resource-group[data-resource-class="INSTALL_ELEC"]');
+    await expect(electrical.locator(".resource-group-title strong")).toHaveText("Installation \u00e9lectrique");
+    await expect(page.locator('.resource-group[data-resource-class="INSTALL_EXC"]')).toHaveCount(0);
+    await expect(page.locator('.resource-group[data-resource-class="EMPTY_750"]')).toHaveCount(0);
+    await expect(page.locator('.resource-identity[data-resource-id^="R-750-EXC"]')).toHaveCount(0);
+    await page.getByRole("button", { name: /^Filtres/ }).click();
+    await expect(page.getByLabel("Classe").locator('option[value="INSTALL_EXC"]')).toHaveCount(0);
+  } finally {
+    await context.close();
+  }
+});
