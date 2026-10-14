@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, time
 from decimal import Decimal
 import unittest
 
@@ -218,8 +218,8 @@ class SqlPlannerQueryRepositoryTests(unittest.TestCase):
                     start_date=D1,
                     end_date=D2,
                     weekdays="Lun,Mar",
-                    start_time="08:00",
-                    end_time="16:00",
+                    start_time=time(8, 0),
+                    end_time=time(16, 0),
                     active=True,
                 )
             )
