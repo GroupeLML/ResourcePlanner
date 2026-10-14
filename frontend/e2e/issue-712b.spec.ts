@@ -79,3 +79,70 @@ test("712B conserve les groupes distincts et Non classé si classe absente ou no
     await context.close();
   }
 });
+
+// Rendering contract only: SQL regression tests establish schedule eligibility.
+// React must use the projected resource population, never rebuild that policy.
+test("753 creates resource groups only from the eligible Planning projection", async ({ browser }) => {
+  const classes = [
+    { code: "INSTALL_ELEC", label: "Installation électrique", active: true },
+    { code: "INSTALL_EXC", label: "Installation excavation", active: true },
+    { code: "EMPTY_753", label: "Empty class", active: true },
+  ];
+  const members = [
+    { id: "R-753-E1", name: "Electrical Alpha", resource_class: "INSTALL_ELEC" },
+    { id: "R-753-E2", name: "Electrical Beta", resource_class: "INSTALL_ELEC" },
+    { id: "R-753-E3", name: "Electrical Gamma", resource_class: "INSTALL_ELEC" },
+    { id: "R-753-X1", name: "Excavation Alpha", resource_class: "INSTALL_EXC" },
+  ];
+  let additionalSchedulesConfigured = false;
+  const { context, page } = await openPlanning(browser, classes);
+  try {
+    await page.route("**/api/v1/planning/snapshot?**", async (route) => {
+      const response = await route.fetch();
+      const snapshot = await response.json();
+      const template = snapshot.resources[0];
+      if (!template) throw new Error("753 requires the existing scheduled resource fixture");
+      const eligible = additionalSchedulesConfigured ? members : members.slice(0, 2);
+      await route.fulfill({ response, json: {
+        ...snapshot,
+        resources: eligible.map((row) => ({ ...template, ...row })),
+        shifts: [], segments: [], demands: [], pending_loads: [],
+      } });
+    });
+    await page.route("**/api/v1/planning/actions?**", (route) => route.fulfill({ json: [] }));
+    await page.route("**/api/v1/planning/capacity-grid?**", async (route) => {
+      const response = await route.fetch();
+      await route.fulfill({ response, json: {
+        ...await response.json(), resources: [], segment_diagnostics: [],
+      } });
+    });
+    await page.route("**/api/v1/resources?**", async (route) => {
+      const response = await route.fetch();
+      const catalog = await response.json();
+      if (!catalog[0]) throw new Error("753 requires the existing resource catalog fixture");
+      // Active/classified editor entries cannot create a Planning resource row.
+      await route.fulfill({ response, json: members.map((row) => ({ ...catalog[0], ...row })) });
+    });
+
+    await showPlanning(page);
+    const electrical = page.locator('.resource-group[data-resource-class="INSTALL_ELEC"]');
+    const excavation = page.locator('.resource-group[data-resource-class="INSTALL_EXC"]');
+    await expect(electrical).toHaveCount(1);
+    await expect(electrical.locator(".resource-identity > strong")).toHaveCount(2);
+    await expect(excavation).toHaveCount(0);
+    await expect(page.locator('.resource-group[data-resource-class="EMPTY_753"]')).toHaveCount(0);
+    await page.getByRole("button", { name: /^Filtres/ }).click();
+    await expect(page.getByLabel("Classe").locator('option[value="INSTALL_EXC"]')).toHaveCount(0);
+
+    additionalSchedulesConfigured = true;
+    await showPlanning(page);
+    await expect(electrical).toHaveCount(1);
+    await expect(electrical.locator(".resource-identity > strong")).toHaveCount(3);
+    await expect(excavation).toHaveCount(1);
+    await expect(excavation.locator(".resource-group-title strong")).toHaveText("Installation excavation");
+    await expect(excavation.locator(".resource-identity > strong")).toHaveText("Excavation Alpha");
+    await expect(page.locator('.resource-group[data-resource-class="EMPTY_753"]')).toHaveCount(0);
+  } finally {
+    await context.close();
+  }
+});
