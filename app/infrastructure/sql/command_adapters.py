@@ -18,7 +18,7 @@ from ...domain.availability_rules import (
     outside_standard_hours_decision_for_day,
 )
 from ...domain.confirmation import CONFIRMATION_CONFIRMED, normalize_confirmation
-from ...domain.planning_engine import PreservedAllocationInput, build_allocation_plan
+from ...domain.planning_engine import MISSING_ALLOCATION_TYPE, PreservedAllocationInput, build_allocation_plan
 from ...domain.planning_projection import project_planning_snapshot
 from ...domain.value_coercion import date_from_value
 from .asset_service import SqlAssetService
@@ -141,6 +141,7 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
                 hours=float(shift.hours),
                 locked=bool(shift.locked),
                 outside_schedule=bool(shift.outside_standard_hours),
+                counts_as_allocated=shift.allocation_type != MISSING_ALLOCATION_TYPE,
             )
             for shift, requirement, resource in preserved_rows
             if not shift.locked
