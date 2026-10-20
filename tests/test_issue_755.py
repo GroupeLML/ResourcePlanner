@@ -116,6 +116,13 @@ class QuickShiftDelete755Tests(unittest.TestCase):
     def test_delete_middle_quick_shift_preserves_mixed_survivors_and_persists_exclusion(self) -> None:
         with transactional_session(self.factory) as session:
             requirement = self._requirement(session, identifier="SEG-QS-32", hours="32")
+            unrelated = self._requirement(
+                session,
+                identifier="SEG-UNRELATED",
+                hours="8",
+                origin=ORIGIN_AD_HOC,
+            )
+            unrelated.end_date = MONDAY
             monday = self._shift(session, requirement, identifier="MON", day=MONDAY, hours="8", locked=True)
             tuesday = self._shift(session, requirement, identifier="TUE", day=TUESDAY, hours="8", locked=False)
             self._shift(session, requirement, identifier="WED", day=WEDNESDAY, hours="8", locked=True)
@@ -147,9 +154,12 @@ class QuickShiftDelete755Tests(unittest.TestCase):
             )
             self.assertIsNotNone(exclusion)
 
-            # A later unrelated/global rebuild may replace automatic rows, but the
-            # persisted Quick Shift exclusion must keep Wednesday empty.
-            SqlPlanningCommandAdapter(session).rebuild()
+            # A later unrelated Planning mutation triggers another global rebuild.
+            # Automatic survivors may be replaced, but Wednesday must remain excluded.
+            SqlAllocationCommandAdapter(session).assign_segment(
+                unrelated.legacy_segment_id or unrelated.id,
+                "Alice",
+            )
             rebuilt = list(
                 session.scalars(
                     select(Shift)
