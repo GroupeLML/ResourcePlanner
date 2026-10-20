@@ -534,11 +534,6 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
                 )
             ).all()
         )
-        SqlAssetService(
-            self._session,
-            actor="planning",
-        ).delete_shift_ad_hoc_assignment(shift=shift)
-
         if remaining_hours == 0:
             if survivor_ids:
                 raise ValueError(
@@ -550,12 +545,20 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
                 requirement,
                 removing=True,
             )
+            SqlAssetService(
+                self._session,
+                actor="planning",
+            ).delete_shift_ad_hoc_assignment(shift=shift)
             self._session.delete(shift)
             requirement.status = "Annulé"
             self._session.flush()
             self._planning.rebuild()
             return
 
+        SqlAssetService(
+            self._session,
+            actor="planning",
+        ).delete_shift_ad_hoc_assignment(shift=shift)
         requirement.planned_hours = remaining_hours
         if self._session.get(
             QuickShiftPlanningExclusion,
