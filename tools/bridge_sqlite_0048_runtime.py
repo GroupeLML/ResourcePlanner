@@ -56,6 +56,7 @@ SOURCE_MISSING_TABLES = {
     "verification_executor_assignments",
     "verification_test_executions",
     "verification_evidence_links",
+    "quick_shift_planning_exclusions",
 }
 SOURCE_MISSING_COLUMNS = {
     "projects": {
