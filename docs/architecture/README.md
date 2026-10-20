@@ -75,6 +75,7 @@ Voir :
 - `ADR-028-competency-class-grouping-and-non-additive-capacity.md`
 - `ADR-029-explicit-period-inheritance-and-same-resource-constraint.md`
 - `ADR-030-module-read-capabilities-and-indirect-data-access.md`
+- `ADR-031-quick-shift-deletion-date-exclusions.md`
 
 Chaîne métier actuelle :
 
@@ -501,3 +502,5 @@ Créer un ADR lorsqu'une décision :
 - mérite d'être connue par un futur développeur avant de modifier le système.
 
 Un petit nombre d'ADR utiles et maintenus vaut mieux qu'une grande collection de décisions triviales ou obsolètes.
+
+ADR-031 formalise la suppression métier des Quick Shifts : soustraction exacte des heures, exclusion persistée de la date pour la génération automatique, préservation transactionnelle des quarts survivants pendant le rebuild et annulation canonique du besoin lorsque le dernier quart épuise le budget.
