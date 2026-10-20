@@ -13,6 +13,7 @@ from sqlalchemy import event, func, select
 from app.domain.reservable_assets import AssetRequirementOrigin
 from app.infrastructure.sql import (
     ORIGIN_AD_HOC,
+    ORIGIN_QUICK_SHIFT,
     Asset,
     AssetAllocation,
     AssetRequirement,
@@ -1490,6 +1491,22 @@ class ShiftAssetCommandTests(unittest.TestCase):
         self.assertIsNotNone(allocation)
         self.assertIsNotNone(shift)
 
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory.begin() as session:
+                source_shift = session.get(Shift, "SHIFT-SKILLED")
+                assert source_shift is not None
+                quick_requirement = session.get(
+                    ResourceRequirement,
+                    source_shift.resource_requirement_id,
+                )
+                assert quick_requirement is not None
+                quick_requirement.origin = ORIGIN_QUICK_SHIFT
+                quick_requirement_id = quick_requirement.id
+        finally:
+            engine.dispose()
+
         current_version = self._version()
         delete_params = {"expected_planning_version": current_version}
         delete_headers = {"Idempotency-Key": "delete-final-560c"}
@@ -1517,6 +1534,10 @@ class ShiftAssetCommandTests(unittest.TestCase):
                 self.assertIsNone(
                     session.get(AssetAllocation, allocation_id)
                 )
+                cancelled = session.get(ResourceRequirement, quick_requirement_id)
+                assert cancelled is not None
+                self.assertEqual(cancelled.status, "Annulé")
+                self.assertEqual(cancelled.planned_hours, Decimal("8.00"))
         finally:
             engine.dispose()
 
