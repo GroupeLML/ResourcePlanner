@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from decimal import Decimal
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from sqlalchemy import func, select, true
 from sqlalchemy.orm import Session
@@ -18,7 +18,7 @@ from ...domain.availability_rules import (
     outside_standard_hours_decision_for_day,
 )
 from ...domain.confirmation import CONFIRMATION_CONFIRMED, normalize_confirmation
-from ...domain.planning_engine import build_allocation_plan
+from ...domain.planning_engine import LockedAllocationInput, build_allocation_plan
 from ...domain.planning_projection import project_planning_snapshot
 from ...domain.value_coercion import date_from_value
 from .asset_service import SqlAssetService
@@ -29,12 +29,14 @@ from .models import (
     ORIGIN_REQUEST,
     Project,
     Resource,
+    QuickShiftPlanningExclusion,
     ResourceRequirement,
     Shift,
     WorkforceRequest,
     WorkforceRequestHistory,
 )
 from .planning_repository import SqlPlanningReadRepository
+from .segment_asset_guard import assert_segment_asset_mutation_compatible
 from .planning_version import SqlPlanningMutationVersionRepository
 from .segment_repository import SqlSegmentRepository
 from .same_resource_periods import SqlSameResourcePeriodCoordinator
@@ -98,7 +100,11 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
             ).all()
         )
 
-    def rebuild(self) -> Mapping[str, Any]:
+    def rebuild(
+        self,
+        *,
+        preserve_shift_ids: Sequence[str] = (),
+    ) -> Mapping[str, Any]:
         self._versioning.acquire()
         same_resource = SqlSameResourcePeriodCoordinator(self._session)
         same_resource_summary = same_resource.enforce_targets()
@@ -110,9 +116,38 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
                 + ", ".join(calculation.unsupported_segment_ids)
             )
 
+        preserve_ids = {str(value) for value in preserve_shift_ids if str(value)}
+        preserved_rows = []
+        if preserve_ids:
+            preserved_rows = list(
+                self._session.execute(
+                    select(Shift, ResourceRequirement, Resource)
+                    .join(
+                        ResourceRequirement,
+                        Shift.resource_requirement_id == ResourceRequirement.id,
+                    )
+                    .join(Resource, Shift.resource_id == Resource.id)
+                    .where(
+                        Shift.id.in_(preserve_ids),
+                        ResourceRequirement.status.not_in(INACTIVE_REQUIREMENT_STATUSES),
+                    )
+                ).all()
+            )
+        temporary_inputs = tuple(
+            LockedAllocationInput(
+                segment_id=_text(requirement.legacy_segment_id) or requirement.id,
+                resource_id=resource.name,
+                day=shift.work_date,
+                hours=float(shift.hours),
+                outside_schedule=bool(shift.outside_standard_hours),
+            )
+            for shift, requirement, resource in preserved_rows
+            if not shift.locked
+        )
+
         result = build_allocation_plan(
             calculation.segments,
-            calculation.locked_allocations,
+            calculation.locked_allocations + temporary_inputs,
             calculation.capacity_by_resource_day,
             preserve_locked_segment_ids=calculation.preserved_segment_ids,
             outside_schedule_eligible_by_resource_day=(
@@ -121,7 +156,9 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
         )
 
         protected = self._active_locked_shifts()
-        protected_ids = {shift.id for shift in protected}
+        protected_ids = {shift.id for shift in protected} | {
+            shift.id for shift, _requirement, _resource in preserved_rows
+        }
 
         # Keep only active locked user decisions. Unlocked rows are disposable engine
         # output; locked rows belonging to cancelled/completed requirements are removed
@@ -470,13 +507,72 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
         shift = self._shift(allocation_id)
         if shift is None:
             return
+        requirement = self._requirement(shift.resource_requirement_id)
+        if requirement.origin != ORIGIN_QUICK_SHIFT:
+            SqlAssetService(
+                self._session,
+                actor="planning",
+            ).delete_shift_ad_hoc_assignment(shift=shift)
+            self._session.delete(shift)
+            self._session.flush()
+            self._planning.rebuild()
+            return
+
+        deleted_hours = Decimal(shift.hours)
+        remaining_hours = Decimal(requirement.planned_hours) - deleted_hours
+        if remaining_hours < 0:
+            raise ValueError(
+                "Le quart Quick Shift dépasse les heures prévues du segment; "
+                "la suppression est refusée pour éviter un budget négatif."
+            )
+
+        survivor_ids = tuple(
+            self._session.scalars(
+                select(Shift.id).where(
+                    Shift.resource_requirement_id == requirement.id,
+                    Shift.id != shift.id,
+                )
+            ).all()
+        )
         SqlAssetService(
             self._session,
             actor="planning",
         ).delete_shift_ad_hoc_assignment(shift=shift)
+
+        if remaining_hours == 0:
+            if survivor_ids:
+                raise ValueError(
+                    "Le Quick Shift contient encore des quarts alors que la suppression "
+                    "épuiserait ses heures prévues."
+                )
+            assert_segment_asset_mutation_compatible(
+                self._session,
+                requirement,
+                removing=True,
+            )
+            self._session.delete(shift)
+            requirement.status = "Annulé"
+            self._session.flush()
+            self._planning.rebuild()
+            return
+
+        requirement.planned_hours = remaining_hours
+        if self._session.get(
+            QuickShiftPlanningExclusion,
+            {
+                "resource_requirement_id": requirement.id,
+                "excluded_date": shift.work_date,
+            },
+        ) is None:
+            self._session.add(
+                QuickShiftPlanningExclusion(
+                    resource_requirement_id=requirement.id,
+                    excluded_date=shift.work_date,
+                )
+            )
         self._session.delete(shift)
         self._session.flush()
-        self._planning.rebuild()
+        self._planning.rebuild(preserve_shift_ids=survivor_ids)
 
     def assign_segment(self, segment_id: str, technician: str) -> Mapping[str, Any]:
         self._versioning.acquire()
