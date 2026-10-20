@@ -34,6 +34,7 @@ class SegmentInput:
     overtime_allowed: bool = False
     desired_active_days: int | None = None
     load_profile: str = LOAD_PROFILE_UNIFORM
+    excluded_dates: frozenset[date] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -99,12 +100,13 @@ def _capacity_window(
     result: list[tuple[date, float]] = []
     cursor = segment.start
     while cursor <= segment.end:
-        result.append(
-            (
-                cursor,
-                max(float(capacity_by_resource_day.get((segment.resource_id, cursor), 0.0)), 0.0),
+        if cursor not in segment.excluded_dates:
+            result.append(
+                (
+                    cursor,
+                    max(float(capacity_by_resource_day.get((segment.resource_id, cursor), 0.0)), 0.0),
+                )
             )
-        )
         cursor += timedelta(days=1)
     return result
 
@@ -193,6 +195,9 @@ def _outside_schedule_slots(
     candidates: list[tuple[int, date, float]] = []
     cursor = segment.start
     while cursor <= segment.end:
+        if cursor in segment.excluded_dates:
+            cursor += timedelta(days=1)
+            continue
         key = (segment.resource_id, cursor)
         eligible = (
             bool(eligible_by_resource_day.get(key, False))
