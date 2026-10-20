@@ -6,6 +6,12 @@ import unittest
 
 from sqlalchemy import select
 
+from app.domain.planning_engine import (
+    LockedAllocationInput,
+    MISSING_ALLOCATION_TYPE,
+    SegmentInput,
+    build_allocation_plan,
+)
 from app.infrastructure.sql import (
     Base,
     ORIGIN_AD_HOC,
@@ -112,6 +118,110 @@ class QuickShiftDelete755Tests(unittest.TestCase):
         session.add(row)
         session.flush()
         return row
+
+    def test_excluded_date_is_skipped_by_normal_overtime_and_shortage_generation(self) -> None:
+        segment = SegmentInput(
+            segment_id="SEG-PURE-755",
+            resource_id="Alice",
+            start=MONDAY,
+            end=THURSDAY,
+            hours=8,
+            overtime_allowed=True,
+            excluded_dates=frozenset({WEDNESDAY}),
+        )
+        capacity = {
+            ("Alice", MONDAY): 0.0,
+            ("Alice", TUESDAY): 0.0,
+            ("Alice", WEDNESDAY): 8.0,
+            ("Alice", THURSDAY): 0.0,
+        }
+        eligible = {
+            ("Alice", MONDAY): False,
+            ("Alice", TUESDAY): False,
+            ("Alice", WEDNESDAY): True,
+            ("Alice", THURSDAY): True,
+        }
+
+        overtime = build_allocation_plan(
+            [segment],
+            [],
+            capacity,
+            outside_schedule_eligible_by_resource_day=eligible,
+        )
+        self.assertEqual(
+            [(row.day, row.hours, row.outside_schedule) for row in overtime.allocations],
+            [(THURSDAY, 8.0, True)],
+        )
+
+        shortage = build_allocation_plan(
+            [SegmentInput(
+                segment_id="SEG-PURE-755-MISSING",
+                resource_id="Alice",
+                start=MONDAY,
+                end=THURSDAY,
+                hours=8,
+                overtime_allowed=False,
+                excluded_dates=frozenset({WEDNESDAY}),
+            )],
+            [],
+            capacity,
+            outside_schedule_eligible_by_resource_day=eligible,
+        )
+        self.assertEqual(
+            [(row.day, row.hours, row.allocation_type) for row in shortage.allocations],
+            [(THURSDAY, 8.0, MISSING_ALLOCATION_TYPE)],
+        )
+
+        normal = build_allocation_plan(
+            [SegmentInput(
+                segment_id="SEG-PURE-755-NORMAL",
+                resource_id="Alice",
+                start=MONDAY,
+                end=THURSDAY,
+                hours=8,
+                excluded_dates=frozenset({WEDNESDAY}),
+            )],
+            [],
+            {
+                ("Alice", MONDAY): 0.0,
+                ("Alice", TUESDAY): 0.0,
+                ("Alice", WEDNESDAY): 8.0,
+                ("Alice", THURSDAY): 8.0,
+            },
+        )
+        self.assertEqual([(row.day, row.hours) for row in normal.allocations], [(THURSDAY, 8.0)])
+
+    def test_manual_locked_placement_on_excluded_date_remains_authoritative(self) -> None:
+        result = build_allocation_plan(
+            [
+                SegmentInput(
+                    segment_id="SEG-MANUAL-EXCLUDED",
+                    resource_id="Alice",
+                    start=MONDAY,
+                    end=THURSDAY,
+                    hours=8,
+                    excluded_dates=frozenset({WEDNESDAY}),
+                )
+            ],
+            [
+                LockedAllocationInput(
+                    segment_id="SEG-MANUAL-EXCLUDED",
+                    resource_id="Alice",
+                    day=WEDNESDAY,
+                    hours=8,
+                )
+            ],
+            {
+                ("Alice", MONDAY): 8.0,
+                ("Alice", TUESDAY): 8.0,
+                ("Alice", WEDNESDAY): 8.0,
+                ("Alice", THURSDAY): 8.0,
+            },
+        )
+        self.assertEqual(len(result.allocations), 1)
+        self.assertEqual(result.allocations[0].day, WEDNESDAY)
+        self.assertTrue(result.allocations[0].locked)
+        self.assertEqual(result.allocated_hours, 8.0)
 
     def test_delete_middle_quick_shift_preserves_mixed_survivors_and_persists_exclusion(self) -> None:
         with transactional_session(self.factory) as session:
