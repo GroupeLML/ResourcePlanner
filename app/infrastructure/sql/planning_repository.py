@@ -9,6 +9,7 @@ from ...application.repository_ports import PlanningReadRepositoryPort
 from ...domain.planning_snapshot import PlanningSnapshot
 from .availability_class_scope import availability_class_codes_by_rule
 from .models import (
+    ORIGIN_QUICK_SHIFT,
     Project,
     QuickShiftPlanningExclusion,
     Resource,
@@ -92,7 +93,11 @@ class SqlPlanningReadRepository(PlanningReadRepositoryPort):
                 "Priorite": requirement.priority,
                 "HorsHoraireAutorise": requirement.outside_standard_hours_allowed,
                 "OrigineSegment": requirement.origin,
-                "DatesExclues": tuple(exclusions_by_requirement.get(requirement.id, ())),
+                "DatesExclues": (
+                    tuple(exclusions_by_requirement.get(requirement.id, ()))
+                    if requirement.origin == ORIGIN_QUICK_SHIFT
+                    else ()
+                ),
             }
             for requirement, project, request, resource in rows
         ]
