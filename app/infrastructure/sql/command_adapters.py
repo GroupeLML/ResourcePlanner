@@ -18,7 +18,7 @@ from ...domain.availability_rules import (
     outside_standard_hours_decision_for_day,
 )
 from ...domain.confirmation import CONFIRMATION_CONFIRMED, normalize_confirmation
-from ...domain.planning_engine import LockedAllocationInput, build_allocation_plan
+from ...domain.planning_engine import PreservedAllocationInput, build_allocation_plan
 from ...domain.planning_projection import project_planning_snapshot
 from ...domain.value_coercion import date_from_value
 from .asset_service import SqlAssetService
@@ -134,11 +134,12 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
                 ).all()
             )
         temporary_inputs = tuple(
-            LockedAllocationInput(
+            PreservedAllocationInput(
                 segment_id=_text(requirement.legacy_segment_id) or requirement.id,
                 resource_id=resource.name,
                 day=shift.work_date,
                 hours=float(shift.hours),
+                locked=bool(shift.locked),
                 outside_schedule=bool(shift.outside_standard_hours),
             )
             for shift, requirement, resource in preserved_rows
@@ -147,8 +148,9 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
 
         result = build_allocation_plan(
             calculation.segments,
-            calculation.locked_allocations + temporary_inputs,
+            calculation.locked_allocations,
             calculation.capacity_by_resource_day,
+            preserved_allocations=temporary_inputs,
             preserve_locked_segment_ids=calculation.preserved_segment_ids,
             outside_schedule_eligible_by_resource_day=(
                 calculation.outside_schedule_eligible_by_resource_day
@@ -178,7 +180,7 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
         resource_by_name = {resource.name: resource for resource in resources}
 
         for allocation in result.allocations:
-            if allocation.locked:
+            if allocation.preserved:
                 continue
             requirement = requirement_by_identifier.get(allocation.segment_id)
             if requirement is None:
