@@ -73,12 +73,13 @@ test("755 supprimer un jour Quick Shift réduit le besoin sans recréer le jour"
     await quickShift.getByRole("button", { name: "Créer le Quick Shift" }).click();
     await expect(quickShift).toBeHidden();
 
-    const mondayCard = mondayCell.locator('.shift-card').filter({ hasText: "Issue 755 E2E" });
-    await expect(mondayCard).toHaveCount(1);
+    const mondayCardButton = mondayCell.locator('.shift-card-main[title*="Issue 755 E2E"]');
+    await expect(mondayCardButton).toHaveCount(1);
+    const mondayCard = mondayCardButton.locator("..");
     const segmentId = await mondayCard.getAttribute("data-segment-id");
     expect(segmentId).toBeTruthy();
 
-    await mondayCard.locator(".shift-card-main").click();
+    await mondayCardButton.click();
     let shiftDialog = page.getByRole("dialog", { name: "Modifier le quart" });
     await shiftDialog.getByRole("button", { name: "Modifier le segment parent" }).click();
 
