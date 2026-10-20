@@ -39,7 +39,9 @@ class ReactQuickShiftContractTests(unittest.TestCase):
         self.assertIn("expected_planning_version=", api)
         self.assertIn('"Idempotency-Key": idempotencyKey', api)
         self.assertIn("planningVersion", editor)
-        self.assertIn("newAtomicIdempotencyKey()", editor)
+        self.assertIn("deleteIdempotencyKey.current ?? newAtomicIdempotencyKey()", editor)
+        self.assertIn("deleteIdempotencyKey.current = idempotencyKey", editor)
+        self.assertIn("deleteIdempotencyKey.current = null", editor)
         self.assertNotIn("planned_hours -", editor)
         self.assertNotIn("segment_planned_hours -", editor)
 
