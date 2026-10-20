@@ -163,9 +163,9 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
             shift.id for shift, _requirement, _resource in preserved_rows
         }
 
-        # Keep only active locked user decisions. Unlocked rows are disposable engine
-        # output; locked rows belonging to cancelled/completed requirements are removed
-        # as part of that explicit workflow transition.
+        # Keep active locked user decisions plus the narrowly scoped survivor rows
+        # explicitly preserved for this one mutation. Other automatic rows remain
+        # disposable engine output.
         existing = self._session.scalars(select(Shift)).all()
         for shift in existing:
             if shift.id not in protected_ids:
@@ -230,11 +230,11 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
             if protected_ids
             else set()
         )
-        missing_locked = sorted(protected_ids - persisted_protected)
-        if missing_locked:
+        missing_protected = sorted(protected_ids - persisted_protected)
+        if missing_protected:
             raise RuntimeError(
-                "Le recalcul SQL aurait supprimé des quarts verrouillés actifs: "
-                + ", ".join(missing_locked)
+                "Le recalcul SQL aurait supprimé des quarts protégés pour cette mutation: "
+                + ", ".join(missing_protected)
             )
 
         return {
@@ -242,7 +242,7 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
             "allocations": len(
                 [row for row in result.allocations if row.counts_as_allocated]
             ),
-            "locked_allocations": len(protected_ids),
+            "locked_allocations": len(protected),
             "requested_hours": round(result.requested_hours, 2),
             "allocated_hours": round(result.allocated_hours, 2),
             "overtime_hours": round(result.overtime_hours, 2),
