@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
 from .commands import (
@@ -16,7 +16,7 @@ from .commands import (
 class PlanningCommandPort(Protocol):
     """Command boundary for one authoritative planning rebuild."""
 
-    def rebuild(self) -> Mapping[str, Any]: ...
+    def rebuild(self, *, preserve_shift_ids: Sequence[str] = ()) -> Mapping[str, Any]: ...
 
 
 class AllocationCommandPort(Protocol):
