@@ -338,12 +338,20 @@ export async function releaseManualAllocation(allocationId: string) {
   return response.json() as Promise<Record<string, unknown>>;
 }
 
-export async function deleteManualAllocation(allocationId: string) {
+export async function deleteManualAllocation(
+  allocationId: string,
+  expectedPlanningVersion: number,
+  idempotencyKey: string,
+) {
   const response = await fetch(
-    `${API_BASE}/api/v1/allocations/${encodeURIComponent(allocationId)}`,
+    `${API_BASE}/api/v1/allocations/${encodeURIComponent(allocationId)}?expected_planning_version=${expectedPlanningVersion}`,
     {
       method: "DELETE",
-      headers: { Accept: "application/json", ...csrfHeaders() },
+      headers: {
+        Accept: "application/json",
+        "Idempotency-Key": idempotencyKey,
+        ...csrfHeaders(),
+      },
       credentials: "include",
     },
   );
