@@ -54,6 +54,7 @@ class PreservedAllocationInput:
     hours: float
     locked: bool
     outside_schedule: bool = False
+    counts_as_allocated: bool = True
 
 
 @dataclass(frozen=True)
@@ -330,6 +331,7 @@ def build_allocation_plan(
         hours: float,
         locked: bool,
         outside_schedule: bool,
+        counts_as_allocated: bool = True,
     ) -> None:
         if segment_id not in preservable_segment_ids or hours <= 0:
             return
@@ -342,13 +344,15 @@ def build_allocation_plan(
                 allocation_type="Locked" if locked else "Preserved",
                 locked=locked,
                 outside_schedule=outside_schedule,
+                counts_as_allocated=counts_as_allocated,
                 preserved=True,
             )
         )
         consumed_by_segment[segment_id] = consumed_by_segment.get(segment_id, 0.0) + hours
         preserved_days_by_segment.setdefault(segment_id, set()).add(day)
-        key = (resource_id, day)
-        normal_used[key] = normal_used.get(key, 0.0) + hours
+        if counts_as_allocated:
+            key = (resource_id, day)
+            normal_used[key] = normal_used.get(key, 0.0) + hours
 
     for allocation in locked_allocations:
         register_preserved(
@@ -367,6 +371,7 @@ def build_allocation_plan(
             hours=float(allocation.hours),
             locked=bool(allocation.locked),
             outside_schedule=allocation.outside_schedule,
+            counts_as_allocated=bool(allocation.counts_as_allocated),
         )
 
     fixed_segments = sorted(
