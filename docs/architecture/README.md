@@ -75,7 +75,7 @@ Voir :
 - `ADR-028-competency-class-grouping-and-non-additive-capacity.md`
 - `ADR-029-explicit-period-inheritance-and-same-resource-constraint.md`
 - `ADR-030-module-read-capabilities-and-indirect-data-access.md`
-- `ADR-031-quick-shift-deletion-date-exclusions.md`
+- `ADR-031-quick-shift-persistent-date-exclusions.md`
 
 Chaîne métier actuelle :
 
@@ -110,6 +110,8 @@ Voir :
 - `ADR-022-operational-planning-window-overrides.md`
 
 ADR-021 fixe la sémantique des fériés ciblés par classes sans modifier les fériés globaux ou individuels historiques. ADR-022 introduit une dérogation opérationnelle persistante de fenêtre, distincte de l'approbation de demande et du consentement hors horaire, tout en conservant les contrats de concurrence et de quorum existants.
+
+ADR-031 fixe la suppression partielle d'un `QUICK_SHIFT` : les heures du quart supprimé réduisent le besoin, les survivants sont préservés pendant le rebuild de suppression et la date retirée devient une exclusion persistante de génération automatique propre au requirement. Les rebuilds ultérieurs respectent cette exclusion sans modifier la disponibilité globale de la ressource; le dernier quart utilise le cycle canonique `Annulé` plutôt qu'un requirement à zéro heure.
 
 ### Ressources réservables non humaines
 
@@ -502,5 +504,3 @@ Créer un ADR lorsqu'une décision :
 - mérite d'être connue par un futur développeur avant de modifier le système.
 
 Un petit nombre d'ADR utiles et maintenus vaut mieux qu'une grande collection de décisions triviales ou obsolètes.
-
-ADR-031 formalise la suppression métier des Quick Shifts : soustraction exacte des heures, exclusion persistée de la date pour la génération automatique, préservation transactionnelle des quarts survivants pendant le rebuild et annulation canonique du besoin lorsque le dernier quart épuise le budget.
