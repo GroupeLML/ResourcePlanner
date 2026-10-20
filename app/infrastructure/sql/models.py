@@ -907,6 +907,23 @@ class ResourceRequirement(TimestampMixin, Base):
     created_by_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
+class QuickShiftPlanningExclusion(Base):
+    __tablename__ = "quick_shift_planning_exclusions"
+    __table_args__ = (
+        Index(
+            "ix_quick_shift_planning_exclusions_date",
+            "excluded_date",
+        ),
+    )
+
+    resource_requirement_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("resource_requirements.id"),
+        primary_key=True,
+    )
+    excluded_date: Mapped[date] = mapped_column(Date, primary_key=True)
+
+
 class ResourceRequirementCompetency(Base):
     """Canonical competency snapshot for one materialized requirement."""
 
