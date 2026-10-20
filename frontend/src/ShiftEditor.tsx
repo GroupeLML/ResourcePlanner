@@ -1,5 +1,5 @@
 import { compareResourcesByDisplayName, resourceDisplayName } from "./resourceLabels";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { createClientId } from "./clientId";
 import { useAuth } from "./AuthContext";
@@ -165,6 +165,7 @@ export default function ShiftEditor({
   const [windowOverrideReason, setWindowOverrideReason] = useState("");
   const [windowOverrideConfirmed, setWindowOverrideConfirmed] = useState(false);
   const [windowOverrideKey, setWindowOverrideKey] = useState<string | null>(null);
+  const deleteIdempotencyKey = useRef<string | null>(null);
   const overallocationShift = shift as OverallocationShift;
   const currentExcess = Number(overallocationShift.segment_overallocated_hours ?? 0);
 
@@ -500,11 +501,14 @@ export default function ShiftEditor({
     setSaving(true);
     setError(null);
     try {
+      const idempotencyKey = deleteIdempotencyKey.current ?? newAtomicIdempotencyKey();
+      deleteIdempotencyKey.current = idempotencyKey;
       await deleteManualAllocation(
         shift.allocation_id,
         planningVersion,
-        newAtomicIdempotencyKey(),
+        idempotencyKey,
       );
+      deleteIdempotencyKey.current = null;
       onSaved();
     } catch (reason: unknown) {
       if (reason instanceof ApiError) {
