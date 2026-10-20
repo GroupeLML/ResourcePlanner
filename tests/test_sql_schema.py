@@ -69,6 +69,7 @@ EXPECTED_TABLES = {
     "planning_mutation_state",
     "planning_resource_user_orders",
     "planning_window_overrides",
+    "quick_shift_planning_exclusions",
     "projects",
     "project_co_managers",
     "project_manager_audit",
