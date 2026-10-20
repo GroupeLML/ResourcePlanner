@@ -496,11 +496,15 @@ export default function ShiftEditor({
 
   async function deleteManual() {
     if (saving || !shift.locked) return;
-    if (!window.confirm("Supprimer ce quart manuel? Le reliquat du segment redeviendra disponible au recalcul.")) return;
+    if (!window.confirm("Supprimer ce quart manuel?")) return;
     setSaving(true);
     setError(null);
     try {
-      await deleteManualAllocation(shift.allocation_id);
+      await deleteManualAllocation(
+        shift.allocation_id,
+        planningVersion,
+        newAtomicIdempotencyKey(),
+      );
       onSaved();
     } catch (reason: unknown) {
       if (reason instanceof ApiError) {
