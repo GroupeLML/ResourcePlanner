@@ -45,8 +45,7 @@ async function chooseCombobox(scope: Locator, label: string, query: string, opti
 
 test("755 supprimer un jour Quick Shift réduit le besoin sans recréer le jour", async ({ browser }) => {
   test.setTimeout(120_000);
-  const weekStart = addDays(startOfWeek(new Date()), 28);
-  const monday = localIso(weekStart);
+  // Use Bob six weeks ahead: #659A consumes Alice/Tue four weeks ahead and\n  // the Playwright suite shares one database across specs.\n  const weekStart = addDays(startOfWeek(new Date()), 42);\n  const monday = localIso(weekStart);
   const tuesday = localIso(addDays(weekStart, 1));
   const wednesday = localIso(addDays(weekStart, 2));
   const thursday = localIso(addDays(weekStart, 3));
@@ -54,17 +53,9 @@ test("755 supprimer un jour Quick Shift réduit le besoin sans recréer le jour"
 
   try {
     await navigateMain(page, "Planning opérationnel");
-    for (let index = 0; index < 4; index += 1) {
-      await page.getByRole("button", { name: /Suivante/ }).click();
-    }
-
-    const aliceRow = page.locator(".resource-row").filter({ hasText: "Alice" }).first();
-    await expect(aliceRow).toBeVisible();
-    const mondayCell = aliceRow.locator(`.planning-drop-day[data-day="${monday}"]`);
-    await mondayCell.hover();
+    for (let index = 0; index < 6; index += 1) {\n      await page.getByRole("button", { name: /Suivante/ }).click();\n    }\n\n    const bobRow = page.locator(".resource-row").filter({ hasText: "Bob" }).first();\n    await expect(bobRow).toBeVisible();\n    const mondayCell = bobRow.locator(`.planning-drop-day[data-day="${monday}"]`);\n    await mondayCell.hover();
     await mondayCell.getByRole("button", {
-      name: `Créer un Quick Shift pour Alice le ${monday}`,
-    }).click();
+      name: `Créer un Quick Shift pour Bob le ${monday}`,\n    }).click();
 
     const quickShift = page.getByRole("dialog", { name: "Créer un Quick Shift" });
     await chooseCombobox(quickShift, "Projet", "251", "P-251");
@@ -91,13 +82,8 @@ test("755 supprimer un jour Quick Shift réduit le besoin sans recréer le jour"
 
     const segmentSelector = `.shift-card[data-segment-id="${segmentId}"]`;
     const dayCard = (day: string) =>
-      aliceRow.locator(`.planning-drop-day[data-day="${day}"]`).locator(segmentSelector);
-
-    await expect(dayCard(monday)).toHaveCount(1);
-    await expect(dayCard(tuesday)).toHaveCount(1);
-    await expect(dayCard(wednesday)).toHaveCount(1);
-    await expect(dayCard(thursday)).toHaveCount(1);
-
+      bobRow.locator(`.planning-drop-day[data-day="${day}"]`).locator(segmentSelector);\n
+    for (const day of [monday, tuesday, wednesday, thursday]) {\n      await expect(dayCard(day)).toHaveCount(1);\n      await expect(dayCard(day)).toContainText("8 h");\n    }\n
     // Turn the Wednesday automatic output into the manual/locked Shift that the
     // coordinator explicitly deletes. Tuesday and Thursday remain automatic.
     await dayCard(wednesday).locator(".shift-card-main").click();
@@ -114,28 +100,10 @@ test("755 supprimer un jour Quick Shift réduit le besoin sans recréer le jour"
     await shiftDialog.getByRole("button", { name: "Supprimer le quart manuel" }).click();
     await expect(shiftDialog).toBeHidden();
 
-    await expect(dayCard(monday)).toHaveCount(1);
-    await expect(dayCard(tuesday)).toHaveCount(1);
-    await expect(dayCard(wednesday)).toHaveCount(0);
-    await expect(dayCard(thursday)).toHaveCount(1);
-
-    // Reload proves the persisted exclusion, not only the immediate mutation result.
-    await page.reload();
-    await navigateMain(page, "Planning opérationnel");
-    for (let index = 0; index < 4; index += 1) {
-      await page.getByRole("button", { name: /Suivante/ }).click();
-    }
-    const reloadedAlice = page.locator(".resource-row").filter({ hasText: "Alice" }).first();
-    const reloadedCard = (day: string) =>
-      reloadedAlice
-        .locator(`.planning-drop-day[data-day="${day}"]`)
+    for (const day of [monday, tuesday, thursday]) {\n      await expect(dayCard(day)).toHaveCount(1);\n      await expect(dayCard(day)).toContainText("8 h");\n    }\n    await expect(dayCard(wednesday)).toHaveCount(0);\n\n    // Tuesday and Thursday must remain automatic survivors, not silently locked.\n    for (const day of [tuesday, thursday]) {\n      await dayCard(day).locator(".shift-card-main").click();\n      shiftDialog = page.getByRole("dialog", { name: "Modifier le quart" });\n      await expect(\n        shiftDialog.getByRole("button", { name: "Supprimer le quart manuel" }),\n      ).toHaveCount(0);\n      await shiftDialog.getByRole("button", { name: "Annuler" }).click();\n      await expect(shiftDialog).toBeHidden();\n    }\n\n    // Reload verifies persisted displayed state. A later unrelated rebuild is\n    // covered by tests/test_issue_755.py. Planning restores the selected week.\n    await page.reload();\n    await navigateMain(page, "Planning opérationnel");\n    const reloadedBob = page.locator(".resource-row").filter({ hasText: "Bob" }).first();\n    await expect(reloadedBob.locator(`.planning-drop-day[data-day="${monday}"]`)).toBeVisible();\n    const reloadedCard = (day: string) =>\n      reloadedBob\n        .locator(`.planning-drop-day[data-day="${day}"]`)
         .locator(`.shift-card[data-segment-id="${segmentId}"]`);
 
-    await expect(reloadedCard(monday)).toHaveCount(1);
-    await expect(reloadedCard(tuesday)).toHaveCount(1);
-    await expect(reloadedCard(wednesday)).toHaveCount(0);
-    await expect(reloadedCard(thursday)).toHaveCount(1);
-
+    for (const day of [monday, tuesday, thursday]) {\n      await expect(reloadedCard(day)).toHaveCount(1);\n      await expect(reloadedCard(day)).toContainText("8 h");\n    }\n    await expect(reloadedCard(wednesday)).toHaveCount(0);\n
     await reloadedCard(monday).locator(".shift-card-main").click();
     shiftDialog = page.getByRole("dialog", { name: "Modifier le quart" });
     await shiftDialog.getByRole("button", { name: "Modifier le segment parent" }).click();
