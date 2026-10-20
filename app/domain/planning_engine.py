@@ -388,9 +388,11 @@ def build_allocation_plan(
     overtime_total = sum(
         item.hours
         for item in preserved
-        if item.outside_schedule and item.segment_id in segment_map
+        if item.counts_as_allocated
+        and item.outside_schedule
+        and item.segment_id in segment_map
     )
-    missing_count = 0
+    missing_count = sum(1 for item in preserved if not item.counts_as_allocated)
 
     def place_segment(segment: SegmentInput, allocation_type: str) -> None:
         nonlocal missing_total, overtime_total, missing_count
