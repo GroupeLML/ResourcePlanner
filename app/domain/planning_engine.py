@@ -500,7 +500,7 @@ def build_allocation_plan(
     return PlanResult(
         allocations=tuple(allocations),
         segment_count=len(active_segments),
-        locked_allocation_count=len(preserved),
+        locked_allocation_count=sum(1 for item in preserved if item.locked),
         requested_hours=round(requested, 4),
         allocated_hours=round(allocated, 4),
         unallocated_hours=round(max(requested - allocated, missing_total), 4),
