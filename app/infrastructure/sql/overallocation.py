@@ -758,6 +758,22 @@ class OverallocationAuditedAllocationCommandAdapter(AuditedAllocationCommandAdap
         parent = previous[2] if previous is not None else None
         before_snapshot, before_metrics = self._segment_audit_state(parent)
         super().delete_manual(allocation_id)
+        after_snapshot = (
+            self._journal.requirement_snapshot(parent)
+            if parent
+            else None
+        )
+        if before_snapshot is not None and after_snapshot is not None:
+            entity_id, entity_reference, before_values = before_snapshot
+            _, _, after_values = after_snapshot
+            self._journal.append(
+                entity_type=ENTITY_SEGMENT,
+                entity_id=entity_id,
+                entity_reference=entity_reference,
+                action="Modification segment liée à suppression quart",
+                before=before_values,
+                after=after_values,
+            )
         self._append_segment_change(parent, before_snapshot, before_metrics)
 
 
