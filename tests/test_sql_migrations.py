@@ -131,6 +131,40 @@ class SqlMigrationTests(unittest.TestCase):
             ],
         )
 
+    def test_quick_shift_exclusion_migration_is_additive_and_reversible(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_path = Path(directory) / "quick-shift-exclusions.db"
+            config = alembic_config(database_path)
+            command.upgrade(config, "0020_period_inheritance_contract")
+
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            self.assertNotIn(
+                "quick_shift_planning_exclusions",
+                inspect(engine).get_table_names(),
+            )
+            engine.dispose()
+
+            command.upgrade(config, "head")
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            inspector = inspect(engine)
+            self.assertIn("quick_shift_planning_exclusions", inspector.get_table_names())
+            columns = {column["name"] for column in inspector.get_columns("quick_shift_planning_exclusions")}
+            self.assertEqual(columns, {"resource_requirement_id", "excluded_date"})
+            pk = inspector.get_pk_constraint("quick_shift_planning_exclusions")
+            self.assertEqual(
+                set(pk["constrained_columns"]),
+                {"resource_requirement_id", "excluded_date"},
+            )
+            engine.dispose()
+
+            command.downgrade(config, "0020_period_inheritance_contract")
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            self.assertNotIn(
+                "quick_shift_planning_exclusions",
+                inspect(engine).get_table_names(),
+            )
+            engine.dispose()
+
     def test_verification_persistence_migration_is_additive_and_starts_empty(self) -> None:
         with TemporaryDirectory() as directory:
             database_path = Path(directory) / "verification-persistence.db"
