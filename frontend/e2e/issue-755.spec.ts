@@ -34,6 +34,13 @@ async function navigateMain(page: Page, label: string) {
   await page.locator(".main-nav").getByRole("button", { name: new RegExp(label, "i") }).click();
 }
 
+async function waitForPlanningWeek(page: Page, monday: string) {
+  await expect(page.locator(".planning-board-scroll")).not.toHaveClass(/is-loading/);
+  await expect(page.locator(
+    `.planning-drop-day[data-resource-id="R-BOB"][data-day="${monday}"]`,
+  )).toBeVisible();
+}
+
 async function chooseCombobox(scope: Locator, label: string, query: string, optionName: string) {
   const input = scope.getByRole("combobox", { name: label, exact: true });
   await input.click();
@@ -47,7 +54,8 @@ test("755 supprimer un jour Quick Shift réduit le besoin sans recréer le jour"
   test.setTimeout(120_000);
   // Use Bob six weeks ahead: #659A consumes Alice/Tue four weeks ahead and
   // the Playwright suite shares one database across specs.
-  const weekStart = addDays(startOfWeek(new Date()), 42);
+  const currentWeekStart = startOfWeek(new Date());
+  const weekStart = addDays(currentWeekStart, 42);
   const monday = localIso(weekStart);
   const tuesday = localIso(addDays(weekStart, 1));
   const wednesday = localIso(addDays(weekStart, 2));
@@ -56,8 +64,11 @@ test("755 supprimer un jour Quick Shift réduit le besoin sans recréer le jour"
 
   try {
     await navigateMain(page, "Planning opérationnel");
+    await waitForPlanningWeek(page, localIso(currentWeekStart));
     for (let index = 0; index < 6; index += 1) {
       await page.getByRole("button", { name: /Suivante/ }).click();
+      // Finish each week's real requests before starting the next navigation.
+      await waitForPlanningWeek(page, localIso(addDays(currentWeekStart, (index + 1) * 7)));
     }
 
     const bobRow = page.locator(".resource-row").filter({ hasText: "Bob" }).first();
@@ -104,11 +115,17 @@ test("755 supprimer un jour Quick Shift réduit le besoin sans recréer le jour"
     // coordinator explicitly deletes. Tuesday and Thursday remain automatic.
     await dayCard(wednesday).locator(".shift-card-main").click();
     shiftDialog = page.getByRole("dialog", { name: "Modifier le quart" });
-    await shiftDialog.getByRole("button", { name: "Enregistrer et verrouiller" }).click();
+    const saveShift = shiftDialog.getByRole("button", { name: "Enregistrer les modifications", exact: true });
+    await expect(saveShift).toHaveText("Enregistrer et verrouiller");
+    await saveShift.click();
     await expect(shiftDialog).toBeHidden();
+    // Closing the editor precedes the refreshed locked Shift reaching the board.
+    await waitForPlanningWeek(page, monday);
+    await expect(dayCard(wednesday)).toContainText("Verrouillé");
 
     await dayCard(wednesday).locator(".shift-card-main").click();
     shiftDialog = page.getByRole("dialog", { name: "Modifier le quart" });
+    await expect(shiftDialog.locator(".dialog-context-grid")).toContainText("Verrouillé");
     page.once("dialog", async (dialog) => {
       expect(dialog.type()).toBe("confirm");
       await dialog.accept();
@@ -137,6 +154,7 @@ test("755 supprimer un jour Quick Shift réduit le besoin sans recréer le jour"
     // covered by tests/test_issue_755.py. Planning restores the selected week.
     await page.reload();
     await navigateMain(page, "Planning opérationnel");
+    await waitForPlanningWeek(page, monday);
     const reloadedBob = page.locator(".resource-row").filter({ hasText: "Bob" }).first();
     await expect(reloadedBob.locator(`.planning-drop-day[data-day="${monday}"]`)).toBeVisible();
     const reloadedCard = (day: string) =>
