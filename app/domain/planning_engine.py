@@ -34,6 +34,7 @@ class SegmentInput:
     overtime_allowed: bool = False
     desired_active_days: int | None = None
     load_profile: str = LOAD_PROFILE_UNIFORM
+    excluded_dates: frozenset[date] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,17 @@ class LockedAllocationInput:
 
 
 @dataclass(frozen=True)
+class PreservedAllocationInput:
+    segment_id: str
+    resource_id: str
+    day: date
+    hours: float
+    locked: bool
+    outside_schedule: bool = False
+    counts_as_allocated: bool = True
+
+
+@dataclass(frozen=True)
 class PlannedAllocation:
     segment_id: str
     resource_id: str
@@ -55,6 +67,7 @@ class PlannedAllocation:
     locked: bool = False
     outside_schedule: bool = False
     counts_as_allocated: bool = True
+    preserved: bool = False
 
 
 @dataclass(frozen=True)
@@ -99,12 +112,13 @@ def _capacity_window(
     result: list[tuple[date, float]] = []
     cursor = segment.start
     while cursor <= segment.end:
-        result.append(
-            (
-                cursor,
-                max(float(capacity_by_resource_day.get((segment.resource_id, cursor), 0.0)), 0.0),
+        if cursor not in segment.excluded_dates:
+            result.append(
+                (
+                    cursor,
+                    max(float(capacity_by_resource_day.get((segment.resource_id, cursor), 0.0)), 0.0),
+                )
             )
-        )
         cursor += timedelta(days=1)
     return result
 
@@ -193,6 +207,9 @@ def _outside_schedule_slots(
     candidates: list[tuple[int, date, float]] = []
     cursor = segment.start
     while cursor <= segment.end:
+        if cursor in segment.excluded_dates:
+            cursor += timedelta(days=1)
+            continue
         key = (segment.resource_id, cursor)
         eligible = (
             bool(eligible_by_resource_day.get(key, False))
@@ -279,6 +296,7 @@ def build_allocation_plan(
     locked_allocations: Sequence[LockedAllocationInput],
     capacity_by_resource_day: Mapping[CapacityKey, float],
     *,
+    preserved_allocations: Sequence[PreservedAllocationInput] = (),
     preserve_locked_segment_ids: Sequence[str] | set[str] | frozenset[str] | None = None,
     outside_schedule_eligible_by_resource_day: Mapping[CapacityKey, bool] | None = None,
     outside_schedule_daily_limit: float = 8.0,
@@ -301,30 +319,60 @@ def build_allocation_plan(
     )
 
     preserved: list[PlannedAllocation] = []
-    locked_by_segment: dict[str, float] = {}
-    locked_days_by_segment: dict[str, set[date]] = {}
+    consumed_by_segment: dict[str, float] = {}
+    preserved_days_by_segment: dict[str, set[date]] = {}
     normal_used: dict[CapacityKey, float] = {}
-    for allocation in locked_allocations:
-        if allocation.segment_id not in preservable_segment_ids or float(allocation.hours) <= 0:
-            continue
-        hours = float(allocation.hours)
+
+    def register_preserved(
+        *,
+        segment_id: str,
+        resource_id: str,
+        day: date,
+        hours: float,
+        locked: bool,
+        outside_schedule: bool,
+        counts_as_allocated: bool = True,
+    ) -> None:
+        if segment_id not in preservable_segment_ids or hours <= 0:
+            return
         preserved.append(
             PlannedAllocation(
-                segment_id=allocation.segment_id,
-                resource_id=allocation.resource_id,
-                day=allocation.day,
+                segment_id=segment_id,
+                resource_id=resource_id,
+                day=day,
                 hours=round(hours, 4),
-                allocation_type="Locked",
-                locked=True,
-                outside_schedule=allocation.outside_schedule,
+                allocation_type="Locked" if locked else "Preserved",
+                locked=locked,
+                outside_schedule=outside_schedule,
+                counts_as_allocated=counts_as_allocated,
+                preserved=True,
             )
         )
-        locked_by_segment[allocation.segment_id] = (
-            locked_by_segment.get(allocation.segment_id, 0.0) + hours
+        consumed_by_segment[segment_id] = consumed_by_segment.get(segment_id, 0.0) + hours
+        preserved_days_by_segment.setdefault(segment_id, set()).add(day)
+        if counts_as_allocated:
+            key = (resource_id, day)
+            normal_used[key] = normal_used.get(key, 0.0) + hours
+
+    for allocation in locked_allocations:
+        register_preserved(
+            segment_id=allocation.segment_id,
+            resource_id=allocation.resource_id,
+            day=allocation.day,
+            hours=float(allocation.hours),
+            locked=True,
+            outside_schedule=allocation.outside_schedule,
         )
-        locked_days_by_segment.setdefault(allocation.segment_id, set()).add(allocation.day)
-        key = (allocation.resource_id, allocation.day)
-        normal_used[key] = normal_used.get(key, 0.0) + hours
+    for allocation in preserved_allocations:
+        register_preserved(
+            segment_id=allocation.segment_id,
+            resource_id=allocation.resource_id,
+            day=allocation.day,
+            hours=float(allocation.hours),
+            locked=bool(allocation.locked),
+            outside_schedule=allocation.outside_schedule,
+            counts_as_allocated=bool(allocation.counts_as_allocated),
+        )
 
     fixed_segments = sorted(
         [segment for segment in active_segments if segment.plan_type == "Fixe"],
@@ -340,15 +388,17 @@ def build_allocation_plan(
     overtime_total = sum(
         item.hours
         for item in preserved
-        if item.outside_schedule and item.segment_id in segment_map
+        if item.counts_as_allocated
+        and item.outside_schedule
+        and item.segment_id in segment_map
     )
-    missing_count = 0
+    missing_count = sum(1 for item in preserved if not item.counts_as_allocated)
 
     def place_segment(segment: SegmentInput, allocation_type: str) -> None:
         nonlocal missing_total, overtime_total, missing_count
         remaining = remaining_segment_hours(
             segment.hours,
-            locked_by_segment.get(segment.segment_id, 0.0),
+            consumed_by_segment.get(segment.segment_id, 0.0),
         )
         if remaining <= 0 or segment.end < segment.start:
             return
@@ -368,7 +418,7 @@ def build_allocation_plan(
             segment,
             residual,
             remaining_hours=remaining,
-            locked_days=locked_days_by_segment.get(segment.segment_id, set()),
+            locked_days=preserved_days_by_segment.get(segment.segment_id, set()),
         )
         spread = (
             spread_hours(remaining, preferred)
@@ -457,7 +507,7 @@ def build_allocation_plan(
     return PlanResult(
         allocations=tuple(allocations),
         segment_count=len(active_segments),
-        locked_allocation_count=len(preserved),
+        locked_allocation_count=sum(1 for item in preserved if item.locked),
         requested_hours=round(requested, 4),
         allocated_hours=round(allocated, 4),
         unallocated_hours=round(max(requested - allocated, missing_total), 4),

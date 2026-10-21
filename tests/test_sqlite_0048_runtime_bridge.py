@@ -119,6 +119,7 @@ def _reshape_as_0048(path: Path) -> None:
             DROP TABLE IF EXISTS project_manager_audit;
             DROP TABLE IF EXISTS project_co_managers;
             DROP TABLE IF EXISTS task_catalog_preferred_resource_audit;
+            DROP TABLE IF EXISTS quick_shift_planning_exclusions;
 
             DROP TABLE IF EXISTS competency_resource_class_audit;
 
@@ -754,6 +755,7 @@ class Sqlite0048RuntimeBridgeTests(unittest.TestCase):
                             "work_package_weekly_loads",
                             "availability_rule_resource_classes",
                             "planning_window_overrides",
+                            "quick_shift_planning_exclusions",
                         }.issubset(tables)
                     )
                     auth_columns = {

@@ -68,6 +68,7 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
             "verification_test_executions",
             "verification_evidence_links",
             "task_catalog_preferred_resource_audit",
+            "quick_shift_planning_exclusions",
         },
         "missing_columns": {
             "auth_sessions": {
@@ -202,6 +203,9 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
     ),
     "planning_window_overrides": _keep(
         "Dérogations opérationnelles durables de fenêtre Planning liées aux autorisations approuvées."
+    ),
+    "quick_shift_planning_exclusions": _keep(
+        "Intentions durables d’exclusion de date propres aux Quick Shifts selon ADR-031."
     ),
     "projects": _keep(
         "Préserve les UUID/FK et champs locaux; les attributs ERP sont réconciliés après.",

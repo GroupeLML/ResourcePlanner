@@ -147,6 +147,12 @@ def _segment_inputs(
                 overtime_allowed=_truthy(row.get(SEGMENT_OVERTIME_FIELD)),
                 desired_active_days=_optional_positive_int(row.get(SEGMENT_ACTIVE_DAYS_FIELD)),
                 load_profile=load_profile,
+                excluded_dates=frozenset(
+                    day
+                    for value in row.get("DatesExclues") or ()
+                    for day in (date_from_value(value),)
+                    if day is not None
+                ),
             )
         )
 

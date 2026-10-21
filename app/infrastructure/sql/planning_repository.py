@@ -9,7 +9,9 @@ from ...application.repository_ports import PlanningReadRepositoryPort
 from ...domain.planning_snapshot import PlanningSnapshot
 from .availability_class_scope import availability_class_codes_by_rule
 from .models import (
+    ORIGIN_QUICK_SHIFT,
     Project,
+    QuickShiftPlanningExclusion,
     Resource,
     ResourceAvailabilityRule,
     ResourceRequirement,
@@ -55,6 +57,15 @@ class SqlPlanningReadRepository(PlanningReadRepositoryPort):
             .outerjoin(Resource, ResourceRequirement.assigned_resource_id == Resource.id)
             .order_by(ResourceRequirement.start_date, ResourceRequirement.id)
         ).all()
+        exclusion_rows = self._session.execute(
+            select(
+                QuickShiftPlanningExclusion.resource_requirement_id,
+                QuickShiftPlanningExclusion.excluded_date,
+            )
+        ).all()
+        exclusions_by_requirement: dict[str, list[object]] = {}
+        for requirement_id, excluded_date in exclusion_rows:
+            exclusions_by_requirement.setdefault(requirement_id, []).append(excluded_date)
         return [
             {
                 "IDSegment": _identifier(requirement.legacy_segment_id, requirement.id),
@@ -82,6 +93,11 @@ class SqlPlanningReadRepository(PlanningReadRepositoryPort):
                 "Priorite": requirement.priority,
                 "HorsHoraireAutorise": requirement.outside_standard_hours_allowed,
                 "OrigineSegment": requirement.origin,
+                "DatesExclues": (
+                    tuple(exclusions_by_requirement.get(requirement.id, ()))
+                    if requirement.origin == ORIGIN_QUICK_SHIFT
+                    else ()
+                ),
             }
             for requirement, project, request, resource in rows
         ]
