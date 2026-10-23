@@ -21,7 +21,7 @@ MIGRATIONS = ROOT / "migrations"
 VERSIONS = MIGRATIONS / "versions"
 BASELINE_FILE = VERSIONS / "0001_v2_production_baseline.py"
 BASELINE_REVISION = "v2_production_baseline"
-HEAD_REVISION = "0021_quick_shift_planning_exclusions"
+HEAD_REVISION = "0022_continuous_vehicle_resource_period"
 
 
 def alembic_config(database_path: Path) -> Config:
@@ -90,6 +90,7 @@ class SqlMigrationTests(unittest.TestCase):
                 "0019_planning_resource_user_order.py",
                 "0020_period_inheritance_contract.py",
                 "0021_quick_shift_planning_exclusions.py",
+                "0022_continuous_vehicle_resource_period.py",
             ],
         )
 
@@ -108,6 +109,7 @@ class SqlMigrationTests(unittest.TestCase):
             [revision.revision for revision in script.walk_revisions()],
             [
                 HEAD_REVISION,
+                "0021_quick_shift_planning_exclusions",
                 "0020_period_inheritance_contract",
                 "0019_planning_resource_user_order",
                 "0018_competency_resource_class",
@@ -130,6 +132,63 @@ class SqlMigrationTests(unittest.TestCase):
                 BASELINE_REVISION,
             ],
         )
+
+    def test_continuous_vehicle_migration_preserves_bounded_history_and_guards_downgrade(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_path = Path(directory) / "continuous-vehicle.db"
+            config = alembic_config(database_path)
+            command.upgrade(config, "0021_quick_shift_planning_exclusions")
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            with engine.begin() as connection:
+                connection.execute(text(
+                    "INSERT INTO asset_types (id, code, label, category, active, occupancy_policy, qualification_policy) "
+                    "VALUES ('AT-744', 'VEH', 'Véhicule', 'VEHICLE', 1, 'EXCLUSIVE_DAY', 'ANY_ASSIGNED_WORKFORCE')"
+                ))
+                connection.execute(text(
+                    "INSERT INTO resources (id, name, active, erp_active, sort_order) "
+                    "VALUES ('R-744', 'Ressource 744', 1, 1, 0)"
+                ))
+                connection.execute(text(
+                    "INSERT INTO assets (id, code, label, asset_type_id, active) "
+                    "VALUES ('A-744', 'V-744', 'Véhicule 744', 'AT-744', 1)"
+                ))
+                connection.execute(text(
+                    "INSERT INTO asset_requirements "
+                    "(id, origin, context_resource_id, slot_index, asset_type_id, start_date, end_date, status) "
+                    "VALUES ('AR-744', 'RESOURCE_PERIOD', 'R-744', 0, 'AT-744', '2026-10-23', '2026-10-30', 'Planifié')"
+                ))
+                connection.execute(text(
+                    "INSERT INTO asset_allocations "
+                    "(id, asset_requirement_id, asset_id, operator_resource_id, start_date, end_date, locked, source) "
+                    "VALUES ('AA-744', 'AR-744', 'A-744', 'R-744', '2026-10-23', '2026-10-30', 1, 'MANUAL')"
+                ))
+            engine.dispose()
+
+            command.upgrade(config, "head")
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            inspector = inspect(engine)
+            req_columns = {row["name"]: row for row in inspector.get_columns("asset_requirements")}
+            alloc_columns = {row["name"]: row for row in inspector.get_columns("asset_allocations")}
+            self.assertTrue(req_columns["end_date"]["nullable"])
+            self.assertTrue(alloc_columns["end_date"]["nullable"])
+            self.assertIn("resource_period_mode", req_columns)
+            with engine.begin() as connection:
+                self.assertEqual(
+                    connection.execute(text(
+                        "SELECT resource_period_mode FROM asset_requirements WHERE id='AR-744'"
+                    )).scalar_one(),
+                    "BOUNDED",
+                )
+                connection.execute(text(
+                    "UPDATE asset_requirements SET resource_period_mode='CONTINUOUS', end_date=NULL WHERE id='AR-744'"
+                ))
+                connection.execute(text(
+                    "UPDATE asset_allocations SET end_date=NULL WHERE id='AA-744'"
+                ))
+            engine.dispose()
+
+            with self.assertRaises(RuntimeError):
+                command.downgrade(config, "0021_quick_shift_planning_exclusions")
 
     def test_quick_shift_exclusion_migration_is_additive_and_reversible(self) -> None:
         with TemporaryDirectory() as directory:
