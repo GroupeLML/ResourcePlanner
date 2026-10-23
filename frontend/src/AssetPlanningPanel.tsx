@@ -216,7 +216,7 @@ function AssetRequirementCard({
                 max={isRequest || isSegment ? requirement.end_date ?? undefined : undefined}
                 value={reservationStart}
                 onChange={(event) => setReservationStart(event.target.value)}
-                disabled={!canManage || busy}
+                disabled={!canManage || busy || isContinuous}
                 aria-label={`Date début réelle pour ${requirement.asset_type_label} ${requirement.demand_number}`}
               />
             </label>
@@ -228,7 +228,7 @@ function AssetRequirementCard({
                 max={isRequest || isSegment ? requirement.end_date ?? undefined : undefined}
                 value={reservationEnd}
                 onChange={(event) => setReservationEnd(event.target.value)}
-                disabled={!canManage || busy}
+                disabled={!canManage || busy || isContinuous}
                 aria-label={`Date fin réelle pour ${requirement.asset_type_label} ${requirement.demand_number}`}
               />
             </label>
