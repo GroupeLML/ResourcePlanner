@@ -86,6 +86,34 @@ class ReactResourceAdminContractTests(unittest.TestCase):
         self.assertNotIn("utilization_pct", page)
         self.assertNotIn("residual_hours", page)
 
+    def test_resource_profile_uses_backend_continuous_vehicle_contract(self) -> None:
+        page = (ROOT / "frontend" / "src" / "ResourcesPage.tsx").read_text(
+            encoding="utf-8"
+        )
+        panel = (
+            ROOT / "frontend" / "src" / "ContinuousVehicleAssignmentPanel.tsx"
+        ).read_text(encoding="utf-8")
+        asset_api = (ROOT / "frontend" / "src" / "assetApi.ts").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("ContinuousVehicleAssignmentPanel", page)
+        self.assertIn("getContinuousVehicleAssignments", panel)
+        self.assertIn("effective_state", asset_api)
+        self.assertIn("resource_period_mode", asset_api)
+        self.assertIn("createContinuousVehicleAssignment", panel)
+        self.assertIn("revokeContinuousVehicleAssignment", panel)
+        self.assertIn("transferContinuousVehicleAssignment", panel)
+        self.assertIn("cancelContinuousVehicleAssignment", panel)
+        self.assertIn("rescheduleContinuousVehicleAssignment", panel)
+        self.assertIn("cancelContinuousVehicleRevocation", panel)
+        self.assertIn("rescheduleContinuousVehicleRevocation", panel)
+        self.assertNotIn("2099-12-31", panel)
+        self.assertNotIn("9999-12-31", panel)
+        self.assertNotIn("assigned_resource_id", panel)
+        self.assertNotIn("current_resource_id", panel)
+
+
 
 if __name__ == "__main__":
     unittest.main()
