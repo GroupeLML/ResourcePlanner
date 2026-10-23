@@ -806,10 +806,11 @@ class SqlAssetService:
             ),
         )
         if conflicts:
+            # Occupancy is global, but ADR-027 does not grant the caller access to
+            # the hidden reservation's owner, dates or stable allocation identity.
             raise ApplicationConflictError(
                 "Actif déjà réservé.",
                 code="asset_double_booking",
-                context={"allocation_ids": conflicts},
             )
         unavailability_statement = select(AssetUnavailability.id).where(
             AssetUnavailability.asset_id == asset_id,
