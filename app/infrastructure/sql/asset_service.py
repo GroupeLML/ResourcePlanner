@@ -6,7 +6,7 @@ from datetime import date
 import hashlib
 import json
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
 from ...application.errors import (
@@ -30,6 +30,9 @@ from ...domain.approval_routing import (
 from ...domain.reservable_assets import (
     AssetOccupation,
     AssetRequirementOrigin,
+    ContinuousAssignmentState,
+    ResourcePeriodMode,
+    continuous_assignment_state,
     overlapping_asset_occupations,
 )
 from ...domain.approval_envelope import approval_envelope_from_snapshot_payload
@@ -765,7 +768,7 @@ class SqlAssetService:
         *,
         asset_id: str,
         start_date: date,
-        end_date: date,
+        end_date: date | None,
         allocation_id: str,
     ) -> None:
         candidate = AssetOccupation(
@@ -774,13 +777,16 @@ class SqlAssetService:
             start_date,
             end_date,
         )
-        existing = self.session.scalars(
-            select(AssetAllocation).where(
-                AssetAllocation.asset_id == asset_id,
-                AssetAllocation.start_date <= end_date,
+        statement = select(AssetAllocation).where(
+            AssetAllocation.asset_id == asset_id,
+            or_(
+                AssetAllocation.end_date.is_(None),
                 AssetAllocation.end_date >= start_date,
-            )
-        ).all()
+            ),
+        )
+        if end_date is not None:
+            statement = statement.where(AssetAllocation.start_date <= end_date)
+        existing = self.session.scalars(statement).all()
         conflicts = overlapping_asset_occupations(
             candidate,
             (
@@ -800,13 +806,15 @@ class SqlAssetService:
                 code="asset_double_booking",
                 context={"allocation_ids": conflicts},
             )
-        unavailable = self.session.scalar(
-            select(AssetUnavailability.id).where(
-                AssetUnavailability.asset_id == asset_id,
-                AssetUnavailability.start_date <= end_date,
-                AssetUnavailability.end_date >= start_date,
-            )
+        unavailability_statement = select(AssetUnavailability.id).where(
+            AssetUnavailability.asset_id == asset_id,
+            AssetUnavailability.end_date >= start_date,
         )
+        if end_date is not None:
+            unavailability_statement = unavailability_statement.where(
+                AssetUnavailability.start_date <= end_date
+            )
+        unavailable = self.session.scalar(unavailability_statement)
         if unavailable:
             raise ApplicationConflictError(
                 "Actif indisponible.",
@@ -1775,7 +1783,10 @@ class SqlAssetService:
             self.session.scalars(
                 select(AssetAllocation).where(
                     AssetAllocation.start_date <= shift.work_date,
-                    AssetAllocation.end_date >= shift.work_date,
+                    or_(
+                        AssetAllocation.end_date.is_(None),
+                        AssetAllocation.end_date >= shift.work_date,
+                    ),
                 )
             ).all()
         )
