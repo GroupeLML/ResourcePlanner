@@ -321,9 +321,11 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                     if (
                         human_requirement.project_id
                         == asset_requirement.project_id
-                        and allocation.start_date
-                        <= shift.work_date
-                        <= allocation.end_date
+                        and allocation.start_date <= shift.work_date
+                        and (
+                            allocation.end_date is None
+                            or shift.work_date <= allocation.end_date
+                        )
                     ):
                         asset_qualification_diagnostics_by_shift.setdefault(
                             shift.id,
