@@ -427,9 +427,12 @@ def _critical_statements():
                 "asset_window_end",
                 type_=AssetRequirement.__table__.c.end_date.type,
             ),
-            AssetRequirement.end_date >= bindparam(
-                "asset_window_start",
-                type_=AssetRequirement.__table__.c.start_date.type,
+            or_(
+                AssetRequirement.end_date.is_(None),
+                AssetRequirement.end_date >= bindparam(
+                    "asset_window_start",
+                    type_=AssetRequirement.__table__.c.start_date.type,
+                ),
             ),
             or_(
                 AssetRequirement.project_id == bindparam("asset_project_id"),
@@ -457,9 +460,12 @@ def _critical_statements():
                 "asset_occupancy_end",
                 type_=AssetAllocation.__table__.c.end_date.type,
             ),
-            AssetAllocation.end_date >= bindparam(
-                "asset_occupancy_start",
-                type_=AssetAllocation.__table__.c.start_date.type,
+            or_(
+                AssetAllocation.end_date.is_(None),
+                AssetAllocation.end_date >= bindparam(
+                    "asset_occupancy_start",
+                    type_=AssetAllocation.__table__.c.start_date.type,
+                ),
             ),
         )
         .order_by(AssetAllocation.asset_id, AssetAllocation.start_date)
