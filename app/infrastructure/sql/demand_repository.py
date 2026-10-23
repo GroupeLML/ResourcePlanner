@@ -359,7 +359,7 @@ class SqlDemandRepository(DemandRepositoryPort):
             .where(
                 request_owned_asset_scope,
                 AssetRequirement.status != "Annulé",
-                AssetAllocation.end_date >= date.today(),
+                or_(AssetAllocation.end_date.is_(None), AssetAllocation.end_date >= date.today()),
             )
             .correlate(WorkforceRequest)
             .scalar_subquery()
