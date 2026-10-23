@@ -95,15 +95,13 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     connection = op.get_bind()
-    open_count = connection.execute(
-        sa.text(
-            "SELECT COUNT(*) FROM asset_requirements ar "
-            "JOIN asset_allocations aa ON aa.asset_requirement_id = ar.id "
-            "WHERE ar.origin = 'RESOURCE_PERIOD' "
-            "AND (ar.end_date IS NULL OR aa.end_date IS NULL)"
-        )
+    open_requirement_count = connection.execute(
+        sa.text("SELECT COUNT(*) FROM asset_requirements WHERE end_date IS NULL")
     ).scalar_one()
-    if int(open_count or 0) > 0:
+    open_allocation_count = connection.execute(
+        sa.text("SELECT COUNT(*) FROM asset_allocations WHERE end_date IS NULL")
+    ).scalar_one()
+    if int(open_requirement_count or 0) > 0 or int(open_allocation_count or 0) > 0:
         raise RuntimeError(
             "Cannot downgrade continuous vehicle support while open RESOURCE_PERIOD allocations exist."
         )
