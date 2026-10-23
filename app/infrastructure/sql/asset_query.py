@@ -6,7 +6,7 @@ from datetime import date, timedelta
 import json
 from collections.abc import Sequence
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, or_, select
 from sqlalchemy.orm import Session
 
 from ...application.query_models import (
@@ -452,7 +452,7 @@ class SqlAssetPlanningQuery:
         requirement_statement = select(AssetRequirement).where(
             AssetRequirement.status != "Annulé",
             AssetRequirement.start_date <= end,
-            AssetRequirement.end_date >= start,
+            or_(AssetRequirement.end_date.is_(None), AssetRequirement.end_date >= start),
         )
         if project_ids is not None or demand_ids is not None:
             identifiers = tuple(
@@ -514,7 +514,7 @@ class SqlAssetPlanningQuery:
                 .where(
                     AssetAllocation.asset_requirement_id.in_(visible_requirement_ids),
                     AssetAllocation.start_date <= end,
-                    AssetAllocation.end_date >= start,
+                    or_(AssetAllocation.end_date.is_(None), AssetAllocation.end_date >= start),
                 )
                 .order_by(AssetAllocation.start_date, AssetAllocation.asset_id, AssetAllocation.id)
             ).all()
@@ -525,7 +525,7 @@ class SqlAssetPlanningQuery:
                 select(AssetAllocation)
                 .where(
                     AssetAllocation.start_date <= end,
-                    AssetAllocation.end_date >= start,
+                    or_(AssetAllocation.end_date.is_(None), AssetAllocation.end_date >= start),
                 )
                 .order_by(AssetAllocation.asset_id, AssetAllocation.start_date, AssetAllocation.id)
             ).all()
