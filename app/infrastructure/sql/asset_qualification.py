@@ -69,6 +69,12 @@ def has_compatible_assignment(
     allocation: AssetAllocation,
     resource_id: str,
 ) -> bool:
+    if requirement.origin == AssetRequirementOrigin.RESOURCE_PERIOD.value:
+        return bool(
+            requirement.context_resource_id
+            and requirement.context_resource_id == resource_id
+        )
+
     statement = (
         select(Shift.id)
         .join(
@@ -98,13 +104,6 @@ def has_compatible_assignment(
         # The direct-project command is itself the explicit designation of the
         # operator in the project context. No synthetic Shift is required.
         return bool(requirement.project_id)
-    elif requirement.origin == AssetRequirementOrigin.RESOURCE_PERIOD.value:
-        # The beneficiary is explicit and must remain the physical operator for
-        # the complete direct period.
-        return bool(
-            requirement.context_resource_id
-            and requirement.context_resource_id == resource_id
-        )
     elif requirement.origin == AssetRequirementOrigin.SEGMENT.value:
         # SEGMENT uses an explicit operator designation in the human requirement
         # context. It deliberately does not infer ownership from the automatic
