@@ -18,7 +18,10 @@ depends_on: str | None = None
 def _create_requirement_constraints(operations, *, table_name: str | None = None) -> None:
     args = (
         ("asset_requirement_window", "end_date IS NULL OR end_date >= start_date"),
-        ("asset_requirement_open_end_origin", "end_date IS NOT NULL OR origin = 'RESOURCE_PERIOD'"),
+        (
+            "asset_requirement_open_end_origin",
+            "end_date IS NOT NULL OR (origin = 'RESOURCE_PERIOD' AND resource_period_mode = 'CONTINUOUS')",
+        ),
         (
             "asset_requirement_resource_period_mode_values",
             "resource_period_mode IS NULL OR resource_period_mode IN ('BOUNDED', 'CONTINUOUS')",
