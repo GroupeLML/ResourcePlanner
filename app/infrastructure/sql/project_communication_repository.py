@@ -270,7 +270,7 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                         or_(*asset_scope),
                         AssetRequirement.status != "Annulé",
                         AssetAllocation.start_date <= week_end,
-                        AssetAllocation.end_date >= week_start,
+                        or_(AssetAllocation.end_date.is_(None), AssetAllocation.end_date >= week_start),
                     )
                 ).all()
             )
