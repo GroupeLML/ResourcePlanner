@@ -545,12 +545,11 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
                     "start_date": requirement.start_date,
                     "end_date": requirement.end_date,
                     "operator_resource_id": allocation.operator_resource_id,
-                    "qualification_state": service(
+                    "qualification_state": evaluate_asset_qualification(
                         session,
-                        type("_ReadRequest", (), {"state": type("_State", (), {"auth_principal": None})()})(),
-                    )._qualification_for(requirement, allocation).state
-                    if False
-                    else None,
+                        requirement=requirement,
+                        allocation=allocation,
+                    ).state,
                 }
                 for requirement, allocation, asset, asset_type in rows
             ],
