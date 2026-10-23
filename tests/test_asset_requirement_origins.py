@@ -76,6 +76,86 @@ class AssetRequirementOriginTests(unittest.TestCase):
             ),
         )
 
+    def test_resource_period_mode_and_open_end_constraints_are_fail_closed(self) -> None:
+        engine = self._engine()
+        requirements = Base.metadata.tables["asset_requirements"]
+
+        with engine.begin() as connection:
+            connection.execute(
+                requirements.insert().values(
+                    **self._requirement_values(
+                        "AR-CONTINUOUS-OPEN",
+                        origin=AssetRequirementOrigin.RESOURCE_PERIOD.value,
+                        resource_period_mode="CONTINUOUS",
+                        project_id=None,
+                        context_resource_id="RESOURCE-CONTINUOUS",
+                        workforce_request_id=None,
+                        source_request_line_id=None,
+                        approved_entry_key=None,
+                        end_date=None,
+                    )
+                )
+            )
+            connection.execute(
+                requirements.insert().values(
+                    **self._requirement_values(
+                        "AR-BOUNDED",
+                        origin=AssetRequirementOrigin.RESOURCE_PERIOD.value,
+                        resource_period_mode="BOUNDED",
+                        project_id=None,
+                        context_resource_id="RESOURCE-BOUNDED",
+                        workforce_request_id=None,
+                        source_request_line_id=None,
+                        approved_entry_key=None,
+                    )
+                )
+            )
+
+        invalid_rows = (
+            self._requirement_values(
+                "AR-BOUNDED-OPEN",
+                origin=AssetRequirementOrigin.RESOURCE_PERIOD.value,
+                resource_period_mode="BOUNDED",
+                project_id=None,
+                context_resource_id="RESOURCE-BOUNDED-OPEN",
+                workforce_request_id=None,
+                source_request_line_id=None,
+                approved_entry_key=None,
+                end_date=None,
+            ),
+            self._requirement_values(
+                "AR-RP-NO-MODE",
+                origin=AssetRequirementOrigin.RESOURCE_PERIOD.value,
+                resource_period_mode=None,
+                project_id=None,
+                context_resource_id="RESOURCE-NO-MODE",
+                workforce_request_id=None,
+                source_request_line_id=None,
+                approved_entry_key=None,
+            ),
+            self._requirement_values(
+                "AR-REQUEST-CONTINUOUS",
+                origin=AssetRequirementOrigin.REQUEST.value,
+                resource_period_mode="CONTINUOUS",
+            ),
+            self._requirement_values(
+                "AR-INVALID-MODE",
+                origin=AssetRequirementOrigin.RESOURCE_PERIOD.value,
+                resource_period_mode="FOREVER",
+                project_id=None,
+                context_resource_id="RESOURCE-INVALID",
+                workforce_request_id=None,
+                source_request_line_id=None,
+                approved_entry_key=None,
+            ),
+        )
+        for values in invalid_rows:
+            with self.subTest(identifier=values["id"]):
+                with self.assertRaises(IntegrityError):
+                    with engine.begin() as connection:
+                        connection.execute(requirements.insert().values(**values))
+        engine.dispose()
+
     def test_request_and_shift_ad_hoc_shapes_are_mutually_exclusive(self) -> None:
         engine = self._engine()
         requirements = Base.metadata.tables["asset_requirements"]
