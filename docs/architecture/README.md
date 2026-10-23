@@ -114,7 +114,7 @@ ADR-021 fixe la sémantique des fériés ciblés par classes sans modifier les f
 
 ADR-031 fixe la suppression partielle d'un `QUICK_SHIFT` : les heures du quart supprimé réduisent le besoin, les survivants sont préservés pendant le rebuild de suppression et la date retirée devient une exclusion persistante de génération automatique propre au requirement. Les rebuilds ultérieurs respectent cette exclusion sans modifier la disponibilité globale de la ressource; le dernier quart utilise le cycle canonique `Annulé` plutôt qu'un requirement à zéro heure.
 
-ADR-032 étend `RESOURCE_PERIOD` pour l'attitrage continu de véhicules : une fin `NULL` représente un intervalle ouvert jusqu'à révocation, sans date sentinelle ni seconde autorité. La révocation borne l'allocation historique, le transfert ferme puis ouvre atomiquement les périodes, tous les chevauchements traitent `NULL` comme +∞, et ADR-026 reste autoritaire pour qualification, droits et projection vers les `Shift` sans duplication.
+ADR-032 étend `RESOURCE_PERIOD` pour l'attitrage continu de véhicules : une fin `NULL` représente un intervalle ouvert jusqu'à révocation, sans date sentinelle ni seconde autorité. Une provenance persistante distingue les périodes `CONTINUOUS` des `BOUNDED` même après fermeture afin de protéger l'historique; l'état effectif est dérivé par date (`SCHEDULED/ACTIVE/ENDED`), les transferts valident l'état final proposé atomiquement, les détails hors scope restent masqués tout en bloquant la disponibilité, et les readers compatibles nullable doivent être déployés avant l'activation des writes ouverts. ADR-026 reste autoritaire pour qualification, droits et projection vers les `Shift` sans duplication.
 
 ### Ressources réservables non humaines
 
