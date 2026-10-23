@@ -770,6 +770,7 @@ class SqlAssetService:
         start_date: date,
         end_date: date | None,
         allocation_id: str,
+        ignore_allocation_ids: tuple[str, ...] = (),
     ) -> None:
         candidate = AssetOccupation(
             allocation_id,
@@ -786,6 +787,10 @@ class SqlAssetService:
         )
         if end_date is not None:
             statement = statement.where(AssetAllocation.start_date <= end_date)
+        if ignore_allocation_ids:
+            statement = statement.where(
+                AssetAllocation.id.not_in(tuple(ignore_allocation_ids))
+            )
         existing = self.session.scalars(statement).all()
         conflicts = overlapping_asset_occupations(
             candidate,
@@ -893,13 +898,19 @@ class SqlAssetService:
         requirement: AssetRequirement,
         asset_id: str,
         start_date: date,
-        end_date: date,
+        end_date: date | None,
         operator_resource_id: str | None,
         allocation_id: str,
         source: str = "MANUAL",
+        ignore_allocation_ids: tuple[str, ...] = (),
     ) -> str:
         self._validate_request_authority(requirement)
-        asset, _asset_type = self._active_asset(asset_id)
+        asset, asset_type = self._active_asset(asset_id)
+        if allow_open and asset_type.category != "VEHICLE":
+            raise ApplicationValidationError(
+                "L'attribution continue est réservée aux véhicules.",
+                code="asset_continuous_vehicle_required",
+            )
         if asset.asset_type_id != requirement.asset_type_id:
             raise ApplicationValidationError(
                 "Actif inactif ou incompatible.",
@@ -920,6 +931,7 @@ class SqlAssetService:
             start_date=start_date,
             end_date=end_date,
             allocation_id=allocation_id,
+            ignore_allocation_ids=ignore_allocation_ids,
         )
         candidate = AssetAllocation(
             id=allocation_id,
@@ -1937,7 +1949,19 @@ class SqlAssetService:
         }
 
     @staticmethod
-    def _validate_direct_window(start_date: date, end_date: date) -> None:
+    def _validate_direct_window(
+        start_date: date,
+        end_date: date | None,
+        *,
+        allow_open: bool = False,
+    ) -> None:
+        if end_date is None:
+            if allow_open:
+                return
+            raise ApplicationValidationError(
+                "La date de fin est requise pour cette réservation.",
+                code="asset_reservation_end_required",
+            )
         if start_date > end_date:
             raise ApplicationValidationError(
                 "La date de début doit précéder ou égaler la date de fin.",
@@ -1983,7 +2007,11 @@ class SqlAssetService:
                 "Le besoin d'actif n'est pas une réservation directe.",
                 code="asset_direct_origin_conflict",
             )
-        self._validate_direct_window(start_date, end_date)
+        allow_open = bool(
+            requirement.origin == AssetRequirementOrigin.RESOURCE_PERIOD.value
+            and requirement.resource_period_mode == ResourcePeriodMode.CONTINUOUS.value
+        )
+        self._validate_direct_window(start_date, end_date, allow_open=allow_open)
         if (
             requirement.origin == AssetRequirementOrigin.PROJECT_DIRECT.value
             and not requirement.project_id
@@ -2059,7 +2087,21 @@ class SqlAssetService:
             "context_resource_id": requirement.context_resource_id,
             "operator_resource_id": allocation.operator_resource_id,
             "start_date": allocation.start_date.isoformat(),
-            "end_date": allocation.end_date.isoformat(),
+            "end_date": (
+                allocation.end_date.isoformat()
+                if allocation.end_date is not None
+                else None
+            ),
+            "resource_period_mode": requirement.resource_period_mode,
+            "effective_state": (
+                continuous_assignment_state(
+                    start_date=requirement.start_date,
+                    end_date=requirement.end_date,
+                    as_of=date.today(),
+                ).value
+                if requirement.resource_period_mode == ResourcePeriodMode.CONTINUOUS.value
+                else None
+            ),
             "qualification_state": qualification_state,
             "planning_version": self.version.current_version(),
         }
@@ -2073,13 +2115,21 @@ class SqlAssetService:
         asset_type_id: str,
         asset_id: str,
         start_date: date,
-        end_date: date,
+        end_date: date | None,
         operator_resource_id: str | None,
         expected_version: int,
+        resource_period_mode: ResourcePeriodMode | None = None,
     ) -> dict:
         self.version.acquire(expected_version)
         authority_proof = self._require_assignment_authorities(asset_id)
-        self._validate_direct_window(start_date, end_date)
+        self._validate_direct_window(
+            start_date,
+            end_date,
+            allow_open=(
+                origin == AssetRequirementOrigin.RESOURCE_PERIOD
+                and resource_period_mode == ResourcePeriodMode.CONTINUOUS
+            ),
+        )
         if origin == AssetRequirementOrigin.PROJECT_DIRECT:
             if not project_id:
                 raise ApplicationValidationError(
@@ -2089,6 +2139,7 @@ class SqlAssetService:
             self._direct_project(project_id)
             context_resource_id = None
         elif origin == AssetRequirementOrigin.RESOURCE_PERIOD:
+            resource_period_mode = resource_period_mode or ResourcePeriodMode.BOUNDED
             if not context_resource_id:
                 raise ApplicationValidationError(
                     "La ressource est requise.",
@@ -2102,6 +2153,7 @@ class SqlAssetService:
                 )
             project_id = None
         else:
+            resource_period_mode = None
             raise ApplicationConflictError(
                 "Origine de réservation directe invalide.",
                 code="asset_direct_origin_conflict",
@@ -2115,6 +2167,11 @@ class SqlAssetService:
             asset_type_id=asset_type_id,
             start_date=start_date,
             end_date=end_date,
+            resource_period_mode=(
+                resource_period_mode.value
+                if resource_period_mode is not None
+                else None
+            ),
             status="Planifié",
         )
         allocation = AssetAllocation(
@@ -2156,6 +2213,7 @@ class SqlAssetService:
                 "operator_resource_id": operator_resource_id,
                 "start_date": start_date,
                 "end_date": end_date,
+                "resource_period_mode": requirement.resource_period_mode,
                 "assignment_authority": authority_proof,
             },
         )
@@ -2250,6 +2308,7 @@ class SqlAssetService:
                 end_date=end_date,
                 operator_resource_id=resource_id,
                 expected_version=expected_version,
+                resource_period_mode=ResourcePeriodMode.BOUNDED,
             ),
         )
 
@@ -2275,6 +2334,14 @@ class SqlAssetService:
             raise ApplicationConflictError(
                 "Origine de réservation directe incompatible.",
                 code="asset_direct_origin_conflict",
+            )
+        if (
+            expected_origin == AssetRequirementOrigin.RESOURCE_PERIOD
+            and requirement.resource_period_mode == ResourcePeriodMode.CONTINUOUS.value
+        ):
+            raise ApplicationConflictError(
+                "Une attribution continue doit être modifiée par sa commande dédiée.",
+                code="asset_continuous_command_required",
             )
         allocation = self._allocation_for_requirement(requirement.id)
         if allocation is None:
@@ -2448,6 +2515,14 @@ class SqlAssetService:
             raise ApplicationConflictError(
                 "Origine de réservation directe incompatible.",
                 code="asset_direct_origin_conflict",
+            )
+        if (
+            expected_origin == AssetRequirementOrigin.RESOURCE_PERIOD
+            and requirement.resource_period_mode == ResourcePeriodMode.CONTINUOUS.value
+        ):
+            raise ApplicationConflictError(
+                "Une attribution continue doit être modifiée par sa commande dédiée.",
+                code="asset_continuous_command_required",
             )
         allocation = self._allocation_for_requirement(requirement.id)
         allocation_id = allocation.id if allocation is not None else None
