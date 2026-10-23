@@ -79,7 +79,7 @@ class AssetRequirement(TimestampMixin, Base):
     __table_args__ = (
         CheckConstraint("end_date IS NULL OR end_date >= start_date", name="asset_requirement_window"),
         CheckConstraint(
-            "end_date IS NOT NULL OR origin = 'RESOURCE_PERIOD'",
+            "end_date IS NOT NULL OR (origin = 'RESOURCE_PERIOD' AND resource_period_mode = 'CONTINUOUS')",
             name="asset_requirement_open_end_origin",
         ),
         CheckConstraint(
