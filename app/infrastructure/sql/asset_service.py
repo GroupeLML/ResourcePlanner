@@ -2440,6 +2440,11 @@ class SqlAssetService:
                 code="asset_continuous_revocation_exists",
             )
 
+        if effective_from <= requirement.start_date:
+            raise ApplicationValidationError(
+                "La révocation doit être postérieure au début; annulez explicitement une attribution future qui ne doit jamais commencer.",
+                code="asset_continuous_revocation_date_invalid",
+            )
         before = {
             "asset_id": allocation.asset_id,
             "resource_id": requirement.context_resource_id,
@@ -2447,33 +2452,6 @@ class SqlAssetService:
             "end_date": requirement.end_date,
             "resource_period_mode": requirement.resource_period_mode,
         }
-        if effective_from <= requirement.start_date:
-            # The assignment has never produced an effective day.
-            self.session.delete(allocation)
-            self.session.flush()
-            self.session.delete(requirement)
-            self.audit.append(
-                entity_type="ASSET_ALLOCATION",
-                entity_id=allocation.id,
-                entity_reference=requirement_id,
-                parent_reference=requirement.context_resource_id,
-                action="Annulation attribution continue",
-                before=before,
-                after={
-                    "effective_from": effective_from,
-                    "assignment_authority": authority_proof,
-                },
-            )
-            self.session.flush()
-            return {
-                "operation": "CANCEL",
-                "requirement_id": requirement_id,
-                "requirement_origin": AssetRequirementOrigin.RESOURCE_PERIOD.value,
-                "resource_period_mode": ResourcePeriodMode.CONTINUOUS.value,
-                "allocation_id": allocation.id,
-                "planning_version": self.version.current_version(),
-            }
-
         closed_end = effective_from - timedelta(days=1)
         requirement.end_date = closed_end
         allocation.end_date = closed_end
