@@ -25,7 +25,11 @@ from app.infrastructure.sql import (
     create_session_factory,
     create_sql_engine,
 )
-from app.infrastructure.sql.approval_scope_models import ApprovalScopeApprover
+from app.infrastructure.sql.approval_scope_models import (
+    ApprovalScope,
+    ApprovalScopeApprover,
+    AssetTypeApprovalScopeMapping,
+)
 from app.server import create_api_app
 from tests.approval_test_support import (
     TEST_ADMIN_USER_ID,
@@ -896,6 +900,205 @@ class DirectAssetReservationTests(unittest.TestCase):
                 self.assertIsNone(requirement.end_date)
                 self.assertIsNone(allocation.end_date)
                 self.assertEqual(requirement.resource_period_mode, "CONTINUOUS")
+        finally:
+            engine.dispose()
+
+    def test_continuous_create_rejects_stale_planning_version_without_mutation(self) -> None:
+        stale_version = self._version()
+        bumped = self.client.post(
+            "/api/v1/assets/ASSET-B/unavailability",
+            json={
+                "start_date": (date.today() + timedelta(days=40)).isoformat(),
+                "end_date": (date.today() + timedelta(days=41)).isoformat(),
+                "reason": "Mutation concurrente",
+                "expected_planning_version": stale_version,
+            },
+        )
+        self.assertEqual(bumped.status_code, 201, bumped.text)
+
+        rejected = self._continuous_create(
+            version=stale_version,
+            key="stale-continuous-create-744",
+        )
+        self.assertEqual(rejected.status_code, 409, rejected.text)
+        self.assertEqual(
+            rejected.json()["error"]["code"],
+            "planning_version_conflict",
+        )
+        state = self.client.get(
+            "/api/v1/assets/continuous-resource-assignments",
+            params={"resource_id": "RESOURCE-SKILLED"},
+        )
+        self.assertEqual(state.status_code, 200, state.text)
+        self.assertEqual(state.json()["assignments"], [])
+
+    def test_continuous_create_requires_exact_current_asset_authority(self) -> None:
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory.begin() as session:
+                session.execute(
+                    delete(ApprovalScopeApprover).where(
+                        ApprovalScopeApprover.approval_scope_id == TEST_APPROVAL_SCOPE_ID,
+                        ApprovalScopeApprover.app_user_id == TEST_COORDINATOR_USER_ID,
+                    )
+                )
+        finally:
+            engine.dispose()
+
+        with TestClient(
+            create_api_app(
+                self.url,
+                auth_resolver=TEST_COORDINATOR_AUTH_RESOLVER,
+            ),
+            raise_server_exceptions=False,
+        ) as coordinator:
+            version = coordinator.get("/api/v1/assets/requirements").json()["planning_version"]
+            denied = coordinator.post(
+                "/api/v1/assets/continuous-resource-assignments",
+                headers={"Idempotency-Key": "continuous-authority-denied-744"},
+                json={
+                    "resource_id": "RESOURCE-SKILLED",
+                    "asset_id": "ASSET-A",
+                    "start_date": date.today().isoformat(),
+                    "expected_planning_version": version,
+                },
+            )
+            self.assertEqual(denied.status_code, 403, denied.text)
+            self.assertEqual(
+                denied.json()["error"]["code"],
+                "asset_assignment_authority_required",
+            )
+
+    def test_continuous_create_keeps_ambiguous_asset_scope_fail_closed(self) -> None:
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory.begin() as session:
+                session.add(
+                    ApprovalScope(
+                        id="SCOPE-744-SECOND",
+                        code="SECOND-744",
+                        label="Second périmètre 744",
+                        active=True,
+                        version=1,
+                    )
+                )
+                session.flush()
+                session.add(
+                    AssetTypeApprovalScopeMapping(
+                        asset_type_id="TYPE-575C",
+                        approval_scope_id="SCOPE-744-SECOND",
+                    )
+                )
+                session.add(
+                    ApprovalScopeApprover(
+                        approval_scope_id="SCOPE-744-SECOND",
+                        app_user_id=TEST_ADMIN_USER_ID,
+                    )
+                )
+        finally:
+            engine.dispose()
+
+        denied = self._continuous_create(key="continuous-ambiguous-scope-744")
+        self.assertEqual(denied.status_code, 403, denied.text)
+        self.assertEqual(
+            denied.json()["error"]["code"],
+            "asset_assignment_authority_required",
+        )
+
+    def test_failed_transfer_qualification_rolls_back_old_open_assignment(self) -> None:
+        created = self._continuous_create()
+        self.assertEqual(created.status_code, 201, created.text)
+        effective_from = date.today() + timedelta(days=1)
+        rejected = self.client.post(
+            f"/api/v1/assets/continuous-resource-assignments/{created.json()['requirement_id']}/transfer",
+            headers={"Idempotency-Key": "transfer-unqualified-744"},
+            json={
+                "resource_id": "RESOURCE-UNSKILLED",
+                "asset_id": "ASSET-B",
+                "effective_from": effective_from.isoformat(),
+                "expected_planning_version": created.json()["planning_version"],
+            },
+        )
+        self.assertEqual(rejected.status_code, 422, rejected.text)
+        self.assertEqual(
+            rejected.json()["error"]["code"],
+            "asset_operator_skill_mismatch",
+        )
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory() as session:
+                old_requirement = session.get(
+                    AssetRequirement,
+                    created.json()["requirement_id"],
+                )
+                old_allocation = session.get(
+                    AssetAllocation,
+                    created.json()["allocation_id"],
+                )
+                assert old_requirement is not None and old_allocation is not None
+                self.assertIsNone(old_requirement.end_date)
+                self.assertIsNone(old_allocation.end_date)
+                self.assertEqual(
+                    session.scalar(
+                        select(func.count()).select_from(AssetRequirement).where(
+                            AssetRequirement.resource_period_mode == "CONTINUOUS"
+                        )
+                    ),
+                    1,
+                )
+        finally:
+            engine.dispose()
+
+    def test_failed_transfer_unavailability_rolls_back_old_open_assignment(self) -> None:
+        created = self._continuous_create()
+        self.assertEqual(created.status_code, 201, created.text)
+        effective_from = date.today() + timedelta(days=2)
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory.begin() as session:
+                session.add(
+                    AssetUnavailability(
+                        id="TRANSFER-UNAVAIL-744",
+                        asset_id="ASSET-B",
+                        start_date=effective_from,
+                        end_date=effective_from + timedelta(days=3),
+                        reason="Garage transfert",
+                    )
+                )
+        finally:
+            engine.dispose()
+
+        rejected = self.client.post(
+            f"/api/v1/assets/continuous-resource-assignments/{created.json()['requirement_id']}/transfer",
+            headers={"Idempotency-Key": "transfer-unavailable-744"},
+            json={
+                "resource_id": "RESOURCE-SKILLED-B",
+                "asset_id": "ASSET-B",
+                "effective_from": effective_from.isoformat(),
+                "expected_planning_version": created.json()["planning_version"],
+            },
+        )
+        self.assertEqual(rejected.status_code, 409, rejected.text)
+        self.assertEqual(rejected.json()["error"]["code"], "asset_unavailable")
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory() as session:
+                old_requirement = session.get(
+                    AssetRequirement,
+                    created.json()["requirement_id"],
+                )
+                old_allocation = session.get(
+                    AssetAllocation,
+                    created.json()["allocation_id"],
+                )
+                assert old_requirement is not None and old_allocation is not None
+                self.assertIsNone(old_requirement.end_date)
+                self.assertIsNone(old_allocation.end_date)
         finally:
             engine.dispose()
 
