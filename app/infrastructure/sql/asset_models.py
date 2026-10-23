@@ -69,14 +69,28 @@ class AssetUnavailability(TimestampMixin, Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     asset_id: Mapped[str] = mapped_column(String(36), ForeignKey("assets.id"), nullable=False, index=True)
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
-    end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    resource_period_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class AssetRequirement(TimestampMixin, Base):
     __tablename__ = "asset_requirements"
     __table_args__ = (
-        CheckConstraint("end_date >= start_date", name="asset_requirement_window"),
+        CheckConstraint("end_date IS NULL OR end_date >= start_date", name="asset_requirement_window"),
+        CheckConstraint(
+            "end_date IS NOT NULL OR origin = 'RESOURCE_PERIOD'",
+            name="asset_requirement_open_end_origin",
+        ),
+        CheckConstraint(
+            "resource_period_mode IS NULL OR resource_period_mode IN ('BOUNDED', 'CONTINUOUS')",
+            name="asset_requirement_resource_period_mode_values",
+        ),
+        CheckConstraint(
+            "(origin = 'RESOURCE_PERIOD' AND resource_period_mode IS NOT NULL) OR "
+            "(origin != 'RESOURCE_PERIOD' AND resource_period_mode IS NULL)",
+            name="asset_requirement_resource_period_mode_origin",
+        ),
         CheckConstraint("usage_hours IS NULL OR usage_hours > 0", name="asset_requirement_hours_positive"),
         CheckConstraint(
             "origin IN ('REQUEST', 'SHIFT_AD_HOC', 'PROJECT_DIRECT', 'SEGMENT', 'RESOURCE_PERIOD')",
@@ -201,7 +215,7 @@ class AssetRequirement(TimestampMixin, Base):
 class AssetAllocation(TimestampMixin, Base):
     __tablename__ = "asset_allocations"
     __table_args__ = (
-        CheckConstraint("end_date >= start_date", name="asset_allocation_window"),
+        CheckConstraint("end_date IS NULL OR end_date >= start_date", name="asset_allocation_window"),
         UniqueConstraint("asset_requirement_id", name="uq_asset_allocation_requirement"),
         Index("ix_asset_allocations_asset_window", "asset_id", "start_date", "end_date"),
     )
@@ -213,6 +227,6 @@ class AssetAllocation(TimestampMixin, Base):
         String(36), ForeignKey("resources.id"), nullable=True, index=True
     )
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
-    end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     locked: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false())
     source: Mapped[str] = mapped_column(String(32), nullable=False, server_default=text("'MANUAL'"))
