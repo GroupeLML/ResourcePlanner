@@ -508,6 +508,7 @@ class DirectAssetReservationTests(unittest.TestCase):
                     id="AR-HIST-RP-615C",
                     project_id="PROJECT-575C",
                     origin=AssetRequirementOrigin.RESOURCE_PERIOD.value,
+                    resource_period_mode="BOUNDED",
                     context_resource_id="RESOURCE-SKILLED",
                     asset_type_id="TYPE-575C",
                     start_date=DAY,
