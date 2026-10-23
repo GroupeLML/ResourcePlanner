@@ -499,6 +499,66 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
             idempotency_key=idempotency_key,
         )
 
+    @router.get("/continuous-resource-assignments")
+    def continuous_vehicle_assignments(
+        resource_id: str,
+        as_of: date | None = None,
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        business_date = as_of or date.today()
+        rows = session.execute(
+            select(AssetRequirement, AssetAllocation, Asset, AssetType)
+            .join(
+                AssetAllocation,
+                AssetAllocation.asset_requirement_id == AssetRequirement.id,
+            )
+            .join(Asset, Asset.id == AssetAllocation.asset_id)
+            .join(AssetType, AssetType.id == Asset.asset_type_id)
+            .where(
+                AssetRequirement.origin
+                == "RESOURCE_PERIOD",
+                AssetRequirement.resource_period_mode
+                == ResourcePeriodMode.CONTINUOUS.value,
+                AssetRequirement.context_resource_id == resource_id,
+            )
+            .order_by(AssetRequirement.start_date, AssetRequirement.id)
+        ).all()
+        return {
+            "resource_id": resource_id,
+            "as_of": business_date,
+            "assignments": [
+                {
+                    "requirement_id": requirement.id,
+                    "allocation_id": allocation.id,
+                    "asset_id": asset.id,
+                    "asset_code": asset.code,
+                    "asset_label": asset.label,
+                    "asset_type_id": asset_type.id,
+                    "asset_type_code": asset_type.code,
+                    "asset_type_label": asset_type.label,
+                    "resource_period_mode": requirement.resource_period_mode,
+                    "effective_state": continuous_assignment_state(
+                        start_date=requirement.start_date,
+                        end_date=requirement.end_date,
+                        as_of=business_date,
+                    ).value,
+                    "start_date": requirement.start_date,
+                    "end_date": requirement.end_date,
+                    "operator_resource_id": allocation.operator_resource_id,
+                    "qualification_state": service(
+                        session,
+                        type("_ReadRequest", (), {"state": type("_State", (), {"auth_principal": None})()})(),
+                    )._qualification_for(requirement, allocation).state
+                    if False
+                    else None,
+                }
+                for requirement, allocation, asset, asset_type in rows
+            ],
+            "planning_version": SqlPlanningMutationVersionRepository(
+                session
+            ).current_version(),
+        }
+
     @router.post("/continuous-resource-assignments", status_code=201)
     def create_continuous_vehicle_assignment(
         body: ContinuousVehicleAssignmentCreate,
