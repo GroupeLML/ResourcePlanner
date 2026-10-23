@@ -123,6 +123,9 @@ class SqlSchemaTests(unittest.TestCase):
         asset_type_competencies = Base.metadata.tables["asset_type_competencies"].c
         asset_requirements = Base.metadata.tables["asset_requirements"].c
         asset_allocations = Base.metadata.tables["asset_allocations"].c
+        self.assertTrue(asset_requirements.end_date.nullable)
+        self.assertTrue(asset_allocations.end_date.nullable)
+        self.assertTrue(asset_requirements.resource_period_mode.nullable)
         period_requirements = Base.metadata.tables["workforce_request_period_requirements"].c
         availability = Base.metadata.tables["resource_availability_rules"].c
         idempotency = Base.metadata.tables["command_idempotency_receipts"].c
