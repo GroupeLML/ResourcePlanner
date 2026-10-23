@@ -271,6 +271,10 @@ class SqlDeliveryPlanningReadRepository:
             )
             if asset_type_id is None:
                 continue
+            if allocation.end_date is None:
+                raise ValueError(
+                    "Une allocation d'actif REQUEST ouverte est invalide pour la projection Delivery."
+                )
             reserved_days_by_type[asset_type_id] += (
                 allocation.end_date - allocation.start_date
             ).days + 1
@@ -285,7 +289,9 @@ class SqlDeliveryPlanningReadRepository:
             requirement.end_date for requirement in requirements
         ]
         window_ends.extend(
-            requirement.end_date for requirement in asset_requirements
+            requirement.end_date
+            for requirement in asset_requirements
+            if requirement.end_date is not None
         )
 
         used_keys_by_revision: dict[str, set[str]] = defaultdict(set)
