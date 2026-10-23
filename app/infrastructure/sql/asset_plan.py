@@ -81,6 +81,7 @@ class SqlAssetPlanSynchronizer:
                     asset = self.session.get(Asset, allocation.asset_id)
                     compatible = (asset is not None and asset.asset_type_id == asset_type.id
                                   and entry.start_date <= allocation.start_date
+                                  and allocation.end_date is not None
                                   and allocation.end_date <= entry.end_date)
                     if not compatible:
                         if allocation.locked:
