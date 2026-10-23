@@ -814,9 +814,11 @@ export type DemandDetailAssetRequirementReadModel = {
   asset_type_code: string;
   asset_type_label: string;
   start_date: string;
-  end_date: string;
+  end_date: string | null;
   usage_hours: number | null;
   status: string;
+  resource_period_mode: "BOUNDED" | "CONTINUOUS" | null;
+  effective_state: "SCHEDULED" | "ACTIVE" | "ENDED" | null;
   allocation_id: string | null;
   asset_id: string | null;
   asset_code: string | null;
@@ -1396,7 +1398,7 @@ export type AssetAllocationPlanningReadModel = {
   asset_label: string;
   project_number: string | null;
   start_date: string;
-  end_date: string;
+  end_date: string | null;
   locked: boolean;
   source: string;
   operator_resource_id: string | null;
