@@ -201,7 +201,11 @@ class AssetRequirement(TimestampMixin, Base):
     slot_index: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     asset_type_id: Mapped[str] = mapped_column(String(36), ForeignKey("asset_types.id"), nullable=False)
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
-    end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    resource_period_mode: Mapped[str | None] = mapped_column(
+        String(16),
+        nullable=True,
+    )
     usage_hours: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, server_default=text("'À affecter'"))
 
