@@ -374,7 +374,16 @@ export function reserveAssetRequirement(
 }
 
 export type DirectAssetReservationResult = {
-  operation: "CREATE" | "UPDATE" | "RELEASE";
+  operation:
+    | "CREATE"
+    | "UPDATE"
+    | "RELEASE"
+    | "REVOKE"
+    | "CANCEL"
+    | "RESCHEDULE"
+    | "CANCEL_REVOCATION"
+    | "RESCHEDULE_REVOCATION"
+    | "TRANSFER";
   requirement_id: string;
   requirement_origin: "PROJECT_DIRECT" | "RESOURCE_PERIOD" | "SEGMENT";
   allocation_id: string | null;
@@ -384,10 +393,162 @@ export type DirectAssetReservationResult = {
   context_resource_id?: string | null;
   operator_resource_id?: string | null;
   start_date?: string;
-  end_date?: string;
+  end_date?: string | null;
+  resource_period_mode?: "BOUNDED" | "CONTINUOUS" | null;
+  effective_state?: "SCHEDULED" | "ACTIVE" | "ENDED" | null;
   qualification_state?: string;
   planning_version: number;
 };
+
+export type ContinuousVehicleAssignment = {
+  requirement_id: string;
+  allocation_id: string;
+  asset_id: string;
+  asset_code: string;
+  asset_label: string;
+  asset_type_id: string;
+  asset_type_code: string;
+  asset_type_label: string;
+  resource_period_mode: "CONTINUOUS";
+  effective_state: "SCHEDULED" | "ACTIVE" | "ENDED";
+  start_date: string;
+  end_date: string | null;
+  operator_resource_id: string | null;
+  qualification_state: string;
+};
+
+export type ContinuousVehicleAssignments = {
+  resource_id: string;
+  as_of: string;
+  assignments: ContinuousVehicleAssignment[];
+  planning_version: number;
+};
+
+export function getContinuousVehicleAssignments(
+  resourceId: string,
+  signal?: AbortSignal,
+) {
+  const params = new URLSearchParams({ resource_id: resourceId });
+  return getJson<ContinuousVehicleAssignments>(
+    `/api/v1/assets/continuous-resource-assignments?${params.toString()}`,
+    signal,
+  );
+}
+
+export function createContinuousVehicleAssignment(
+  payload: {
+    resource_id: string;
+    asset_id: string;
+    start_date: string;
+    expected_planning_version: number;
+  },
+  idempotencyKey: string,
+) {
+  return sendJson<DirectAssetReservationResult>(
+    "/api/v1/assets/continuous-resource-assignments",
+    "POST",
+    payload,
+    { "Idempotency-Key": idempotencyKey },
+  );
+}
+
+export function revokeContinuousVehicleAssignment(
+  requirementId: string,
+  payload: {
+    effective_from: string;
+    expected_planning_version: number;
+  },
+  idempotencyKey: string,
+) {
+  return sendJson<DirectAssetReservationResult>(
+    `/api/v1/assets/continuous-resource-assignments/${encodeURIComponent(requirementId)}/revoke`,
+    "POST",
+    payload,
+    { "Idempotency-Key": idempotencyKey },
+  );
+}
+
+export function cancelContinuousVehicleAssignment(
+  requirementId: string,
+  expectedPlanningVersion: number,
+  idempotencyKey: string,
+) {
+  const params = new URLSearchParams({
+    expected_planning_version: String(expectedPlanningVersion),
+  });
+  return sendJson<DirectAssetReservationResult>(
+    `/api/v1/assets/continuous-resource-assignments/${encodeURIComponent(requirementId)}?${params.toString()}`,
+    "DELETE",
+    {},
+    { "Idempotency-Key": idempotencyKey },
+  );
+}
+
+export function rescheduleContinuousVehicleAssignment(
+  requirementId: string,
+  payload: {
+    start_date: string;
+    expected_planning_version: number;
+  },
+  idempotencyKey: string,
+) {
+  return sendJson<DirectAssetReservationResult>(
+    `/api/v1/assets/continuous-resource-assignments/${encodeURIComponent(requirementId)}/schedule`,
+    "PUT",
+    payload,
+    { "Idempotency-Key": idempotencyKey },
+  );
+}
+
+export function cancelContinuousVehicleRevocation(
+  requirementId: string,
+  expectedPlanningVersion: number,
+  idempotencyKey: string,
+) {
+  const params = new URLSearchParams({
+    expected_planning_version: String(expectedPlanningVersion),
+  });
+  return sendJson<DirectAssetReservationResult>(
+    `/api/v1/assets/continuous-resource-assignments/${encodeURIComponent(requirementId)}/revocation?${params.toString()}`,
+    "DELETE",
+    {},
+    { "Idempotency-Key": idempotencyKey },
+  );
+}
+
+export function rescheduleContinuousVehicleRevocation(
+  requirementId: string,
+  payload: {
+    effective_from: string;
+    expected_planning_version: number;
+  },
+  idempotencyKey: string,
+) {
+  return sendJson<DirectAssetReservationResult>(
+    `/api/v1/assets/continuous-resource-assignments/${encodeURIComponent(requirementId)}/revocation`,
+    "PUT",
+    payload,
+    { "Idempotency-Key": idempotencyKey },
+  );
+}
+
+export function transferContinuousVehicleAssignment(
+  requirementId: string,
+  payload: {
+    resource_id: string;
+    asset_id: string;
+    effective_from: string;
+    expected_planning_version: number;
+  },
+  idempotencyKey: string,
+) {
+  return sendJson<DirectAssetReservationResult>(
+    `/api/v1/assets/continuous-resource-assignments/${encodeURIComponent(requirementId)}/transfer`,
+    "POST",
+    payload,
+    { "Idempotency-Key": idempotencyKey },
+  );
+}
 
 export function createProjectDirectReservation(
   payload: {
