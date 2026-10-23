@@ -44,14 +44,20 @@ class AssetOccupation:
     allocation_id: str
     asset_id: str
     start_date: date
-    end_date: date
+    end_date: date | None
     locked: bool = False
 
     def __post_init__(self) -> None:
-        if not self.allocation_id or not self.asset_id or self.end_date < self.start_date:
+        if (
+            not self.allocation_id
+            or not self.asset_id
+            or (self.end_date is not None and self.end_date < self.start_date)
+        ):
             raise ValueError("Invalid asset occupation")
 
     def dates(self) -> frozenset[date]:
+        if self.end_date is None:
+            raise ValueError("Open asset occupations cannot be expanded without a bounded window")
         return frozenset(
             self.start_date + timedelta(days=offset)
             for offset in range((self.end_date - self.start_date).days + 1)
@@ -68,6 +74,6 @@ def overlapping_asset_occupations(
         for occupation in existing
         if occupation.asset_id == proposed.asset_id
         and occupation.allocation_id != proposed.allocation_id
-        and occupation.start_date <= proposed.end_date
-        and proposed.start_date <= occupation.end_date
+        and (proposed.end_date is None or occupation.start_date <= proposed.end_date)
+        and (occupation.end_date is None or proposed.start_date <= occupation.end_date)
     )
