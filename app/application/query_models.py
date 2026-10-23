@@ -471,7 +471,7 @@ class AssetAllocationReadModel:
     asset_code: str
     asset_label: str
     start_date: date
-    end_date: date
+    end_date: date | None
     locked: bool
     source: str
     operator_resource_id: str | None = None
@@ -512,9 +512,11 @@ class AssetRequirementReadModel:
     asset_type_code: str
     asset_type_label: str
     start_date: date
-    end_date: date
+    end_date: date | None
     usage_hours: float | None
     status: str
+    resource_period_mode: str | None = None
+    effective_state: str | None = None
     allocation_id: str | None = None
     asset_id: str | None = None
     asset_code: str | None = None
