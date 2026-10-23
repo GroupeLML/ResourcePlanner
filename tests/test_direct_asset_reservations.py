@@ -707,6 +707,31 @@ class DirectAssetReservationTests(unittest.TestCase):
         finally:
             engine.dispose()
 
+    def test_continuous_create_replay_precedes_current_asset_revalidation(self) -> None:
+        version = self._version()
+        created = self._continuous_create(
+            version=version,
+            key="continuous-replay-before-validation-744",
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory.begin() as session:
+                asset = session.get(Asset, "ASSET-A")
+                assert asset is not None
+                asset.active = False
+        finally:
+            engine.dispose()
+
+        replay = self._continuous_create(
+            version=version,
+            key="continuous-replay-before-validation-744",
+        )
+        self.assertEqual(replay.status_code, 201, replay.text)
+        self.assertEqual(replay.json(), created.json())
+
     def test_continuous_assignment_blocks_future_bounded_and_future_bounded_blocks_open(self) -> None:
         created = self._continuous_create()
         self.assertEqual(created.status_code, 201, created.text)
