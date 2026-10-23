@@ -21,6 +21,30 @@ class OccupancyPolicy(StrEnum):
     EXCLUSIVE_DAY = "EXCLUSIVE_DAY"
 
 
+class ResourcePeriodMode(StrEnum):
+    BOUNDED = "BOUNDED"
+    CONTINUOUS = "CONTINUOUS"
+
+
+class ContinuousAssignmentState(StrEnum):
+    SCHEDULED = "SCHEDULED"
+    ACTIVE = "ACTIVE"
+    ENDED = "ENDED"
+
+
+def continuous_assignment_state(
+    *,
+    start_date: date,
+    end_date: date | None,
+    as_of: date,
+) -> ContinuousAssignmentState:
+    if start_date > as_of:
+        return ContinuousAssignmentState.SCHEDULED
+    if end_date is None or as_of <= end_date:
+        return ContinuousAssignmentState.ACTIVE
+    return ContinuousAssignmentState.ENDED
+
+
 class AssetRequirementOrigin(StrEnum):
     REQUEST = "REQUEST"
     SHIFT_AD_HOC = "SHIFT_AD_HOC"
