@@ -6,7 +6,7 @@ from datetime import date, timedelta
 import json
 from collections.abc import Sequence
 
-from sqlalchemy import or_, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ...application.query_models import (
@@ -20,7 +20,11 @@ from ...application.query_models import (
     AssetUnavailabilityReadModel,
 )
 from ...domain.approval_envelope import approval_envelope_from_snapshot_payload
-from ...domain.reservable_assets import AssetRequirementOrigin
+from ...domain.reservable_assets import (
+    AssetRequirementOrigin,
+    ResourcePeriodMode,
+    continuous_assignment_state,
+)
 from .approval_revision_models import (
     APPROVAL_REFERENCE_CAPTURED,
     RequestApprovalReference,
@@ -51,8 +55,13 @@ def _text(value: object) -> str:
     return str(value or "").strip()
 
 
-def _overlaps(start_a: date, end_a: date, start_b: date, end_b: date) -> bool:
-    return start_a <= end_b and end_a >= start_b
+def _overlaps(
+    start_a: date,
+    end_a: date | None,
+    start_b: date,
+    end_b: date | None,
+) -> bool:
+    return (end_b is None or start_a <= end_b) and (end_a is None or end_a >= start_b)
 
 
 class SqlAssetPlanningQuery:
@@ -228,6 +237,17 @@ class SqlAssetPlanningQuery:
                     ),
                     start_date=row.start_date,
                     end_date=row.end_date,
+                    resource_period_mode=row.resource_period_mode,
+                    effective_state=(
+                        continuous_assignment_state(
+                            start_date=row.start_date,
+                            end_date=row.end_date,
+                            as_of=date.today(),
+                        ).value
+                        if row.origin == AssetRequirementOrigin.RESOURCE_PERIOD.value
+                        and row.resource_period_mode == ResourcePeriodMode.CONTINUOUS.value
+                        else None
+                    ),
                     usage_hours=(
                         float(row.usage_hours)
                         if row.usage_hours is not None
@@ -688,7 +708,18 @@ class SqlAssetPlanningQuery:
 
             if (
                 allocation.start_date < requirement.start_date
-                or allocation.end_date > requirement.end_date
+                or (
+                    requirement.end_date is not None
+                    and (
+                        allocation.end_date is None
+                        or allocation.end_date > requirement.end_date
+                    )
+                )
+                or (
+                    requirement.end_date is None
+                    and allocation.end_date is not None
+                    and requirement.resource_period_mode == ResourcePeriodMode.CONTINUOUS.value
+                )
             ):
                 add_diagnostic(
                     "ASSET_OUTSIDE_REQUIREMENT_WINDOW",
@@ -785,13 +816,15 @@ class SqlAssetPlanningQuery:
                     1
                     for allocation in all_allocations
                     if allocation.asset_id == asset.id
-                    and allocation.start_date <= cursor <= allocation.end_date
+                    and allocation.start_date <= cursor
+                    and (allocation.end_date is None or cursor <= allocation.end_date)
                 )
                 visible_occupations = tuple(
                     allocation
                     for allocation in allocation_models
                     if allocation.asset_id == asset.id
-                    and allocation.start_date <= cursor <= allocation.end_date
+                    and allocation.start_date <= cursor
+                    and (allocation.end_date is None or cursor <= allocation.end_date)
                 )
                 unavailable = any(
                     row.start_date <= cursor <= row.end_date
