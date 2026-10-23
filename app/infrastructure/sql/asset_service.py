@@ -898,19 +898,13 @@ class SqlAssetService:
         requirement: AssetRequirement,
         asset_id: str,
         start_date: date,
-        end_date: date | None,
+        end_date: date,
         operator_resource_id: str | None,
         allocation_id: str,
         source: str = "MANUAL",
-        ignore_allocation_ids: tuple[str, ...] = (),
     ) -> str:
         self._validate_request_authority(requirement)
-        asset, asset_type = self._active_asset(asset_id)
-        if allow_open and asset_type.category != "VEHICLE":
-            raise ApplicationValidationError(
-                "L'attribution continue est réservée aux véhicules.",
-                code="asset_continuous_vehicle_required",
-            )
+        asset, _asset_type = self._active_asset(asset_id)
         if asset.asset_type_id != requirement.asset_type_id:
             raise ApplicationValidationError(
                 "Actif inactif ou incompatible.",
@@ -931,7 +925,6 @@ class SqlAssetService:
             start_date=start_date,
             end_date=end_date,
             allocation_id=allocation_id,
-            ignore_allocation_ids=ignore_allocation_ids,
         )
         candidate = AssetAllocation(
             id=allocation_id,
@@ -1994,10 +1987,11 @@ class SqlAssetService:
         requirement: AssetRequirement,
         asset_id: str,
         start_date: date,
-        end_date: date,
+        end_date: date | None,
         operator_resource_id: str | None,
         allocation_id: str,
         source: str = "MANUAL",
+        ignore_allocation_ids: tuple[str, ...] = (),
     ) -> str:
         if requirement.origin not in {
             AssetRequirementOrigin.PROJECT_DIRECT.value,
@@ -2029,7 +2023,12 @@ class SqlAssetService:
                     "La ressource bénéficiaire doit rester l'opérateur de la période.",
                     code="asset_resource_period_operator_conflict",
                 )
-        asset, _asset_type = self._active_asset(asset_id)
+        asset, asset_type = self._active_asset(asset_id)
+        if allow_open and asset_type.category != "VEHICLE":
+            raise ApplicationValidationError(
+                "L'attribution continue est réservée aux véhicules.",
+                code="asset_continuous_vehicle_required",
+            )
         if asset.asset_type_id != requirement.asset_type_id:
             raise ApplicationValidationError(
                 "Actif inactif ou incompatible.",
@@ -2040,6 +2039,7 @@ class SqlAssetService:
             start_date=start_date,
             end_date=end_date,
             allocation_id=allocation_id,
+            ignore_allocation_ids=ignore_allocation_ids,
         )
         candidate = AssetAllocation(
             id=allocation_id,
