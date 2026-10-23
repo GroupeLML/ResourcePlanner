@@ -707,15 +707,21 @@ class DirectAssetReservationTests(unittest.TestCase):
         created = self._continuous_create()
         self.assertEqual(created.status_code, 201, created.text)
         future = date.today() + timedelta(days=30)
-        blocked = self._resource_create(
-            asset_id="ASSET-A",
-            version=created.json()["planning_version"],
-            key="bounded-after-open-744",
+        blocked = self.client.post(
+            "/api/v1/assets/resource-period-reservations",
+            headers={"Idempotency-Key": "bounded-after-open-744"},
+            json={
+                "resource_id": "RESOURCE-SKILLED-B",
+                "project_id": None,
+                "asset_type_id": "TYPE-575C",
+                "asset_id": "ASSET-A",
+                "start_date": future.isoformat(),
+                "end_date": (future + timedelta(days=2)).isoformat(),
+                "expected_planning_version": created.json()["planning_version"],
+            },
         )
-        # _resource_create uses DAY in the past relative to this test's business
-        # date, so exercise the competing bounded API directly with future dates.
-        if blocked.status_code == 201:
-            self.fail("A continuous allocation must block any overlapping bounded reservation.")
+        self.assertEqual(blocked.status_code, 409, blocked.text)
+        self.assertEqual(blocked.json()["error"]["code"], "asset_double_booking")
         current_version = self._version()
         bounded_b = self.client.post(
             "/api/v1/assets/resource-period-reservations",
