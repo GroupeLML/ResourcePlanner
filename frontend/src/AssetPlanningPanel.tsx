@@ -85,7 +85,7 @@ function AssetRequirementCard({
   const [reservationEnd, setReservationEnd] = useState(
     requirement.origin === "REQUEST"
       ? requirement.allocation_end_date ?? requirement.start_date
-      : requirement.allocation_end_date ?? requirement.end_date,
+      : requirement.allocation_end_date ?? requirement.end_date ?? "",
   );
   const [operatorSelected, setOperatorSelected] = useState(requirement.operator_resource_id ?? "");
   const [operatorCandidates, setOperatorCandidates] = useState<AssetOperatorCandidate[]>([]);
@@ -97,7 +97,7 @@ function AssetRequirementCard({
     setReservationEnd(
       requirement.origin === "REQUEST"
         ? requirement.allocation_end_date ?? requirement.start_date
-        : requirement.allocation_end_date ?? requirement.end_date,
+        : requirement.allocation_end_date ?? requirement.end_date ?? "",
     );
   }, [
     requirement.requirement_id,
@@ -147,6 +147,7 @@ function AssetRequirementCard({
   const isRequest = requirement.origin === "REQUEST";
   const isProjectDirect = requirement.origin === "PROJECT_DIRECT";
   const isResourcePeriod = requirement.origin === "RESOURCE_PERIOD";
+  const isContinuous = isResourcePeriod && requirement.resource_period_mode === "CONTINUOUS";
   const isSegment = requirement.origin === "SEGMENT";
   const operatorEditable = isRequest || isProjectDirect || isSegment;
   const contextLabel = isProjectDirect
@@ -164,7 +165,7 @@ function AssetRequirementCard({
           <span>{contextLabel}</span>
           <strong>{requirement.asset_type_code} — {requirement.asset_type_label}</strong>
           <small>
-            {isRequest ? "Fenêtre autorisée" : isSegment ? "Fenêtre segment" : "Période directe"} {requirement.start_date} → {requirement.end_date}
+            {isRequest ? "Fenêtre autorisée" : isSegment ? "Fenêtre segment" : "Période directe"} {requirement.start_date} → {requirement.end_date ?? "sans fin"}
           </small>
         </div>
         <span className={requirement.asset_id ? "asset-status is-assigned" : "asset-status"}>
@@ -194,7 +195,7 @@ function AssetRequirementCard({
           <select
             value={selected}
             onChange={(event) => setSelected(event.target.value)}
-            disabled={!canManage || busy}
+            disabled={!canManage || busy || isContinuous}
             aria-label={`Unité pour ${requirement.asset_type_label} ${requirement.demand_number}`}
           >
             <option value="">Aucune réservation</option>
@@ -212,7 +213,7 @@ function AssetRequirementCard({
               <input
                 type="date"
                 min={isRequest || isSegment ? requirement.start_date : undefined}
-                max={isRequest || isSegment ? requirement.end_date : undefined}
+                max={isRequest || isSegment ? requirement.end_date ?? undefined : undefined}
                 value={reservationStart}
                 onChange={(event) => setReservationStart(event.target.value)}
                 disabled={!canManage || busy}
@@ -224,7 +225,7 @@ function AssetRequirementCard({
               <input
                 type="date"
                 min={isRequest || isSegment ? requirement.start_date : undefined}
-                max={isRequest || isSegment ? requirement.end_date : undefined}
+                max={isRequest || isSegment ? requirement.end_date ?? undefined : undefined}
                 value={reservationEnd}
                 onChange={(event) => setReservationEnd(event.target.value)}
                 disabled={!canManage || busy}
@@ -233,10 +234,15 @@ function AssetRequirementCard({
             </label>
           </>
         )}
+        {isContinuous && (
+          <small className="asset-usage-budget">
+            Attribution continue — gérer la révocation, le transfert ou la replanification depuis le profil Ressource.
+          </small>
+        )}
         <button
           type="button"
           className="secondary-button"
-          disabled={!canManage || busy || !reservationChanged || !datesReady}
+          disabled={!canManage || busy || isContinuous || !reservationChanged || !datesReady}
           onClick={() => onReserve(
             requirement,
             selected || null,
