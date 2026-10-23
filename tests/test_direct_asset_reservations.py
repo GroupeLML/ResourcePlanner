@@ -726,6 +726,9 @@ class DirectAssetReservationTests(unittest.TestCase):
         )
         self.assertEqual(blocked.status_code, 409, blocked.text)
         self.assertEqual(blocked.json()["error"]["code"], "asset_double_booking")
+        self.assertNotIn("allocation_ids", blocked.json()["error"])
+        self.assertNotIn(created.json()["allocation_id"], blocked.text)
+        self.assertNotIn("RESOURCE-SKILLED", blocked.text)
         current_version = self._version()
         bounded_b = self.client.post(
             "/api/v1/assets/resource-period-reservations",
