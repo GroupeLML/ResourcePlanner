@@ -60,6 +60,7 @@ def segment_asset_dependencies(
         )
         for requirement, allocation in rows
         if requirement.resource_requirement_id
+        and allocation.end_date is not None
     )
 
 
