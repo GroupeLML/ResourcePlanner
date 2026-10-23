@@ -2113,7 +2113,7 @@ class SqlAssetService:
         origin: AssetRequirementOrigin,
         project_id: str | None,
         context_resource_id: str | None,
-        asset_type_id: str,
+        asset_type_id: str | None,
         asset_id: str,
         start_date: date,
         end_date: date | None,
@@ -2123,6 +2123,24 @@ class SqlAssetService:
     ) -> dict:
         self.version.acquire(expected_version)
         authority_proof = self._require_assignment_authorities(asset_id)
+        if (
+            origin == AssetRequirementOrigin.RESOURCE_PERIOD
+            and resource_period_mode == ResourcePeriodMode.CONTINUOUS
+            and asset_type_id is None
+        ):
+            continuous_asset, continuous_type = self._active_asset(asset_id)
+            if continuous_type.category != "VEHICLE":
+                raise ApplicationValidationError(
+                    "L'attribution continue est réservée aux véhicules.",
+                    code="asset_continuous_vehicle_required",
+                )
+            asset_id = continuous_asset.id
+            asset_type_id = continuous_asset.asset_type_id
+        if asset_type_id is None:
+            raise ApplicationValidationError(
+                "Le type d'actif est requis.",
+                code="asset_type_required",
+            )
         self._validate_direct_window(
             start_date,
             end_date,
@@ -2327,12 +2345,6 @@ class SqlAssetService:
                 "Une attribution continue opérationnelle ne peut pas être antidatée.",
                 code="asset_continuous_backdating_forbidden",
             )
-        asset, asset_type = self._active_asset(asset_id)
-        if asset_type.category != "VEHICLE":
-            raise ApplicationValidationError(
-                "L'attribution continue est réservée aux véhicules.",
-                code="asset_continuous_vehicle_required",
-            )
         payload = {
             "resource_id": resource_id,
             "asset_id": asset_id,
@@ -2353,8 +2365,8 @@ class SqlAssetService:
                 origin=AssetRequirementOrigin.RESOURCE_PERIOD,
                 project_id=None,
                 context_resource_id=resource_id,
-                asset_type_id=asset.asset_type_id,
-                asset_id=asset.id,
+                asset_type_id=None,
+                asset_id=asset_id,
                 start_date=start_date,
                 end_date=None,
                 operator_resource_id=resource_id,
