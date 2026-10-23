@@ -153,6 +153,7 @@ class AssetRequirementOriginTests(unittest.TestCase):
             self._requirement_values(
                 "AR-RESOURCE-PERIOD",
                 origin=AssetRequirementOrigin.RESOURCE_PERIOD.value,
+                resource_period_mode="BOUNDED",
                 project_id=None,
                 context_resource_id="RESOURCE-CONTEXT",
                 workforce_request_id=None,
@@ -162,6 +163,7 @@ class AssetRequirementOriginTests(unittest.TestCase):
             self._requirement_values(
                 "AR-RESOURCE-PERIOD-PROJECT",
                 origin=AssetRequirementOrigin.RESOURCE_PERIOD.value,
+                resource_period_mode="BOUNDED",
                 project_id="P-2",
                 context_resource_id="RESOURCE-CONTEXT-2",
                 workforce_request_id=None,
