@@ -1,7 +1,8 @@
 # ADR-032 — Attribution continue de véhicule par RESOURCE_PERIOD ouvert
 
-Status: Accepted
+Status: Accepted — amended after Architect review
 Date: 2026-10-23
+Amended: 2026-10-23
 
 ## Context
 
@@ -123,6 +124,47 @@ Pour `AssetRequirement`, le schéma doit également garantir que `end_date IS NU
 `AssetAllocation` ne porte pas l'origine directement; l'application doit donc garantir que toute allocation à `end_date NULL` appartient à un requirement `RESOURCE_PERIOD` lui-même ouvert. Les migrations/tests de readiness doivent détecter toute donnée violant cet invariant.
 
 Aucune donnée historique bornée n'est convertie automatiquement en période ouverte.
+
+### 4A. Provenance persistante CONTINUOUS vs BOUNDED
+
+`RESOURCE_PERIOD` seul ne suffit pas à protéger l'historique : après révocation, une ancienne attribution continue possède une `end_date` non nulle et devient visuellement semblable à une réservation ressource-période bornée ordinaire.
+
+#744 doit donc persister sur le **requirement support** une provenance explicite et durable distinguant au minimum :
+
+```text
+RESOURCE_PERIOD / BOUNDED
+RESOURCE_PERIOD / CONTINUOUS
+```
+
+Le nom exact du champ peut suivre les conventions du modèle, mais sa sémantique doit être stable. Par exemple :
+
+```text
+resource_period_mode = BOUNDED | CONTINUOUS
+```
+
+Cette provenance :
+
+- n'est **pas** une seconde autorité d'occupation;
+- ne remplace jamais `AssetAllocation`;
+- reste `CONTINUOUS` après révocation ou transfert historique;
+- permet aux commandes et migrations de reconnaître qu'un intervalle aujourd'hui borné provient d'un attitrage continu.
+
+Les `RESOURCE_PERIOD` historiques existants sont classés `BOUNDED` par migration déterministe, ou par une convention persistée équivalente qui ne dépend jamais de l'état actuel de `end_date`.
+
+Les autres origines n'utilisent pas cette provenance.
+
+### 4B. Protection de l'historique dans toutes les mutations
+
+Toute mutation générique existante qui pourrait supprimer ou réécrire un `RESOURCE_PERIOD / CONTINUOUS` doit être protégée.
+
+En particulier :
+
+- le chemin générique de **release** ne doit pas supprimer un requirement/allocation `CONTINUOUS`, même après que sa fin a été bornée par révocation;
+- le chemin générique d'**update bounded resource-period** ne doit pas remplacer l'actif, le bénéficiaire ou convertir la sémantique d'un ancien `CONTINUOUS`;
+- une attribution `CONTINUOUS` ne peut être modifiée que par les commandes explicites de création, révocation, transfert/remplacement, annulation planifiée ou correction historique définies par ce contrat;
+- la fermeture d'une attribution conserve requirement + allocation comme historique, sauf annulation avant prise d'effet telle que définie plus bas.
+
+Une ancienne attribution continue ne redevient donc jamais une réservation bornée générique simplement parce que `end_date` n'est plus `NULL`.
 
 ### 5. Sémantique d'intervalle commune
 
@@ -270,6 +312,56 @@ La réservation historique bornée est conservée; elle n'est pas supprimée.
 
 Si une révocation est effective au plus tard à la date de début et qu'aucune journée d'occupation ne subsiste, la commande peut annuler le requirement et retirer l'allocation dans la même transaction, tout en conservant l'audit/idempotency receipt. Elle ne doit jamais créer un intervalle invalide.
 
+### 10A. État effectif à une date donnée
+
+L'état **Attitré** n'est jamais dérivé du seul fait que `end_date IS NULL`.
+
+Pour une date métier `D`, une attribution continue est :
+
+```text
+SCHEDULED
+si start_date > D
+
+ACTIVE
+si start_date <= D
+et (end_date IS NULL ou D <= end_date)
+
+ENDED
+si end_date IS NOT NULL
+et end_date < D
+```
+
+Le read model backend doit exposer cette sémantique de façon autoritaire, directement ou via des champs équivalents suffisamment explicites.
+
+Conséquences :
+
+- une attribution avec une fin prévue le mois prochain reste **ACTIVE aujourd'hui**;
+- une attribution ouverte commençant la semaine prochaine est **SCHEDULED**, pas ACTIVE;
+- l'UI #762 ne doit pas interpréter `NULL` ou non-`NULL` seule pour décider si la case **Attitré** est cochée aujourd'hui.
+
+Les lectures peuvent accepter une date `as_of` lorsqu'une surface historique/future l'exige. En l'absence de date explicite, la surface opérationnelle utilise la date métier courante du backend.
+
+### 10B. Transitions planifiées, annulation et replanification
+
+Une attribution future peut être créée comme `SCHEDULED`.
+
+Une transition future doit être visible dans le read model afin d'éviter qu'une future attribution ou révocation reste cachée jusqu'au jour d'effet.
+
+Règles :
+
+- une attribution future qui n'a encore produit aucune journée d'occupation peut être **annulée explicitement**; la suppression requirement/allocation est permise dans ce seul cas, avec audit et idempotence;
+- une attribution future peut être **replanifiée** vers une autre date future par une commande explicite, après revalidation complète des conflits, indisponibilités, qualification et autorité;
+- une révocation future peut être annulée ou replanifiée avant sa prise d'effet par une commande explicite, avec restauration atomique de la borne précédente;
+- les commandes ordinaires refusent les corrections rétroactives qui modifieraient une période déjà effective ou historique.
+
+### 10C. Backdating et correction historique
+
+Les commandes opérationnelles ordinaires doivent rejeter une création, révocation, transfert ou replanification dont la date effective est antérieure à la date métier courante lorsqu'elle réécrirait de l'historique déjà effectif.
+
+Une correction historique, si nécessaire, relève d'un **processus explicite et audité distinct** avec permission appropriée, justification obligatoire, validation des conflits sur les intervalles résultants et traçabilité avant/après.
+
+#744 n'a pas besoin de livrer une UI générale de correction historique, mais son modèle et ses protections ne doivent pas rendre possible un backdating silencieux via les endpoints ordinaires.
+
 ### 11. Transfert et remplacement sont atomiques
 
 Le transfert est une commande métier composite sous un seul CAS Planning et une seule transaction.
@@ -296,6 +388,41 @@ La séquence logique est :
 
 Aucun état intermédiaire visible ne doit laisser le véhicule doublement réservé ou libre entre deux commandes.
 
+### 11A. Validation de conflit sur l'état final proposé
+
+La validation d'un transfert doit raisonner sur les **intervalles finaux proposés**, pas sur l'état pré-mutation brut.
+
+Pour un transfert du même véhicule de la ressource A vers la ressource B à `effective_from` :
+
+```text
+ancienne allocation A : ... → effective_from - 1
+nouvelle allocation B : effective_from → ...
+```
+
+Lors de la validation de la nouvelle allocation, l'ancienne allocation qui est fermée dans **la même transaction** ne doit pas être traitée comme un conflit pour la portion qui disparaît dans l'état final.
+
+Conceptuellement, le moteur de disponibilité valide :
+
+```text
+proposed_final_state
+=
+existing_allocations
+- allocation_being_closed_as_current
++ proposed_closed_interval
++ proposed_new_interval
+```
+
+ou un mécanisme équivalent garantissant la même propriété.
+
+Cette exception est strictement limitée à l'allocation concernée par la fermeture atomique. Restent toujours bloquants :
+
+- toute autre `AssetAllocation` chevauchante;
+- toute `AssetUnavailability` chevauchante;
+- toute seconde mutation concurrente détectée par CAS;
+- toute incompatibilité de qualification ou d'autorité.
+
+Si n'importe quelle validation échoue, **aucune** fermeture ni création n'est persistée : la transaction entière est rollback.
+
 ### 12. Modification d'une attribution ouverte
 
 Une attribution ouverte peut être modifiée explicitement, mais aucune commande ne doit transformer silencieusement :
@@ -314,6 +441,8 @@ update bounded resource-period reservation
 ```
 
 Le serveur peut réutiliser des primitives communes, mais l'API ne doit pas rendre ambiguë l'intention métier.
+
+Les endpoints/services historiques de `RESOURCE_PERIOD` borné doivent refuser toute mutation qui viserait un requirement portant la provenance `CONTINUOUS`. Cette protection reste vraie après révocation, lorsque l'intervalle est devenu borné.
 
 ### 13. Projection vers les Shift
 
@@ -402,6 +531,31 @@ Une attribution active ouverte apparaît dans toute fenêtre future chevauchant 
 
 Les read models ne doivent pas présenter `end_date = NULL` comme donnée manquante; ils doivent l'exposer explicitement comme période continue / « jusqu'à révocation ».
 
+Les read models doivent également distinguer l'état effectif `SCHEDULED / ACTIVE / ENDED` pour la date de lecture et exposer les transitions futures pertinentes sans exiger que le client reconstruise cette logique.
+
+### 18A. Confidentialité inter-scope
+
+ADR-027 reste autoritaire sur les détails exposés.
+
+Une attribution cachée du scope courant doit néanmoins continuer à participer **globalement** aux calculs de disponibilité et de double booking.
+
+Le backend peut donc répondre qu'une unité est indisponible/réservée sans révéler :
+
+- le nom de la ressource bénéficiaire;
+- le projet ou contexte caché;
+- les dates détaillées au-delà de ce qui est nécessaire;
+- toute autre donnée interdite par le scope de lecture.
+
+Principe :
+
+```text
+occupation globale
+≠
+droit de voir les détails de l'occupation
+```
+
+Les diagnostics de conflit doivent rester suffisamment précis pour l'action utilisateur sans devenir une fuite de données inter-scope.
+
 ### 19. Compatibilité SQL Server / SQLite
 
 La migration doit être additive et compatible avec les deux dialectes.
@@ -427,6 +581,39 @@ Aucun backfill ne convertit automatiquement une ancienne réservation en attribu
 Les autres origines gardent une `end_date` métier obligatoire.
 
 La migration ne doit pas réinterpréter les anciennes dates ni modifier les allocations historiques.
+
+### 20A. Déploiement progressif compatible
+
+L'introduction de `end_date = NULL` nécessite une séquence de déploiement compatible.
+
+Avant d'autoriser la première écriture ouverte, **tous les readers runtime déployés** susceptibles de lire `AssetRequirement.end_date` ou `AssetAllocation.end_date` doivent accepter la nullabilité et appliquer `NULL = +∞`.
+
+La séquence attendue est conceptuellement :
+
+1. déployer le schéma nullable et des readers compatibles;
+2. valider les chemins de lecture, disponibilité, Planning, communications et outils SQL;
+3. seulement ensuite activer les commandes capables d'écrire des attributions ouvertes.
+
+#744 peut réaliser cette compatibilité dans un seul déploiement atomique si l'exploitation garantit qu'aucun ancien binaire incompatible ne continue à servir du trafic. Sinon, utiliser un feature flag ou une activation séparée.
+
+Aucun writer ne doit produire `end_date = NULL` tant qu'un reader actif peut supposer `end_date NOT NULL`.
+
+### 20B. Rollback et downgrade
+
+Un rollback applicatif vers une version qui sait lire les périodes ouvertes est permis.
+
+En revanche, un downgrade de schéma qui restaurerait `end_date NOT NULL` doit être **refusé** tant qu'il existe une attribution ouverte.
+
+Le rollback ne doit jamais résoudre cette incompatibilité en :
+
+- supprimant les attributions ouvertes;
+- inventant une date de fin;
+- convertissant silencieusement une attribution continue en réservation bornée;
+- tronquant l'historique.
+
+Un outil/check de downgrade ou une garde de migration doit détecter la présence d'assignments ouverts et échouer explicitement avec diagnostic opératoire.
+
+La restauration vers une version réellement incompatible avec les lecteurs nullable nécessite d'abord une opération métier explicite de fermeture/révocation des attributions concernées, pas une mutation technique cachée.
 
 ### 21. Portée de #744
 
@@ -547,7 +734,18 @@ La livraison de #744 devra prouver au minimum :
 12. interaction avec une `AssetUnavailability` ajoutée après l'attribution;
 13. non-régression des `RESOURCE_PERIOD` bornés historiques;
 14. SQL Server + SQLite;
-15. React/E2E du parcours ressource.
+15. React/E2E du parcours ressource;
+16. provenance persistante `CONTINUOUS` conservée après révocation et protection contre les chemins génériques release/update;
+17. attribution avec fin future encore `ACTIVE` avant sa fin;
+18. attribution future ouverte exposée `SCHEDULED` et non active;
+19. annulation et replanification d'une attribution future avant prise d'effet;
+20. rejet du backdating par les commandes ordinaires;
+21. transfert même-véhicule validé contre l'état final proposé sans faux conflit avec l'allocation fermée;
+22. échec d'un transfert si une autre réservation ou indisponibilité chevauche, avec rollback atomique complet;
+23. lectures d'intervalles ouverts bornées par une fenêtre de requête, sans génération ni expansion de dates jusqu'à l'infini;
+24. attribution hors scope qui bloque la disponibilité sans divulguer les détails protégés;
+25. readers compatibles nullable déployés avant activation des writes ouverts;
+26. downgrade `NOT NULL` refusé tant qu'une attribution ouverte existe, sans suppression ni date sentinelle.
 
 ## References
 
