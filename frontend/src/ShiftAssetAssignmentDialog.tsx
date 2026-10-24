@@ -211,7 +211,7 @@ export default function ShiftAssetAssignmentDialog({
       && (
         !selectedAssetId
         || !selectedCandidate?.allowed
-        || !selectedCandidate.assignment_authority.can_assign
+        || !selectedCandidate?.assignment_authority.can_assign
       )
     ) return;
 
@@ -294,7 +294,7 @@ export default function ShiftAssetAssignmentDialog({
         loadingCandidates
         || !selectedAssetId
         || !selectedCandidate?.allowed
-        || !selectedCandidate.assignment_authority.can_assign
+        || !selectedCandidate?.assignment_authority.can_assign
         || noChange
         || (
           !projectReuse
@@ -461,7 +461,7 @@ export default function ShiftAssetAssignmentDialog({
                   {reasonLabel(selectedCandidate.reason)}
                 </div>
               )}
-              {selectedCandidate && !selectedCandidate.assignment_authority.can_assign && (
+              {selectedCandidate && !selectedCandidate?.assignment_authority.can_assign && (
                 <div className="info-banner" role="status" data-testid="shift-asset-authority-diagnostic">
                   {selectedCandidate.assignment_authority.message}
                 </div>
