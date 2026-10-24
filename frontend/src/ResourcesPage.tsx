@@ -30,6 +30,7 @@ import {
 import AssetCatalogPanel from "./AssetCatalogPanel";
 import CompetencyCatalogPanel from "./CompetencyCatalogPanel";
 import CompetencyPicker from "./CompetencyPicker";
+import ContinuousVehicleAssignmentPanel from "./ContinuousVehicleAssignmentPanel";
 import { ContactSelect } from "./BusinessContactUi";
 import { ResourceClassOptionReadModel, getResourceClassOptions } from "./resourceClassesApi";
 
@@ -677,6 +678,13 @@ export default function ResourcesPage() {
                     />
                   </label>
                 </div>
+              )}
+
+              {!creatingResource && selected && (
+                <ContinuousVehicleAssignmentPanel
+                  resource={selected}
+                  resources={resources}
+                />
               )}
 
               {!creatingResource && selected && (

@@ -31,7 +31,9 @@ def asset_shift_association(
 
     if requirement.status == "Annulé":
         return None
-    if not allocation.start_date <= shift.work_date <= allocation.end_date:
+    if allocation.start_date > shift.work_date:
+        return None
+    if allocation.end_date is not None and shift.work_date > allocation.end_date:
         return None
 
     origin = requirement.origin
@@ -49,7 +51,8 @@ def asset_shift_association(
             and requirement.workforce_request_id
             == human_requirement.workforce_request_id
             and requirement.project_id == human_requirement.project_id
-            and requirement.start_date <= shift.work_date <= requirement.end_date
+            and requirement.start_date <= shift.work_date
+            and (requirement.end_date is None or shift.work_date <= requirement.end_date)
         ):
             return ASSOCIATION_RELATED_REQUEST
         return None

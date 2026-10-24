@@ -809,6 +809,7 @@ class SqlPlannerQueryRepositoryWithPlanDelta(SqlPlannerQueryRepositoryWeb):
                 and asset.active
                 and asset.asset_type_id == entry.asset_type_id
                 and entry.start_date <= allocation.start_date
+                and allocation.end_date is not None
                 and allocation.end_date <= entry.end_date
             )
             if (

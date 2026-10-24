@@ -1820,14 +1820,20 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                     )
                     & (AssetRequirement.project_id == ResourceRequirement.project_id)
                     & (AssetRequirement.start_date <= Shift.work_date)
-                    & (AssetRequirement.end_date >= Shift.work_date),
+                    & or_(
+                        AssetRequirement.end_date.is_(None),
+                        AssetRequirement.end_date >= Shift.work_date,
+                    ),
                     (
                         AssetRequirement.origin
                         == AssetRequirementOrigin.RESOURCE_PERIOD.value
                     )
                     & (AssetRequirement.context_resource_id == Shift.resource_id)
                     & (AssetRequirement.start_date <= Shift.work_date)
-                    & (AssetRequirement.end_date >= Shift.work_date),
+                    & or_(
+                        AssetRequirement.end_date.is_(None),
+                        AssetRequirement.end_date >= Shift.work_date,
+                    ),
                     (
                         AssetRequirement.origin
                         == AssetRequirementOrigin.SEGMENT.value
@@ -1837,7 +1843,10 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                         == ResourceRequirement.id
                     )
                     & (AssetRequirement.start_date <= Shift.work_date)
-                    & (AssetRequirement.end_date >= Shift.work_date),
+                    & or_(
+                        AssetRequirement.end_date.is_(None),
+                        AssetRequirement.end_date >= Shift.work_date,
+                    ),
                 ),
             )
             .limit(1)
@@ -1998,7 +2007,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                     (AssetRequirement.origin == AssetRequirementOrigin.PROJECT_DIRECT.value)
                     & (AssetRequirement.project_id.in_(visible_project_ids))
                     & (AssetRequirement.start_date <= visible_end)
-                    & (AssetRequirement.end_date >= visible_start)
+                    & or_(AssetRequirement.end_date.is_(None), AssetRequirement.end_date >= visible_start)
                 )
             )
         if visible_resource_ids:
@@ -2007,7 +2016,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                     (AssetRequirement.origin == AssetRequirementOrigin.RESOURCE_PERIOD.value)
                     & (AssetRequirement.context_resource_id.in_(visible_resource_ids))
                     & (AssetRequirement.start_date <= visible_end)
-                    & (AssetRequirement.end_date >= visible_start)
+                    & or_(AssetRequirement.end_date.is_(None), AssetRequirement.end_date >= visible_start)
                 )
             )
         if visible_requirement_ids:
@@ -2020,7 +2029,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                         )
                     )
                     & (AssetRequirement.start_date <= visible_end)
-                    & (AssetRequirement.end_date >= visible_start)
+                    & or_(AssetRequirement.end_date.is_(None), AssetRequirement.end_date >= visible_start)
                 )
             )
         has_asset_context = any(marker is not None for *_row, marker in rows)
@@ -2047,7 +2056,10 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                     qualification_shift.resource_id
                     == AssetAllocation.operator_resource_id,
                     qualification_shift.work_date >= AssetAllocation.start_date,
-                    qualification_shift.work_date <= AssetAllocation.end_date,
+                    or_(
+                        AssetAllocation.end_date.is_(None),
+                        qualification_shift.work_date <= AssetAllocation.end_date,
+                    ),
                     qualification_requirement.project_id
                     == AssetRequirement.project_id,
                     qualification_requirement.status != "Annulé",

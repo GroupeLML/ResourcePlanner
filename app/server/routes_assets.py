@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..application.security import PERMISSION_APPROVE_DEMANDS, normalize_roles, permissions_for_roles
+from ..domain.reservable_assets import ResourcePeriodMode, continuous_assignment_state
 from ..infrastructure.sql.asset_models import (
     Asset,
     AssetAllocation,
@@ -119,6 +120,35 @@ class ResourcePeriodReservationUpdate(StrictBody):
     asset_id: str
     start_date: date
     end_date: date
+    expected_planning_version: int = Field(ge=1)
+
+
+class ContinuousVehicleAssignmentCreate(StrictBody):
+    resource_id: str
+    asset_id: str
+    start_date: date
+    expected_planning_version: int = Field(ge=1)
+
+
+class ContinuousVehicleRevocation(StrictBody):
+    effective_from: date
+    expected_planning_version: int = Field(ge=1)
+
+
+class ContinuousVehicleReschedule(StrictBody):
+    start_date: date
+    expected_planning_version: int = Field(ge=1)
+
+
+class ContinuousVehicleTransfer(StrictBody):
+    resource_id: str
+    asset_id: str
+    effective_from: date
+    expected_planning_version: int = Field(ge=1)
+
+
+class ContinuousVehicleRevocationReschedule(StrictBody):
+    effective_from: date
     expected_planning_version: int = Field(ge=1)
 
 
@@ -323,6 +353,16 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
                     "asset_type_id": row.asset_type_id,
                     "start_date": row.start_date,
                     "end_date": row.end_date,
+                    "resource_period_mode": row.resource_period_mode,
+                    "effective_state": (
+                        continuous_assignment_state(
+                            start_date=row.start_date,
+                            end_date=row.end_date,
+                            as_of=date.today(),
+                        ).value
+                        if row.resource_period_mode == ResourcePeriodMode.CONTINUOUS.value
+                        else None
+                    ),
                     "usage_hours": row.usage_hours,
                     "status": row.status,
                     "approved_entry_key": row.approved_entry_key,
@@ -456,6 +496,170 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
         return service(session, request).release_resource_period_reservation(
             requirement_id=identifier,
             expected_version=expected_planning_version,
+            idempotency_key=idempotency_key,
+        )
+
+    @router.get("/continuous-resource-assignments")
+    def continuous_vehicle_assignments(
+        resource_id: str,
+        as_of: date | None = None,
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        business_date = as_of or date.today()
+        rows = session.execute(
+            select(AssetRequirement, AssetAllocation, Asset, AssetType)
+            .join(
+                AssetAllocation,
+                AssetAllocation.asset_requirement_id == AssetRequirement.id,
+            )
+            .join(Asset, Asset.id == AssetAllocation.asset_id)
+            .join(AssetType, AssetType.id == Asset.asset_type_id)
+            .where(
+                AssetRequirement.origin
+                == "RESOURCE_PERIOD",
+                AssetRequirement.resource_period_mode
+                == ResourcePeriodMode.CONTINUOUS.value,
+                AssetRequirement.context_resource_id == resource_id,
+            )
+            .order_by(AssetRequirement.start_date, AssetRequirement.id)
+        ).all()
+        return {
+            "resource_id": resource_id,
+            "as_of": business_date,
+            "assignments": [
+                {
+                    "requirement_id": requirement.id,
+                    "allocation_id": allocation.id,
+                    "asset_id": asset.id,
+                    "asset_code": asset.code,
+                    "asset_label": asset.label,
+                    "asset_type_id": asset_type.id,
+                    "asset_type_code": asset_type.code,
+                    "asset_type_label": asset_type.label,
+                    "resource_period_mode": requirement.resource_period_mode,
+                    "effective_state": continuous_assignment_state(
+                        start_date=requirement.start_date,
+                        end_date=requirement.end_date,
+                        as_of=business_date,
+                    ).value,
+                    "start_date": requirement.start_date,
+                    "end_date": requirement.end_date,
+                    "operator_resource_id": allocation.operator_resource_id,
+                    "qualification_state": evaluate_asset_qualification(
+                        session,
+                        requirement=requirement,
+                        allocation=allocation,
+                    ).state,
+                }
+                for requirement, allocation, asset, asset_type in rows
+            ],
+            "planning_version": SqlPlanningMutationVersionRepository(
+                session
+            ).current_version(),
+        }
+
+    @router.post("/continuous-resource-assignments", status_code=201)
+    def create_continuous_vehicle_assignment(
+        body: ContinuousVehicleAssignmentCreate,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key", min_length=1),
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        return service(session, request).create_continuous_vehicle_assignment(
+            resource_id=body.resource_id,
+            asset_id=body.asset_id,
+            start_date=body.start_date,
+            expected_version=body.expected_planning_version,
+            idempotency_key=idempotency_key,
+        )
+
+    @router.post("/continuous-resource-assignments/{identifier}/revoke")
+    def revoke_continuous_vehicle_assignment(
+        identifier: str,
+        body: ContinuousVehicleRevocation,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key", min_length=1),
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        return service(session, request).revoke_continuous_vehicle_assignment(
+            requirement_id=identifier,
+            effective_from=body.effective_from,
+            expected_version=body.expected_planning_version,
+            idempotency_key=idempotency_key,
+        )
+
+    @router.delete("/continuous-resource-assignments/{identifier}")
+    def cancel_continuous_vehicle_assignment(
+        identifier: str,
+        expected_planning_version: int,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key", min_length=1),
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        return service(session, request).cancel_continuous_vehicle_assignment(
+            requirement_id=identifier,
+            expected_version=expected_planning_version,
+            idempotency_key=idempotency_key,
+        )
+
+    @router.put("/continuous-resource-assignments/{identifier}/schedule")
+    def reschedule_continuous_vehicle_assignment(
+        identifier: str,
+        body: ContinuousVehicleReschedule,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key", min_length=1),
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        return service(session, request).reschedule_continuous_vehicle_assignment(
+            requirement_id=identifier,
+            start_date=body.start_date,
+            expected_version=body.expected_planning_version,
+            idempotency_key=idempotency_key,
+        )
+
+    @router.delete("/continuous-resource-assignments/{identifier}/revocation")
+    def cancel_continuous_vehicle_revocation(
+        identifier: str,
+        expected_planning_version: int,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key", min_length=1),
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        return service(session, request).cancel_continuous_revocation(
+            requirement_id=identifier,
+            expected_version=expected_planning_version,
+            idempotency_key=idempotency_key,
+        )
+
+    @router.put("/continuous-resource-assignments/{identifier}/revocation")
+    def reschedule_continuous_vehicle_revocation(
+        identifier: str,
+        body: ContinuousVehicleRevocationReschedule,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key", min_length=1),
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        return service(session, request).reschedule_continuous_revocation(
+            requirement_id=identifier,
+            effective_from=body.effective_from,
+            expected_version=body.expected_planning_version,
+            idempotency_key=idempotency_key,
+        )
+
+    @router.post("/continuous-resource-assignments/{identifier}/transfer", status_code=201)
+    def transfer_continuous_vehicle_assignment(
+        identifier: str,
+        body: ContinuousVehicleTransfer,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key", min_length=1),
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        return service(session, request).transfer_continuous_vehicle_assignment(
+            requirement_id=identifier,
+            resource_id=body.resource_id,
+            asset_id=body.asset_id,
+            effective_from=body.effective_from,
+            expected_version=body.expected_planning_version,
             idempotency_key=idempotency_key,
         )
 

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 import hashlib
 import json
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
 from ...application.errors import (
@@ -30,6 +30,9 @@ from ...domain.approval_routing import (
 from ...domain.reservable_assets import (
     AssetOccupation,
     AssetRequirementOrigin,
+    ContinuousAssignmentState,
+    ResourcePeriodMode,
+    continuous_assignment_state,
     overlapping_asset_occupations,
 )
 from ...domain.approval_envelope import approval_envelope_from_snapshot_payload
@@ -765,8 +768,9 @@ class SqlAssetService:
         *,
         asset_id: str,
         start_date: date,
-        end_date: date,
+        end_date: date | None,
         allocation_id: str,
+        ignore_allocation_ids: tuple[str, ...] = (),
     ) -> None:
         candidate = AssetOccupation(
             allocation_id,
@@ -774,13 +778,20 @@ class SqlAssetService:
             start_date,
             end_date,
         )
-        existing = self.session.scalars(
-            select(AssetAllocation).where(
-                AssetAllocation.asset_id == asset_id,
-                AssetAllocation.start_date <= end_date,
+        statement = select(AssetAllocation).where(
+            AssetAllocation.asset_id == asset_id,
+            or_(
+                AssetAllocation.end_date.is_(None),
                 AssetAllocation.end_date >= start_date,
+            ),
+        )
+        if end_date is not None:
+            statement = statement.where(AssetAllocation.start_date <= end_date)
+        if ignore_allocation_ids:
+            statement = statement.where(
+                AssetAllocation.id.not_in(tuple(ignore_allocation_ids))
             )
-        ).all()
+        existing = self.session.scalars(statement).all()
         conflicts = overlapping_asset_occupations(
             candidate,
             (
@@ -795,18 +806,21 @@ class SqlAssetService:
             ),
         )
         if conflicts:
+            # Occupancy is global, but ADR-027 does not grant the caller access to
+            # the hidden reservation's owner, dates or stable allocation identity.
             raise ApplicationConflictError(
                 "Actif déjà réservé.",
                 code="asset_double_booking",
-                context={"allocation_ids": conflicts},
             )
-        unavailable = self.session.scalar(
-            select(AssetUnavailability.id).where(
-                AssetUnavailability.asset_id == asset_id,
-                AssetUnavailability.start_date <= end_date,
-                AssetUnavailability.end_date >= start_date,
-            )
+        unavailability_statement = select(AssetUnavailability.id).where(
+            AssetUnavailability.asset_id == asset_id,
+            AssetUnavailability.end_date >= start_date,
         )
+        if end_date is not None:
+            unavailability_statement = unavailability_statement.where(
+                AssetUnavailability.start_date <= end_date
+            )
+        unavailable = self.session.scalar(unavailability_statement)
         if unavailable:
             raise ApplicationConflictError(
                 "Actif indisponible.",
@@ -1775,7 +1789,10 @@ class SqlAssetService:
             self.session.scalars(
                 select(AssetAllocation).where(
                     AssetAllocation.start_date <= shift.work_date,
-                    AssetAllocation.end_date >= shift.work_date,
+                    or_(
+                        AssetAllocation.end_date.is_(None),
+                        AssetAllocation.end_date >= shift.work_date,
+                    ),
                 )
             ).all()
         )
@@ -1926,7 +1943,19 @@ class SqlAssetService:
         }
 
     @staticmethod
-    def _validate_direct_window(start_date: date, end_date: date) -> None:
+    def _validate_direct_window(
+        start_date: date,
+        end_date: date | None,
+        *,
+        allow_open: bool = False,
+    ) -> None:
+        if end_date is None:
+            if allow_open:
+                return
+            raise ApplicationValidationError(
+                "La date de fin est requise pour cette réservation.",
+                code="asset_reservation_end_required",
+            )
         if start_date > end_date:
             raise ApplicationValidationError(
                 "La date de début doit précéder ou égaler la date de fin.",
@@ -1959,10 +1988,11 @@ class SqlAssetService:
         requirement: AssetRequirement,
         asset_id: str,
         start_date: date,
-        end_date: date,
+        end_date: date | None,
         operator_resource_id: str | None,
         allocation_id: str,
         source: str = "MANUAL",
+        ignore_allocation_ids: tuple[str, ...] = (),
     ) -> str:
         if requirement.origin not in {
             AssetRequirementOrigin.PROJECT_DIRECT.value,
@@ -1972,7 +2002,11 @@ class SqlAssetService:
                 "Le besoin d'actif n'est pas une réservation directe.",
                 code="asset_direct_origin_conflict",
             )
-        self._validate_direct_window(start_date, end_date)
+        allow_open = bool(
+            requirement.origin == AssetRequirementOrigin.RESOURCE_PERIOD.value
+            and requirement.resource_period_mode == ResourcePeriodMode.CONTINUOUS.value
+        )
+        self._validate_direct_window(start_date, end_date, allow_open=allow_open)
         if (
             requirement.origin == AssetRequirementOrigin.PROJECT_DIRECT.value
             and not requirement.project_id
@@ -1990,7 +2024,12 @@ class SqlAssetService:
                     "La ressource bénéficiaire doit rester l'opérateur de la période.",
                     code="asset_resource_period_operator_conflict",
                 )
-        asset, _asset_type = self._active_asset(asset_id)
+        asset, asset_type = self._active_asset(asset_id)
+        if allow_open and asset_type.category != "VEHICLE":
+            raise ApplicationValidationError(
+                "L'attribution continue est réservée aux véhicules.",
+                code="asset_continuous_vehicle_required",
+            )
         if asset.asset_type_id != requirement.asset_type_id:
             raise ApplicationValidationError(
                 "Actif inactif ou incompatible.",
@@ -2001,6 +2040,7 @@ class SqlAssetService:
             start_date=start_date,
             end_date=end_date,
             allocation_id=allocation_id,
+            ignore_allocation_ids=ignore_allocation_ids,
         )
         candidate = AssetAllocation(
             id=allocation_id,
@@ -2048,7 +2088,21 @@ class SqlAssetService:
             "context_resource_id": requirement.context_resource_id,
             "operator_resource_id": allocation.operator_resource_id,
             "start_date": allocation.start_date.isoformat(),
-            "end_date": allocation.end_date.isoformat(),
+            "end_date": (
+                allocation.end_date.isoformat()
+                if allocation.end_date is not None
+                else None
+            ),
+            "resource_period_mode": requirement.resource_period_mode,
+            "effective_state": (
+                continuous_assignment_state(
+                    start_date=requirement.start_date,
+                    end_date=requirement.end_date,
+                    as_of=date.today(),
+                ).value
+                if requirement.resource_period_mode == ResourcePeriodMode.CONTINUOUS.value
+                else None
+            ),
             "qualification_state": qualification_state,
             "planning_version": self.version.current_version(),
         }
@@ -2059,16 +2113,42 @@ class SqlAssetService:
         origin: AssetRequirementOrigin,
         project_id: str | None,
         context_resource_id: str | None,
-        asset_type_id: str,
+        asset_type_id: str | None,
         asset_id: str,
         start_date: date,
-        end_date: date,
+        end_date: date | None,
         operator_resource_id: str | None,
         expected_version: int,
+        resource_period_mode: ResourcePeriodMode | None = None,
     ) -> dict:
         self.version.acquire(expected_version)
         authority_proof = self._require_assignment_authorities(asset_id)
-        self._validate_direct_window(start_date, end_date)
+        if (
+            origin == AssetRequirementOrigin.RESOURCE_PERIOD
+            and resource_period_mode == ResourcePeriodMode.CONTINUOUS
+            and asset_type_id is None
+        ):
+            continuous_asset, continuous_type = self._active_asset(asset_id)
+            if continuous_type.category != "VEHICLE":
+                raise ApplicationValidationError(
+                    "L'attribution continue est réservée aux véhicules.",
+                    code="asset_continuous_vehicle_required",
+                )
+            asset_id = continuous_asset.id
+            asset_type_id = continuous_asset.asset_type_id
+        if asset_type_id is None:
+            raise ApplicationValidationError(
+                "Le type d'actif est requis.",
+                code="asset_type_required",
+            )
+        self._validate_direct_window(
+            start_date,
+            end_date,
+            allow_open=(
+                origin == AssetRequirementOrigin.RESOURCE_PERIOD
+                and resource_period_mode == ResourcePeriodMode.CONTINUOUS
+            ),
+        )
         if origin == AssetRequirementOrigin.PROJECT_DIRECT:
             if not project_id:
                 raise ApplicationValidationError(
@@ -2078,6 +2158,7 @@ class SqlAssetService:
             self._direct_project(project_id)
             context_resource_id = None
         elif origin == AssetRequirementOrigin.RESOURCE_PERIOD:
+            resource_period_mode = resource_period_mode or ResourcePeriodMode.BOUNDED
             if not context_resource_id:
                 raise ApplicationValidationError(
                     "La ressource est requise.",
@@ -2091,6 +2172,7 @@ class SqlAssetService:
                 )
             project_id = None
         else:
+            resource_period_mode = None
             raise ApplicationConflictError(
                 "Origine de réservation directe invalide.",
                 code="asset_direct_origin_conflict",
@@ -2104,6 +2186,11 @@ class SqlAssetService:
             asset_type_id=asset_type_id,
             start_date=start_date,
             end_date=end_date,
+            resource_period_mode=(
+                resource_period_mode.value
+                if resource_period_mode is not None
+                else None
+            ),
             status="Planifié",
         )
         allocation = AssetAllocation(
@@ -2145,6 +2232,7 @@ class SqlAssetService:
                 "operator_resource_id": operator_resource_id,
                 "start_date": start_date,
                 "end_date": end_date,
+                "resource_period_mode": requirement.resource_period_mode,
                 "assignment_authority": authority_proof,
             },
         )
@@ -2239,6 +2327,670 @@ class SqlAssetService:
                 end_date=end_date,
                 operator_resource_id=resource_id,
                 expected_version=expected_version,
+                resource_period_mode=ResourcePeriodMode.BOUNDED,
+            ),
+        )
+
+    def create_continuous_vehicle_assignment(
+        self,
+        *,
+        resource_id: str,
+        asset_id: str,
+        start_date: date,
+        expected_version: int,
+        idempotency_key: str,
+    ) -> dict:
+        if start_date < date.today():
+            raise ApplicationValidationError(
+                "Une attribution continue opérationnelle ne peut pas être antidatée.",
+                code="asset_continuous_backdating_forbidden",
+            )
+        payload = {
+            "resource_id": resource_id,
+            "asset_id": asset_id,
+            "start_date": start_date.isoformat(),
+            "expected_version": expected_version,
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode()
+        ).hexdigest()
+        return SqlCommandIdempotencyAdapter(
+            self.session,
+            actor_name=self.actor,
+        ).replay_or_execute(
+            scope="asset_continuous_resource_create",
+            key=idempotency_key,
+            request_fingerprint=fingerprint,
+            action=lambda: self._create_direct_reservation(
+                origin=AssetRequirementOrigin.RESOURCE_PERIOD,
+                project_id=None,
+                context_resource_id=resource_id,
+                asset_type_id=None,
+                asset_id=asset_id,
+                start_date=start_date,
+                end_date=None,
+                operator_resource_id=resource_id,
+                expected_version=expected_version,
+                resource_period_mode=ResourcePeriodMode.CONTINUOUS,
+            ),
+        )
+
+    def _continuous_assignment_rows(
+        self,
+        requirement_id: str,
+    ) -> tuple[AssetRequirement, AssetAllocation]:
+        requirement = self.session.get(AssetRequirement, requirement_id)
+        if (
+            requirement is None
+            or requirement.origin != AssetRequirementOrigin.RESOURCE_PERIOD.value
+            or requirement.resource_period_mode != ResourcePeriodMode.CONTINUOUS.value
+            or requirement.status == "Annulé"
+        ):
+            raise ApplicationNotFoundError(
+                "Attribution continue introuvable.",
+                code="asset_continuous_assignment_not_found",
+            )
+        allocation = self._allocation_for_requirement(requirement.id)
+        if allocation is None:
+            raise ApplicationConflictError(
+                "L'attribution continue n'a plus d'allocation physique.",
+                code="asset_continuous_allocation_missing",
+            )
+        return requirement, allocation
+
+    def _continuous_mutation_result(
+        self,
+        *,
+        requirement: AssetRequirement,
+        allocation: AssetAllocation | None,
+        operation: str,
+    ) -> dict:
+        return {
+            "operation": operation,
+            "requirement_id": requirement.id,
+            "requirement_origin": requirement.origin,
+            "resource_period_mode": requirement.resource_period_mode,
+            "allocation_id": allocation.id if allocation is not None else None,
+            "asset_id": allocation.asset_id if allocation is not None else None,
+            "context_resource_id": requirement.context_resource_id,
+            "operator_resource_id": (
+                allocation.operator_resource_id if allocation is not None else None
+            ),
+            "start_date": requirement.start_date.isoformat(),
+            "end_date": (
+                requirement.end_date.isoformat()
+                if requirement.end_date is not None
+                else None
+            ),
+            "effective_state": continuous_assignment_state(
+                start_date=requirement.start_date,
+                end_date=requirement.end_date,
+                as_of=date.today(),
+            ).value,
+            "planning_version": self.version.current_version(),
+        }
+
+    def _revoke_continuous_vehicle_assignment(
+        self,
+        *,
+        requirement_id: str,
+        effective_from: date,
+        expected_version: int,
+    ) -> dict:
+        self.version.acquire(expected_version)
+        requirement, allocation = self._continuous_assignment_rows(requirement_id)
+        authority_proof = self._require_assignment_authorities(allocation.asset_id)
+        today = date.today()
+        if effective_from < today:
+            raise ApplicationValidationError(
+                "Une révocation opérationnelle ne peut pas réécrire l'historique.",
+                code="asset_continuous_backdating_forbidden",
+            )
+        if requirement.end_date is not None:
+            raise ApplicationConflictError(
+                "Cette attribution possède déjà une révocation planifiée ou historique.",
+                code="asset_continuous_revocation_exists",
+            )
+
+        if effective_from <= requirement.start_date:
+            raise ApplicationValidationError(
+                "La révocation doit être postérieure au début; annulez explicitement une attribution future qui ne doit jamais commencer.",
+                code="asset_continuous_revocation_date_invalid",
+            )
+        before = {
+            "asset_id": allocation.asset_id,
+            "resource_id": requirement.context_resource_id,
+            "start_date": requirement.start_date,
+            "end_date": requirement.end_date,
+            "resource_period_mode": requirement.resource_period_mode,
+        }
+        closed_end = effective_from - timedelta(days=1)
+        requirement.end_date = closed_end
+        allocation.end_date = closed_end
+        self.audit.append(
+            entity_type="ASSET_ALLOCATION",
+            entity_id=allocation.id,
+            entity_reference=requirement.id,
+            parent_reference=requirement.context_resource_id,
+            action="Révocation attribution continue",
+            before=before,
+            after={
+                "asset_id": allocation.asset_id,
+                "resource_id": requirement.context_resource_id,
+                "start_date": requirement.start_date,
+                "end_date": closed_end,
+                "resource_period_mode": requirement.resource_period_mode,
+                "effective_from": effective_from,
+                "assignment_authority": authority_proof,
+            },
+        )
+        self.session.flush()
+        return self._continuous_mutation_result(
+            requirement=requirement,
+            allocation=allocation,
+            operation="REVOKE",
+        )
+
+    def revoke_continuous_vehicle_assignment(
+        self,
+        *,
+        requirement_id: str,
+        effective_from: date,
+        expected_version: int,
+        idempotency_key: str,
+    ) -> dict:
+        payload = {
+            "requirement_id": requirement_id,
+            "effective_from": effective_from.isoformat(),
+            "expected_version": expected_version,
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode()
+        ).hexdigest()
+        return SqlCommandIdempotencyAdapter(
+            self.session,
+            actor_name=self.actor,
+        ).replay_or_execute(
+            scope="asset_continuous_resource_revoke",
+            key=idempotency_key,
+            request_fingerprint=fingerprint,
+            action=lambda: self._revoke_continuous_vehicle_assignment(
+                requirement_id=requirement_id,
+                effective_from=effective_from,
+                expected_version=expected_version,
+            ),
+        )
+
+    def _cancel_continuous_vehicle_assignment(
+        self,
+        *,
+        requirement_id: str,
+        expected_version: int,
+    ) -> dict:
+        self.version.acquire(expected_version)
+        requirement, allocation = self._continuous_assignment_rows(requirement_id)
+        if requirement.start_date <= date.today():
+            raise ApplicationConflictError(
+                "Seule une attribution future non commencée peut être annulée.",
+                code="asset_continuous_cancel_started",
+            )
+        authority_proof = self._require_assignment_authorities(allocation.asset_id)
+        before = {
+            "asset_id": allocation.asset_id,
+            "resource_id": requirement.context_resource_id,
+            "start_date": requirement.start_date,
+            "end_date": requirement.end_date,
+            "resource_period_mode": requirement.resource_period_mode,
+        }
+        self.session.delete(allocation)
+        self.session.flush()
+        self.session.delete(requirement)
+        self.audit.append(
+            entity_type="ASSET_ALLOCATION",
+            entity_id=allocation.id,
+            entity_reference=requirement_id,
+            parent_reference=requirement.context_resource_id,
+            action="Annulation attribution continue future",
+            before=before,
+            after={"assignment_authority": authority_proof},
+        )
+        self.session.flush()
+        return {
+            "operation": "CANCEL",
+            "requirement_id": requirement_id,
+            "requirement_origin": AssetRequirementOrigin.RESOURCE_PERIOD.value,
+            "resource_period_mode": ResourcePeriodMode.CONTINUOUS.value,
+            "allocation_id": allocation.id,
+            "planning_version": self.version.current_version(),
+        }
+
+    def cancel_continuous_vehicle_assignment(
+        self,
+        *,
+        requirement_id: str,
+        expected_version: int,
+        idempotency_key: str,
+    ) -> dict:
+        payload = {
+            "requirement_id": requirement_id,
+            "expected_version": expected_version,
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode()
+        ).hexdigest()
+        return SqlCommandIdempotencyAdapter(
+            self.session,
+            actor_name=self.actor,
+        ).replay_or_execute(
+            scope="asset_continuous_resource_cancel",
+            key=idempotency_key,
+            request_fingerprint=fingerprint,
+            action=lambda: self._cancel_continuous_vehicle_assignment(
+                requirement_id=requirement_id,
+                expected_version=expected_version,
+            ),
+        )
+
+    def _reschedule_continuous_vehicle_assignment(
+        self,
+        *,
+        requirement_id: str,
+        start_date: date,
+        expected_version: int,
+    ) -> dict:
+        self.version.acquire(expected_version)
+        requirement, allocation = self._continuous_assignment_rows(requirement_id)
+        today = date.today()
+        if requirement.start_date <= today:
+            raise ApplicationConflictError(
+                "Une attribution déjà effective ne peut pas être replanifiée.",
+                code="asset_continuous_reschedule_started",
+            )
+        if start_date <= today:
+            raise ApplicationValidationError(
+                "La nouvelle date doit rester future.",
+                code="asset_continuous_backdating_forbidden",
+            )
+        authority_proof = self._require_assignment_authorities(allocation.asset_id)
+        self._direct_resource(requirement.context_resource_id or "")
+        qualification_state = self._validate_direct_allocation_state(
+            requirement=requirement,
+            asset_id=allocation.asset_id,
+            start_date=start_date,
+            end_date=None,
+            operator_resource_id=requirement.context_resource_id,
+            allocation_id=allocation.id,
+            source=allocation.source,
+            ignore_allocation_ids=(allocation.id,),
+        )
+        before_start = requirement.start_date
+        requirement.start_date = start_date
+        allocation.start_date = start_date
+        self.audit.append(
+            entity_type="ASSET_ALLOCATION",
+            entity_id=allocation.id,
+            entity_reference=requirement.id,
+            parent_reference=requirement.context_resource_id,
+            action="Replanification attribution continue",
+            before={"start_date": before_start},
+            after={
+                "start_date": start_date,
+                "resource_period_mode": requirement.resource_period_mode,
+                "qualification_state": qualification_state,
+                "assignment_authority": authority_proof,
+            },
+        )
+        self.session.flush()
+        return self._continuous_mutation_result(
+            requirement=requirement,
+            allocation=allocation,
+            operation="RESCHEDULE",
+        )
+
+    def reschedule_continuous_vehicle_assignment(
+        self,
+        *,
+        requirement_id: str,
+        start_date: date,
+        expected_version: int,
+        idempotency_key: str,
+    ) -> dict:
+        payload = {
+            "requirement_id": requirement_id,
+            "start_date": start_date.isoformat(),
+            "expected_version": expected_version,
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode()
+        ).hexdigest()
+        return SqlCommandIdempotencyAdapter(
+            self.session,
+            actor_name=self.actor,
+        ).replay_or_execute(
+            scope="asset_continuous_resource_reschedule",
+            key=idempotency_key,
+            request_fingerprint=fingerprint,
+            action=lambda: self._reschedule_continuous_vehicle_assignment(
+                requirement_id=requirement_id,
+                start_date=start_date,
+                expected_version=expected_version,
+            ),
+        )
+
+    def _cancel_continuous_revocation(
+        self,
+        *,
+        requirement_id: str,
+        expected_version: int,
+    ) -> dict:
+        self.version.acquire(expected_version)
+        requirement, allocation = self._continuous_assignment_rows(requirement_id)
+        today = date.today()
+        if requirement.end_date is None or requirement.end_date < today:
+            raise ApplicationConflictError(
+                "Aucune révocation future ne peut être annulée.",
+                code="asset_continuous_future_revocation_missing",
+            )
+        authority_proof = self._require_assignment_authorities(allocation.asset_id)
+        previous_end = requirement.end_date
+        qualification_state = self._validate_direct_allocation_state(
+            requirement=requirement,
+            asset_id=allocation.asset_id,
+            start_date=requirement.start_date,
+            end_date=None,
+            operator_resource_id=requirement.context_resource_id,
+            allocation_id=allocation.id,
+            source=allocation.source,
+            ignore_allocation_ids=(allocation.id,),
+        )
+        requirement.end_date = None
+        allocation.end_date = None
+        self.audit.append(
+            entity_type="ASSET_ALLOCATION",
+            entity_id=allocation.id,
+            entity_reference=requirement.id,
+            parent_reference=requirement.context_resource_id,
+            action="Annulation révocation future",
+            before={"end_date": previous_end},
+            after={
+                "end_date": None,
+                "qualification_state": qualification_state,
+                "assignment_authority": authority_proof,
+            },
+        )
+        self.session.flush()
+        return self._continuous_mutation_result(
+            requirement=requirement,
+            allocation=allocation,
+            operation="CANCEL_REVOCATION",
+        )
+
+    def cancel_continuous_revocation(
+        self,
+        *,
+        requirement_id: str,
+        expected_version: int,
+        idempotency_key: str,
+    ) -> dict:
+        payload = {
+            "requirement_id": requirement_id,
+            "expected_version": expected_version,
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode()
+        ).hexdigest()
+        return SqlCommandIdempotencyAdapter(
+            self.session,
+            actor_name=self.actor,
+        ).replay_or_execute(
+            scope="asset_continuous_revocation_cancel",
+            key=idempotency_key,
+            request_fingerprint=fingerprint,
+            action=lambda: self._cancel_continuous_revocation(
+                requirement_id=requirement_id,
+                expected_version=expected_version,
+            ),
+        )
+
+    def _reschedule_continuous_revocation(
+        self,
+        *,
+        requirement_id: str,
+        effective_from: date,
+        expected_version: int,
+    ) -> dict:
+        self.version.acquire(expected_version)
+        requirement, allocation = self._continuous_assignment_rows(requirement_id)
+        today = date.today()
+        if requirement.end_date is None or requirement.end_date < today:
+            raise ApplicationConflictError(
+                "Aucune révocation future ne peut être replanifiée.",
+                code="asset_continuous_future_revocation_missing",
+            )
+        if effective_from <= today or effective_from <= requirement.start_date:
+            raise ApplicationValidationError(
+                "La nouvelle révocation doit rester future et postérieure au début.",
+                code="asset_continuous_revocation_date_invalid",
+            )
+        authority_proof = self._require_assignment_authorities(allocation.asset_id)
+        new_end = effective_from - timedelta(days=1)
+        qualification_state = self._validate_direct_allocation_state(
+            requirement=requirement,
+            asset_id=allocation.asset_id,
+            start_date=requirement.start_date,
+            end_date=new_end,
+            operator_resource_id=requirement.context_resource_id,
+            allocation_id=allocation.id,
+            source=allocation.source,
+            ignore_allocation_ids=(allocation.id,),
+        )
+        previous_end = requirement.end_date
+        requirement.end_date = new_end
+        allocation.end_date = new_end
+        self.audit.append(
+            entity_type="ASSET_ALLOCATION",
+            entity_id=allocation.id,
+            entity_reference=requirement.id,
+            parent_reference=requirement.context_resource_id,
+            action="Replanification révocation future",
+            before={"end_date": previous_end},
+            after={
+                "end_date": new_end,
+                "effective_from": effective_from,
+                "qualification_state": qualification_state,
+                "assignment_authority": authority_proof,
+            },
+        )
+        self.session.flush()
+        return self._continuous_mutation_result(
+            requirement=requirement,
+            allocation=allocation,
+            operation="RESCHEDULE_REVOCATION",
+        )
+
+    def reschedule_continuous_revocation(
+        self,
+        *,
+        requirement_id: str,
+        effective_from: date,
+        expected_version: int,
+        idempotency_key: str,
+    ) -> dict:
+        payload = {
+            "requirement_id": requirement_id,
+            "effective_from": effective_from.isoformat(),
+            "expected_version": expected_version,
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode()
+        ).hexdigest()
+        return SqlCommandIdempotencyAdapter(
+            self.session,
+            actor_name=self.actor,
+        ).replay_or_execute(
+            scope="asset_continuous_revocation_reschedule",
+            key=idempotency_key,
+            request_fingerprint=fingerprint,
+            action=lambda: self._reschedule_continuous_revocation(
+                requirement_id=requirement_id,
+                effective_from=effective_from,
+                expected_version=expected_version,
+            ),
+        )
+
+    def _transfer_continuous_vehicle_assignment(
+        self,
+        *,
+        requirement_id: str,
+        resource_id: str,
+        asset_id: str,
+        effective_from: date,
+        expected_version: int,
+    ) -> dict:
+        self.version.acquire(expected_version)
+        requirement, allocation = self._continuous_assignment_rows(requirement_id)
+        today = date.today()
+        if effective_from < today:
+            raise ApplicationValidationError(
+                "Un transfert opérationnel ne peut pas être antidaté.",
+                code="asset_continuous_backdating_forbidden",
+            )
+        if requirement.end_date is not None:
+            raise ApplicationConflictError(
+                "Annulez d'abord la révocation planifiée avant un transfert.",
+                code="asset_continuous_revocation_exists",
+            )
+        authority_proof = self._require_assignment_authorities(
+            allocation.asset_id,
+            asset_id,
+        )
+        new_resource = self._direct_resource(resource_id)
+        new_asset, new_asset_type = self._active_asset(asset_id)
+        if new_asset_type.category != "VEHICLE":
+            raise ApplicationValidationError(
+                "L'attribution continue est réservée aux véhicules.",
+                code="asset_continuous_vehicle_required",
+            )
+        if effective_from <= requirement.start_date and requirement.start_date <= today:
+            raise ApplicationValidationError(
+                "Le transfert ne peut pas effacer une journée déjà effective.",
+                code="asset_continuous_backdating_forbidden",
+            )
+
+        new_requirement = AssetRequirement(
+            id=new_id(),
+            project_id=None,
+            origin=AssetRequirementOrigin.RESOURCE_PERIOD.value,
+            context_resource_id=new_resource.id,
+            asset_type_id=new_asset.asset_type_id,
+            start_date=effective_from,
+            end_date=None,
+            resource_period_mode=ResourcePeriodMode.CONTINUOUS.value,
+            status="Planifié",
+        )
+        new_allocation = AssetAllocation(
+            id=new_id(),
+            asset_requirement_id=new_requirement.id,
+            asset_id=new_asset.id,
+            operator_resource_id=new_resource.id,
+            start_date=effective_from,
+            end_date=None,
+            locked=True,
+            source="MANUAL",
+        )
+        qualification_state = self._validate_direct_allocation_state(
+            requirement=new_requirement,
+            asset_id=new_asset.id,
+            start_date=effective_from,
+            end_date=None,
+            operator_resource_id=new_resource.id,
+            allocation_id=new_allocation.id,
+            source=new_allocation.source,
+            ignore_allocation_ids=(allocation.id,),
+        )
+
+        before = {
+            "requirement_id": requirement.id,
+            "allocation_id": allocation.id,
+            "asset_id": allocation.asset_id,
+            "resource_id": requirement.context_resource_id,
+            "start_date": requirement.start_date,
+            "end_date": requirement.end_date,
+        }
+        if effective_from <= requirement.start_date:
+            # Scheduled assignment is replaced before ever becoming effective.
+            self.session.delete(allocation)
+            self.session.flush()
+            self.session.delete(requirement)
+        else:
+            closed_end = effective_from - timedelta(days=1)
+            requirement.end_date = closed_end
+            allocation.end_date = closed_end
+
+        self.session.add(new_requirement)
+        self.session.flush()
+        self.session.add(new_allocation)
+        self.audit.append(
+            entity_type="ASSET_ALLOCATION",
+            entity_id=new_allocation.id,
+            entity_reference=new_requirement.id,
+            parent_reference=new_resource.id,
+            action="Transfert attribution continue",
+            before=before,
+            after={
+                "requirement_id": new_requirement.id,
+                "allocation_id": new_allocation.id,
+                "asset_id": new_asset.id,
+                "resource_id": new_resource.id,
+                "start_date": effective_from,
+                "end_date": None,
+                "resource_period_mode": ResourcePeriodMode.CONTINUOUS.value,
+                "effective_from": effective_from,
+                "qualification_state": qualification_state,
+                "assignment_authority": authority_proof,
+            },
+        )
+        self.session.flush()
+        return self._direct_result(
+            requirement=new_requirement,
+            allocation=new_allocation,
+            qualification_state=qualification_state,
+            operation="TRANSFER",
+        )
+
+    def transfer_continuous_vehicle_assignment(
+        self,
+        *,
+        requirement_id: str,
+        resource_id: str,
+        asset_id: str,
+        effective_from: date,
+        expected_version: int,
+        idempotency_key: str,
+    ) -> dict:
+        payload = {
+            "requirement_id": requirement_id,
+            "resource_id": resource_id,
+            "asset_id": asset_id,
+            "effective_from": effective_from.isoformat(),
+            "expected_version": expected_version,
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode()
+        ).hexdigest()
+        return SqlCommandIdempotencyAdapter(
+            self.session,
+            actor_name=self.actor,
+        ).replay_or_execute(
+            scope="asset_continuous_resource_transfer",
+            key=idempotency_key,
+            request_fingerprint=fingerprint,
+            action=lambda: self._transfer_continuous_vehicle_assignment(
+                requirement_id=requirement_id,
+                resource_id=resource_id,
+                asset_id=asset_id,
+                effective_from=effective_from,
+                expected_version=expected_version,
             ),
         )
 
@@ -2264,6 +3016,14 @@ class SqlAssetService:
             raise ApplicationConflictError(
                 "Origine de réservation directe incompatible.",
                 code="asset_direct_origin_conflict",
+            )
+        if (
+            expected_origin == AssetRequirementOrigin.RESOURCE_PERIOD
+            and requirement.resource_period_mode == ResourcePeriodMode.CONTINUOUS.value
+        ):
+            raise ApplicationConflictError(
+                "Une attribution continue doit être modifiée par sa commande dédiée.",
+                code="asset_continuous_command_required",
             )
         allocation = self._allocation_for_requirement(requirement.id)
         if allocation is None:
@@ -2437,6 +3197,14 @@ class SqlAssetService:
             raise ApplicationConflictError(
                 "Origine de réservation directe incompatible.",
                 code="asset_direct_origin_conflict",
+            )
+        if (
+            expected_origin == AssetRequirementOrigin.RESOURCE_PERIOD
+            and requirement.resource_period_mode == ResourcePeriodMode.CONTINUOUS.value
+        ):
+            raise ApplicationConflictError(
+                "Une attribution continue doit être modifiée par sa commande dédiée.",
+                code="asset_continuous_command_required",
             )
         allocation = self._allocation_for_requirement(requirement.id)
         allocation_id = allocation.id if allocation is not None else None

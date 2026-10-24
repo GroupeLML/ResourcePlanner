@@ -46,6 +46,7 @@ from app.infrastructure.smtp import FernetSecretCipher
 from app.infrastructure.sql.approval_scope_models import (
     ApprovalScope,
     ApprovalScopeApprover,
+    AssetTypeApprovalScopeMapping,
     TaskApprovalScopeMapping,
     ResourceClassApprovalScopeMapping,
 )
@@ -318,13 +319,21 @@ def _seed(database_url: str) -> None:
                     active=True,
                 )
 
-            session.add(
-                AssetType(
-                    id="AT-LIFT",
-                    code="LIFT",
-                    label="Nacelle",
-                    category="EQUIPMENT",
-                )
+            session.add_all(
+                [
+                    AssetType(
+                        id="AT-LIFT",
+                        code="LIFT",
+                        label="Nacelle",
+                        category="EQUIPMENT",
+                    ),
+                    AssetType(
+                        id="AT-VEHICLE-744",
+                        code="VEH-744",
+                        label="Véhicule attitrable E2E",
+                        category="VEHICLE",
+                    ),
+                ]
             )
             session.flush()
             session.add_all(
@@ -340,6 +349,12 @@ def _seed(database_url: str) -> None:
                         code="NAC-02",
                         label="Nacelle 02",
                         asset_type_id="AT-LIFT",
+                    ),
+                    Asset(
+                        id="A-VEHICLE-744",
+                        code="VEH-744-01",
+                        label="Camion E2E 744",
+                        asset_type_id="AT-VEHICLE-744",
                     ),
                 ]
             )
@@ -470,6 +485,12 @@ def _seed(database_url: str) -> None:
             session.add(
                 TaskApprovalScopeMapping(
                     task_catalog_item_id="TASK-P251-210",
+                    approval_scope_id="SCOPE-P251-AUTOMATION",
+                )
+            )
+            session.add(
+                AssetTypeApprovalScopeMapping(
+                    asset_type_id="AT-VEHICLE-744",
                     approval_scope_id="SCOPE-P251-AUTOMATION",
                 )
             )
