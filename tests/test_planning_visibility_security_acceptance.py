@@ -154,6 +154,8 @@ class PlanningVisibilitySecurityAcceptanceTests(unittest.TestCase):
                 Resource(
                     id="R-COORD-A",
                     name="Ressource coordonnée Alpha sans quart",
+                    resource_class="INSTALL_ELEC",
+                    erp_employee_class="ELCOMP",
                     coordinator_contact_id="C-COORD-A",
                     active=True,
                     erp_active=True,
@@ -161,6 +163,8 @@ class PlanningVisibilitySecurityAcceptanceTests(unittest.TestCase):
                 Resource(
                     id="R-COORD-B",
                     name="Ressource coordonnée Beta sans quart",
+                    resource_class="INSTALL_ELEC",
+                    erp_employee_class="ELAPP1",
                     coordinator_contact_id="C-COORD-B",
                     active=True,
                     erp_active=True,
@@ -661,6 +665,14 @@ class PlanningVisibilitySecurityAcceptanceTests(unittest.TestCase):
         self.assertEqual(
             {row["name"] for row in beta.json()["resources"]},
             {"Ressource coordonnée Beta sans quart"},
+        )
+        self.assertEqual(
+            alpha.json()["resources"][0]["planning_subgroup_code"],
+            "COMPANION",
+        )
+        self.assertEqual(
+            beta.json()["resources"][0]["planning_subgroup_code"],
+            "APPRENTICE",
         )
         self.assertEqual(alpha.json()["shifts"], [])
         self.assertEqual(beta.json()["shifts"], [])
