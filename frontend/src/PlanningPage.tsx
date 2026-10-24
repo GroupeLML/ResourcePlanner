@@ -958,12 +958,13 @@ export default function PlanningPage({
     setManualResourceOrder(new Map());
     setLoading(true);
     setError(null);
-    setSearch("");
-    setProject("all");
-    setConfirmation("all");
-    setClassFilter("all");
-    setResourceFilter("all");
-    setOnlyWithCapacity(false);
+    setSearch(detachedContext?.search ?? "");
+    setProject(detachedContext?.project ?? "all");
+    setConfirmation(detachedContext?.confirmation ?? "all");
+    setClassFilter(detachedContext?.classFilter ?? "all");
+    setResourceFilter(detachedContext?.resourceFilter ?? "all");
+    setOnlyWithCapacity(detachedContext?.onlyWithCapacity ?? false);
+    setFiltersExpanded(detachedContext?.filtersExpanded ?? false);
     setEditingShift(null);
     setEditingSegmentId(null);
     setQuickShiftOpen(false);
@@ -983,8 +984,12 @@ export default function PlanningPage({
         if (controller.signal.aborted || planningIdentityKeyRef.current !== planningIdentityKey) return;
         setPlanningPolicy(policy);
         setPlanningPolicyOwnerKey(planningIdentityKey);
-        setScope(policy.default_scope);
-        if (!policy.default_scope) setScopeError("La lecture du Planning n’est pas autorisée pour cette identité.");
+        const requestedScope = detachedContext?.scope;
+        const resolvedScope = requestedScope && policy.available_scopes.includes(requestedScope)
+          ? requestedScope
+          : policy.default_scope;
+        setScope(resolvedScope);
+        if (!resolvedScope) setScopeError("La lecture du Planning n’est pas autorisée pour cette identité.");
       })
       .catch((reason: unknown) => {
         if (controller.signal.aborted || planningIdentityKeyRef.current !== planningIdentityKey) return;
@@ -998,7 +1003,7 @@ export default function PlanningPage({
         if (!controller.signal.aborted && planningIdentityKeyRef.current === planningIdentityKey) setScopeLoading(false);
       });
     return () => controller.abort();
-  }, [planningIdentityKey]);
+  }, [detachedContext, planningIdentityKey]);
 
   useEffect(() => {
     if (loadedPreferenceOwnerId === preferenceOwnerId) return;
@@ -1039,6 +1044,55 @@ export default function PlanningPage({
   const snapshotQueryKeyRef = useRef("");
   const today = toIsoDate(new Date());
   const quickShiftDefaultDay = today >= start && today <= end ? today : start;
+
+  useEffect(() => {
+    if (!detached) return;
+    const previousTitle = document.title;
+    document.title = "Ressources et quarts — ResourcePlanner";
+    return () => {
+      document.title = previousTitle;
+    };
+  }, [detached]);
+
+  useEffect(() => (
+    subscribePlanningInvalidations((message) => {
+      if (message.week !== start) return;
+      setRefreshKey((value) => value + 1);
+    })
+  ), [start]);
+
+  function refreshAfterMutation() {
+    publishPlanningInvalidation(weekStart, snapshot?.planning_version ?? null);
+    setRefreshKey((value) => value + 1);
+  }
+
+  function openDetachedPlanningWindow() {
+    setDetachError(null);
+    const url = buildDetachedPlanningUrl({
+      weekStart,
+      scope,
+      search,
+      project,
+      confirmation,
+      classFilter,
+      resourceFilter,
+      onlyWithCapacity,
+      filtersExpanded,
+      resourceSortMode,
+    });
+    const detachedWindow = window.open(url, "_blank");
+    if (!detachedWindow) {
+      setDetachError(
+        "Le navigateur a bloqué l’ouverture de la fenêtre. Autorisez les fenêtres contextuelles pour ResourcePlanner puis réessayez.",
+      );
+      return;
+    }
+    try {
+      detachedWindow.opener = null;
+    } catch {
+      // The detached route does not depend on an opener reference.
+    }
+  }
 
   useEffect(() => {
     if (scopeLoading || planningPolicyOwnerKey !== planningIdentityKey) return;
