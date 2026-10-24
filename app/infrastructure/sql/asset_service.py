@@ -223,7 +223,7 @@ class SqlAssetService:
 
     def assignment_authority_capability(self, asset_id: str) -> dict[str, object]:
         try:
-            proof = self._require_assignment_authority(asset_id)
+            self._require_assignment_authority(asset_id)
         except ApplicationAuthorizationError as exc:
             diagnostics = []
             if exc.context:
@@ -237,7 +237,6 @@ class SqlAssetService:
             "allowed": True,
             "code": None,
             "diagnostics": [],
-            "proof": proof,
         }
 
     def _require_assignment_authorities(
