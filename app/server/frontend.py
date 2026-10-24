@@ -52,5 +52,9 @@ def attach_frontend(
     def frontend_index() -> FileResponse:
         return FileResponse(index)
 
+    @app.get("/planning/resources-window", include_in_schema=False)
+    def frontend_detached_planning() -> FileResponse:
+        return FileResponse(index)
+
     app.state.frontend_dist = str(root)
     return True
