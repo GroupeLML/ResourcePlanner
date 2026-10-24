@@ -98,12 +98,14 @@ export default function ShiftAssetAssignmentDialog({
   planningVersion,
   onClose,
   onRefresh,
+  onMutated,
 }: {
   shift: ShiftReadModel;
   mode: ShiftAssetAssignmentMode;
   planningVersion: number;
   onClose: () => void;
   onRefresh: () => void;
+  onMutated?: () => void;
 }) {
   const [candidateState, setCandidateState] = useState<ShiftAssetCandidates | null>(null);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(
@@ -257,7 +259,7 @@ export default function ShiftAssetAssignmentDialog({
         keyFor(fingerprint),
       );
       retryKeys.current.delete(fingerprint);
-      onRefresh();
+      (onMutated ?? onRefresh)();
       onClose();
     } catch (reason: unknown) {
       if (reason instanceof TypeError) {
