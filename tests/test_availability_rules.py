@@ -147,6 +147,86 @@ class AvailabilityRulesTests(unittest.TestCase):
         ]
         self.assertEqual(availability_hours_for_day(rows, "R1", TUESDAY), 8)
 
+    def test_holiday_metadata_preserves_scope_label_and_precedence(self) -> None:
+        global_state = availability_state_for_day(
+            [
+                standard(),
+                {
+                    "Type": "Jour férié",
+                    "DateDebut": TUESDAY,
+                    "DateFin": TUESDAY,
+                    "Note": "Action de grâce",
+                    "Actif": "Oui",
+                },
+            ],
+            "R1",
+            TUESDAY,
+        )
+        self.assertEqual(global_state.reason_code, "HOLIDAY")
+        self.assertEqual(global_state.reason_label, "Action de grâce")
+        self.assertEqual(global_state.holiday_scope, "GLOBAL")
+
+        class_state = availability_state_for_day(
+            [
+                standard(resource_class="INSTALL_ELEC"),
+                {
+                    "Type": "Jour férié",
+                    "DateDebut": TUESDAY,
+                    "DateFin": TUESDAY,
+                    "ClassesRessources": ("INSTALL_ELEC",),
+                    "Note": "Férié électriciens",
+                    "Actif": "Oui",
+                },
+            ],
+            "R1",
+            TUESDAY,
+        )
+        self.assertEqual(class_state.reason_code, "HOLIDAY")
+        self.assertEqual(class_state.holiday_scope, "RESOURCE_CLASS")
+
+        individual_state = availability_state_for_day(
+            [
+                standard(),
+                {
+                    "Technicien": "R1",
+                    "Type": "Jour férié",
+                    "DateDebut": TUESDAY,
+                    "DateFin": TUESDAY,
+                    "Actif": "Oui",
+                },
+            ],
+            "R1",
+            TUESDAY,
+        )
+        self.assertEqual(individual_state.reason_code, "HOLIDAY")
+        self.assertEqual(individual_state.reason_label, "Jour férié")
+        self.assertEqual(individual_state.holiday_scope, "RESOURCE")
+
+        vacation_wins = availability_state_for_day(
+            [
+                standard(),
+                {
+                    "Type": "Jour férié",
+                    "DateDebut": TUESDAY,
+                    "DateFin": TUESDAY,
+                    "Note": "Ne doit pas gagner",
+                    "Actif": "Oui",
+                },
+                {
+                    "Technicien": "R1",
+                    "Type": "Vacances",
+                    "DateDebut": TUESDAY,
+                    "DateFin": TUESDAY,
+                    "Actif": "Oui",
+                },
+            ],
+            "R1",
+            TUESDAY,
+        )
+        self.assertEqual(vacation_wins.reason_code, "VACATION")
+        self.assertEqual(vacation_wins.reason_label, "Vacances")
+        self.assertIsNone(vacation_wins.holiday_scope)
+
     def test_weekend_without_standard_capacity_allows_overtime_slot(self) -> None:
         rows = [standard()]
         self.assertEqual(availability_hours_for_day(rows, "R1", SATURDAY), 0)

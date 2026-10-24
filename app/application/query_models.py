@@ -405,6 +405,9 @@ class PlanningDayCapacityReadModel:
     available: bool
     overloaded: bool
     reason: str | None = None
+    reason_code: str | None = None
+    reason_label: str | None = None
+    holiday_scope: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

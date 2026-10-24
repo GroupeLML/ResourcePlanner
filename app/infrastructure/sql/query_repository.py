@@ -154,6 +154,7 @@ def _availability_record(
         "JoursSemaine": rule.weekdays,
         "HeureDebut": rule.start_time,
         "HeureFin": rule.end_time,
+        "Note": rule.note,
     }
 
 
@@ -1211,6 +1212,9 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                         available=bool(state.available),
                         overloaded=overloaded,
                         reason=state.reason,
+                        reason_code=state.reason_code,
+                        reason_label=state.reason_label,
+                        holiday_scope=state.holiday_scope,
                     )
                 )
                 cursor += timedelta(days=1)
