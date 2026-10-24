@@ -32,6 +32,7 @@ def employee(
     email: str | None = None,
     status: str = "Actif",
     branch: str | None = "210",
+    employee_class: str | None = "GENERAL",
 ) -> ExternalEmployeeRecord:
     return ExternalEmployeeRecord(
         external_id=external_id,
@@ -41,7 +42,7 @@ def employee(
         erp_active=status.casefold() == "actif",
         department_description="Automatisation",
         department_code="AUTO",
-        employee_class="GENERAL",
+        employee_class=employee_class,
         supervisor_external_id="EMP-BOSS",
         telephone="555-0100",
         branch_code=branch,
@@ -151,6 +152,42 @@ class EmployeeSyncTests(unittest.TestCase):
             resources = SqlPlannerQueryRepository(session).list_resources()
             self.assertEqual([row.external_id for row in resources], ["EMP-3"])
             self.assertTrue(resources[0].effective_active)
+
+    def test_erp_employee_class_progression_updates_planning_subgroup_without_local_class_change(self) -> None:
+        source = StubEmployeeSource(
+            [employee("EMP-ELEC", "Électricien", employee_class="ELAPP4")]
+        )
+        self._sync(source)
+        with transactional_session(self.factory) as session:
+            row = session.scalar(
+                select(Resource).where(Resource.external_id == "EMP-ELEC")
+            )
+            assert row is not None
+            row.active = True
+            row.resource_class = "INSTALL_ELEC"
+
+        with self.factory() as session:
+            before = SqlPlannerQueryRepository(session).list_resources()
+            self.assertEqual(before[0].resource_class, "INSTALL_ELEC")
+            self.assertEqual(before[0].planning_subgroup_code, "APPRENTICE")
+
+        source.rows[0] = employee(
+            "EMP-ELEC",
+            "Électricien",
+            employee_class="ELCOMP",
+        )
+        result = self._sync(source)
+        self.assertEqual(result.updated, 1)
+
+        with self.factory() as session:
+            row = session.scalar(
+                select(Resource).where(Resource.external_id == "EMP-ELEC")
+            )
+            assert row is not None
+            self.assertEqual(row.resource_class, "INSTALL_ELEC")
+            self.assertEqual(row.erp_employee_class, "ELCOMP")
+            projected = SqlPlannerQueryRepository(session).list_resources()
+            self.assertEqual(projected[0].planning_subgroup_code, "COMPANION")
 
     def test_partial_snapshot_preserves_missing_employee_and_local_activation(self) -> None:
         source = StubEmployeeSource(

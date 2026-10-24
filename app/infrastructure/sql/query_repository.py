@@ -37,6 +37,7 @@ from ...application.read_models import DemandPeriodReadModel, DemandReadModel, S
 from ...domain.availability_rules import availability_hours_for_day, availability_state_for_day
 from ...domain.confirmation import effective_confirmation
 from ...domain.planning_engine import MISSING_ALLOCATION_TYPE
+from ...domain.planning_resource_subgroups import classify_planning_resource_subgroup
 from ...domain.resource_recommendations import (
     COMPETENCY_MISSING,
     COMPETENCY_NOT_REQUIRED,
@@ -183,6 +184,10 @@ def _period_definition(row: DemandPeriodReadModel) -> DemandPeriodDefinition:
 
 
 def _resource_read_model(resource: Resource, competency_ids: tuple[str, ...] = ()) -> ResourceReadModel:
+    subgroup = classify_planning_resource_subgroup(
+        resource_class=resource.resource_class,
+        erp_employee_class=resource.erp_employee_class,
+    )
     return ResourceReadModel(
         id=resource.id,
         name=resource.name,
@@ -203,6 +208,8 @@ def _resource_read_model(resource: Resource, competency_ids: tuple[str, ...] = (
         erp_phone=_optional_text(resource.erp_phone),
         erp_branch_code=_optional_text(resource.erp_branch_code),
         erp_contact_id=resource.erp_contact_id,
+        planning_subgroup_code=subgroup.code if subgroup is not None else None,
+        planning_subgroup_label=subgroup.label if subgroup is not None else None,
     )
 
 

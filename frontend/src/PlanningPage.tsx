@@ -99,6 +99,18 @@ type ClassPlanningWork = {
   assignments: PlanningActionReadModel[];
 };
 
+type PlanningSubgroupCode = "COMPANION" | "APPRENTICE" | "OTHER";
+
+const INSTALL_ELEC_SUBGROUP_ORDER: readonly PlanningSubgroupCode[] = [
+  "COMPANION",
+  "APPRENTICE",
+  "OTHER",
+];
+
+function planningSubgroupCollapseKey(code: PlanningSubgroupCode) {
+  return `INSTALL_ELEC::${code}`;
+}
+
 type ManualResourceOrderControls = {
   canMoveUp: boolean;
   canMoveDown: boolean;
@@ -1955,6 +1967,47 @@ export default function PlanningPage({
                 const collapsed = collapsedClasses.has(className);
                 const classWork = visibleClassWork.get(className) ?? { candidates: [], assignments: [] };
                 const workCount = classWork.candidates.length + classWork.assignments.length;
+                const renderResourceRow = ({ resource, shifts, capacity }: ResourceGroupEntry) => (
+                  <ResourceRow
+                    resource={resource}
+                    days={days}
+                    shifts={shifts}
+                    candidates={visibleCandidateRowsByResource.get(resource.id) ?? []}
+                    onOpenDemand={canReadDemands ? setDetailDemandNumber : undefined}
+                    capacity={capacity}
+                    diagnostics={diagnosticsBySegment}
+                    onEditShift={canManagePlanning ? setEditingShift : undefined}
+                    onAssignAsset={canManagePlanning ? (shift) => setAssetAssignment({ shift, mode: "assign" }) : undefined}
+                    onCreateQuickShift={canManagePlanning ? (targetResource, day) => {
+                      setQuickShiftSeed({ resourceId: targetResource.id, day });
+                      setQuickShiftOpen(true);
+                    } : undefined}
+                    dragEnabled={canManagePlanning && !dropBusy}
+                    manualOrder={canManagePlanning && resourceSortMode === "manual" ? {
+                      canMoveUp: manualOrderAvailability.get(resource.id)?.canMoveUp ?? false,
+                      canMoveDown: manualOrderAvailability.get(resource.id)?.canMoveDown ?? false,
+                      busy: Boolean(resourceReorderBusy || dropBusy),
+                      onMove: (direction) => void moveResourceInManualOrder(resource, direction),
+                    } : undefined}
+                    onDropShift={(payload, target, day) => void moveShiftFromDrop(payload, target, day)}
+                    onDropSegment={(payload, target) => void assignSegmentFromDrop(payload, target)}
+                    key={resource.id}
+                  />
+                );
+                const electricalSubgroups = className === "INSTALL_ELEC"
+                  ? INSTALL_ELEC_SUBGROUP_ORDER
+                    .map((code) => {
+                      const subgroupRows = rows.filter(
+                        ({ resource }) => (resource.planning_subgroup_code ?? "OTHER") === code,
+                      );
+                      return {
+                        code,
+                        rows: subgroupRows,
+                        label: subgroupRows[0]?.resource.planning_subgroup_label ?? code,
+                      };
+                    })
+                    .filter(({ rows: subgroupRows }) => subgroupRows.length > 0)
+                  : [];
                 return (
                   <div className="resource-group" key={className} data-resource-class={className}>
                     <button
@@ -1979,33 +2032,32 @@ export default function PlanningPage({
                         dragEnabled={canManagePlanning && !dropBusy}
                       />
                     )}
-                    {!collapsed && rows.map(({ resource, shifts, capacity }) => (
-                      <ResourceRow
-                        resource={resource}
-                        days={days}
-                        shifts={shifts}
-                        candidates={visibleCandidateRowsByResource.get(resource.id) ?? []}
-                        onOpenDemand={canReadDemands ? setDetailDemandNumber : undefined}
-                        capacity={capacity}
-                        diagnostics={diagnosticsBySegment}
-                        onEditShift={canManagePlanning ? setEditingShift : undefined}
-                        onAssignAsset={canManagePlanning ? (shift) => setAssetAssignment({ shift, mode: "assign" }) : undefined}
-                        onCreateQuickShift={canManagePlanning ? (targetResource, day) => {
-                          setQuickShiftSeed({ resourceId: targetResource.id, day });
-                          setQuickShiftOpen(true);
-                        } : undefined}
-                        dragEnabled={canManagePlanning && !dropBusy}
-                        manualOrder={canManagePlanning && resourceSortMode === "manual" ? {
-                          canMoveUp: manualOrderAvailability.get(resource.id)?.canMoveUp ?? false,
-                          canMoveDown: manualOrderAvailability.get(resource.id)?.canMoveDown ?? false,
-                          busy: Boolean(resourceReorderBusy || dropBusy),
-                          onMove: (direction) => void moveResourceInManualOrder(resource, direction),
-                        } : undefined}
-                        onDropShift={(payload, target, day) => void moveShiftFromDrop(payload, target, day)}
-                        onDropSegment={(payload, target) => void assignSegmentFromDrop(payload, target)}
-                        key={resource.id}
-                      />
-                    ))}
+                    {!collapsed && className === "INSTALL_ELEC" && electricalSubgroups.map((subgroup) => {
+                      const subgroupKey = planningSubgroupCollapseKey(subgroup.code);
+                      const subgroupCollapsed = collapsedClasses.has(subgroupKey);
+                      return (
+                        <div
+                          className="resource-subgroup"
+                          data-resource-subgroup={subgroup.code}
+                          key={subgroup.code}
+                        >
+                          <button
+                            type="button"
+                            className="resource-subgroup-heading"
+                            aria-expanded={!subgroupCollapsed}
+                            onClick={() => toggleResourceClass(subgroupKey)}
+                          >
+                            <span className="resource-group-title">
+                              <span aria-hidden="true">{subgroupCollapsed ? "▶" : "▼"}</span>
+                              <strong>{subgroup.label}</strong>
+                            </span>
+                            <span>{subgroup.rows.length} ressource(s)</span>
+                          </button>
+                          {!subgroupCollapsed && subgroup.rows.map(renderResourceRow)}
+                        </div>
+                      );
+                    })}
+                    {!collapsed && className !== "INSTALL_ELEC" && rows.map(renderResourceRow)}
                   </div>
                 );
               })}

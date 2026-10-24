@@ -79,6 +79,8 @@ class ResourceReadModel:
     erp_phone: str | None = None
     erp_branch_code: str | None = None
     erp_contact_id: int | None = None
+    planning_subgroup_code: str | None = None
+    planning_subgroup_label: str | None = None
 
     @property
     def effective_active(self) -> bool:
