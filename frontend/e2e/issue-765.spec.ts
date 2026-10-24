@@ -78,12 +78,12 @@ async function createQuickShiftFromCell(
 test("765 ouvre un Planning détaché avec contexte et synchronise les mutations dans les deux sens", async ({ browser }) => {
   test.setTimeout(180_000);
   const { context, page } = await openCoordinator(browser);
-  const weekStart = addDays(startOfWeek(new Date()), 84);
+  const weekStart = addDays(startOfWeek(new Date()), 56);
   const monday = localIso(weekStart);
   const tuesday = localIso(addDays(weekStart, 1));
 
   try {
-    for (let index = 0; index < 12; index += 1) {
+    for (let index = 0; index < 8; index += 1) {
       await page.getByRole("button", { name: /Suivante/ }).click();
     }
 
@@ -108,6 +108,22 @@ test("765 ouvre un Planning détaché avec contexte et synchronise les mutations
     await expect(detached.locator(".metric-grid")).toHaveCount(0);
     await expect(detached.locator(".asset-planning-panel")).toHaveCount(0);
     await expect(detached.getByText("Ressources et quarts", { exact: true }).first()).toBeVisible();
+    await expect(detached.getByLabel("Recherche")).toHaveValue("Alice");
+
+    const requestedScope = detachedUrl.searchParams.get("scope");
+    if (requestedScope === "mine") {
+      await expect(detached.getByRole("button", { name: "Mon périmètre" })).toHaveClass(/active/);
+    } else if (requestedScope === "global") {
+      await expect(detached.getByRole("button", { name: "Vue globale" })).toHaveClass(/active/);
+    }
+
+    await detached.setViewportSize({ width: 1600, height: 900 });
+    await expect(detached.locator(".planning-board-panel")).toBeVisible();
+    await detached.setViewportSize({ width: 1024, height: 768 });
+    await expect(detached.locator(".planning-board-panel")).toBeVisible();
+
+    await detached.reload();
+    await expect(detached).toHaveTitle("Ressources et quarts — ResourcePlanner");
     await expect(detached.getByLabel("Recherche")).toHaveValue("Alice");
 
     await createQuickShiftFromCell(
@@ -379,22 +395,26 @@ test("765 conserve la sécurité CAS si la synchronisation inter-fenêtres est i
     await expect(mainCard).toContainText("Aucun actif");
     await expect(detachedCard).toContainText("Aucun actif");
 
+    // Window B prepares a mutation while both windows still hold version 100.
+    await detachedCard.getByRole("button", { name: /Assigner un actif à Ressource CAS 765/ }).click();
+    const detachedDialog = detached.getByRole("dialog", { name: "Assigner un actif" });
+    await chooseCombobox(detachedDialog, "Actif", "VEH-765", "VEH-765");
+
+    // Window A commits first and advances canonical Planning state to version 101.
     await mainCard.getByRole("button", { name: /Assigner un actif à Ressource CAS 765/ }).click();
-    let dialog = page.getByRole("dialog", { name: "Assigner un actif" });
-    await chooseCombobox(dialog, "Actif", "VEH-765", "VEH-765");
-    await dialog.getByRole("button", { name: "Assigner l’actif" }).click();
+    const mainDialog = page.getByRole("dialog", { name: "Assigner un actif" });
+    await chooseCombobox(mainDialog, "Actif", "VEH-765", "VEH-765");
+    await mainDialog.getByRole("button", { name: "Assigner l’actif" }).click();
     await expect(mainCard).toContainText("Actif : VEH-765");
     expect(planningVersion).toBe(101);
 
-    await detachedCard.getByRole("button", { name: /Assigner un actif à Ressource CAS 765/ }).click();
-    dialog = detached.getByRole("dialog", { name: "Assigner un actif" });
-    await chooseCombobox(dialog, "Actif", "VEH-765", "VEH-765");
-    await dialog.getByRole("button", { name: "Assigner l’actif" }).click();
+    // B submits its already-prepared version-100 mutation and must fail closed.
+    await detachedDialog.getByRole("button", { name: "Assigner l’actif" }).click();
 
-    await expect(dialog).toContainText("Le planning a changé");
+    await expect(detachedDialog).toContainText("Le planning a changé");
     expect(assignedAssetId).toBe("ASSET-765-CAS");
     expect(planningVersion).toBe(101);
-    await dialog.getByRole("button", { name: "Annuler" }).click();
+    await detachedDialog.getByRole("button", { name: "Annuler" }).click();
     await expect(detachedCard).toContainText("Actif : VEH-765");
 
     await detached.close();
