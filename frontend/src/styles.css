@@ -807,6 +807,10 @@ h1 { font-size: 1.6rem; }
 .resource-group-heading:hover { background: #e3eaf4; }
 .resource-group-heading:focus-visible { z-index: 7; outline: 2px solid var(--accent); outline-offset: -2px; }
 .resource-group-title { display: flex !important; align-items: center; gap: .35rem; min-width: 0; }
+.resource-subgroup { display: contents; }
+.resource-subgroup-heading { grid-column: 1 / -1; position: sticky; left: 0; z-index: 4; display: flex; align-items: center; justify-content: space-between; width: 100%; padding: .34rem .65rem .34rem 1.35rem; border: 0; border-bottom: 1px solid #e2e8f0; background: #f5f7fb; color: #526178; font: inherit; font-size: .64rem; text-align: left; cursor: pointer; appearance: none; }
+.resource-subgroup-heading:hover { background: #eef2f7; }
+.resource-subgroup-heading:focus-visible { z-index: 7; outline: 2px solid var(--accent); outline-offset: -2px; }
 .resource-row { display: contents; }
 .resource-cell { min-height: 88px; padding: .45rem; border-right: 1px solid #e6eaf0; border-bottom: 1px solid #e6eaf0; background: white; }
 .resource-identity { position: sticky; left: 0; z-index: 4; background: #fbfcfe; }
