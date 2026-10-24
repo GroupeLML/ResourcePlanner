@@ -224,7 +224,7 @@ class DirectAssetReservationTests(unittest.TestCase):
         self.assertEqual(candidates.status_code, 200, candidates.text)
         self.assertEqual(
             [row["resource_id"] for row in candidates.json()["candidates"]],
-            ["RESOURCE-SKILLED"],
+            ["RESOURCE-SKILLED", "RESOURCE-SKILLED-B"],
         )
 
         updated = self.client.put(
