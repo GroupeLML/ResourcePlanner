@@ -2221,6 +2221,7 @@ export default function PlanningPage({
           planningVersion={snapshot.planning_version}
           onClose={() => setAssetAssignment(null)}
           onRefresh={() => setRefreshKey((value) => value + 1)}
+          onMutated={refreshAfterMutation}
         />
       )}
 
