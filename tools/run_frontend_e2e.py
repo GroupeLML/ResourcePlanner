@@ -296,7 +296,6 @@ def _seed(database_url: str) -> None:
                 ("PROGRAMMEUR", "Programmeur", "125.00"),
                 ("AUTOMATION", "Automatisation", "125.00"),
                 ("ELECTRICAL", "Électricité", "100.00"),
-                ("INSTALL_ELEC", "Installation électrique", "100.00"),
                 (
                     "INSTALLATEUR_AUTOMATISATION",
                     "Installateur automatisation",
@@ -406,72 +405,6 @@ def _seed(database_url: str) -> None:
                         active=True,
                         sort_order=20,
                     ),
-                    Resource(
-                        id="R-ELEC-COMP",
-                        external_id="EMP-ELEC-COMP",
-                        name="E2E Compagnon",
-                        resource_class="INSTALL_ELEC",
-                        erp_employee_class="ELCOMP",
-                        erp_department_code="CCQ",
-                        erp_branch_code="110",
-                        active=True,
-                        sort_order=30,
-                    ),
-                    Resource(
-                        id="R-ELEC-APP1",
-                        external_id="EMP-ELEC-APP1",
-                        name="E2E Apprenti 1",
-                        resource_class="INSTALL_ELEC",
-                        erp_employee_class="ELAPP1",
-                        erp_department_code="CCQ",
-                        erp_branch_code="110",
-                        active=True,
-                        sort_order=40,
-                    ),
-                    Resource(
-                        id="R-ELEC-APP2",
-                        external_id="EMP-ELEC-APP2",
-                        name="E2E Apprenti 2",
-                        resource_class="INSTALL_ELEC",
-                        erp_employee_class="ELAPP2",
-                        erp_department_code="CCQ",
-                        erp_branch_code="110",
-                        active=True,
-                        sort_order=50,
-                    ),
-                    Resource(
-                        id="R-ELEC-APP3",
-                        external_id="EMP-ELEC-APP3",
-                        name="E2E Apprenti 3",
-                        resource_class="INSTALL_ELEC",
-                        erp_employee_class="ELAPP3",
-                        erp_department_code="CCQ",
-                        erp_branch_code="110",
-                        active=True,
-                        sort_order=60,
-                    ),
-                    Resource(
-                        id="R-ELEC-APP4",
-                        external_id="EMP-ELEC-APP4",
-                        name="E2E Apprenti 4",
-                        resource_class="INSTALL_ELEC",
-                        erp_employee_class="ELAPP4",
-                        erp_department_code="CCQ",
-                        erp_branch_code="110",
-                        active=True,
-                        sort_order=70,
-                    ),
-                    Resource(
-                        id="R-ELEC-OTHER",
-                        external_id="EMP-ELEC-OTHER",
-                        name="E2E Électrique non classé",
-                        resource_class="INSTALL_ELEC",
-                        erp_employee_class="GENERAL",
-                        erp_department_code="CCQ",
-                        erp_branch_code="110",
-                        active=True,
-                        sort_order=80,
-                    ),
                 ]
             )
             session.flush()
@@ -483,16 +416,7 @@ def _seed(database_url: str) -> None:
                     ResourceCompetency(resource_id="R-BOB", competency_id="C-SCADA"),
                 ]
             )
-            for resource_id, suffix in (
-                ("R-ALICE", "ALICE"),
-                ("R-BOB", "BOB"),
-                ("R-ELEC-COMP", "ELEC-COMP"),
-                ("R-ELEC-APP1", "ELEC-APP1"),
-                ("R-ELEC-APP2", "ELEC-APP2"),
-                ("R-ELEC-APP3", "ELEC-APP3"),
-                ("R-ELEC-APP4", "ELEC-APP4"),
-                ("R-ELEC-OTHER", "ELEC-OTHER"),
-            ):
+            for resource_id, suffix in (("R-ALICE", "ALICE"), ("R-BOB", "BOB")):
                 session.add(
                     ResourceAvailabilityRule(
                         id=f"E2E-STD-{suffix}",
