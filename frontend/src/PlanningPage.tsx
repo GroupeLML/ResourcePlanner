@@ -733,6 +733,7 @@ function ResourceRow({
           isToday(day) ? "today-column" : "",
           cellCapacity?.overloaded ? "capacity-overloaded-cell" : "",
           cellCapacity && !cellCapacity.available ? "capacity-unavailable-cell" : "",
+          cellCapacity?.reason_code === "HOLIDAY" ? "holiday-day-cell" : "",
         ].filter(Boolean).join(" ");
 
         return (
@@ -741,7 +742,13 @@ function ResourceRow({
             key={iso}
             data-resource-id={resource.id}
             data-day={iso}
-            title={dragEnabled ? `Déposer un quart sur ${resourceDisplayName(resource.name)}, ${iso}` : undefined}
+            title={
+              cellCapacity?.reason_code === "HOLIDAY"
+                ? `Jour férié — ${cellCapacity.reason_label || "Jour férié"}`
+                : dragEnabled
+                  ? `Déposer un quart sur ${resourceDisplayName(resource.name)}, ${iso}`
+                  : undefined
+            }
             onDragOver={(event) => {
               if (!dragEnabled || !hasShiftDrag(event.dataTransfer)) return;
               event.preventDefault();
@@ -777,8 +784,17 @@ function ResourceRow({
                     {cellCapacity.tentative_hours > 0 && <span>{hours(cellCapacity.tentative_hours)} h tent.</span>}
                     {cellCapacity.outside_standard_hours > 0 && <span>{hours(cellCapacity.outside_standard_hours)} h hors horaire</span>}
                   </>
+                ) : cellCapacity.reason_code === "HOLIDAY" ? (
+                  <span
+                    className="holiday-cell-badge"
+                    data-holiday-scope={cellCapacity.holiday_scope ?? undefined}
+                    aria-label={`Jour férié — ${cellCapacity.reason_label || "Jour férié"}`}
+                  >
+                    <strong>Jour férié</strong>
+                    <small>{cellCapacity.reason_label || "Jour férié"}</small>
+                  </span>
                 ) : (
-                  <span>{cellCapacity.reason || "Indisponible"}</span>
+                  <span>{cellCapacity.reason_label || cellCapacity.reason || "Indisponible"}</span>
                 )}
               </div>
             )}
@@ -1258,6 +1274,28 @@ export default function PlanningPage({
     () => new Map((capacityGrid?.segment_diagnostics ?? []).map((row) => [row.segment_id, row])),
     [capacityGrid],
   );
+
+  const globalHolidayByDay = useMemo(() => {
+    const result = new Map<string, string>();
+    const rows = capacityGrid?.resources ?? [];
+    if (rows.length === 0) return result;
+
+    days.forEach((day) => {
+      const iso = toIsoDate(day);
+      const dayStates = rows
+        .map((resource) => resource.days.find((entry) => entry.day === iso) ?? null);
+      if (dayStates.some((entry) => entry === null)) return;
+      const holidays = dayStates.filter(
+        (entry) => entry?.reason_code === "HOLIDAY" && entry.holiday_scope === "GLOBAL",
+      );
+      if (holidays.length !== dayStates.length) return;
+      const labels = new Set(
+        holidays.map((entry) => entry?.reason_label || "Jour férié"),
+      );
+      if (labels.size === 1) result.set(iso, [...labels][0]);
+    });
+    return result;
+  }, [capacityGrid, days]);
 
   const query = normalize(search);
   const activeFilterCount = [
@@ -2080,12 +2118,27 @@ export default function PlanningPage({
           <div className={`planning-board-scroll ${loading ? "is-loading" : ""}`}>
             <div className="planning-grid">
               <div className="planning-header resource-header">Ressource</div>
-              {days.map((day) => (
-                <div className={`planning-header day-header ${isToday(day) ? "today-column" : ""}`} key={toIsoDate(day)}>
-                  <span>{formatDay(day)}</span>
-                  {isToday(day) && <small>Aujourd’hui</small>}
-                </div>
-              ))}
+              {days.map((day) => {
+                const iso = toIsoDate(day);
+                const globalHoliday = globalHolidayByDay.get(iso) ?? null;
+                return (
+                  <div
+                    className={`planning-header day-header ${isToday(day) ? "today-column" : ""} ${globalHoliday ? "is-global-holiday" : ""}`}
+                    key={iso}
+                    data-holiday-scope={globalHoliday ? "GLOBAL" : undefined}
+                    aria-label={globalHoliday ? `${formatDay(day)} — Jour férié — ${globalHoliday}` : undefined}
+                  >
+                    <span>{formatDay(day)}</span>
+                    {isToday(day) && <small>Aujourd’hui</small>}
+                    {globalHoliday && (
+                      <span className="holiday-header-badge">
+                        <strong>Jour férié</strong>
+                        <small>{globalHoliday}</small>
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
 
               {!loading && visibleResourceGroups.length === 0 && (
                 <div className="planning-empty">Aucune ressource, aucun quart ou besoin à planifier ne correspond aux filtres.</div>
