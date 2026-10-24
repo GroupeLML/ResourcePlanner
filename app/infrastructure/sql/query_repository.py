@@ -37,6 +37,7 @@ from ...application.read_models import DemandPeriodReadModel, DemandReadModel, S
 from ...domain.availability_rules import availability_hours_for_day, availability_state_for_day
 from ...domain.confirmation import effective_confirmation
 from ...domain.planning_engine import MISSING_ALLOCATION_TYPE
+from ...domain.planning_resource_subgroups import classify_planning_resource_subgroup
 from ...domain.resource_recommendations import (
     COMPETENCY_MISSING,
     COMPETENCY_NOT_REQUIRED,
