@@ -223,6 +223,19 @@ export default function AssetContinuousAssignmentEditor({
               Ce véhicule est attitré, mais la ressource bénéficiaire n’est pas visible dans ton périmètre.
             </div>
           )}
+          {state.scheduled_assignment && (
+            <div className="subtle-status" data-testid="asset-continuous-scheduled-transition">
+              Transition planifiée pour {state.scheduled_assignment.start_date}
+              {state.scheduled_assignment_details_visible && state.scheduled_assignment.operator_resource_id
+                ? ` vers ${resourceLabel(
+                    resources.find(
+                      (row) => row.id === state.scheduled_assignment?.operator_resource_id,
+                    ) ?? { name: state.scheduled_assignment.operator_resource_id } as ResourceReadModel,
+                  )}`
+                : " vers une ressource protégée"}
+            </div>
+          )}
+
 
           {state.has_ended_history && !assignment && (
             <div className="subtle-status">Une attribution historique terminée existe; le véhicule n’est pas actuellement attitré.</div>
