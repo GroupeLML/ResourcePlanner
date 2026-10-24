@@ -889,6 +889,7 @@ export default function PlanningPage({
   const [scopeLoading, setScopeLoading] = useState(true);
   const [scopeError, setScopeError] = useState<string | null>(null);
   const planningIdentityKeyRef = useRef(planningIdentityKey);
+  const planningWindowIdRef = useRef(createClientId());
   const activePlanningRequestKeyRef = useRef("");
   const [loadedPreferenceOwnerId, setLoadedPreferenceOwnerId] = useState<string | null>(preferenceOwnerId);
   const [weekStart, setWeekStart] = useState(
@@ -1089,13 +1090,13 @@ export default function PlanningPage({
 
   useEffect(() => (
     subscribePlanningInvalidations((message) => {
-      if (message.week !== start) return;
+      if (message.source === planningWindowIdRef.current || message.week !== start) return;
       setRefreshKey((value) => value + 1);
     })
   ), [start]);
 
   function refreshAfterMutation() {
-    publishPlanningInvalidation(weekStart, snapshot?.planning_version ?? null);
+    publishPlanningInvalidation(weekStart, null, planningWindowIdRef.current);
     setRefreshKey((value) => value + 1);
   }
 
