@@ -94,6 +94,7 @@ SOURCE_MISSING_COLUMNS = {
         "shift_id",
         "resource_requirement_id",
         "context_resource_id",
+        "resource_period_mode",
     },
     "task_catalog_items": {
         "erp_budget_last_success_at",
