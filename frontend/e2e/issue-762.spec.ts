@@ -56,17 +56,17 @@ test("762 profile unité véhicule pilote le contrat continu #744", async ({ bro
     const assigned = editor.getByRole("checkbox", { name: "Attitré" });
     await expect(assigned).not.toBeChecked();
     await assigned.check();
-    await editor.getByLabel("Ressource", { exact: true }).selectOption("R-ALICE");
+    await editor.getByRole("combobox").selectOption("R-ALICE");
     await editor.getByLabel("Date effective").fill(today);
     await editor.getByRole("button", { name: "Enregistrer l’attribution" }).click();
 
     await expect(assigned).toBeChecked();
     await expect(editor.getByTestId("asset-continuous-assignment-state")).toContainText("État : Actif");
-    await expect(editor.getByLabel("Ressource", { exact: true })).toHaveValue("R-ALICE");
+    await expect(editor.getByRole("combobox")).toHaveValue("R-ALICE");
 
     // Changing the Resource uses the canonical atomic transfer and surfaces the
     // future transition without pretending it is already active.
-    await editor.getByLabel("Ressource", { exact: true }).selectOption("R-BOB");
+    await editor.getByRole("combobox").selectOption("R-BOB");
     await editor.getByLabel("Date effective").fill(tomorrow);
     await editor.getByRole("button", { name: "Enregistrer l’attribution" }).click();
 
@@ -89,7 +89,7 @@ test("762 profile unité véhicule pilote le contrat continu #744", async ({ bro
     editor = page.getByTestId("asset-continuous-assignment-editor");
     const scheduledCheck = editor.getByRole("checkbox", { name: "Attitré" });
     await scheduledCheck.check();
-    await editor.getByLabel("Ressource", { exact: true }).selectOption("R-ALICE");
+    await editor.getByRole("combobox").selectOption("R-ALICE");
     await editor.getByLabel("Date effective").fill(tomorrow);
     await editor.getByRole("button", { name: "Enregistrer l’attribution" }).click();
     await expect(editor.getByTestId("asset-continuous-assignment-state")).toContainText(
@@ -105,7 +105,7 @@ test("762 profile unité véhicule pilote le contrat continu #744", async ({ bro
     editor = page.getByTestId("asset-continuous-assignment-editor");
     const revokeCheck = editor.getByRole("checkbox", { name: "Attitré" });
     await revokeCheck.check();
-    await editor.getByLabel("Ressource", { exact: true }).selectOption("R-ALICE");
+    await editor.getByRole("combobox").selectOption("R-ALICE");
     await editor.getByLabel("Date effective").fill(today);
     await editor.getByRole("button", { name: "Enregistrer l’attribution" }).click();
     await expect(editor.getByTestId("asset-continuous-assignment-state")).toContainText("État : Actif");
