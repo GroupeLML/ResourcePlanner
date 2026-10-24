@@ -11,6 +11,7 @@ import DemandsWorkspace from "./DemandsWorkspace";
 import type { DemandCreateContext } from "./DemandsPage";
 import MediumTermPage from "./MediumTermPage";
 import PlanningPage from "./PlanningPage";
+import { isDetachedPlanningResourcesRoute } from "./planningDetached";
 import ProjectsPage from "./ProjectsPage";
 import ResourcesPage from "./ResourcesPage";
 import TechnicianSchedulePage from "./TechnicianSchedulePage";
@@ -161,6 +162,14 @@ export default function App() {
           <span>{authError || "Aucune identité active n’a été retournée par le serveur."}</span>
           <small>Les permissions sont déterminées par FastAPI; React ne peut pas contourner cette étape.</small>
         </section>
+      </main>
+    );
+  }
+
+  if (isDetachedPlanningResourcesRoute()) {
+    return (
+      <main className="detached-planning-root">
+        <PlanningPage detached />
       </main>
     );
   }
