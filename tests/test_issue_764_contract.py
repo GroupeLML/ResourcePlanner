@@ -19,7 +19,7 @@ class Issue764ContractTests(unittest.TestCase):
         self.assertIn("holiday-header-badge", planning)
         self.assertNotIn("availability_state_for_day", planning)
         self.assertNotIn("ClassesRessources", planning)
-        self.assertNotIn("Jour férié" && resource.resource_class", planning)
+        self.assertNotIn('"Jour férié" && resource.resource_class', planning)
 
     def test_shared_planning_surface_covers_detached_workspace(self) -> None:
         app = (ROOT / "frontend" / "src" / "App.tsx").read_text(encoding="utf-8")
