@@ -89,6 +89,10 @@ export default function AssetContinuousAssignmentEditor({
   const currentResource = currentResourceId
     ? resources.find((row) => row.id === currentResourceId) ?? null
     : null;
+  const scheduledResourceId = state?.scheduled_assignment?.operator_resource_id ?? null;
+  const scheduledResource = scheduledResourceId
+    ? resources.find((row) => row.id === scheduledResourceId) ?? null
+    : null;
 
   async function mutate(fingerprint: string, action: (key: string) => Promise<unknown>) {
     if (pending || !state) return;
@@ -226,12 +230,8 @@ export default function AssetContinuousAssignmentEditor({
           {state.scheduled_assignment && (
             <div className="subtle-status" data-testid="asset-continuous-scheduled-transition">
               Transition planifiée pour {state.scheduled_assignment.start_date}
-              {state.scheduled_assignment_details_visible && state.scheduled_assignment.operator_resource_id
-                ? ` vers ${resourceLabel(
-                    resources.find(
-                      (row) => row.id === state.scheduled_assignment?.operator_resource_id,
-                    ) ?? { name: state.scheduled_assignment.operator_resource_id } as ResourceReadModel,
-                  )}`
+              {state.scheduled_assignment_details_visible && scheduledResourceId
+                ? ` vers ${scheduledResource ? resourceLabel(scheduledResource) : scheduledResourceId}`
                 : " vers une ressource protégée"}
             </div>
           )}
