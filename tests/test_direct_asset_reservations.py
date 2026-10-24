@@ -41,6 +41,7 @@ from tests.approval_test_support import (
 from tests.http_test_auth import (
     TEST_ADMIN_AUTH_RESOLVER,
     TEST_COORDINATOR_AUTH_RESOLVER,
+    TEST_PROJECT_MANAGER_AUTH_RESOLVER,
 )
 
 
@@ -1129,6 +1130,81 @@ class DirectAssetReservationTests(unittest.TestCase):
                 self.assertIsNone(old_allocation.end_date)
         finally:
             engine.dispose()
+
+    def test_asset_unit_read_projects_active_scheduled_and_ended_without_client_inference(self) -> None:
+        created = self._continuous_create()
+        self.assertEqual(created.status_code, 201, created.text)
+
+        active = self.client.get("/api/v1/assets/continuous-vehicle-units/ASSET-A")
+        self.assertEqual(active.status_code, 200, active.text)
+        payload = active.json()
+        self.assertEqual(payload["asset_category"], "VEHICLE")
+        self.assertEqual(payload["assignment"]["effective_state"], "ACTIVE")
+        self.assertEqual(
+            payload["assignment"]["operator_resource_id"],
+            "RESOURCE-SKILLED",
+        )
+        self.assertTrue(payload["assignment_details_visible"])
+        self.assertTrue(payload["assignment_authority"]["allowed"])
+
+        effective_from = date.today() + timedelta(days=2)
+        revoked = self.client.post(
+            f"/api/v1/assets/continuous-resource-assignments/{created.json()['requirement_id']}/revoke",
+            headers={"Idempotency-Key": "unit-state-ended-762"},
+            json={
+                "effective_from": effective_from.isoformat(),
+                "expected_planning_version": payload["planning_version"],
+            },
+        )
+        self.assertEqual(revoked.status_code, 200, revoked.text)
+        ended = self.client.get(
+            "/api/v1/assets/continuous-vehicle-units/ASSET-A",
+            params={"as_of": effective_from.isoformat()},
+        )
+        self.assertEqual(ended.status_code, 200, ended.text)
+        self.assertIsNone(ended.json()["assignment"])
+        self.assertTrue(ended.json()["has_ended_history"])
+
+        scheduled_start = date.today() + timedelta(days=10)
+        scheduled = self._continuous_create(
+            asset_id="ASSET-B",
+            start_date=scheduled_start,
+            key="unit-state-scheduled-762",
+        )
+        self.assertEqual(scheduled.status_code, 201, scheduled.text)
+        scheduled_state = self.client.get(
+            "/api/v1/assets/continuous-vehicle-units/ASSET-B"
+        )
+        self.assertEqual(scheduled_state.status_code, 200, scheduled_state.text)
+        self.assertEqual(
+            scheduled_state.json()["assignment"]["effective_state"],
+            "SCHEDULED",
+        )
+        self.assertEqual(
+            scheduled_state.json()["assignment"]["start_date"],
+            scheduled_start.isoformat(),
+        )
+
+    def test_asset_unit_read_redacts_hidden_resource_and_exposes_no_mutation_capability(self) -> None:
+        created = self._continuous_create()
+        self.assertEqual(created.status_code, 201, created.text)
+
+        with TestClient(
+            create_api_app(
+                self.url,
+                auth_resolver=TEST_PROJECT_MANAGER_AUTH_RESOLVER,
+            ),
+            raise_server_exceptions=False,
+        ) as project_manager:
+            response = project_manager.get(
+                "/api/v1/assets/continuous-vehicle-units/ASSET-A"
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertIsNotNone(payload["assignment"])
+        self.assertFalse(payload["assignment_details_visible"])
+        self.assertIsNone(payload["assignment"]["operator_resource_id"])
+        self.assertFalse(payload["assignment_authority"]["allowed"])
 
     def test_continuous_commands_reject_backdating(self) -> None:
         yesterday = date.today() - timedelta(days=1)
