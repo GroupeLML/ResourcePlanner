@@ -1335,6 +1335,9 @@ export type PlanningDayCapacityReadModel = {
   available: boolean;
   overloaded: boolean;
   reason: string | null;
+  reason_code: "HOLIDAY" | "VACATION" | "NO_STANDARD_SCHEDULE" | "INVALID_STANDARD_SCHEDULE" | "OUTSIDE_STANDARD_SCHEDULE" | null;
+  reason_label: string | null;
+  holiday_scope: "GLOBAL" | "RESOURCE_CLASS" | "RESOURCE" | null;
 };
 
 export type PlanningResourceCapacityReadModel = {
