@@ -424,6 +424,31 @@ export type ContinuousVehicleAssignments = {
   planning_version: number;
 };
 
+export type ContinuousVehicleUnitState = {
+  asset_id: string;
+  asset_category: string | null;
+  as_of: string;
+  assignment: ContinuousVehicleAssignment | null;
+  assignment_details_visible: boolean;
+  has_ended_history: boolean;
+  assignment_authority: {
+    allowed: boolean;
+    code: string | null;
+    diagnostics: string[];
+  };
+  planning_version: number;
+};
+
+export function getContinuousVehicleUnitState(
+  assetId: string,
+  signal?: AbortSignal,
+) {
+  return getJson<ContinuousVehicleUnitState>(
+    `/api/v1/assets/continuous-vehicle-units/${encodeURIComponent(assetId)}`,
+    signal,
+  );
+}
+
 export function getContinuousVehicleAssignments(
   resourceId: string,
   signal?: AbortSignal,
