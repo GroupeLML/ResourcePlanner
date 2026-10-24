@@ -575,21 +575,24 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
     ) -> dict:
         business_date = as_of or date.today()
         asset = session.get(Asset, asset_id)
+        version = SqlPlanningMutationVersionRepository(session).current_version()
         if asset is None:
             return {
                 "asset_id": asset_id,
                 "as_of": business_date,
                 "assignment": None,
+                "scheduled_assignment": None,
                 "assignment_details_visible": False,
+                "scheduled_assignment_details_visible": False,
+                "has_ended_history": False,
                 "assignment_authority": {
                     "allowed": False,
                     "code": "asset_not_found",
                     "diagnostics": [],
                 },
-                "planning_version": SqlPlanningMutationVersionRepository(
-                    session
-                ).current_version(),
+                "planning_version": version,
             }
+
         asset_type = session.get(AssetType, asset.asset_type_id)
         rows = session.execute(
             select(AssetRequirement, AssetAllocation, Resource)
@@ -597,10 +600,7 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
                 AssetAllocation,
                 AssetAllocation.asset_requirement_id == AssetRequirement.id,
             )
-            .join(
-                Resource,
-                Resource.id == AssetRequirement.context_resource_id,
-            )
+            .join(Resource, Resource.id == AssetRequirement.context_resource_id)
             .where(
                 AssetRequirement.origin == "RESOURCE_PERIOD",
                 AssetRequirement.resource_period_mode
@@ -612,22 +612,24 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
 
         projected: list[tuple[AssetRequirement, AssetAllocation, Resource, str]] = []
         for requirement, allocation, resource in rows:
-            state = continuous_assignment_state(
-                start_date=requirement.start_date,
-                end_date=requirement.end_date,
-                as_of=business_date,
-            ).value
-            projected.append((requirement, allocation, resource, state))
+            projected.append(
+                (
+                    requirement,
+                    allocation,
+                    resource,
+                    continuous_assignment_state(
+                        start_date=requirement.start_date,
+                        end_date=requirement.end_date,
+                        as_of=business_date,
+                    ).value,
+                )
+            )
 
-        active = next(
-            (row for row in projected if row[3] == "ACTIVE"),
-            None,
-        )
-        scheduled = next(
-            (row for row in projected if row[3] == "SCHEDULED"),
-            None,
-        )
-        current = active or scheduled
+        active = next((row for row in projected if row[3] == "ACTIVE"), None)
+        scheduled_rows = [row for row in projected if row[3] == "SCHEDULED"]
+        scheduled = scheduled_rows[0] if scheduled_rows else None
+        primary = active or scheduled
+        upcoming = scheduled if active is not None else None
 
         principal = request.state.auth_principal
         global_details = bool(
@@ -635,54 +637,64 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
                 set(principal.roles)
             )
         )
-        resource_details_visible = False
-        if current is not None:
-            _requirement, _allocation, current_resource, _state = current
-            resource_details_visible = global_details or bool(
+
+        def details_visible(resource: Resource | None) -> bool:
+            if resource is None:
+                return False
+            return global_details or bool(
                 principal.employee_external_id
-                and current_resource.external_id == principal.employee_external_id
+                and resource.external_id == principal.employee_external_id
             )
 
-        assignment = None
-        if current is not None:
-            requirement, allocation, resource, state = current
-            assignment = {
-                "requirement_id": requirement.id,
-                "allocation_id": allocation.id,
-                "asset_id": asset.id,
-                "asset_code": asset.code,
-                "asset_label": asset.label,
-                "asset_type_id": asset_type.id if asset_type is not None else asset.asset_type_id,
-                "asset_type_code": asset_type.code if asset_type is not None else "",
-                "asset_type_label": asset_type.label if asset_type is not None else "",
-                "resource_period_mode": requirement.resource_period_mode,
-                "effective_state": state,
-                "start_date": requirement.start_date,
-                "end_date": requirement.end_date,
-                "operator_resource_id": (
-                    allocation.operator_resource_id
-                    if resource_details_visible
-                    else None
-                ),
-                "qualification_state": evaluate_asset_qualification(
-                    session,
-                    requirement=requirement,
-                    allocation=allocation,
-                ).state,
-            }
+        def serialize(
+            row: tuple[AssetRequirement, AssetAllocation, Resource, str] | None,
+        ) -> tuple[dict | None, bool]:
+            if row is None:
+                return None, False
+            requirement, allocation, resource, state = row
+            visible = details_visible(resource)
+            return (
+                {
+                    "requirement_id": requirement.id,
+                    "allocation_id": allocation.id,
+                    "asset_id": asset.id,
+                    "asset_code": asset.code,
+                    "asset_label": asset.label,
+                    "asset_type_id": (
+                        asset_type.id if asset_type is not None else asset.asset_type_id
+                    ),
+                    "asset_type_code": asset_type.code if asset_type is not None else "",
+                    "asset_type_label": asset_type.label if asset_type is not None else "",
+                    "resource_period_mode": requirement.resource_period_mode,
+                    "effective_state": state,
+                    "start_date": requirement.start_date,
+                    "end_date": requirement.end_date,
+                    "operator_resource_id": (
+                        allocation.operator_resource_id if visible else None
+                    ),
+                    "qualification_state": evaluate_asset_qualification(
+                        session,
+                        requirement=requirement,
+                        allocation=allocation,
+                    ).state,
+                },
+                visible,
+            )
 
+        assignment, assignment_visible = serialize(primary)
+        scheduled_assignment, scheduled_visible = serialize(upcoming)
         authority = service(session, request).assignment_authority_capability(asset_id)
         return {
             "asset_id": asset_id,
             "asset_category": asset_type.category if asset_type is not None else None,
             "as_of": business_date,
             "assignment": assignment,
-            "assignment_details_visible": resource_details_visible,
+            "scheduled_assignment": scheduled_assignment,
+            "assignment_details_visible": assignment_visible,
+            "scheduled_assignment_details_visible": scheduled_visible,
             "has_ended_history": any(row[3] == "ENDED" for row in projected),
             "assignment_authority": authority,
-            "planning_version": SqlPlanningMutationVersionRepository(
-                session
-            ).current_version(),
+            "planning_version": version,
         }
 
     @router.post("/continuous-resource-assignments", status_code=201)
