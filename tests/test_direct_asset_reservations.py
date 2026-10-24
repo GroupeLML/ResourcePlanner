@@ -868,6 +868,27 @@ class DirectAssetReservationTests(unittest.TestCase):
         self.assertEqual(transferred.json()["context_resource_id"], "RESOURCE-SKILLED-B")
         self.assertIsNone(transferred.json()["end_date"])
 
+        unit_state = self.client.get(
+            "/api/v1/assets/continuous-vehicle-units/ASSET-A"
+        )
+        self.assertEqual(unit_state.status_code, 200, unit_state.text)
+        self.assertEqual(
+            unit_state.json()["assignment"]["operator_resource_id"],
+            "RESOURCE-SKILLED",
+        )
+        self.assertEqual(
+            unit_state.json()["assignment"]["effective_state"],
+            "ACTIVE",
+        )
+        self.assertEqual(
+            unit_state.json()["scheduled_assignment"]["operator_resource_id"],
+            "RESOURCE-SKILLED-B",
+        )
+        self.assertEqual(
+            unit_state.json()["scheduled_assignment"]["effective_state"],
+            "SCHEDULED",
+        )
+
         engine = create_sql_engine(self.url)
         factory = create_session_factory(engine)
         try:
