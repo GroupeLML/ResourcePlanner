@@ -42,8 +42,12 @@ test("744 gère l’attribution continue depuis le profil ressource", async ({ b
     await expect(panel).toBeVisible();
     await expect(panel).toContainText("Aucune attribution continue");
 
-    await panel.getByLabel("Véhicule", { exact: true }).selectOption("A-VEHICLE-744");
-    await panel.getByLabel("Date de début effective").fill(today);
+    const createEditor = panel.locator(".admin-editor").filter({
+      hasText: "Nouvelle attribution continue",
+    });
+    await expect(createEditor).toBeVisible();
+    await createEditor.getByRole("combobox").selectOption("A-VEHICLE-744");
+    await createEditor.getByLabel("Date de début effective").fill(today);
     await panel.getByRole("button", { name: "Attitrer le véhicule" }).click();
 
     await expect(panel).toContainText("VEH-744-01");
