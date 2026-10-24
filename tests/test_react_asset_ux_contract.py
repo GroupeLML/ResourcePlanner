@@ -14,7 +14,7 @@ class ReactAssetUxContractTests(unittest.TestCase):
         api = (ROOT / "frontend" / "src" / "assetApi.ts").read_text(encoding="utf-8")
 
         self.assertIn('import AssetCatalogPanel from "./AssetCatalogPanel"', page)
-        self.assertIn("<AssetCatalogPanel competencies={competencies} />", page)
+        self.assertIn("<AssetCatalogPanel competencies={competencies} resources={resources} />", page)
         self.assertIn("Catalogue des actifs", panel)
         self.assertIn("Nouvelle unité physique", panel)
         self.assertIn("Compétences / permis requis", panel)

@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
-import { ApiError, CompetencyReadModel } from "./api";
+import { ApiError, CompetencyReadModel, ResourceReadModel } from "./api";
 import {
   AssetCatalog,
   AssetCatalogItem,
@@ -21,6 +21,7 @@ import {
 } from "./assetApi";
 import { useAuth } from "./AuthContext";
 import CompetencyPicker from "./CompetencyPicker";
+import AssetContinuousAssignmentEditor from "./AssetContinuousAssignmentEditor";
 
 const CATEGORIES = [
   ["VEHICLE", "Véhicule"],
@@ -74,8 +75,10 @@ function sameIds(left: string[], right: string[]) {
 
 export default function AssetCatalogPanel({
   competencies,
+  resources,
 }: {
   competencies: CompetencyReadModel[];
+  resources: ResourceReadModel[];
 }) {
   const { can } = useAuth();
   const canManagePlanning = can("manage_planning");
@@ -634,6 +637,15 @@ export default function AssetCatalogPanel({
                     </form>
                   )}
                 </div>
+
+                {!creatingAsset && selectedAsset && selectedType && (
+                  <AssetContinuousAssignmentEditor
+                    asset={selectedAsset}
+                    assetType={selectedType}
+                    resources={resources}
+                    onChanged={refresh}
+                  />
+                )}
 
                 {!creatingAsset && selectedAsset && (
                   <div className="asset-unavailability-section" data-testid="asset-approvers-editor">

@@ -12,7 +12,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..application.security import PERMISSION_APPROVE_DEMANDS, normalize_roles, permissions_for_roles
+from ..application.security import (
+    PERMISSION_APPROVE_DEMANDS,
+    ROLE_ADMIN,
+    ROLE_COORDINATOR,
+    ROLE_MANAGER,
+    normalize_roles,
+    permissions_for_roles,
+)
 from ..domain.reservable_assets import ResourcePeriodMode, continuous_assignment_state
 from ..infrastructure.sql.asset_models import (
     Asset,
@@ -30,6 +37,7 @@ from ..infrastructure.sql.asset_qualification import (
 from ..infrastructure.sql.asset_service import SqlAssetService
 from ..infrastructure.sql.identity_models import AppUser
 from ..infrastructure.sql.planning_version import SqlPlanningMutationVersionRepository
+from ..infrastructure.sql.models import Resource
 
 
 class StrictBody(BaseModel):
@@ -556,6 +564,137 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
             "planning_version": SqlPlanningMutationVersionRepository(
                 session
             ).current_version(),
+        }
+
+    @router.get("/continuous-vehicle-units/{asset_id}")
+    def continuous_vehicle_unit_state(
+        asset_id: str,
+        request: Request,
+        as_of: date | None = None,
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        business_date = as_of or date.today()
+        asset = session.get(Asset, asset_id)
+        version = SqlPlanningMutationVersionRepository(session).current_version()
+        if asset is None:
+            return {
+                "asset_id": asset_id,
+                "as_of": business_date,
+                "assignment": None,
+                "scheduled_assignment": None,
+                "assignment_details_visible": False,
+                "scheduled_assignment_details_visible": False,
+                "has_ended_history": False,
+                "assignment_authority": {
+                    "allowed": False,
+                    "code": "asset_not_found",
+                    "diagnostics": [],
+                },
+                "planning_version": version,
+            }
+
+        asset_type = session.get(AssetType, asset.asset_type_id)
+        rows = session.execute(
+            select(AssetRequirement, AssetAllocation, Resource)
+            .join(
+                AssetAllocation,
+                AssetAllocation.asset_requirement_id == AssetRequirement.id,
+            )
+            .join(Resource, Resource.id == AssetRequirement.context_resource_id)
+            .where(
+                AssetRequirement.origin == "RESOURCE_PERIOD",
+                AssetRequirement.resource_period_mode
+                == ResourcePeriodMode.CONTINUOUS.value,
+                AssetAllocation.asset_id == asset_id,
+            )
+            .order_by(AssetRequirement.start_date, AssetRequirement.id)
+        ).all()
+
+        projected: list[tuple[AssetRequirement, AssetAllocation, Resource, str]] = []
+        for requirement, allocation, resource in rows:
+            projected.append(
+                (
+                    requirement,
+                    allocation,
+                    resource,
+                    continuous_assignment_state(
+                        start_date=requirement.start_date,
+                        end_date=requirement.end_date,
+                        as_of=business_date,
+                    ).value,
+                )
+            )
+
+        active = next((row for row in projected if row[3] == "ACTIVE"), None)
+        scheduled_rows = [row for row in projected if row[3] == "SCHEDULED"]
+        scheduled = scheduled_rows[0] if scheduled_rows else None
+        primary = active or scheduled
+        upcoming = scheduled if active is not None else None
+
+        principal = request.state.auth_principal
+        global_details = bool(
+            {ROLE_ADMIN, ROLE_COORDINATOR, ROLE_MANAGER}.intersection(
+                set(principal.roles)
+            )
+        )
+
+        def details_visible(resource: Resource | None) -> bool:
+            if resource is None:
+                return False
+            return global_details or bool(
+                principal.employee_external_id
+                and resource.external_id == principal.employee_external_id
+            )
+
+        def serialize(
+            row: tuple[AssetRequirement, AssetAllocation, Resource, str] | None,
+        ) -> tuple[dict | None, bool]:
+            if row is None:
+                return None, False
+            requirement, allocation, resource, state = row
+            visible = details_visible(resource)
+            return (
+                {
+                    "requirement_id": requirement.id,
+                    "allocation_id": allocation.id,
+                    "asset_id": asset.id,
+                    "asset_code": asset.code,
+                    "asset_label": asset.label,
+                    "asset_type_id": (
+                        asset_type.id if asset_type is not None else asset.asset_type_id
+                    ),
+                    "asset_type_code": asset_type.code if asset_type is not None else "",
+                    "asset_type_label": asset_type.label if asset_type is not None else "",
+                    "resource_period_mode": requirement.resource_period_mode,
+                    "effective_state": state,
+                    "start_date": requirement.start_date,
+                    "end_date": requirement.end_date,
+                    "operator_resource_id": (
+                        allocation.operator_resource_id if visible else None
+                    ),
+                    "qualification_state": evaluate_asset_qualification(
+                        session,
+                        requirement=requirement,
+                        allocation=allocation,
+                    ).state,
+                },
+                visible,
+            )
+
+        assignment, assignment_visible = serialize(primary)
+        scheduled_assignment, scheduled_visible = serialize(upcoming)
+        authority = service(session, request).assignment_authority_capability(asset_id)
+        return {
+            "asset_id": asset_id,
+            "asset_category": asset_type.category if asset_type is not None else None,
+            "as_of": business_date,
+            "assignment": assignment,
+            "scheduled_assignment": scheduled_assignment,
+            "assignment_details_visible": assignment_visible,
+            "scheduled_assignment_details_visible": scheduled_visible,
+            "has_ended_history": any(row[3] == "ENDED" for row in projected),
+            "assignment_authority": authority,
+            "planning_version": version,
         }
 
     @router.post("/continuous-resource-assignments", status_code=201)
