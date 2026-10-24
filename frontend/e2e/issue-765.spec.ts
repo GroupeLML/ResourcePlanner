@@ -78,13 +78,14 @@ async function createQuickShiftFromCell(
 test("765 ouvre un Planning détaché avec contexte et synchronise les mutations dans les deux sens", async ({ browser }) => {
   test.setTimeout(180_000);
   const { context, page } = await openCoordinator(browser);
-  const weekStart = addDays(startOfWeek(new Date()), 56);
+  const weekStart = addDays(startOfWeek(new Date()), 14);
   const monday = localIso(weekStart);
   const tuesday = localIso(addDays(weekStart, 1));
 
   try {
-    for (let index = 0; index < 8; index += 1) {
+    for (let index = 0; index < 2; index += 1) {
       await page.getByRole("button", { name: /Suivante/ }).click();
+      await expect(page.locator(".planning-board-scroll")).not.toHaveClass(/is-loading/);
     }
 
     await page.getByRole("button", { name: /^Filtres/ }).click();
