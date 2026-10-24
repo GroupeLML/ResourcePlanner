@@ -58,7 +58,7 @@ test("744 gère l’attribution continue depuis le profil ressource", async ({ b
     await panel.getByRole("button", { name: "Révoquer à cette date" }).click();
 
     await expect(panel).toContainText(`${today} → ${today}`);
-    await expect(panel).toContainText("CONTINUOUS").toHaveCount(0);
+    await expect(panel).not.toContainText("CONTINUOUS");
 
     await page.reload();
     await navigateMain(page, "Ressources");
