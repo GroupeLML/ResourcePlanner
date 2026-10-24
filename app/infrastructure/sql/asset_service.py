@@ -25,6 +25,11 @@ from ...application.security import (
 from ...domain.approval_routing import (
     ApprovalRoutingUser,
     ApprovalScopeCandidate,
+    DIAGNOSTIC_ASSET_TYPE_INACTIVE,
+    DIAGNOSTIC_ASSET_TYPE_SCOPE_AMBIGUOUS,
+    DIAGNOSTIC_ASSET_TYPE_SCOPE_UNMAPPED,
+    DIAGNOSTIC_ASSET_TYPE_UNKNOWN,
+    DIAGNOSTIC_SCOPE_INACTIVE,
     resolve_asset_line_approvers,
 )
 from ...domain.reservable_assets import (
@@ -221,23 +226,235 @@ class SqlAssetService:
             "sources": list(eligible.sources),
         }
 
-    def assignment_authority_capability(self, asset_id: str) -> dict[str, object]:
-        try:
-            self._require_assignment_authority(asset_id)
-        except ApplicationAuthorizationError as exc:
-            diagnostics = []
-            if exc.context:
-                diagnostics = list(exc.context.get("diagnostics") or ())
+    @staticmethod
+    def _assignment_authority_projection(
+        *,
+        actor: AppUser | None,
+        actor_has_manage_planning: bool,
+        resolution,
+    ) -> dict[str, object]:
+        diagnostics = list(resolution.diagnostics)
+        diagnostic_roots = {str(value).split(":", 1)[0] for value in diagnostics}
+
+        if not actor_has_manage_planning or actor is None:
             return {
                 "allowed": False,
-                "code": exc.code,
-                "diagnostics": diagnostics,
+                "can_assign": False,
+                "status": "NOT_AUTHORIZED",
+                "code": "asset_assignment_authority_required",
+                "message": "Vous n’êtes pas autorisé à attribuer cette unité.",
+                "diagnostics": [],
             }
+
+        if DIAGNOSTIC_ASSET_TYPE_SCOPE_AMBIGUOUS in diagnostic_roots:
+            return {
+                "allowed": False,
+                "can_assign": False,
+                "status": "AMBIGUOUS_SCOPE",
+                "code": DIAGNOSTIC_ASSET_TYPE_SCOPE_AMBIGUOUS,
+                "message": "Type d’actif associé à plusieurs périmètres d’approbation.",
+                "diagnostics": [DIAGNOSTIC_ASSET_TYPE_SCOPE_AMBIGUOUS],
+            }
+
+        if diagnostic_roots.intersection(
+            {
+                DIAGNOSTIC_ASSET_TYPE_SCOPE_UNMAPPED,
+                DIAGNOSTIC_SCOPE_INACTIVE,
+                DIAGNOSTIC_ASSET_TYPE_UNKNOWN,
+                DIAGNOSTIC_ASSET_TYPE_INACTIVE,
+            }
+        ):
+            return {
+                "allowed": False,
+                "can_assign": False,
+                "status": "NO_ACTIVE_SCOPE",
+                "code": "asset_assignment_authority_scope_unavailable",
+                "message": "Aucun périmètre d’approbation actif valide pour ce type d’actif.",
+                "diagnostics": sorted(diagnostic_roots),
+            }
+
+        eligible = any(
+            item.user_id == actor.id for item in resolution.eligible_approvers
+        )
+        if resolution.blocked or not eligible:
+            return {
+                "allowed": False,
+                "can_assign": False,
+                "status": "NOT_AUTHORIZED",
+                "code": "asset_assignment_authority_required",
+                "message": "Admissible opérationnellement, mais vous n’êtes pas autorisé à attribuer cette unité.",
+                "diagnostics": [],
+            }
+
         return {
             "allowed": True,
+            "can_assign": True,
+            "status": "AUTHORIZED",
             "code": None,
+            "message": "Autorisé à attribuer.",
             "diagnostics": [],
         }
+
+    def assignment_authority_capabilities(
+        self,
+        assets: tuple[tuple[Asset, AssetType], ...],
+    ) -> dict[str, dict[str, object]]:
+        """Project exact-unit assignment authority without N+1 approval queries."""
+
+        if not assets:
+            return {}
+
+        actor_id = str(self.actor or "").strip()
+        actor = self.session.get(AppUser, actor_id) if actor_id else None
+        actor_has_manage_planning = bool(
+            actor is not None
+            and actor.active
+            and PERMISSION_MANAGE_PLANNING in self._user_permissions(actor)
+        )
+
+        type_ids = tuple(dict.fromkeys(asset.asset_type_id for asset, _ in assets))
+        scope_rows = tuple(
+            self.session.execute(
+                select(
+                    AssetTypeApprovalScopeMapping.asset_type_id,
+                    ApprovalScope,
+                )
+                .join(
+                    ApprovalScope,
+                    ApprovalScope.id
+                    == AssetTypeApprovalScopeMapping.approval_scope_id,
+                )
+                .where(AssetTypeApprovalScopeMapping.asset_type_id.in_(type_ids))
+                .order_by(
+                    AssetTypeApprovalScopeMapping.asset_type_id,
+                    ApprovalScope.id,
+                )
+            ).all()
+        )
+        scopes_by_type: dict[str, list[ApprovalScope]] = {}
+        for asset_type_id, scope in scope_rows:
+            scopes_by_type.setdefault(asset_type_id, []).append(scope)
+
+        scope_ids = tuple(dict.fromkeys(scope.id for _, scope in scope_rows))
+        scope_approver_rows = (
+            tuple(
+                self.session.execute(
+                    select(
+                        ApprovalScopeApprover.approval_scope_id,
+                        ApprovalScopeApprover.app_user_id,
+                    )
+                    .where(ApprovalScopeApprover.approval_scope_id.in_(scope_ids))
+                    .order_by(
+                        ApprovalScopeApprover.approval_scope_id,
+                        ApprovalScopeApprover.app_user_id,
+                    )
+                ).all()
+            )
+            if scope_ids
+            else ()
+        )
+        scope_approvers_by_scope: dict[str, list[str]] = {}
+        for scope_id, user_id in scope_approver_rows:
+            scope_approvers_by_scope.setdefault(scope_id, []).append(user_id)
+
+        asset_ids = tuple(asset.id for asset, _ in assets)
+        asset_approver_rows = tuple(
+            self.session.execute(
+                select(AssetApprover.asset_id, AssetApprover.app_user_id)
+                .where(AssetApprover.asset_id.in_(asset_ids))
+                .order_by(AssetApprover.asset_id, AssetApprover.app_user_id)
+            ).all()
+        )
+        asset_approvers_by_asset: dict[str, list[str]] = {}
+        for asset_id, user_id in asset_approver_rows:
+            asset_approvers_by_asset.setdefault(asset_id, []).append(user_id)
+
+        user_ids = {
+            user_id for _, user_id in scope_approver_rows
+        } | {
+            user_id for _, user_id in asset_approver_rows
+        }
+        if actor is not None:
+            user_ids.add(actor.id)
+        users = {
+            row.id: ApprovalRoutingUser(
+                user_id=row.id,
+                active=bool(row.active),
+                permissions=self._user_permissions(row),
+            )
+            for row in (
+                self.session.scalars(
+                    select(AppUser)
+                    .where(AppUser.id.in_(tuple(sorted(user_ids))))
+                    .order_by(AppUser.id)
+                ).all()
+                if user_ids
+                else ()
+            )
+        }
+
+        result: dict[str, dict[str, object]] = {}
+        for asset, asset_type in assets:
+            scopes = tuple(scopes_by_type.get(asset.asset_type_id, ()))
+            relevant_scope_ids = {scope.id for scope in scopes}
+            scope_approver_ids = tuple(
+                user_id
+                for scope_id, user_id in scope_approver_rows
+                if scope_id in relevant_scope_ids
+            )
+            resolution = resolve_asset_line_approvers(
+                line_active=True,
+                asset_type_id=asset.asset_type_id,
+                asset_type_exists=True,
+                # Match mutation semantics: catalogue deactivation does not erase
+                # authority for an existing physical unit.
+                asset_type_active=True,
+                scope_candidates=tuple(
+                    ApprovalScopeCandidate(
+                        scope_id=scope.id,
+                        active=bool(scope.active),
+                    )
+                    for scope in scopes
+                ),
+                scope_approver_user_ids=scope_approver_ids,
+                users=users,
+                proposed_asset_id=asset.id,
+                proposed_asset_exists=True,
+                proposed_asset_active=True,
+                proposed_asset_type_matches=asset.asset_type_id == asset_type.id,
+                asset_approver_user_ids=tuple(
+                    asset_approvers_by_asset.get(asset.id, ())
+                ),
+            )
+            result[asset.id] = self._assignment_authority_projection(
+                actor=actor,
+                actor_has_manage_planning=actor_has_manage_planning,
+                resolution=resolution,
+            )
+        return result
+
+    def assignment_authority_capability(self, asset_id: str) -> dict[str, object]:
+        asset = self.session.get(Asset, str(asset_id or "").strip())
+        if asset is None:
+            return {
+                "allowed": False,
+                "can_assign": False,
+                "status": "NO_ACTIVE_SCOPE",
+                "code": "asset_not_found",
+                "message": "Unité d’actif introuvable.",
+                "diagnostics": [],
+            }
+        asset_type = self.session.get(AssetType, asset.asset_type_id)
+        if asset_type is None:
+            return {
+                "allowed": False,
+                "can_assign": False,
+                "status": "NO_ACTIVE_SCOPE",
+                "code": "asset_assignment_authority_scope_unavailable",
+                "message": "Aucun périmètre d’approbation actif valide pour ce type d’actif.",
+                "diagnostics": [DIAGNOSTIC_ASSET_TYPE_UNKNOWN],
+            }
+        return self.assignment_authority_capabilities(((asset, asset_type),))[asset.id]
 
     def _require_assignment_authorities(
         self,
