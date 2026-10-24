@@ -20,8 +20,9 @@ def attach_frontend(
     """Attach a Vite production build to an existing FastAPI application.
 
     API/system routes are registered by ``create_api_app`` before this helper is
-    called. The frontend therefore only owns ``/`` and the Vite ``/assets``
-    namespace; it never becomes a fallback for unknown API routes.
+    called. The frontend therefore owns ``/``, the explicit detached Planning
+    entry route, and the Vite ``/assets`` namespace; it never becomes a fallback
+    for unknown API routes.
     """
 
     root = Path(directory).expanduser().resolve()
@@ -50,6 +51,10 @@ def attach_frontend(
 
     @app.get("/", include_in_schema=False)
     def frontend_index() -> FileResponse:
+        return FileResponse(index)
+
+    @app.get("/planning/resources-window", include_in_schema=False)
+    def frontend_detached_planning() -> FileResponse:
         return FileResponse(index)
 
     app.state.frontend_dist = str(root)

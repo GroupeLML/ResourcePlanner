@@ -42,6 +42,12 @@ import {
   savePlanningResourceSort,
   savePlanningWeekStart,
 } from "./planningPreferences";
+import {
+  buildDetachedPlanningUrl,
+  publishPlanningInvalidation,
+  readDetachedPlanningContext,
+  subscribePlanningInvalidations,
+} from "./planningDetached";
 import { useAuth } from "./AuthContext";
 import {
   getCurrentPlanningViewPolicy,
@@ -856,11 +862,17 @@ function PlanningScopeSelector({
 export default function PlanningPage({
   onOpenDemands,
   onOpenDemand,
+  detached = false,
 }: {
   onOpenDemands?: () => void;
   onOpenDemand?: (demandNumber: string) => void;
+  detached?: boolean;
 }) {
   const { can, principal } = useAuth();
+  const detachedContext = useMemo(
+    () => detached ? readDetachedPlanningContext() : null,
+    [detached],
+  );
   const canManagePlanning = can("manage_planning");
   const canReadDemands = can("read_demands");
   const preferenceOwnerId = principal?.local_user_id ?? null;
@@ -877,11 +889,14 @@ export default function PlanningPage({
   const [scopeLoading, setScopeLoading] = useState(true);
   const [scopeError, setScopeError] = useState<string | null>(null);
   const planningIdentityKeyRef = useRef(planningIdentityKey);
+  const planningWindowIdRef = useRef(createClientId());
   const activePlanningRequestKeyRef = useRef("");
   const [loadedPreferenceOwnerId, setLoadedPreferenceOwnerId] = useState<string | null>(preferenceOwnerId);
-  const [weekStart, setWeekStart] = useState(() => loadPlanningWeekStart(preferenceOwnerId));
+  const [weekStart, setWeekStart] = useState(
+    () => detachedContext?.weekStart ?? loadPlanningWeekStart(preferenceOwnerId),
+  );
   const [resourceSortMode, setResourceSortMode] = useState<ResourceSortMode>(
-    () => loadPlanningResourceSort(preferenceOwnerId),
+    () => detachedContext?.resourceSortMode ?? loadPlanningResourceSort(preferenceOwnerId),
   );
   const [collapsedClasses, setCollapsedClasses] = useState<Set<string>>(
     () => new Set(loadCollapsedPlanningClasses(preferenceOwnerId)),
@@ -894,13 +909,19 @@ export default function PlanningPage({
   const [manualResourceOrder, setManualResourceOrder] = useState<Map<string, number>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
-  const [project, setProject] = useState("all");
-  const [confirmation, setConfirmation] = useState<ConfirmationFilter>("all");
-  const [classFilter, setClassFilter] = useState("all");
-  const [resourceFilter, setResourceFilter] = useState("all");
-  const [onlyWithCapacity, setOnlyWithCapacity] = useState(false);
-  const [filtersExpanded, setFiltersExpanded] = useState(false);
+  const [search, setSearch] = useState(detachedContext?.search ?? "");
+  const [project, setProject] = useState(detachedContext?.project ?? "all");
+  const [confirmation, setConfirmation] = useState<ConfirmationFilter>(
+    detachedContext?.confirmation ?? "all",
+  );
+  const [classFilter, setClassFilter] = useState(detachedContext?.classFilter ?? "all");
+  const [resourceFilter, setResourceFilter] = useState(detachedContext?.resourceFilter ?? "all");
+  const [onlyWithCapacity, setOnlyWithCapacity] = useState(
+    detachedContext?.onlyWithCapacity ?? false,
+  );
+  const [filtersExpanded, setFiltersExpanded] = useState(
+    detachedContext?.filtersExpanded ?? false,
+  );
   const [editingShift, setEditingShift] = useState<ShiftReadModel | null>(null);
   const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null);
   const [quickShiftOpen, setQuickShiftOpen] = useState(false);
@@ -920,6 +941,7 @@ export default function PlanningPage({
     message: string;
   } | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [detachError, setDetachError] = useState<string | null>(null);
 
   useEffect(() => {
     planningIdentityKeyRef.current = planningIdentityKey;
@@ -937,12 +959,13 @@ export default function PlanningPage({
     setManualResourceOrder(new Map());
     setLoading(true);
     setError(null);
-    setSearch("");
-    setProject("all");
-    setConfirmation("all");
-    setClassFilter("all");
-    setResourceFilter("all");
-    setOnlyWithCapacity(false);
+    setSearch(detachedContext?.search ?? "");
+    setProject(detachedContext?.project ?? "all");
+    setConfirmation(detachedContext?.confirmation ?? "all");
+    setClassFilter(detachedContext?.classFilter ?? "all");
+    setResourceFilter(detachedContext?.resourceFilter ?? "all");
+    setOnlyWithCapacity(detachedContext?.onlyWithCapacity ?? false);
+    setFiltersExpanded(detachedContext?.filtersExpanded ?? false);
     setEditingShift(null);
     setEditingSegmentId(null);
     setQuickShiftOpen(false);
@@ -962,8 +985,12 @@ export default function PlanningPage({
         if (controller.signal.aborted || planningIdentityKeyRef.current !== planningIdentityKey) return;
         setPlanningPolicy(policy);
         setPlanningPolicyOwnerKey(planningIdentityKey);
-        setScope(policy.default_scope);
-        if (!policy.default_scope) setScopeError("La lecture du Planning n’est pas autorisée pour cette identité.");
+        const requestedScope = detachedContext?.scope;
+        const resolvedScope = requestedScope && policy.available_scopes.includes(requestedScope)
+          ? requestedScope
+          : policy.default_scope;
+        setScope(resolvedScope);
+        if (!resolvedScope) setScopeError("La lecture du Planning n’est pas autorisée pour cette identité.");
       })
       .catch((reason: unknown) => {
         if (controller.signal.aborted || planningIdentityKeyRef.current !== planningIdentityKey) return;
@@ -977,7 +1004,7 @@ export default function PlanningPage({
         if (!controller.signal.aborted && planningIdentityKeyRef.current === planningIdentityKey) setScopeLoading(false);
       });
     return () => controller.abort();
-  }, [planningIdentityKey]);
+  }, [detachedContext, planningIdentityKey]);
 
   useEffect(() => {
     if (loadedPreferenceOwnerId === preferenceOwnerId) return;
@@ -1002,6 +1029,39 @@ export default function PlanningPage({
     saveCollapsedPlanningClasses(preferenceOwnerId, [...collapsedClasses]);
   }, [collapsedClasses, loadedPreferenceOwnerId, preferenceOwnerId]);
 
+  useEffect(() => {
+    if (!detached) return;
+    const next = new URL(buildDetachedPlanningUrl({
+      weekStart,
+      scope,
+      search,
+      project,
+      confirmation,
+      classFilter,
+      resourceFilter,
+      onlyWithCapacity,
+      filtersExpanded,
+      resourceSortMode,
+    }));
+    window.history.replaceState(
+      null,
+      "",
+      `${next.pathname}${next.search}`,
+    );
+  }, [
+    classFilter,
+    confirmation,
+    detached,
+    filtersExpanded,
+    onlyWithCapacity,
+    project,
+    resourceFilter,
+    resourceSortMode,
+    scope,
+    search,
+    weekStart,
+  ]);
+
   function toggleResourceClass(className: string) {
     setCollapsedClasses((current) => {
       const next = new Set(current);
@@ -1018,6 +1078,55 @@ export default function PlanningPage({
   const snapshotQueryKeyRef = useRef("");
   const today = toIsoDate(new Date());
   const quickShiftDefaultDay = today >= start && today <= end ? today : start;
+
+  useEffect(() => {
+    if (!detached) return;
+    const previousTitle = document.title;
+    document.title = "Ressources et quarts — ResourcePlanner";
+    return () => {
+      document.title = previousTitle;
+    };
+  }, [detached]);
+
+  useEffect(() => (
+    subscribePlanningInvalidations((message) => {
+      if (message.source === planningWindowIdRef.current || message.week !== start) return;
+      setRefreshKey((value) => value + 1);
+    })
+  ), [start]);
+
+  function refreshAfterMutation() {
+    publishPlanningInvalidation(weekStart, null, planningWindowIdRef.current);
+    setRefreshKey((value) => value + 1);
+  }
+
+  function openDetachedPlanningWindow() {
+    setDetachError(null);
+    const url = buildDetachedPlanningUrl({
+      weekStart,
+      scope,
+      search,
+      project,
+      confirmation,
+      classFilter,
+      resourceFilter,
+      onlyWithCapacity,
+      filtersExpanded,
+      resourceSortMode,
+    });
+    const detachedWindow = window.open(url, "_blank");
+    if (!detachedWindow) {
+      setDetachError(
+        "Le navigateur a bloqué l’ouverture de la fenêtre. Autorisez les fenêtres contextuelles pour ResourcePlanner puis réessayez.",
+      );
+      return;
+    }
+    try {
+      detachedWindow.opener = null;
+    } catch {
+      // The detached route does not depend on an opener reference.
+    }
+  }
 
   useEffect(() => {
     if (scopeLoading || planningPolicyOwnerKey !== planningIdentityKey) return;
@@ -1375,7 +1484,7 @@ export default function PlanningPage({
           tone: "success",
           message: `Ordre manuel mis à jour pour ${resourceDisplayName(resource.name)}.`,
         });
-        setRefreshKey((value) => value + 1);
+        refreshAfterMutation();
       }
     } catch (reason: unknown) {
       if (reason instanceof ApiError) {
@@ -1436,7 +1545,7 @@ export default function PlanningPage({
           tone: "success",
           message: `Fenêtre du besoin étendue automatiquement et quart déplacé vers ${targetResource.name} le ${targetDay}.`,
         });
-        setRefreshKey((value) => value + 1);
+        refreshAfterMutation();
         return;
       }
       setDropDialog({
@@ -1609,7 +1718,7 @@ export default function PlanningPage({
       }
 
       setDropDialog(null);
-      setRefreshKey((value) => value + 1);
+      refreshAfterMutation();
     } catch (reason: unknown) {
       if (
         reason instanceof OverallocationApiError
@@ -1661,7 +1770,7 @@ export default function PlanningPage({
         tone: "success",
         message: `Cible automatique de ${payload.segment_id} définie à ${resourceDisplayName(targetResource.name)}; le reliquat a été recalculé.`,
       });
-      setRefreshKey((value) => value + 1);
+      refreshAfterMutation();
     } catch (reason: unknown) {
       if (reason instanceof ApiError) {
         setDragFeedback({
@@ -1709,7 +1818,7 @@ export default function PlanningPage({
 
   if (planningPolicyOwnerKey !== planningIdentityKey) {
     return (
-      <section className="planning-page">
+      <section className={`planning-page${detached ? " is-detached" : ""}`}>
         <div className="planning-loading" role="status">
           Chargement du périmètre Planning…
         </div>
@@ -1718,13 +1827,17 @@ export default function PlanningPage({
   }
 
   return (
-    <section className="planning-page">
+    <section className={`planning-page${detached ? " is-detached" : ""}`}>
       <div className="planning-sticky-controls">
         <div className="page-heading planning-sticky-heading">
           <div>
             <span className="eyebrow">Planification opérationnelle</span>
-            <h1>Semaine du {formatWeekRange(weekStart)}</h1>
-            <p>Planning Web V2 alimenté directement par FastAPI. Capacité, indisponibilités et heures non placées sont calculées côté backend.</p>
+            <h1>{detached ? "Ressources et quarts — " : ""}Semaine du {formatWeekRange(weekStart)}</h1>
+            <p>
+              {detached
+                ? "Fenêtre détachée connectée au même Planning backend; les conflits restent protégés par la version Planning."
+                : "Planning Web V2 alimenté directement par FastAPI. Capacité, indisponibilités et heures non placées sont calculées côté backend."}
+            </p>
           </div>
           <div className="page-actions">
             <PlanningScopeSelector
@@ -1853,7 +1966,8 @@ export default function PlanningPage({
         </div>
       )}
 
-      <div className="metric-grid">
+      {!detached && (
+        <div className="metric-grid">
         <article>
           <span>Charge ferme</span>
           <strong>{snapshot ? `${hours(snapshot.firm_hours)} h` : "—"}</strong>
@@ -1874,9 +1988,8 @@ export default function PlanningPage({
           <strong>{snapshot ? `${hours(visibleShiftHours)} h` : "—"}</strong>
           <small>{snapshot ? `${shiftsPassingGlobalFilters.length} quart(s) avant recherche` : "Chargement…"}</small>
         </article>
-      </div>
-
-
+        </div>
+      )}
 
       {error && (
         <div className="error-panel">
@@ -1886,7 +1999,7 @@ export default function PlanningPage({
         </div>
       )}
 
-      {!loading && unplacedDiagnostics.length > 0 && snapshot && (
+      {!detached && !loading && unplacedDiagnostics.length > 0 && snapshot && (
         <section className="unplaced-panel" aria-label="Heures non placées">
           <div className="unplaced-heading">
             <div>
@@ -1920,6 +2033,12 @@ export default function PlanningPage({
         </section>
       )}
 
+      {!detached && detachError && (
+        <div className="info-banner is-error" role="alert">
+          {detachError}
+        </div>
+      )}
+
       <div className="planning-layout">
         <div className="planning-board-panel">
           <div className="planning-board-toolbar">
@@ -1939,6 +2058,15 @@ export default function PlanningPage({
               )}
             </div>
             <div className="planning-board-options">
+              {!detached && (
+                <button
+                  type="button"
+                  className="detach-planning-button"
+                  onClick={openDetachedPlanningWindow}
+                >
+                  Ouvrir dans une fenêtre séparée
+                </button>
+              )}
               <div className="legend">
                 <span><i className="legend-dot confirmed" />Confirmée</span>
                 <span><i className="legend-dot tentative" />Tentative</span>
@@ -2072,12 +2200,12 @@ export default function PlanningPage({
             onOpenDemands={canReadDemands ? onOpenDemands : undefined}
             onOpenDemand={canReadDemands ? setDetailDemandNumber : undefined}
             onOpenSegment={canManagePlanning ? setEditingSegmentId : undefined}
-            onAssigned={() => setRefreshKey((value) => value + 1)}
+            onAssigned={refreshAfterMutation}
           />
         </aside>
       </div>
 
-      {snapshot && (
+      {!detached && snapshot && (
         <AssetPlanningPanel
           snapshot={snapshot}
           canManage={canManagePlanning && !loading}
@@ -2093,6 +2221,7 @@ export default function PlanningPage({
           planningVersion={snapshot.planning_version}
           onClose={() => setAssetAssignment(null)}
           onRefresh={() => setRefreshKey((value) => value + 1)}
+          onMutated={refreshAfterMutation}
         />
       )}
 
@@ -2121,7 +2250,7 @@ export default function PlanningPage({
           onClose={() => setEditingShift(null)}
           onSaved={() => {
             setEditingShift(null);
-            setRefreshKey((value) => value + 1);
+            refreshAfterMutation();
           }}
           onStale={() => {
             setEditingShift(null);
@@ -2152,7 +2281,7 @@ export default function PlanningPage({
           onClose={() => setEditingSegmentId(null)}
           onSaved={() => {
             setEditingSegmentId(null);
-            setRefreshKey((value) => value + 1);
+            refreshAfterMutation();
           }}
           onOpenDemand={canReadDemands ? (demandNumber) => {
             setEditingSegmentId(null);
@@ -2180,7 +2309,7 @@ export default function PlanningPage({
           onClose={() => setManualAllocationOpen(false)}
           onSaved={() => {
             setManualAllocationOpen(false);
-            setRefreshKey((value) => value + 1);
+            refreshAfterMutation();
           }}
         />
       )}
@@ -2232,7 +2361,7 @@ export default function PlanningPage({
                 actionsOnly
                 showActions={canManagePlanning}
                 hasUnsavedChanges={detailContextDirty}
-                onChanged={() => setRefreshKey((value) => value + 1)}
+                onChanged={refreshAfterMutation}
               />
               <DemandDetail
                 demandNumber={detailDemandNumber}
@@ -2240,7 +2369,7 @@ export default function PlanningPage({
                 readOnly={!canManagePlanning}
                 compact
                 onDirtyChange={setDetailContextDirty}
-                onChanged={() => setRefreshKey((value) => value + 1)}
+                onChanged={refreshAfterMutation}
               />
             </div>
           </section>
@@ -2265,7 +2394,7 @@ export default function PlanningPage({
             tone: "success",
             message: `Quick Shift créé pour ${resourceDisplayName(resourceName)} le ${day}.`,
           });
-          setRefreshKey((value) => value + 1);
+          refreshAfterMutation();
         }}
       />
     </section>

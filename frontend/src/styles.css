@@ -778,6 +778,35 @@ h1 { font-size: 1.6rem; }
 .error-panel { display: grid; gap: .15rem; margin-bottom: .8rem; padding: .8rem .9rem; border: 1px solid #efbbbb; border-radius: 11px; background: #fff1f1; color: #8e2e2e; }
 .error-panel span, .error-panel small { font-size: .75rem; }
 
+.detached-planning-root {
+  min-height: 100vh;
+  padding: .6rem;
+}
+.planning-page.is-detached {
+  min-height: calc(100vh - 1.2rem);
+}
+.planning-page.is-detached .planning-sticky-controls {
+  top: 0;
+}
+.planning-page.is-detached .planning-board-scroll {
+  max-height: calc(100vh - 245px);
+}
+.detach-planning-button {
+  min-height: 32px;
+  padding: .36rem .58rem;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: .66rem;
+  font-weight: 800;
+}
+.detach-planning-button:hover { background: #dbe8ff; }
+.detach-planning-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .planning-layout { display: grid; grid-template-columns: minmax(0, 1fr) 310px; gap: .8rem; align-items: start; }
 .planning-board-panel, .pending-panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
 .planning-board-toolbar, .pending-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: .7rem; padding: .75rem .9rem; border-bottom: 1px solid var(--border); }
