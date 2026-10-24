@@ -2063,6 +2063,8 @@ class SqlAssetService:
             ).all()
         )
 
+        assignment_authorities = self.assignment_authority_capabilities(asset_rows)
+
         candidates: list[dict] = []
         for asset, asset_type in asset_rows:
             required = required_by_type.get(asset.asset_type_id, set())
@@ -2161,6 +2163,7 @@ class SqlAssetService:
                     "existing_operator_resource_id": existing_operator_resource_id,
                     "existing_start_date": existing_start_date,
                     "existing_end_date": existing_end_date,
+                    "assignment_authority": assignment_authorities[asset.id],
                 }
             )
         return {
