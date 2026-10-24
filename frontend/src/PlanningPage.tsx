@@ -42,6 +42,12 @@ import {
   savePlanningResourceSort,
   savePlanningWeekStart,
 } from "./planningPreferences";
+import {
+  buildDetachedPlanningUrl,
+  publishPlanningInvalidation,
+  readDetachedPlanningContext,
+  subscribePlanningInvalidations,
+} from "./planningDetached";
 import { useAuth } from "./AuthContext";
 import {
   getCurrentPlanningViewPolicy,
@@ -856,11 +862,17 @@ function PlanningScopeSelector({
 export default function PlanningPage({
   onOpenDemands,
   onOpenDemand,
+  detached = false,
 }: {
   onOpenDemands?: () => void;
   onOpenDemand?: (demandNumber: string) => void;
+  detached?: boolean;
 }) {
   const { can, principal } = useAuth();
+  const detachedContext = useMemo(
+    () => detached ? readDetachedPlanningContext() : null,
+    [detached],
+  );
   const canManagePlanning = can("manage_planning");
   const canReadDemands = can("read_demands");
   const preferenceOwnerId = principal?.local_user_id ?? null;
@@ -879,9 +891,11 @@ export default function PlanningPage({
   const planningIdentityKeyRef = useRef(planningIdentityKey);
   const activePlanningRequestKeyRef = useRef("");
   const [loadedPreferenceOwnerId, setLoadedPreferenceOwnerId] = useState<string | null>(preferenceOwnerId);
-  const [weekStart, setWeekStart] = useState(() => loadPlanningWeekStart(preferenceOwnerId));
+  const [weekStart, setWeekStart] = useState(
+    () => detachedContext?.weekStart ?? loadPlanningWeekStart(preferenceOwnerId),
+  );
   const [resourceSortMode, setResourceSortMode] = useState<ResourceSortMode>(
-    () => loadPlanningResourceSort(preferenceOwnerId),
+    () => detachedContext?.resourceSortMode ?? loadPlanningResourceSort(preferenceOwnerId),
   );
   const [collapsedClasses, setCollapsedClasses] = useState<Set<string>>(
     () => new Set(loadCollapsedPlanningClasses(preferenceOwnerId)),
@@ -894,13 +908,19 @@ export default function PlanningPage({
   const [manualResourceOrder, setManualResourceOrder] = useState<Map<string, number>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
-  const [project, setProject] = useState("all");
-  const [confirmation, setConfirmation] = useState<ConfirmationFilter>("all");
-  const [classFilter, setClassFilter] = useState("all");
-  const [resourceFilter, setResourceFilter] = useState("all");
-  const [onlyWithCapacity, setOnlyWithCapacity] = useState(false);
-  const [filtersExpanded, setFiltersExpanded] = useState(false);
+  const [search, setSearch] = useState(detachedContext?.search ?? "");
+  const [project, setProject] = useState(detachedContext?.project ?? "all");
+  const [confirmation, setConfirmation] = useState<ConfirmationFilter>(
+    detachedContext?.confirmation ?? "all",
+  );
+  const [classFilter, setClassFilter] = useState(detachedContext?.classFilter ?? "all");
+  const [resourceFilter, setResourceFilter] = useState(detachedContext?.resourceFilter ?? "all");
+  const [onlyWithCapacity, setOnlyWithCapacity] = useState(
+    detachedContext?.onlyWithCapacity ?? false,
+  );
+  const [filtersExpanded, setFiltersExpanded] = useState(
+    detachedContext?.filtersExpanded ?? false,
+  );
   const [editingShift, setEditingShift] = useState<ShiftReadModel | null>(null);
   const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null);
   const [quickShiftOpen, setQuickShiftOpen] = useState(false);
@@ -920,6 +940,7 @@ export default function PlanningPage({
     message: string;
   } | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [detachError, setDetachError] = useState<string | null>(null);
 
   useEffect(() => {
     planningIdentityKeyRef.current = planningIdentityKey;
