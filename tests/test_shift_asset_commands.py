@@ -41,10 +41,12 @@ from app.infrastructure.sql.approval_scope_models import (
     AssetTypeApprovalScopeMapping,
 )
 from app.infrastructure.sql.asset_models import AssetApprover
+from app.infrastructure.sql.asset_service import SqlAssetService
 from app.infrastructure.sql.identity_models import AppUser
 from app.server import create_api_app
 from app.server.security import static_auth_resolver
 from tests.approval_test_support import (
+    TEST_ADMIN_USER_ID,
     map_asset_type_to_test_approval_scope,
     routed_demand_payload,
     seed_test_approval_routing,
@@ -1842,6 +1844,56 @@ class ShiftAssetCommandTests(unittest.TestCase):
                 self.assertEqual(cancelled.planned_hours, Decimal("8.00"))
         finally:
             engine.dispose()
+
+    def test_760_candidate_authority_queries_do_not_grow_per_asset(self) -> None:
+        def query_count() -> int:
+            engine = create_sql_engine(self.url)
+            factory = create_session_factory(engine)
+            statements = 0
+
+            def count_statement(*_args, **_kwargs) -> None:
+                nonlocal statements
+                statements += 1
+
+            event.listen(engine, "before_cursor_execute", count_statement)
+            try:
+                with factory() as session:
+                    payload = SqlAssetService(
+                        session,
+                        actor=TEST_ADMIN_USER_ID,
+                    ).shift_asset_candidates("SHIFT-SKILLED")
+                    self.assertGreaterEqual(len(payload["candidates"]), 3)
+            finally:
+                event.remove(engine, "before_cursor_execute", count_statement)
+                engine.dispose()
+            return statements
+
+        baseline = query_count()
+
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory.begin() as session:
+                session.add_all(
+                    [
+                        Asset(
+                            id=f"ASSET-760-BATCH-{index}",
+                            code=f"760-BATCH-{index}",
+                            label=f"Actif batch 760 {index}",
+                            asset_type_id="TYPE-560B",
+                        )
+                        for index in range(20)
+                    ]
+                )
+        finally:
+            engine.dispose()
+
+        expanded = query_count()
+        self.assertLessEqual(
+            expanded,
+            baseline + 1,
+            "Authority projection must batch ApprovalScope/approver reads instead of adding per-asset queries.",
+        )
 
     def test_shift_asset_projection_query_count_does_not_grow_per_shift(self) -> None:
         engine = create_sql_engine(self.url)
