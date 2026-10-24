@@ -32,6 +32,7 @@ export type PlanningInvalidationMessage = {
   type: "planning-invalidated";
   week: string;
   planningVersion: number | null;
+  source: string;
 };
 
 const DETACHED_PATH = "/planning/resources-window";
@@ -117,12 +118,15 @@ function isPlanningInvalidationMessage(value: unknown): value is PlanningInvalid
       candidate.planningVersion === null
       || typeof candidate.planningVersion === "number"
     )
+    && typeof candidate.source === "string"
+    && candidate.source.length > 0
   );
 }
 
 export function publishPlanningInvalidation(
   weekStart: Date,
   planningVersion: number | null,
+  source: string,
 ) {
   if (typeof BroadcastChannel === "undefined") return;
   const channel = new BroadcastChannel(PLANNING_CHANNEL);
@@ -131,6 +135,7 @@ export function publishPlanningInvalidation(
       type: "planning-invalidated",
       week: toIsoDate(startOfWeek(weekStart)),
       planningVersion,
+      source,
     } satisfies PlanningInvalidationMessage);
   } finally {
     channel.close();
