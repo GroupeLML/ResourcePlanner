@@ -830,6 +830,15 @@ h1 { font-size: 1.6rem; }
 .resource-header { left: 0; z-index: 8; }
 .day-header { text-align: center; }
 .day-header small { display: block; margin-top: .08rem; color: var(--accent); font-size: .58rem; }
+.day-header.is-global-holiday { background: #fff8e7; }
+.holiday-header-badge { display: block; margin-top: .2rem; line-height: 1.15; }
+.holiday-header-badge strong { display: block; color: #8a5a00; font-size: .58rem; }
+.holiday-header-badge small { color: #6f5a2c; font-size: .55rem; font-weight: 700; }
+.holiday-day-cell { background-image: repeating-linear-gradient(135deg, rgba(180, 120, 0, .035) 0 8px, transparent 8px 16px); }
+.holiday-cell-badge { display: block; padding: .22rem .3rem; border: 1px solid #e7cf99; border-radius: 6px; background: #fff8e7; color: #6f5a2c; line-height: 1.2; }
+.holiday-cell-badge strong, .holiday-cell-badge small { display: block; }
+.holiday-cell-badge strong { font-size: .58rem; color: #8a5a00; }
+.holiday-cell-badge small { margin-top: .08rem; font-size: .54rem; }
 .today-column { background: #f5f8ff !important; }
 .resource-group { display: contents; }
 .resource-group-heading { grid-column: 1 / -1; position: sticky; left: 0; z-index: 5; display: flex; align-items: center; justify-content: space-between; width: 100%; padding: .42rem .65rem; border: 0; border-bottom: 1px solid #d5deeb; background: #e9eef6; color: #44536b; font: inherit; font-size: .67rem; text-align: left; cursor: pointer; appearance: none; }
