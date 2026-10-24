@@ -56,6 +56,21 @@ function reasonLabel(reason: string | null | undefined) {
   }
 }
 
+function authorityLabel(candidate: ShiftAssetCandidate) {
+  switch (candidate.assignment_authority.status) {
+    case "AUTHORIZED":
+      return "Autorisé à attribuer";
+    case "AMBIGUOUS_SCOPE":
+      return "Configuration d’autorité ambiguë";
+    case "NO_ACTIVE_SCOPE":
+      return "Périmètre d’approbation invalide";
+    case "NOT_AUTHORIZED":
+      return "Non autorisé à attribuer";
+    default:
+      return candidate.assignment_authority.message || "Autorité à vérifier";
+  }
+}
+
 function qualificationLabel(state: string | null | undefined) {
   switch (state) {
     case "SATISFIED":
@@ -164,7 +179,7 @@ export default function ShiftAssetAssignmentDialog({
             : "Indisponible";
       return {
         value: candidate.id,
-        label: `${candidate.code} — ${candidate.label} · ${candidate.asset_type_label} · ${availability} · ${qualificationLabel(candidate.qualification_state)}`,
+        label: `${candidate.code} — ${candidate.label} · ${candidate.asset_type_label} · ${availability} · ${qualificationLabel(candidate.qualification_state)} · ${candidate.assignment_authority.message}`,
         searchText: [
           candidate.code,
           candidate.label,
@@ -172,8 +187,10 @@ export default function ShiftAssetAssignmentDialog({
           candidate.asset_type_label,
           availability,
           reasonLabel(candidate.reason),
+          candidate.assignment_authority.message,
+          authorityLabel(candidate),
         ].join(" "),
-        disabled: !candidate.allowed,
+        disabled: !candidate.allowed || !candidate.assignment_authority.can_assign,
       };
     }),
     [candidateState],
@@ -189,7 +206,14 @@ export default function ShiftAssetAssignmentDialog({
 
   async function save() {
     if (busy) return;
-    if (mode !== "release" && (!selectedAssetId || !selectedCandidate?.allowed)) return;
+    if (
+      mode !== "release"
+      && (
+        !selectedAssetId
+        || !selectedCandidate?.allowed
+        || !selectedCandidate?.assignment_authority.can_assign
+      )
+    ) return;
 
     const expectedVersion = mode === "release"
       ? planningVersion
@@ -270,6 +294,7 @@ export default function ShiftAssetAssignmentDialog({
         loadingCandidates
         || !selectedAssetId
         || !selectedCandidate?.allowed
+        || !selectedCandidate?.assignment_authority.can_assign
         || noChange
         || (
           !projectReuse
@@ -420,8 +445,13 @@ export default function ShiftAssetAssignmentDialog({
                     <strong>{qualificationLabel(selectedCandidate.qualification_state)}</strong>
                   </div>
                   <div>
-                    <span>Admissibilité</span>
+                    <span>Admissibilité opérationnelle</span>
                     <strong>{selectedCandidate.allowed ? "Admissible" : reasonLabel(selectedCandidate.reason)}</strong>
+                  </div>
+                  <div data-testid="shift-asset-assignment-authority">
+                    <span>Attribution</span>
+                    <strong>{authorityLabel(selectedCandidate)}</strong>
+                    <small>{selectedCandidate.assignment_authority.message}</small>
                   </div>
                 </div>
               )}
@@ -429,6 +459,11 @@ export default function ShiftAssetAssignmentDialog({
               {selectedCandidate && !selectedCandidate.allowed && (
                 <div className="info-banner" role="status">
                   {reasonLabel(selectedCandidate.reason)}
+                </div>
+              )}
+              {selectedCandidate && !selectedCandidate?.assignment_authority.can_assign && (
+                <div className="info-banner" role="status" data-testid="shift-asset-authority-diagnostic">
+                  {selectedCandidate.assignment_authority.message}
                 </div>
               )}
             </>

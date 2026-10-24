@@ -225,6 +225,15 @@ export function setAssetApprover(
   );
 }
 
+export type AssetAssignmentAuthority = {
+  allowed: boolean;
+  can_assign: boolean;
+  status: "AUTHORIZED" | "NOT_AUTHORIZED" | "AMBIGUOUS_SCOPE" | "NO_ACTIVE_SCOPE";
+  code: string | null;
+  message: string;
+  diagnostics: string[];
+};
+
 export type ShiftAssetCandidate = {
   id: string;
   code: string;
@@ -250,6 +259,7 @@ export type ShiftAssetCandidate = {
   existing_operator_resource_id: string | null;
   existing_start_date: string | null;
   existing_end_date: string | null;
+  assignment_authority: AssetAssignmentAuthority;
 };
 
 export type ShiftAssetCandidates = {
@@ -433,11 +443,7 @@ export type ContinuousVehicleUnitState = {
   assignment_details_visible: boolean;
   scheduled_assignment_details_visible: boolean;
   has_ended_history: boolean;
-  assignment_authority: {
-    allowed: boolean;
-    code: string | null;
-    diagnostics: string[];
-  };
+  assignment_authority: AssetAssignmentAuthority;
   planning_version: number;
 };
 

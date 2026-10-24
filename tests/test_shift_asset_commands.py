@@ -34,10 +34,19 @@ from app.infrastructure.sql import (
     create_session_factory,
     create_sql_engine,
 )
-from app.application.security import AuthPrincipal, ROLE_MANAGER
+from app.application.security import AuthPrincipal, ROLE_COORDINATOR, ROLE_MANAGER
+from app.infrastructure.sql.approval_scope_models import (
+    ApprovalScope,
+    ApprovalScopeApprover,
+    AssetTypeApprovalScopeMapping,
+)
+from app.infrastructure.sql.asset_models import AssetApprover
+from app.infrastructure.sql.asset_service import SqlAssetService
+from app.infrastructure.sql.identity_models import AppUser
 from app.server import create_api_app
 from app.server.security import static_auth_resolver
 from tests.approval_test_support import (
+    TEST_ADMIN_USER_ID,
     map_asset_type_to_test_approval_scope,
     routed_demand_payload,
     seed_test_approval_routing,
@@ -188,6 +197,85 @@ class ShiftAssetCommandTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.client.__exit__(None, None, None)
         self.directory.cleanup()
+
+    def _authority_client(self, user_id: str, role: str) -> TestClient:
+        return TestClient(
+            create_api_app(
+                self.url,
+                auth_resolver=static_auth_resolver(
+                    AuthPrincipal.from_roles(
+                        local_user_id=user_id,
+                        issuer="urn:resourceplanner:test",
+                        subject=f"authority-{user_id}",
+                        display_name=f"Authority {user_id}",
+                        email=None,
+                        roles=(role,),
+                        auth_mode="test",
+                    )
+                ),
+            ),
+            raise_server_exceptions=False,
+        )
+
+    def _seed_authority_user(
+        self,
+        *,
+        user_id: str,
+        role: str,
+        scope_approver: bool = False,
+        asset_id: str | None = None,
+    ) -> None:
+        import json
+
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory.begin() as session:
+                if session.get(AppUser, user_id) is None:
+                    session.add(
+                        AppUser(
+                            id=user_id,
+                            issuer="urn:resourceplanner:test",
+                            subject=f"authority-{user_id}",
+                            display_name=f"Authority {user_id}",
+                            email=None,
+                            employee_external_id=None,
+                            roles_json=json.dumps([role]),
+                            active=True,
+                        )
+                    )
+                    session.flush()
+                if scope_approver and session.get(
+                    ApprovalScopeApprover,
+                    ("TEST-APPROVAL-SCOPE", user_id),
+                ) is None:
+                    session.add(
+                        ApprovalScopeApprover(
+                            approval_scope_id="TEST-APPROVAL-SCOPE",
+                            app_user_id=user_id,
+                        )
+                    )
+                if asset_id and session.get(AssetApprover, (asset_id, user_id)) is None:
+                    session.add(
+                        AssetApprover(asset_id=asset_id, app_user_id=user_id)
+                    )
+        finally:
+            engine.dispose()
+
+    def _candidate(
+        self,
+        asset_id: str,
+        *,
+        shift_id: str = "SHIFT-SKILLED",
+        client: TestClient | None = None,
+    ) -> dict:
+        response = (client or self.client).get(
+            f"/api/v1/assets/shifts/{shift_id}/assignment/candidates"
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        return next(
+            row for row in response.json()["candidates"] if row["id"] == asset_id
+        )
 
     def _version(self) -> int:
         response = self.client.get("/api/v1/assets/requirements")
@@ -675,6 +763,222 @@ class ShiftAssetCommandTests(unittest.TestCase):
                 self.assertIsNone(ad_hoc)
         finally:
             engine.dispose()
+
+    def test_760_candidate_authority_matrix_and_mutation_parity(self) -> None:
+        authorized = self._candidate("ASSET-A")
+        self.assertEqual(authorized["assignment_authority"]["status"], "AUTHORIZED")
+        self.assertTrue(authorized["assignment_authority"]["can_assign"])
+        self.assertTrue(authorized["allowed"])
+
+        created = self._set_asset(
+            asset_id="ASSET-A",
+            version=self._version(),
+            key="760-authorized",
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+
+        # Restore a clean shift attachment for the remaining authority cases.
+        released = self._set_asset(
+            asset_id=None,
+            version=created.json()["planning_version"],
+            key="760-authorized-release",
+        )
+        self.assertEqual(released.status_code, 200, released.text)
+
+        self._seed_authority_user(
+            user_id="U-760-NOAUTH",
+            role=ROLE_COORDINATOR,
+        )
+        with self._authority_client("U-760-NOAUTH", ROLE_COORDINATOR) as denied_client:
+            candidate = self._candidate("ASSET-A", client=denied_client)
+            self.assertTrue(candidate["available"])
+            self.assertEqual(candidate["qualification_state"], "SATISFIED")
+            self.assertTrue(candidate["allowed"])
+            self.assertEqual(
+                candidate["assignment_authority"]["status"],
+                "NOT_AUTHORIZED",
+            )
+            self.assertFalse(candidate["assignment_authority"]["can_assign"])
+            forced = self._set_asset(
+                asset_id="ASSET-A",
+                version=self._version(),
+                key="760-not-authorized",
+                client=denied_client,
+            )
+        self.assertEqual(forced.status_code, 403, forced.text)
+        self.assertEqual(
+            forced.json()["error"]["code"],
+            "asset_assignment_authority_required",
+        )
+
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory.begin() as session:
+                session.add(
+                    ApprovalScope(
+                        id="SCOPE-760-SECOND",
+                        code="SCOPE_760_SECOND",
+                        label="Deuxième périmètre 760",
+                        active=True,
+                        version=1,
+                    )
+                )
+                session.flush()
+                session.add(
+                    AssetTypeApprovalScopeMapping(
+                        asset_type_id="TYPE-560B",
+                        approval_scope_id="SCOPE-760-SECOND",
+                    )
+                )
+        finally:
+            engine.dispose()
+
+        ambiguous = self._candidate("ASSET-A")
+        self.assertEqual(
+            ambiguous["assignment_authority"]["status"],
+            "AMBIGUOUS_SCOPE",
+        )
+        self.assertFalse(ambiguous["assignment_authority"]["can_assign"])
+        self.assertEqual(
+            ambiguous["assignment_authority"]["message"],
+            "Type d’actif associé à plusieurs périmètres d’approbation.",
+        )
+        self.assertNotIn("approver", str(ambiguous["assignment_authority"]).lower())
+
+        blocked = self._set_asset(
+            asset_id="ASSET-A",
+            version=self._version(),
+            key="760-ambiguous",
+        )
+        self.assertEqual(blocked.status_code, 403, blocked.text)
+        self.assertEqual(
+            blocked.json()["error"]["code"],
+            "asset_assignment_authority_required",
+        )
+
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory.begin() as session:
+                mapping = session.get(
+                    AssetTypeApprovalScopeMapping,
+                    ("TYPE-560B", "SCOPE-760-SECOND"),
+                )
+                assert mapping is not None
+                session.delete(mapping)
+                primary = session.get(ApprovalScope, "TEST-APPROVAL-SCOPE")
+                assert primary is not None
+                primary.active = False
+        finally:
+            engine.dispose()
+
+        no_scope = self._candidate("ASSET-A")
+        self.assertEqual(
+            no_scope["assignment_authority"]["status"],
+            "NO_ACTIVE_SCOPE",
+        )
+        self.assertFalse(no_scope["assignment_authority"]["can_assign"])
+        self.assertIn(
+            "Aucun périmètre d’approbation actif valide",
+            no_scope["assignment_authority"]["message"],
+        )
+
+    def test_760_exact_unit_authority_requires_valid_unambiguous_scope(self) -> None:
+        self._seed_authority_user(
+            user_id="U-760-EXACT",
+            role=ROLE_COORDINATOR,
+            asset_id="ASSET-A",
+        )
+        with self._authority_client("U-760-EXACT", ROLE_COORDINATOR) as exact_client:
+            exact_a = self._candidate("ASSET-A", client=exact_client)
+            exact_b = self._candidate("ASSET-B", client=exact_client)
+
+        self.assertEqual(exact_a["assignment_authority"]["status"], "AUTHORIZED")
+        self.assertEqual(
+            exact_b["assignment_authority"]["status"],
+            "NOT_AUTHORIZED",
+        )
+
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory.begin() as session:
+                session.add(
+                    ApprovalScope(
+                        id="SCOPE-760-AMB",
+                        code="SCOPE_760_AMB",
+                        label="Ambigu 760",
+                        active=True,
+                        version=1,
+                    )
+                )
+                session.flush()
+                session.add(
+                    AssetTypeApprovalScopeMapping(
+                        asset_type_id="TYPE-560B",
+                        approval_scope_id="SCOPE-760-AMB",
+                    )
+                )
+        finally:
+            engine.dispose()
+
+        with self._authority_client("U-760-EXACT", ROLE_COORDINATOR) as exact_client:
+            exact_ambiguous = self._candidate("ASSET-A", client=exact_client)
+        self.assertEqual(
+            exact_ambiguous["assignment_authority"]["status"],
+            "AMBIGUOUS_SCOPE",
+        )
+        self.assertFalse(exact_ambiguous["assignment_authority"]["can_assign"])
+
+    def test_760_manage_planning_and_operational_states_are_independent(self) -> None:
+        self._seed_authority_user(
+            user_id="U-760-MANAGER",
+            role=ROLE_MANAGER,
+            scope_approver=True,
+        )
+        with self._authority_client("U-760-MANAGER", ROLE_MANAGER) as manager_client:
+            candidate = self._candidate("ASSET-A", client=manager_client)
+        self.assertEqual(
+            candidate["assignment_authority"]["status"],
+            "NOT_AUTHORIZED",
+        )
+        self.assertFalse(candidate["assignment_authority"]["can_assign"])
+
+        unqualified = self._candidate(
+            "ASSET-A",
+            shift_id="SHIFT-UNSKILLED",
+        )
+        self.assertEqual(unqualified["qualification_state"], "SKILL_MISMATCH")
+        self.assertFalse(unqualified["allowed"])
+        self.assertEqual(
+            unqualified["assignment_authority"]["status"],
+            "AUTHORIZED",
+        )
+
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory.begin() as session:
+                session.add(
+                    AssetUnavailability(
+                        id="UNAVAILABLE-760",
+                        asset_id="ASSET-B",
+                        start_date=DAY,
+                        end_date=DAY,
+                        reason="760",
+                    )
+                )
+        finally:
+            engine.dispose()
+
+        unavailable = self._candidate("ASSET-B")
+        self.assertFalse(unavailable["available"])
+        self.assertFalse(unavailable["allowed"])
+        self.assertEqual(
+            unavailable["assignment_authority"]["status"],
+            "AUTHORIZED",
+        )
 
     def test_shift_projection_and_candidates_are_backend_authoritative(self) -> None:
         assigned = self._set_asset(
@@ -1540,6 +1844,56 @@ class ShiftAssetCommandTests(unittest.TestCase):
                 self.assertEqual(cancelled.planned_hours, Decimal("8.00"))
         finally:
             engine.dispose()
+
+    def test_760_candidate_authority_queries_do_not_grow_per_asset(self) -> None:
+        def query_count() -> int:
+            engine = create_sql_engine(self.url)
+            factory = create_session_factory(engine)
+            statements = 0
+
+            def count_statement(*_args, **_kwargs) -> None:
+                nonlocal statements
+                statements += 1
+
+            event.listen(engine, "before_cursor_execute", count_statement)
+            try:
+                with factory() as session:
+                    payload = SqlAssetService(
+                        session,
+                        actor=TEST_ADMIN_USER_ID,
+                    ).shift_asset_candidates("SHIFT-SKILLED")
+                    self.assertGreaterEqual(len(payload["candidates"]), 3)
+            finally:
+                event.remove(engine, "before_cursor_execute", count_statement)
+                engine.dispose()
+            return statements
+
+        baseline = query_count()
+
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory.begin() as session:
+                session.add_all(
+                    [
+                        Asset(
+                            id=f"ASSET-760-BATCH-{index}",
+                            code=f"760-BATCH-{index}",
+                            label=f"Actif batch 760 {index}",
+                            asset_type_id="TYPE-560B",
+                        )
+                        for index in range(20)
+                    ]
+                )
+        finally:
+            engine.dispose()
+
+        expanded = query_count()
+        self.assertLessEqual(
+            expanded,
+            baseline + 1,
+            "Authority projection must batch ApprovalScope/approver reads instead of adding per-asset queries.",
+        )
 
     def test_shift_asset_projection_query_count_does_not_grow_per_shift(self) -> None:
         engine = create_sql_engine(self.url)

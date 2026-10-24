@@ -278,8 +278,8 @@ export default function AssetContinuousAssignmentEditor({
           )}
 
           {!authorityAllowed && (
-            <div className="subtle-status">
-              L’attribution de cette unité n’est pas autorisée pour l’utilisateur courant.
+            <div className="subtle-status" data-testid="asset-continuous-authority-diagnostic">
+              {state.assignment_authority.message}
             </div>
           )}
 
