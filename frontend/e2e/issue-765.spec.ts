@@ -385,6 +385,14 @@ test("765 conserve la sécurité CAS si la synchronisation inter-fenêtres est i
   });
 
   try {
+    // openCoordinator() loads Planning before this test installs its mocked
+    // snapshot routes. Reload and re-enter Planning so both windows start from
+    // the same synthetic version-100 backend state.
+    await page.reload();
+    await expect(page.locator(".sidebar-footer")).toContainText("Coordonnateur E2E");
+    await page.locator(".main-nav").getByRole("button", { name: /Planning opérationnel/i }).click();
+    await expect(page.locator('.shift-card[data-allocation-id="SHIFT-765-CAS"]')).toBeVisible();
+
     const [detached] = await Promise.all([
       context.waitForEvent("page"),
       page.getByRole("button", { name: "Ouvrir dans une fenêtre séparée" }).click(),
