@@ -1784,7 +1784,7 @@ export default function PlanningPage({
 
   if (planningPolicyOwnerKey !== planningIdentityKey) {
     return (
-      <section className="planning-page">
+      <section className={`planning-page${detached ? " is-detached" : ""}`}>
         <div className="planning-loading" role="status">
           Chargement du périmètre Planning…
         </div>
@@ -1793,13 +1793,17 @@ export default function PlanningPage({
   }
 
   return (
-    <section className="planning-page">
+    <section className={`planning-page${detached ? " is-detached" : ""}`}>
       <div className="planning-sticky-controls">
         <div className="page-heading planning-sticky-heading">
           <div>
             <span className="eyebrow">Planification opérationnelle</span>
-            <h1>Semaine du {formatWeekRange(weekStart)}</h1>
-            <p>Planning Web V2 alimenté directement par FastAPI. Capacité, indisponibilités et heures non placées sont calculées côté backend.</p>
+            <h1>{detached ? "Ressources et quarts — " : ""}Semaine du {formatWeekRange(weekStart)}</h1>
+            <p>
+              {detached
+                ? "Fenêtre détachée connectée au même Planning backend; les conflits restent protégés par la version Planning."
+                : "Planning Web V2 alimenté directement par FastAPI. Capacité, indisponibilités et heures non placées sont calculées côté backend."}
+            </p>
           </div>
           <div className="page-actions">
             <PlanningScopeSelector
@@ -1928,7 +1932,8 @@ export default function PlanningPage({
         </div>
       )}
 
-      <div className="metric-grid">
+      {!detached && (
+        <div className="metric-grid">
         <article>
           <span>Charge ferme</span>
           <strong>{snapshot ? `${hours(snapshot.firm_hours)} h` : "—"}</strong>
@@ -1949,9 +1954,8 @@ export default function PlanningPage({
           <strong>{snapshot ? `${hours(visibleShiftHours)} h` : "—"}</strong>
           <small>{snapshot ? `${shiftsPassingGlobalFilters.length} quart(s) avant recherche` : "Chargement…"}</small>
         </article>
-      </div>
-
-
+        </div>
+      )}
 
       {error && (
         <div className="error-panel">
@@ -1961,7 +1965,7 @@ export default function PlanningPage({
         </div>
       )}
 
-      {!loading && unplacedDiagnostics.length > 0 && snapshot && (
+      {!detached && !loading && unplacedDiagnostics.length > 0 && snapshot && (
         <section className="unplaced-panel" aria-label="Heures non placées">
           <div className="unplaced-heading">
             <div>
@@ -1995,6 +1999,12 @@ export default function PlanningPage({
         </section>
       )}
 
+      {!detached && detachError && (
+        <div className="info-banner is-error" role="alert">
+          {detachError}
+        </div>
+      )}
+
       <div className="planning-layout">
         <div className="planning-board-panel">
           <div className="planning-board-toolbar">
@@ -2014,6 +2024,15 @@ export default function PlanningPage({
               )}
             </div>
             <div className="planning-board-options">
+              {!detached && (
+                <button
+                  type="button"
+                  className="detach-planning-button"
+                  onClick={openDetachedPlanningWindow}
+                >
+                  Ouvrir dans une fenêtre séparée
+                </button>
+              )}
               <div className="legend">
                 <span><i className="legend-dot confirmed" />Confirmée</span>
                 <span><i className="legend-dot tentative" />Tentative</span>
@@ -2152,7 +2171,7 @@ export default function PlanningPage({
         </aside>
       </div>
 
-      {snapshot && (
+      {!detached && snapshot && (
         <AssetPlanningPanel
           snapshot={snapshot}
           canManage={canManagePlanning && !loading}
