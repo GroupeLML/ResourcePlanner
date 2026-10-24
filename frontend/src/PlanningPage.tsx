@@ -1028,6 +1028,39 @@ export default function PlanningPage({
     saveCollapsedPlanningClasses(preferenceOwnerId, [...collapsedClasses]);
   }, [collapsedClasses, loadedPreferenceOwnerId, preferenceOwnerId]);
 
+  useEffect(() => {
+    if (!detached) return;
+    const next = new URL(buildDetachedPlanningUrl({
+      weekStart,
+      scope,
+      search,
+      project,
+      confirmation,
+      classFilter,
+      resourceFilter,
+      onlyWithCapacity,
+      filtersExpanded,
+      resourceSortMode,
+    }));
+    window.history.replaceState(
+      null,
+      "",
+      `${next.pathname}${next.search}`,
+    );
+  }, [
+    classFilter,
+    confirmation,
+    detached,
+    filtersExpanded,
+    onlyWithCapacity,
+    project,
+    resourceFilter,
+    resourceSortMode,
+    scope,
+    search,
+    weekStart,
+  ]);
+
   function toggleResourceClass(className: string) {
     setCollapsedClasses((current) => {
       const next = new Set(current);
