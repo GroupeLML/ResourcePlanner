@@ -179,7 +179,7 @@ export default function ShiftAssetAssignmentDialog({
             : "Indisponible";
       return {
         value: candidate.id,
-        label: `${candidate.code} — ${candidate.label} · ${candidate.asset_type_label} · ${availability} · ${qualificationLabel(candidate.qualification_state)} · ${authorityLabel(candidate)}`,
+        label: `${candidate.code} — ${candidate.label} · ${candidate.asset_type_label} · ${availability} · ${qualificationLabel(candidate.qualification_state)} · ${candidate.assignment_authority.message}`,
         searchText: [
           candidate.code,
           candidate.label,
