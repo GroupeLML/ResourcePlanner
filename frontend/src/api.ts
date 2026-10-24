@@ -583,6 +583,8 @@ export type ResourceReadModel = {
   erp_phone: string | null;
   erp_branch_code: string | null;
   erp_contact_id: number | null;
+  planning_subgroup_code: string | null;
+  planning_subgroup_label: string | null;
 };
 
 export type ResourceWrite = {
