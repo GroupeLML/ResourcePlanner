@@ -240,17 +240,20 @@ class AssetRequirementContextMigrationTests(unittest.TestCase):
                                 workforce_request_id, source_request_line_id,
                                 source_period_id, approval_revision_id,
                                 approved_entry_key, asset_type_id,
-                                start_date, end_date, status
+                                start_date, end_date, resource_period_mode, status
                             ) VALUES (
                                 :id, :project_id, :origin, NULL,
                                 :resource_requirement_id, :context_resource_id,
                                 NULL, NULL, NULL, NULL, NULL, 'AT-1',
-                                '2026-10-01', '2026-10-01', 'Planifié'
+                                '2026-10-01', '2026-10-01', :resource_period_mode, 'Planifié'
                             )
                         """),
                         {
                             "id": f"AR-{origin}",
                             "origin": origin,
+                            "resource_period_mode": (
+                                "BOUNDED" if origin == "RESOURCE_PERIOD" else None
+                            ),
                             **shape,
                         },
                     )
