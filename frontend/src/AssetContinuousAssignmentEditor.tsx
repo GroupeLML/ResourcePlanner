@@ -85,6 +85,7 @@ export default function AssetContinuousAssignmentEditor({
   const assignment = state?.assignment ?? null;
   const authorityAllowed = Boolean(state?.assignment_authority.allowed);
   const detailsVisible = Boolean(state?.assignment_details_visible);
+  const assignmentEditable = !assignment || detailsVisible;
   const currentResourceId = assignment?.operator_resource_id ?? null;
   const currentResource = currentResourceId
     ? resources.find((row) => row.id === currentResourceId) ?? null
@@ -123,7 +124,7 @@ export default function AssetContinuousAssignmentEditor({
   }
 
   function saveAssignment() {
-    if (!state || !authorityAllowed || !detailsVisible) return;
+    if (!state || !authorityAllowed || !assignmentEditable) return;
 
     if (!assignment) {
       if (!assigned || !resourceId) return;
@@ -207,7 +208,7 @@ export default function AssetContinuousAssignmentEditor({
             <input
               type="checkbox"
               checked={assigned}
-              disabled={pending || !authorityAllowed || !detailsVisible}
+              disabled={pending || !authorityAllowed || !assignmentEditable}
               onChange={(event) => setAssigned(event.target.checked)}
             />
             Attitré
@@ -241,7 +242,7 @@ export default function AssetContinuousAssignmentEditor({
             <div className="subtle-status">Une attribution historique terminée existe; le véhicule n’est pas actuellement attitré.</div>
           )}
 
-          {(assigned || assignment) && detailsVisible && (
+          {(assigned || assignment) && assignmentEditable && (
             <div className="form-grid two-columns">
               <label>
                 Ressource
@@ -281,7 +282,7 @@ export default function AssetContinuousAssignmentEditor({
             </div>
           )}
 
-          {detailsVisible && (
+          {assignmentEditable && (
             <div className="editor-actions">
               <button
                 className="primary-button"
