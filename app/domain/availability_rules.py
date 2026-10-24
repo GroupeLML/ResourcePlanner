@@ -156,6 +156,9 @@ class AvailabilityDayState:
     available: bool
     hours: float
     reason: str | None = None
+    reason_code: str | None = None
+    reason_label: str | None = None
+    holiday_scope: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,7 +188,13 @@ def availability_state_for_day(
     resource_id = str(resource_id or "").strip()
     effective_resource_class = _effective_resource_class(rows, resource_id, resource_class)
     if not has_standard_schedule_in_window(rows, resource_id, day, day):
-        return AvailabilityDayState(False, 0.0, "Aucun horaire standard")
+        return AvailabilityDayState(
+            False,
+            0.0,
+            "Aucun horaire standard",
+            "NO_STANDARD_SCHEDULE",
+            "Aucun horaire standard",
+        )
 
     standards_in_window = [
         row
@@ -206,13 +215,25 @@ def availability_state_for_day(
         if hours > 0:
             valid_standards.append((row, hours))
     if not valid_standards:
-        return AvailabilityDayState(False, 0.0, "Horaire standard invalide")
+        return AvailabilityDayState(
+            False,
+            0.0,
+            "Horaire standard invalide",
+            "INVALID_STANDARD_SCHEDULE",
+            "Horaire standard invalide",
+        )
 
     for row in rows:
         if str(row.get("Type") or "").strip() != "Vacances":
             continue
         if str(row.get("Technicien") or "").strip() == resource_id and _record_applies(row, day):
-            return AvailabilityDayState(False, 0.0, "Vacances")
+            return AvailabilityDayState(
+                False,
+                0.0,
+                "Vacances",
+                "VACATION",
+                "Vacances",
+            )
 
     for row in rows:
         if str(row.get("Type") or "").strip() != "Jour férié":
@@ -224,7 +245,22 @@ def availability_state_for_day(
         if not target and class_codes and effective_resource_class not in class_codes:
             continue
         if _record_applies(row, day):
-            return AvailabilityDayState(False, 0.0, "Jour férié")
+            holiday_scope = (
+                "RESOURCE"
+                if target
+                else "RESOURCE_CLASS"
+                if class_codes
+                else "GLOBAL"
+            )
+            holiday_label = str(row.get("Note") or "").strip() or "Jour férié"
+            return AvailabilityDayState(
+                False,
+                0.0,
+                "Jour férié",
+                "HOLIDAY",
+                holiday_label,
+                holiday_scope,
+            )
 
     matching_standards = [
         (row, hours)
@@ -232,9 +268,15 @@ def availability_state_for_day(
         if _weekday_matches(row, day)
     ]
     if not matching_standards:
-        return AvailabilityDayState(False, 0.0, "Hors horaire standard")
+        return AvailabilityDayState(
+            False,
+            0.0,
+            "Hors horaire standard",
+            "OUTSIDE_STANDARD_SCHEDULE",
+            "Hors horaire standard",
+        )
 
-    return AvailabilityDayState(True, matching_standards[0][1], None)
+    return AvailabilityDayState(True, matching_standards[0][1], None, None, None)
 
 
 def outside_standard_hours_decision_for_day(
