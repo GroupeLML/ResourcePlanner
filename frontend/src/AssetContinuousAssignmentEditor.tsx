@@ -12,6 +12,7 @@ import {
   transferContinuousVehicleAssignment,
 } from "./assetApi";
 import { createClientId } from "./clientId";
+import { resourceDisplayName } from "./resourceLabels";
 
 const STALE_CODES = new Set(["planning_version_conflict", "planning_version_stale"]);
 
@@ -23,7 +24,7 @@ function todayIso() {
 }
 
 function resourceLabel(resource: ResourceReadModel) {
-  return resource.name;
+  return resourceDisplayName(resource.name);
 }
 
 export default function AssetContinuousAssignmentEditor({
