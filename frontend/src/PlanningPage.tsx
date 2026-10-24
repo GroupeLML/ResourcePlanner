@@ -1450,7 +1450,7 @@ export default function PlanningPage({
           tone: "success",
           message: `Ordre manuel mis à jour pour ${resourceDisplayName(resource.name)}.`,
         });
-        setRefreshKey((value) => value + 1);
+        refreshAfterMutation();
       }
     } catch (reason: unknown) {
       if (reason instanceof ApiError) {
@@ -1511,7 +1511,7 @@ export default function PlanningPage({
           tone: "success",
           message: `Fenêtre du besoin étendue automatiquement et quart déplacé vers ${targetResource.name} le ${targetDay}.`,
         });
-        setRefreshKey((value) => value + 1);
+        refreshAfterMutation();
         return;
       }
       setDropDialog({
@@ -1684,7 +1684,7 @@ export default function PlanningPage({
       }
 
       setDropDialog(null);
-      setRefreshKey((value) => value + 1);
+      refreshAfterMutation();
     } catch (reason: unknown) {
       if (
         reason instanceof OverallocationApiError
@@ -1736,7 +1736,7 @@ export default function PlanningPage({
         tone: "success",
         message: `Cible automatique de ${payload.segment_id} définie à ${resourceDisplayName(targetResource.name)}; le reliquat a été recalculé.`,
       });
-      setRefreshKey((value) => value + 1);
+      refreshAfterMutation();
     } catch (reason: unknown) {
       if (reason instanceof ApiError) {
         setDragFeedback({
@@ -2147,7 +2147,7 @@ export default function PlanningPage({
             onOpenDemands={canReadDemands ? onOpenDemands : undefined}
             onOpenDemand={canReadDemands ? setDetailDemandNumber : undefined}
             onOpenSegment={canManagePlanning ? setEditingSegmentId : undefined}
-            onAssigned={() => setRefreshKey((value) => value + 1)}
+            onAssigned={refreshAfterMutation}
           />
         </aside>
       </div>
@@ -2196,7 +2196,7 @@ export default function PlanningPage({
           onClose={() => setEditingShift(null)}
           onSaved={() => {
             setEditingShift(null);
-            setRefreshKey((value) => value + 1);
+            refreshAfterMutation();
           }}
           onStale={() => {
             setEditingShift(null);
@@ -2227,7 +2227,7 @@ export default function PlanningPage({
           onClose={() => setEditingSegmentId(null)}
           onSaved={() => {
             setEditingSegmentId(null);
-            setRefreshKey((value) => value + 1);
+            refreshAfterMutation();
           }}
           onOpenDemand={canReadDemands ? (demandNumber) => {
             setEditingSegmentId(null);
@@ -2255,7 +2255,7 @@ export default function PlanningPage({
           onClose={() => setManualAllocationOpen(false)}
           onSaved={() => {
             setManualAllocationOpen(false);
-            setRefreshKey((value) => value + 1);
+            refreshAfterMutation();
           }}
         />
       )}
@@ -2307,7 +2307,7 @@ export default function PlanningPage({
                 actionsOnly
                 showActions={canManagePlanning}
                 hasUnsavedChanges={detailContextDirty}
-                onChanged={() => setRefreshKey((value) => value + 1)}
+                onChanged={refreshAfterMutation}
               />
               <DemandDetail
                 demandNumber={detailDemandNumber}
@@ -2315,7 +2315,7 @@ export default function PlanningPage({
                 readOnly={!canManagePlanning}
                 compact
                 onDirtyChange={setDetailContextDirty}
-                onChanged={() => setRefreshKey((value) => value + 1)}
+                onChanged={refreshAfterMutation}
               />
             </div>
           </section>
@@ -2340,7 +2340,7 @@ export default function PlanningPage({
             tone: "success",
             message: `Quick Shift créé pour ${resourceDisplayName(resourceName)} le ${day}.`,
           });
-          setRefreshKey((value) => value + 1);
+          refreshAfterMutation();
         }}
       />
     </section>
