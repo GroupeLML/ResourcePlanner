@@ -60,11 +60,13 @@ class Issue765ContractTests(unittest.TestCase):
         self.assertIn('new BroadcastChannel(PLANNING_CHANNEL)', detached)
         self.assertIn('"planning-invalidated"', detached)
         self.assertIn("planningVersion", detached)
+        self.assertIn("source", detached)
         self.assertIn("channel.close()", detached)
         self.assertNotIn("snapshot:", detached)
         self.assertNotIn("resources:", detached)
         self.assertNotIn("shifts:", detached)
         self.assertIn("subscribePlanningInvalidations", planning)
+        self.assertIn("message.source === planningWindowIdRef.current", planning)
         self.assertIn("publishPlanningInvalidation", planning)
         self.assertIn("refreshAfterMutation", planning)
 
@@ -78,8 +80,8 @@ class Issue765ContractTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn('@app.get("/planning/resources-window"', frontend)
-        self.assertIn("@app.get("/"", frontend)
-        self.assertNotIn("@app.get("/{path:path}"", frontend)
+        self.assertIn('@app.get("/", include_in_schema=False)', frontend)
+        self.assertNotIn('@app.get("/{path:path}"', frontend)
 
 
 if __name__ == "__main__":
