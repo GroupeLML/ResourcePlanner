@@ -736,7 +736,7 @@ export default function ResourcesPage() {
         </div>
       </div>
 
-      <AssetCatalogPanel competencies={competencies} />
+      <AssetCatalogPanel competencies={competencies} resources={resources} />
 
       <CompetencyCatalogPanel
         competencies={competencies}
