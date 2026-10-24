@@ -368,6 +368,12 @@ def _seed(database_url: str) -> None:
                         label="Camion E2E 762 planifié",
                         asset_type_id="AT-VEHICLE-744",
                     ),
+                    Asset(
+                        id="A-VEHICLE-762-C",
+                        code="VEH-762-03",
+                        label="Camion E2E 762 révocation",
+                        asset_type_id="AT-VEHICLE-744",
+                    ),
                 ]
             )
             session.add_all(
