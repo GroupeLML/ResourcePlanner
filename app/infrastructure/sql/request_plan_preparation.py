@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from ...domain.active_days import normalize_active_day_target, split_total_workforce_hours
 from ...domain.approval_envelope import EnvelopeEntryIdentity
 from ...domain.confirmation import CONFIRMATION_CONFIRMED, normalize_confirmation
+from ...domain.effective_need import resolve_effective_slot_need
 from ...domain.demand_periods import PERIOD_KIND_CUMULATIVE, resolve_period_authority
 from .demand_period_models import (
     WorkforceRequestPeriod,
@@ -20,6 +21,7 @@ from .demand_period_models import (
     WorkforceRequestPeriodSelection,
 )
 from .operational_choice_repository import SqlRequestOperationalChoiceRepository
+from .operational_choice_models import RequestCompletionReduction, RequestRequirementPlanningIntent
 from .segment_asset_guard import segment_asset_dependencies
 from .approval_revision_models import RequestApprovalRevision
 from .planning_window_override_repository import SqlPlanningWindowOverrideRepository
@@ -729,6 +731,39 @@ class SqlRequestPlanPreparer:
                 else (1 if line_mode else max(int(row.get("slot_count") or 1), 1))
             )
             split_hours = split_total_workforce_hours(total_hours, slot_count)
+            persisted_intents = {
+                int(intent.slot_index): intent
+                for intent in self._session.scalars(
+                    select(RequestRequirementPlanningIntent).where(
+                        RequestRequirementPlanningIntent.workforce_request_id == request.id,
+                        RequestRequirementPlanningIntent.approved_entry_key == identity_key,
+                    )
+                ).all()
+            }
+            active_reductions_by_slot: dict[int, tuple[Decimal, ...]] = {}
+            for slot_index, intent in persisted_intents.items():
+                reductions = tuple(
+                    Decimal(str(value)).quantize(Decimal("0.01"))
+                    for value in self._session.scalars(
+                        select(RequestCompletionReduction.reduction_hours).where(
+                            RequestCompletionReduction.planning_intent_id == intent.id,
+                            RequestCompletionReduction.reconciliation_state == "ACTIVE",
+                        )
+                    ).all()
+                )
+                if reductions:
+                    active_reductions_by_slot[slot_index] = reductions
+            if active_reductions_by_slot and any(index >= slot_count for index in active_reductions_by_slot):
+                raise ValueError(
+                    "reduction_rebase_required: la topologie approuvée ne correspond plus aux réductions actives."
+                )
+            split_hours = tuple(
+                resolve_effective_slot_need(
+                    hours,
+                    active_reductions_by_slot.get(index, ()),
+                )
+                for index, hours in enumerate(split_hours)
+            )
             base_key = (
                 ("PERIOD", line_id, period_key)
                 if period_key is not None
@@ -739,6 +774,8 @@ class SqlRequestPlanPreparer:
                 default=CONFIRMATION_CONFIRMED,
             )
             for index, hours in enumerate(split_hours):
+                if Decimal(str(hours)).quantize(Decimal("0.01")) <= 0:
+                    continue
                 spec_key = (
                     base_key
                     if line_mode and slot_count == 1
