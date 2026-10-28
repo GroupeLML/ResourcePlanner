@@ -2345,6 +2345,65 @@ class SqlAssetService:
             "planning_version": self.version.current_version(),
         }
 
+    def _neutralize_future_for_continuous(
+        self, *, asset_id: str, start_date: date, authority_proof: dict,
+        ignore_allocation_ids: tuple[str, ...] = (),
+    ) -> None:
+        """Remove not-yet-effective physical intent atomically under Planning CAS.
+
+        Never silently truncate an allocation that already took effect. Unknown
+        origins fail closed rather than losing their parent business context.
+        """
+        today = date.today()
+        allocations = self.session.scalars(
+            select(AssetAllocation)
+            .where(
+                AssetAllocation.asset_id == asset_id,
+                or_(
+                    AssetAllocation.end_date.is_(None),
+                    AssetAllocation.end_date >= start_date,
+                ),
+            )
+            .order_by(AssetAllocation.start_date, AssetAllocation.id)
+        ).all()
+        for allocation in allocations:
+            if allocation.id in ignore_allocation_ids:
+                continue
+            if allocation.start_date <= today:
+                raise ApplicationConflictError(
+                    "Une réservation déjà effective empêche l'attribution continue.",
+                    code="asset_double_booking",
+                )
+            requirement = self.session.get(AssetRequirement, allocation.asset_requirement_id)
+            if requirement is None or requirement.origin not in {
+                AssetRequirementOrigin.RESOURCE_PERIOD.value,
+                AssetRequirementOrigin.PROJECT_DIRECT.value,
+            }:
+                raise ApplicationConflictError(
+                    "Une réservation future non remplaçable empêche l'attribution continue.",
+                    code="asset_double_booking",
+                )
+            self.audit.append(
+                entity_type="ASSET_ALLOCATION",
+                entity_id=allocation.id,
+                entity_reference=requirement.id,
+                parent_reference=requirement.project_id or requirement.context_resource_id,
+                action="Neutralisation réservation future pour attribution continue",
+                before={
+                    "origin": requirement.origin,
+                    "resource_period_mode": requirement.resource_period_mode,
+                    "asset_id": allocation.asset_id,
+                    "operator_resource_id": allocation.operator_resource_id,
+                    "start_date": allocation.start_date,
+                    "end_date": allocation.end_date,
+                },
+                after={"assignment_authority": authority_proof},
+            )
+            self.session.delete(allocation)
+            self.session.flush()
+            self.session.delete(requirement)
+            self.session.flush()
+
     def _create_direct_reservation(
         self,
         *,
@@ -2441,6 +2500,15 @@ class SqlAssetService:
             locked=True,
             source="MANUAL",
         )
+        if (
+            origin == AssetRequirementOrigin.RESOURCE_PERIOD
+            and resource_period_mode == ResourcePeriodMode.CONTINUOUS
+        ):
+            self._neutralize_future_for_continuous(
+                asset_id=asset_id,
+                start_date=start_date,
+                authority_proof=authority_proof,
+            )
         qualification_state = self._validate_direct_allocation_state(
             requirement=requirement,
             asset_id=asset_id,
@@ -3135,6 +3203,15 @@ class SqlAssetService:
             end_date=None,
             locked=True,
             source="MANUAL",
+        )
+        # A newer explicit CONTINUOUS decision supersedes future physical intent,
+        # including an earlier scheduled ADR-032 transition. The live source is
+        # retained until it is safely closed below.
+        self._neutralize_future_for_continuous(
+            asset_id=new_asset.id,
+            start_date=effective_from,
+            authority_proof=authority_proof,
+            ignore_allocation_ids=(allocation.id,),
         )
         qualification_state = self._validate_direct_allocation_state(
             requirement=new_requirement,

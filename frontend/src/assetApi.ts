@@ -438,6 +438,7 @@ export type ContinuousVehicleUnitState = {
   asset_id: string;
   asset_category: string | null;
   as_of: string;
+  has_continuous_assignment: boolean;
   assignment: ContinuousVehicleAssignment | null;
   scheduled_assignment: ContinuousVehicleAssignment | null;
   assignment_details_visible: boolean;

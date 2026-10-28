@@ -21,7 +21,10 @@ import {
 } from "./assetApi";
 import { useAuth } from "./AuthContext";
 import CompetencyPicker from "./CompetencyPicker";
-import AssetContinuousAssignmentEditor from "./AssetContinuousAssignmentEditor";
+import {
+  ContinuousVehicleAssignmentFields,
+  useContinuousVehicleAssignmentDraft,
+} from "./AssetContinuousAssignmentEditor";
 
 const CATEGORIES = [
   ["VEHICLE", "Véhicule"],
@@ -141,6 +144,14 @@ export default function AssetCatalogPanel({
     () => typeAssets.find((row) => row.id === selectedAssetId) ?? null,
     [typeAssets, selectedAssetId],
   );
+  const assetFormType = useMemo(
+    () => catalog?.types.find((row) => row.id === assetForm.asset_type_id) ?? null,
+    [assetForm.asset_type_id, catalog],
+  );
+  const continuousAssignment = useContinuousVehicleAssignmentDraft({
+    assetId: creatingAsset ? null : selectedAsset?.id ?? null,
+    vehicle: assetFormType?.category === "VEHICLE",
+  });
   const staleApproverIds = useMemo(() => {
     if (!catalog || !selectedAsset) return [];
     const candidates = new Set(catalog.approver_candidates.map((row) => row.id));
@@ -303,6 +314,30 @@ export default function AssetCatalogPanel({
       setNotice({ tone: "error", text: "Le code, le libellé et le type de l’unité sont requis." });
       return;
     }
+    const vehicle = assetFormType?.category === "VEHICLE";
+    if (vehicle && !creatingAsset && continuousAssignment.loading) {
+      setNotice({ tone: "info", text: "L’état Attitré est encore en chargement. Réessaie après l’actualisation." });
+      return;
+    }
+    if (
+      vehicle
+      && continuousAssignment.draft.assigned
+      && (!continuousAssignment.draft.resourceId || !continuousAssignment.draft.effectiveDate)
+    ) {
+      setNotice({ tone: "error", text: "La ressource et la date effective sont requises pour attitrer le véhicule." });
+      return;
+    }
+
+    const assignmentDraft = { ...continuousAssignment.draft };
+    const assignmentChanged = vehicle && (
+      creatingAsset
+        ? assignmentDraft.assigned
+        : continuousAssignment.hasDraftMutation(assignmentDraft)
+    );
+    let catalogSaved = false;
+    let targetAssetId = selectedAsset?.id ?? null;
+    let catalogChanged = false;
+
     setPending("asset");
     setNotice(null);
     try {
@@ -312,30 +347,55 @@ export default function AssetCatalogPanel({
           label,
           asset_type_id: assetForm.asset_type_id,
         });
+        targetAssetId = created.id;
+        catalogSaved = true;
+        catalogChanged = true;
         setSelectedTypeId(assetForm.asset_type_id);
         setSelectedAssetId(created.id);
         setCreatingAsset(false);
-        setNotice({ tone: "success", text: "Unité physique créée." });
       } else if (selectedAsset) {
-        const changed = (
+        catalogChanged = (
           code !== selectedAsset.code
           || label !== selectedAsset.label
           || assetForm.asset_type_id !== selectedAsset.asset_type_id
         );
-        if (changed) {
+        if (catalogChanged) {
           await updateAsset(selectedAsset.id, {
             code,
             label,
             asset_type_id: assetForm.asset_type_id,
             expected_planning_version: catalog.planning_version,
           });
+          catalogSaved = true;
           setSelectedTypeId(assetForm.asset_type_id);
         }
-        setNotice({
-          tone: "success",
-          text: changed ? "Unité physique enregistrée." : "Aucune modification à enregistrer.",
-        });
       }
+
+      if (assignmentChanged && targetAssetId) {
+        try {
+          await continuousAssignment.commit(targetAssetId, assignmentDraft);
+        } catch (reason: unknown) {
+          refresh();
+          setNotice({
+            tone: "error",
+            text: catalogSaved
+              ? `L’unité a été enregistrée, mais l’attribution continue a échoué : ${messageFromError(reason, "erreur d’attribution")}. L’état canonique est actualisé.`
+              : messageFromError(reason, "Impossible d’enregistrer l’attribution continue."),
+          });
+          return;
+        }
+      }
+
+      setNotice({
+        tone: "success",
+        text: creatingAsset
+          ? assignmentChanged
+            ? "Unité physique créée et attribution continue enregistrée."
+            : "Unité physique créée."
+          : catalogChanged || assignmentChanged
+            ? "Unité enregistrée."
+            : "Aucune modification à enregistrer.",
+      });
       refresh();
     } catch (reason: unknown) {
       handleMutationFailure(reason, "Impossible d’enregistrer l’unité physique.");
@@ -612,6 +672,14 @@ export default function AssetCatalogPanel({
                             ))}
                           </select>
                         </label>
+                        {assetFormType?.category === "VEHICLE" && (
+                          <ContinuousVehicleAssignmentFields
+                            controller={continuousAssignment}
+                            resources={resources}
+                            creating={creatingAsset}
+                            creatingCanAssign={canManagePlanning}
+                          />
+                        )}
                       </div>
                       <div className="editor-actions split-actions">
                         {!creatingAsset && selectedAsset && (
@@ -630,22 +698,25 @@ export default function AssetCatalogPanel({
                             Annuler
                           </button>
                         )}
-                        <button className="primary-button" type="submit" disabled={Boolean(pending)}>
+                        <button
+                          className="primary-button"
+                          type="submit"
+                          disabled={
+                            Boolean(pending)
+                            || continuousAssignment.pending
+                            || (
+                              assetFormType?.category === "VEHICLE"
+                              && !creatingAsset
+                              && continuousAssignment.loading
+                            )
+                          }
+                        >
                           {pending === "asset" ? "Enregistrement…" : "Enregistrer l’unité"}
                         </button>
                       </div>
                     </form>
                   )}
                 </div>
-
-                {!creatingAsset && selectedAsset && selectedType && (
-                  <AssetContinuousAssignmentEditor
-                    asset={selectedAsset}
-                    assetType={selectedType}
-                    resources={resources}
-                    onChanged={refresh}
-                  />
-                )}
 
                 {!creatingAsset && selectedAsset && (
                   <div className="asset-unavailability-section" data-testid="asset-approvers-editor">

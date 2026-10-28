@@ -36,8 +36,8 @@ class Issue760ContractTests(unittest.TestCase):
             ROOT / "frontend" / "src" / "AssetContinuousAssignmentEditor.tsx"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("state.assignment_authority.message", editor)
-        self.assertIn("state?.assignment_authority.allowed", editor)
+        self.assertIn("authority.message", editor)
+        self.assertIn("authority?.can_assign", editor)
         self.assertNotIn("ApprovalScope", editor)
 
 

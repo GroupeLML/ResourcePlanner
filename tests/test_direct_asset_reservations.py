@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -22,6 +23,10 @@ from app.infrastructure.sql import (
     Project,
     Resource,
     ResourceCompetency,
+    ResourceRequirement,
+    RequestLine,
+    WorkforceRequest,
+    Shift,
     create_session_factory,
     create_sql_engine,
 )
@@ -733,52 +738,285 @@ class DirectAssetReservationTests(unittest.TestCase):
         self.assertEqual(replay.status_code, 201, replay.text)
         self.assertEqual(replay.json(), created.json())
 
-    def test_continuous_assignment_blocks_future_bounded_and_future_bounded_blocks_open(self) -> None:
-        created = self._continuous_create()
-        self.assertEqual(created.status_code, 201, created.text)
-        future = date.today() + timedelta(days=30)
-        blocked = self.client.post(
+    def test_continuous_fails_closed_for_future_nonreplaceable_origins(self) -> None:
+        """REQUEST, SHIFT_AD_HOC and SEGMENT retain their business owners."""
+        for origin in (
+            AssetRequirementOrigin.REQUEST,
+            AssetRequirementOrigin.SHIFT_AD_HOC,
+            AssetRequirementOrigin.SEGMENT,
+        ):
+            with self.subTest(origin=origin.value):
+                # Each case uses its own physical vehicle and standalone fixture.
+                # The application command must reject the conflicting origin.
+                asset_id = f"ASSET-775-{origin.value}"
+                suffix = origin.value
+                future = date.today() + timedelta(days=21)
+                engine = create_sql_engine(self.url)
+                factory = create_session_factory(engine)
+                requirement_id = f"REQ-775-{suffix}"
+                allocation_id = f"ALLOC-775-{suffix}"
+                try:
+                    with factory.begin() as session:
+                        session.add(Asset(
+                            id=asset_id, code=f"VEH-775-{suffix}",
+                            label=f"Vehicle {suffix}", asset_type_id="TYPE-575C",
+                        ))
+                        if origin == AssetRequirementOrigin.REQUEST:
+                            session.add(WorkforceRequest(
+                                id=f"WR-775-{suffix}", project_id="PROJECT-575C",
+                            ))
+                            session.flush()
+                            session.add(RequestLine(
+                                id=f"LINE-775-{suffix}",
+                                workforce_request_id=f"WR-775-{suffix}",
+                                kind="ASSET", asset_type_id="TYPE-575C",
+                            ))
+                            session.flush()
+                        if origin in (
+                            AssetRequirementOrigin.SEGMENT,
+                            AssetRequirementOrigin.SHIFT_AD_HOC,
+                        ):
+                            session.add(ResourceRequirement(
+                                id=f"RR-775-{suffix}", project_id="PROJECT-575C",
+                                origin="AD_HOC", start_date=future,
+                                end_date=future, planned_hours=Decimal("8"),
+                            ))
+                            session.flush()
+                        if origin == AssetRequirementOrigin.SHIFT_AD_HOC:
+                            session.add(Shift(
+                                id=f"SHIFT-775-{suffix}",
+                                resource_requirement_id=f"RR-775-{suffix}",
+                                resource_id="RESOURCE-SKILLED-B",
+                                work_date=future, hours=Decimal("8"),
+                            ))
+                            session.flush()
+                        requirement = AssetRequirement(
+                            id=requirement_id,
+                            origin=origin.value,
+                            project_id="PROJECT-575C",
+                            asset_type_id="TYPE-575C",
+                            start_date=future,
+                            end_date=future + timedelta(days=2),
+                            status="Planifié",
+                            **(
+                                {
+                                    "workforce_request_id": f"WR-775-{suffix}",
+                                    "source_request_line_id": f"LINE-775-{suffix}",
+                                    "approved_entry_key": "775-future",
+                                }
+                                if origin == AssetRequirementOrigin.REQUEST else
+                                {"shift_id": f"SHIFT-775-{suffix}"}
+                                if origin == AssetRequirementOrigin.SHIFT_AD_HOC else
+                                {"resource_requirement_id": f"RR-775-{suffix}"}
+                            ),
+                        )
+                        session.add(requirement)
+                        session.flush()
+                        session.add(AssetAllocation(
+                            id=allocation_id,
+                            asset_requirement_id=requirement_id,
+                            asset_id=asset_id,
+                            start_date=future,
+                            end_date=future + timedelta(days=2),
+                            operator_resource_id="RESOURCE-SKILLED-B",
+                            locked=True,
+                            source="MANUAL",
+                        ))
+                finally:
+                    engine.dispose()
+
+                version = self._version()
+                rejected = self._continuous_create(
+                    asset_id=asset_id, version=version,
+                    key=f"nonreplaceable-{suffix}-775",
+                )
+                self.assertEqual(rejected.status_code, 409, rejected.text)
+                self.assertEqual(rejected.json()["error"]["code"], "asset_double_booking")
+                self.assertEqual(self._version(), version)
+                engine = create_sql_engine(self.url)
+                try:
+                    with create_session_factory(engine)() as session:
+                        self.assertIsNotNone(session.get(AssetRequirement, requirement_id))
+                        self.assertIsNotNone(session.get(AssetAllocation, allocation_id))
+                        self.assertEqual(
+                            session.scalar(select(func.count()).select_from(AssetAllocation).where(
+                                AssetAllocation.asset_id == asset_id
+                            )), 1,
+                        )
+                        self.assertEqual(
+                            session.scalar(select(func.count()).select_from(PlanningChangeHistory).where(
+                                PlanningChangeHistory.entity_reference == requirement_id,
+                                PlanningChangeHistory.action
+                                == "Neutralisation réservation future pour attribution continue",
+                            )), 0,
+                        )
+                finally:
+                    engine.dispose()
+                state = self.client.get(
+                    f"/api/v1/assets/continuous-vehicle-units/{asset_id}"
+                )
+                self.assertEqual(state.status_code, 200, state.text)
+                self.assertFalse(state.json()["has_continuous_assignment"])
+
+    def test_continuous_overrides_future_bounded_with_audit_and_reverse_exclusivity(self) -> None:
+        future = date.today() + timedelta(days=21)
+        bounded = self.client.post(
             "/api/v1/assets/resource-period-reservations",
-            headers={"Idempotency-Key": "bounded-after-open-744"},
+            headers={"Idempotency-Key": "future-bounded-before-continuous-775"},
             json={
                 "resource_id": "RESOURCE-SKILLED-B",
-                "project_id": None,
+                "asset_type_id": "TYPE-575C",
+                "asset_id": "ASSET-A",
+                "start_date": future.isoformat(),
+                "end_date": (future + timedelta(days=4)).isoformat(),
+                "expected_planning_version": self._version(),
+            },
+        )
+        self.assertEqual(bounded.status_code, 201, bounded.text)
+        created = self._continuous_create(
+            version=bounded.json()["planning_version"],
+            key="continuous-overrides-bounded-775",
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        unit = self.client.get("/api/v1/assets/continuous-vehicle-units/ASSET-A")
+        self.assertEqual(unit.status_code, 200, unit.text)
+        self.assertEqual(
+            unit.json()["assignment"]["operator_resource_id"], "RESOURCE-SKILLED"
+        )
+        engine = create_sql_engine(self.url)
+        try:
+            with create_session_factory(engine)() as session:
+                self.assertIsNone(
+                    session.get(AssetRequirement, bounded.json()["requirement_id"])
+                )
+                self.assertIsNone(
+                    session.get(AssetAllocation, bounded.json()["allocation_id"])
+                )
+                audit = session.scalars(
+                    select(PlanningChangeHistory).where(
+                        PlanningChangeHistory.entity_reference
+                        == bounded.json()["requirement_id"]
+                    )
+                ).all()
+                self.assertTrue(
+                    any(
+                        row.action == "Neutralisation réservation future pour attribution continue"
+                        for row in audit
+                    )
+                )
+        finally:
+            engine.dispose()
+        replay = self._continuous_create(
+            version=bounded.json()["planning_version"],
+            key="continuous-overrides-bounded-775",
+        )
+        self.assertEqual(replay.status_code, 201, replay.text)
+        self.assertEqual(replay.json(), created.json())
+        blocked = self.client.post(
+            "/api/v1/assets/resource-period-reservations",
+            headers={"Idempotency-Key": "bounded-after-continuous-775"},
+            json={
+                "resource_id": "RESOURCE-SKILLED-B",
                 "asset_type_id": "TYPE-575C",
                 "asset_id": "ASSET-A",
                 "start_date": future.isoformat(),
                 "end_date": (future + timedelta(days=2)).isoformat(),
-                "expected_planning_version": created.json()["planning_version"],
+                "expected_planning_version": self._version(),
             },
         )
         self.assertEqual(blocked.status_code, 409, blocked.text)
         self.assertEqual(blocked.json()["error"]["code"], "asset_double_booking")
-        self.assertNotIn("allocation_ids", blocked.json()["error"])
-        self.assertNotIn(created.json()["allocation_id"], blocked.text)
-        self.assertNotIn("RESOURCE-SKILLED", blocked.text)
-        current_version = self._version()
-        bounded_b = self.client.post(
-            "/api/v1/assets/resource-period-reservations",
-            headers={"Idempotency-Key": "future-bounded-b-744"},
+
+    def test_continuous_overrides_future_project_direct_but_not_earlier_history(self) -> None:
+        future = date.today() + timedelta(days=21)
+        project = self.client.post(
+            "/api/v1/assets/project-reservations",
+            headers={"Idempotency-Key": "future-project-before-continuous-775"},
             json={
-                "resource_id": "RESOURCE-SKILLED-B",
-                "project_id": None,
+                "project_id": "PROJECT-575C",
                 "asset_type_id": "TYPE-575C",
-                "asset_id": "ASSET-B",
+                "asset_id": "ASSET-A",
+                "operator_resource_id": None,
                 "start_date": future.isoformat(),
                 "end_date": (future + timedelta(days=2)).isoformat(),
-                "expected_planning_version": current_version,
+                "expected_planning_version": self._version(),
             },
         )
-        self.assertEqual(bounded_b.status_code, 201, bounded_b.text)
-        open_blocked = self._continuous_create(
-            resource_id="RESOURCE-SKILLED",
-            asset_id="ASSET-B",
-            start_date=date.today(),
-            version=bounded_b.json()["planning_version"],
-            key="open-vs-future-bounded-744",
+        self.assertEqual(project.status_code, 201, project.text)
+        created = self._continuous_create(
+            version=project.json()["planning_version"],
+            key="continuous-overrides-project-775",
         )
-        self.assertEqual(open_blocked.status_code, 409, open_blocked.text)
-        self.assertEqual(open_blocked.json()["error"]["code"], "asset_double_booking")
+        self.assertEqual(created.status_code, 201, created.text)
+        engine = create_sql_engine(self.url)
+        try:
+            with create_session_factory(engine)() as session:
+                self.assertIsNone(
+                    session.get(AssetRequirement, project.json()["requirement_id"])
+                )
+                self.assertIsNotNone(
+                    session.get(AssetRequirement, created.json()["requirement_id"])
+                )
+        finally:
+            engine.dispose()
+
+    def test_continuous_stale_cas_does_not_clear_future_reservation(self) -> None:
+        old_version = self._version()
+        future = date.today() + timedelta(days=21)
+        bounded = self.client.post(
+            "/api/v1/assets/resource-period-reservations",
+            headers={"Idempotency-Key": "future-cas-bounded-775"},
+            json={
+                "resource_id": "RESOURCE-SKILLED-B",
+                "asset_type_id": "TYPE-575C",
+                "asset_id": "ASSET-A",
+                "start_date": future.isoformat(),
+                "end_date": (future + timedelta(days=2)).isoformat(),
+                "expected_planning_version": old_version,
+            },
+        )
+        self.assertEqual(bounded.status_code, 201, bounded.text)
+        rejected = self._continuous_create(
+            version=old_version,
+            key="continuous-stale-775",
+        )
+        self.assertEqual(rejected.status_code, 409, rejected.text)
+        engine = create_sql_engine(self.url)
+        try:
+            with create_session_factory(engine)() as session:
+                self.assertIsNotNone(
+                    session.get(AssetRequirement, bounded.json()["requirement_id"])
+                )
+        finally:
+            engine.dispose()
+
+    def test_continuous_does_not_erase_active_physical_reservation(self) -> None:
+        active = self.client.post(
+            "/api/v1/assets/resource-period-reservations",
+            headers={"Idempotency-Key": "active-bounded-775"},
+            json={
+                "resource_id": "RESOURCE-SKILLED-B",
+                "asset_type_id": "TYPE-575C",
+                "asset_id": "ASSET-A",
+                "start_date": date.today().isoformat(),
+                "end_date": (date.today() + timedelta(days=4)).isoformat(),
+                "expected_planning_version": self._version(),
+            },
+        )
+        self.assertEqual(active.status_code, 201, active.text)
+        denied = self._continuous_create(
+            version=active.json()["planning_version"],
+            key="continuous-active-denied-775",
+        )
+        self.assertEqual(denied.status_code, 409, denied.text)
+        engine = create_sql_engine(self.url)
+        try:
+            with create_session_factory(engine)() as session:
+                self.assertIsNotNone(
+                    session.get(AssetRequirement, active.json()["requirement_id"])
+                )
+        finally:
+            engine.dispose()
 
     def test_revoke_preserves_continuous_history_and_generic_paths_are_blocked(self) -> None:
         created = self._continuous_create()
@@ -848,6 +1086,100 @@ class DirectAssetReservationTests(unittest.TestCase):
             params={"resource_id": "RESOURCE-SKILLED"},
         ).json()
         self.assertEqual(state["assignments"], [])
+
+    def test_future_continuous_transfer_replaces_same_day_and_unit_projection(self) -> None:
+        start = date.today() + timedelta(days=7)
+        created = self._continuous_create(
+            resource_id="RESOURCE-SKILLED",
+            start_date=start,
+            key="future-replace-source-775",
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+
+        transferred = self.client.post(
+            f"/api/v1/assets/continuous-resource-assignments/{created.json()['requirement_id']}/transfer",
+            headers={"Idempotency-Key": "future-replace-transfer-775"},
+            json={
+                "resource_id": "RESOURCE-SKILLED-B",
+                "asset_id": "ASSET-A",
+                "effective_from": start.isoformat(),
+                "expected_planning_version": created.json()["planning_version"],
+            },
+        )
+        self.assertEqual(transferred.status_code, 201, transferred.text)
+        self.assertNotEqual(
+            transferred.json()["requirement_id"], created.json()["requirement_id"]
+        )
+
+        unit_state = self.client.get("/api/v1/assets/continuous-vehicle-units/ASSET-A")
+        self.assertEqual(unit_state.status_code, 200, unit_state.text)
+        payload = unit_state.json()
+        self.assertTrue(payload["has_continuous_assignment"])
+        self.assertEqual(payload["assignment"]["operator_resource_id"], "RESOURCE-SKILLED-B")
+        self.assertEqual(payload["assignment"]["resource_period_mode"], "CONTINUOUS")
+        self.assertEqual(payload["assignment"]["effective_state"], "SCHEDULED")
+        self.assertEqual(payload["assignment"]["start_date"], start.isoformat())
+        self.assertIsNone(payload["scheduled_assignment"])
+
+    def test_newer_future_continuous_decision_supersedes_scheduled_transfer(self) -> None:
+        today = date.today()
+        transition = today + timedelta(days=21)
+        current = self._continuous_create(
+            key="supersession-alice-775",
+        )
+        self.assertEqual(current.status_code, 201, current.text)
+        bob = self.client.post(
+            f"/api/v1/assets/continuous-resource-assignments/{current.json()['requirement_id']}/transfer",
+            headers={"Idempotency-Key": "supersession-bob-775"},
+            json={
+                "resource_id": "RESOURCE-SKILLED-B",
+                "asset_id": "ASSET-A",
+                "effective_from": transition.isoformat(),
+                "expected_planning_version": current.json()["planning_version"],
+            },
+        )
+        self.assertEqual(bob.status_code, 201, bob.text)
+        alice = self.client.post(
+            f"/api/v1/assets/continuous-resource-assignments/{bob.json()['requirement_id']}/transfer",
+            headers={"Idempotency-Key": "supersession-alice-again-775"},
+            json={
+                "resource_id": "RESOURCE-SKILLED",
+                "asset_id": "ASSET-A",
+                "effective_from": transition.isoformat(),
+                "expected_planning_version": bob.json()["planning_version"],
+            },
+        )
+        self.assertEqual(alice.status_code, 201, alice.text)
+        replay = self.client.post(
+            f"/api/v1/assets/continuous-resource-assignments/{bob.json()['requirement_id']}/transfer",
+            headers={"Idempotency-Key": "supersession-alice-again-775"},
+            json={
+                "resource_id": "RESOURCE-SKILLED",
+                "asset_id": "ASSET-A",
+                "effective_from": transition.isoformat(),
+                "expected_planning_version": bob.json()["planning_version"],
+            },
+        )
+        self.assertEqual(replay.status_code, 201, replay.text)
+        self.assertEqual(replay.json(), alice.json())
+        state = self.client.get(
+            "/api/v1/assets/continuous-vehicle-units/ASSET-A",
+            params={"as_of": transition.isoformat()},
+        )
+        self.assertEqual(state.status_code, 200, state.text)
+        self.assertEqual(state.json()["assignment"]["operator_resource_id"], "RESOURCE-SKILLED")
+        engine = create_sql_engine(self.url)
+        try:
+            with create_session_factory(engine)() as session:
+                self.assertIsNone(
+                    session.get(AssetRequirement, bob.json()["requirement_id"])
+                )
+                history = session.scalars(select(PlanningChangeHistory).where(
+                    PlanningChangeHistory.entity_reference == bob.json()["requirement_id"]
+                )).all()
+                self.assertTrue(history)
+        finally:
+            engine.dispose()
 
     def test_same_vehicle_transfer_closes_old_and_opens_new_without_self_conflict(self) -> None:
         created = self._continuous_create()
@@ -1160,7 +1492,13 @@ class DirectAssetReservationTests(unittest.TestCase):
         self.assertEqual(active.status_code, 200, active.text)
         payload = active.json()
         self.assertEqual(payload["asset_category"], "VEHICLE")
+        self.assertTrue(payload["has_continuous_assignment"])
+        self.assertEqual(payload["assignment"]["resource_period_mode"], "CONTINUOUS")
         self.assertEqual(payload["assignment"]["effective_state"], "ACTIVE")
+        self.assertEqual(
+            payload["assignment"]["start_date"],
+            date.today().isoformat(),
+        )
         self.assertEqual(
             payload["assignment"]["operator_resource_id"],
             "RESOURCE-SKILLED",
@@ -1183,6 +1521,7 @@ class DirectAssetReservationTests(unittest.TestCase):
             params={"as_of": effective_from.isoformat()},
         )
         self.assertEqual(ended.status_code, 200, ended.text)
+        self.assertFalse(ended.json()["has_continuous_assignment"])
         self.assertIsNone(ended.json()["assignment"])
         self.assertTrue(ended.json()["has_ended_history"])
 
@@ -1197,6 +1536,11 @@ class DirectAssetReservationTests(unittest.TestCase):
             "/api/v1/assets/continuous-vehicle-units/ASSET-B"
         )
         self.assertEqual(scheduled_state.status_code, 200, scheduled_state.text)
+        self.assertTrue(scheduled_state.json()["has_continuous_assignment"])
+        self.assertEqual(
+            scheduled_state.json()["assignment"]["resource_period_mode"],
+            "CONTINUOUS",
+        )
         self.assertEqual(
             scheduled_state.json()["assignment"]["effective_state"],
             "SCHEDULED",
@@ -1205,6 +1549,55 @@ class DirectAssetReservationTests(unittest.TestCase):
             scheduled_state.json()["assignment"]["start_date"],
             scheduled_start.isoformat(),
         )
+
+    def test_asset_unit_read_never_projects_bounded_reservation_as_attitre(self) -> None:
+        future = date.today() + timedelta(days=10)
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory.begin() as session:
+                requirement = AssetRequirement(
+                    id="AR-775-BOUNDED",
+                    project_id=None,
+                    origin=AssetRequirementOrigin.RESOURCE_PERIOD.value,
+                    resource_period_mode="BOUNDED",
+                    context_resource_id="RESOURCE-SKILLED-B",
+                    asset_type_id="TYPE-575C",
+                    start_date=future,
+                    end_date=future + timedelta(days=2),
+                    status="Planifié",
+                )
+                session.add(requirement)
+                session.flush()
+                session.add(
+                    AssetAllocation(
+                        id="ALLOC-775-BOUNDED",
+                        asset_requirement_id=requirement.id,
+                        asset_id="ASSET-B",
+                        operator_resource_id="RESOURCE-SKILLED-B",
+                        start_date=future,
+                        end_date=future + timedelta(days=2),
+                        locked=True,
+                        source="MANUAL",
+                    )
+                )
+        finally:
+            engine.dispose()
+
+        scheduled = self.client.get(
+            "/api/v1/assets/continuous-vehicle-units/ASSET-B"
+        )
+        self.assertEqual(scheduled.status_code, 200, scheduled.text)
+        self.assertFalse(scheduled.json()["has_continuous_assignment"])
+        self.assertIsNone(scheduled.json()["assignment"])
+
+        active = self.client.get(
+            "/api/v1/assets/continuous-vehicle-units/ASSET-B",
+            params={"as_of": future.isoformat()},
+        )
+        self.assertEqual(active.status_code, 200, active.text)
+        self.assertFalse(active.json()["has_continuous_assignment"])
+        self.assertIsNone(active.json()["assignment"])
 
     def test_asset_unit_read_redacts_hidden_resource_and_exposes_no_mutation_capability(self) -> None:
         created = self._continuous_create()
@@ -1222,6 +1615,7 @@ class DirectAssetReservationTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 200, response.text)
         payload = response.json()
+        self.assertTrue(payload["has_continuous_assignment"])
         self.assertIsNotNone(payload["assignment"])
         self.assertFalse(payload["assignment_details_visible"])
         self.assertIsNone(payload["assignment"]["operator_resource_id"])

@@ -545,6 +545,27 @@
 }
 
 
+.asset-continuous-fields {
+  display: contents;
+}
+
+.asset-continuous-fields > .subtle-status,
+.asset-continuous-fields > .inline-error,
+.asset-continuous-fields > .asset-assigned-checkbox {
+  grid-column: 1 / -1;
+}
+
+.asset-assigned-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 800;
+}
+
+.asset-assigned-checkbox input {
+  width: auto;
+}
+
 .asset-catalog-card {
   display: grid;
   gap: 16px;

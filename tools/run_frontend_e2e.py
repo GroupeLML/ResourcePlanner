@@ -395,6 +395,15 @@ def _seed(database_url: str) -> None:
                         active=True,
                         sort_order=10,
                     ),
+                    # Dedicated #775 vehicle assignee: no Planning schedule,
+                    # preventing cross-test asset links on Alice/Bob shifts.
+                    Resource(
+                        id="R-775",
+                        external_id="EMP-775",
+                        name="Ressource véhicule 775",
+                        resource_class="GENERAL",
+                        active=True,
+                    ),
                     Resource(
                         id="R-BOB",
                         external_id="EMP-BOB",
@@ -412,6 +421,7 @@ def _seed(database_url: str) -> None:
                 [
                     ResourceCompetency(resource_id="R-ALICE", competency_id="C-SCADA"),
                     ResourceCompetency(resource_id="R-ALICE", competency_id="C-MES"),
+                    ResourceCompetency(resource_id="R-775", competency_id="C-SCADA"),
                     ResourceCompetency(resource_id="R-BOB", competency_id="C-PLC"),
                     ResourceCompetency(resource_id="R-BOB", competency_id="C-SCADA"),
                 ]

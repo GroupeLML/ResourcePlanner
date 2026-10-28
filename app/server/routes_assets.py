@@ -32,6 +32,7 @@ from ..infrastructure.sql.asset_models import (
 from ..infrastructure.sql.asset_qualification import (
     QUALIFICATION_POLICY_ANY_ASSIGNED_WORKFORCE,
     evaluate_asset_qualification,
+    evaluate_asset_qualifications,
     required_competencies,
 )
 from ..infrastructure.sql.asset_service import SqlAssetService
@@ -579,7 +580,9 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
         if asset is None:
             return {
                 "asset_id": asset_id,
+                "asset_category": None,
                 "as_of": business_date,
+                "has_continuous_assignment": False,
                 "assignment": None,
                 "scheduled_assignment": None,
                 "assignment_details_visible": False,
@@ -587,7 +590,10 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
                 "has_ended_history": False,
                 "assignment_authority": {
                     "allowed": False,
+                    "can_assign": False,
+                    "status": "NO_ACTIVE_SCOPE",
                     "code": "asset_not_found",
+                    "message": "Unité d’actif introuvable.",
                     "diagnostics": [],
                 },
                 "planning_version": version,
@@ -624,6 +630,14 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
                     ).value,
                 )
             )
+
+        qualifications = evaluate_asset_qualifications(
+            session,
+            pairs=tuple(
+                (requirement, allocation)
+                for requirement, allocation, _resource, _state in projected
+            ),
+        )
 
         active = next((row for row in projected if row[3] == "ACTIVE"), None)
         scheduled_rows = [row for row in projected if row[3] == "SCHEDULED"]
@@ -672,11 +686,9 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
                     "operator_resource_id": (
                         allocation.operator_resource_id if visible else None
                     ),
-                    "qualification_state": evaluate_asset_qualification(
-                        session,
-                        requirement=requirement,
-                        allocation=allocation,
-                    ).state,
+                    "qualification_state": qualifications[
+                        (requirement.id, allocation.id)
+                    ].state,
                 },
                 visible,
             )
@@ -688,6 +700,7 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
             "asset_id": asset_id,
             "asset_category": asset_type.category if asset_type is not None else None,
             "as_of": business_date,
+            "has_continuous_assignment": primary is not None,
             "assignment": assignment,
             "scheduled_assignment": scheduled_assignment,
             "assignment_details_visible": assignment_visible,

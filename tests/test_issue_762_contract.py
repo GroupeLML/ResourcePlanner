@@ -19,7 +19,7 @@ class Issue762FrontendContractTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn('assetType.category !== "VEHICLE"', editor)
+        self.assertIn("useContinuousVehicleAssignmentDraft", editor)
         self.assertIn("getContinuousVehicleUnitState", editor)
         self.assertIn("createContinuousVehicleAssignment", editor)
         self.assertIn("revokeContinuousVehicleAssignment", editor)
@@ -29,7 +29,8 @@ class Issue762FrontendContractTests(unittest.TestCase):
         self.assertIn("planning_version", editor)
         self.assertIn("new Map<string, string>()", editor)
         self.assertIn("planning_version_conflict", editor)
-        self.assertIn("AssetContinuousAssignmentEditor", panel)
+        self.assertIn("ContinuousVehicleAssignmentFields", panel)
+        self.assertIn("continuousAssignment.commit", panel)
 
         self.assertNotIn("assigned_resource_id", editor)
         self.assertNotIn("current_resource_id", editor)
@@ -47,10 +48,11 @@ class Issue762FrontendContractTests(unittest.TestCase):
         self.assertIn('État : Actif', editor)
         self.assertIn('État : Planifié pour', editor)
         self.assertIn("Transition planifiée pour", editor)
-        self.assertIn("has_ended_history", editor)
-        self.assertIn("ressource bénéficiaire n’est pas visible", editor)
+        self.assertIn("has_continuous_assignment", editor)
+        self.assertIn("ressource hors de votre périmètre", editor)
         self.assertIn("assignment_details_visible", routes)
         self.assertIn("scheduled_assignment_details_visible", routes)
+        self.assertIn("has_continuous_assignment", routes)
         self.assertIn("has_ended_history", routes)
         self.assertIn("assignment_authority_capability", routes)
 
