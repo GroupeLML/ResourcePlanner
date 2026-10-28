@@ -121,7 +121,7 @@ test("775 restaure une attribution CONTINUOUS dans le formulaire Unité sans dou
     const fields = unitEditor.getByTestId("asset-continuous-assignment-fields");
     await expect(fields).toBeVisible();
     await fields.getByRole("checkbox", { name: "Attitré" }).check();
-    await fields.getByRole("combobox").selectOption("R-ALICE");
+    await fields.getByRole("combobox").selectOption("R-775");
     await fields.getByLabel("Date effective").fill(today);
     await unitEditor.getByRole("button", { name: "Enregistrer l’unité" }).click();
     await expect(catalog.locator(".asset-catalog-notice")).toContainText(
@@ -136,9 +136,9 @@ test("775 restaure une attribution CONTINUOUS dans le formulaire Unité sans dou
     expect(canonical.has_continuous_assignment).toBeTruthy();
     expect(canonical.assignment?.resource_period_mode).toBe("CONTINUOUS");
     expect(canonical.assignment?.effective_state).toBe("ACTIVE");
-    expect(canonical.assignment?.operator_resource_id).toBe("R-ALICE");
+    expect(canonical.assignment?.operator_resource_id).toBe("R-775");
     expect(canonical.assignment?.start_date).toBe(today);
-    expect(await continuousCount(page, "R-ALICE", asset!.id)).toBe(1);
+    expect(await continuousCount(page, "R-775", asset!.id)).toBe(1);
 
     // Leave the unit and return: the draft must be rebuilt from canonical backend state.
     await catalog.locator(".asset-unit-row").filter({ hasText: "VEH-744-01" }).click();
@@ -148,7 +148,7 @@ test("775 restaure une attribution CONTINUOUS dans le formulaire Unité sans dou
       "asset-continuous-assignment-fields",
     );
     await expect(restored.getByRole("checkbox", { name: "Attitré" })).toBeChecked();
-    await expect(restored.getByRole("combobox")).toHaveValue("R-ALICE");
+    await expect(restored.getByRole("combobox")).toHaveValue("R-775");
     await expect(restored.getByLabel("Date effective")).toHaveValue(today);
 
     // Reload/re-enter must restore the original start date rather than today/as_of inference.
@@ -159,7 +159,7 @@ test("775 restaure une attribution CONTINUOUS dans le formulaire Unité sans dou
       "asset-continuous-assignment-fields",
     );
     await expect(restored.getByRole("checkbox", { name: "Attitré" })).toBeChecked();
-    await expect(restored.getByRole("combobox")).toHaveValue("R-ALICE");
+    await expect(restored.getByRole("combobox")).toHaveValue("R-775");
     await expect(restored.getByLabel("Date effective")).toHaveValue(today);
 
     // Saving unchanged state must not issue a duplicate continuous create.
@@ -167,7 +167,7 @@ test("775 restaure une attribution CONTINUOUS dans le formulaire Unité sans dou
       .locator(".asset-unit-editor")
       .getByRole("button", { name: "Enregistrer l’unité" })
       .click();
-    expect(await continuousCount(page, "R-ALICE", asset!.id)).toBe(1);
+    expect(await continuousCount(page, "R-775", asset!.id)).toBe(1);
 
   } finally {
     await context.close();
@@ -311,7 +311,7 @@ test("775 garde Attitré lié au mode CONTINUOUS et non à SCHEDULED/ACTIVE", as
       {
         headers: { "Idempotency-Key": "775-e2e-active-revoke" },
         data: {
-          resource_id: "R-ALICE",
+          resource_id: "R-775",
           asset_id: revokeVehicle.assetId,
           start_date: today,
           expected_planning_version: version,
