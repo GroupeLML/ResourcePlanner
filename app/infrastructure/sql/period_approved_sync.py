@@ -55,6 +55,9 @@ from .planning_version import SqlPlanningMutationVersionRepository
 from .planning_intent_repository import SqlRequestRequirementPlanningIntentRepository
 from .operational_choice_models import (
     PLANNING_INTENT_AUTO,
+    PLANNING_INTENT_QUEUED,
+    PLANNING_TARGET_EXPLICIT_NONE,
+    PLANNING_TARGET_EXPLICIT_RESOURCE,
     RequestCompletionReduction,
     RequestRequirementPlanningIntent,
 )
@@ -1121,7 +1124,7 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             and self._session.get(RequestLine, spec.source_request_line_id) is not None
             else None
         )
-        SqlRequestRequirementPlanningIntentRepository(self._session).ensure(
+        intent = SqlRequestRequirementPlanningIntentRepository(self._session).ensure(
             workforce_request_id=request.id,
             approved_entry_key=spec.approved_entry_key,
             slot_index=spec.slot_index,
@@ -1130,6 +1133,20 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             approval_revision_id=approval_revision_id,
             current_resource_requirement_id=requirement.id,
         )
+        if (
+            intent.intent_mode == PLANNING_INTENT_QUEUED
+            or intent.target_mode == PLANNING_TARGET_EXPLICIT_NONE
+        ):
+            requirement.assigned_resource_id = None
+            if requirement.status not in {"Terminé", "Annulé"}:
+                requirement.status = "À assigner"
+        elif (
+            intent.target_mode == PLANNING_TARGET_EXPLICIT_RESOURCE
+            and intent.target_resource_id
+        ):
+            requirement.assigned_resource_id = intent.target_resource_id
+            if requirement.status not in {"Terminé", "Annulé"}:
+                requirement.status = "Planifié"
 
     def _sync_request_lines(
         self,
