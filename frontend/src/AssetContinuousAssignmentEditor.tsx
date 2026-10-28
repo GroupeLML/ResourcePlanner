@@ -24,6 +24,15 @@ function todayIso() {
     .slice(0, 10);
 }
 
+function earliestLifecycleDate(startDate: string) {
+  const next = new Date(`${startDate}T12:00:00`);
+  next.setDate(next.getDate() + 1);
+  const afterStart = new Date(next.getTime() - next.getTimezoneOffset() * 60_000)
+    .toISOString()
+    .slice(0, 10);
+  return afterStart > todayIso() ? afterStart : todayIso();
+}
+
 export type ContinuousVehicleAssignmentDraft = {
   assigned: boolean;
   resourceId: string;
@@ -95,7 +104,7 @@ export function useContinuousVehicleAssignmentDraft({
       setLoading(false);
       setAssignedState(false);
       setResourceIdState("");
-      setEffectiveDateState(todayIso());
+      setEffectiveDateState(earliestLifecycleDate(state.assignment.start_date));
       return;
     }
     setState(null);
@@ -122,7 +131,7 @@ export function useContinuousVehicleAssignmentDraft({
   const setAssigned = useCallback((value: boolean) => {
     setAssignedState(value);
     if (state?.assignment?.effective_state === "ACTIVE" && !value) {
-      setEffectiveDateState(todayIso());
+      setEffectiveDateState(earliestLifecycleDate(state.assignment.start_date));
     } else if (state?.assignment && value) {
       setEffectiveDateState(state.assignment.start_date);
     }
@@ -390,6 +399,20 @@ export function ContinuousVehicleAssignmentFields({
         />
         Attitré
       </label>
+
+      {!draft.assigned && assignment?.effective_state === "ACTIVE" && editable && (
+        <label>
+          Date effective de révocation
+          <input
+            type="date"
+            value={draft.effectiveDate}
+            disabled={controlsDisabled}
+            min={earliestLifecycleDate(assignment.start_date)}
+            onChange={(event) => setEffectiveDate(event.target.value)}
+            required
+          />
+        </label>
+      )}
 
       {draft.assigned && (
         <>
