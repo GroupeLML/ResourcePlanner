@@ -6,6 +6,7 @@ import json
 import unittest
 
 from app.application.errors import ApplicationAuthorizationError, ApplicationConflictError
+from app.application.idempotency import IdempotentCommandExecutor
 from app.application.request_work_queue import (
     PermanentlyReduceShiftHoursCommand,
     ReturnSegmentToWorkQueueCommand,
@@ -22,6 +23,7 @@ from app.infrastructure.sql.approval_revision_models import (
 )
 from app.infrastructure.sql.base import Base
 from app.infrastructure.sql.identity_models import AppUser
+from app.infrastructure.sql.idempotency import SqlCommandIdempotencyAdapter
 from app.infrastructure.sql.models import (
     Project,
     RequestLine,
@@ -396,6 +398,62 @@ class RequestWorkQueueCommandTests(unittest.TestCase):
             self.assertEqual(result["effective_need_after"], 32.0)
             self.assertIsNone(session.get(Shift, "S4"))
             self.assertEqual(session.query(RequestCompletionReduction).count(), 1)
+
+    def test_same_stable_actor_key_replays_after_shift_is_gone(self) -> None:
+        payload = {
+            "operation": "RETURN_SHIFT_TO_WORK_QUEUE",
+            "allocation_id": "A4",
+            "expected_planning_version": 1,
+            "expected_approval_revision_id": "REV1",
+            "expected_operational_version": 1,
+        }
+        with transactional_session(self.factory) as session:
+            adapter, _planning = self._adapter(session)
+            executor = IdempotentCommandExecutor(
+                SqlCommandIdempotencyAdapter(session, actor_name="U1")
+            )
+            first = executor.execute(
+                scope="request_work_queue.return_shift",
+                key="replay-return-778",
+                request_payload=payload,
+                action=lambda: dict(
+                    adapter.return_shift(
+                        ReturnShiftToWorkQueueCommand(
+                            allocation_id="A4",
+                            expected_planning_version=1,
+                            expected_approval_revision_id="REV1",
+                            expected_operational_version=1,
+                            command_id="replay-return-778",
+                        )
+                    )
+                ),
+            )
+            self.assertIsNone(session.get(Shift, "S4"))
+            self.assertEqual(session.query(PlanningWorkQueueRelease).count(), 1)
+
+        with transactional_session(self.factory) as session:
+            adapter, _planning = self._adapter(session)
+            executor = IdempotentCommandExecutor(
+                SqlCommandIdempotencyAdapter(session, actor_name="U1")
+            )
+            replay = executor.execute(
+                scope="request_work_queue.return_shift",
+                key="replay-return-778",
+                request_payload=payload,
+                action=lambda: dict(
+                    adapter.return_shift(
+                        ReturnShiftToWorkQueueCommand(
+                            allocation_id="A4",
+                            expected_planning_version=1,
+                            expected_approval_revision_id="REV1",
+                            expected_operational_version=1,
+                            command_id="replay-return-778",
+                        )
+                    )
+                ),
+            )
+            self.assertEqual(replay, first)
+            self.assertEqual(session.query(PlanningWorkQueueRelease).count(), 1)
 
     def test_stale_planning_version_rolls_back_without_release(self) -> None:
         with self.assertRaises(ApplicationConflictError):
