@@ -4,7 +4,7 @@ import json
 from decimal import Decimal
 from typing import Any, Mapping, Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from ...application.errors import (
@@ -211,6 +211,41 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
             )
         return request
 
+    def _acquire_operational_guard(
+        self,
+        *,
+        request_id: str,
+        approval_revision_id: str,
+        expected_version: int,
+    ) -> RequestOperationalState:
+        result = self._session.execute(
+            update(RequestOperationalState)
+            .where(
+                RequestOperationalState.workforce_request_id == request_id,
+                RequestOperationalState.approval_revision_id == approval_revision_id,
+                RequestOperationalState.version == int(expected_version),
+            )
+            .values(version=RequestOperationalState.version)
+        )
+        if int(result.rowcount or 0) != 1:
+            current = self._session.get(RequestOperationalState, request_id)
+            raise ApplicationConflictError(
+                "L'état opérationnel de la demande a changé depuis la lecture.",
+                code="operational_choice_version_conflict",
+                context={
+                    "expected_version": int(expected_version),
+                    "current_version": int(current.version or 0) if current is not None else None,
+                },
+            )
+        self._session.flush()
+        state = self._session.get(RequestOperationalState, request_id)
+        if state is None:
+            raise ApplicationConflictError(
+                "L'état opérationnel de la demande est introuvable.",
+                code="operational_choice_version_conflict",
+            )
+        return state
+
     def _approval_and_operational(
         self,
         requirement: ResourceRequirement,
@@ -245,20 +280,11 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
                 "La révision approuvée active est introuvable.",
                 code="planning_authorization_unknown",
             )
-        state = self._session.get(RequestOperationalState, request.id)
-        if (
-            state is None
-            or state.approval_revision_id != expected
-            or int(state.version or 1) != int(expected_operational_version)
-        ):
-            raise ApplicationConflictError(
-                "L'état opérationnel de la demande a changé depuis la lecture.",
-                code="operational_choice_version_conflict",
-                context={
-                    "expected_version": int(expected_operational_version),
-                    "current_version": int(state.version or 0) if state is not None else None,
-                },
-            )
+        state = self._acquire_operational_guard(
+            request_id=request.id,
+            approval_revision_id=expected,
+            expected_version=expected_operational_version,
+        )
         return revision, state
 
     def _intent(self, requirement: ResourceRequirement) -> RequestRequirementPlanningIntent:
