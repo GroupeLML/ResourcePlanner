@@ -41,7 +41,7 @@ async function selectVehicle(page: Page, code: string) {
 
 async function catalogPayload(page: Page) {
   const response = await page.request.get("/api/v1/assets/catalog");
-  expect(response.ok(), await response.text()).toBeTruthy();
+  if (!response.ok()) throw new Error(await response.text());
   return response.json() as Promise<{
     types: Array<{ id: string; code: string; category: string }>;
     assets: Array<{ id: string; code: string; label: string; asset_type_id: string }>;
@@ -60,7 +60,7 @@ async function createVehicleByApi(page: Page, code: string, label: string) {
       asset_type_id: type!.id,
     },
   });
-  expect(response.status(), await response.text()).toBe(201);
+  if (response.status() !== 201) throw new Error(await response.text());
   const created = await response.json() as { id: string };
   await page.reload();
   await expect(page.locator(".sidebar-footer")).toContainText("Administrateur");
@@ -73,7 +73,7 @@ async function unitState(page: Page, assetId: string, asOf?: string) {
   const response = await page.request.get(
     `/api/v1/assets/continuous-vehicle-units/${encodeURIComponent(assetId)}${suffix}`,
   );
-  expect(response.ok(), await response.text()).toBeTruthy();
+  if (!response.ok()) throw new Error(await response.text());
   return response.json() as Promise<{
     has_continuous_assignment: boolean;
     assignment: null | {
@@ -93,7 +93,7 @@ async function continuousCount(page: Page, resourceId: string, assetId: string) 
   const response = await page.request.get(
     `/api/v1/assets/continuous-resource-assignments?resource_id=${encodeURIComponent(resourceId)}`,
   );
-  expect(response.ok(), await response.text()).toBeTruthy();
+  if (!response.ok()) throw new Error(await response.text());
   const payload = await response.json() as {
     assignments: Array<{ asset_id: string; resource_period_mode: string }>;
   };
