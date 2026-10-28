@@ -144,7 +144,7 @@ export function useContinuousVehicleAssignmentDraft({
       && value
       && value !== state.assignment.operator_resource_id
     ) {
-      setEffectiveDateState(todayIso());
+      setEffectiveDateState(earliestLifecycleDate(state.assignment.start_date));
     }
   }, [state]);
 
