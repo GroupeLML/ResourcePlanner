@@ -27,7 +27,7 @@ from ...application.security import (
 )
 from ...application.user_view_context import UserViewContextService
 from ...domain.effective_need import allocate_entry_budget
-from .approval_cycle_repository import SqlApprovalCycleRepository
+from .approval_cycle_models import ApprovalRequirement, ApprovalRequirementApprover, RequestApprovalCycle
 from .approval_revision_models import (
     APPROVAL_REFERENCE_CAPTURED,
     RequestApprovalReference,
@@ -359,25 +359,42 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
                 "L'autorité d'approbation de cette entrée legacy ne peut pas être établie sans ambiguïté.",
                 code="reduction_approval_authority_unknown",
             )
-        cycle = SqlApprovalCycleRepository(
-            self._session,
-            actor_user_id=actor.id,
-            actor_name=self._actor_name,
-        ).get_latest_cycle(request.id)
-        if cycle is None or cycle.approved_revision_id != revision.id:
-            raise ApplicationAuthorizationError(
-                "Le cycle qui a produit l'autorisation active est introuvable.",
-                code="reduction_approval_authority_unknown",
+        cycles = self._session.scalars(
+            select(RequestApprovalCycle).where(
+                RequestApprovalCycle.workforce_request_id == request.id,
+                RequestApprovalCycle.approved_revision_id == revision.id,
             )
-        relevant = [
-            requirement
-            for requirement in cycle.requirements
-            if requirement.request_line_id == intent.source_request_line_id
-        ]
-        if not relevant or any(
-            actor.id not in {approver.app_user_id for approver in requirement.approvers}
-            for requirement in relevant
-        ):
+        ).all()
+        if len(cycles) != 1:
+            raise ApplicationAuthorizationError(
+                "Le cycle qui a produit l'autorisation active est absent ou ambigu.",
+                code="reduction_approval_authority_unknown",
+                context={"approval_cycle_count": len(cycles)},
+            )
+        cycle = cycles[0]
+        relevant_ids = tuple(
+            self._session.scalars(
+                select(ApprovalRequirement.id).where(
+                    ApprovalRequirement.approval_cycle_id == cycle.id,
+                    ApprovalRequirement.request_line_id == intent.source_request_line_id,
+                )
+            ).all()
+        )
+        if not relevant_ids:
+            raise ApplicationAuthorizationError(
+                "Aucune exigence d'approbation ne correspond à la source autorisée.",
+                code="reduction_approval_authority_unknown",
+                context={"request_line_id": intent.source_request_line_id},
+            )
+        actor_requirement_ids = set(
+            self._session.scalars(
+                select(ApprovalRequirementApprover.requirement_id).where(
+                    ApprovalRequirementApprover.requirement_id.in_(relevant_ids),
+                    ApprovalRequirementApprover.app_user_id == actor.id,
+                )
+            ).all()
+        )
+        if actor_requirement_ids != set(relevant_ids):
             raise ApplicationAuthorizationError(
                 "L'utilisateur n'est pas admissible sur toutes les exigences d'approbation de la source.",
                 code="reduction_approval_authority_denied",
