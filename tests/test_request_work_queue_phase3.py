@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import time
 from decimal import Decimal
 from tempfile import TemporaryDirectory
 import unittest
@@ -9,8 +10,12 @@ from sqlalchemy import select
 
 from app.infrastructure.sql import (
     RequestCompletionReduction,
+    Resource,
+    ResourceAvailabilityRule,
     RequestRequirementPlanningIntent,
     ResourceRequirement,
+    Shift,
+    SqlPlanningCommandAdapter,
     SqlPeriodAwareApprovedDemandSyncAdapter,
     WorkforceRequest,
     create_session_factory,
@@ -33,7 +38,27 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
         from app.infrastructure.sql import Project
 
         session.add(Project(id="P-778-P3", number="P-778-P3", name="Projet 778 Phase 3"))
+        session.add(
+            Resource(
+                id="R-778-P3",
+                name="Alice 778 P3",
+                resource_class="GENERAL",
+                active=True,
+                erp_active=True,
+            )
+        )
         session.flush()
+        session.add(
+            ResourceAvailabilityRule(
+                id="AV-778-P3",
+                resource_id="R-778-P3",
+                availability_type="Horaire standard",
+                weekdays="Lun,Mar,Mer,Jeu,Ven",
+                start_time=time(8, 0),
+                end_time=time(16, 0),
+                active=True,
+            )
+        )
         seed_test_approval_routing(session, map_existing_tasks=True)
 
     @classmethod
@@ -163,6 +188,88 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                         requirement.approval_revision_id,
                         prepared.approval_revision_id,
                     )
+            finally:
+                engine.dispose()
+
+    def test_preserve_existing_survivor_keeps_exact_shift_identity_across_rebuild(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-778-p3-preserve",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._approve(client, 8)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    _request, requirement, intent = self._context(session, number)
+                    requirement.assigned_resource_id = "R-778-P3"
+                    intent.intent_mode = "PRESERVE_EXISTING"
+                    session.add(
+                        Shift(
+                            id="SHIFT-PRESERVE-778",
+                            legacy_allocation_id="ALLOC-PRESERVE-778",
+                            resource_requirement_id=requirement.id,
+                            resource_id="R-778-P3",
+                            work_date=requirement.start_date,
+                            hours=Decimal("8.00"),
+                            source="AUTO",
+                            locked=False,
+                        )
+                    )
+                    session.flush()
+                    SqlPlanningCommandAdapter(session).rebuild()
+                    rows = session.scalars(
+                        select(Shift).where(
+                            Shift.resource_requirement_id == requirement.id
+                        )
+                    ).all()
+                    self.assertEqual([row.id for row in rows], ["SHIFT-PRESERVE-778"])
+                    self.assertEqual(rows[0].hours, Decimal("8.00"))
+                    self.assertEqual(rows[0].resource_id, "R-778-P3")
+            finally:
+                engine.dispose()
+
+    def test_queued_slot_stays_empty_and_unassigned_through_resync_and_rebuild(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-778-p3-queued",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._approve(client, 8)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    _request, requirement, intent = self._context(session, number)
+                    requirement.assigned_resource_id = "R-778-P3"
+                    intent.intent_mode = "QUEUED"
+                    intent.target_mode = "EXPLICIT_NONE"
+                    intent.target_resource_id = None
+                    session.flush()
+
+                    SqlPeriodAwareApprovedDemandSyncAdapter(
+                        session
+                    ).sync_operational_choices(number)
+                    self.assertIsNone(requirement.assigned_resource_id)
+                    SqlPlanningCommandAdapter(session).rebuild()
+                    self.assertEqual(
+                        session.scalars(
+                            select(Shift).where(
+                                Shift.resource_requirement_id == requirement.id
+                            )
+                        ).all(),
+                        [],
+                    )
+                    self.assertIsNone(requirement.assigned_resource_id)
             finally:
                 engine.dispose()
 
