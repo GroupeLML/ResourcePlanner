@@ -315,9 +315,14 @@ export function useContinuousVehicleAssignmentDraft({
     }
   }, [applyCanonicalState, draft, pending, vehicle]);
 
+  const effectiveLoading = Boolean(
+    loading
+    || (vehicle && assetId && loadedAssetId !== assetId),
+  );
+
   return {
     state,
-    loading,
+    loading: effectiveLoading,
     pending,
     error,
     draft,
@@ -385,7 +390,7 @@ export function ContinuousVehicleAssignmentFields({
   }
 
   const authorityAllowed = creating ? creatingCanAssign : Boolean(authority?.can_assign);
-  const controlsDisabled = pending || (!creating && (!authorityAllowed || !editable));
+  const controlsDisabled = pending || !authorityAllowed || (!creating && !editable);
 
   return (
     <div className="asset-continuous-fields" data-testid="asset-continuous-assignment-fields">
