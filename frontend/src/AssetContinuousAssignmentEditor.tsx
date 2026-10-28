@@ -330,10 +330,12 @@ export function ContinuousVehicleAssignmentFields({
   controller,
   resources,
   creating,
+  creatingCanAssign,
 }: {
   controller: ReturnType<typeof useContinuousVehicleAssignmentDraft>;
   resources: ResourceReadModel[];
   creating: boolean;
+  creatingCanAssign: boolean;
 }) {
   const {
     state,
@@ -373,7 +375,7 @@ export function ContinuousVehicleAssignmentFields({
     );
   }
 
-  const authorityAllowed = creating || Boolean(authority?.can_assign);
+  const authorityAllowed = creating ? creatingCanAssign : Boolean(authority?.can_assign);
   const controlsDisabled = pending || (!creating && (!authorityAllowed || !editable));
 
   return (
@@ -462,6 +464,11 @@ export function ContinuousVehicleAssignmentFields({
         </div>
       )}
 
+      {creating && !creatingCanAssign && (
+        <div className="subtle-status" data-testid="asset-continuous-authority-diagnostic">
+          La permission manage_planning est requise pour attitrer cette nouvelle unité.
+        </div>
+      )}
       {!creating && authority && !authority.can_assign && (
         <div className="subtle-status" data-testid="asset-continuous-authority-diagnostic">
           {authority.message}
