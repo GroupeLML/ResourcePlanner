@@ -24,6 +24,7 @@ from app.infrastructure.sql.approval_revision_models import (
 from app.infrastructure.sql.base import Base
 from app.infrastructure.sql.identity_models import AppUser
 from app.infrastructure.sql.idempotency import SqlCommandIdempotencyAdapter
+from app.infrastructure.sql.command_adapters import SqlAllocationCommandAdapter
 from app.infrastructure.sql.models import (
     Project,
     RequestLine,
@@ -525,6 +526,32 @@ class RequestWorkQueueCommandTests(unittest.TestCase):
                 session.get(PlanningMutationState, "GLOBAL").version,
                 1,
             )
+
+    def test_legacy_generic_release_and_delete_fail_closed_for_request_shift(self) -> None:
+        for operation in ("release", "delete"):
+            with self.subTest(operation=operation):
+                with self.assertRaises(ApplicationConflictError) as raised:
+                    with transactional_session(self.factory) as session:
+                        versioning = SqlPlanningMutationVersionRepository(session)
+                        adapter = SqlAllocationCommandAdapter(
+                            session,
+                            planning=_PlanningStub(),
+                            versioning=versioning,
+                        )
+                        if operation == "release":
+                            adapter.release_manual("A4")
+                        else:
+                            adapter.delete_manual("A4")
+                self.assertEqual(
+                    raised.exception.code,
+                    "request_shift_action_requires_explicit_command",
+                )
+                with transactional_session(self.factory) as session:
+                    self.assertIsNotNone(session.get(Shift, "S4"))
+                    self.assertEqual(
+                        session.get(PlanningMutationState, "GLOBAL").version,
+                        1,
+                    )
 
     def test_permanent_reduction_requires_enhanced_permissions(self) -> None:
         with self.assertRaises(ApplicationAuthorizationError):
