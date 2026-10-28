@@ -1109,11 +1109,17 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
     ) -> None:
         if not approval_revision_id:
             return
+        source_line_id = (
+            spec.source_request_line_id
+            if spec.source_request_line_id
+            and self._session.get(RequestLine, spec.source_request_line_id) is not None
+            else None
+        )
         SqlRequestRequirementPlanningIntentRepository(self._session).ensure(
             workforce_request_id=request.id,
             approved_entry_key=spec.approved_entry_key,
             slot_index=spec.slot_index,
-            source_request_line_id=spec.source_request_line_id,
+            source_request_line_id=source_line_id,
             source_period_id=spec.source_period_id,
             approval_revision_id=approval_revision_id,
             current_resource_requirement_id=requirement.id,
