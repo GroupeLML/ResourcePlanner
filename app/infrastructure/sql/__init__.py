@@ -167,7 +167,11 @@ from .operational_choice_models import (
     RequestOperationalState,
     RequestRequirementPlanningIntent,
 )
-from .operational_choice_repository import SqlRequestOperationalChoiceRepository\nfrom .planning_intent_repository import (\n    SqlRequestRequirementPlanningIntentRepository,\n    stable_planning_slot_key,\n)
+from .operational_choice_repository import SqlRequestOperationalChoiceRepository
+from .planning_intent_repository import (
+    SqlRequestRequirementPlanningIntentRepository,
+    stable_planning_slot_key,
+)
 from .operational_contact_repository import SqlOperationalContactRepository
 from .operational_responsibility_mutation_repository import (
     SqlOperationalResponsibilityMutationRepository,
@@ -324,7 +328,9 @@ __all__ = [
     "SqlIdentityResourceLinkRepository",
     "SqlOperationalContactRepository",
     "SqlOperationalResponsibilityMutationRepository",
-    "SqlRequestOperationalChoiceRepository",\n    "SqlRequestRequirementPlanningIntentRepository",\n    "stable_planning_slot_key",
+    "SqlRequestOperationalChoiceRepository",
+    "SqlRequestRequirementPlanningIntentRepository",
+    "stable_planning_slot_key",
     "SqlProjectCommunicationRepository",
     "SqlProjectCoManagerRepository",
     "SqlProjectManagerResolutionRepository",
