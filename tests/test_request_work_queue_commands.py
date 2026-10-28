@@ -359,6 +359,44 @@ class RequestWorkQueueCommandTests(unittest.TestCase):
             self.assertEqual(result["covered_hours_after"], 32.0)
             self.assertEqual(result["remaining_hours_after"], 0.0)
 
+    def test_pending_candidate_cycle_does_not_replace_active_reduction_authority(self) -> None:
+        with transactional_session(self.factory) as session:
+            session.add(
+                RequestApprovalCycle(
+                    id="C2",
+                    workforce_request_id="D1",
+                    submitted_request_version=2,
+                    state="OPEN",
+                    subject_fingerprint="c" * 64,
+                    initialization_reason="RESUBMISSION",
+                    submitted_at=datetime.now(timezone.utc) + timedelta(seconds=1),
+                )
+            )
+            session.flush()
+            session.add(
+                ApprovalRequirement(
+                    id="AR2",
+                    approval_cycle_id="C2",
+                    request_line_id="L1",
+                    routing_sources_text="[]",
+                )
+            )
+        with transactional_session(self.factory) as session:
+            adapter, _planning = self._adapter(session)
+            result = adapter.permanently_reduce_shift(
+                PermanentlyReduceShiftHoursCommand(
+                    allocation_id="A4",
+                    expected_planning_version=1,
+                    expected_request_version=1,
+                    expected_approval_revision_id="REV1",
+                    expected_operational_version=1,
+                    command_id="reduce-with-pending-candidate-778",
+                )
+            )
+            self.assertEqual(result["effective_need_after"], 32.0)
+            self.assertIsNone(session.get(Shift, "S4"))
+            self.assertEqual(session.query(RequestCompletionReduction).count(), 1)
+
     def test_stale_planning_version_rolls_back_without_release(self) -> None:
         with self.assertRaises(ApplicationConflictError):
             with transactional_session(self.factory) as session:
