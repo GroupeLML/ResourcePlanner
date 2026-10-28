@@ -7,6 +7,7 @@ from typing import Any, Mapping, Sequence
 from sqlalchemy import func, select, true
 from sqlalchemy.orm import Session
 
+from ...application.errors import ApplicationConflictError
 from ...application.command_ports import (
     AllocationCommandPort,
     ApprovedDemandSyncPort,
@@ -497,6 +498,13 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
         shift = self._shift(allocation_id)
         if shift is None:
             return
+        requirement = self._requirement(shift.resource_requirement_id)
+        if requirement.origin == ORIGIN_REQUEST:
+            raise ApplicationConflictError(
+                "Un quart issu d'une demande approuvée doit utiliser la commande explicite de retour à la File de Travail.",
+                code="request_shift_action_requires_explicit_command",
+                context={"allocation_id": allocation_id, "requirement_id": requirement.id},
+            )
         SqlAssetService(
             self._session,
             actor="planning",
@@ -511,6 +519,12 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
         if shift is None:
             return
         requirement = self._requirement(shift.resource_requirement_id)
+        if requirement.origin == ORIGIN_REQUEST:
+            raise ApplicationConflictError(
+                "Un quart issu d'une demande approuvée doit utiliser une commande #778 explicite.",
+                code="request_shift_action_requires_explicit_command",
+                context={"allocation_id": allocation_id, "requirement_id": requirement.id},
+            )
         if requirement.origin != ORIGIN_QUICK_SHIFT:
             SqlAssetService(
                 self._session,
