@@ -36,6 +36,7 @@ class Issue775ContractTests(unittest.TestCase):
         self.assertIn("state?.has_continuous_assignment", editor)
         self.assertIn('state.assignment?.resource_period_mode === "CONTINUOUS"', editor)
         self.assertIn('"has_continuous_assignment": primary is not None', routes)
+        self.assertIn("evaluate_asset_qualifications", routes)
         self.assertIn('AssetRequirement.resource_period_mode', routes)
         self.assertIn('== ResourcePeriodMode.CONTINUOUS.value', routes)
         self.assertNotIn('effective_state === "ACTIVE"\n    && state?.has_continuous_assignment', editor)
@@ -65,6 +66,8 @@ class Issue775ContractTests(unittest.TestCase):
         self.assertIn("fresh.planning_version", editor)
         self.assertIn("L’unité a été enregistrée, mais l’attribution continue a échoué", panel)
         self.assertIn("continuousAssignment.loading", panel)
+        self.assertIn("loadedAssetId !== assetId", editor)
+        self.assertIn("effectiveLoading", editor)
 
         self.assertNotIn("assigned_resource_id", panel)
         self.assertNotIn("assignment_start_date", panel)
