@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -22,6 +23,10 @@ from app.infrastructure.sql import (
     Project,
     Resource,
     ResourceCompetency,
+    ResourceRequirement,
+    RequestLine,
+    WorkforceRequest,
+    Shift,
     create_session_factory,
     create_sql_engine,
 )
@@ -732,6 +737,126 @@ class DirectAssetReservationTests(unittest.TestCase):
         )
         self.assertEqual(replay.status_code, 201, replay.text)
         self.assertEqual(replay.json(), created.json())
+
+    def test_continuous_fails_closed_for_future_nonreplaceable_origins(self) -> None:
+        """REQUEST, SHIFT_AD_HOC and SEGMENT retain their business owners."""
+        for origin in (
+            AssetRequirementOrigin.REQUEST,
+            AssetRequirementOrigin.SHIFT_AD_HOC,
+            AssetRequirementOrigin.SEGMENT,
+        ):
+            with self.subTest(origin=origin.value):
+                # Each case uses its own physical vehicle and standalone fixture.
+                # The application command must reject the conflicting origin.
+                asset_id = f"ASSET-775-{origin.value}"
+                suffix = origin.value
+                future = date.today() + timedelta(days=21)
+                engine = create_sql_engine(self.url)
+                factory = create_session_factory(engine)
+                requirement_id = f"REQ-775-{suffix}"
+                allocation_id = f"ALLOC-775-{suffix}"
+                try:
+                    with factory.begin() as session:
+                        session.add(Asset(
+                            id=asset_id, code=f"VEH-775-{suffix}",
+                            label=f"Vehicle {suffix}", asset_type_id="TYPE-575C",
+                        ))
+                        if origin == AssetRequirementOrigin.REQUEST:
+                            session.add(WorkforceRequest(
+                                id=f"WR-775-{suffix}", project_id="PROJECT-575C",
+                            ))
+                            session.flush()
+                            session.add(RequestLine(
+                                id=f"LINE-775-{suffix}",
+                                workforce_request_id=f"WR-775-{suffix}",
+                                kind="ASSET", asset_type_id="TYPE-575C",
+                            ))
+                            session.flush()
+                        if origin in (
+                            AssetRequirementOrigin.SEGMENT,
+                            AssetRequirementOrigin.SHIFT_AD_HOC,
+                        ):
+                            session.add(ResourceRequirement(
+                                id=f"RR-775-{suffix}", project_id="PROJECT-575C",
+                                origin="AD_HOC", start_date=future,
+                                end_date=future, planned_hours=Decimal("8"),
+                            ))
+                            session.flush()
+                        if origin == AssetRequirementOrigin.SHIFT_AD_HOC:
+                            session.add(Shift(
+                                id=f"SHIFT-775-{suffix}",
+                                resource_requirement_id=f"RR-775-{suffix}",
+                                resource_id="RESOURCE-SKILLED-B",
+                                work_date=future, hours=Decimal("8"),
+                            ))
+                            session.flush()
+                        requirement = AssetRequirement(
+                            id=requirement_id,
+                            origin=origin.value,
+                            project_id="PROJECT-575C",
+                            asset_type_id="TYPE-575C",
+                            start_date=future,
+                            end_date=future + timedelta(days=2),
+                            status="Planifié",
+                            **(
+                                {
+                                    "workforce_request_id": f"WR-775-{suffix}",
+                                    "source_request_line_id": f"LINE-775-{suffix}",
+                                    "approved_entry_key": "775-future",
+                                }
+                                if origin == AssetRequirementOrigin.REQUEST else
+                                {"shift_id": f"SHIFT-775-{suffix}"}
+                                if origin == AssetRequirementOrigin.SHIFT_AD_HOC else
+                                {"resource_requirement_id": f"RR-775-{suffix}"}
+                            ),
+                        )
+                        session.add(requirement)
+                        session.flush()
+                        session.add(AssetAllocation(
+                            id=allocation_id,
+                            asset_requirement_id=requirement_id,
+                            asset_id=asset_id,
+                            start_date=future,
+                            end_date=future + timedelta(days=2),
+                            operator_resource_id="RESOURCE-SKILLED-B",
+                            locked=True,
+                            source="MANUAL",
+                        ))
+                finally:
+                    engine.dispose()
+
+                version = self._version()
+                rejected = self._continuous_create(
+                    asset_id=asset_id, version=version,
+                    key=f"nonreplaceable-{suffix}-775",
+                )
+                self.assertEqual(rejected.status_code, 409, rejected.text)
+                self.assertEqual(rejected.json()["error"]["code"], "asset_double_booking")
+                self.assertEqual(self._version(), version)
+                engine = create_sql_engine(self.url)
+                try:
+                    with create_session_factory(engine)() as session:
+                        self.assertIsNotNone(session.get(AssetRequirement, requirement_id))
+                        self.assertIsNotNone(session.get(AssetAllocation, allocation_id))
+                        self.assertEqual(
+                            session.scalar(select(func.count()).select_from(AssetAllocation).where(
+                                AssetAllocation.asset_id == asset_id
+                            )), 1,
+                        )
+                        self.assertEqual(
+                            session.scalar(select(func.count()).select_from(PlanningChangeHistory).where(
+                                PlanningChangeHistory.entity_reference == requirement_id,
+                                PlanningChangeHistory.action
+                                == "Neutralisation réservation future pour attribution continue",
+                            )), 0,
+                        )
+                finally:
+                    engine.dispose()
+                state = self.client.get(
+                    f"/api/v1/assets/continuous-vehicle-units/{asset_id}"
+                )
+                self.assertEqual(state.status_code, 200, state.text)
+                self.assertFalse(state.json()["has_continuous_assignment"])
 
     def test_continuous_overrides_future_bounded_with_audit_and_reverse_exclusivity(self) -> None:
         future = date.today() + timedelta(days=21)
