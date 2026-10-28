@@ -15,6 +15,10 @@ from .demand_period_models import (
     WorkforceRequestPeriodRequirement,
 )
 from .models import ResourceRequirement, Shift
+from .operational_choice_models import (
+    PLANNING_INTENT_QUEUED,
+    RequestRequirementPlanningIntent,
+)
 
 
 INACTIVE_REQUIREMENT_STATUSES = {"Annulé", "Terminé"}
@@ -225,7 +229,29 @@ class SqlSameResourcePeriodCoordinator:
                     .order_by(ResourceRequirement.id)
                 ).all()
             )
-            locked_ids = self._locked_resource_ids(group.requirement_ids)
+            intents_by_requirement = {
+                intent.current_resource_requirement_id: intent
+                for intent in self._session.scalars(
+                    select(RequestRequirementPlanningIntent).where(
+                        RequestRequirementPlanningIntent.current_resource_requirement_id.in_(
+                            group.requirement_ids
+                        )
+                    )
+                ).all()
+                if intent.current_resource_requirement_id
+            }
+            queued_requirement_ids = {
+                requirement_id
+                for requirement_id, intent in intents_by_requirement.items()
+                if intent.intent_mode == PLANNING_INTENT_QUEUED
+            }
+            locked_ids = self._locked_resource_ids(
+                tuple(
+                    requirement_id
+                    for requirement_id in group.requirement_ids
+                    if requirement_id not in queued_requirement_ids
+                )
+            )
             if len(locked_ids) > 1:
                 raise ValueError(
                     "Des quarts verrouillés d'une composante SAME_AS_PERIOD utilisent "
@@ -235,7 +261,8 @@ class SqlSameResourcePeriodCoordinator:
             assigned_ids = {
                 _text(requirement.assigned_resource_id)
                 for requirement in requirements
-                if _text(requirement.assigned_resource_id)
+                if requirement.id not in queued_requirement_ids
+                and _text(requirement.assigned_resource_id)
             }
             chosen_resource_id: str | None = None
             if locked_ids:
@@ -253,6 +280,9 @@ class SqlSameResourcePeriodCoordinator:
                 continue
 
             for requirement in requirements:
+                if requirement.id in queued_requirement_ids:
+                    requirement.assigned_resource_id = None
+                    continue
                 requirement.assigned_resource_id = chosen_resource_id
                 if requirement.status not in INACTIVE_REQUIREMENT_STATUSES:
                     requirement.status = "Planifié"
