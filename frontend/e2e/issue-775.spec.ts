@@ -359,7 +359,7 @@ test("775 garde Attitré lié au mode CONTINUOUS et non à SCHEDULED/ACTIVE", as
 test("775 remplace la réservation future de Bob par Attitré Alice dans la fiche Unité", async ({ browser }) => {
   test.setTimeout(120_000);
   const { context, page } = await openAdmin(browser);
-  const today = localIso(new Date());
+  const newStart = localIso(addDays(new Date(), 7));
   const future = localIso(addDays(new Date(), 21));
   const futureEnd = localIso(addDays(new Date(), 25));
   try {
@@ -384,7 +384,7 @@ test("775 remplace la réservation future de Bob par Attitré Alice dans la fich
     await expect(fields.getByRole("checkbox", { name: "Attitré" })).not.toBeChecked();
     await fields.getByRole("checkbox", { name: "Attitré" }).check();
     await fields.getByRole("combobox").selectOption("R-ALICE");
-    await fields.getByLabel("Date effective").fill(today);
+    await fields.getByLabel("Date effective").fill(newStart);
     await catalog.locator(".asset-unit-editor").getByRole("button", { name: "Enregistrer l’unité" }).click();
     await expect(catalog.locator(".asset-catalog-notice")).toContainText("Unité enregistrée.");
 
