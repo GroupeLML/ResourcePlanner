@@ -22,6 +22,7 @@ from ...domain.confirmation import CONFIRMATION_CONFIRMED, normalize_confirmatio
 from ...domain.demand_periods import PERIOD_KIND_CUMULATIVE, resolve_period_authority
 from .approval_revision_models import (
     APPROVAL_REFERENCE_CAPTURED,
+    RequestApprovalReference,
     RequestApprovalRevision,
 )
 from .approval_revision_repository import SqlRequestApprovalRevisionRepository
@@ -52,6 +53,11 @@ from .request_plan_preparation import (
 )
 from .planning_version import SqlPlanningMutationVersionRepository
 from .planning_intent_repository import SqlRequestRequirementPlanningIntentRepository
+from .operational_choice_models import (
+    PLANNING_INTENT_AUTO,
+    RequestCompletionReduction,
+    RequestRequirementPlanningIntent,
+)
 from .planning_window_override_repository import SqlPlanningWindowOverrideRepository
 from .operational_contact_repository import SqlOperationalContactRepository
 from .segment_repository import SqlSegmentRepository
@@ -1342,6 +1348,85 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                 requirement.status = "Annulé"
         self._session.flush()
 
+    def _assert_reduction_reapproval_compatible(
+        self,
+        request: WorkforceRequest,
+        candidate_specs: tuple[PreparedRequirementSpec, ...] | list[PreparedRequirementSpec],
+    ) -> None:
+        reduced_intents = self._session.scalars(
+            select(RequestRequirementPlanningIntent)
+            .join(
+                RequestCompletionReduction,
+                RequestCompletionReduction.planning_intent_id
+                == RequestRequirementPlanningIntent.id,
+            )
+            .where(
+                RequestRequirementPlanningIntent.workforce_request_id == request.id,
+                RequestCompletionReduction.reconciliation_state == "ACTIVE",
+            )
+            .distinct()
+        ).all()
+        if not reduced_intents:
+            return
+        reference = self._session.get(RequestApprovalReference, request.id)
+        if reference is None or not reference.active_revision_id:
+            raise ApplicationConflictError(
+                "Les réductions actives ne peuvent pas être réconciliées sans révision approuvée active.",
+                code="reduction_rebase_required",
+            )
+        revision = self._session.get(RequestApprovalRevision, reference.active_revision_id)
+        if revision is None:
+            raise ApplicationConflictError(
+                "La révision approuvée active est introuvable pour réconcilier les réductions.",
+                code="reduction_rebase_required",
+            )
+        payload = json.loads(revision.payload_text)
+        entries = {
+            _text(row.get("identity")): row
+            for row in payload.get("authorization", {}).get("entries", [])
+            if isinstance(row, dict) and _text(row.get("identity"))
+        }
+        candidate_by_slot = {
+            (spec.approved_entry_key, int(spec.slot_index)): spec
+            for spec in candidate_specs
+        }
+        for intent in reduced_intents:
+            entry = entries.get(intent.approved_entry_key)
+            if entry is None:
+                raise ApplicationConflictError(
+                    "Une réduction active ne correspond plus à la même entrée approuvée.",
+                    code="reduction_rebase_required",
+                    context={"planning_intent_id": intent.id},
+                )
+            slot_count = max(int(entry.get("slot_count") or 1), 1)
+            nominal_slots = split_total_workforce_hours(
+                Decimal(str(entry.get("hours"))).quantize(Decimal("0.01")),
+                slot_count,
+            )
+            if intent.slot_index < 0 or intent.slot_index >= len(nominal_slots):
+                raise ApplicationConflictError(
+                    "La topologie approuvée a changé pour un slot réduit.",
+                    code="reduction_rebase_required",
+                    context={"planning_intent_id": intent.id},
+                )
+            candidate = candidate_by_slot.get(
+                (intent.approved_entry_key, int(intent.slot_index))
+            )
+            if candidate is None or Decimal(str(candidate.planned_hours)).quantize(
+                Decimal("0.01")
+            ) != Decimal(str(nominal_slots[int(intent.slot_index)])).quantize(
+                Decimal("0.01")
+            ):
+                raise ApplicationConflictError(
+                    "La nouvelle autorisation modifierait la base nominale d'un slot réduit; une réconciliation explicite est requise.",
+                    code="reduction_rebase_required",
+                    context={
+                        "planning_intent_id": intent.id,
+                        "approved_entry_key": intent.approved_entry_key,
+                        "slot_index": int(intent.slot_index),
+                    },
+                )
+
     def sync_approved(
         self,
         demand_number: str,
@@ -1365,6 +1450,10 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             current_before,
             prepared.specs,
             target_project_id=request.project_id,
+        )
+        self._assert_reduction_reapproval_compatible(
+            request,
+            prepared.specs,
         )
         if not bool(request.line_mode) and not periods:
             self._legacy.prevalidate_approved(demand_number)
@@ -1461,6 +1550,9 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                     approval_revision_id=revision.id,
                 )
             self._approval_revisions.activate_revision(request, revision)
+            self.sync_operational_choices(
+                _text(request.legacy_demand_number) or request.id
+            )
             self._session.add(
                 WorkforceRequestHistory(
                     workforce_request_id=request.id,
