@@ -1160,7 +1160,13 @@ class DirectAssetReservationTests(unittest.TestCase):
         self.assertEqual(active.status_code, 200, active.text)
         payload = active.json()
         self.assertEqual(payload["asset_category"], "VEHICLE")
+        self.assertTrue(payload["has_continuous_assignment"])
+        self.assertEqual(payload["assignment"]["resource_period_mode"], "CONTINUOUS")
         self.assertEqual(payload["assignment"]["effective_state"], "ACTIVE")
+        self.assertEqual(
+            payload["assignment"]["start_date"],
+            date.today().isoformat(),
+        )
         self.assertEqual(
             payload["assignment"]["operator_resource_id"],
             "RESOURCE-SKILLED",
@@ -1183,6 +1189,7 @@ class DirectAssetReservationTests(unittest.TestCase):
             params={"as_of": effective_from.isoformat()},
         )
         self.assertEqual(ended.status_code, 200, ended.text)
+        self.assertFalse(ended.json()["has_continuous_assignment"])
         self.assertIsNone(ended.json()["assignment"])
         self.assertTrue(ended.json()["has_ended_history"])
 
@@ -1197,6 +1204,11 @@ class DirectAssetReservationTests(unittest.TestCase):
             "/api/v1/assets/continuous-vehicle-units/ASSET-B"
         )
         self.assertEqual(scheduled_state.status_code, 200, scheduled_state.text)
+        self.assertTrue(scheduled_state.json()["has_continuous_assignment"])
+        self.assertEqual(
+            scheduled_state.json()["assignment"]["resource_period_mode"],
+            "CONTINUOUS",
+        )
         self.assertEqual(
             scheduled_state.json()["assignment"]["effective_state"],
             "SCHEDULED",
@@ -1205,6 +1217,55 @@ class DirectAssetReservationTests(unittest.TestCase):
             scheduled_state.json()["assignment"]["start_date"],
             scheduled_start.isoformat(),
         )
+
+    def test_asset_unit_read_never_projects_bounded_reservation_as_attitre(self) -> None:
+        future = date.today() + timedelta(days=10)
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory.begin() as session:
+                requirement = AssetRequirement(
+                    id="AR-775-BOUNDED",
+                    project_id=None,
+                    origin=AssetRequirementOrigin.RESOURCE_PERIOD.value,
+                    resource_period_mode="BOUNDED",
+                    context_resource_id="RESOURCE-SKILLED-B",
+                    asset_type_id="TYPE-575C",
+                    start_date=future,
+                    end_date=future + timedelta(days=2),
+                    status="Planifié",
+                )
+                session.add(requirement)
+                session.flush()
+                session.add(
+                    AssetAllocation(
+                        id="ALLOC-775-BOUNDED",
+                        asset_requirement_id=requirement.id,
+                        asset_id="ASSET-B",
+                        operator_resource_id="RESOURCE-SKILLED-B",
+                        start_date=future,
+                        end_date=future + timedelta(days=2),
+                        locked=True,
+                        source="MANUAL",
+                    )
+                )
+        finally:
+            engine.dispose()
+
+        scheduled = self.client.get(
+            "/api/v1/assets/continuous-vehicle-units/ASSET-B"
+        )
+        self.assertEqual(scheduled.status_code, 200, scheduled.text)
+        self.assertFalse(scheduled.json()["has_continuous_assignment"])
+        self.assertIsNone(scheduled.json()["assignment"])
+
+        active = self.client.get(
+            "/api/v1/assets/continuous-vehicle-units/ASSET-B",
+            params={"as_of": future.isoformat()},
+        )
+        self.assertEqual(active.status_code, 200, active.text)
+        self.assertFalse(active.json()["has_continuous_assignment"])
+        self.assertIsNone(active.json()["assignment"])
 
     def test_asset_unit_read_redacts_hidden_resource_and_exposes_no_mutation_capability(self) -> None:
         created = self._continuous_create()
@@ -1222,6 +1283,7 @@ class DirectAssetReservationTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 200, response.text)
         payload = response.json()
+        self.assertTrue(payload["has_continuous_assignment"])
         self.assertIsNotNone(payload["assignment"])
         self.assertFalse(payload["assignment_details_visible"])
         self.assertIsNone(payload["assignment"]["operator_resource_id"])
