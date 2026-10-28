@@ -6,6 +6,7 @@ import unittest
 
 from sqlalchemy import select
 
+from app.application.errors import ApplicationConflictError
 from app.domain.planning_engine import (
     LockedAllocationInput,
     MISSING_ALLOCATION_TYPE,
@@ -328,7 +329,7 @@ class QuickShiftDelete755Tests(unittest.TestCase):
                 [],
             )
 
-    def test_request_and_generic_ad_hoc_keep_existing_delete_semantics(self) -> None:
+    def test_request_delete_is_redirected_to_778_while_generic_ad_hoc_keeps_delete_semantics(self) -> None:
         with transactional_session(self.factory) as session:
             request = WorkforceRequest(
                 id="WR-755",
@@ -359,7 +360,16 @@ class QuickShiftDelete755Tests(unittest.TestCase):
             self._shift(session, adhoc_requirement, identifier="ADHOC-S", day=MONDAY, hours="8", locked=True)
 
             adapter = SqlAllocationCommandAdapter(session)
-            adapter.delete_manual("REQ-S")
+            with self.assertRaises(ApplicationConflictError) as raised:
+                adapter.delete_manual("REQ-S")
+            self.assertEqual(
+                raised.exception.code,
+                "request_shift_action_requires_explicit_command",
+            )
+            self.assertIsNotNone(
+                session.scalar(select(Shift).where(Shift.legacy_allocation_id == "REQ-S"))
+            )
+
             adapter.delete_manual("ADHOC-S")
 
             self.assertEqual(request_requirement.planned_hours, Decimal("8.00"))
