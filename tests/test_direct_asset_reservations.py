@@ -849,6 +849,40 @@ class DirectAssetReservationTests(unittest.TestCase):
         ).json()
         self.assertEqual(state["assignments"], [])
 
+    def test_future_continuous_transfer_replaces_same_day_and_unit_projection(self) -> None:
+        start = date.today() + timedelta(days=7)
+        created = self._continuous_create(
+            resource_id="RESOURCE-SKILLED",
+            start_date=start,
+            key="future-replace-source-775",
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+
+        transferred = self.client.post(
+            f"/api/v1/assets/continuous-resource-assignments/{created.json()['requirement_id']}/transfer",
+            headers={"Idempotency-Key": "future-replace-transfer-775"},
+            json={
+                "resource_id": "RESOURCE-SKILLED-B",
+                "asset_id": "ASSET-A",
+                "effective_from": start.isoformat(),
+                "expected_planning_version": created.json()["planning_version"],
+            },
+        )
+        self.assertEqual(transferred.status_code, 201, transferred.text)
+        self.assertNotEqual(
+            transferred.json()["requirement_id"], created.json()["requirement_id"]
+        )
+
+        unit_state = self.client.get("/api/v1/assets/continuous-vehicle-units/ASSET-A")
+        self.assertEqual(unit_state.status_code, 200, unit_state.text)
+        payload = unit_state.json()
+        self.assertTrue(payload["has_continuous_assignment"])
+        self.assertEqual(payload["assignment"]["operator_resource_id"], "RESOURCE-SKILLED-B")
+        self.assertEqual(payload["assignment"]["resource_period_mode"], "CONTINUOUS")
+        self.assertEqual(payload["assignment"]["effective_state"], "SCHEDULED")
+        self.assertEqual(payload["assignment"]["start_date"], start.isoformat())
+        self.assertIsNone(payload["scheduled_assignment"])
+
     def test_same_vehicle_transfer_closes_old_and_opens_new_without_self_conflict(self) -> None:
         created = self._continuous_create()
         self.assertEqual(created.status_code, 201, created.text)
