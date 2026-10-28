@@ -472,6 +472,27 @@ class RequestWorkQueueCommandTests(unittest.TestCase):
             self.assertIsNotNone(session.get(Shift, "S4"))
             self.assertEqual(session.query(PlanningWorkQueueRelease).count(), 0)
 
+    def test_stale_operational_version_rolls_back_without_mutation(self) -> None:
+        with self.assertRaises(ApplicationConflictError):
+            with transactional_session(self.factory) as session:
+                adapter, _planning = self._adapter(session)
+                adapter.return_shift(
+                    ReturnShiftToWorkQueueCommand(
+                        allocation_id="A4",
+                        expected_planning_version=1,
+                        expected_approval_revision_id="REV1",
+                        expected_operational_version=2,
+                        command_id="stale-operational-778",
+                    )
+                )
+        with transactional_session(self.factory) as session:
+            self.assertIsNotNone(session.get(Shift, "S4"))
+            self.assertEqual(session.query(PlanningWorkQueueRelease).count(), 0)
+            self.assertEqual(
+                session.get(PlanningMutationState, "GLOBAL").version,
+                1,
+            )
+
     def test_permanent_reduction_requires_enhanced_permissions(self) -> None:
         with self.assertRaises(ApplicationAuthorizationError):
             with transactional_session(self.factory) as session:
