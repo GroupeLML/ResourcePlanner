@@ -996,6 +996,66 @@ class DirectAssetReservationTests(unittest.TestCase):
         self.assertEqual(payload["assignment"]["start_date"], start.isoformat())
         self.assertIsNone(payload["scheduled_assignment"])
 
+    def test_newer_future_continuous_decision_supersedes_scheduled_transfer(self) -> None:
+        today = date.today()
+        transition = today + timedelta(days=21)
+        current = self._continuous_create(
+            key="supersession-alice-775",
+        )
+        self.assertEqual(current.status_code, 201, current.text)
+        bob = self.client.post(
+            f"/api/v1/assets/continuous-resource-assignments/{current.json()['requirement_id']}/transfer",
+            headers={"Idempotency-Key": "supersession-bob-775"},
+            json={
+                "resource_id": "RESOURCE-SKILLED-B",
+                "asset_id": "ASSET-A",
+                "effective_from": transition.isoformat(),
+                "expected_planning_version": current.json()["planning_version"],
+            },
+        )
+        self.assertEqual(bob.status_code, 201, bob.text)
+        alice = self.client.post(
+            f"/api/v1/assets/continuous-resource-assignments/{bob.json()['requirement_id']}/transfer",
+            headers={"Idempotency-Key": "supersession-alice-again-775"},
+            json={
+                "resource_id": "RESOURCE-SKILLED",
+                "asset_id": "ASSET-A",
+                "effective_from": transition.isoformat(),
+                "expected_planning_version": bob.json()["planning_version"],
+            },
+        )
+        self.assertEqual(alice.status_code, 201, alice.text)
+        replay = self.client.post(
+            f"/api/v1/assets/continuous-resource-assignments/{bob.json()['requirement_id']}/transfer",
+            headers={"Idempotency-Key": "supersession-alice-again-775"},
+            json={
+                "resource_id": "RESOURCE-SKILLED",
+                "asset_id": "ASSET-A",
+                "effective_from": transition.isoformat(),
+                "expected_planning_version": bob.json()["planning_version"],
+            },
+        )
+        self.assertEqual(replay.status_code, 201, replay.text)
+        self.assertEqual(replay.json(), alice.json())
+        state = self.client.get(
+            "/api/v1/assets/continuous-vehicle-units/ASSET-A",
+            params={"as_of": transition.isoformat()},
+        )
+        self.assertEqual(state.status_code, 200, state.text)
+        self.assertEqual(state.json()["assignment"]["operator_resource_id"], "RESOURCE-SKILLED")
+        engine = create_sql_engine(self.url)
+        try:
+            with create_session_factory(engine)() as session:
+                self.assertIsNone(
+                    session.get(AssetRequirement, bob.json()["requirement_id"])
+                )
+                history = session.scalars(select(PlanningChangeHistory).where(
+                    PlanningChangeHistory.entity_reference == bob.json()["requirement_id"]
+                )).all()
+                self.assertTrue(history)
+        finally:
+            engine.dispose()
+
     def test_same_vehicle_transfer_closes_old_and_opens_new_without_self_conflict(self) -> None:
         created = self._continuous_create()
         self.assertEqual(created.status_code, 201, created.text)
