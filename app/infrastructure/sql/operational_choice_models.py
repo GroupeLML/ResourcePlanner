@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from datetime import date, datetime\nfrom decimal import Decimal\n\nfrom sqlalchemy import (\n    Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, Numeric, String,\n    Text, UniqueConstraint, text,\n)
+from datetime import date, datetime
+from decimal import Decimal
+
+from sqlalchemy import (
+    Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, Numeric, String,
+    Text, UniqueConstraint, text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, TimestampMixin, new_id
