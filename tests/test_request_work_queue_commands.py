@@ -1,0 +1,402 @@
+from __future__ import annotations
+
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
+import json
+import unittest
+
+from app.application.errors import ApplicationAuthorizationError, ApplicationConflictError
+from app.application.request_work_queue import (
+    PermanentlyReduceShiftHoursCommand,
+    ReturnSegmentToWorkQueueCommand,
+    ReturnShiftToWorkQueueCommand,
+)
+from app.infrastructure.sql.approval_cycle_models import (
+    ApprovalRequirement,
+    ApprovalRequirementApprover,
+    RequestApprovalCycle,
+)
+from app.infrastructure.sql.approval_revision_models import (
+    RequestApprovalReference,
+    RequestApprovalRevision,
+)
+from app.infrastructure.sql.base import Base
+from app.infrastructure.sql.identity_models import AppUser
+from app.infrastructure.sql.models import (
+    Project,
+    RequestLine,
+    Resource,
+    ResourceRequirement,
+    Shift,
+    WorkforceRequest,
+)
+from app.infrastructure.sql.operational_choice_models import (
+    PLANNING_INTENT_AUTO,
+    PLANNING_INTENT_PRESERVE_EXISTING,
+    PLANNING_INTENT_QUEUED,
+    PLANNING_TARGET_EXPLICIT_NONE,
+    PLANNING_TARGET_INHERIT,
+    PlanningWorkQueueRelease,
+    RequestCompletionReduction,
+    RequestOperationalState,
+    RequestRequirementPlanningIntent,
+)
+from app.infrastructure.sql.planning_audit import SqlPlanningAuditJournal
+from app.infrastructure.sql.planning_version import (
+    PlanningMutationState,
+    SqlPlanningMutationVersionRepository,
+)
+from app.infrastructure.sql.request_work_queue_commands import (
+    SqlRequestWorkQueueCommandAdapter,
+)
+from app.infrastructure.sql.session import create_session_factory, create_sql_engine, transactional_session
+
+
+DAY = date(2026, 10, 26)
+ENTRY_KEY = "ENTRY-778"
+
+
+class _PlanningStub:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, ...]] = []
+
+    def rebuild(self, *, preserve_shift_ids=()):
+        self.calls.append(tuple(preserve_shift_ids))
+        return {
+            "segments": 1,
+            "allocations": len(preserve_shift_ids),
+            "locked_allocations": 0,
+            "requested_hours": 40,
+            "allocated_hours": 0,
+            "unallocated_hours": 40,
+            "planning_engine": "test",
+        }
+
+
+class RequestWorkQueueCommandTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.engine = create_sql_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(self.engine)
+        self.factory = create_session_factory(self.engine)
+        approved_payload = json.dumps(
+            {
+                "authorization": {
+                    "entries": [
+                        {
+                            "identity": ENTRY_KEY,
+                            "hours": "40.00",
+                            "slot_count": 1,
+                            "start_date": DAY.isoformat(),
+                            "end_date": (DAY + timedelta(days=4)).isoformat(),
+                        }
+                    ]
+                }
+            },
+            separators=(",", ":"),
+        )
+        with transactional_session(self.factory) as session:
+            session.add(Project(id="P1", number="P-1", name="Projet 778"))
+            session.add(Resource(id="R1", name="Alice", active=True, erp_active=True))
+            session.add(
+                AppUser(
+                    id="U1",
+                    issuer="test",
+                    subject="u1",
+                    display_name="Planificateur approbateur",
+                    roles_json='["ADMIN"]',
+                    active=True,
+                )
+            )
+            session.add(
+                WorkforceRequest(
+                    id="D1",
+                    legacy_demand_number="DMO-778",
+                    project_id="P1",
+                    status="En planification",
+                    aggregate_version=1,
+                    line_mode=True,
+                    desired_start=DAY,
+                    desired_end=DAY + timedelta(days=4),
+                    estimated_hours=Decimal("40"),
+                )
+            )
+            session.flush()
+            session.add(
+                RequestLine(
+                    id="L1",
+                    workforce_request_id="D1",
+                    position=0,
+                    kind="WORKFORCE",
+                    slot_count=1,
+                    desired_start=DAY,
+                    desired_end=DAY + timedelta(days=4),
+                    estimated_hours=Decimal("40"),
+                    active=True,
+                )
+            )
+            session.add(
+                RequestApprovalRevision(
+                    id="REV1",
+                    workforce_request_id="D1",
+                    request_version=1,
+                    approved_at=datetime.now(timezone.utc),
+                    payload_text=approved_payload,
+                    authorization_fingerprint="a" * 64,
+                )
+            )
+            session.flush()
+            session.add(
+                RequestApprovalReference(
+                    workforce_request_id="D1",
+                    active_revision_id="REV1",
+                    status="CAPTURED",
+                )
+            )
+            session.add(
+                RequestOperationalState(
+                    workforce_request_id="D1",
+                    approval_revision_id="REV1",
+                    version=1,
+                    selections_text="{}",
+                    confirmations_text="{}",
+                    budget_overrides_text="{}",
+                )
+            )
+            session.add(
+                ResourceRequirement(
+                    id="REQ1",
+                    legacy_segment_id="SEG-778",
+                    project_id="P1",
+                    workforce_request_id="D1",
+                    source_request_line_id="L1",
+                    approval_revision_id="REV1",
+                    approved_entry_key=ENTRY_KEY,
+                    approval_reference_status="CAPTURED",
+                    start_date=DAY,
+                    end_date=DAY + timedelta(days=4),
+                    planned_hours=Decimal("40"),
+                    status="Planifié",
+                    origin="REQUEST",
+                    assigned_resource_id="R1",
+                )
+            )
+            session.flush()
+            session.add(
+                RequestRequirementPlanningIntent(
+                    id="INT1",
+                    slot_identity_key='["D1","L1","ENTRY-778","",0]',
+                    workforce_request_id="D1",
+                    source_request_line_id="L1",
+                    approval_revision_id="REV1",
+                    approved_entry_key=ENTRY_KEY,
+                    slot_index=0,
+                    current_resource_requirement_id="REQ1",
+                    intent_mode=PLANNING_INTENT_AUTO,
+                    target_mode=PLANNING_TARGET_INHERIT,
+                )
+            )
+            for index in range(5):
+                session.add(
+                    Shift(
+                        id=f"S{index + 1}",
+                        legacy_allocation_id=f"A{index + 1}",
+                        resource_requirement_id="REQ1",
+                        resource_id="R1",
+                        work_date=DAY + timedelta(days=index),
+                        hours=Decimal("8"),
+                        source="AUTO",
+                        locked=False,
+                    )
+                )
+            session.add(
+                RequestApprovalCycle(
+                    id="C1",
+                    workforce_request_id="D1",
+                    submitted_request_version=1,
+                    state="COMPLETED",
+                    subject_fingerprint="b" * 64,
+                    initialization_reason="SUBMISSION",
+                    submitted_at=datetime.now(timezone.utc),
+                    completed_at=datetime.now(timezone.utc),
+                    approved_revision_id="REV1",
+                )
+            )
+            session.flush()
+            session.add(
+                ApprovalRequirement(
+                    id="AR1",
+                    approval_cycle_id="C1",
+                    request_line_id="L1",
+                    routing_sources_text="[]",
+                )
+            )
+            session.flush()
+            session.add(
+                ApprovalRequirementApprover(
+                    requirement_id="AR1",
+                    app_user_id="U1",
+                    sources_text='["TEST"]',
+                )
+            )
+            session.add(PlanningMutationState(id="GLOBAL", version=1))
+
+    def tearDown(self) -> None:
+        self.engine.dispose()
+
+    def _adapter(self, session, *, permissions=None):
+        planning = _PlanningStub()
+        adapter = SqlRequestWorkQueueCommandAdapter(
+            session,
+            planning=planning,
+            versioning=SqlPlanningMutationVersionRepository(session),
+            journal=SqlPlanningAuditJournal(session, actor_name="Test"),
+            actor_user_id="U1",
+            actor_name="Test",
+            permissions=permissions
+            or ("manage_planning", "read_demands", "approve_demands", "read"),
+            roles=("ADMIN",),
+        )
+        return adapter, planning
+
+    def test_return_shift_persists_release_and_preserves_nominal_need(self) -> None:
+        with transactional_session(self.factory) as session:
+            adapter, planning = self._adapter(session)
+            result = adapter.return_shift(
+                ReturnShiftToWorkQueueCommand(
+                    allocation_id="A4",
+                    expected_planning_version=1,
+                    expected_approval_revision_id="REV1",
+                    expected_operational_version=1,
+                    command_id="return-shift-778",
+                )
+            )
+            self.assertIsNone(session.get(Shift, "S4"))
+            self.assertEqual(
+                session.get(ResourceRequirement, "REQ1").planned_hours,
+                Decimal("40"),
+            )
+            intent = session.get(RequestRequirementPlanningIntent, "INT1")
+            self.assertEqual(intent.intent_mode, PLANNING_INTENT_PRESERVE_EXISTING)
+            release = session.query(PlanningWorkQueueRelease).one()
+            self.assertEqual(release.original_shift_id, "S4")
+            self.assertEqual(release.resource_id, "R1")
+            self.assertEqual(release.hours, Decimal("8"))
+            self.assertEqual(set(planning.calls[-1]), {"S1", "S2", "S3", "S5"})
+            self.assertEqual(result["effective_need_after"], 40.0)
+            self.assertEqual(result["covered_hours_after"], 32.0)
+            self.assertEqual(result["remaining_hours_after"], 8.0)
+
+    def test_return_segment_queues_entire_requirement_and_clears_target(self) -> None:
+        with transactional_session(self.factory) as session:
+            adapter, planning = self._adapter(session)
+            result = adapter.return_segment(
+                ReturnSegmentToWorkQueueCommand(
+                    segment_id="SEG-778",
+                    expected_planning_version=1,
+                    expected_approval_revision_id="REV1",
+                    expected_operational_version=1,
+                    command_id="return-segment-778",
+                )
+            )
+            self.assertEqual(
+                session.query(Shift).filter_by(resource_requirement_id="REQ1").count(),
+                0,
+            )
+            requirement = session.get(ResourceRequirement, "REQ1")
+            self.assertEqual(requirement.planned_hours, Decimal("40"))
+            self.assertIsNone(requirement.assigned_resource_id)
+            intent = session.get(RequestRequirementPlanningIntent, "INT1")
+            self.assertEqual(intent.intent_mode, PLANNING_INTENT_QUEUED)
+            self.assertEqual(intent.target_mode, PLANNING_TARGET_EXPLICIT_NONE)
+            self.assertEqual(planning.calls[-1], ())
+            self.assertEqual(result["removed_shift_count"], 5)
+            self.assertEqual(result["remaining_hours_after"], 40.0)
+
+    def test_permanent_reduction_appends_once_and_advances_request_cas(self) -> None:
+        with transactional_session(self.factory) as session:
+            adapter, planning = self._adapter(session)
+            result = adapter.permanently_reduce_shift(
+                PermanentlyReduceShiftHoursCommand(
+                    allocation_id="A4",
+                    expected_planning_version=1,
+                    expected_request_version=1,
+                    expected_approval_revision_id="REV1",
+                    expected_operational_version=1,
+                    command_id="reduce-shift-778",
+                )
+            )
+            self.assertIsNone(session.get(Shift, "S4"))
+            requirement = session.get(ResourceRequirement, "REQ1")
+            self.assertEqual(requirement.planned_hours, Decimal("32"))
+            request = session.get(WorkforceRequest, "D1")
+            self.assertEqual(request.aggregate_version, 2)
+            reduction = session.query(RequestCompletionReduction).one()
+            self.assertEqual(reduction.reduction_hours, Decimal("8"))
+            self.assertEqual(reduction.effective_need_before, Decimal("40"))
+            self.assertEqual(reduction.effective_need_after, Decimal("32"))
+            self.assertEqual(
+                session.get(RequestApprovalRevision, "REV1").payload_text,
+                json.dumps(
+                    {
+                        "authorization": {
+                            "entries": [
+                                {
+                                    "identity": ENTRY_KEY,
+                                    "hours": "40.00",
+                                    "slot_count": 1,
+                                    "start_date": DAY.isoformat(),
+                                    "end_date": (DAY + timedelta(days=4)).isoformat(),
+                                }
+                            ]
+                        }
+                    },
+                    separators=(",", ":"),
+                ),
+            )
+            self.assertEqual(set(planning.calls[-1]), {"S1", "S2", "S3", "S5"})
+            self.assertEqual(result["request_version"], 2)
+            self.assertEqual(result["effective_need_after"], 32.0)
+            self.assertEqual(result["covered_hours_after"], 32.0)
+            self.assertEqual(result["remaining_hours_after"], 0.0)
+
+    def test_stale_planning_version_rolls_back_without_release(self) -> None:
+        with self.assertRaises(ApplicationConflictError):
+            with transactional_session(self.factory) as session:
+                adapter, _planning = self._adapter(session)
+                adapter.return_shift(
+                    ReturnShiftToWorkQueueCommand(
+                        allocation_id="A4",
+                        expected_planning_version=99,
+                        expected_approval_revision_id="REV1",
+                        expected_operational_version=1,
+                        command_id="stale-778",
+                    )
+                )
+        with transactional_session(self.factory) as session:
+            self.assertIsNotNone(session.get(Shift, "S4"))
+            self.assertEqual(session.query(PlanningWorkQueueRelease).count(), 0)
+
+    def test_permanent_reduction_requires_enhanced_permissions(self) -> None:
+        with self.assertRaises(ApplicationAuthorizationError):
+            with transactional_session(self.factory) as session:
+                adapter, _planning = self._adapter(
+                    session,
+                    permissions=("manage_planning",),
+                )
+                adapter.permanently_reduce_shift(
+                    PermanentlyReduceShiftHoursCommand(
+                        allocation_id="A4",
+                        expected_planning_version=1,
+                        expected_request_version=1,
+                        expected_approval_revision_id="REV1",
+                        expected_operational_version=1,
+                        command_id="permission-778",
+                    )
+                )
+        with transactional_session(self.factory) as session:
+            self.assertIsNotNone(session.get(Shift, "S4"))
+            self.assertEqual(session.query(RequestCompletionReduction).count(), 0)
+
+
+if __name__ == "__main__":
+    unittest.main()
