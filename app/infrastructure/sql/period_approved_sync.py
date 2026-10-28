@@ -51,6 +51,7 @@ from .request_plan_preparation import (
     SqlRequestPlanPreparer,
 )
 from .planning_version import SqlPlanningMutationVersionRepository
+from .planning_intent_repository import SqlRequestRequirementPlanningIntentRepository
 from .planning_window_override_repository import SqlPlanningWindowOverrideRepository
 from .operational_contact_repository import SqlOperationalContactRepository
 from .segment_repository import SqlSegmentRepository
@@ -1098,6 +1099,26 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
         self._update_period_link(requirement, source_period)
         return requirement
 
+    def _bind_planning_intent(
+        self,
+        request: WorkforceRequest,
+        requirement: ResourceRequirement,
+        spec: PreparedRequirementSpec,
+        *,
+        approval_revision_id: str | None,
+    ) -> None:
+        if not approval_revision_id:
+            return
+        SqlRequestRequirementPlanningIntentRepository(self._session).ensure(
+            workforce_request_id=request.id,
+            approved_entry_key=spec.approved_entry_key,
+            slot_index=spec.slot_index,
+            source_request_line_id=spec.source_request_line_id,
+            source_period_id=spec.source_period_id,
+            approval_revision_id=approval_revision_id,
+            current_resource_requirement_id=requirement.id,
+        )
+
     def _sync_request_lines(
         self,
         request: WorkforceRequest,
@@ -1131,14 +1152,23 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
 
         materialized: list[ResourceRequirement] = []
         for match in matches:
-            materialized.append(
-                self._apply_line_spec(
-                    request,
-                    project,
-                    match.requirement,
-                    match.spec,
-                )
+            requirement = self._apply_line_spec(
+                request,
+                project,
+                match.requirement,
+                match.spec,
             )
+            if self._responsibility_revision_id:
+                requirement.approval_revision_id = self._responsibility_revision_id
+                requirement.approved_entry_key = match.spec.approved_entry_key
+                requirement.approval_reference_status = APPROVAL_REFERENCE_CAPTURED
+            self._bind_planning_intent(
+                request,
+                requirement,
+                match.spec,
+                approval_revision_id=self._responsibility_revision_id,
+            )
+            materialized.append(requirement)
 
         emergency = self._emergency_materialization(request)
         self._session.add(
@@ -1238,6 +1268,12 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             requirement.approval_revision_id = prepared.approval_revision_id
             requirement.approved_entry_key = match.spec.approved_entry_key
             requirement.approval_reference_status = APPROVAL_REFERENCE_CAPTURED
+            self._bind_planning_intent(
+                request,
+                requirement,
+                match.spec,
+                approval_revision_id=prepared.approval_revision_id,
+            )
             materialized.append(requirement)
 
         self._session.add(
