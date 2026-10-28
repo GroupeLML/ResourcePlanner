@@ -1439,6 +1439,21 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                 request,
                 revision,
             )
+            rebound_current = self._active_requirements(request.id)
+            rebound_matches, _rebound_obsolete = self._plan_preparer.match_current(
+                request,
+                rebound_current,
+                prepared.specs,
+            )
+            for match in rebound_matches:
+                if match.requirement is None:
+                    continue
+                self._bind_planning_intent(
+                    request,
+                    match.requirement,
+                    match.spec,
+                    approval_revision_id=revision.id,
+                )
             self._approval_revisions.activate_revision(request, revision)
             self._session.add(
                 WorkforceRequestHistory(
