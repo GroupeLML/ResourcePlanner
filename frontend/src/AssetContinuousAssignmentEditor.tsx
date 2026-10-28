@@ -360,6 +360,10 @@ export function ContinuousVehicleAssignmentFields({
   const currentResource = assignment?.operator_resource_id
     ? resources.find((row) => row.id === assignment.operator_resource_id) ?? null
     : null;
+  const scheduledResourceId = state?.scheduled_assignment?.operator_resource_id ?? null;
+  const scheduledResource = scheduledResourceId
+    ? resources.find((row) => row.id === scheduledResourceId) ?? null
+    : null;
 
   if (!creating && loading) {
     return (
@@ -446,6 +450,15 @@ export function ContinuousVehicleAssignmentFields({
             ? "État : Actif"
             : `État : Planifié pour ${assignment.start_date}`}
           {assignment.end_date ? ` · Fin prévue : ${assignment.end_date}` : ""}
+        </div>
+      )}
+
+      {state?.scheduled_assignment && (
+        <div className="subtle-status" data-testid="asset-continuous-scheduled-transition">
+          Transition planifiée pour {state.scheduled_assignment.start_date}
+          {state.scheduled_assignment_details_visible && scheduledResourceId
+            ? ` vers ${scheduledResource ? resourceDisplayName(scheduledResource.name) : scheduledResourceId}`
+            : " vers une ressource protégée"}
         </div>
       )}
 
