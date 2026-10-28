@@ -62,6 +62,9 @@ async function createVehicleByApi(page: Page, code: string, label: string) {
   });
   expect(response.status(), await response.text()).toBe(201);
   const created = await response.json() as { id: string };
+  await page.reload();
+  await expect(page.locator(".sidebar-footer")).toContainText("Administrateur");
+  await page.locator(".main-nav").getByRole("button", { name: /Ressources/i }).click();
   return { assetId: created.id, assetTypeId: type!.id };
 }
 
@@ -165,34 +168,6 @@ test("775 restaure une attribution CONTINUOUS dans le formulaire Unité sans dou
       .click();
     expect(await continuousCount(page, "R-ALICE", asset!.id)).toBe(1);
 
-    // Transfer is the canonical atomic #744 command through the same save button.
-    await restored.getByRole("combobox").selectOption("R-BOB");
-    await restored.getByLabel("Date effective du transfert").fill(today);
-    await reloadedCatalog
-      .locator(".asset-unit-editor")
-      .getByRole("button", { name: "Enregistrer l’unité" })
-      .click();
-
-    canonical = await unitState(page, asset!.id);
-    expect(canonical.has_continuous_assignment).toBeTruthy();
-    expect(canonical.assignment?.operator_resource_id).toBe("R-BOB");
-    expect(await continuousCount(page, "R-BOB", asset!.id)).toBe(1);
-
-    // Revoke today; after canonical reload there is history but no current/future contract.
-    restored = reloadedCatalog.locator(".asset-unit-editor").getByTestId(
-      "asset-continuous-assignment-fields",
-    );
-    await restored.getByRole("checkbox", { name: "Attitré" }).uncheck();
-    await reloadedCatalog
-      .locator(".asset-unit-editor")
-      .getByRole("button", { name: "Enregistrer l’unité" })
-      .click();
-
-    canonical = await unitState(page, asset!.id);
-    expect(canonical.has_continuous_assignment).toBeFalsy();
-    expect(canonical.assignment).toBeNull();
-    expect(canonical.has_ended_history).toBeTruthy();
-    await expect(restored.getByRole("checkbox", { name: "Attitré" })).not.toBeChecked();
   } finally {
     await context.close();
   }
@@ -231,6 +206,29 @@ test("775 garde Attitré lié au mode CONTINUOUS et non à SCHEDULED/ACTIVE", as
     await expect(fields.getByTestId("asset-continuous-assignment-state")).toContainText(
       `État : Planifié pour ${future}`,
     );
+
+    // Resource change uses the canonical atomic transfer command; because the
+    // assignment has not started yet, the replacement remains CONTINUOUS/SCHEDULED.
+    await fields.getByRole("combobox").selectOption("R-BOB");
+    await catalog.locator(".asset-unit-editor").getByRole(
+      "button",
+      { name: "Enregistrer l’unité" },
+    ).click();
+    let futureState = await unitState(page, futureVehicle.assetId);
+    expect(futureState.has_continuous_assignment).toBeTruthy();
+    expect(futureState.assignment?.operator_resource_id).toBe("R-BOB");
+    expect(futureState.assignment?.resource_period_mode).toBe("CONTINUOUS");
+    expect(futureState.assignment?.effective_state).toBe("SCHEDULED");
+
+    await page.reload();
+    await page.locator(".main-nav").getByRole("button", { name: /Ressources/i }).click();
+    catalog = await selectVehicle(page, "VEH-775-FUTURE");
+    fields = catalog.locator(".asset-unit-editor").getByTestId(
+      "asset-continuous-assignment-fields",
+    );
+    await expect(fields.getByRole("checkbox", { name: "Attitré" })).toBeChecked();
+    await expect(fields.getByRole("combobox")).toHaveValue("R-BOB");
+    await expect(fields.getByLabel("Date effective")).toHaveValue(future);
 
     // Unchecking a future CONTINUOUS cancels that #744 assignment.
     await fields.getByRole("checkbox", { name: "Attitré" }).uncheck();
@@ -295,6 +293,43 @@ test("775 garde Attitré lié au mode CONTINUOUS et non à SCHEDULED/ACTIVE", as
     );
     await expect(fields.getByRole("checkbox", { name: "Attitré" })).not.toBeChecked();
     expect((await unitState(page, boundedActive.assetId)).has_continuous_assignment).toBeFalsy();
+
+    // ACTIVE CONTINUOUS uncheck uses canonical revocation and preserves history.
+    const revokeVehicle = await createVehicleByApi(
+      page,
+      "VEH-775-REVOKE",
+      "Camion E2E 775 révocation",
+    );
+    state = await page.request.get("/api/v1/assets/requirements");
+    version = (await state.json() as { planning_version: number }).planning_version;
+    const activeContinuous = await page.request.post(
+      "/api/v1/assets/continuous-resource-assignments",
+      {
+        headers: { "Idempotency-Key": "775-e2e-active-revoke" },
+        data: {
+          resource_id: "R-ALICE",
+          asset_id: revokeVehicle.assetId,
+          start_date: today,
+          expected_planning_version: version,
+        },
+      },
+    );
+    expect(activeContinuous.status(), await activeContinuous.text()).toBe(201);
+
+    catalog = await selectVehicle(page, "VEH-775-REVOKE");
+    fields = catalog.locator(".asset-unit-editor").getByTestId(
+      "asset-continuous-assignment-fields",
+    );
+    await expect(fields.getByRole("checkbox", { name: "Attitré" })).toBeChecked();
+    await fields.getByRole("checkbox", { name: "Attitré" }).uncheck();
+    await catalog.locator(".asset-unit-editor").getByRole(
+      "button",
+      { name: "Enregistrer l’unité" },
+    ).click();
+    const revokedState = await unitState(page, revokeVehicle.assetId);
+    expect(revokedState.has_continuous_assignment).toBeFalsy();
+    expect(revokedState.assignment).toBeNull();
+    expect(revokedState.has_ended_history).toBeTruthy();
   } finally {
     await context.close();
   }
