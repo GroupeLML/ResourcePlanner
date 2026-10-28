@@ -90,7 +90,8 @@ class SqlMigrationTests(unittest.TestCase):
                 "0019_planning_resource_user_order.py",
                 "0020_period_inheritance_contract.py",
                 "0021_quick_shift_planning_exclusions.py",
-                "0022_continuous_vehicle_resource_period.py",\n                "0023_request_work_queue_intent.py",
+                "0022_continuous_vehicle_resource_period.py",
+                "0023_request_work_queue_intent.py",
             ],
         )
 
@@ -109,6 +110,7 @@ class SqlMigrationTests(unittest.TestCase):
             [revision.revision for revision in script.walk_revisions()],
             [
                 HEAD_REVISION,
+                "0022_continuous_vehicle_resource_period",
                 "0021_quick_shift_planning_exclusions",
                 "0020_period_inheritance_contract",
                 "0019_planning_resource_user_order",
