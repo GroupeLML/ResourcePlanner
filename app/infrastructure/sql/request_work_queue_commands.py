@@ -33,7 +33,8 @@ from .approval_revision_models import (
     RequestApprovalReference,
     RequestApprovalRevision,
 )
-from .asset_service import SqlAssetService, assert_segment_asset_mutation_compatible
+from .asset_service import SqlAssetService
+from .segment_asset_guard import assert_segment_asset_mutation_compatible
 from .base import new_id
 from .command_adapters import SqlPlanningCommandAdapter
 from .identity_models import AppUser
