@@ -6,6 +6,7 @@ Revises: 0022_continuous_vehicle_resource_period
 from __future__ import annotations
 
 from alembic import op
+import json
 import sqlalchemy as sa
 
 
@@ -65,6 +66,69 @@ def upgrade() -> None:
         "request_requirement_planning_intents",
         ["current_resource_requirement_id"],
     )
+
+    # Backfill only legacy REQUEST slots whose approved-entry identity is
+    # unambiguous. Multi-slot legacy entries intentionally remain without an
+    # intent and therefore fail closed until explicitly regularized.
+    connection = op.get_bind()
+    groups = connection.execute(sa.text(
+        "SELECT workforce_request_id, approved_entry_key "
+        "FROM resource_requirements "
+        "WHERE origin = 'REQUEST' AND status <> 'Annulé' "
+        "AND workforce_request_id IS NOT NULL "
+        "AND approved_entry_key IS NOT NULL "
+        "AND approval_revision_id IS NOT NULL "
+        "GROUP BY workforce_request_id, approved_entry_key HAVING COUNT(*) = 1"
+    )).mappings().all()
+    for group in groups:
+        row = connection.execute(
+            sa.text(
+                "SELECT r.id, r.workforce_request_id, r.source_request_line_id, "
+                "r.approval_revision_id, r.approved_entry_key, p.period_id "
+                "FROM resource_requirements r "
+                "LEFT JOIN workforce_request_period_requirements p "
+                "ON p.resource_requirement_id = r.id "
+                "WHERE r.workforce_request_id = :request_id "
+                "AND r.approved_entry_key = :entry_key "
+                "AND r.origin = 'REQUEST' AND r.status <> 'Annulé'"
+            ),
+            {
+                "request_id": group["workforce_request_id"],
+                "entry_key": group["approved_entry_key"],
+            },
+        ).mappings().one()
+        slot_key = json.dumps(
+            [
+                str(row["workforce_request_id"]),
+                str(row["source_request_line_id"] or ""),
+                str(row["approved_entry_key"]),
+                str(row["period_id"] or ""),
+                0,
+            ],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        connection.execute(
+            sa.text(
+                "INSERT INTO request_requirement_planning_intents "
+                "(id, slot_identity_key, workforce_request_id, source_request_line_id, "
+                "approval_revision_id, approved_entry_key, source_period_id, slot_index, "
+                "current_resource_requirement_id, intent_mode, target_mode, target_resource_id, "
+                "created_at, updated_at) "
+                "VALUES (:id, :slot_key, :request_id, :line_id, :revision_id, :entry_key, "
+                ":period_id, 0, :requirement_id, 'AUTO', 'INHERIT', NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            ),
+            {
+                "id": row["id"],
+                "slot_key": slot_key,
+                "request_id": row["workforce_request_id"],
+                "line_id": row["source_request_line_id"],
+                "revision_id": row["approval_revision_id"],
+                "entry_key": row["approved_entry_key"],
+                "period_id": row["period_id"],
+                "requirement_id": row["id"],
+            },
+        )
 
     op.create_table(
         "planning_work_queue_releases",
