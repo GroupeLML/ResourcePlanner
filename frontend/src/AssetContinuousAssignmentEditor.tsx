@@ -48,6 +48,20 @@ function hasContinuousAssignment(state: ContinuousVehicleUnitState | null) {
   );
 }
 
+function canonicalAssignmentSignature(state: ContinuousVehicleUnitState | null) {
+  if (!state || !hasContinuousAssignment(state) || !state.assignment) return "NONE";
+  const assignment = state.assignment;
+  return [
+    assignment.requirement_id,
+    assignment.resource_period_mode,
+    assignment.effective_state,
+    assignment.start_date,
+    assignment.end_date ?? "",
+    assignment.operator_resource_id ?? "REDACTED",
+    state.assignment_details_visible ? "VISIBLE" : "HIDDEN",
+  ].join("|");
+}
+
 export function useContinuousVehicleAssignmentDraft({
   assetId,
   vehicle,
@@ -191,6 +205,16 @@ export function useContinuousVehicleAssignmentDraft({
     setError(null);
     try {
       const fresh = await getContinuousVehicleUnitState(targetAssetId);
+      if (
+        loadedAssetId === targetAssetId
+        && state
+        && canonicalAssignmentSignature(state) !== canonicalAssignmentSignature(fresh)
+      ) {
+        applyCanonicalState(fresh);
+        throw new Error(
+          "L’attribution continue a changé depuis le chargement. L’état canonique a été rechargé; vérifie puis réessaie.",
+        );
+      }
       const current = fresh.assignment;
       const currentContinuous = hasContinuousAssignment(fresh);
       const authorityAllowed = Boolean(fresh.assignment_authority.can_assign);
@@ -313,7 +337,7 @@ export function useContinuousVehicleAssignmentDraft({
     } finally {
       setPending(false);
     }
-  }, [applyCanonicalState, draft, pending, vehicle]);
+  }, [applyCanonicalState, draft, loadedAssetId, pending, state, vehicle]);
 
   const effectiveLoading = Boolean(
     loading
