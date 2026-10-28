@@ -388,9 +388,13 @@ export default function AssetCatalogPanel({
 
       setNotice({
         tone: "success",
-        text: catalogChanged || assignmentChanged
-          ? "Unité enregistrée."
-          : "Aucune modification à enregistrer.",
+        text: creatingAsset
+          ? assignmentChanged
+            ? "Unité physique créée et attribution continue enregistrée."
+            : "Unité physique créée."
+          : catalogChanged || assignmentChanged
+            ? "Unité enregistrée."
+            : "Aucune modification à enregistrer.",
       });
       refresh();
     } catch (reason: unknown) {
