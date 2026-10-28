@@ -16,6 +16,7 @@ from app.infrastructure.sql import (
     ResourceRequirement,
     Shift,
     SqlPlanningCommandAdapter,
+    SqlPlannerQueryRepositoryWithLoadProfiles,
     SqlPeriodAwareApprovedDemandSyncAdapter,
     WorkforceRequest,
     create_session_factory,
@@ -270,6 +271,94 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                         [],
                     )
                     self.assertIsNone(requirement.assigned_resource_id)
+            finally:
+                engine.dispose()
+
+    def test_work_queue_exposes_only_preserved_residual(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-778-p3-queue-residual",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._approve(client, 8)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    _request, requirement, intent = self._context(session, number)
+                    requirement.assigned_resource_id = "R-778-P3"
+                    intent.intent_mode = "PRESERVE_EXISTING"
+                    session.add(
+                        Shift(
+                            id="SHIFT-RESIDUAL-778",
+                            legacy_allocation_id="ALLOC-RESIDUAL-778",
+                            resource_requirement_id=requirement.id,
+                            resource_id="R-778-P3",
+                            work_date=requirement.start_date,
+                            hours=Decimal("4.00"),
+                            source="AUTO",
+                            locked=False,
+                        )
+                    )
+                    session.flush()
+                    SqlPlanningCommandAdapter(session).rebuild()
+                    actions = SqlPlannerQueryRepositoryWithLoadProfiles(
+                        session
+                    ).list_planning_actions(
+                        start=requirement.start_date,
+                        end=requirement.end_date,
+                    )
+                    assignments = [
+                        row for row in actions
+                        if row.kind == "ASSIGNMENT"
+                        and row.segment_id
+                        == (requirement.legacy_segment_id or requirement.id)
+                    ]
+                    self.assertEqual(len(assignments), 1)
+                    self.assertEqual(assignments[0].planned_hours, 4.0)
+            finally:
+                engine.dispose()
+
+    def test_work_queue_exposes_full_need_for_queued_slot(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-778-p3-queue-full",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._approve(client, 8)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    _request, requirement, intent = self._context(session, number)
+                    intent.intent_mode = "QUEUED"
+                    intent.target_mode = "EXPLICIT_NONE"
+                    intent.target_resource_id = None
+                    requirement.assigned_resource_id = None
+                    session.flush()
+                    SqlPlanningCommandAdapter(session).rebuild()
+                    actions = SqlPlannerQueryRepositoryWithLoadProfiles(
+                        session
+                    ).list_planning_actions(
+                        start=requirement.start_date,
+                        end=requirement.end_date,
+                    )
+                    assignments = [
+                        row for row in actions
+                        if row.kind == "ASSIGNMENT"
+                        and row.segment_id
+                        == (requirement.legacy_segment_id or requirement.id)
+                    ]
+                    self.assertEqual(len(assignments), 1)
+                    self.assertEqual(assignments[0].planned_hours, 8.0)
             finally:
                 engine.dispose()
 
