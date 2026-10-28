@@ -1,10 +1,11 @@
 # ADR-033 — Synchronisation quotidienne Acumatica et reprise sûre
 
-Status: Proposed
+Status: Accepted
 Date: 2026-10-24
+Accepted: 2026-10-28
 WorkItem: ASTRA-643
 
-L'autorisation PO porte sur l'analyse de la gate. L'acceptation de cette proposition reste distincte; elle ne lance aucune tranche DEV. Les contrats d'acceptation et scénarios opérationnels font partie de cette décision dans [ASTRA-643-implementation-contract.md](ASTRA-643-implementation-contract.md).
+Le Product Owner a accepté cette décision sans amendement architectural le 2026-10-28 et autorisé le workflow d'acceptation/fusion de PR #774. Cette acceptation ne lance aucune tranche DEV. Les contrats d'acceptation et scénarios opérationnels font partie de cette décision dans [ASTRA-643-implementation-contract.md](ASTRA-643-implementation-contract.md).
 
 ## Context
 

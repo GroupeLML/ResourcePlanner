@@ -1,7 +1,8 @@
 # ASTRA-643 — Contrat de livraison et d'exploitation
 
-Status: Proposed, avec [ADR-033](ADR-033-daily-acumatica-sync-and-safe-recovery.md)
+Status: Accepted, avec [ADR-033](ADR-033-daily-acumatica-sync-and-safe-recovery.md)
 Date: 2026-10-24
+Accepted: 2026-10-28
 
 Ce contrat complète la décision, sans implémenter 643A/B/C. La hiérarchie métier reste #207, #525/#540, ADR-024 et les modifications explicites d'ADR-033. Les valeurs ci-dessous sont des politiques initiales explicites, non des propriétés supposées d'Acumatica.
 
@@ -194,8 +195,8 @@ Promotion/rollback : arrêter les nouveaux départs, drainer ou constater l'inte
 
 ## Acceptation et réconciliation roadmap
 
-La gate a été autorisée; la proposition doit être acceptée explicitement selon le workflow ADR du dépôt. Le PR documentaire peut être revu sans lancer DEV; il ne faut pas interpréter son existence comme une livraison de #643.
+Le Product Owner a accepté ADR-033 et ce contrat sans amendement architectural le 2026-10-28 et autorisé le workflow d'acceptation/fusion de PR #774. La livraison reste documentaire; elle ne constitue pas la livraison des tranches DEV de #643.
 
 Après **acceptation et livraison documentaire prouvée** : réconcilier ASTRA-643 DONE, promouvoir **643A seulement** READY, laisser 643B/643C et ASTRA-644 BLOCKED selon la séquence existante; #641 demeure bloqué par la livraison complète #643. Conserver les identités et l'ordre de `COCKPIT_PIPELINE_V1`, et aligner les passages humains décrivant l'état courant. Ce n'est pas un changement de décomposition ni une permission de commencer la tranche suivante dans cette session.
 
-Corriger dès cette analyse la phrase obsolète de #643 disant #693 READY / ASTRA-643 BLOCKED : #55 prouve #693 DONE et ASTRA-643 READY. Conserver la provenance de la priorité du 2026-10-07 comme historique; ajouter la référence de la proposition sans déclarer la gate DONE avant son acceptation. Le livrable de cette session est documentaire uniquement.
+La phrase obsolète de #643 disant #693 READY / ASTRA-643 BLOCKED a été corrigée pendant l'analyse. Conserver la priorité du 2026-10-07 comme historique; après fusion documentaire prouvée, mettre à jour #643 et #55 pour référencer l'ADR accepté et l'état réconcilié. Le livrable de cette gate reste documentaire uniquement.
