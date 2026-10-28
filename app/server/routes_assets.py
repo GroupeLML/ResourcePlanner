@@ -32,6 +32,7 @@ from ..infrastructure.sql.asset_models import (
 from ..infrastructure.sql.asset_qualification import (
     QUALIFICATION_POLICY_ANY_ASSIGNED_WORKFORCE,
     evaluate_asset_qualification,
+    evaluate_asset_qualifications,
     required_competencies,
 )
 from ..infrastructure.sql.asset_service import SqlAssetService
@@ -629,6 +630,14 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
                 )
             )
 
+        qualifications = evaluate_asset_qualifications(
+            session,
+            pairs=tuple(
+                (requirement, allocation)
+                for requirement, allocation, _resource, _state in projected
+            ),
+        )
+
         active = next((row for row in projected if row[3] == "ACTIVE"), None)
         scheduled_rows = [row for row in projected if row[3] == "SCHEDULED"]
         scheduled = scheduled_rows[0] if scheduled_rows else None
@@ -676,11 +685,9 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
                     "operator_resource_id": (
                         allocation.operator_resource_id if visible else None
                     ),
-                    "qualification_state": evaluate_asset_qualification(
-                        session,
-                        requirement=requirement,
-                        allocation=allocation,
-                    ).state,
+                    "qualification_state": qualifications[
+                        (requirement.id, allocation.id)
+                    ].state,
                 },
                 visible,
             )
