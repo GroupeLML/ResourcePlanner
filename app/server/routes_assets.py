@@ -580,6 +580,7 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
             return {
                 "asset_id": asset_id,
                 "as_of": business_date,
+                "has_continuous_assignment": False,
                 "assignment": None,
                 "scheduled_assignment": None,
                 "assignment_details_visible": False,
@@ -688,6 +689,7 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
             "asset_id": asset_id,
             "asset_category": asset_type.category if asset_type is not None else None,
             "as_of": business_date,
+            "has_continuous_assignment": primary is not None,
             "assignment": assignment,
             "scheduled_assignment": scheduled_assignment,
             "assignment_details_visible": assignment_visible,
