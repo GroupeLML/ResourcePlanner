@@ -314,6 +314,39 @@ class RequestWorkQueueCommandTests(unittest.TestCase):
             self.assertEqual(result["removed_shift_count"], 5)
             self.assertEqual(result["remaining_hours_after"], 40.0)
 
+    def test_return_segment_clears_existing_overcoverage_instead_of_blocking(self) -> None:
+        with transactional_session(self.factory) as session:
+            session.add(
+                Shift(
+                    id="S6",
+                    legacy_allocation_id="A6",
+                    resource_requirement_id="REQ1",
+                    resource_id="R1",
+                    work_date=DAY,
+                    hours=Decimal("8"),
+                    source="MANUAL",
+                    locked=True,
+                )
+            )
+        with transactional_session(self.factory) as session:
+            adapter, _planning = self._adapter(session)
+            result = adapter.return_segment(
+                ReturnSegmentToWorkQueueCommand(
+                    segment_id="SEG-778",
+                    expected_planning_version=1,
+                    expected_approval_revision_id="REV1",
+                    expected_operational_version=1,
+                    command_id="return-overcovered-segment-778",
+                )
+            )
+            self.assertEqual(
+                session.query(Shift).filter_by(resource_requirement_id="REQ1").count(),
+                0,
+            )
+            self.assertEqual(result["removed_shift_count"], 6)
+            self.assertEqual(result["removed_hours"], 48.0)
+            self.assertEqual(result["remaining_hours_after"], 40.0)
+
     def test_permanent_reduction_appends_once_and_advances_request_cas(self) -> None:
         with transactional_session(self.factory) as session:
             adapter, planning = self._adapter(session)
