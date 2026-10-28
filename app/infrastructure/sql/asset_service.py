@@ -2346,7 +2346,8 @@ class SqlAssetService:
         }
 
     def _neutralize_future_for_continuous(
-        self, *, asset_id: str, start_date: date, authority_proof: dict
+        self, *, asset_id: str, start_date: date, authority_proof: dict,
+        ignore_allocation_ids: tuple[str, ...] = (),
     ) -> None:
         """Remove not-yet-effective physical intent atomically under Planning CAS.
 
@@ -2366,6 +2367,8 @@ class SqlAssetService:
             .order_by(AssetAllocation.start_date, AssetAllocation.id)
         ).all()
         for allocation in allocations:
+            if allocation.id in ignore_allocation_ids:
+                continue
             if allocation.start_date <= today:
                 raise ApplicationConflictError(
                     "Une réservation déjà effective empêche l'attribution continue.",
@@ -3200,6 +3203,15 @@ class SqlAssetService:
             end_date=None,
             locked=True,
             source="MANUAL",
+        )
+        # A newer explicit CONTINUOUS decision supersedes future physical intent,
+        # including an earlier scheduled ADR-032 transition. The live source is
+        # retained until it is safely closed below.
+        self._neutralize_future_for_continuous(
+            asset_id=new_asset.id,
+            start_date=effective_from,
+            authority_proof=authority_proof,
+            ignore_allocation_ids=(allocation.id,),
         )
         qualification_state = self._validate_direct_allocation_state(
             requirement=new_requirement,
