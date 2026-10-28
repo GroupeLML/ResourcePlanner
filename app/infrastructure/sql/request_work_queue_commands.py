@@ -581,7 +581,6 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
         )
         intent = self._intent(requirement)
         effective_need = self._current_need(intent, revision, state)
-        self._assert_not_overcovered(requirement, effective_need)
         shifts = list(
             self._session.scalars(
                 select(Shift)
