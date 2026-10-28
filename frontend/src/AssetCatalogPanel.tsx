@@ -673,6 +673,7 @@ export default function AssetCatalogPanel({
                             controller={continuousAssignment}
                             resources={resources}
                             creating={creatingAsset}
+                            creatingCanAssign={canManagePlanning}
                           />
                         )}
                       </div>
