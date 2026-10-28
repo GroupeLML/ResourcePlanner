@@ -215,6 +215,9 @@ test("775 garde Attitré lié au mode CONTINUOUS et non à SCHEDULED/ACTIVE", as
       "button",
       { name: "Enregistrer l’unité" },
     ).click();
+    // Wait for the asynchronous save/transfer and canonical refresh before
+    // asserting the persisted resource; a click alone does not await a mutation.
+    await expect(catalog.locator(".asset-catalog-notice")).toContainText("Unité enregistrée.");
     let futureState = await unitState(page, futureVehicle.assetId);
     expect(futureState.has_continuous_assignment).toBeTruthy();
     expect(futureState.assignment?.operator_resource_id).toBe("R-BOB");
