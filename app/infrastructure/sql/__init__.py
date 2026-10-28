@@ -161,7 +161,12 @@ from .identity_constraints import (
     WORKFORCE_REQUEST_NUMBER_INDEX,
 )
 from .resource_identity_constraints import RESOURCE_EXTERNAL_ID_INDEX
-from .operational_choice_models import (\n    PlanningWorkQueueRelease,\n    RequestCompletionReduction,\n    RequestOperationalState,\n    RequestRequirementPlanningIntent,\n)
+from .operational_choice_models import (
+    PlanningWorkQueueRelease,
+    RequestCompletionReduction,
+    RequestOperationalState,
+    RequestRequirementPlanningIntent,
+)
 from .operational_choice_repository import SqlRequestOperationalChoiceRepository
 from .operational_contact_repository import SqlOperationalContactRepository
 from .operational_responsibility_mutation_repository import (
@@ -270,7 +275,10 @@ __all__ = [
     "RequestApprovalCycle",
     "RequestApprovalReference",
     "RequestApprovalRevision",
-    "RequestOperationalState",\n    "RequestRequirementPlanningIntent",\n    "PlanningWorkQueueRelease",\n    "RequestCompletionReduction",
+    "RequestOperationalState",
+    "RequestRequirementPlanningIntent",
+    "PlanningWorkQueueRelease",
+    "RequestCompletionReduction",
     "RequestLineCompetency",
     "RESOURCE_EXTERNAL_ID_INDEX",
     "RESOURCE_REQUIREMENT_NUMBER_INDEX",
