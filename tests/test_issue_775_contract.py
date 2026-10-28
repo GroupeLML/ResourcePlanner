@@ -68,6 +68,8 @@ class Issue775ContractTests(unittest.TestCase):
         self.assertIn("continuousAssignment.loading", panel)
         self.assertIn("loadedAssetId !== assetId", editor)
         self.assertIn("effectiveLoading", editor)
+        self.assertIn("canonicalAssignmentSignature(state)", editor)
+        self.assertIn("canonicalAssignmentSignature(fresh)", editor)
 
         self.assertNotIn("assigned_resource_id", panel)
         self.assertNotIn("assignment_start_date", panel)
