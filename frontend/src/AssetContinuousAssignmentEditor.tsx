@@ -102,7 +102,7 @@ export function useContinuousVehicleAssignmentDraft({
       return next;
     } catch (reason: unknown) {
       if (reason instanceof DOMException && reason.name === "AbortError") return null;
-      setError(reason instanceof Error ? reason.message : "Attribution continue indisponible.");
+      setError(reason instanceof Error ? reason.message : "État Attitré indisponible.");
       throw reason;
     } finally {
       if (!signal?.aborted) setLoading(false);
@@ -118,7 +118,7 @@ export function useContinuousVehicleAssignmentDraft({
       setLoading(false);
       setAssignedState(false);
       setResourceIdState("");
-      setEffectiveDateState(earliestLifecycleDate(state.assignment.start_date));
+      setEffectiveDateState(todayIso());
       return;
     }
     setState(null);
