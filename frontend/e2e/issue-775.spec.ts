@@ -356,6 +356,58 @@ test("775 garde Attitré lié au mode CONTINUOUS et non à SCHEDULED/ACTIVE", as
   }
 });
 
+test("775 remplace la réservation future de Bob par Attitré Alice dans la fiche Unité", async ({ browser }) => {
+  test.setTimeout(120_000);
+  const { context, page } = await openAdmin(browser);
+  const today = localIso(new Date());
+  const future = localIso(addDays(new Date(), 21));
+  const futureEnd = localIso(addDays(new Date(), 25));
+  try {
+    const vehicle = await createVehicleByApi(page, "VEH-775-OVERRIDE", "Camion E2E futur Bob");
+    const before = await catalogPayload(page);
+    const reservation = await page.request.post("/api/v1/assets/resource-period-reservations", {
+      headers: { "Idempotency-Key": "775-future-bob-before-alice" },
+      data: {
+        resource_id: "R-BOB",
+        asset_type_id: vehicle.assetTypeId,
+        asset_id: vehicle.assetId,
+        start_date: future,
+        end_date: futureEnd,
+        expected_planning_version: before.planning_version,
+      },
+    });
+    expect(reservation.status(), await reservation.text()).toBe(201);
+    const oldRequirement = (await reservation.json() as { requirement_id: string }).requirement_id;
+
+    let catalog = await selectVehicle(page, "VEH-775-OVERRIDE");
+    const fields = catalog.locator(".asset-unit-editor").getByTestId("asset-continuous-assignment-fields");
+    await expect(fields.getByRole("checkbox", { name: "Attitré" })).not.toBeChecked();
+    await fields.getByRole("checkbox", { name: "Attitré" }).check();
+    await fields.getByRole("combobox").selectOption("R-ALICE");
+    await fields.getByLabel("Date effective").fill(today);
+    await catalog.locator(".asset-unit-editor").getByRole("button", { name: "Enregistrer l’unité" }).click();
+    await expect(catalog.locator(".asset-catalog-notice")).toContainText("Unité enregistrée.");
+
+    const after = await unitState(page, vehicle.assetId);
+    expect(after.has_continuous_assignment).toBeTruthy();
+    expect(after.assignment?.operator_resource_id).toBe("R-ALICE");
+    expect((await unitState(page, vehicle.assetId, future)).assignment?.operator_resource_id).toBe("R-ALICE");
+    const requirements = await page.request.get("/api/v1/assets/requirements");
+    expect(requirements.ok()).toBeTruthy();
+    expect(JSON.stringify(await requirements.json())).not.toContain(oldRequirement);
+
+    await page.reload();
+    await page.locator(".main-nav").getByRole("button", { name: /Ressources/i }).click();
+    catalog = await selectVehicle(page, "VEH-775-OVERRIDE");
+    const restored = catalog.locator(".asset-unit-editor").getByTestId("asset-continuous-assignment-fields");
+    await expect(restored.getByRole("checkbox", { name: "Attitré" })).toBeChecked();
+    await expect(restored.getByRole("combobox")).toHaveValue("R-ALICE");
+    expect((await unitState(page, vehicle.assetId, future)).assignment?.operator_resource_id).toBe("R-ALICE");
+  } finally {
+    await context.close();
+  }
+});
+
 test("775 conserve l’état continu caché et signale un succès partiel catalogue", async ({ browser }) => {
   test.setTimeout(120_000);
   const { context, page } = await openAdmin(browser);
