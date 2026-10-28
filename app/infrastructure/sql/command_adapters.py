@@ -37,6 +37,11 @@ from .models import (
     WorkforceRequestHistory,
 )
 from .planning_repository import SqlPlanningReadRepository
+from .operational_choice_models import (
+    PLANNING_INTENT_PRESERVE_EXISTING,
+    PLANNING_INTENT_QUEUED,
+    RequestRequirementPlanningIntent,
+)
 from .segment_asset_guard import assert_segment_asset_mutation_compatible
 from .planning_version import SqlPlanningMutationVersionRepository
 from .segment_repository import SqlSegmentRepository
@@ -111,6 +116,28 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
         same_resource_summary = same_resource.enforce_targets()
         snapshot = SqlPlanningReadRepository(self._session).capture()
         calculation = project_planning_snapshot(snapshot)
+        intent_rows = self._session.execute(
+            select(RequestRequirementPlanningIntent, ResourceRequirement)
+            .join(
+                ResourceRequirement,
+                RequestRequirementPlanningIntent.current_resource_requirement_id
+                == ResourceRequirement.id,
+            )
+            .where(
+                RequestRequirementPlanningIntent.intent_mode.in_(
+                    (PLANNING_INTENT_PRESERVE_EXISTING, PLANNING_INTENT_QUEUED)
+                )
+            )
+        ).all()
+        suppressed_segment_ids = {
+            _text(requirement.legacy_segment_id) or requirement.id
+            for _intent, requirement in intent_rows
+        }
+        preserve_requirement_ids = {
+            requirement.id
+            for intent, requirement in intent_rows
+            if intent.intent_mode == PLANNING_INTENT_PRESERVE_EXISTING
+        }
         if calculation.unsupported_segment_ids:
             raise RuntimeError(
                 "Le moteur pur ne peut pas recalculer des segments actifs non supportés: "
@@ -118,6 +145,14 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
             )
 
         preserve_ids = {str(value) for value in preserve_shift_ids if str(value)}
+        if preserve_requirement_ids:
+            preserve_ids.update(
+                self._session.scalars(
+                    select(Shift.id).where(
+                        Shift.resource_requirement_id.in_(preserve_requirement_ids)
+                    )
+                ).all()
+            )
         preserved_rows = []
         if preserve_ids:
             preserved_rows = list(
@@ -148,11 +183,25 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
             if not shift.locked
         )
 
+        engine_segments = tuple(
+            segment
+            for segment in calculation.segments
+            if segment.segment_id not in suppressed_segment_ids
+        )
+        engine_locked = tuple(
+            allocation
+            for allocation in calculation.locked_allocations
+            if allocation.segment_id not in suppressed_segment_ids
+        )
         result = build_allocation_plan(
-            calculation.segments,
-            calculation.locked_allocations,
+            engine_segments,
+            engine_locked,
             calculation.capacity_by_resource_day,
-            preserved_allocations=temporary_inputs,
+            preserved_allocations=tuple(
+                item
+                for item in temporary_inputs
+                if item.segment_id not in suppressed_segment_ids
+            ),
             preserve_locked_segment_ids=calculation.preserved_segment_ids,
             outside_schedule_eligible_by_resource_day=(
                 calculation.outside_schedule_eligible_by_resource_day
