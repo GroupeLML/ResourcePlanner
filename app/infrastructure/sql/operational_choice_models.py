@@ -135,6 +135,7 @@ class PlanningWorkQueueRelease(TimestampMixin, Base):
     __tablename__ = "planning_work_queue_releases"
     __table_args__ = (
         CheckConstraint("hours > 0", name="planning_work_queue_release_hours_positive"),
+        UniqueConstraint("command_id", name="uq_planning_work_queue_release_command"),
         Index("ix_planning_work_queue_release_slot_active", "planning_intent_id", "active"),
         Index("ix_planning_work_queue_release_exclusion", "resource_requirement_id", "resource_id", "work_date"),
     )
@@ -178,6 +179,7 @@ class RequestCompletionReduction(TimestampMixin, Base):
     __tablename__ = "request_completion_reductions"
     __table_args__ = (
         CheckConstraint("reduction_hours > 0", name="request_completion_reduction_hours_positive"),
+        UniqueConstraint("command_id", name="uq_request_completion_reduction_command"),
         CheckConstraint(
             "effective_need_before >= effective_need_after AND effective_need_after >= 0",
             name="request_completion_reduction_need_order",
