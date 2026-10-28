@@ -240,6 +240,7 @@ test("775 garde Attitré lié au mode CONTINUOUS et non à SCHEDULED/ACTIVE", as
       "button",
       { name: "Enregistrer l’unité" },
     ).click();
+    await expect(catalog.locator(".asset-catalog-notice")).toContainText("Unité enregistrée.");
     expect((await unitState(page, futureVehicle.assetId)).has_continuous_assignment).toBeFalsy();
 
     // Generic bounded RESOURCE_PERIOD, future SCHEDULED, must remain unchecked.
@@ -334,6 +335,7 @@ test("775 garde Attitré lié au mode CONTINUOUS et non à SCHEDULED/ACTIVE", as
     ).click();
 
     // A future-dated revocation leaves the contract effective through today.
+    await expect(catalog.locator(".asset-catalog-notice")).toContainText("Unité enregistrée.");
     const currentRevokedState = await unitState(page, revokeVehicle.assetId);
     expect(currentRevokedState.has_continuous_assignment).toBeTruthy();
     expect(currentRevokedState.assignment?.end_date).toBe(today);
