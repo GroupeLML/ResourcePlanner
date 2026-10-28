@@ -588,7 +588,10 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
                 "has_ended_history": False,
                 "assignment_authority": {
                     "allowed": False,
+                    "can_assign": False,
+                    "status": "NO_ACTIVE_SCOPE",
                     "code": "asset_not_found",
+                    "message": "Unité d’actif introuvable.",
                     "diagnostics": [],
                 },
                 "planning_version": version,
