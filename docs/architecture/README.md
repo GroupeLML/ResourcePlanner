@@ -77,6 +77,7 @@ Voir :
 - `ADR-030-module-read-capabilities-and-indirect-data-access.md`
 - `ADR-031-quick-shift-persistent-date-exclusions.md`
 - `ADR-032-continuous-vehicle-resource-period.md`
+- `ADR-033-daily-acumatica-sync-and-safe-recovery.md` — Accepted, ASTRA-643; [contrat de livraison et d'exploitation](ASTRA-643-implementation-contract.md).
 
 Chaîne métier actuelle :
 
