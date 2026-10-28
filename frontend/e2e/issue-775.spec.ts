@@ -68,9 +68,10 @@ async function createVehicleByApi(page: Page, code: string, label: string) {
   return { assetId: created.id, assetTypeId: type!.id };
 }
 
-async function unitState(page: Page, assetId: string) {
+async function unitState(page: Page, assetId: string, asOf?: string) {
+  const suffix = asOf ? `?as_of=${encodeURIComponent(asOf)}` : "";
   const response = await page.request.get(
-    `/api/v1/assets/continuous-vehicle-units/${encodeURIComponent(assetId)}`,
+    `/api/v1/assets/continuous-vehicle-units/${encodeURIComponent(assetId)}${suffix}`,
   );
   expect(response.ok(), await response.text()).toBeTruthy();
   return response.json() as Promise<{
@@ -322,14 +323,29 @@ test("775 garde Attitré lié au mode CONTINUOUS et non à SCHEDULED/ACTIVE", as
     );
     await expect(fields.getByRole("checkbox", { name: "Attitré" })).toBeChecked();
     await fields.getByRole("checkbox", { name: "Attitré" }).uncheck();
+    const revokeDate = localIso(addDays(new Date(), 1));
+    await expect(fields.getByLabel("Date effective de révocation")).toHaveValue(revokeDate);
     await catalog.locator(".asset-unit-editor").getByRole(
       "button",
       { name: "Enregistrer l’unité" },
     ).click();
-    const revokedState = await unitState(page, revokeVehicle.assetId);
-    expect(revokedState.has_continuous_assignment).toBeFalsy();
-    expect(revokedState.assignment).toBeNull();
-    expect(revokedState.has_ended_history).toBeTruthy();
+
+    // A future-dated revocation leaves the contract effective through today.
+    const currentRevokedState = await unitState(page, revokeVehicle.assetId);
+    expect(currentRevokedState.has_continuous_assignment).toBeTruthy();
+    expect(currentRevokedState.assignment?.end_date).toBe(today);
+    await expect(
+      catalog
+        .locator(".asset-unit-editor")
+        .getByTestId("asset-continuous-assignment-fields")
+        .getByRole("checkbox", { name: "Attitré" }),
+    ).toBeChecked();
+
+    // On the first non-applicable day, the same canonical history is no longer Attitré.
+    const endedState = await unitState(page, revokeVehicle.assetId, revokeDate);
+    expect(endedState.has_continuous_assignment).toBeFalsy();
+    expect(endedState.assignment).toBeNull();
+    expect(endedState.has_ended_history).toBeTruthy();
   } finally {
     await context.close();
   }
