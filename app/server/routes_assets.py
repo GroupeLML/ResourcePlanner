@@ -580,6 +580,7 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
         if asset is None:
             return {
                 "asset_id": asset_id,
+                "asset_category": None,
                 "as_of": business_date,
                 "has_continuous_assignment": False,
                 "assignment": None,
