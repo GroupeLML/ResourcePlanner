@@ -38,8 +38,12 @@ from .models import (
 )
 from .planning_repository import SqlPlanningReadRepository
 from .operational_choice_models import (
+    PLANNING_INTENT_AUTO,
     PLANNING_INTENT_PRESERVE_EXISTING,
     PLANNING_INTENT_QUEUED,
+    PLANNING_TARGET_EXPLICIT_NONE,
+    PLANNING_TARGET_EXPLICIT_RESOURCE,
+    PlanningWorkQueueRelease,
     RequestRequirementPlanningIntent,
 )
 from .segment_asset_guard import assert_segment_asset_mutation_compatible
@@ -324,6 +328,48 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             versioning=self._versioning,
         )
 
+    def _request_intent(
+        self,
+        requirement: ResourceRequirement,
+    ) -> RequestRequirementPlanningIntent | None:
+        if requirement.origin != ORIGIN_REQUEST:
+            return None
+        rows = self._session.scalars(
+            select(RequestRequirementPlanningIntent).where(
+                RequestRequirementPlanningIntent.current_resource_requirement_id
+                == requirement.id
+            )
+        ).all()
+        if len(rows) > 1:
+            raise ApplicationConflictError(
+                "Le segment possède plusieurs intentions Planning durables.",
+                code="planning_slot_binding_ambiguous",
+                context={"requirement_id": requirement.id},
+            )
+        return rows[0] if rows else None
+
+    def _resolve_covered_releases(
+        self,
+        intent: RequestRequirementPlanningIntent | None,
+        requirement: ResourceRequirement,
+    ) -> None:
+        if intent is None:
+            return
+        shifts = self._session.scalars(
+            select(Shift).where(Shift.resource_requirement_id == requirement.id)
+        ).all()
+        covered = {(row.resource_id, row.work_date) for row in shifts}
+        releases = self._session.scalars(
+            select(PlanningWorkQueueRelease).where(
+                PlanningWorkQueueRelease.planning_intent_id == intent.id,
+                PlanningWorkQueueRelease.active == true(),
+            )
+        ).all()
+        for release in releases:
+            if (release.resource_id, release.work_date) in covered:
+                release.active = False
+                release.resolved_at = utc_now()
+
     def _requirement(self, identifier: str) -> ResourceRequirement:
         wanted = _text(identifier)
         requirement = self._session.scalar(
@@ -434,6 +480,12 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
         )
 
 
+        intent = self._request_intent(requirement)
+        if intent is not None and intent.intent_mode == PLANNING_INTENT_QUEUED:
+            intent.intent_mode = PLANNING_INTENT_PRESERVE_EXISTING
+            intent.target_mode = PLANNING_TARGET_EXPLICIT_NONE
+            intent.target_resource_id = None
+
         identifier = f"MAN-{new_id()}"
         shift = Shift(
             legacy_allocation_id=identifier,
@@ -453,6 +505,8 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
         self._session.add(shift)
         self._session.flush()
         self._planning.rebuild()
+        self._resolve_covered_releases(intent, requirement)
+        self._session.flush()
         return identifier
 
     def update_manual(
@@ -651,6 +705,24 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
         self._versioning.acquire()
         requirement = self._requirement(segment_id)
         resource = self._resource(technician)
+        intent = self._request_intent(requirement)
+        controlled_restore = (
+            intent is not None
+            and intent.intent_mode
+            in (PLANNING_INTENT_QUEUED, PLANNING_INTENT_PRESERVE_EXISTING)
+        )
+        survivor_ids = tuple(
+            self._session.scalars(
+                select(Shift.id).where(
+                    Shift.resource_requirement_id == requirement.id
+                )
+            ).all()
+        )
+        if controlled_restore and intent is not None:
+            intent.intent_mode = PLANNING_INTENT_AUTO
+            intent.target_mode = PLANNING_TARGET_EXPLICIT_RESOURCE
+            intent.target_resource_id = resource.id
+
         grouped = SqlSameResourcePeriodCoordinator(self._session).retarget_component(
             requirement.id,
             resource.id,
@@ -658,8 +730,16 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
         if not grouped:
             requirement.assigned_resource_id = resource.id
             requirement.status = "Planifié"
+        self._session.flush()
+        result = self._planning.rebuild(preserve_shift_ids=survivor_ids)
+
+        if controlled_restore and intent is not None:
+            intent.intent_mode = PLANNING_INTENT_PRESERVE_EXISTING
+            intent.target_mode = PLANNING_TARGET_EXPLICIT_RESOURCE
+            intent.target_resource_id = resource.id
+            self._resolve_covered_releases(intent, requirement)
             self._session.flush()
-        return self._planning.rebuild()
+        return result
 
 
 class SqlApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
