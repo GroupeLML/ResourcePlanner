@@ -796,7 +796,14 @@ class SqlRequestPlanPreparer:
                         desired_active_days=(
                             int(row["desired_active_days"])
                             if row.get("desired_active_days") is not None
-                            else None
+                            else next(
+                                (
+                                    int(item.desired_active_days)
+                                    for item in previous_rows
+                                    if item.desired_active_days is not None
+                                ),
+                                None,
+                            )
                         ),
                         confirmation=confirmation,
                         proposed_resource_id=(
