@@ -873,6 +873,7 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                 with factory.begin() as session:
                     _request, requirement, intent = self._context(session, number)
                     requirement.assigned_resource_id = "R-778-P3"
+                    requirement.planned_hours = Decimal("4.00")
                     intent.intent_mode = "AUTO"
                     session.add(
                         Shift(
@@ -935,6 +936,7 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                 with factory.begin() as session:
                     _request, requirement, intent = self._context(session, number)
                     requirement.assigned_resource_id = "R-778-P3"
+                    requirement.planned_hours = Decimal("4.00")
                     intent.intent_mode = "AUTO"
                     shift = Shift(
                         id="SHIFT-ASSET-LOCKED-CAPACITY-778",
