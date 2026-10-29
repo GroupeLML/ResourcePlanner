@@ -1162,7 +1162,7 @@ class SqlMigrationTests(unittest.TestCase):
         ):
             command.downgrade(
                 offline_config("mssql+pyodbc://", output),
-                "0024_request_work_queue_command_identity",
+                "0025_request_work_queue_architect_corrections:0024_request_work_queue_command_identity",
                 sql=True,
             )
         generated = output.getvalue().upper()
