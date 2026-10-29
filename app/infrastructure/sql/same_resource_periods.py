@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 
-from sqlalchemy import select, true
+from sqlalchemy import or_, select, true
 from sqlalchemy.orm import Session
 
 from ...domain.demand_periods import (
@@ -72,7 +72,17 @@ class SqlSameResourcePeriodCoordinator:
                 == WorkforceRequestPeriod.id,
             )
             .where(
-                ResourceRequirement.status.not_in(INACTIVE_REQUIREMENT_STATUSES),
+                or_(
+                    ResourceRequirement.status.not_in(INACTIVE_REQUIREMENT_STATUSES),
+                    ResourceRequirement.id.in_(
+                        select(
+                            RequestRequirementPlanningIntent.current_resource_requirement_id
+                        ).where(
+                            RequestRequirementPlanningIntent.current_resource_requirement_id
+                            .is_not(None)
+                        )
+                    ),
+                )
             )
             .order_by(
                 ResourceRequirement.workforce_request_id,
