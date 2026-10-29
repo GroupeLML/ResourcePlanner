@@ -711,12 +711,16 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             and intent.intent_mode
             in (PLANNING_INTENT_QUEUED, PLANNING_INTENT_PRESERVE_EXISTING)
         )
-        survivor_ids = tuple(
-            self._session.scalars(
-                select(Shift.id).where(
-                    Shift.resource_requirement_id == requirement.id
-                )
-            ).all()
+        survivor_ids = (
+            tuple(
+                self._session.scalars(
+                    select(Shift.id).where(
+                        Shift.resource_requirement_id == requirement.id
+                    )
+                ).all()
+            )
+            if controlled_restore
+            else ()
         )
         if controlled_restore and intent is not None:
             intent.intent_mode = PLANNING_INTENT_AUTO
