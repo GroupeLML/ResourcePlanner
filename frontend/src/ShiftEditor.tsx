@@ -788,10 +788,8 @@ export default function ShiftEditor({
                   </strong>
                   <span>
                     {workQueueAction.mode === "return_shift"
-                      ? `Le quart de ${hoursLabel(workQueueAction?.preview.shift_hours ?? shift.hours)} h sera retiré. Le segment ${workQueueAction?.preview.segment_id ?? shift.segment_id} conservera son besoin approuvé et les heures redeviendront à planifier.`
-                      : workQueueAction.mode === "return_segment"
-                        ? `Tous les quarts opérationnels du segment ${workQueueAction?.preview.segment_id ?? shift.segment_id} seront retirés et le besoin complet reviendra dans la File de Travail.`
-                        : `Vous êtes sur le point de supprimer définitivement ce quart de ${hoursLabel(workQueueAction?.preview.shift_hours ?? shift.hours)} h.`}
+                      ? `Le quart de ${hoursLabel(workQueueAction.preview.shift_hours)} h sera retiré. Le segment ${workQueueAction.preview.segment_id} conservera son besoin approuvé et les heures redeviendront à planifier.`
+                      : `Tous les quarts opérationnels du segment ${workQueueAction.preview.segment_id} seront retirés et le besoin complet reviendra dans la File de Travail.`}
                   </span>
                 </div>
               </div>
@@ -814,7 +812,7 @@ export default function ShiftEditor({
                 </button>
                 <button
                   type="button"
-                  className={workQueueAction.mode === "permanent_reduction" ? "danger-button" : "primary-button"}
+                  className="primary-button"
                   disabled={saving}
                   onClick={() => void executeWorkQueueAction()}
                 >
@@ -824,9 +822,7 @@ export default function ShiftEditor({
                       ? "Réessayer la même commande"
                       : workQueueAction.mode === "return_shift"
                         ? "Retourner le quart"
-                        : workQueueAction.mode === "return_segment"
-                          ? "Retourner le segment"
-                          : "Supprimer définitivement"}
+                        : "Retourner le segment"}
                 </button>
               </div>
             </div>
