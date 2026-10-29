@@ -56,6 +56,7 @@ class RequestPlanningIntentRepositoryTests(unittest.TestCase):
                     active=True,
                 )
             )
+            session.flush()
             session.add_all(
                 [
                     WorkforceRequestPeriod(
