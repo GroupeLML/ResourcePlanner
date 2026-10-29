@@ -500,6 +500,17 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                 [],
             ).append(shift)
 
+        effective_need_by_requirement = (
+            SqlRequestRequirementPlanningIntentRepository(
+                self._session
+            ).current_effective_need_by_requirement(
+                {
+                    requirement.id: requirement.planned_hours
+                    for requirement in requirements
+                }
+            )
+        )
+
         result: list[DemandMaterializedRequirementReadModel] = []
         for requirement in requirements:
             grouped: dict[str, list[float]] = {}
@@ -533,14 +544,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             covered = round(sum(row.allocated_hours for row in mobilized), 2)
             locked = round(sum(row.locked_hours for row in mobilized), 2)
             planned = round(
-                float(
-                    SqlRequestRequirementPlanningIntentRepository(
-                        self._session
-                    ).current_effective_need_for_requirement(
-                        requirement.id,
-                        fallback_hours=requirement.planned_hours,
-                    )
-                ),
+                float(effective_need_by_requirement[requirement.id]),
                 2,
             )
             target = resources.get(requirement.assigned_resource_id)
