@@ -1377,9 +1377,20 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             if demand is not None and not (
                 demand.status == "En planification" or demand.emergency_override_active
             ):
-                # A submitted modification keeps the old plan visible, but should not
-                # invite assigning that stale plan until it is approved again.
-                continue
+                # ADR-034: a pending candidate must not hide residual work from the
+                # still-active approved plan. Only requirements without a captured
+                # active authorization are withheld while the candidate is pending.
+                requirement_id = _optional_text(segment.requirement_id)
+                active_requirement = (
+                    self._session.get(ResourceRequirement, requirement_id)
+                    if requirement_id is not None
+                    else None
+                )
+                if (
+                    active_requirement is None
+                    or active_requirement.approval_reference_status != "CAPTURED"
+                ):
+                    continue
             if segment.start_date is None or segment.end_date is None:
                 continue
             result.append(
