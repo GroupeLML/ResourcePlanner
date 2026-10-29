@@ -1092,6 +1092,7 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
             try:
                 with factory.begin() as session:
                     request, requirement, intent = self._context(session, number)
+                    intent.intent_mode = "PRESERVE_EXISTING"
                     session.query(Shift).filter_by(
                         resource_requirement_id=requirement.id
                     ).delete(synchronize_session=False)
@@ -1184,6 +1185,7 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
             try:
                 with factory.begin() as session:
                     request, requirement, intent = self._context(session, number)
+                    intent.intent_mode = "PRESERVE_EXISTING"
                     session.query(Shift).filter_by(
                         resource_requirement_id=requirement.id
                     ).delete(synchronize_session=False)
