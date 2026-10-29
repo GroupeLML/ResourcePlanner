@@ -5,6 +5,7 @@ Revises: 0024_request_work_queue_command_identity
 """
 from __future__ import annotations
 
+import hashlib
 import json
 
 from alembic import op
@@ -75,22 +76,100 @@ def _backfill_reduction_watermarks() -> None:
     if context.as_sql:
         return
     connection = op.get_bind()
-    connection.execute(
+    rows = connection.execute(
         sa.text(
             """
-            UPDATE request_completion_reductions
-            SET authorization_fingerprint = (
-                SELECT authorization_fingerprint
-                FROM request_approval_revisions
-                WHERE request_approval_revisions.id =
-                    request_completion_reductions.historical_approval_revision_id
-            ),
-                reconciled_approval_revision_id = historical_approval_revision_id
-            WHERE authorization_fingerprint IS NULL
-               OR reconciled_approval_revision_id IS NULL
+            SELECT
+                r.id AS reduction_id,
+                r.approved_entry_key AS approved_entry_key,
+                r.historical_approval_revision_id AS revision_id,
+                v.payload_text AS payload_text
+            FROM request_completion_reductions AS r
+            JOIN request_approval_revisions AS v
+              ON v.id = r.historical_approval_revision_id
             """
         )
+    ).mappings().all()
+    request_keys = ("project_id", "site_client", "location", "line_mode")
+    entry_keys = (
+        "identity",
+        "project_id",
+        "site_id",
+        "location",
+        "slot_count",
+        "line_kind",
+        "required_resource_class",
+        "competency_ids",
+        "task_ref",
+        "work_package_ref",
+        "start_date",
+        "end_date",
+        "hours",
+        "kind",
+        "group",
+        "confirmation_mode",
+        "proposed_resource_mode",
+        "same_as_period_key",
+        "asset_type_id",
+        "occupancy_policy",
     )
+    for row in rows:
+        payload = json.loads(row["payload_text"])
+        request_context = (
+            payload.get("request")
+            if isinstance(payload.get("request"), dict)
+            else {}
+        )
+        entries = payload.get("authorization", {}).get("entries", [])
+        matches = [
+            entry
+            for entry in entries
+            if isinstance(entry, dict)
+            and str(entry.get("identity") or "") == str(row["approved_entry_key"])
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(
+                "ADR-034 reduction migration cannot identify the historical approved entry "
+                f"for reduction {row['reduction_id']}."
+            )
+        entry = matches[0]
+        canonical = {
+            "request": {
+                key: request_context.get(key)
+                for key in request_keys
+            },
+            "entry": {
+                key: entry.get(key)
+                for key in entry_keys
+            },
+        }
+        competencies = canonical["entry"].get("competency_ids")
+        if isinstance(competencies, list):
+            canonical["entry"]["competency_ids"] = sorted(
+                str(value) for value in competencies if str(value)
+            )
+        encoded = json.dumps(
+            canonical,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        fingerprint = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        connection.execute(
+            sa.text(
+                """
+                UPDATE request_completion_reductions
+                SET authorization_fingerprint = :fingerprint,
+                    reconciled_approval_revision_id = :revision_id
+                WHERE id = :reduction_id
+                """
+            ),
+            {
+                "fingerprint": fingerprint,
+                "revision_id": row["revision_id"],
+                "reduction_id": row["reduction_id"],
+            },
+        )
 
 
 def upgrade() -> None:
