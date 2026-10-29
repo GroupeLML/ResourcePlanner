@@ -1513,6 +1513,37 @@ export type DemandMutationResult = {
   reapproval_required: boolean;
 };
 
+export type RequestWorkQueueReturnWrite = {
+  expected_planning_version: number;
+  expected_approval_revision_id: string;
+  expected_operational_version: number;
+};
+
+export type RequestPermanentReductionWrite = RequestWorkQueueReturnWrite & {
+  expected_request_version: number;
+};
+
+export type RequestWorkQueueMutationResult = {
+  operation: string;
+  requirement_id: string;
+  segment_id: string;
+  demand_number: string;
+  planning_version: number;
+  approval_revision_id: string;
+  operational_version: number;
+  request_version: number | null;
+  shift_id: string | null;
+  release_id: string | null;
+  reduction_id: string | null;
+  removed_shift_count: number;
+  removed_hours: number;
+  effective_need_before: number;
+  effective_need_after: number;
+  covered_hours_after: number;
+  remaining_hours_after: number;
+  no_op: boolean;
+};
+
 export type AllocationMoveWrite = {
   resource_id: string;
   day: string;
@@ -2439,6 +2470,45 @@ export function selectDemandLineAlternative(
     `/api/v1/demands/${encodeURIComponent(number)}/lines/${encodeURIComponent(lineId)}/alternative-groups/${encodeURIComponent(alternativeGroup)}/selection`,
     "PUT",
     { period_id: periodId },
+  );
+}
+
+export function returnShiftToWorkQueue(
+  allocationId: string,
+  payload: RequestWorkQueueReturnWrite,
+  idempotencyKey: string,
+) {
+  return sendJson<RequestWorkQueueMutationResult>(
+    `/api/v1/allocations/${encodeURIComponent(allocationId)}/return-to-work-queue`,
+    "POST",
+    payload,
+    { "Idempotency-Key": idempotencyKey },
+  );
+}
+
+export function returnSegmentToWorkQueue(
+  segmentId: string,
+  payload: RequestWorkQueueReturnWrite,
+  idempotencyKey: string,
+) {
+  return sendJson<RequestWorkQueueMutationResult>(
+    `/api/v1/segments/${encodeURIComponent(segmentId)}/return-to-work-queue`,
+    "POST",
+    payload,
+    { "Idempotency-Key": idempotencyKey },
+  );
+}
+
+export function permanentlyReduceShiftHours(
+  allocationId: string,
+  payload: RequestPermanentReductionWrite,
+  idempotencyKey: string,
+) {
+  return sendJson<RequestWorkQueueMutationResult>(
+    `/api/v1/allocations/${encodeURIComponent(allocationId)}/permanent-reduction`,
+    "POST",
+    payload,
+    { "Idempotency-Key": idempotencyKey },
   );
 }
 
