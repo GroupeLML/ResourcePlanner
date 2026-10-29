@@ -193,16 +193,20 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
             for allocation in calculation.locked_allocations
             if allocation.segment_id not in suppressed_segment_ids
         )
+        preserved_capacity_segment_ids = {
+            item.segment_id for item in temporary_inputs
+        }
         result = build_allocation_plan(
             engine_segments,
             engine_locked,
             calculation.capacity_by_resource_day,
-            preserved_allocations=tuple(
-                item
-                for item in temporary_inputs
-                if item.segment_id not in suppressed_segment_ids
+            # ADR-034: suppressed PRESERVE_EXISTING segments must not regenerate
+            # residual work, but their surviving Shifts still consume capacity.
+            preserved_allocations=temporary_inputs,
+            preserve_locked_segment_ids=(
+                set(calculation.preserved_segment_ids)
+                | preserved_capacity_segment_ids
             ),
-            preserve_locked_segment_ids=calculation.preserved_segment_ids,
             outside_schedule_eligible_by_resource_day=(
                 calculation.outside_schedule_eligible_by_resource_day
             ),
