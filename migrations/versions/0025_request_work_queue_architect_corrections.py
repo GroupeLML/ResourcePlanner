@@ -211,19 +211,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index(
-        "uq_request_requirement_planning_intent_current_requirement",
-        table_name="request_requirement_planning_intents",
+    raise RuntimeError(
+        "0025_request_work_queue_architect_corrections is forward-only: "
+        "downgrading would destroy ADR-034 durable slot/reduction provenance."
     )
-    with op.batch_alter_table("request_requirement_planning_intents") as batch:
-        batch.drop_constraint(
-            "uq_request_requirement_planning_intent_logical_slot",
-            type_="unique",
-        )
-    with op.batch_alter_table("request_completion_reductions") as batch:
-        batch.drop_constraint(
-            "fk_request_completion_reductions_reconciled_revision",
-            type_="foreignkey",
-        )
-        batch.drop_column("reconciled_approval_revision_id")
-        batch.drop_column("authorization_fingerprint")
