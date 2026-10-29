@@ -46,6 +46,7 @@ from .quick_shift_service import QuickShiftService
 from .request_work_queue import (
     PermanentlyReduceShiftHoursCommand,
     RequestWorkQueueMutationResult,
+    RequestWorkQueuePreviewResult,
     RequestWorkQueueService,
     ReturnSegmentToWorkQueueCommand,
     ReturnShiftToWorkQueueCommand,
@@ -497,6 +498,12 @@ class ApplicationFacade:
         self._acquire_planning_version(command.expected_planning_version)
         self._allocations.delete_manual_command(command)
         return AllocationMutationResult(_identifier(command.allocation_id), action="deleted")
+
+    def preview_request_work_queue_actions(
+        self,
+        allocation_id: str,
+    ) -> RequestWorkQueuePreviewResult:
+        return self._request_work_queue_service().preview_shift(allocation_id)
 
     def return_shift_to_work_queue(
         self,
