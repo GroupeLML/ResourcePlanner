@@ -153,14 +153,12 @@ def _allocation_projection_metrics(
 
     result: dict[str, dict[str, object]] = {}
     intent_repository = SqlRequestRequirementPlanningIntentRepository(session)
+    effective_need_by_requirement = intent_repository.current_effective_need_by_requirement(
+        {requirement.id: requirement.planned_hours for requirement in rows}
+    )
     for requirement in rows:
         reference = _text(requirement.legacy_segment_id) or requirement.id
-        planned = float(
-            intent_repository.current_effective_need_for_requirement(
-                requirement.id,
-                fallback_hours=requirement.planned_hours,
-            )
-        )
+        planned = float(effective_need_by_requirement[requirement.id])
         metrics = by_requirement[requirement.id]
         locked = float(metrics["locked_hours"])
         replaceable = float(metrics["replaceable_hours"])
