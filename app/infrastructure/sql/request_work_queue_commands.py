@@ -536,6 +536,119 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
             "no_op": no_op,
         }
 
+    def preview_shift(self, allocation_id: str) -> Mapping[str, Any]:
+        actor = self._actor()
+        shift = self._shift(allocation_id)
+        requirement = self._requirement(shift.resource_requirement_id)
+        self._assert_planning_scope(actor, requirement)
+        request = self._request(requirement)
+        reference = self._session.get(RequestApprovalReference, request.id)
+        if (
+            reference is None
+            or reference.status != APPROVAL_REFERENCE_CAPTURED
+            or not reference.active_revision_id
+            or requirement.approval_revision_id != reference.active_revision_id
+        ):
+            raise ApplicationConflictError(
+                "L'autorisation approuvée active est indisponible pour prévisualiser cette action.",
+                code="planning_authorization_unknown",
+            )
+        revision = self._session.get(
+            RequestApprovalRevision,
+            reference.active_revision_id,
+        )
+        state = self._session.get(RequestOperationalState, request.id)
+        if (
+            revision is None
+            or state is None
+            or state.approval_revision_id != revision.id
+        ):
+            raise ApplicationConflictError(
+                "Le contexte opérationnel approuvé est indisponible pour prévisualiser cette action.",
+                code="planning_authorization_unknown",
+            )
+        intent = self._intent(requirement)
+        effective_need = self._current_need(intent, revision, state)
+        covered = self._covered_hours(requirement.id)
+        hours = _decimal(shift.hours)
+        survivors = self._covered_hours(
+            requirement.id,
+            excluding_shift_id=shift.id,
+        )
+        effective_after = max(effective_need - hours, Decimal("0.00"))
+
+        def capability(check) -> tuple[bool, str | None]:
+            try:
+                check()
+            except (ApplicationAuthorizationError, ApplicationConflictError) as exc:
+                return False, exc.code
+            except ValueError:
+                return False, "request_work_queue_asset_or_lifecycle_conflict"
+            return True, None
+
+        return_shift_allowed, return_shift_block = capability(
+            lambda: (
+                self._assert_return_lifecycle(requirement),
+                self._assert_not_overcovered(requirement, effective_need),
+            )
+        )
+        return_segment_allowed, return_segment_block = capability(
+            lambda: self._assert_return_lifecycle(requirement)
+        )
+
+        def check_reduction() -> None:
+            self._assert_reduction_lifecycle(requirement)
+            self._actor(reduction=True)
+            self._assert_reduction_approval_authority(
+                actor,
+                request,
+                intent,
+                revision,
+            )
+            self._assert_not_overcovered(requirement, effective_need)
+            if survivors > effective_after + TOLERANCE:
+                raise ApplicationConflictError(
+                    "Les quarts survivants dépasseraient le besoin courant après la réduction.",
+                    code="request_reduction_survivor_conflict",
+                )
+            if effective_after == 0:
+                assert_segment_asset_mutation_compatible(
+                    self._session,
+                    requirement,
+                    removing=True,
+                )
+
+        reduction_allowed, reduction_block = capability(check_reduction)
+        return {
+            "allocation_id": _text(shift.legacy_allocation_id) or shift.id,
+            "requirement_id": requirement.id,
+            "segment_id": _text(requirement.legacy_segment_id) or requirement.id,
+            "demand_number": _text(request.legacy_demand_number) or request.id,
+            "source_request_line_id": intent.source_request_line_id,
+            "planning_version": self._versioning.current_version(),
+            "request_version": int(request.aggregate_version or 1),
+            "approval_revision_id": revision.id,
+            "operational_version": int(state.version or 1),
+            "shift_hours": float(hours),
+            "effective_need": float(effective_need),
+            "covered_hours": float(covered),
+            "remaining_hours": float(max(effective_need - covered, Decimal("0.00"))),
+            "return_shift_allowed": return_shift_allowed,
+            "return_shift_block_code": return_shift_block,
+            "return_segment_allowed": return_segment_allowed,
+            "return_segment_block_code": return_segment_block,
+            "permanent_reduction_allowed": reduction_allowed,
+            "permanent_reduction_block_code": reduction_block,
+            "effective_need_after_reduction": float(effective_after),
+            "remaining_after_return_shift": float(
+                max(effective_need - survivors, Decimal("0.00"))
+            ),
+            "remaining_after_return_segment": float(effective_need),
+            "remaining_after_reduction": float(
+                max(effective_after - survivors, Decimal("0.00"))
+            ),
+        }
+
     def return_shift(self, command: ReturnShiftToWorkQueueCommand) -> Mapping[str, Any]:
         planning_version = self._versioning.acquire(command.expected_planning_version)
         actor = self._actor()
