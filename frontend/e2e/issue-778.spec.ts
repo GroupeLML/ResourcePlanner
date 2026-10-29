@@ -140,6 +140,38 @@ test("778 expose les trois actions ADR-034 et confirme leurs mutations", async (
     });
   });
 
+  await page.route("**/api/v1/allocations/ALLOC-778/work-queue-preview", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        allocation_id: "ALLOC-778",
+        requirement_id: "REQ-778",
+        segment_id: "SEG-778",
+        demand_number: "DMO-778",
+        source_request_line_id: "LINE-778",
+        planning_version: 778,
+        request_version: 14,
+        approval_revision_id: "REV-778",
+        operational_version: 7,
+        shift_hours: 8,
+        effective_need: 40,
+        covered_hours: 40,
+        remaining_hours: 0,
+        return_shift_allowed: true,
+        return_shift_block_code: null,
+        return_segment_allowed: true,
+        return_segment_block_code: null,
+        permanent_reduction_allowed: true,
+        permanent_reduction_block_code: null,
+        effective_need_after_reduction: 32,
+        remaining_after_return_shift: 8,
+        remaining_after_return_segment: 40,
+        remaining_after_reduction: 0,
+      }),
+    });
+  });
+
   const fulfillMutation = async (
     route: any,
     operation: string,
@@ -236,19 +268,23 @@ test("778 expose les trois actions ADR-034 et confirme leurs mutations", async (
     dialog = await openShift();
     await dialog.getByTestId("request-work-queue-actions")
       .getByRole("button", { name: "Supprimer définitivement ce quart" }).click();
-    confirm = dialog.getByTestId("request-work-queue-confirmation");
-    await expect(confirm).toContainText("Supprimer définitivement ce quart?");
-    await expect(confirm).toContainText("8 h");
-    await expect(confirm).toContainText("segment SEG-778");
-    await expect(confirm).toContainText("demande DMO-778 / ligne LINE-778");
-    await expect(confirm).toContainText("Elles ne retourneront pas dans la File de Travail");
+    let permanentDialog = page.getByTestId("permanent-reduction-confirmation-dialog");
+    await expect(permanentDialog).toBeVisible();
+    await expect(permanentDialog).toContainText("Supprimer définitivement ce quart?");
+    await expect(permanentDialog).toContainText("8 h");
+    await expect(permanentDialog).toContainText("Segment SEG-778");
+    await expect(permanentDialog).toContainText("Demande DMO-778 / ligne LINE-778");
+    await expect(permanentDialog).toContainText("40 h → 32 h");
+    await expect(permanentDialog).toContainText("Reliquat File de Travail après suppression : 0 h");
+    await expect(permanentDialog).toContainText("ne retourneront pas dans la File de Travail");
 
-    await confirm.getByRole("button", { name: "Annuler" }).click();
+    await permanentDialog.getByRole("button", { name: "Annuler" }).click();
+    await expect(permanentDialog).toBeHidden();
     expect(reductionPosts).toBe(0);
     await dialog.getByTestId("request-work-queue-actions")
       .getByRole("button", { name: "Supprimer définitivement ce quart" }).click();
-    confirm = dialog.getByTestId("request-work-queue-confirmation");
-    await confirm.getByRole("button", { name: "Supprimer définitivement" }).click();
+    permanentDialog = page.getByTestId("permanent-reduction-confirmation-dialog");
+    await permanentDialog.getByRole("button", { name: "Supprimer définitivement" }).click();
     await expect(dialog).toBeHidden();
     expect(reductionPosts).toBe(1);
     expect(lastReductionPayload).toEqual({
