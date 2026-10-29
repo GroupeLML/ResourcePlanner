@@ -959,9 +959,10 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
         if effective_after > 0:
             requirement.planned_hours = effective_after
         else:
-            requirement.planned_hours = Decimal("0.00")
-            # Zero effective need is completion, not cancellation. Preserve an
-            # existing terminal completion and otherwise transition to Terminé.
+            # ResourceRequirement rows intentionally retain a positive historical
+            # projection. Effective need = 0 lives in the append-only reduction
+            # ledger; the terminal row remains as SAME/provenance topology and is
+            # never made planifiable.
             requirement.status = "Terminé"
         self._session.flush()
         self._planning.rebuild(preserve_shift_ids=survivor_ids)
