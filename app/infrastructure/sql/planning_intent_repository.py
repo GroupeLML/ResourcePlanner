@@ -155,32 +155,32 @@ class SqlRequestRequirementPlanningIntentRepository:
         }
         if not intent_by_requirement:
             return fallbacks
-        reduction_rows = self.session.execute(
+
+        zero_rows = self.session.execute(
             select(
                 RequestCompletionReduction.planning_intent_id,
-                func.coalesce(func.sum(RequestCompletionReduction.reduction_hours), 0),
-            )
-            .where(
+                RequestCompletionReduction.effective_need_before,
+            ).where(
                 RequestCompletionReduction.planning_intent_id.in_(
                     tuple(intent_by_requirement.values())
                 ),
                 RequestCompletionReduction.reconciliation_state == "ACTIVE",
+                RequestCompletionReduction.effective_need_after <= 0,
             )
-            .group_by(RequestCompletionReduction.planning_intent_id)
         ).all()
-        active_reduction_by_intent = {
-            str(intent_id): Decimal(str(hours or 0)).quantize(Decimal("0.01"))
-            for intent_id, hours in reduction_rows
+        zero_before_by_intent = {
+            str(intent_id): Decimal(str(before)).quantize(Decimal("0.01"))
+            for intent_id, before in zero_rows
+            if before is not None
         }
         return {
-            requirement_id: resolve_effective_slot_need(
-                fallback,
-                (
-                    active_reduction_by_intent.get(
-                        intent_by_requirement.get(requirement_id, ""),
-                        Decimal("0.00"),
-                    ),
-                ),
+            requirement_id: (
+                Decimal("0.00")
+                if zero_before_by_intent.get(
+                    intent_by_requirement.get(requirement_id, "")
+                )
+                == fallback
+                else fallback
             )
             for requirement_id, fallback in fallbacks.items()
         }
