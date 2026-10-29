@@ -167,10 +167,7 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
                         Shift.resource_requirement_id == ResourceRequirement.id,
                     )
                     .join(Resource, Shift.resource_id == Resource.id)
-                    .where(
-                        Shift.id.in_(preserve_ids),
-                        ResourceRequirement.status.not_in(INACTIVE_REQUIREMENT_STATUSES),
-                    )
+                    .where(Shift.id.in_(preserve_ids))
                 ).all()
             )
         temporary_inputs = tuple(
@@ -184,7 +181,6 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
                 counts_as_allocated=shift.allocation_type != MISSING_ALLOCATION_TYPE,
             )
             for shift, requirement, resource in preserved_rows
-            if not shift.locked
         )
 
         engine_segments = tuple(
