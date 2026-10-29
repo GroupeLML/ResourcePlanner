@@ -22,6 +22,12 @@ from app.infrastructure.sql.approval_revision_models import (
     RequestApprovalReference,
     RequestApprovalRevision,
 )
+from app.infrastructure.sql.asset_models import (
+    Asset,
+    AssetAllocation,
+    AssetRequirement,
+    AssetType,
+)
 from app.infrastructure.sql.base import Base
 from app.infrastructure.sql.identity_models import AppUser
 from app.infrastructure.sql.idempotency import SqlCommandIdempotencyAdapter
@@ -655,6 +661,173 @@ class RequestWorkQueueCommandTests(unittest.TestCase):
         with transactional_session(self.factory) as session:
             shifts = session.query(Shift).filter_by(resource_requirement_id="REQ1").all()
             self.assertEqual(len(shifts), 5)
+            self.assertEqual(session.query(PlanningWorkQueueRelease).count(), 0)
+
+    def test_return_shift_deletes_only_shift_owned_asset_state_across_multi_resource_survivors(self) -> None:
+        with transactional_session(self.factory) as session:
+            session.add(Resource(id="R2", name="Bob", active=True, erp_active=True))
+            session.add(
+                AssetType(
+                    id="AT-778",
+                    code="AT-778",
+                    label="Type 778",
+                    category="EQUIPMENT",
+                )
+            )
+            session.flush()
+            session.add_all(
+                [
+                    Asset(id="AS-OWN-778", code="AS-OWN-778", label="Owned", asset_type_id="AT-778"),
+                    Asset(id="AS-PROJ-778", code="AS-PROJ-778", label="Project", asset_type_id="AT-778"),
+                    Asset(id="AS-SEG-778", code="AS-SEG-778", label="Segment", asset_type_id="AT-778"),
+                ]
+            )
+            session.get(Shift, "S5").resource_id = "R2"
+            session.add_all(
+                [
+                    AssetRequirement(
+                        id="AR-OWN-778",
+                        project_id="P1",
+                        origin="SHIFT_AD_HOC",
+                        shift_id="S4",
+                        asset_type_id="AT-778",
+                        start_date=DAY + timedelta(days=3),
+                        end_date=DAY + timedelta(days=3),
+                    ),
+                    AssetRequirement(
+                        id="AR-PROJ-778",
+                        project_id="P1",
+                        origin="PROJECT_DIRECT",
+                        asset_type_id="AT-778",
+                        start_date=DAY,
+                        end_date=DAY + timedelta(days=4),
+                    ),
+                    AssetRequirement(
+                        id="AR-SEG-778",
+                        project_id="P1",
+                        origin="SEGMENT",
+                        resource_requirement_id="REQ1",
+                        asset_type_id="AT-778",
+                        start_date=DAY,
+                        end_date=DAY + timedelta(days=4),
+                    ),
+                ]
+            )
+            session.flush()
+            session.add_all(
+                [
+                    AssetAllocation(
+                        id="AA-OWN-778",
+                        asset_requirement_id="AR-OWN-778",
+                        asset_id="AS-OWN-778",
+                        operator_resource_id="R1",
+                        start_date=DAY + timedelta(days=3),
+                        end_date=DAY + timedelta(days=3),
+                        locked=True,
+                    ),
+                    AssetAllocation(
+                        id="AA-PROJ-778",
+                        asset_requirement_id="AR-PROJ-778",
+                        asset_id="AS-PROJ-778",
+                        operator_resource_id="R2",
+                        start_date=DAY,
+                        end_date=DAY + timedelta(days=4),
+                        locked=True,
+                    ),
+                    AssetAllocation(
+                        id="AA-SEG-778",
+                        asset_requirement_id="AR-SEG-778",
+                        asset_id="AS-SEG-778",
+                        operator_resource_id="R1",
+                        start_date=DAY,
+                        end_date=DAY + timedelta(days=4),
+                        locked=True,
+                    ),
+                ]
+            )
+
+        with transactional_session(self.factory) as session:
+            adapter, _planning = self._adapter(session)
+            adapter.return_shift(
+                ReturnShiftToWorkQueueCommand(
+                    allocation_id="A4",
+                    expected_planning_version=1,
+                    expected_approval_revision_id="REV1",
+                    expected_operational_version=1,
+                    command_id="asset-owned-return-778",
+                )
+            )
+            self.assertIsNone(session.get(Shift, "S4"))
+            self.assertIsNone(session.get(AssetRequirement, "AR-OWN-778"))
+            self.assertIsNone(session.get(AssetAllocation, "AA-OWN-778"))
+            self.assertIsNotNone(session.get(AssetRequirement, "AR-PROJ-778"))
+            self.assertIsNotNone(session.get(AssetAllocation, "AA-PROJ-778"))
+            self.assertIsNotNone(session.get(AssetRequirement, "AR-SEG-778"))
+            self.assertIsNotNone(session.get(AssetAllocation, "AA-SEG-778"))
+            survivor = session.get(Shift, "S5")
+            self.assertIsNotNone(survivor)
+            self.assertEqual(survivor.resource_id, "R2")
+
+    def test_terminal_rejection_rolls_back_shift_owned_asset_cleanup(self) -> None:
+        with transactional_session(self.factory) as session:
+            session.add(
+                AssetType(
+                    id="AT-ROLLBACK-778",
+                    code="AT-ROLLBACK-778",
+                    label="Type rollback 778",
+                    category="EQUIPMENT",
+                )
+            )
+            session.flush()
+            session.add(
+                Asset(
+                    id="AS-ROLLBACK-778",
+                    code="AS-ROLLBACK-778",
+                    label="Rollback",
+                    asset_type_id="AT-ROLLBACK-778",
+                )
+            )
+            session.add(
+                AssetRequirement(
+                    id="AR-ROLLBACK-778",
+                    project_id="P1",
+                    origin="SHIFT_AD_HOC",
+                    shift_id="S4",
+                    asset_type_id="AT-ROLLBACK-778",
+                    start_date=DAY + timedelta(days=3),
+                    end_date=DAY + timedelta(days=3),
+                )
+            )
+            session.flush()
+            session.add(
+                AssetAllocation(
+                    id="AA-ROLLBACK-778",
+                    asset_requirement_id="AR-ROLLBACK-778",
+                    asset_id="AS-ROLLBACK-778",
+                    operator_resource_id="R1",
+                    start_date=DAY + timedelta(days=3),
+                    end_date=DAY + timedelta(days=3),
+                    locked=True,
+                )
+            )
+            session.get(ResourceRequirement, "REQ1").status = "Terminé"
+
+        with self.assertRaises(ApplicationConflictError):
+            with transactional_session(self.factory) as session:
+                adapter, _planning = self._adapter(session)
+                adapter.return_shift(
+                    ReturnShiftToWorkQueueCommand(
+                        allocation_id="A4",
+                        expected_planning_version=1,
+                        expected_approval_revision_id="REV1",
+                        expected_operational_version=1,
+                        command_id="asset-terminal-rollback-778",
+                    )
+                )
+        with transactional_session(self.factory) as session:
+            self.assertIsNotNone(session.get(Shift, "S4"))
+            self.assertIsNotNone(session.get(AssetRequirement, "AR-ROLLBACK-778"))
+            self.assertIsNotNone(session.get(AssetAllocation, "AA-ROLLBACK-778"))
             self.assertEqual(session.query(PlanningWorkQueueRelease).count(), 0)
 
     def test_permanent_reduction_requires_enhanced_permissions(self) -> None:
