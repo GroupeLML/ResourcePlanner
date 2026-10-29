@@ -20,7 +20,7 @@ test("778 expose les trois actions ADR-034 et confirme leurs mutations", async (
   let lastIdempotencyKey: string | null = null;
 
   await page.route("**/api/v1/planning/snapshot?**", async (route) => {
-    const response = await route.fetch();
+    const response = await context.request.get(route.request().url());
     const body = await response.json() as Record<string, any>;
     const resource = body.resources?.[0];
     if (!resource) {
