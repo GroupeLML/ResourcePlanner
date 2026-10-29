@@ -22,6 +22,7 @@ from .demand_period_models import (
 )
 from .operational_choice_repository import SqlRequestOperationalChoiceRepository
 from .operational_choice_models import RequestCompletionReduction, RequestRequirementPlanningIntent
+from .planning_intent_repository import stable_planning_slot_key
 from .segment_asset_guard import segment_asset_dependencies
 from .approval_revision_models import RequestApprovalRevision
 from .planning_window_override_repository import SqlPlanningWindowOverrideRepository
@@ -970,32 +971,92 @@ class SqlRequestPlanPreparer:
         current: Sequence[ResourceRequirement],
         specs: Sequence[PreparedRequirementSpec],
     ) -> tuple[tuple[PreparedRequirementMatch, ...], tuple[ResourceRequirement, ...]]:
-        current_by_key = self._current_by_base_key(request, current)
+        current_by_id = {row.id: row for row in current}
+        claimed_requirement_ids: set[str] = set()
+        matches_by_spec_key: dict[tuple[str, ...], PreparedRequirementMatch] = {}
+
+        # ADR-034: durable logical-slot bindings are authoritative. Never reorder
+        # slots because assignment, creation time, or physical row ids changed.
+        for spec in specs:
+            slot_key = stable_planning_slot_key(
+                workforce_request_id=request.id,
+                approved_entry_key=spec.approved_entry_key,
+                slot_index=spec.slot_index,
+                source_request_line_id=spec.source_request_line_id,
+                source_period_id=spec.source_period_id,
+            )
+            intent = self._session.scalar(
+                select(RequestRequirementPlanningIntent).where(
+                    RequestRequirementPlanningIntent.slot_identity_key == slot_key
+                )
+            )
+            if intent is None:
+                logical = self._session.scalars(
+                    select(RequestRequirementPlanningIntent).where(
+                        RequestRequirementPlanningIntent.workforce_request_id == request.id,
+                        RequestRequirementPlanningIntent.approved_entry_key == spec.approved_entry_key,
+                        RequestRequirementPlanningIntent.slot_index == int(spec.slot_index),
+                    )
+                ).all()
+                if len(logical) > 1:
+                    raise ValueError(
+                        "planning_slot_identity_ambiguous: plusieurs intentions durables "
+                        "existent pour le même slot logique."
+                    )
+                intent = logical[0] if logical else None
+            if intent is None or not intent.current_resource_requirement_id:
+                continue
+            requirement = current_by_id.get(intent.current_resource_requirement_id)
+            if requirement is None:
+                continue
+            if requirement.id in claimed_requirement_ids:
+                raise ValueError(
+                    "planning_slot_binding_ambiguous: plusieurs slots logiques "
+                    "réclament le même ResourceRequirement."
+                )
+            claimed_requirement_ids.add(requirement.id)
+            matches_by_spec_key[spec.key] = PreparedRequirementMatch(
+                spec=spec,
+                requirement=requirement,
+            )
+
+        # Only never-bound slots use the historical base-key fallback. Already
+        # claimed requirements are excluded so mutable assignment/order cannot
+        # swap durable slots.
+        remaining_current = [
+            row for row in current if row.id not in claimed_requirement_ids
+        ]
+        current_by_key = self._current_by_base_key(request, remaining_current)
         specs_by_key: dict[tuple[str, ...], list[PreparedRequirementSpec]] = defaultdict(list)
         for spec in specs:
-            specs_by_key[spec.base_key].append(spec)
+            if spec.key not in matches_by_spec_key:
+                specs_by_key[spec.base_key].append(spec)
         for rows in specs_by_key.values():
             rows.sort(key=lambda row: (row.slot_index, row.key))
 
-        matches: list[PreparedRequirementMatch] = []
         obsolete: list[ResourceRequirement] = []
         all_keys = set(current_by_key) | set(specs_by_key)
         for base_key in sorted(all_keys):
             current_rows = current_by_key.get(base_key, [])
             desired_rows = specs_by_key.get(base_key, [])
             for index, spec in enumerate(desired_rows):
-                matches.append(
-                    PreparedRequirementMatch(
-                        spec=spec,
-                        requirement=(
-                            current_rows[index]
-                            if index < len(current_rows)
-                            else None
-                        ),
-                    )
+                requirement = current_rows[index] if index < len(current_rows) else None
+                if requirement is not None:
+                    claimed_requirement_ids.add(requirement.id)
+                matches_by_spec_key[spec.key] = PreparedRequirementMatch(
+                    spec=spec,
+                    requirement=requirement,
                 )
             obsolete.extend(current_rows[len(desired_rows):])
-        return tuple(matches), tuple(obsolete)
+
+        ordered = tuple(matches_by_spec_key[spec.key] for spec in specs)
+        obsolete.extend(
+            row
+            for row in current
+            if row.id not in claimed_requirement_ids
+            and row not in obsolete
+        )
+        return ordered, tuple(obsolete)
 
     def locked_conflicts(
         self,
