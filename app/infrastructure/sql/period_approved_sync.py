@@ -456,6 +456,39 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             ).all()
         )
 
+    def _preserve_zero_effective_terminal(
+        self,
+        requirement: ResourceRequirement,
+    ) -> bool:
+        if _text(requirement.status) != "Terminé":
+            return False
+        intent = self._session.scalar(
+            select(RequestRequirementPlanningIntent).where(
+                RequestRequirementPlanningIntent.current_resource_requirement_id
+                == requirement.id
+            )
+        )
+        if intent is None:
+            return False
+        latest = self._session.scalar(
+            select(RequestCompletionReduction)
+            .where(
+                RequestCompletionReduction.planning_intent_id == intent.id,
+                RequestCompletionReduction.reconciliation_state == "ACTIVE",
+            )
+            .order_by(
+                RequestCompletionReduction.created_at.desc(),
+                RequestCompletionReduction.id.desc(),
+            )
+        )
+        return bool(
+            latest is not None
+            and Decimal(str(latest.effective_need_after)).quantize(
+                Decimal("0.01")
+            )
+            <= 0
+        )
+
     def _requirement_links(self, requirement_ids: set[str]) -> dict[str, str]:
         if not requirement_ids:
             return {}
@@ -1180,7 +1213,8 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
         )
         obsolete = list(obsolete_rows)
         for requirement in obsolete:
-            requirement.status = "Annulé"
+            if not self._preserve_zero_effective_terminal(requirement):
+                requirement.status = "Annulé"
 
         materialized: list[ResourceRequirement] = []
         for match in matches:
@@ -1286,7 +1320,8 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
         self._restore_approved_responsibility_only = True
 
         for requirement in obsolete:
-            requirement.status = "Annulé"
+            if not self._preserve_zero_effective_terminal(requirement):
+                requirement.status = "Annulé"
 
         materialized: list[ResourceRequirement] = []
         for match in matches:
@@ -1416,11 +1451,6 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             "location": request.location,
             "line_mode": bool(request.line_mode),
         }
-        candidate_slots = {
-            (spec.approved_entry_key, int(spec.slot_index)): spec
-            for spec in candidate_specs
-        }
-
         active_payload = json.loads(active_revision.payload_text)
         active_entries = {
             _text(row.get("identity")): row
@@ -1436,10 +1466,7 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
         for intent in reduced_intents:
             active_entry = active_entries.get(intent.approved_entry_key)
             candidate_entry = candidate_entries.get(intent.approved_entry_key)
-            candidate_spec = candidate_slots.get(
-                (intent.approved_entry_key, int(intent.slot_index))
-            )
-            if active_entry is None or candidate_entry is None or candidate_spec is None:
+            if active_entry is None or candidate_entry is None:
                 raise ApplicationConflictError(
                     "Une réduction active ne correspond plus au même slot autorisé.",
                     code="reduction_rebase_required",
@@ -1633,6 +1660,30 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             ).all()
             for reduction in active_reductions:
                 reduction.reconciled_approval_revision_id = revision.id
+                intent = self._session.get(
+                    RequestRequirementPlanningIntent,
+                    reduction.planning_intent_id,
+                )
+                if intent is not None:
+                    intent.approval_revision_id = revision.id
+                    if intent.current_resource_requirement_id:
+                        terminal_requirement = self._session.get(
+                            ResourceRequirement,
+                            intent.current_resource_requirement_id,
+                        )
+                        if (
+                            terminal_requirement is not None
+                            and self._preserve_zero_effective_terminal(
+                                terminal_requirement
+                            )
+                        ):
+                            terminal_requirement.approval_revision_id = revision.id
+                            terminal_requirement.approved_entry_key = (
+                                intent.approved_entry_key
+                            )
+                            terminal_requirement.approval_reference_status = (
+                                APPROVAL_REFERENCE_CAPTURED
+                            )
                 if reduction.authorization_fingerprint is None:
                     intent = self._session.get(
                         RequestRequirementPlanningIntent,
