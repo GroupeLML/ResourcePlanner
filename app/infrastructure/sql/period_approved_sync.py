@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from ...application.command_ports import ApprovedDemandSyncPort
 from ...application.errors import ApplicationConflictError
 from ...application.operational_contacts import OperationalContactService
+from ...domain.request_reduction import reduction_subject_fingerprint
 from ...domain.operational_contacts import (
     PROVENANCE_APPROVAL_CAPTURE,
     PROVENANCE_LEGACY_UNKNOWN,
@@ -1387,57 +1388,110 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
         ).all()
         if not reduced_intents:
             return
+
         reference = self._session.get(RequestApprovalReference, request.id)
         if reference is None or not reference.active_revision_id:
             raise ApplicationConflictError(
                 "Les réductions actives ne peuvent pas être réconciliées sans révision approuvée active.",
                 code="reduction_rebase_required",
             )
-        revision = self._session.get(RequestApprovalRevision, reference.active_revision_id)
-        if revision is None:
+        active_revision = self._session.get(
+            RequestApprovalRevision,
+            reference.active_revision_id,
+        )
+        if active_revision is None:
             raise ApplicationConflictError(
                 "La révision approuvée active est introuvable pour réconcilier les réductions.",
                 code="reduction_rebase_required",
             )
-        payload = json.loads(revision.payload_text)
-        entries = {
-            _text(row.get("identity")): row
-            for row in payload.get("authorization", {}).get("entries", [])
-            if isinstance(row, dict) and _text(row.get("identity"))
+
+        candidate_envelope = self._approval_revisions.candidate_envelope(request)
+        candidate_entries = {
+            entry.identity.stable_key: entry.authorization_payload()
+            for entry in candidate_envelope.entries
         }
-        candidate_by_slot = {
+        candidate_request_context = {
+            "project_id": request.project_id,
+            "site_client": request.site_client,
+            "location": request.location,
+            "line_mode": bool(request.line_mode),
+        }
+        candidate_slots = {
             (spec.approved_entry_key, int(spec.slot_index)): spec
             for spec in candidate_specs
         }
+
+        active_payload = json.loads(active_revision.payload_text)
+        active_entries = {
+            _text(row.get("identity")): row
+            for row in active_payload.get("authorization", {}).get("entries", [])
+            if isinstance(row, dict) and _text(row.get("identity"))
+        }
+        active_request_context = (
+            active_payload.get("request")
+            if isinstance(active_payload.get("request"), dict)
+            else {}
+        )
+
         for intent in reduced_intents:
-            entry = entries.get(intent.approved_entry_key)
-            if entry is None:
-                raise ApplicationConflictError(
-                    "Une réduction active ne correspond plus à la même entrée approuvée.",
-                    code="reduction_rebase_required",
-                    context={"planning_intent_id": intent.id},
-                )
-            slot_count = max(int(entry.get("slot_count") or 1), 1)
-            nominal_slots = split_total_workforce_hours(
-                Decimal(str(entry.get("hours"))).quantize(Decimal("0.01")),
-                slot_count,
-            )
-            if intent.slot_index < 0 or intent.slot_index >= len(nominal_slots):
-                raise ApplicationConflictError(
-                    "La topologie approuvée a changé pour un slot réduit.",
-                    code="reduction_rebase_required",
-                    context={"planning_intent_id": intent.id},
-                )
-            candidate = candidate_by_slot.get(
+            active_entry = active_entries.get(intent.approved_entry_key)
+            candidate_entry = candidate_entries.get(intent.approved_entry_key)
+            candidate_spec = candidate_slots.get(
                 (intent.approved_entry_key, int(intent.slot_index))
             )
-            if candidate is None or Decimal(str(candidate.planned_hours)).quantize(
-                Decimal("0.01")
-            ) != Decimal(str(nominal_slots[int(intent.slot_index)])).quantize(
-                Decimal("0.01")
-            ):
+            if active_entry is None or candidate_entry is None or candidate_spec is None:
                 raise ApplicationConflictError(
-                    "La nouvelle autorisation modifierait la base nominale d'un slot réduit; une réconciliation explicite est requise.",
+                    "Une réduction active ne correspond plus au même slot autorisé.",
+                    code="reduction_rebase_required",
+                    context={"planning_intent_id": intent.id},
+                )
+
+            slot_count = max(int(candidate_entry.get("slot_count") or 1), 1)
+            if intent.slot_index < 0 or intent.slot_index >= slot_count:
+                raise ApplicationConflictError(
+                    "La topologie autorisée a changé pour un slot réduit.",
+                    code="reduction_rebase_required",
+                    context={
+                        "planning_intent_id": intent.id,
+                        "slot_index": int(intent.slot_index),
+                        "slot_count": slot_count,
+                    },
+                )
+
+            historical_fingerprint = reduction_subject_fingerprint(
+                request_context=active_request_context,
+                authorization_entry=active_entry,
+            )
+            candidate_fingerprint = reduction_subject_fingerprint(
+                request_context=candidate_request_context,
+                authorization_entry=candidate_entry,
+            )
+            stored_fingerprints = {
+                _text(value)
+                for value in self._session.scalars(
+                    select(RequestCompletionReduction.authorization_fingerprint)
+                    .where(
+                        RequestCompletionReduction.planning_intent_id == intent.id,
+                        RequestCompletionReduction.reconciliation_state == "ACTIVE",
+                    )
+                ).all()
+                if _text(value)
+            }
+            if len(stored_fingerprints) > 1:
+                raise ApplicationConflictError(
+                    "Les réductions actives du slot portent des sujets d'autorisation incompatibles.",
+                    code="reduction_rebase_required",
+                    context={"planning_intent_id": intent.id},
+                )
+            if stored_fingerprints and stored_fingerprints != {historical_fingerprint}:
+                raise ApplicationConflictError(
+                    "La provenance d'une réduction active ne correspond plus à l'autorisation historique.",
+                    code="reduction_rebase_required",
+                    context={"planning_intent_id": intent.id},
+                )
+            if candidate_fingerprint != historical_fingerprint:
+                raise ApplicationConflictError(
+                    "La nouvelle autorisation change le sujet métier d'un slot réduit; une réconciliation explicite est requise.",
                     code="reduction_rebase_required",
                     context={
                         "planning_intent_id": intent.id,
@@ -1445,6 +1499,7 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                         "slot_index": int(intent.slot_index),
                     },
                 )
+
 
     def sync_approved(
         self,
@@ -1569,6 +1624,50 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                     approval_revision_id=revision.id,
                 )
             self._approval_revisions.activate_revision(request, revision)
+            active_reductions = self._session.scalars(
+                select(RequestCompletionReduction)
+                .where(
+                    RequestCompletionReduction.workforce_request_id == request.id,
+                    RequestCompletionReduction.reconciliation_state == "ACTIVE",
+                )
+            ).all()
+            for reduction in active_reductions:
+                reduction.reconciled_approval_revision_id = revision.id
+                if reduction.authorization_fingerprint is None:
+                    intent = self._session.get(
+                        RequestRequirementPlanningIntent,
+                        reduction.planning_intent_id,
+                    )
+                    if intent is None:
+                        raise ApplicationConflictError(
+                            "La réduction active ne possède plus de slot durable.",
+                            code="reduction_rebase_required",
+                        )
+                    payload = json.loads(revision.payload_text)
+                    current_entry = next(
+                        (
+                            row
+                            for row in payload.get("authorization", {}).get("entries", [])
+                            if isinstance(row, dict)
+                            and _text(row.get("identity")) == intent.approved_entry_key
+                        ),
+                        None,
+                    )
+                    if current_entry is None:
+                        raise ApplicationConflictError(
+                            "La réduction active ne correspond plus à une entrée approuvée.",
+                            code="reduction_rebase_required",
+                        )
+                    request_context = (
+                        payload.get("request")
+                        if isinstance(payload.get("request"), dict)
+                        else {}
+                    )
+                    reduction.authorization_fingerprint = reduction_subject_fingerprint(
+                        request_context=request_context,
+                        authorization_entry=current_entry,
+                    )
+            self._session.flush()
             self.sync_operational_choices(
                 _text(request.legacy_demand_number) or request.id
             )
