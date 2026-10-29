@@ -10,6 +10,7 @@ from app.application.errors import ApplicationConflictError
 from sqlalchemy import select
 
 from app.infrastructure.sql import (
+    PlanningWorkQueueRelease,
     RequestCompletionReduction,
     RequestLine,
     Resource,
@@ -26,6 +27,7 @@ from app.infrastructure.sql import (
     create_sql_engine,
 )
 from app.infrastructure.sql.request_plan_preparation import SqlRequestPlanPreparer
+from app.infrastructure.sql.asset_models import Asset, AssetAllocation, AssetRequirement, AssetType
 from app.domain.planning_engine import MISSING_ALLOCATION_TYPE
 from app.infrastructure.sql.demand_period_repository import SqlDemandPeriodRepository
 from app.infrastructure.sql.approval_revision_models import RequestApprovalReference, RequestApprovalRevision
@@ -846,6 +848,257 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                     survivor = session.get(Shift, "SHIFT-CAPACITY-778")
                     self.assertIsNotNone(survivor)
                     self.assertEqual(survivor.hours, Decimal("8.00"))
+            finally:
+                engine.dispose()
+
+    def test_locked_preserved_survivor_consumes_capacity(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-778-p3-locked-capacity",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._approve(client, 8)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    _request, requirement, intent = self._context(session, number)
+                    requirement.assigned_resource_id = "R-778-P3"
+                    intent.intent_mode = "PRESERVE_EXISTING"
+                    session.add(
+                        Shift(
+                            id="SHIFT-LOCKED-CAPACITY-778",
+                            legacy_allocation_id="ALLOC-LOCKED-CAPACITY-778",
+                            resource_requirement_id=requirement.id,
+                            resource_id="R-778-P3",
+                            work_date=requirement.start_date,
+                            hours=Decimal("8.00"),
+                            source="MANUAL",
+                            locked=True,
+                        )
+                    )
+                    other = ResourceRequirement(
+                        id="REQ-LOCKED-CAPACITY-OTHER-778",
+                        legacy_segment_id="SEG-LOCKED-CAPACITY-OTHER-778",
+                        project_id=requirement.project_id,
+                        start_date=requirement.start_date,
+                        end_date=requirement.start_date,
+                        planned_hours=Decimal("8.00"),
+                        status="Planifié",
+                        origin="AD_HOC",
+                        assigned_resource_id="R-778-P3",
+                        planning_type="Flexible",
+                    )
+                    session.add(other)
+                    session.flush()
+
+                    SqlPlanningCommandAdapter(session).rebuild()
+                    competing = session.scalars(
+                        select(Shift).where(
+                            Shift.resource_requirement_id == other.id,
+                            Shift.allocation_type != MISSING_ALLOCATION_TYPE,
+                        )
+                    ).all()
+                    self.assertEqual(competing, [])
+                    survivor = session.get(Shift, "SHIFT-LOCKED-CAPACITY-778")
+                    self.assertIsNotNone(survivor)
+                    self.assertTrue(survivor.locked)
+                    self.assertEqual(survivor.hours, Decimal("8.00"))
+            finally:
+                engine.dispose()
+
+    def test_asset_locked_preserved_survivor_consumes_capacity(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-778-p3-asset-locked-capacity",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._approve(client, 8)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    _request, requirement, intent = self._context(session, number)
+                    requirement.assigned_resource_id = "R-778-P3"
+                    intent.intent_mode = "PRESERVE_EXISTING"
+                    shift = Shift(
+                        id="SHIFT-ASSET-LOCKED-CAPACITY-778",
+                        legacy_allocation_id="ALLOC-ASSET-LOCKED-CAPACITY-778",
+                        resource_requirement_id=requirement.id,
+                        resource_id="R-778-P3",
+                        work_date=requirement.start_date,
+                        hours=Decimal("8.00"),
+                        source="MANUAL",
+                        locked=True,
+                    )
+                    session.add(shift)
+                    session.add(
+                        AssetType(
+                            id="AT-ASSET-LOCKED-778",
+                            code="AT-ASSET-LOCKED-778",
+                            label="Asset locked 778",
+                            category="EQUIPMENT",
+                        )
+                    )
+                    session.flush()
+                    session.add(
+                        Asset(
+                            id="AS-ASSET-LOCKED-778",
+                            code="AS-ASSET-LOCKED-778",
+                            label="Asset locked 778",
+                            asset_type_id="AT-ASSET-LOCKED-778",
+                        )
+                    )
+                    session.add(
+                        AssetRequirement(
+                            id="AR-ASSET-LOCKED-778",
+                            project_id=requirement.project_id,
+                            origin="SHIFT_AD_HOC",
+                            shift_id=shift.id,
+                            asset_type_id="AT-ASSET-LOCKED-778",
+                            start_date=requirement.start_date,
+                            end_date=requirement.start_date,
+                            status="Planifié",
+                        )
+                    )
+                    session.flush()
+                    session.add(
+                        AssetAllocation(
+                            id="AA-ASSET-LOCKED-778",
+                            asset_requirement_id="AR-ASSET-LOCKED-778",
+                            asset_id="AS-ASSET-LOCKED-778",
+                            operator_resource_id="R-778-P3",
+                            start_date=requirement.start_date,
+                            end_date=requirement.start_date,
+                            locked=True,
+                        )
+                    )
+                    other = ResourceRequirement(
+                        id="REQ-ASSET-LOCKED-OTHER-778",
+                        legacy_segment_id="SEG-ASSET-LOCKED-OTHER-778",
+                        project_id=requirement.project_id,
+                        start_date=requirement.start_date,
+                        end_date=requirement.start_date,
+                        planned_hours=Decimal("8.00"),
+                        status="Planifié",
+                        origin="AD_HOC",
+                        assigned_resource_id="R-778-P3",
+                        planning_type="Flexible",
+                    )
+                    session.add(other)
+                    session.flush()
+
+                    SqlPlanningCommandAdapter(session).rebuild()
+                    competing = session.scalars(
+                        select(Shift).where(
+                            Shift.resource_requirement_id == other.id,
+                            Shift.allocation_type != MISSING_ALLOCATION_TYPE,
+                        )
+                    ).all()
+                    self.assertEqual(competing, [])
+                    self.assertIsNotNone(session.get(AssetAllocation, "AA-ASSET-LOCKED-778"))
+                    self.assertTrue(session.get(Shift, shift.id).locked)
+            finally:
+                engine.dispose()
+
+    def test_same_resource_date_release_fragments_resolve_independently(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-778-p3-release-fragments",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._approve(client, 8)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    request, requirement, intent = self._context(session, number)
+                    requirement.assigned_resource_id = None
+                    intent.intent_mode = "PRESERVE_EXISTING"
+                    session.query(Shift).filter_by(
+                        resource_requirement_id=requirement.id
+                    ).delete(synchronize_session=False)
+                    session.add_all([
+                        PlanningWorkQueueRelease(
+                            id="REL-FRAG-A-778",
+                            planning_intent_id=intent.id,
+                            resource_requirement_id=requirement.id,
+                            original_shift_id="SHIFT-FRAG-A-778",
+                            workforce_request_id=request.id,
+                            approval_revision_id=requirement.approval_revision_id,
+                            approved_entry_key=intent.approved_entry_key,
+                            resource_id="R-778-P3",
+                            work_date=requirement.start_date,
+                            hours=Decimal("4.00"),
+                            shift_snapshot_text="{}",
+                            actor_user_id=TEST_ADMIN_USER_ID,
+                            command_id="release-frag-a-778",
+                            active=True,
+                        ),
+                        PlanningWorkQueueRelease(
+                            id="REL-FRAG-B-778",
+                            planning_intent_id=intent.id,
+                            resource_requirement_id=requirement.id,
+                            original_shift_id="SHIFT-FRAG-B-778",
+                            workforce_request_id=request.id,
+                            approval_revision_id=requirement.approval_revision_id,
+                            approved_entry_key=intent.approved_entry_key,
+                            resource_id="R-778-P3",
+                            work_date=requirement.start_date,
+                            hours=Decimal("4.00"),
+                            shift_snapshot_text="{}",
+                            actor_user_id=TEST_ADMIN_USER_ID,
+                            command_id="release-frag-b-778",
+                            active=True,
+                        ),
+                    ])
+                    session.flush()
+                    SqlAllocationCommandAdapter(session).create_manual(
+                        requirement.id,
+                        "R-778-P3",
+                        requirement.start_date,
+                        Decimal("4.00"),
+                    )
+                    releases = session.scalars(
+                        select(PlanningWorkQueueRelease)
+                        .where(
+                            PlanningWorkQueueRelease.planning_intent_id == intent.id
+                        )
+                        .order_by(PlanningWorkQueueRelease.id)
+                    ).all()
+                    self.assertEqual(sum(1 for row in releases if not row.active), 1)
+                    self.assertEqual(sum(1 for row in releases if row.active), 1)
+                    segment = SqlPlannerQueryRepositoryWithLoadProfiles(session).get_segment(
+                        requirement.id
+                    )
+                    self.assertIsNotNone(segment)
+                    self.assertEqual(segment.covered_hours, 4.0)
+                    self.assertEqual(segment.remaining_hours, 4.0)
+
+                    active_before = {row.id for row in releases if row.active}
+                    SqlPlanningCommandAdapter(session).rebuild()
+                    active_after = {
+                        row.id
+                        for row in session.scalars(
+                            select(PlanningWorkQueueRelease).where(
+                                PlanningWorkQueueRelease.planning_intent_id == intent.id,
+                                PlanningWorkQueueRelease.active.is_(True),
+                            )
+                        ).all()
+                    }
+                    self.assertEqual(active_after, active_before)
             finally:
                 engine.dispose()
 
