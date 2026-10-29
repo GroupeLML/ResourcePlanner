@@ -416,7 +416,7 @@ class RequestWorkQueueSqlServerConcurrencyTests(unittest.TestCase):
                             "start_date": DAY.isoformat(),
                             "end_date": (DAY + timedelta(days=4)).isoformat(),
                             "hours": "40.00",
-                            "kind": "BASE",
+                            "kind": "CUMULATIVE",
                             "group": None,
                             "confirmation": "Confirmée",
                         }
