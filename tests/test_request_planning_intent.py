@@ -15,6 +15,7 @@ from app.infrastructure.sql import (
     ResourceRequirement,
     SqlRequestRequirementPlanningIntentRepository,
     WorkforceRequest,
+    WorkforceRequestPeriod,
     create_session_factory,
     create_sql_engine,
     transactional_session,
@@ -54,6 +55,38 @@ class RequestPlanningIntentRepositoryTests(unittest.TestCase):
                     confirmation="Confirmée",
                     active=True,
                 )
+            )
+            session.add_all(
+                [
+                    WorkforceRequestPeriod(
+                        id="PER-PHYSICAL-1",
+                        period_key="PERIOD-A",
+                        workforce_request_id="D1",
+                        request_line_id="L1",
+                        sequence=0,
+                        kind="CUMULATIVE",
+                        start_date=DAY,
+                        end_date=DAY,
+                        hours=Decimal("40"),
+                        confirmation="Confirmée",
+                        resource_count=1,
+                        active=False,
+                    ),
+                    WorkforceRequestPeriod(
+                        id="PER-PHYSICAL-2",
+                        period_key="PERIOD-A",
+                        workforce_request_id="D1",
+                        request_line_id="L1",
+                        sequence=0,
+                        kind="CUMULATIVE",
+                        start_date=DAY,
+                        end_date=DAY,
+                        hours=Decimal("40"),
+                        confirmation="Confirmée",
+                        resource_count=1,
+                        active=True,
+                    ),
+                ]
             )
             session.add(
                 RequestApprovalRevision(
