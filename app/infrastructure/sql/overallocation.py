@@ -40,6 +40,7 @@ from .planning_audit import (
     SqlPlanningAuditJournal,
 )
 from .planning_repository import SqlPlanningReadRepository
+from .planning_intent_repository import SqlRequestRequirementPlanningIntentRepository
 from .segment_repository import SqlSegmentRepository
 
 
@@ -67,7 +68,12 @@ def _segment_metrics(session: Session, identifier: str) -> dict[str, float] | No
             Shift.locked == true(),
         )
     )
-    planned = float(requirement.planned_hours)
+    planned = float(
+        SqlRequestRequirementPlanningIntentRepository(session).current_effective_need_for_requirement(
+            requirement.id,
+            fallback_hours=requirement.planned_hours,
+        )
+    )
     locked_hours = float(locked or 0)
     return {
         "planned_hours": round(planned, 2),
@@ -146,9 +152,15 @@ def _allocation_projection_metrics(
         resource_metrics[key] += amount
 
     result: dict[str, dict[str, object]] = {}
+    intent_repository = SqlRequestRequirementPlanningIntentRepository(session)
     for requirement in rows:
         reference = _text(requirement.legacy_segment_id) or requirement.id
-        planned = float(requirement.planned_hours)
+        planned = float(
+            intent_repository.current_effective_need_for_requirement(
+                requirement.id,
+                fallback_hours=requirement.planned_hours,
+            )
+        )
         metrics = by_requirement[requirement.id]
         locked = float(metrics["locked_hours"])
         replaceable = float(metrics["replaceable_hours"])
