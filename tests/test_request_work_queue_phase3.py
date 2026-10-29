@@ -583,9 +583,6 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                     json=routed_demand_payload(
                         {
                             "project_number": "P-778-P3",
-                            "desired_start": "2026-10-28",
-                            "desired_end": "2026-10-28",
-                            "estimated_hours": 40,
                             "submit": True,
                             "lines": [
                                 {
@@ -815,9 +812,13 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                     session.add(other)
                     session.flush()
 
-                    summary = SqlPlanningCommandAdapter(session).rebuild()
-                    self.assertEqual(summary["allocated_hours"], 8.0)
-                    self.assertGreaterEqual(summary["unallocated_hours"], 8.0)
+                    SqlPlanningCommandAdapter(session).rebuild()
+                    competing_shifts = session.scalars(
+                        select(Shift).where(
+                            Shift.resource_requirement_id == other.id
+                        )
+                    ).all()
+                    self.assertEqual(competing_shifts, [])
                     other_after = SqlPlannerQueryRepositoryWithLoadProfiles(
                         session
                     ).get_segment(other.id)
