@@ -17,6 +17,7 @@ from app.infrastructure.sql.approval_cycle_models import (
     ApprovalRequirementApprover,
     RequestApprovalCycle,
 )
+from app.infrastructure.sql.approval_scope_models import ApprovalScope, ApprovalScopeApprover
 from app.infrastructure.sql.approval_revision_models import (
     RequestApprovalReference,
     RequestApprovalRevision,
@@ -99,6 +100,7 @@ class RequestWorkQueueCommandTests(unittest.TestCase):
         )
         with transactional_session(self.factory) as session:
             session.add(Project(id="P1", number="P-1", name="Projet 778"))
+            session.add(ApprovalScope(id="SCOPE1", code="SCOPE1", label="Scope 778", active=True, version=1))
             session.add(Resource(id="R1", name="Alice", active=True, erp_active=True))
             session.add(
                 AppUser(
@@ -110,6 +112,8 @@ class RequestWorkQueueCommandTests(unittest.TestCase):
                     active=True,
                 )
             )
+            session.flush()
+            session.add(ApprovalScopeApprover(approval_scope_id="SCOPE1", app_user_id="U1"))
             session.add(
                 WorkforceRequest(
                     id="D1",
@@ -230,6 +234,7 @@ class RequestWorkQueueCommandTests(unittest.TestCase):
                     id="AR1",
                     approval_cycle_id="C1",
                     request_line_id="L1",
+                    approval_scope_id="SCOPE1",
                     routing_sources_text="[]",
                 )
             )
@@ -552,6 +557,58 @@ class RequestWorkQueueCommandTests(unittest.TestCase):
                         session.get(PlanningMutationState, "GLOBAL").version,
                         1,
                     )
+
+    def test_revoked_current_approver_is_denied_even_if_historical_cycle_contains_actor(self) -> None:
+        with transactional_session(self.factory) as session:
+            membership = session.get(ApprovalScopeApprover, ("SCOPE1", "U1"))
+            self.assertIsNotNone(membership)
+            session.delete(membership)
+
+        with self.assertRaises(ApplicationAuthorizationError) as raised:
+            with transactional_session(self.factory) as session:
+                adapter, _planning = self._adapter(session)
+                adapter.permanently_reduce_shift(
+                    PermanentlyReduceShiftHoursCommand(
+                        allocation_id="A4",
+                        expected_planning_version=1,
+                        expected_request_version=1,
+                        expected_approval_revision_id="REV1",
+                        expected_operational_version=1,
+                        command_id="revoked-current-approver-778",
+                    )
+                )
+        self.assertEqual(
+            raised.exception.code,
+            "reduction_approval_authority_denied",
+        )
+        with transactional_session(self.factory) as session:
+            self.assertIsNotNone(session.get(Shift, "S4"))
+            self.assertEqual(session.query(RequestCompletionReduction).count(), 0)
+
+    def test_terminal_return_rejects_before_any_shift_is_deleted(self) -> None:
+        with transactional_session(self.factory) as session:
+            session.get(ResourceRequirement, "REQ1").status = "Terminé"
+
+        with self.assertRaises(ApplicationConflictError) as raised:
+            with transactional_session(self.factory) as session:
+                adapter, _planning = self._adapter(session)
+                adapter.return_shift(
+                    ReturnShiftToWorkQueueCommand(
+                        allocation_id="A4",
+                        expected_planning_version=1,
+                        expected_approval_revision_id="REV1",
+                        expected_operational_version=1,
+                        command_id="terminal-return-778",
+                    )
+                )
+        self.assertEqual(
+            raised.exception.code,
+            "request_work_queue_terminal_requirement",
+        )
+        with transactional_session(self.factory) as session:
+            shifts = session.query(Shift).filter_by(resource_requirement_id="REQ1").all()
+            self.assertEqual(len(shifts), 5)
+            self.assertEqual(session.query(PlanningWorkQueueRelease).count(), 0)
 
     def test_permanent_reduction_requires_enhanced_permissions(self) -> None:
         with self.assertRaises(ApplicationAuthorizationError):
