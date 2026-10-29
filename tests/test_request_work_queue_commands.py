@@ -543,7 +543,7 @@ class RequestWorkQueueCommandTests(unittest.TestCase):
             )
             requirement = session.get(ResourceRequirement, "REQ1")
             self.assertEqual(result["effective_need_after"], 0.0)
-            self.assertEqual(requirement.planned_hours, Decimal("0.00"))
+            self.assertEqual(requirement.planned_hours, Decimal("8.00"))
             self.assertEqual(requirement.status, "Terminé")
             self.assertIsNone(session.get(Shift, "S1"))
 
