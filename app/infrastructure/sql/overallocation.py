@@ -85,6 +85,8 @@ def _segment_metrics(session: Session, identifier: str) -> dict[str, float] | No
 def _allocation_projection_metrics(
     session: Session,
     requirements: Sequence[ResourceRequirement],
+    *,
+    planned_hours_by_reference: Mapping[str, float] | None = None,
 ) -> dict[str, dict[str, object]]:
     """Build additive #331A coverage metrics from counted persisted shifts."""
 
@@ -152,13 +154,23 @@ def _allocation_projection_metrics(
         resource_metrics[key] += amount
 
     result: dict[str, dict[str, object]] = {}
-    intent_repository = SqlRequestRequirementPlanningIntentRepository(session)
-    effective_need_by_requirement = intent_repository.current_effective_need_by_requirement(
-        {requirement.id: requirement.planned_hours for requirement in rows}
+    effective_need_by_requirement = (
+        SqlRequestRequirementPlanningIntentRepository(
+            session
+        ).current_effective_need_by_requirement(
+            {requirement.id: requirement.planned_hours for requirement in rows}
+        )
+        if planned_hours_by_reference is None
+        else {}
     )
     for requirement in rows:
         reference = _text(requirement.legacy_segment_id) or requirement.id
-        planned = float(effective_need_by_requirement[requirement.id])
+        planned = (
+            float(planned_hours_by_reference[reference])
+            if planned_hours_by_reference is not None
+            and reference in planned_hours_by_reference
+            else float(effective_need_by_requirement[requirement.id])
+        )
         metrics = by_requirement[requirement.id]
         locked = float(metrics["locked_hours"])
         replaceable = float(metrics["replaceable_hours"])
@@ -233,13 +245,17 @@ class SqlSegmentRepositoryWithAllocationMetrics(SqlSegmentRepository):
         super().__init__(session, actor_name=actor_name)
         self._overallocation_session = session
 
-    def _metric_map(self) -> dict[str, dict[str, object]]:
+    def _metric_map(
+        self,
+        planned_hours_by_reference: Mapping[str, float],
+    ) -> dict[str, dict[str, object]]:
         requirements = self._overallocation_session.scalars(
             select(ResourceRequirement)
         ).all()
         return _allocation_projection_metrics(
             self._overallocation_session,
             requirements,
+            planned_hours_by_reference=planned_hours_by_reference,
         )
 
     @staticmethod
@@ -273,14 +289,33 @@ class SqlSegmentRepositoryWithAllocationMetrics(SqlSegmentRepository):
 
     def list(self, *, include_cancelled: bool = True) -> Sequence[SegmentReadModel]:
         rows = super().list(include_cancelled=include_cancelled)
-        metrics = self._metric_map()
+        metrics = self._metric_map(
+            {row.segment_id: float(row.planned_hours) for row in rows}
+        )
         return tuple(self._enrich(row, metrics.get(row.segment_id)) for row in rows)
 
     def get(self, segment_id: str) -> SegmentReadModel | None:
         row = super().get(segment_id)
         if row is None:
             return None
-        return self._enrich(row, _segment_projection_metrics(self._overallocation_session, row.segment_id))
+        requirement = self._overallocation_session.scalar(
+            select(ResourceRequirement).where(
+                (ResourceRequirement.id == row.requirement_id)
+                | (ResourceRequirement.legacy_segment_id == row.segment_id)
+            )
+        )
+        metrics = (
+            _allocation_projection_metrics(
+                self._overallocation_session,
+                (requirement,),
+                planned_hours_by_reference={
+                    row.segment_id: float(row.planned_hours)
+                },
+            ).get(row.segment_id)
+            if requirement is not None
+            else None
+        )
+        return self._enrich(row, metrics)
 
 
 def evaluate_projected_manual_state(
