@@ -29,7 +29,12 @@ from ...application.user_view_context import UserViewContextService
 from ...domain.effective_need import allocate_entry_budget
 from ...domain.request_reduction import reduction_subject_fingerprint
 from .approval_cycle_models import ApprovalRequirement, RequestApprovalCycle
-from .approval_scope_models import ApprovalScope, ApprovalScopeApprover
+from .approval_scope_models import (
+    ApprovalScope,
+    ApprovalScopeApprover,
+    ResourceClassApprovalScopeMapping,
+    TaskApprovalScopeMapping,
+)
 from .approval_revision_models import (
     APPROVAL_REFERENCE_CAPTURED,
     RequestApprovalReference,
@@ -443,21 +448,47 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
         # The completed-cycle approver list is historical evidence only. ADR-034
         # requires current eligibility in the ApprovalScope that authorized the
         # active approved subject.
-        scope_ids = {
+        historical_scope_ids = {
             _text(requirement.approval_scope_id)
             for requirement in relevant
             if _text(requirement.approval_scope_id)
         }
-        if len(scope_ids) != 1:
+        approved_entry = self._entry(revision, intent.approved_entry_key)
+        task_ref = _text(approved_entry.get("task_ref"))
+        resource_class = _text(approved_entry.get("required_resource_class"))
+        task_scope_ids = (
+            set(
+                self._session.scalars(
+                    select(TaskApprovalScopeMapping.approval_scope_id).where(
+                        TaskApprovalScopeMapping.task_catalog_item_id == task_ref
+                    )
+                ).all()
+            )
+            if task_ref
+            else set()
+        )
+        class_scope_ids = (
+            set(
+                self._session.scalars(
+                    select(ResourceClassApprovalScopeMapping.approval_scope_id).where(
+                        ResourceClassApprovalScopeMapping.resource_class_code == resource_class
+                    )
+                ).all()
+            )
+            if resource_class
+            else set()
+        )
+        current_scope_ids = task_scope_ids or class_scope_ids or historical_scope_ids
+        if len(current_scope_ids) != 1:
             raise ApplicationAuthorizationError(
                 "Le périmètre d'approbation courant de la source est absent ou ambigu.",
                 code="reduction_approval_authority_unknown",
                 context={
                     "request_line_id": intent.source_request_line_id,
-                    "approval_scope_ids": sorted(scope_ids),
+                    "approval_scope_ids": sorted(current_scope_ids),
                 },
             )
-        scope_id = next(iter(scope_ids))
+        scope_id = next(iter(current_scope_ids))
         scope = self._session.get(ApprovalScope, scope_id)
         current_membership = self._session.get(
             ApprovalScopeApprover,
