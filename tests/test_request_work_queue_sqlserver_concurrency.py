@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 import json
 import os
@@ -29,6 +29,7 @@ from app.infrastructure.sql import (
     ResourceRequirement,
     Shift,
     WorkforceRequest,
+    WorkforceRequestHistory,
     create_session_factory,
     create_sql_engine,
 )
@@ -413,7 +414,7 @@ class RequestWorkQueueSqlServerConcurrencyTests(unittest.TestCase):
                             "task_ref": None,
                             "work_package_ref": None,
                             "start_date": DAY.isoformat(),
-                            "end_date": (DAY.replace(day=DAY.day + 4)).isoformat(),
+                            "end_date": (DAY + timedelta(days=4)).isoformat(),
                             "hours": "40.00",
                             "kind": "BASE",
                             "group": None,
@@ -471,7 +472,7 @@ class RequestWorkQueueSqlServerConcurrencyTests(unittest.TestCase):
                         requester_user_id=actor_id,
                         requester_name=f"Admin 778 réduction {marker}",
                         desired_start=DAY,
-                        desired_end=DAY.replace(day=DAY.day + 4),
+                        desired_end=DAY + timedelta(days=4),
                         resource_count=1,
                         estimated_hours=Decimal("40.00"),
                         status="En planification",
@@ -488,7 +489,7 @@ class RequestWorkQueueSqlServerConcurrencyTests(unittest.TestCase):
                         kind="WORKFORCE",
                         slot_count=1,
                         desired_start=DAY,
-                        desired_end=DAY.replace(day=DAY.day + 4),
+                        desired_end=DAY + timedelta(days=4),
                         estimated_hours=Decimal("40.00"),
                         confirmation="Confirmée",
                         active=True,
@@ -536,7 +537,7 @@ class RequestWorkQueueSqlServerConcurrencyTests(unittest.TestCase):
                         approved_entry_key=entry_key,
                         approval_reference_status=APPROVAL_REFERENCE_CAPTURED,
                         start_date=DAY,
-                        end_date=DAY.replace(day=DAY.day + 4),
+                        end_date=DAY + timedelta(days=4),
                         planned_hours=Decimal("40.00"),
                         status="Planifié",
                         planning_type="Flexible",
@@ -570,7 +571,7 @@ class RequestWorkQueueSqlServerConcurrencyTests(unittest.TestCase):
                             legacy_allocation_id=f"A778R-{marker}-{index}",
                             resource_requirement_id=requirement_id,
                             resource_id=resource_id,
-                            work_date=DAY.replace(day=DAY.day + index),
+                            work_date=DAY + timedelta(days=index),
                             hours=Decimal("8.00"),
                             source="AUTO",
                             locked=False,
@@ -642,9 +643,11 @@ class RequestWorkQueueSqlServerConcurrencyTests(unittest.TestCase):
                     return "success", str(result["reduction_id"])
 
             with ThreadPoolExecutor(max_workers=2) as executor:
+                first = executor.submit(reduce, f"reduce-a-{marker}")
+                second = executor.submit(reduce, f"reduce-b-{marker}")
                 outcomes = (
-                    executor.submit(reduce, f"reduce-a-{marker}").result(timeout=30),
-                    executor.submit(reduce, f"reduce-b-{marker}").result(timeout=30),
+                    first.result(timeout=30),
+                    second.result(timeout=30),
                 )
 
             self.assertEqual(
@@ -745,6 +748,11 @@ class RequestWorkQueueSqlServerConcurrencyTests(unittest.TestCase):
                     )
                 )
                 session.execute(delete(RequestLine).where(RequestLine.id == line_id))
+                session.execute(
+                    delete(WorkforceRequestHistory).where(
+                        WorkforceRequestHistory.workforce_request_id == request_id
+                    )
+                )
                 session.execute(
                     delete(WorkforceRequest).where(
                         WorkforceRequest.id == request_id
