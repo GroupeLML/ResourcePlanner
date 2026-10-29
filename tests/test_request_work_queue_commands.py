@@ -17,7 +17,12 @@ from app.infrastructure.sql.approval_cycle_models import (
     ApprovalRequirementApprover,
     RequestApprovalCycle,
 )
-from app.infrastructure.sql.approval_scope_models import ApprovalScope, ApprovalScopeApprover
+from app.infrastructure.sql.approval_scope_models import (
+    ApprovalScope,
+    ApprovalScopeApprover,
+    ResourceClassApprovalScopeMapping,
+    TaskApprovalScopeMapping,
+)
 from app.infrastructure.sql.approval_revision_models import (
     RequestApprovalReference,
     RequestApprovalRevision,
@@ -38,6 +43,7 @@ from app.infrastructure.sql.models import (
     Resource,
     ResourceRequirement,
     Shift,
+    TaskCatalogEntry,
     WorkforceRequest,
 )
 from app.infrastructure.sql.operational_choice_models import (
@@ -56,6 +62,7 @@ from app.infrastructure.sql.planning_version import (
     PlanningMutationState,
     SqlPlanningMutationVersionRepository,
 )
+from app.infrastructure.sql.resource_class_models import ResourceClassConfig
 from app.infrastructure.sql.request_work_queue_commands import (
     SqlRequestWorkQueueCommandAdapter,
 )
@@ -96,6 +103,9 @@ class RequestWorkQueueCommandTests(unittest.TestCase):
                             "identity": ENTRY_KEY,
                             "hours": "40.00",
                             "slot_count": 1,
+                            "line_kind": "WORKFORCE",
+                            "required_resource_class": "CLASS-A",
+                            "task_ref": "TASK-B",
                             "start_date": DAY.isoformat(),
                             "end_date": (DAY + timedelta(days=4)).isoformat(),
                         }
@@ -106,7 +116,25 @@ class RequestWorkQueueCommandTests(unittest.TestCase):
         )
         with transactional_session(self.factory) as session:
             session.add(Project(id="P1", number="P-1", name="Projet 778"))
-            session.add(ApprovalScope(id="SCOPE1", code="SCOPE1", label="Scope 778", active=True, version=1))
+            session.add_all([
+                ApprovalScope(id="SCOPE1", code="SCOPE1", label="Scope classe 778", active=True, version=1),
+                ApprovalScope(id="SCOPE2", code="SCOPE2", label="Scope tâche 778", active=True, version=1),
+                ResourceClassConfig(
+                    code="CLASS-A",
+                    label="Classe explicite A",
+                    average_hourly_cost_cad=Decimal("100.00"),
+                    active=True,
+                    version=1,
+                ),
+                TaskCatalogEntry(
+                    id="TASK-B",
+                    project_number="P-1",
+                    task_code="TASK-B",
+                    label="Tâche B",
+                    active=True,
+                    resource_class_code=None,
+                ),
+            ])
             session.add(Resource(id="R1", name="Alice", active=True, erp_active=True))
             session.add(
                 AppUser(
@@ -120,6 +148,16 @@ class RequestWorkQueueCommandTests(unittest.TestCase):
             )
             session.flush()
             session.add(ApprovalScopeApprover(approval_scope_id="SCOPE1", app_user_id="U1"))
+            session.add_all([
+                ResourceClassApprovalScopeMapping(
+                    resource_class_code="CLASS-A",
+                    approval_scope_id="SCOPE1",
+                ),
+                TaskApprovalScopeMapping(
+                    task_catalog_item_id="TASK-B",
+                    approval_scope_id="SCOPE2",
+                ),
+            ])
             session.add(
                 WorkforceRequest(
                     id="D1",
@@ -144,6 +182,8 @@ class RequestWorkQueueCommandTests(unittest.TestCase):
                     desired_start=DAY,
                     desired_end=DAY + timedelta(days=4),
                     estimated_hours=Decimal("40"),
+                    required_resource_class="CLASS-A",
+                    task_catalog_item_id="TASK-B",
                     active=True,
                 )
             )
@@ -610,6 +650,51 @@ class RequestWorkQueueCommandTests(unittest.TestCase):
                         session.get(PlanningMutationState, "GLOBAL").version,
                         1,
                     )
+
+    def test_explicit_class_scope_beats_task_scope_for_permanent_reduction(self) -> None:
+        with transactional_session(self.factory) as session:
+            session.add(
+                ApprovalScopeApprover(
+                    approval_scope_id="SCOPE2",
+                    app_user_id="U1",
+                )
+            )
+            membership = session.get(ApprovalScopeApprover, ("SCOPE1", "U1"))
+            self.assertIsNotNone(membership)
+            session.delete(membership)
+
+        with self.assertRaises(ApplicationAuthorizationError) as raised:
+            with transactional_session(self.factory) as session:
+                adapter, _planning = self._adapter(session)
+                adapter.permanently_reduce_shift(
+                    PermanentlyReduceShiftHoursCommand(
+                        allocation_id="A4",
+                        expected_planning_version=1,
+                        expected_request_version=1,
+                        expected_approval_revision_id="REV1",
+                        expected_operational_version=1,
+                        command_id="class-precedence-denied-778",
+                    )
+                )
+        self.assertEqual(raised.exception.code, "reduction_approval_authority_denied")
+        with transactional_session(self.factory) as session:
+            self.assertIsNotNone(session.get(Shift, "S4"))
+            self.assertEqual(session.query(RequestCompletionReduction).count(), 0)
+
+    def test_controlling_explicit_class_scope_allows_permanent_reduction(self) -> None:
+        with transactional_session(self.factory) as session:
+            adapter, _planning = self._adapter(session)
+            result = adapter.permanently_reduce_shift(
+                PermanentlyReduceShiftHoursCommand(
+                    allocation_id="A4",
+                    expected_planning_version=1,
+                    expected_request_version=1,
+                    expected_approval_revision_id="REV1",
+                    expected_operational_version=1,
+                    command_id="class-precedence-allowed-778",
+                )
+            )
+            self.assertEqual(result["effective_need_after"], 32.0)
 
     def test_revoked_current_approver_is_denied_even_if_historical_cycle_contains_actor(self) -> None:
         with transactional_session(self.factory) as session:
