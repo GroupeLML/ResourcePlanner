@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -127,29 +128,68 @@ class SqlRequestRequirementPlanningIntentRepository:
         self.session.flush()
         return row
 
+    def current_effective_need_by_requirement(
+        self,
+        fallback_hours_by_requirement: Mapping[str, object],
+    ) -> dict[str, Decimal]:
+        fallbacks = {
+            str(requirement_id): Decimal(str(hours)).quantize(Decimal("0.01"))
+            for requirement_id, hours in fallback_hours_by_requirement.items()
+        }
+        if not fallbacks:
+            return {}
+        intent_rows = self.session.execute(
+            select(
+                RequestRequirementPlanningIntent.id,
+                RequestRequirementPlanningIntent.current_resource_requirement_id,
+            ).where(
+                RequestRequirementPlanningIntent.current_resource_requirement_id.in_(
+                    tuple(fallbacks)
+                )
+            )
+        ).all()
+        intent_by_requirement = {
+            str(requirement_id): str(intent_id)
+            for intent_id, requirement_id in intent_rows
+            if requirement_id
+        }
+        if not intent_by_requirement:
+            return fallbacks
+        reduction_rows = self.session.execute(
+            select(
+                RequestCompletionReduction.planning_intent_id,
+                func.min(RequestCompletionReduction.effective_need_after),
+            )
+            .where(
+                RequestCompletionReduction.planning_intent_id.in_(
+                    tuple(intent_by_requirement.values())
+                ),
+                RequestCompletionReduction.reconciliation_state == "ACTIVE",
+            )
+            .group_by(RequestCompletionReduction.planning_intent_id)
+        ).all()
+        active_after_by_intent = {
+            str(intent_id): Decimal(str(hours)).quantize(Decimal("0.01"))
+            for intent_id, hours in reduction_rows
+            if hours is not None
+        }
+        return {
+            requirement_id: active_after_by_intent.get(
+                intent_by_requirement.get(requirement_id, ""),
+                fallback,
+            )
+            for requirement_id, fallback in fallbacks.items()
+        }
+
     def current_effective_need_for_requirement(
         self,
         requirement_id: str,
         *,
         fallback_hours: object,
     ) -> Decimal:
-        intent = self.session.scalar(
-            select(RequestRequirementPlanningIntent).where(
-                RequestRequirementPlanningIntent.current_resource_requirement_id
-                == str(requirement_id)
-            )
-        )
-        if intent is None:
-            return Decimal(str(fallback_hours)).quantize(Decimal("0.01"))
-        active_after = self.session.scalar(
-            select(func.min(RequestCompletionReduction.effective_need_after)).where(
-                RequestCompletionReduction.planning_intent_id == intent.id,
-                RequestCompletionReduction.reconciliation_state == "ACTIVE",
-            )
-        )
-        if active_after is None:
-            return Decimal(str(fallback_hours)).quantize(Decimal("0.01"))
-        return Decimal(str(active_after)).quantize(Decimal("0.01"))
+        return self.current_effective_need_by_requirement(
+            {str(requirement_id): fallback_hours}
+        )[str(requirement_id)]
 
     def active_reduction_total(self, planning_intent_id: str) -> Decimal:
         total = self.session.scalar(
