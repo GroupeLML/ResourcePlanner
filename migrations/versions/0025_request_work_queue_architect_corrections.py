@@ -211,7 +211,42 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise RuntimeError(
-        "0025_request_work_queue_architect_corrections is forward-only: "
-        "downgrading would destroy ADR-034 durable slot/reduction provenance."
+    context = op.get_context()
+    if not context.as_sql:
+        connection = op.get_bind()
+        protected_tables = (
+            "request_requirement_planning_intents",
+            "planning_work_queue_releases",
+            "request_completion_reductions",
+        )
+        populated = []
+        for table_name in protected_tables:
+            count = connection.execute(
+                sa.text(f"SELECT COUNT(*) FROM {table_name}")
+            ).scalar_one()
+            if int(count or 0) > 0:
+                populated.append(table_name)
+        if populated:
+            raise RuntimeError(
+                "0025_request_work_queue_architect_corrections refuses downgrade "
+                "while ADR-034 durable planning/reduction provenance exists in: "
+                + ", ".join(populated)
+            )
+
+    op.drop_index(
+        "uq_request_requirement_planning_intent_current_requirement",
+        table_name="request_requirement_planning_intents",
     )
+    with op.batch_alter_table("request_requirement_planning_intents") as batch:
+        batch.drop_constraint(
+            "uq_request_requirement_planning_intent_logical_slot",
+            type_="unique",
+        )
+
+    with op.batch_alter_table("request_completion_reductions") as batch:
+        batch.drop_constraint(
+            "fk_request_completion_reductions_reconciled_revision",
+            type_="foreignkey",
+        )
+        batch.drop_column("reconciled_approval_revision_id")
+        batch.drop_column("authorization_fingerprint")
