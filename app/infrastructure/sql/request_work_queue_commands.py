@@ -7,6 +7,10 @@ from typing import Any, Mapping, Sequence
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
+from ...application.approval_scopes import (
+    ApprovalRequestLineRecord,
+    ApprovalScopeService,
+)
 from ...application.errors import (
     ApplicationAuthorizationError,
     ApplicationConflictError,
@@ -29,12 +33,7 @@ from ...application.user_view_context import UserViewContextService
 from ...domain.effective_need import allocate_entry_budget
 from ...domain.request_reduction import reduction_subject_fingerprint
 from .approval_cycle_models import ApprovalRequirement, RequestApprovalCycle
-from .approval_scope_models import (
-    ApprovalScope,
-    ApprovalScopeApprover,
-    ResourceClassApprovalScopeMapping,
-    TaskApprovalScopeMapping,
-)
+from .approval_scope_repository import SqlApprovalScopeRepository
 from .approval_revision_models import (
     APPROVAL_REFERENCE_CAPTURED,
     RequestApprovalReference,
@@ -45,7 +44,7 @@ from .segment_asset_guard import assert_segment_asset_mutation_compatible
 from .base import new_id, utc_now
 from .command_adapters import SqlPlanningCommandAdapter
 from .identity_models import AppUser
-from .models import ORIGIN_REQUEST, ResourceRequirement, Shift, WorkforceRequest, WorkforceRequestHistory
+from .models import ORIGIN_REQUEST, RequestLine, ResourceRequirement, Shift, WorkforceRequest, WorkforceRequestHistory
 from .operational_choice_models import (
     PLANNING_INTENT_PRESERVE_EXISTING,
     PLANNING_INTENT_QUEUED,
@@ -72,6 +71,24 @@ def _text(value: object) -> str:
 
 def _decimal(value: object) -> Decimal:
     return Decimal(str(value)).quantize(CENT)
+
+
+class _CapturedApprovalScopeRepository:
+    """Delegate canonical routing lookups while overriding only the approved line subject."""
+
+    def __init__(
+        self,
+        session: Session,
+        line: ApprovalRequestLineRecord,
+    ) -> None:
+        self._delegate = SqlApprovalScopeRepository(session)
+        self._line = line
+
+    def get_request_line(self, line_id: str) -> ApprovalRequestLineRecord | None:
+        return self._line if _text(line_id) == self._line.id else None
+
+    def __getattr__(self, name: str):
+        return getattr(self._delegate, name)
 
 
 class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
@@ -417,95 +434,56 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
                 "L'autorité d'approbation de cette entrée legacy ne peut pas être établie sans ambiguïté.",
                 code="reduction_approval_authority_unknown",
             )
-        cycles = self._session.scalars(
-            select(RequestApprovalCycle).where(
-                RequestApprovalCycle.workforce_request_id == request.id,
-                RequestApprovalCycle.approved_revision_id == revision.id,
-            )
-        ).all()
-        if len(cycles) != 1:
+        source_line = self._session.get(RequestLine, intent.source_request_line_id)
+        if source_line is None:
             raise ApplicationAuthorizationError(
-                "Le cycle qui a produit l'autorisation active est absent ou ambigu.",
-                code="reduction_approval_authority_unknown",
-                context={"approval_cycle_count": len(cycles)},
-            )
-        cycle = cycles[0]
-        relevant = tuple(
-            self._session.scalars(
-                select(ApprovalRequirement).where(
-                    ApprovalRequirement.approval_cycle_id == cycle.id,
-                    ApprovalRequirement.request_line_id == intent.source_request_line_id,
-                )
-            ).all()
-        )
-        if not relevant:
-            raise ApplicationAuthorizationError(
-                "Aucune exigence d'approbation ne correspond à la source autorisée.",
+                "La ligne source de l'autorisation approuvée est introuvable.",
                 code="reduction_approval_authority_unknown",
                 context={"request_line_id": intent.source_request_line_id},
             )
 
-        # The completed-cycle approver list is historical evidence only. ADR-034
-        # requires current eligibility in the ApprovalScope that authorized the
-        # active approved subject.
-        historical_scope_ids = {
-            _text(requirement.approval_scope_id)
-            for requirement in relevant
-            if _text(requirement.approval_scope_id)
-        }
         approved_entry = self._entry(revision, intent.approved_entry_key)
-        task_ref = _text(approved_entry.get("task_ref"))
-        resource_class = _text(approved_entry.get("required_resource_class"))
-        task_scope_ids = (
-            set(
-                self._session.scalars(
-                    select(TaskApprovalScopeMapping.approval_scope_id).where(
-                        TaskApprovalScopeMapping.task_catalog_item_id == task_ref
-                    )
-                ).all()
-            )
-            if task_ref
-            else set()
+        captured_line = ApprovalRequestLineRecord(
+            id=source_line.id,
+            active=True,
+            task_catalog_item_id=_text(approved_entry.get("task_ref")) or None,
+            kind=_text(approved_entry.get("line_kind")) or "WORKFORCE",
+            position=int(source_line.position or 0),
+            erp_task_code=_text(source_line.erp_task_code) or None,
+            erp_task_label=_text(source_line.erp_task_label) or None,
+            required_resource_class=(
+                _text(approved_entry.get("required_resource_class")) or None
+            ),
+            proposed_resource_id=(
+                _text(approved_entry.get("proposed_resource_id")) or None
+            ),
         )
-        class_scope_ids = (
-            set(
-                self._session.scalars(
-                    select(ResourceClassApprovalScopeMapping.approval_scope_id).where(
-                        ResourceClassApprovalScopeMapping.resource_class_code == resource_class
-                    )
-                ).all()
-            )
-            if resource_class
-            else set()
-        )
-        if task_ref:
-            current_scope_ids = task_scope_ids
-        elif resource_class:
-            current_scope_ids = class_scope_ids
-        else:
-            current_scope_ids = historical_scope_ids
-        if len(current_scope_ids) != 1:
+        resolution = ApprovalScopeService(
+            _CapturedApprovalScopeRepository(self._session, captured_line)
+        ).resolve_request_line(captured_line.id)
+
+        if resolution.resolution.blocked or not resolution.resolution.approval_scope_id:
             raise ApplicationAuthorizationError(
                 "Le périmètre d'approbation courant de la source est absent ou ambigu.",
                 code="reduction_approval_authority_unknown",
                 context={
                     "request_line_id": intent.source_request_line_id,
-                    "approval_scope_ids": sorted(current_scope_ids),
+                    "diagnostics": list(resolution.resolution.diagnostics),
+                    "routing_sources": list(resolution.routing_sources),
                 },
             )
-        scope_id = next(iter(current_scope_ids))
-        scope = self._session.get(ApprovalScope, scope_id)
-        current_membership = self._session.get(
-            ApprovalScopeApprover,
-            (scope_id, actor.id),
-        )
-        if scope is None or not bool(scope.active) or current_membership is None:
+        eligible_ids = {
+            row.user_id for row in resolution.resolution.eligible_approvers
+        }
+        if actor.id not in eligible_ids:
             raise ApplicationAuthorizationError(
                 "L'utilisateur n'est plus admissible dans le périmètre d'approbation courant.",
                 code="reduction_approval_authority_denied",
                 context={
                     "request_line_id": intent.source_request_line_id,
-                    "approval_scope_id": scope_id,
+                    "approval_scope_id": resolution.resolution.approval_scope_id,
+                    "effective_resource_class": resolution.effective_resource_class,
+                    "routing_sources": list(resolution.routing_sources),
                 },
             )
 
