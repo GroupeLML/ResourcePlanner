@@ -12,6 +12,7 @@ from app.infrastructure.sql import (
     Base,
     Project,
     RequestLine,
+    RequestRequirementPlanningIntent,
     Resource,
     ResourceAvailabilityRule,
     ResourceRequirement,
@@ -247,6 +248,49 @@ class SameResourcePeriodPlanningTests(unittest.TestCase):
             self.assertEqual(summary["same_resource_groups"], 1)
             self.assertEqual(root.assigned_resource_id, "R1")
             self.assertEqual(child.assigned_resource_id, "R1")
+
+    def test_zero_hour_terminal_same_root_remains_in_logical_topology(self) -> None:
+        with transactional_session(self.factory) as session:
+            root, child = self._same_as_plan(session, root_target="R1")
+            session.add_all(
+                [
+                    RequestRequirementPlanningIntent(
+                        id="INT-SAME-ROOT",
+                        slot_identity_key='["D-SAME","[\"PERIOD\",\"L-SAME\",\"A\"]",0]',
+                        workforce_request_id="D-SAME",
+                        source_request_line_id="L-SAME",
+                        approved_entry_key='["PERIOD","L-SAME","A"]',
+                        source_period_id="PER-A",
+                        slot_index=0,
+                        current_resource_requirement_id=root.id,
+                        intent_mode="PRESERVE_EXISTING",
+                        target_mode="EXPLICIT_RESOURCE",
+                        target_resource_id="R1",
+                    ),
+                    RequestRequirementPlanningIntent(
+                        id="INT-SAME-CHILD",
+                        slot_identity_key='["D-SAME","[\"PERIOD\",\"L-SAME\",\"B\"]",0]',
+                        workforce_request_id="D-SAME",
+                        source_request_line_id="L-SAME",
+                        approved_entry_key='["PERIOD","L-SAME","B"]',
+                        source_period_id="PER-B",
+                        slot_index=0,
+                        current_resource_requirement_id=child.id,
+                        intent_mode="AUTO",
+                        target_mode="INHERIT",
+                    ),
+                ]
+            )
+            root.planned_hours = Decimal("0.00")
+            root.status = "Terminé"
+            session.flush()
+
+            summary = SqlPlanningCommandAdapter(session).rebuild()
+
+            self.assertEqual(summary["same_resource_groups"], 1)
+            self.assertEqual(child.assigned_resource_id, "R1")
+            self.assertEqual(root.status, "Terminé")
+            self.assertEqual(root.planned_hours, Decimal("0.00"))
 
     def test_unassigned_component_remains_unresolved_without_inventing_a_resource(self) -> None:
         with transactional_session(self.factory) as session:
