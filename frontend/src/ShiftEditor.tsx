@@ -636,7 +636,7 @@ export default function ShiftEditor({
     return (
       <SegmentEditor
         open
-        segmentId={shift.requirement_id || workQueueAction?.preview.segment_id ?? shift.segment_id}
+        segmentId={shift.requirement_id || shift.segment_id}
         demand={null}
         resources={resources}
         onClose={() => setSegmentOpen(false)}
