@@ -21,7 +21,7 @@ MIGRATIONS = ROOT / "migrations"
 VERSIONS = MIGRATIONS / "versions"
 BASELINE_FILE = VERSIONS / "0001_v2_production_baseline.py"
 BASELINE_REVISION = "v2_production_baseline"
-HEAD_REVISION = "0024_request_work_queue_command_identity"
+HEAD_REVISION = "0025_request_work_queue_architect_corrections"
 
 
 def alembic_config(database_path: Path) -> Config:
@@ -93,6 +93,7 @@ class SqlMigrationTests(unittest.TestCase):
                 "0022_continuous_vehicle_resource_period.py",
                 "0023_request_work_queue_intent.py",
                 "0024_request_work_queue_command_identity.py",
+                "0025_request_work_queue_architect_corrections.py",
             ],
         )
 
@@ -111,6 +112,7 @@ class SqlMigrationTests(unittest.TestCase):
             [revision.revision for revision in script.walk_revisions()],
             [
                 HEAD_REVISION,
+                "0024_request_work_queue_command_identity",
                 "0023_request_work_queue_intent",
                 "0022_continuous_vehicle_resource_period",
                 "0021_quick_shift_planning_exclusions",
