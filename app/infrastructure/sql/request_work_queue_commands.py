@@ -27,6 +27,7 @@ from ...application.security import (
 )
 from ...application.user_view_context import UserViewContextService
 from ...domain.effective_need import allocate_entry_budget
+from ...domain.request_reduction import reduction_subject_fingerprint
 from .approval_cycle_models import ApprovalRequirement, RequestApprovalCycle
 from .approval_scope_models import ApprovalScope, ApprovalScopeApprover
 from .approval_revision_models import (
@@ -713,6 +714,13 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
         )
         intent = self._intent(requirement)
         self._assert_reduction_approval_authority(actor, request, intent, revision)
+        revision_payload = json.loads(revision.payload_text)
+        reduction_fingerprint = reduction_subject_fingerprint(
+            request_context=revision_payload.get("request")
+            if isinstance(revision_payload.get("request"), Mapping)
+            else {},
+            authorization_entry=self._entry(revision, intent.approved_entry_key),
+        )
         effective_need = self._current_need(intent, revision, state)
         self._assert_not_overcovered(requirement, effective_need)
 
@@ -751,6 +759,8 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
             actor_user_id=actor.id,
             command_id=command.command_id,
             reconciliation_state="ACTIVE",
+            authorization_fingerprint=reduction_fingerprint,
+            reconciled_approval_revision_id=revision.id,
         )
         self._session.add(reduction)
         survivor_ids = tuple(
