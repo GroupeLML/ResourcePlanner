@@ -31,6 +31,7 @@ from ...application.security import (
 )
 from ...application.user_view_context import UserViewContextService
 from ...domain.effective_need import allocate_entry_budget
+from ...domain.planning_engine import MISSING_ALLOCATION_TYPE
 from ...domain.request_reduction import reduction_subject_fingerprint
 from .approval_cycle_models import ApprovalRequirement, RequestApprovalCycle
 from .approval_scope_repository import SqlApprovalScopeRepository
@@ -399,11 +400,22 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
         excluding_shift_id: str | None = None,
     ) -> Decimal:
         statement = select(func.coalesce(func.sum(Shift.hours), 0)).where(
-            Shift.resource_requirement_id == requirement_id
+            Shift.resource_requirement_id == requirement_id,
+            (Shift.allocation_type.is_(None))
+            | (Shift.allocation_type != MISSING_ALLOCATION_TYPE),
         )
         if excluding_shift_id:
             statement = statement.where(Shift.id != excluding_shift_id)
         return _decimal(self._session.scalar(statement) or 0)
+
+    @staticmethod
+    def _assert_counted_shift(shift: Shift) -> None:
+        if _text(shift.allocation_type) == MISSING_ALLOCATION_TYPE:
+            raise ApplicationConflictError(
+                "Un quart diagnostique/non comptabilisé ne peut pas être la cible d'une commande ADR-034.",
+                code="request_work_queue_shift_not_counted",
+                context={"shift_id": shift.id, "allocation_type": shift.allocation_type},
+            )
 
     def _assert_not_overcovered(
         self,
@@ -602,6 +614,7 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
 
         return_shift_allowed, return_shift_block = capability(
             lambda: (
+                self._assert_counted_shift(shift),
                 self._assert_return_lifecycle(requirement),
                 self._assert_not_overcovered(requirement, effective_need),
             )
@@ -611,6 +624,7 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
         )
 
         def check_reduction() -> None:
+            self._assert_counted_shift(shift)
             self._assert_reduction_lifecycle(requirement)
             self._actor(reduction=True)
             self._assert_reduction_approval_authority(
@@ -668,6 +682,7 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
         actor = self._actor()
         shift = self._shift(command.allocation_id)
         requirement = self._requirement(shift.resource_requirement_id)
+        self._assert_counted_shift(shift)
         self._assert_return_lifecycle(requirement)
         self._assert_planning_scope(actor, requirement)
         request = self._request(requirement)
@@ -825,6 +840,7 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
         actor = self._actor(reduction=True)
         shift = self._shift(command.allocation_id)
         requirement = self._requirement(shift.resource_requirement_id)
+        self._assert_counted_shift(shift)
         self._assert_reduction_lifecycle(requirement)
         self._assert_planning_scope(actor, requirement)
         request = self._request(requirement)
