@@ -1154,6 +1154,21 @@ class SqlMigrationTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_0025_offline_downgrade_refuses_destructive_sql_generation(self) -> None:
+        output = StringIO()
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "refuses offline downgrade generation",
+        ):
+            command.downgrade(
+                offline_config("mssql+pyodbc://", output),
+                "0024_request_work_queue_command_identity",
+                sql=True,
+            )
+        generated = output.getvalue().upper()
+        self.assertNotIn("DROP COLUMN AUTHORIZATION_FINGERPRINT", generated)
+        self.assertNotIn("DROP COLUMN RECONCILED_APPROVAL_REVISION_ID", generated)
+
     def test_head_compiles_offline_for_mssql(self) -> None:
         output = StringIO()
         command.upgrade(
