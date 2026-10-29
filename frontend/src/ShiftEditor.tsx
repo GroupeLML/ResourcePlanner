@@ -6,8 +6,12 @@ import { useAuth } from "./AuthContext";
 import {
   ApiError,
   ResourceReadModel,
+  DemandDetailReadModel,
   ShiftReadModel,
   getDemandDetail,
+  permanentlyReduceShiftHours,
+  returnSegmentToWorkQueue,
+  returnShiftToWorkQueue,
 } from "./api";
 import {
   OverallocationApiError,
@@ -43,6 +47,19 @@ type AtomicAction = {
   retryPolicy: OverallocationPolicy | null;
   ambiguousRetry: boolean;
 };
+type WorkQueueActionMode = "return_shift" | "return_segment" | "permanent_reduction";
+type WorkQueueAction = {
+  mode: WorkQueueActionMode;
+  detail: DemandDetailReadModel;
+  expectedPlanningVersion: number;
+  expectedApprovalRevisionId: string;
+  expectedOperationalVersion: number;
+  expectedRequestVersion: number;
+  sourceRequestLineId: string | null;
+  idempotencyKey: string;
+  ambiguousRetry: boolean;
+};
+
 type OverallocationShift = ShiftReadModel & {
   segment_planned_hours?: number;
   segment_locked_hours?: number;
@@ -166,6 +183,8 @@ export default function ShiftEditor({
   const [windowOverrideConfirmed, setWindowOverrideConfirmed] = useState(false);
   const [windowOverrideKey, setWindowOverrideKey] = useState<string | null>(null);
   const deleteIdempotencyKey = useRef<string | null>(null);
+  const [workQueueAction, setWorkQueueAction] = useState<WorkQueueAction | null>(null);
+  const [workQueuePreparing, setWorkQueuePreparing] = useState(false);
   const overallocationShift = shift as OverallocationShift;
   const currentExcess = Number(overallocationShift.segment_overallocated_hours ?? 0);
 
@@ -477,6 +496,107 @@ export default function ShiftEditor({
     }
   }
 
+  async function prepareWorkQueueAction(mode: WorkQueueActionMode) {
+    if (saving || workQueuePreparing || !canManagePlanning || !shift.demand_number) return;
+    setWorkQueuePreparing(true);
+    setError(null);
+    try {
+      const detail = await getDemandDetail(shift.demand_number);
+      const activeRevisionId = detail.approval_state?.active_revision_id ?? null;
+      const operationalVersion = detail.approval_state?.operational_version ?? null;
+      const expectedRequestVersion = detail.policy.expected_request_version;
+      if (!activeRevisionId || operationalVersion == null) {
+        onStale();
+        return;
+      }
+      const materialized = detail.materialized_plan.requirements.find(
+        (row) =>
+          row.requirement_id === shift.requirement_id
+          || row.segment_id === shift.segment_id,
+      );
+      setWorkQueueAction({
+        mode,
+        detail,
+        expectedPlanningVersion: planningVersion,
+        expectedApprovalRevisionId: activeRevisionId,
+        expectedOperationalVersion: operationalVersion,
+        expectedRequestVersion,
+        sourceRequestLineId: materialized?.source_request_line_id ?? null,
+        idempotencyKey: newAtomicIdempotencyKey(),
+        ambiguousRetry: false,
+      });
+    } catch (reason: unknown) {
+      if (reason instanceof ApiError) {
+        setError(`${reason.message}${reason.code ? ` (${reason.code})` : ""}`);
+      } else {
+        setError(reason instanceof Error ? reason.message : "Impossible de préparer l’action demandée.");
+      }
+    } finally {
+      setWorkQueuePreparing(false);
+    }
+  }
+
+  async function executeWorkQueueAction() {
+    if (!workQueueAction || saving || !shift.demand_number) return;
+    setSaving(true);
+    setError(null);
+    setWorkQueueAction((current) => current ? { ...current, ambiguousRetry: false } : current);
+    try {
+      const common = {
+        expected_planning_version: workQueueAction.expectedPlanningVersion,
+        expected_approval_revision_id: workQueueAction.expectedApprovalRevisionId,
+        expected_operational_version: workQueueAction.expectedOperationalVersion,
+      };
+      if (workQueueAction.mode === "return_shift") {
+        await returnShiftToWorkQueue(
+          shift.allocation_id,
+          common,
+          workQueueAction.idempotencyKey,
+        );
+      } else if (workQueueAction.mode === "return_segment") {
+        await returnSegmentToWorkQueue(
+          shift.requirement_id || shift.segment_id,
+          common,
+          workQueueAction.idempotencyKey,
+        );
+      } else {
+        await permanentlyReduceShiftHours(
+          shift.allocation_id,
+          {
+            ...common,
+            expected_request_version: workQueueAction.expectedRequestVersion,
+          },
+          workQueueAction.idempotencyKey,
+        );
+      }
+      setWorkQueueAction(null);
+      onSaved();
+    } catch (reason: unknown) {
+      if (
+        reason instanceof ApiError
+        && (
+          reason.code === "planning_version_conflict"
+          || reason.code === "operational_choice_version_conflict"
+          || reason.code === "planning_authorization_revision_conflict"
+          || reason.code === "planning_authorization_unknown"
+          || reason.code === "demand_version_conflict"
+        )
+      ) {
+        setWorkQueueAction(null);
+        onStale();
+      } else if (reason instanceof TypeError) {
+        setWorkQueueAction((current) => current ? { ...current, ambiguousRetry: true } : current);
+        setError("La réponse réseau est incertaine. Réessaie la même commande pour réutiliser exactement la même clé idempotente.");
+      } else if (reason instanceof ApiError) {
+        setError(`${reason.message}${reason.code ? ` (${reason.code})` : ""}`);
+      } else {
+        setError(reason instanceof Error ? reason.message : "Impossible d’exécuter l’action demandée.");
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function releaseManual() {
     if (saving || !shift.locked) return;
     setSaving(true);
@@ -662,6 +782,77 @@ export default function ShiftEditor({
                 </button>
               </div>
               <small>Cette commande déplace le quart atomiquement. Les autres champs de l’éditeur pourront être ajustés séparément après actualisation.</small>
+            </div>
+          )}
+
+          {workQueueAction && (
+            <div className="atomic-action-section" data-testid="request-work-queue-confirmation">
+              <div className="atomic-action-heading">
+                <div>
+                  <strong>
+                    {workQueueAction.mode === "return_shift"
+                      ? "Retourner ce quart à la File de Travail?"
+                      : workQueueAction.mode === "return_segment"
+                        ? "Retourner le segment à la File de Travail?"
+                        : "Supprimer définitivement ce quart?"}
+                  </strong>
+                  <span>
+                    {workQueueAction.mode === "return_shift"
+                      ? `Le quart de ${hoursLabel(shift.hours)} h sera retiré. Le segment ${shift.segment_id} conservera son besoin approuvé et les heures redeviendront à planifier.`
+                      : workQueueAction.mode === "return_segment"
+                        ? `Tous les quarts opérationnels du segment ${shift.segment_id} seront retirés et le besoin complet reviendra dans la File de Travail.`
+                        : `Vous êtes sur le point de supprimer définitivement ce quart de ${hoursLabel(shift.hours)} h.`}
+                  </span>
+                </div>
+              </div>
+              {workQueueAction.mode === "permanent_reduction" && (
+                <div className="confirmation-help">
+                  <span>Ces {hoursLabel(shift.hours)} h seront également retirées :</span>
+                  <strong>• du segment {shift.segment_id};</strong>
+                  <strong>
+                    • de la demande {shift.demand_number}
+                    {workQueueAction.sourceRequestLineId
+                      ? ` / ligne ${workQueueAction.sourceRequestLineId}`
+                      : " / ligne concernée"}.
+                  </strong>
+                  <span>Elles ne retourneront pas dans la File de Travail et ne seront plus planifiées.</span>
+                  <strong>Voulez-vous vraiment continuer?</strong>
+                </div>
+              )}
+              {workQueueAction.ambiguousRetry && (
+                <div className="atomic-retry-note" role="status">
+                  Le résultat réseau est incertain. Réessayer conservera la même clé idempotente et les mêmes versions capturées.
+                </div>
+              )}
+              <div className="dialog-actions">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={saving}
+                  onClick={() => {
+                    setWorkQueueAction(null);
+                    setError(null);
+                  }}
+                >
+                  Annuler
+                </button>
+                <button
+                  type="button"
+                  className={workQueueAction.mode === "permanent_reduction" ? "danger-button" : "primary-button"}
+                  disabled={saving}
+                  onClick={() => void executeWorkQueueAction()}
+                >
+                  {saving
+                    ? "Traitement…"
+                    : workQueueAction.ambiguousRetry
+                      ? "Réessayer la même commande"
+                      : workQueueAction.mode === "return_shift"
+                        ? "Retourner le quart"
+                        : workQueueAction.mode === "return_segment"
+                          ? "Retourner le segment"
+                          : "Supprimer définitivement"}
+                </button>
+              </div>
             </div>
           )}
 
@@ -981,8 +1172,46 @@ export default function ShiftEditor({
 
           <PlanningHistoryPanel entityType="SHIFT" reference={shift.allocation_id} />
 
+          {shift.demand_number && (
+            <section className="atomic-action-section" data-testid="request-work-queue-actions">
+              <div className="atomic-action-heading">
+                <div>
+                  <strong>Actions sur le besoin approuvé</strong>
+                  <span>Ces actions sont appliquées atomiquement par le backend selon ADR-034.</span>
+                </div>
+              </div>
+              <div className="atomic-action-buttons">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={saving || workQueuePreparing}
+                  onClick={() => void prepareWorkQueueAction("return_shift")}
+                >
+                  Retourner ce quart à la File de Travail
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={saving || workQueuePreparing}
+                  onClick={() => void prepareWorkQueueAction("return_segment")}
+                >
+                  Retourner le segment à la File de Travail
+                </button>
+                <button
+                  type="button"
+                  className="danger-button"
+                  disabled={saving || workQueuePreparing}
+                  onClick={() => void prepareWorkQueueAction("permanent_reduction")}
+                >
+                  Supprimer définitivement ce quart
+                </button>
+              </div>
+              {workQueuePreparing && <small>Chargement des versions et de l’autorisation active…</small>}
+            </section>
+          )}
+
           <div className="dialog-actions">
-            {shift.locked && (
+            {!shift.demand_number && shift.locked && (
               <>
                 <button type="button" className="secondary-button" onClick={() => void releaseManual()} disabled={saving}>
                   Revenir à l’automatique
