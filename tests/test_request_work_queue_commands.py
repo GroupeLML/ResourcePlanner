@@ -118,6 +118,7 @@ class RequestWorkQueueCommandTests(unittest.TestCase):
             },
             separators=(",", ":"),
         )
+        self.approved_payload = approved_payload
         with transactional_session(self.factory) as session:
             session.add(Project(id="P1", number="P-1", name="Projet 778"))
             session.add_all([
@@ -140,18 +141,33 @@ class RequestWorkQueueCommandTests(unittest.TestCase):
                 ),
             ])
             session.add(Resource(id="R1", name="Alice", active=True, erp_active=True))
-            session.add(
-                AppUser(
-                    id="U1",
-                    issuer="test",
-                    subject="u1",
-                    display_name="Planificateur approbateur",
-                    roles_json='["ADMIN"]',
-                    active=True,
-                )
+            session.add_all(
+                [
+                    AppUser(
+                        id="U1",
+                        issuer="test",
+                        subject="u1",
+                        display_name="Planificateur approbateur",
+                        roles_json='["ADMIN"]',
+                        active=True,
+                    ),
+                    AppUser(
+                        id="U2",
+                        issuer="test",
+                        subject="u2",
+                        display_name="Autre approbateur actif",
+                        roles_json='["ADMIN"]',
+                        active=True,
+                    ),
+                ]
             )
             session.flush()
-            session.add(ApprovalScopeApprover(approval_scope_id="SCOPE1", app_user_id="U1"))
+            session.add_all(
+                [
+                    ApprovalScopeApprover(approval_scope_id="SCOPE1", app_user_id="U1"),
+                    ApprovalScopeApprover(approval_scope_id="SCOPE1", app_user_id="U2"),
+                ]
+            )
             session.add_all([
                 ResourceClassApprovalScopeMapping(
                     resource_class_code="CLASS-A",
@@ -427,22 +443,7 @@ class RequestWorkQueueCommandTests(unittest.TestCase):
             self.assertEqual(reduction.effective_need_after, Decimal("32"))
             self.assertEqual(
                 session.get(RequestApprovalRevision, "REV1").payload_text,
-                json.dumps(
-                    {
-                        "authorization": {
-                            "entries": [
-                                {
-                                    "identity": ENTRY_KEY,
-                                    "hours": "40.00",
-                                    "slot_count": 1,
-                                    "start_date": DAY.isoformat(),
-                                    "end_date": (DAY + timedelta(days=4)).isoformat(),
-                                }
-                            ]
-                        }
-                    },
-                    separators=(",", ":"),
-                ),
+                self.approved_payload,
             )
             self.assertEqual(set(planning.calls[-1]), {"S1", "S2", "S3", "S5"})
             self.assertEqual(result["request_version"], 2)
@@ -558,6 +559,9 @@ class RequestWorkQueueCommandTests(unittest.TestCase):
                                 "identity": ENTRY_KEY,
                                 "hours": "8.00",
                                 "slot_count": 1,
+                                "line_kind": "WORKFORCE",
+                                "required_resource_class": "CLASS-A",
+                                "task_ref": "TASK-B",
                                 "start_date": DAY.isoformat(),
                                 "end_date": DAY.isoformat(),
                             }
