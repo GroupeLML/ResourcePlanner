@@ -26,6 +26,7 @@ from app.infrastructure.sql import (
     create_sql_engine,
 )
 from app.infrastructure.sql.request_plan_preparation import SqlRequestPlanPreparer
+from app.domain.planning_engine import MISSING_ALLOCATION_TYPE
 from app.infrastructure.sql.demand_period_repository import SqlDemandPeriodRepository
 from app.infrastructure.sql.approval_revision_models import RequestApprovalReference, RequestApprovalRevision
 from app.infrastructure.sql.approval_scope_models import ApprovalScopeApprover
@@ -818,7 +819,24 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                             Shift.resource_requirement_id == other.id
                         )
                     ).all()
-                    self.assertEqual(competing_shifts, [])
+                    self.assertTrue(competing_shifts)
+                    self.assertTrue(
+                        all(
+                            row.allocation_type == MISSING_ALLOCATION_TYPE
+                            for row in competing_shifts
+                        )
+                    )
+                    self.assertEqual(
+                        sum(
+                            (
+                                row.hours
+                                for row in competing_shifts
+                                if row.allocation_type != MISSING_ALLOCATION_TYPE
+                            ),
+                            Decimal("0"),
+                        ),
+                        Decimal("0"),
+                    )
                     other_after = SqlPlannerQueryRepositoryWithLoadProfiles(
                         session
                     ).get_segment(other.id)
