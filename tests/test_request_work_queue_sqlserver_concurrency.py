@@ -11,11 +11,16 @@ import unittest
 from sqlalchemy import delete, select
 
 from app.application.errors import ApplicationConflictError
-from app.application.request_work_queue import ReturnShiftToWorkQueueCommand
+from app.application.request_work_queue import (
+    PermanentlyReduceShiftHoursCommand,
+    ReturnShiftToWorkQueueCommand,
+)
 from app.application.security import ROLE_ADMIN, permissions_for_roles
 from app.infrastructure.sql import (
     PlanningChangeHistory,
     PlanningWorkQueueRelease,
+    RequestCompletionReduction,
+    SqlPeriodAwareApprovedDemandSyncAdapter,
     Project,
     RequestOperationalState,
     RequestRequirementPlanningIntent,
@@ -27,6 +32,12 @@ from app.infrastructure.sql import (
     create_session_factory,
     create_sql_engine,
 )
+from app.infrastructure.sql.approval_cycle_models import (
+    ApprovalRequirement,
+    ApprovalRequirementApprover,
+    RequestApprovalCycle,
+)
+from app.infrastructure.sql.approval_scope_models import ApprovalScope, ApprovalScopeApprover
 from app.infrastructure.sql.approval_revision_models import (
     APPROVAL_REFERENCE_CAPTURED,
     RequestApprovalReference,
@@ -356,6 +367,401 @@ class RequestWorkQueueSqlServerConcurrencyTests(unittest.TestCase):
                     delete(Project).where(Project.id == project_id)
                 )
             engine.dispose()
+
+
+    def test_permanent_reduction_race_creates_one_32h_reduction_and_resync_stays_deterministic(self) -> None:
+        marker = uuid4().hex[:10]
+        project_id = f"P778R-{marker}"
+        request_id = f"D778R-{marker}"
+        request_number = f"DMO-778R-{marker}"
+        line_id = f"L778R-{marker}"
+        revision_id = f"REV778R-{marker}"
+        requirement_id = f"REQ778R-{marker}"
+        segment_id = f"SEG778R-{marker}"
+        resource_id = f"R778R-{marker}"
+        actor_id = f"USR778R-{marker}"
+        intent_id = f"INT778R-{marker}"
+        scope_id = f"SCOPE778R-{marker}"
+        cycle_id = f"CYCLE778R-{marker}"
+        approval_requirement_id = f"AR778R-{marker}"
+        entry_key = json.dumps(["LINE", line_id, ""], separators=(",", ":"))
+        payload = json.dumps(
+            {
+                "format_version": 1,
+                "request": {
+                    "request_id": request_id,
+                    "request_version": 1,
+                    "project_id": project_id,
+                    "priority": None,
+                    "site_client": None,
+                    "location": None,
+                    "line_mode": True,
+                },
+                "authorization": {
+                    "format_version": 1,
+                    "authorization_fingerprint": marker.ljust(64, "8"),
+                    "entries": [
+                        {
+                            "identity": entry_key,
+                            "project_id": project_id,
+                            "site_id": None,
+                            "location": None,
+                            "slot_count": 1,
+                            "line_kind": "WORKFORCE",
+                            "required_resource_class": None,
+                            "competency_ids": [],
+                            "task_ref": None,
+                            "work_package_ref": None,
+                            "start_date": DAY.isoformat(),
+                            "end_date": (DAY.replace(day=DAY.day + 4)).isoformat(),
+                            "hours": "40.00",
+                            "kind": "BASE",
+                            "group": None,
+                        }
+                    ],
+                },
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+        engine = create_sql_engine(DATABASE_URL)
+        factory = create_session_factory(engine)
+        shift_ids = tuple(f"S778R-{marker}-{index}" for index in range(5))
+        try:
+            with factory.begin() as session:
+                session.add_all(
+                    [
+                        Project(id=project_id, number=f"P-R-{marker}", name="778 reduction SQL"),
+                        Resource(
+                            id=resource_id,
+                            name=f"Ressource 778 réduction {marker}",
+                            active=True,
+                            erp_active=True,
+                        ),
+                        AppUser(
+                            id=actor_id,
+                            issuer="urn:resourceplanner:test",
+                            subject=actor_id,
+                            display_name=f"Admin 778 réduction {marker}",
+                            roles_json=json.dumps([ROLE_ADMIN]),
+                            active=True,
+                        ),
+                        ApprovalScope(
+                            id=scope_id,
+                            code=f"SCOPE_{marker}".upper(),
+                            label="Scope 778 réduction",
+                            active=True,
+                            version=1,
+                        ),
+                    ]
+                )
+                session.flush()
+                session.add(
+                    ApprovalScopeApprover(
+                        approval_scope_id=scope_id,
+                        app_user_id=actor_id,
+                    )
+                )
+                session.add(
+                    WorkforceRequest(
+                        id=request_id,
+                        legacy_demand_number=request_number,
+                        project_id=project_id,
+                        requester_user_id=actor_id,
+                        requester_name=f"Admin 778 réduction {marker}",
+                        desired_start=DAY,
+                        desired_end=DAY.replace(day=DAY.day + 4),
+                        resource_count=1,
+                        estimated_hours=Decimal("40.00"),
+                        status="En planification",
+                        aggregate_version=1,
+                        line_mode=True,
+                    )
+                )
+                session.flush()
+                session.add(
+                    RequestLine(
+                        id=line_id,
+                        workforce_request_id=request_id,
+                        position=0,
+                        kind="WORKFORCE",
+                        slot_count=1,
+                        desired_start=DAY,
+                        desired_end=DAY.replace(day=DAY.day + 4),
+                        estimated_hours=Decimal("40.00"),
+                        confirmation="Confirmée",
+                        active=True,
+                    )
+                )
+                session.add(
+                    RequestApprovalRevision(
+                        id=revision_id,
+                        workforce_request_id=request_id,
+                        request_version=1,
+                        approved_by_name=f"Admin 778 réduction {marker}",
+                        approved_at=utc_now(),
+                        provenance="APPROVAL",
+                        payload_format_version=1,
+                        payload_text=payload,
+                        authorization_fingerprint=marker.ljust(64, "8"),
+                    )
+                )
+                session.flush()
+                session.add(
+                    RequestApprovalReference(
+                        workforce_request_id=request_id,
+                        active_revision_id=revision_id,
+                        status=APPROVAL_REFERENCE_CAPTURED,
+                    )
+                )
+                session.add(
+                    RequestOperationalState(
+                        workforce_request_id=request_id,
+                        approval_revision_id=revision_id,
+                        version=1,
+                        selections_text="{}",
+                        confirmations_text="{}",
+                        budget_overrides_text="{}",
+                    )
+                )
+                session.add(
+                    ResourceRequirement(
+                        id=requirement_id,
+                        legacy_segment_id=segment_id,
+                        project_id=project_id,
+                        workforce_request_id=request_id,
+                        source_request_line_id=line_id,
+                        approval_revision_id=revision_id,
+                        approved_entry_key=entry_key,
+                        approval_reference_status=APPROVAL_REFERENCE_CAPTURED,
+                        start_date=DAY,
+                        end_date=DAY.replace(day=DAY.day + 4),
+                        planned_hours=Decimal("40.00"),
+                        status="Planifié",
+                        planning_type="Flexible",
+                        confirmation="Confirmée",
+                        origin="REQUEST",
+                        assigned_resource_id=resource_id,
+                    )
+                )
+                session.flush()
+                session.add(
+                    RequestRequirementPlanningIntent(
+                        id=intent_id,
+                        slot_identity_key=json.dumps(
+                            [request_id, entry_key, 0],
+                            separators=(",", ":"),
+                        ),
+                        workforce_request_id=request_id,
+                        source_request_line_id=line_id,
+                        approval_revision_id=revision_id,
+                        approved_entry_key=entry_key,
+                        slot_index=0,
+                        current_resource_requirement_id=requirement_id,
+                        intent_mode="AUTO",
+                        target_mode="INHERIT",
+                    )
+                )
+                for index, shift_id in enumerate(shift_ids):
+                    session.add(
+                        Shift(
+                            id=shift_id,
+                            legacy_allocation_id=f"A778R-{marker}-{index}",
+                            resource_requirement_id=requirement_id,
+                            resource_id=resource_id,
+                            work_date=DAY.replace(day=DAY.day + index),
+                            hours=Decimal("8.00"),
+                            source="AUTO",
+                            locked=False,
+                        )
+                    )
+                session.add(
+                    RequestApprovalCycle(
+                        id=cycle_id,
+                        workforce_request_id=request_id,
+                        submitted_request_version=1,
+                        state="COMPLETED",
+                        subject_fingerprint=marker.ljust(64, "9"),
+                        initialization_reason="SUBMISSION",
+                        submitted_at=utc_now(),
+                        completed_at=utc_now(),
+                        approved_revision_id=revision_id,
+                    )
+                )
+                session.flush()
+                session.add(
+                    ApprovalRequirement(
+                        id=approval_requirement_id,
+                        approval_cycle_id=cycle_id,
+                        request_line_id=line_id,
+                        approval_scope_id=scope_id,
+                        routing_sources_text="[]",
+                    )
+                )
+                session.flush()
+                session.add(
+                    ApprovalRequirementApprover(
+                        requirement_id=approval_requirement_id,
+                        app_user_id=actor_id,
+                        sources_text='["TEST"]',
+                    )
+                )
+
+            with factory() as session:
+                expected_planning = SqlPlanningMutationVersionRepository(session).current_version()
+
+            def reduce(key: str) -> tuple[str, str | None]:
+                with factory.begin() as session:
+                    adapter = SqlRequestWorkQueueCommandAdapter(
+                        session,
+                        planning=_NoopPlanning(),
+                        versioning=SqlPlanningMutationVersionRepository(session),
+                        journal=SqlPlanningAuditJournal(
+                            session,
+                            actor_name=f"Admin 778 réduction {marker}",
+                        ),
+                        actor_user_id=actor_id,
+                        actor_name=f"Admin 778 réduction {marker}",
+                        permissions=permissions_for_roles((ROLE_ADMIN,)),
+                        roles=(ROLE_ADMIN,),
+                    )
+                    try:
+                        result = adapter.permanently_reduce_shift(
+                            PermanentlyReduceShiftHoursCommand(
+                                allocation_id=f"A778R-{marker}-3",
+                                expected_planning_version=expected_planning,
+                                expected_request_version=1,
+                                expected_approval_revision_id=revision_id,
+                                expected_operational_version=1,
+                                command_id=key,
+                            )
+                        )
+                    except ApplicationConflictError as exc:
+                        return "conflict", exc.code
+                    return "success", str(result["reduction_id"])
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                outcomes = (
+                    executor.submit(reduce, f"reduce-a-{marker}").result(timeout=30),
+                    executor.submit(reduce, f"reduce-b-{marker}").result(timeout=30),
+                )
+
+            self.assertEqual(
+                sorted(row[0] for row in outcomes),
+                ["conflict", "success"],
+            )
+            self.assertEqual(
+                next(row for row in outcomes if row[0] == "conflict")[1],
+                "planning_version_conflict",
+            )
+
+            with factory.begin() as session:
+                reductions = session.scalars(
+                    select(RequestCompletionReduction).where(
+                        RequestCompletionReduction.planning_intent_id == intent_id
+                    )
+                ).all()
+                self.assertEqual(len(reductions), 1)
+                self.assertEqual(reductions[0].reduction_hours, Decimal("8.00"))
+                requirement = session.get(ResourceRequirement, requirement_id)
+                self.assertEqual(requirement.planned_hours, Decimal("32.00"))
+                self.assertEqual(
+                    sum(
+                        session.scalars(
+                            select(Shift.hours).where(
+                                Shift.resource_requirement_id == requirement_id
+                            )
+                        ).all(),
+                        Decimal("0.00"),
+                    ),
+                    Decimal("32.00"),
+                )
+
+                SqlPeriodAwareApprovedDemandSyncAdapter(
+                    session
+                ).sync_operational_choices(request_number)
+                self.assertEqual(requirement.planned_hours, Decimal("32.00"))
+                self.assertEqual(
+                    session.query(RequestCompletionReduction)
+                    .filter_by(planning_intent_id=intent_id)
+                    .count(),
+                    1,
+                )
+        finally:
+            with factory.begin() as session:
+                session.execute(
+                    delete(PlanningChangeHistory).where(
+                        PlanningChangeHistory.entity_reference.in_(
+                            tuple(f"A778R-{marker}-{index}" for index in range(5))
+                            + (segment_id,)
+                        )
+                    )
+                )
+                session.execute(
+                    delete(RequestCompletionReduction).where(
+                        RequestCompletionReduction.planning_intent_id == intent_id
+                    )
+                )
+                session.execute(delete(Shift).where(Shift.id.in_(shift_ids)))
+                session.execute(
+                    delete(RequestRequirementPlanningIntent).where(
+                        RequestRequirementPlanningIntent.id == intent_id
+                    )
+                )
+                session.execute(
+                    delete(ResourceRequirement).where(
+                        ResourceRequirement.id == requirement_id
+                    )
+                )
+                session.execute(
+                    delete(ApprovalRequirementApprover).where(
+                        ApprovalRequirementApprover.requirement_id == approval_requirement_id
+                    )
+                )
+                session.execute(
+                    delete(ApprovalRequirement).where(
+                        ApprovalRequirement.id == approval_requirement_id
+                    )
+                )
+                session.execute(
+                    delete(RequestApprovalCycle).where(
+                        RequestApprovalCycle.id == cycle_id
+                    )
+                )
+                session.execute(
+                    delete(RequestOperationalState).where(
+                        RequestOperationalState.workforce_request_id == request_id
+                    )
+                )
+                session.execute(
+                    delete(RequestApprovalReference).where(
+                        RequestApprovalReference.workforce_request_id == request_id
+                    )
+                )
+                session.execute(
+                    delete(RequestApprovalRevision).where(
+                        RequestApprovalRevision.id == revision_id
+                    )
+                )
+                session.execute(delete(RequestLine).where(RequestLine.id == line_id))
+                session.execute(
+                    delete(WorkforceRequest).where(
+                        WorkforceRequest.id == request_id
+                    )
+                )
+                session.execute(
+                    delete(ApprovalScopeApprover).where(
+                        ApprovalScopeApprover.approval_scope_id == scope_id,
+                        ApprovalScopeApprover.app_user_id == actor_id,
+                    )
+                )
+                session.execute(delete(ApprovalScope).where(ApprovalScope.id == scope_id))
+                session.execute(delete(AppUser).where(AppUser.id == actor_id))
+                session.execute(delete(Resource).where(Resource.id == resource_id))
+                session.execute(delete(Project).where(Project.id == project_id))
+            engine.dispose()
+
 
 
 if __name__ == "__main__":
