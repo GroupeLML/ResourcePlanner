@@ -96,13 +96,16 @@ class SqlSegmentRepository(SegmentRepositoryPort):
         project: Project,
         request: WorkforceRequest | None,
         resource: Resource | None,
+        *,
+        effective_need: Decimal | None = None,
     ) -> SegmentReadModel:
-        effective_need = SqlRequestRequirementPlanningIntentRepository(
-            self._session
-        ).current_effective_need_for_requirement(
-            requirement.id,
-            fallback_hours=requirement.planned_hours,
-        )
+        if effective_need is None:
+            effective_need = SqlRequestRequirementPlanningIntentRepository(
+                self._session
+            ).current_effective_need_for_requirement(
+                requirement.id,
+                fallback_hours=requirement.planned_hours,
+            )
         return SegmentReadModel(
             segment_id=_text(requirement.legacy_segment_id) or requirement.id,
             demand_number=(
@@ -153,8 +156,24 @@ class SqlSegmentRepository(SegmentRepositoryPort):
                 ResourceRequirement.id,
             )
         ).all()
+        effective_need_by_requirement = (
+            SqlRequestRequirementPlanningIntentRepository(
+                self._session
+            ).current_effective_need_by_requirement(
+                {
+                    requirement.id: requirement.planned_hours
+                    for requirement, _project, _request, _resource in rows
+                }
+            )
+        )
         return tuple(
-            self._read_model(requirement, project, request, resource)
+            self._read_model(
+                requirement,
+                project,
+                request,
+                resource,
+                effective_need=effective_need_by_requirement[requirement.id],
+            )
             for requirement, project, request, resource in rows
         )
 
