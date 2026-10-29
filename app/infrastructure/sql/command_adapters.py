@@ -348,23 +348,43 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
         self,
         intent: RequestRequirementPlanningIntent | None,
         requirement: ResourceRequirement,
+        *,
+        restored_shifts: Sequence[Shift],
     ) -> None:
-        if intent is None:
+        if intent is None or not restored_shifts:
             return
-        shifts = self._session.scalars(
-            select(Shift).where(Shift.resource_requirement_id == requirement.id)
-        ).all()
-        covered = {(row.resource_id, row.work_date) for row in shifts}
+        restored_hours: dict[tuple[str, date], Decimal] = {}
+        for shift in restored_shifts:
+            if shift.allocation_type == MISSING_ALLOCATION_TYPE:
+                continue
+            key = (shift.resource_id, shift.work_date)
+            restored_hours[key] = restored_hours.get(key, Decimal("0.00")) + Decimal(
+                str(shift.hours)
+            )
+
         releases = self._session.scalars(
-            select(PlanningWorkQueueRelease).where(
+            select(PlanningWorkQueueRelease)
+            .where(
                 PlanningWorkQueueRelease.planning_intent_id == intent.id,
                 PlanningWorkQueueRelease.active == true(),
             )
+            .order_by(
+                PlanningWorkQueueRelease.created_at,
+                PlanningWorkQueueRelease.id,
+            )
         ).all()
         for release in releases:
-            if (release.resource_id, release.work_date) in covered:
-                release.active = False
-                release.resolved_at = utc_now()
+            key = (release.resource_id, release.work_date)
+            available = restored_hours.get(key, Decimal("0.00"))
+            release_hours = Decimal(str(release.hours))
+            if available + Decimal("0.001") < release_hours:
+                continue
+            release.active = False
+            release.resolved_at = utc_now()
+            restored_hours[key] = max(
+                available - release_hours,
+                Decimal("0.00"),
+            )
 
     def _requirement(self, identifier: str) -> ResourceRequirement:
         wanted = _text(identifier)
@@ -501,7 +521,11 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
         self._session.add(shift)
         self._session.flush()
         self._planning.rebuild()
-        self._resolve_covered_releases(intent, requirement)
+        self._resolve_covered_releases(
+            intent,
+            requirement,
+            restored_shifts=(shift,),
+        )
         self._session.flush()
         return identifier
 
@@ -731,13 +755,32 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             requirement.assigned_resource_id = resource.id
             requirement.status = "Planifié"
         self._session.flush()
+        before_shift_ids = set(
+            self._session.scalars(
+                select(Shift.id).where(
+                    Shift.resource_requirement_id == requirement.id
+                )
+            ).all()
+        )
         result = self._planning.rebuild(preserve_shift_ids=survivor_ids)
 
         if controlled_restore and intent is not None:
             intent.intent_mode = PLANNING_INTENT_PRESERVE_EXISTING
             intent.target_mode = PLANNING_TARGET_EXPLICIT_RESOURCE
             intent.target_resource_id = resource.id
-            self._resolve_covered_releases(intent, requirement)
+            restored_shifts = tuple(
+                self._session.scalars(
+                    select(Shift).where(
+                        Shift.resource_requirement_id == requirement.id,
+                        Shift.id.not_in(before_shift_ids) if before_shift_ids else true(),
+                    )
+                ).all()
+            )
+            self._resolve_covered_releases(
+                intent,
+                requirement,
+                restored_shifts=restored_shifts,
+            )
             self._session.flush()
         return result
 
