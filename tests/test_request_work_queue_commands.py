@@ -7,6 +7,7 @@ import unittest
 
 from app.application.errors import ApplicationAuthorizationError, ApplicationConflictError
 from app.application.idempotency import IdempotentCommandExecutor
+from app.domain.planning_engine import MISSING_ALLOCATION_TYPE
 from app.application.request_work_queue import (
     PermanentlyReduceShiftHoursCommand,
     ReturnSegmentToWorkQueueCommand,
@@ -36,7 +37,7 @@ from app.infrastructure.sql.asset_models import (
 from app.infrastructure.sql.base import Base
 from app.infrastructure.sql.identity_models import AppUser
 from app.infrastructure.sql.idempotency import SqlCommandIdempotencyAdapter
-from app.infrastructure.sql.command_adapters import SqlAllocationCommandAdapter
+from app.infrastructure.sql.command_adapters import SqlAllocationCommandAdapter, SqlPlanningCommandAdapter
 from app.infrastructure.sql.models import (
     Project,
     RequestLine,
@@ -63,6 +64,7 @@ from app.infrastructure.sql.planning_version import (
     SqlPlanningMutationVersionRepository,
 )
 from app.infrastructure.sql.resource_class_models import ResourceClassConfig
+from app.infrastructure.sql.query_repository import SqlPlannerQueryRepositoryWithLoadProfiles
 from app.infrastructure.sql.request_work_queue_commands import (
     SqlRequestWorkQueueCommandAdapter,
 )
@@ -586,6 +588,114 @@ class RequestWorkQueueCommandTests(unittest.TestCase):
             self.assertEqual(requirement.planned_hours, Decimal("8.00"))
             self.assertEqual(requirement.status, "Terminé")
             self.assertIsNone(session.get(Shift, "S1"))
+            queries = SqlPlannerQueryRepositoryWithLoadProfiles(session)
+            segment = queries.get_segment("REQ1")
+            self.assertIsNotNone(segment)
+            self.assertEqual(segment.planned_hours, 0.0)
+            self.assertEqual(segment.remaining_hours, 0.0)
+            materialized = queries.list_demand_requirements("DMO-778")
+            self.assertEqual(len(materialized), 1)
+            self.assertEqual(materialized[0].planned_hours, 0.0)
+            self.assertEqual(materialized[0].remaining_hours, 0.0)
+            historical = json.loads(
+                session.get(RequestApprovalRevision, "REV1").payload_text
+            )
+            self.assertEqual(
+                historical["authorization"]["entries"][0]["hours"],
+                "8.00",
+            )
+
+    def test_partial_reduction_on_completed_requirement_preserves_completed_survivors(self) -> None:
+        with transactional_session(self.factory) as session:
+            session.get(ResourceRequirement, "REQ1").status = "Terminé"
+            adapter = SqlRequestWorkQueueCommandAdapter(
+                session,
+                planning=SqlPlanningCommandAdapter(
+                    session,
+                    versioning=SqlPlanningMutationVersionRepository(session),
+                ),
+                versioning=SqlPlanningMutationVersionRepository(session),
+                journal=SqlPlanningAuditJournal(session, actor_name="Test"),
+                actor_user_id="U1",
+                actor_name="Test",
+                permissions=("manage_planning", "read_demands", "approve_demands", "read"),
+                roles=("ADMIN",),
+            )
+            result = adapter.permanently_reduce_shift(
+                PermanentlyReduceShiftHoursCommand(
+                    allocation_id="A4",
+                    expected_planning_version=1,
+                    expected_request_version=1,
+                    expected_approval_revision_id="REV1",
+                    expected_operational_version=1,
+                    command_id="completed-partial-reduction-778",
+                )
+            )
+            self.assertEqual(result["removed_shift_count"], 1)
+            self.assertEqual(result["effective_need_after"], 32.0)
+            self.assertIsNone(session.get(Shift, "S4"))
+            survivor_ids = set(
+                session.scalars(
+                    select(Shift.id).where(
+                        Shift.resource_requirement_id == "REQ1"
+                    )
+                ).all()
+            )
+            self.assertEqual(survivor_ids, {"S1", "S2", "S3", "S5"})
+            self.assertEqual(
+                session.get(ResourceRequirement, "REQ1").status,
+                "Terminé",
+            )
+
+    def test_diagnostic_shift_is_excluded_from_coverage_and_rejected_as_target(self) -> None:
+        with transactional_session(self.factory) as session:
+            session.get(Shift, "S4").allocation_type = MISSING_ALLOCATION_TYPE
+            adapter, _planning = self._adapter(session)
+            preview = adapter.preview_shift("A4")
+            self.assertEqual(preview["effective_need"], 40.0)
+            self.assertEqual(preview["covered_hours"], 32.0)
+            self.assertEqual(preview["remaining_hours"], 8.0)
+            self.assertFalse(preview["return_shift_allowed"])
+            self.assertEqual(
+                preview["return_shift_block_code"],
+                "request_work_queue_shift_not_counted",
+            )
+            self.assertFalse(preview["permanent_reduction_allowed"])
+            self.assertEqual(
+                preview["permanent_reduction_block_code"],
+                "request_work_queue_shift_not_counted",
+            )
+
+        for operation in ("return", "reduce"):
+            with self.subTest(operation=operation):
+                with self.assertRaises(ApplicationConflictError) as raised:
+                    with transactional_session(self.factory) as session:
+                        adapter, _planning = self._adapter(session)
+                        if operation == "return":
+                            adapter.return_shift(
+                                ReturnShiftToWorkQueueCommand(
+                                    allocation_id="A4",
+                                    expected_planning_version=1,
+                                    expected_approval_revision_id="REV1",
+                                    expected_operational_version=1,
+                                    command_id="diagnostic-return-778",
+                                )
+                            )
+                        else:
+                            adapter.permanently_reduce_shift(
+                                PermanentlyReduceShiftHoursCommand(
+                                    allocation_id="A4",
+                                    expected_planning_version=1,
+                                    expected_request_version=1,
+                                    expected_approval_revision_id="REV1",
+                                    expected_operational_version=1,
+                                    command_id="diagnostic-reduction-778",
+                                )
+                            )
+                self.assertEqual(
+                    raised.exception.code,
+                    "request_work_queue_shift_not_counted",
+                )
 
     def test_stale_planning_version_rolls_back_without_release(self) -> None:
         with self.assertRaises(ApplicationConflictError):
