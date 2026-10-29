@@ -37,6 +37,7 @@ from .models import (
     WorkforceRequestHistory,
 )
 from .planning_repository import SqlPlanningReadRepository
+from .planning_intent_repository import SqlRequestRequirementPlanningIntentRepository
 from .operational_choice_models import (
     PLANNING_INTENT_AUTO,
     PLANNING_INTENT_PRESERVE_EXISTING,
@@ -149,6 +150,16 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
             )
 
         preserve_ids = {str(value) for value in preserve_shift_ids if str(value)}
+        terminal_survivor_ids = set(
+            self._session.scalars(
+                select(Shift.id)
+                .join(
+                    ResourceRequirement,
+                    Shift.resource_requirement_id == ResourceRequirement.id,
+                )
+                .where(ResourceRequirement.status == "Terminé")
+            ).all()
+        )
         if preserve_requirement_ids:
             preserve_ids.update(
                 self._session.scalars(
@@ -188,11 +199,34 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
             for segment in calculation.segments
             if segment.segment_id not in suppressed_segment_ids
         )
-        engine_locked = tuple(
-            allocation
-            for allocation in calculation.locked_allocations
-            if allocation.segment_id not in suppressed_segment_ids
-        )
+        preserved_locked_counts: dict[tuple[str, str, date, float], int] = {}
+        for item in temporary_inputs:
+            if not item.locked:
+                continue
+            key = (
+                item.segment_id,
+                item.resource_id,
+                item.day,
+                round(float(item.hours), 4),
+            )
+            preserved_locked_counts[key] = preserved_locked_counts.get(key, 0) + 1
+
+        engine_locked_rows = []
+        for allocation in calculation.locked_allocations:
+            if allocation.segment_id in suppressed_segment_ids:
+                continue
+            key = (
+                allocation.segment_id,
+                allocation.resource_id,
+                allocation.day,
+                round(float(allocation.hours), 4),
+            )
+            duplicate_count = preserved_locked_counts.get(key, 0)
+            if duplicate_count:
+                preserved_locked_counts[key] = duplicate_count - 1
+                continue
+            engine_locked_rows.append(allocation)
+        engine_locked = tuple(engine_locked_rows)
         preserved_capacity_segment_ids = {
             item.segment_id for item in temporary_inputs
         }
@@ -213,9 +247,13 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
         )
 
         protected = self._active_locked_shifts()
-        protected_ids = {shift.id for shift in protected} | {
-            shift.id for shift, _requirement, _resource in preserved_rows
-        }
+        protected_ids = (
+            {shift.id for shift in protected}
+            | {
+                shift.id for shift, _requirement, _resource in preserved_rows
+            }
+            | terminal_survivor_ids
+        )
 
         # Keep active locked user decisions plus the narrowly scoped survivor rows
         # explicitly preserved for this one mutation. Other automatic rows remain
@@ -386,6 +424,27 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
                 Decimal("0.00"),
             )
 
+    def _current_effective_need(
+        self,
+        requirement: ResourceRequirement,
+    ) -> Decimal:
+        return SqlRequestRequirementPlanningIntentRepository(
+            self._session
+        ).current_effective_need_for_requirement(
+            requirement.id,
+            fallback_hours=requirement.planned_hours,
+        )
+
+    def _counted_coverage(self, requirement_id: str) -> Decimal:
+        covered = self._session.scalar(
+            select(func.coalesce(func.sum(Shift.hours), 0)).where(
+                Shift.resource_requirement_id == requirement_id,
+                (Shift.allocation_type.is_(None))
+                | (Shift.allocation_type != MISSING_ALLOCATION_TYPE),
+            )
+        )
+        return _decimal(covered or 0)
+
     def _requirement(self, identifier: str) -> ResourceRequirement:
         wanted = _text(identifier)
         requirement = self._session.scalar(
@@ -497,6 +556,22 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
 
 
         intent = self._request_intent(requirement)
+        if intent is not None:
+            effective_need = self._current_effective_need(requirement)
+            covered = self._counted_coverage(requirement.id)
+            residual = max(effective_need - covered, Decimal("0.00"))
+            if hours > residual + Decimal("0.001"):
+                raise ApplicationConflictError(
+                    "Le placement explicite dépasse le besoin courant non couvert.",
+                    code="request_work_queue_placement_exceeds_residual",
+                    context={
+                        "requirement_id": requirement.id,
+                        "effective_need": float(effective_need),
+                        "covered_hours": float(covered),
+                        "residual_hours": float(residual),
+                        "requested_hours": float(hours),
+                    },
+                )
         if intent is not None and intent.intent_mode == PLANNING_INTENT_QUEUED:
             intent.intent_mode = PLANNING_INTENT_PRESERVE_EXISTING
             intent.target_mode = PLANNING_TARGET_EXPLICIT_NONE
