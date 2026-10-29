@@ -136,7 +136,49 @@ class RequestWorkQueueMutationResult(ApplicationResult):
         )
 
 
+@dataclass(frozen=True, slots=True)
+class RequestWorkQueuePreviewResult(ApplicationResult):
+    allocation_id: str
+    requirement_id: str
+    segment_id: str
+    demand_number: str
+    source_request_line_id: str | None
+    planning_version: int
+    request_version: int
+    approval_revision_id: str
+    operational_version: int
+    shift_hours: float
+    effective_need: float
+    covered_hours: float
+    remaining_hours: float
+    return_shift_allowed: bool
+    return_shift_block_code: str | None
+    return_segment_allowed: bool
+    return_segment_block_code: str | None
+    permanent_reduction_allowed: bool
+    permanent_reduction_block_code: str | None
+    effective_need_after_reduction: float
+    remaining_after_return_shift: float
+    remaining_after_return_segment: float
+    remaining_after_reduction: float
+
+    @classmethod
+    def from_mapping(cls, values: Mapping[str, Any]) -> "RequestWorkQueuePreviewResult":
+        source = dict(values)
+        return cls(**{
+            field: source.get(field)
+            for field in cls.__dataclass_fields__
+        })
+
+
 class RequestWorkQueueCommandPort(Protocol):
+    def preview_shift(self, allocation_id: str) -> Mapping[str, Any]: ...
+
+    def preview_shift(self, allocation_id: str) -> RequestWorkQueuePreviewResult:
+        return RequestWorkQueuePreviewResult.from_mapping(
+            self._commands.preview_shift(allocation_id)
+        )
+
     def return_shift(
         self,
         command: ReturnShiftToWorkQueueCommand,
