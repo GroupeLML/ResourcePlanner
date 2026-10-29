@@ -160,8 +160,6 @@ def _allocation_projection_metrics(
         ).current_effective_need_by_requirement(
             {requirement.id: requirement.planned_hours for requirement in rows}
         )
-        if planned_hours_by_reference is None
-        else {}
     )
     for requirement in rows:
         reference = _text(requirement.legacy_segment_id) or requirement.id
