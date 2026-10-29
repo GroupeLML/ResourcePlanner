@@ -95,6 +95,7 @@ from .models import (
 )
 from .segment_repository import SqlSegmentRepository
 from .planning_version import SqlPlanningMutationVersionRepository
+from .planning_intent_repository import SqlRequestRequirementPlanningIntentRepository
 from .project_manager_resolution_repository import SqlProjectManagerResolutionRepository
 
 
@@ -531,7 +532,17 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             )
             covered = round(sum(row.allocated_hours for row in mobilized), 2)
             locked = round(sum(row.locked_hours for row in mobilized), 2)
-            planned = round(float(requirement.planned_hours), 2)
+            planned = round(
+                float(
+                    SqlRequestRequirementPlanningIntentRepository(
+                        self._session
+                    ).current_effective_need_for_requirement(
+                        requirement.id,
+                        fallback_hours=requirement.planned_hours,
+                    )
+                ),
+                2,
+            )
             target = resources.get(requirement.assigned_resource_id)
             result.append(
                 DemandMaterializedRequirementReadModel(
