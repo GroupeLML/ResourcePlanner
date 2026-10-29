@@ -1212,6 +1212,15 @@ def build_command_router(
             action=action,
         )
 
+    @router.get("/allocations/{allocation_id}/work-queue-preview")
+    def preview_request_work_queue_actions(
+        allocation_id: str,
+        facade: ApplicationFacade = Depends(facade_dependency),
+    ) -> dict[str, Any]:
+        return _payload(
+            facade.preview_request_work_queue_actions(allocation_id)
+        )
+
     @router.post("/allocations/{allocation_id}/return-to-work-queue")
     def return_shift_to_work_queue(
         allocation_id: str,
