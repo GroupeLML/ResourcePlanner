@@ -212,6 +212,11 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     context = op.get_context()
+    if context.as_sql:
+        raise RuntimeError(
+            "0025_request_work_queue_architect_corrections refuses offline downgrade "
+            "generation because ADR-034 provenance cannot be inspected safely."
+        )
     if not context.as_sql:
         connection = op.get_bind()
         protected_tables = (
