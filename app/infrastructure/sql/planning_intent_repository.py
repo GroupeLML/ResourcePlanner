@@ -158,7 +158,7 @@ class SqlRequestRequirementPlanningIntentRepository:
         reduction_rows = self.session.execute(
             select(
                 RequestCompletionReduction.planning_intent_id,
-                func.min(RequestCompletionReduction.effective_need_after),
+                func.coalesce(func.sum(RequestCompletionReduction.reduction_hours), 0),
             )
             .where(
                 RequestCompletionReduction.planning_intent_id.in_(
@@ -168,15 +168,19 @@ class SqlRequestRequirementPlanningIntentRepository:
             )
             .group_by(RequestCompletionReduction.planning_intent_id)
         ).all()
-        active_after_by_intent = {
-            str(intent_id): Decimal(str(hours)).quantize(Decimal("0.01"))
+        active_reduction_by_intent = {
+            str(intent_id): Decimal(str(hours or 0)).quantize(Decimal("0.01"))
             for intent_id, hours in reduction_rows
-            if hours is not None
         }
         return {
-            requirement_id: active_after_by_intent.get(
-                intent_by_requirement.get(requirement_id, ""),
+            requirement_id: resolve_effective_slot_need(
                 fallback,
+                (
+                    active_reduction_by_intent.get(
+                        intent_by_requirement.get(requirement_id, ""),
+                        Decimal("0.00"),
+                    ),
+                ),
             )
             for requirement_id, fallback in fallbacks.items()
         }
