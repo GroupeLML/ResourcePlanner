@@ -154,12 +154,21 @@ def _allocation_projection_metrics(
         resource_metrics[key] += amount
 
     result: dict[str, dict[str, object]] = {}
+    missing_effective_need_fallbacks = {
+        requirement.id: requirement.planned_hours
+        for requirement in rows
+        if planned_hours_by_reference is None
+        or (_text(requirement.legacy_segment_id) or requirement.id)
+        not in planned_hours_by_reference
+    }
     effective_need_by_requirement = (
         SqlRequestRequirementPlanningIntentRepository(
             session
         ).current_effective_need_by_requirement(
-            {requirement.id: requirement.planned_hours for requirement in rows}
+            missing_effective_need_fallbacks
         )
+        if missing_effective_need_fallbacks
+        else {}
     )
     for requirement in rows:
         reference = _text(requirement.legacy_segment_id) or requirement.id
