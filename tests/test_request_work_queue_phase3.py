@@ -523,6 +523,52 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                 engine.dispose()
 
 
+
+    def test_pending_candidate_does_not_hide_active_approved_residual(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-778-pending-residual",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._approve(client, 8)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    request, requirement, intent = self._context(session, number)
+                    request.status = "Soumise"
+                    intent.intent_mode = "QUEUED"
+                    intent.target_mode = "EXPLICIT_NONE"
+                    intent.target_resource_id = None
+                    requirement.assigned_resource_id = None
+                    session.query(Shift).filter_by(
+                        resource_requirement_id=requirement.id
+                    ).delete(synchronize_session=False)
+                    session.flush()
+
+                    actions = SqlPlannerQueryRepositoryWithLoadProfiles(
+                        session
+                    ).list_planning_actions(
+                        start=requirement.start_date,
+                        end=requirement.end_date,
+                    )
+                    assignments = [
+                        row
+                        for row in actions
+                        if row.kind == "ASSIGNMENT"
+                        and row.segment_id
+                        == (requirement.legacy_segment_id or requirement.id)
+                    ]
+                    self.assertEqual(len(assignments), 1)
+                    self.assertEqual(assignments[0].planned_hours, 8.0)
+            finally:
+                engine.dispose()
+
+
     def test_compatible_reapproval_new_physical_period_preserves_40_to_32_reduction(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
