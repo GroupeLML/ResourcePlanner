@@ -27,7 +27,8 @@ from ...application.security import (
 )
 from ...application.user_view_context import UserViewContextService
 from ...domain.effective_need import allocate_entry_budget
-from .approval_cycle_models import ApprovalRequirement, ApprovalRequirementApprover, RequestApprovalCycle
+from .approval_cycle_models import ApprovalRequirement, RequestApprovalCycle
+from .approval_scope_models import ApprovalScope, ApprovalScopeApprover
 from .approval_revision_models import (
     APPROVAL_REFERENCE_CAPTURED,
     RequestApprovalReference,
@@ -194,6 +195,30 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
                 context={"requirement_id": row.id, "origin": row.origin},
             )
         return row
+
+    @staticmethod
+    def _assert_return_lifecycle(requirement: ResourceRequirement) -> None:
+        if _text(requirement.status) in {"Terminé", "Annulé"}:
+            raise ApplicationConflictError(
+                "Un besoin terminal ne peut pas retourner du travail dans la File de Travail.",
+                code="request_work_queue_terminal_requirement",
+                context={
+                    "requirement_id": requirement.id,
+                    "status": requirement.status,
+                },
+            )
+
+    @staticmethod
+    def _assert_reduction_lifecycle(requirement: ResourceRequirement) -> None:
+        if _text(requirement.status) == "Annulé":
+            raise ApplicationConflictError(
+                "Un besoin annulé ne peut pas recevoir une réduction de complétion.",
+                code="request_reduction_terminal_requirement",
+                context={
+                    "requirement_id": requirement.id,
+                    "status": requirement.status,
+                },
+            )
 
     def _request(self, requirement: ResourceRequirement) -> WorkforceRequest:
         request = self._session.get(WorkforceRequest, requirement.workforce_request_id)
@@ -399,33 +424,52 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
                 context={"approval_cycle_count": len(cycles)},
             )
         cycle = cycles[0]
-        relevant_ids = tuple(
+        relevant = tuple(
             self._session.scalars(
-                select(ApprovalRequirement.id).where(
+                select(ApprovalRequirement).where(
                     ApprovalRequirement.approval_cycle_id == cycle.id,
                     ApprovalRequirement.request_line_id == intent.source_request_line_id,
                 )
             ).all()
         )
-        if not relevant_ids:
+        if not relevant:
             raise ApplicationAuthorizationError(
                 "Aucune exigence d'approbation ne correspond à la source autorisée.",
                 code="reduction_approval_authority_unknown",
                 context={"request_line_id": intent.source_request_line_id},
             )
-        actor_requirement_ids = set(
-            self._session.scalars(
-                select(ApprovalRequirementApprover.requirement_id).where(
-                    ApprovalRequirementApprover.requirement_id.in_(relevant_ids),
-                    ApprovalRequirementApprover.app_user_id == actor.id,
-                )
-            ).all()
-        )
-        if actor_requirement_ids != set(relevant_ids):
+
+        # The completed-cycle approver list is historical evidence only. ADR-034
+        # requires current eligibility in the ApprovalScope that authorized the
+        # active approved subject.
+        scope_ids = {
+            _text(requirement.approval_scope_id)
+            for requirement in relevant
+            if _text(requirement.approval_scope_id)
+        }
+        if len(scope_ids) != 1:
             raise ApplicationAuthorizationError(
-                "L'utilisateur n'est pas admissible sur toutes les exigences d'approbation de la source.",
+                "Le périmètre d'approbation courant de la source est absent ou ambigu.",
+                code="reduction_approval_authority_unknown",
+                context={
+                    "request_line_id": intent.source_request_line_id,
+                    "approval_scope_ids": sorted(scope_ids),
+                },
+            )
+        scope_id = next(iter(scope_ids))
+        scope = self._session.get(ApprovalScope, scope_id)
+        current_membership = self._session.get(
+            ApprovalScopeApprover,
+            (scope_id, actor.id),
+        )
+        if scope is None or not bool(scope.active) or current_membership is None:
+            raise ApplicationAuthorizationError(
+                "L'utilisateur n'est plus admissible dans le périmètre d'approbation courant.",
                 code="reduction_approval_authority_denied",
-                context={"request_line_id": intent.source_request_line_id},
+                context={
+                    "request_line_id": intent.source_request_line_id,
+                    "approval_scope_id": scope_id,
+                },
             )
 
     @staticmethod
@@ -496,6 +540,7 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
         actor = self._actor()
         shift = self._shift(command.allocation_id)
         requirement = self._requirement(shift.resource_requirement_id)
+        self._assert_return_lifecycle(requirement)
         self._assert_planning_scope(actor, requirement)
         request = self._request(requirement)
         revision, state = self._approval_and_operational(
@@ -571,6 +616,7 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
         planning_version = self._versioning.acquire(command.expected_planning_version)
         actor = self._actor()
         requirement = self._requirement(command.segment_id)
+        self._assert_return_lifecycle(requirement)
         self._assert_planning_scope(actor, requirement)
         request = self._request(requirement)
         revision, state = self._approval_and_operational(
@@ -651,6 +697,7 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
         actor = self._actor(reduction=True)
         shift = self._shift(command.allocation_id)
         requirement = self._requirement(shift.resource_requirement_id)
+        self._assert_reduction_lifecycle(requirement)
         self._assert_planning_scope(actor, requirement)
         request = self._request(requirement)
         request_version = acquire_request_aggregate_version(
@@ -722,7 +769,10 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
         if effective_after > 0:
             requirement.planned_hours = effective_after
         else:
-            requirement.status = "Annulé"
+            requirement.planned_hours = Decimal("0.00")
+            # Zero effective need is completion, not cancellation. Preserve an
+            # existing terminal completion and otherwise transition to Terminé.
+            requirement.status = "Terminé"
         self._session.flush()
         self._planning.rebuild(preserve_shift_ids=survivor_ids)
         if previous is not None:
