@@ -26,6 +26,7 @@ from app.infrastructure.sql import (
 from app.infrastructure.sql.request_plan_preparation import SqlRequestPlanPreparer
 from app.infrastructure.sql.demand_period_repository import SqlDemandPeriodRepository
 from app.infrastructure.sql.approval_revision_models import RequestApprovalReference, RequestApprovalRevision
+from app.infrastructure.sql.approval_scope_models import ApprovalScopeApprover
 from app.domain.demand_periods import DemandPeriodDefinition
 from app.domain.request_reduction import reduction_subject_fingerprint
 from app.server import create_api_app
@@ -411,6 +412,113 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+
+
+
+    def test_http_preview_is_authoritative_and_revoked_current_approver_is_denied(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-778-http-preview",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._approve(client, 8)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    _request, requirement, _intent = self._context(session, number)
+                    session.query(Shift).filter_by(
+                        resource_requirement_id=requirement.id
+                    ).delete(synchronize_session=False)
+                    requirement.assigned_resource_id = "R-778-P3"
+                    requirement.status = "Planifié"
+                    session.add(
+                        Shift(
+                            id="SHIFT-HTTP-778",
+                            legacy_allocation_id="ALLOC-HTTP-778",
+                            resource_requirement_id=requirement.id,
+                            resource_id="R-778-P3",
+                            work_date=requirement.start_date,
+                            hours=Decimal("8.00"),
+                            source="AUTO",
+                            locked=False,
+                        )
+                    )
+                    session.flush()
+
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    preview_response = client.get(
+                        "/api/v1/allocations/ALLOC-HTTP-778/work-queue-preview"
+                    )
+                    self.assertEqual(
+                        preview_response.status_code,
+                        200,
+                        preview_response.text,
+                    )
+                    preview = preview_response.json()
+                    self.assertTrue(preview["return_shift_allowed"])
+                    self.assertTrue(preview["return_segment_allowed"])
+                    self.assertTrue(preview["permanent_reduction_allowed"])
+                    self.assertEqual(preview["shift_hours"], 8.0)
+                    self.assertEqual(preview["effective_need"], 8.0)
+                    self.assertEqual(preview["remaining_after_return_shift"], 8.0)
+                    self.assertEqual(preview["remaining_after_return_segment"], 8.0)
+                    self.assertEqual(preview["effective_need_after_reduction"], 0.0)
+                    self.assertEqual(preview["remaining_after_reduction"], 0.0)
+
+                with factory.begin() as session:
+                    memberships = session.query(ApprovalScopeApprover).filter_by(
+                        app_user_id=TEST_ADMIN_USER_ID
+                    ).all()
+                    self.assertTrue(memberships)
+                    for membership in memberships:
+                        session.delete(membership)
+
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    blocked_preview = client.get(
+                        "/api/v1/allocations/ALLOC-HTTP-778/work-queue-preview"
+                    )
+                    self.assertEqual(
+                        blocked_preview.status_code,
+                        200,
+                        blocked_preview.text,
+                    )
+                    blocked = blocked_preview.json()
+                    self.assertTrue(blocked["return_shift_allowed"])
+                    self.assertTrue(blocked["return_segment_allowed"])
+                    self.assertFalse(blocked["permanent_reduction_allowed"])
+                    self.assertEqual(
+                        blocked["permanent_reduction_block_code"],
+                        "reduction_approval_authority_denied",
+                    )
+                    denied = client.post(
+                        "/api/v1/allocations/ALLOC-HTTP-778/permanent-reduction",
+                        headers={"Idempotency-Key": "http-revoked-778"},
+                        json={
+                            "expected_planning_version": blocked["planning_version"],
+                            "expected_request_version": blocked["request_version"],
+                            "expected_approval_revision_id": blocked["approval_revision_id"],
+                            "expected_operational_version": blocked["operational_version"],
+                        },
+                    )
+                    self.assertEqual(denied.status_code, 403, denied.text)
+                    self.assertEqual(
+                        denied.json()["error"]["code"],
+                        "reduction_approval_authority_denied",
+                    )
+
+                with factory() as session:
+                    self.assertIsNotNone(session.get(Shift, "SHIFT-HTTP-778"))
+                    self.assertEqual(
+                        session.query(RequestCompletionReduction).count(),
+                        0,
+                    )
+            finally:
+                engine.dispose()
 
 
     def test_compatible_reapproval_new_physical_period_preserves_40_to_32_reduction(self) -> None:
