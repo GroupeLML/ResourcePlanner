@@ -1068,11 +1068,30 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                         )
                     )
                     self.assertEqual(current_need, Decimal("28.00"))
+
+                    session.query(Shift).filter_by(
+                        resource_requirement_id=requirement.id
+                    ).delete(synchronize_session=False)
+                    session.add(
+                        Shift(
+                            id="SHIFT-CURRENT-OVERRIDE-778",
+                            legacy_allocation_id="ALLOC-CURRENT-OVERRIDE-778",
+                            resource_requirement_id=requirement.id,
+                            resource_id="R-778-P3",
+                            work_date=requirement.start_date,
+                            hours=Decimal("28.00"),
+                            source="AUTO",
+                            locked=False,
+                        )
+                    )
+                    session.flush()
                     segment = SqlPlannerQueryRepositoryWithLoadProfiles(
                         session
                     ).get_segment(requirement.id)
                     self.assertIsNotNone(segment)
                     self.assertEqual(segment.planned_hours, 28.0)
+                    self.assertEqual(segment.covered_hours, 28.0)
+                    self.assertEqual(segment.remaining_hours, 0.0)
             finally:
                 engine.dispose()
 
