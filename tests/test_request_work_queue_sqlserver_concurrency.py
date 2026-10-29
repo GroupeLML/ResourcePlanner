@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 from decimal import Decimal
 import json
 import os
@@ -26,6 +26,7 @@ from app.infrastructure.sql import (
     RequestRequirementPlanningIntent,
     RequestLine,
     Resource,
+    ResourceAvailabilityRule,
     ResourceRequirement,
     Shift,
     WorkforceRequest,
@@ -38,7 +39,11 @@ from app.infrastructure.sql.approval_cycle_models import (
     ApprovalRequirementApprover,
     RequestApprovalCycle,
 )
-from app.infrastructure.sql.approval_scope_models import ApprovalScope, ApprovalScopeApprover
+from app.infrastructure.sql.approval_scope_models import (
+    ApprovalScope,
+    ApprovalScopeApprover,
+    ResourceClassApprovalScopeMapping,
+)
 from app.infrastructure.sql.approval_revision_models import (
     APPROVAL_REFERENCE_CAPTURED,
     RequestApprovalReference,
@@ -48,6 +53,8 @@ from app.infrastructure.sql.base import utc_now
 from app.infrastructure.sql.identity_models import AppUser
 from app.infrastructure.sql.planning_audit import SqlPlanningAuditJournal
 from app.infrastructure.sql.planning_version import SqlPlanningMutationVersionRepository
+from app.infrastructure.sql.query_repository import SqlPlannerQueryRepositoryWithLoadProfiles
+from app.infrastructure.sql.resource_class_models import ResourceClassConfig
 from app.infrastructure.sql.request_work_queue_commands import SqlRequestWorkQueueCommandAdapter
 
 
@@ -383,6 +390,8 @@ class RequestWorkQueueSqlServerConcurrencyTests(unittest.TestCase):
         actor_id = f"USR778R-{marker}"
         intent_id = f"INT778R-{marker}"
         scope_id = f"SCOPE778R-{marker}"
+        class_code = f"CLASS778R-{marker}".upper()
+        availability_id = f"AV778R-{marker}"
         cycle_id = f"CYCLE778R-{marker}"
         approval_requirement_id = f"AR778R-{marker}"
         entry_key = json.dumps(["LINE", line_id, ""], separators=(",", ":"))
@@ -409,7 +418,7 @@ class RequestWorkQueueSqlServerConcurrencyTests(unittest.TestCase):
                             "location": None,
                             "slot_count": 1,
                             "line_kind": "WORKFORCE",
-                            "required_resource_class": None,
+                            "required_resource_class": class_code,
                             "competency_ids": [],
                             "task_ref": None,
                             "work_package_ref": None,
@@ -456,6 +465,13 @@ class RequestWorkQueueSqlServerConcurrencyTests(unittest.TestCase):
                             active=True,
                             version=1,
                         ),
+                        ResourceClassConfig(
+                            code=class_code,
+                            label=f"Classe SQL 778 {marker}",
+                            average_hourly_cost_cad=Decimal("100.00"),
+                            active=True,
+                            version=1,
+                        ),
                     ]
                 )
                 session.flush()
@@ -463,6 +479,23 @@ class RequestWorkQueueSqlServerConcurrencyTests(unittest.TestCase):
                     ApprovalScopeApprover(
                         approval_scope_id=scope_id,
                         app_user_id=actor_id,
+                    )
+                )
+                session.add(
+                    ResourceClassApprovalScopeMapping(
+                        resource_class_code=class_code,
+                        approval_scope_id=scope_id,
+                    )
+                )
+                session.add(
+                    ResourceAvailabilityRule(
+                        id=availability_id,
+                        resource_id=resource_id,
+                        availability_type="Horaire standard",
+                        weekdays="Lun,Mar,Mer,Jeu,Ven,Sam,Dim",
+                        start_time=time(8, 0),
+                        end_time=time(16, 0),
+                        active=True,
                     )
                 )
                 session.add(
@@ -493,6 +526,7 @@ class RequestWorkQueueSqlServerConcurrencyTests(unittest.TestCase):
                         desired_end=DAY + timedelta(days=4),
                         estimated_hours=Decimal("40.00"),
                         confirmation="Confirmée",
+                        required_resource_class=class_code,
                         active=True,
                     )
                 )
@@ -543,6 +577,7 @@ class RequestWorkQueueSqlServerConcurrencyTests(unittest.TestCase):
                         status="Planifié",
                         planning_type="Flexible",
                         confirmation="Confirmée",
+                        required_resource_class=class_code,
                         origin="REQUEST",
                         assigned_resource_id=resource_id,
                     )
@@ -617,7 +652,6 @@ class RequestWorkQueueSqlServerConcurrencyTests(unittest.TestCase):
                 with factory.begin() as session:
                     adapter = SqlRequestWorkQueueCommandAdapter(
                         session,
-                        planning=_NoopPlanning(),
                         versioning=SqlPlanningMutationVersionRepository(session),
                         journal=SqlPlanningAuditJournal(
                             session,
@@ -670,17 +704,32 @@ class RequestWorkQueueSqlServerConcurrencyTests(unittest.TestCase):
                 self.assertEqual(reductions[0].reduction_hours, Decimal("8.00"))
                 requirement = session.get(ResourceRequirement, requirement_id)
                 self.assertEqual(requirement.planned_hours, Decimal("32.00"))
+                survivors = session.scalars(
+                    select(Shift).where(
+                        Shift.resource_requirement_id == requirement_id
+                    )
+                ).all()
+                self.assertEqual(len(survivors), 4)
                 self.assertEqual(
-                    sum(
-                        session.scalars(
-                            select(Shift.hours).where(
-                                Shift.resource_requirement_id == requirement_id
-                            )
-                        ).all(),
-                        Decimal("0.00"),
-                    ),
+                    sum((row.hours for row in survivors), Decimal("0.00")),
                     Decimal("32.00"),
                 )
+                self.assertEqual(
+                    {row.work_date for row in survivors},
+                    {
+                        DAY,
+                        DAY + timedelta(days=1),
+                        DAY + timedelta(days=2),
+                        DAY + timedelta(days=4),
+                    },
+                )
+                current = SqlPlannerQueryRepositoryWithLoadProfiles(session).get_segment(
+                    requirement_id
+                )
+                self.assertIsNotNone(current)
+                self.assertEqual(current.planned_hours, 32.0)
+                self.assertEqual(current.covered_hours, 32.0)
+                self.assertEqual(current.remaining_hours, 0.0)
 
                 SqlPeriodAwareApprovedDemandSyncAdapter(
                     session
@@ -760,12 +809,28 @@ class RequestWorkQueueSqlServerConcurrencyTests(unittest.TestCase):
                     )
                 )
                 session.execute(
+                    delete(ResourceAvailabilityRule).where(
+                        ResourceAvailabilityRule.id == availability_id
+                    )
+                )
+                session.execute(
+                    delete(ResourceClassApprovalScopeMapping).where(
+                        ResourceClassApprovalScopeMapping.resource_class_code == class_code,
+                        ResourceClassApprovalScopeMapping.approval_scope_id == scope_id,
+                    )
+                )
+                session.execute(
                     delete(ApprovalScopeApprover).where(
                         ApprovalScopeApprover.approval_scope_id == scope_id,
                         ApprovalScopeApprover.app_user_id == actor_id,
                     )
                 )
                 session.execute(delete(ApprovalScope).where(ApprovalScope.id == scope_id))
+                session.execute(
+                    delete(ResourceClassConfig).where(
+                        ResourceClassConfig.code == class_code
+                    )
+                )
                 session.execute(delete(AppUser).where(AppUser.id == actor_id))
                 session.execute(delete(Resource).where(Resource.id == resource_id))
                 session.execute(delete(Project).where(Project.id == project_id))
