@@ -5,6 +5,8 @@ from decimal import Decimal
 import json
 import unittest
 
+from sqlalchemy import select
+
 from app.application.errors import ApplicationAuthorizationError, ApplicationConflictError
 from app.application.idempotency import IdempotentCommandExecutor
 from app.domain.planning_engine import MISSING_ALLOCATION_TYPE
