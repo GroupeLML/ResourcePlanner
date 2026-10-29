@@ -950,13 +950,10 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
             shift=shift
         )
         self._session.delete(shift)
-        if effective_after > 0:
-            requirement.planned_hours = effective_after
-        else:
-            # ResourceRequirement rows intentionally retain a positive historical
-            # projection. Effective need = 0 lives in the append-only reduction
-            # ledger; the terminal row remains as SAME/provenance topology and is
-            # never made planifiable.
+        if effective_after == 0:
+            # ResourceRequirement.planned_hours remains the current operational/base
+            # quantity. Active durable reductions are applied by the canonical
+            # effective-need resolver; terminal zero-hour topology is retained.
             requirement.status = "Terminé"
         self._session.flush()
         self._planning.rebuild(preserve_shift_ids=survivor_ids)
