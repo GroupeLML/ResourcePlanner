@@ -69,6 +69,9 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
             "verification_evidence_links",
             "task_catalog_preferred_resource_audit",
             "quick_shift_planning_exclusions",
+            "request_requirement_planning_intents",
+            "planning_work_queue_releases",
+            "request_completion_reductions",
         },
         "missing_columns": {
             "auth_sessions": {
@@ -351,6 +354,7 @@ RELATIONSHIP_CONTROLS: dict[str, tuple[str, ...]] = {
         "source_request_line_id",
         "actor_user_id",
         "absorbed_by_revision_id",
+        "reconciled_approval_revision_id",
     ),
     "shifts": ("id", "resource_requirement_id", "resource_id"),
     "delivery_plans": ("id", "work_package_id"),
