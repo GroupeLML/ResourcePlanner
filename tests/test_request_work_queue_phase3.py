@@ -24,6 +24,10 @@ from app.infrastructure.sql import (
     create_sql_engine,
 )
 from app.infrastructure.sql.request_plan_preparation import SqlRequestPlanPreparer
+from app.infrastructure.sql.demand_period_repository import SqlDemandPeriodRepository
+from app.infrastructure.sql.approval_revision_models import RequestApprovalReference, RequestApprovalRevision
+from app.domain.demand_periods import DemandPeriodDefinition
+from app.domain.request_reduction import reduction_subject_fingerprint
 from app.server import create_api_app
 from tests.approval_test_support import (
     TEST_ADMIN_USER_ID,
@@ -404,6 +408,162 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                         )
                     ).all()
                     self.assertEqual(active, [])
+            finally:
+                engine.dispose()
+
+
+
+    def test_compatible_reapproval_new_physical_period_preserves_40_to_32_reduction(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-778-compatible-reapproval",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                created = client.post(
+                    "/api/v1/demands",
+                    json=routed_demand_payload(
+                        {
+                            "project_number": "P-778-P3",
+                            "desired_start": "2026-10-28",
+                            "desired_end": "2026-10-28",
+                            "estimated_hours": 40,
+                            "submit": True,
+                            "lines": [
+                                {
+                                    "desired_start": "2026-10-28",
+                                    "desired_end": "2026-10-28",
+                                    "estimated_hours": 40,
+                                    "confirmation": "Confirmée",
+                                }
+                            ],
+                        }
+                    ),
+                )
+                self.assertEqual(created.status_code, 201, created.text)
+                number = created.json()["demand_number"]
+                demand = client.get(f"/api/v1/demands/{number}").json()
+                line_id = demand["lines"][0]["line_id"]
+                periods = client.put(
+                    f"/api/v1/demands/{number}/lines/{line_id}/periods",
+                    json={
+                        "expected_request_version": demand["version"],
+                        "periods": [
+                            {
+                                "period_id": "WORK",
+                                "start_date": "2026-10-28",
+                                "end_date": "2026-10-28",
+                                "hours": 40,
+                                "kind": "CUMULATIVE",
+                                "confirmation": "Confirmée",
+                                "resource_count": 1,
+                            }
+                        ],
+                    },
+                )
+                self.assertEqual(periods.status_code, 200, periods.text)
+                approved = client.post(
+                    f"/api/v1/demands/{number}/approve",
+                    json={"comment": "Approbation initiale #778"},
+                )
+                self.assertEqual(approved.status_code, 200, approved.text)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    request, requirement, intent = self._context(session, number)
+                    reference = session.get(RequestApprovalReference, request.id)
+                    self.assertIsNotNone(reference)
+                    revision = session.get(
+                        RequestApprovalRevision,
+                        reference.active_revision_id,
+                    )
+                    payload = __import__("json").loads(revision.payload_text)
+                    entry = next(
+                        row
+                        for row in payload["authorization"]["entries"]
+                        if row["identity"] == intent.approved_entry_key
+                    )
+                    fingerprint = reduction_subject_fingerprint(
+                        request_context=payload["request"],
+                        authorization_entry=entry,
+                    )
+                    session.add(
+                        RequestCompletionReduction(
+                            planning_intent_id=intent.id,
+                            workforce_request_id=request.id,
+                            historical_approval_revision_id=revision.id,
+                            source_request_line_id=intent.source_request_line_id,
+                            approved_entry_key=intent.approved_entry_key,
+                            resource_requirement_id=requirement.id,
+                            original_shift_id="SHIFT-HIST-COMPAT-778",
+                            shift_snapshot_text="{}",
+                            reduction_hours=Decimal("8.00"),
+                            effective_need_before=Decimal("40.00"),
+                            effective_need_after=Decimal("32.00"),
+                            actor_user_id=TEST_ADMIN_USER_ID,
+                            command_id="compatible-reapproval-reduction-778",
+                            reconciliation_state="ACTIVE",
+                            authorization_fingerprint=fingerprint,
+                            reconciled_approval_revision_id=revision.id,
+                        )
+                    )
+                    session.flush()
+                    SqlPeriodAwareApprovedDemandSyncAdapter(
+                        session
+                    ).sync_operational_choices(number)
+                    self.assertEqual(requirement.planned_hours, Decimal("32.00"))
+                    original_intent_id = intent.id
+                    original_period_id = intent.source_period_id
+
+                    SqlDemandPeriodRepository(session).replace_for_demand(
+                        number,
+                        (
+                            DemandPeriodDefinition(
+                                period_id="WORK",
+                                start_date=requirement.start_date,
+                                end_date=requirement.end_date,
+                                hours=Decimal("40.00"),
+                                kind="CUMULATIVE",
+                                confirmation="Confirmée",
+                                resource_count=1,
+                            ),
+                        ),
+                        request_line_id=line_id,
+                    )
+                    session.flush()
+
+                    SqlPeriodAwareApprovedDemandSyncAdapter(session).sync_approved(
+                        number,
+                        approved_request_version=int(request.aggregate_version or 1),
+                    )
+                    session.flush()
+
+                    current_intents = session.scalars(
+                        select(RequestRequirementPlanningIntent).where(
+                            RequestRequirementPlanningIntent.workforce_request_id
+                            == request.id,
+                            RequestRequirementPlanningIntent.approved_entry_key
+                            == intent.approved_entry_key,
+                        )
+                    ).all()
+                    self.assertEqual(len(current_intents), 1)
+                    rebound = current_intents[0]
+                    self.assertEqual(rebound.id, original_intent_id)
+                    self.assertNotEqual(rebound.source_period_id, original_period_id)
+                    current_requirement = session.get(
+                        ResourceRequirement,
+                        rebound.current_resource_requirement_id,
+                    )
+                    self.assertEqual(current_requirement.planned_hours, Decimal("32.00"))
+                    reduction = session.query(RequestCompletionReduction).one()
+                    self.assertEqual(
+                        reduction.reconciled_approval_revision_id,
+                        current_requirement.approval_revision_id,
+                    )
             finally:
                 engine.dispose()
 
