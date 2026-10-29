@@ -556,7 +556,17 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
 
 
         intent = self._request_intent(requirement)
-        if intent is not None:
+        active_release = (
+            self._session.scalar(
+                select(PlanningWorkQueueRelease.id).where(
+                    PlanningWorkQueueRelease.planning_intent_id == intent.id,
+                    PlanningWorkQueueRelease.active == true(),
+                )
+            )
+            if intent is not None
+            else None
+        )
+        if intent is not None and active_release is not None:
             effective_need = self._current_effective_need(requirement)
             covered = self._counted_coverage(requirement.id)
             residual = max(effective_need - covered, Decimal("0.00"))
