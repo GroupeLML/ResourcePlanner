@@ -6,10 +6,12 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from fastapi.testclient import TestClient
+from app.application.errors import ApplicationConflictError
 from sqlalchemy import select
 
 from app.infrastructure.sql import (
     RequestCompletionReduction,
+    RequestLine,
     Resource,
     ResourceAvailabilityRule,
     RequestRequirementPlanningIntent,
@@ -672,6 +674,52 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                         reduction.reconciled_approval_revision_id,
                         current_requirement.approval_revision_id,
                     )
+            finally:
+                engine.dispose()
+
+
+
+    def test_incompatible_resource_class_reapproval_fails_closed(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-778-incompatible-reapproval",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._approve(client, 8)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    request, requirement, intent = self._context(session, number)
+                    self._reduce(
+                        session,
+                        request,
+                        requirement,
+                        intent,
+                        Decimal("2.00"),
+                    )
+                    SqlPeriodAwareApprovedDemandSyncAdapter(
+                        session
+                    ).sync_operational_choices(number)
+                    line = session.get(RequestLine, intent.source_request_line_id)
+                    self.assertIsNotNone(line)
+                    line.required_resource_class = "ARCHITECT-CHANGED-CLASS"
+                    session.flush()
+
+                    with self.assertRaises(ApplicationConflictError) as raised:
+                        SqlPeriodAwareApprovedDemandSyncAdapter(session).sync_approved(
+                            number,
+                            approved_request_version=int(request.aggregate_version or 1),
+                        )
+                    self.assertEqual(
+                        raised.exception.code,
+                        "reduction_rebase_required",
+                    )
+                    self.assertEqual(requirement.planned_hours, Decimal("6.00"))
             finally:
                 engine.dispose()
 
