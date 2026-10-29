@@ -418,6 +418,7 @@ class RequestWorkQueueSqlServerConcurrencyTests(unittest.TestCase):
                             "hours": "40.00",
                             "kind": "BASE",
                             "group": None,
+                            "confirmation": "Confirmée",
                         }
                     ],
                 },
