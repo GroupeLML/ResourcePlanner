@@ -7,6 +7,7 @@ import unittest
 
 from fastapi.testclient import TestClient
 from app.application.errors import ApplicationConflictError
+from app.application.idempotency import IdempotentCommandExecutor
 from sqlalchemy import select
 
 from app.infrastructure.sql import (
@@ -27,6 +28,7 @@ from app.infrastructure.sql import (
     create_sql_engine,
 )
 from app.infrastructure.sql.request_plan_preparation import SqlRequestPlanPreparer
+from app.infrastructure.sql.idempotency import SqlCommandIdempotencyAdapter
 from app.infrastructure.sql.asset_models import Asset, AssetAllocation, AssetRequirement, AssetType
 from app.domain.planning_engine import MISSING_ALLOCATION_TYPE
 from app.infrastructure.sql.demand_period_repository import SqlDemandPeriodRepository
@@ -1065,11 +1067,31 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                         ),
                     ])
                     session.flush()
-                    SqlAllocationCommandAdapter(session).create_manual(
-                        requirement.id,
-                        "R-778-P3",
-                        requirement.start_date,
-                        Decimal("4.00"),
+                    allocation_adapter = SqlAllocationCommandAdapter(session)
+                    executor = IdempotentCommandExecutor(
+                        SqlCommandIdempotencyAdapter(
+                            session,
+                            actor_name="admin-778-release-fragments",
+                        )
+                    )
+                    payload = {
+                        "segment_id": requirement.id,
+                        "resource_id": "R-778-P3",
+                        "day": requirement.start_date.isoformat(),
+                        "hours": 4.0,
+                    }
+                    first = executor.execute(
+                        scope="manual_allocation.create",
+                        key="restore-fragment-a-778",
+                        request_payload=payload,
+                        action=lambda: {
+                            "allocation_id": allocation_adapter.create_manual(
+                                requirement.id,
+                                "R-778-P3",
+                                requirement.start_date,
+                                Decimal("4.00"),
+                            )
+                        },
                     )
                     releases = session.scalars(
                         select(PlanningWorkQueueRelease)
@@ -1088,7 +1110,20 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                     self.assertEqual(segment.remaining_hours, 4.0)
 
                     active_before = {row.id for row in releases if row.active}
-                    SqlPlanningCommandAdapter(session).rebuild()
+                    replay = executor.execute(
+                        scope="manual_allocation.create",
+                        key="restore-fragment-a-778",
+                        request_payload=payload,
+                        action=lambda: {
+                            "allocation_id": allocation_adapter.create_manual(
+                                requirement.id,
+                                "R-778-P3",
+                                requirement.start_date,
+                                Decimal("4.00"),
+                            )
+                        },
+                    )
+                    self.assertEqual(replay, first)
                     active_after = {
                         row.id
                         for row in session.scalars(
@@ -1099,6 +1134,16 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                         ).all()
                     }
                     self.assertEqual(active_after, active_before)
+                    counted = session.scalars(
+                        select(Shift).where(
+                            Shift.resource_requirement_id == requirement.id,
+                            Shift.allocation_type != MISSING_ALLOCATION_TYPE,
+                        )
+                    ).all()
+                    self.assertEqual(
+                        sum((row.hours for row in counted), Decimal("0.00")),
+                        Decimal("4.00"),
+                    )
             finally:
                 engine.dispose()
 
