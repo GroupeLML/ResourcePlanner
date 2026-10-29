@@ -1446,7 +1446,10 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         end = segment.end_date
         if end < start:
             start, end = end, start
-        required_hours = max(float(segment.automatic_rebuild_hours), 0.0)
+        # ADR-034 recommendations operate on canonical uncovered effective need,
+        # not the automatic rebuild budget. Returned work can therefore be placed
+        # explicitly even while automatic regeneration is suppressed.
+        required_hours = max(float(segment.remaining_hours), 0.0)
         if required_hours <= 0.01:
             return ()
 
