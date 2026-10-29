@@ -7,7 +7,7 @@ import json
 import re
 from typing import Any
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from ...application.read_models import SegmentReadModel
@@ -22,7 +22,10 @@ from ...domain.operational_contacts import (
 from .demand_period_models import WorkforceRequestPeriod, WorkforceRequestPeriodRequirement
 from .segment_asset_guard import assert_segment_asset_mutation_compatible
 from .operational_contact_repository import SqlOperationalContactRepository
-from .planning_intent_repository import SqlRequestRequirementPlanningIntentRepository
+from .operational_choice_models import (
+    RequestCompletionReduction,
+    RequestRequirementPlanningIntent,
+)
 from .models import (
     ORIGIN_REQUEST,
     Project,
@@ -75,12 +78,32 @@ class SqlSegmentRepository(SegmentRepositoryPort):
         self._actor_name = _text(actor_name)
 
     def _row_query(self):
+        effective_need = (
+            select(func.min(RequestCompletionReduction.effective_need_after))
+            .select_from(RequestRequirementPlanningIntent)
+            .join(
+                RequestCompletionReduction,
+                RequestCompletionReduction.planning_intent_id
+                == RequestRequirementPlanningIntent.id,
+            )
+            .where(
+                RequestRequirementPlanningIntent.current_resource_requirement_id
+                == ResourceRequirement.id,
+                RequestCompletionReduction.reconciliation_state == "ACTIVE",
+            )
+            .correlate(ResourceRequirement)
+            .scalar_subquery()
+        )
         return (
             select(
                 ResourceRequirement,
                 Project,
                 WorkforceRequest,
                 Resource,
+                func.coalesce(
+                    effective_need,
+                    ResourceRequirement.planned_hours,
+                ).label("effective_need"),
             )
             .join(Project, ResourceRequirement.project_id == Project.id)
             .outerjoin(
@@ -97,15 +120,8 @@ class SqlSegmentRepository(SegmentRepositoryPort):
         request: WorkforceRequest | None,
         resource: Resource | None,
         *,
-        effective_need: Decimal | None = None,
+        effective_need: Decimal,
     ) -> SegmentReadModel:
-        if effective_need is None:
-            effective_need = SqlRequestRequirementPlanningIntentRepository(
-                self._session
-            ).current_effective_need_for_requirement(
-                requirement.id,
-                fallback_hours=requirement.planned_hours,
-            )
         return SegmentReadModel(
             segment_id=_text(requirement.legacy_segment_id) or requirement.id,
             demand_number=(
@@ -156,25 +172,15 @@ class SqlSegmentRepository(SegmentRepositoryPort):
                 ResourceRequirement.id,
             )
         ).all()
-        effective_need_by_requirement = (
-            SqlRequestRequirementPlanningIntentRepository(
-                self._session
-            ).current_effective_need_by_requirement(
-                {
-                    requirement.id: requirement.planned_hours
-                    for requirement, _project, _request, _resource in rows
-                }
-            )
-        )
         return tuple(
             self._read_model(
                 requirement,
                 project,
                 request,
                 resource,
-                effective_need=effective_need_by_requirement[requirement.id],
+                effective_need=Decimal(str(effective_need)).quantize(Decimal("0.01")),
             )
-            for requirement, project, request, resource in rows
+            for requirement, project, request, resource, effective_need in rows
         )
 
     def get(self, segment_id: str) -> SegmentReadModel | None:
@@ -189,8 +195,14 @@ class SqlSegmentRepository(SegmentRepositoryPort):
         ).one_or_none()
         if row is None:
             return None
-        requirement, project, request, resource = row
-        return self._read_model(requirement, project, request, resource)
+        requirement, project, request, resource, effective_need = row
+        return self._read_model(
+            requirement,
+            project,
+            request,
+            resource,
+            effective_need=Decimal(str(effective_need)).quantize(Decimal("0.01")),
+        )
 
     def _requirement(self, segment_id: str) -> ResourceRequirement:
         wanted = _text(segment_id)
