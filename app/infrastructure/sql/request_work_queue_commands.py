@@ -37,10 +37,10 @@ from .approval_revision_models import (
 )
 from .asset_service import SqlAssetService
 from .segment_asset_guard import assert_segment_asset_mutation_compatible
-from .base import new_id
+from .base import new_id, utc_now
 from .command_adapters import SqlPlanningCommandAdapter
 from .identity_models import AppUser
-from .models import ORIGIN_REQUEST, ResourceRequirement, Shift, WorkforceRequest
+from .models import ORIGIN_REQUEST, ResourceRequirement, Shift, WorkforceRequest, WorkforceRequestHistory
 from .operational_choice_models import (
     PLANNING_INTENT_PRESERVE_EXISTING,
     PLANNING_INTENT_QUEUED,
@@ -706,6 +706,37 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
             request,
             command.expected_request_version,
         )
+        open_cycles = self._session.scalars(
+            select(RequestApprovalCycle).where(
+                RequestApprovalCycle.workforce_request_id == request.id,
+                RequestApprovalCycle.state == "OPEN",
+            )
+        ).all()
+        for cycle in open_cycles:
+            cycle.state = "INVALIDATED"
+            cycle.invalidated_at = utc_now()
+            cycle.invalidation_reason = "POST_APPROVAL_REDUCTION"
+            self._session.add(
+                WorkforceRequestHistory(
+                    workforce_request_id=request.id,
+                    action="Invalidation cycle approbation",
+                    status=request.status,
+                    comment="POST_APPROVAL_REDUCTION",
+                    actor_name=self._actor_name,
+                    details=json.dumps(
+                        {
+                            "approval_cycle_id": cycle.id,
+                            "submitted_request_version": int(cycle.submitted_request_version),
+                            "subject_fingerprint": cycle.subject_fingerprint,
+                            "invalidation_reason": "POST_APPROVAL_REDUCTION",
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    occurred_at=utc_now(),
+                )
+            )
+        self._session.flush()
         revision, state = self._approval_and_operational(
             requirement,
             request,
