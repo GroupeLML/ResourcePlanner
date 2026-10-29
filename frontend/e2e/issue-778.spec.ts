@@ -24,7 +24,12 @@ test("778 expose les trois actions ADR-034 et confirme leurs mutations", async (
     const body = await response.json() as Record<string, any>;
     const resource = body.resources?.[0];
     if (!resource) {
-      await route.fulfill({ response, json: body });
+      await route.fulfill({
+        status: response.status(),
+        headers: response.headers(),
+        contentType: "application/json",
+        body: JSON.stringify(body),
+      });
       return;
     }
     const day = body.start;
@@ -63,7 +68,8 @@ test("778 expose les trois actions ADR-034 et confirme leurs mutations", async (
       },
     ];
     await route.fulfill({
-      response,
+      status: response.status(),
+      headers: response.headers(),
       contentType: "application/json",
       body: JSON.stringify(body),
     });
