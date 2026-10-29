@@ -24,12 +24,13 @@ def stable_planning_slot_key(
     source_period_id: str | None,
 ) -> str:
     """Stable, display-independent ADR-034 slot identity."""
+    # ADR-034: approved_entry_key already embeds the stable logical line/period
+    # identity. Physical RequestLine/Period row ids are provenance only and must
+    # never fork the durable slot when a compatible reapproval rematerializes them.
     return json.dumps(
         [
             str(workforce_request_id),
-            str(source_request_line_id or ""),
             str(approved_entry_key),
-            str(source_period_id or ""),
             int(slot_index),
         ],
         ensure_ascii=False,
@@ -67,6 +68,25 @@ class SqlRequestRequirementPlanningIntentRepository:
             source_period_id=source_period_id,
         )
         row = self.by_key(key)
+        logical_rows = list(
+            self.session.scalars(
+                select(RequestRequirementPlanningIntent).where(
+                    RequestRequirementPlanningIntent.workforce_request_id
+                    == workforce_request_id,
+                    RequestRequirementPlanningIntent.approved_entry_key
+                    == approved_entry_key,
+                    RequestRequirementPlanningIntent.slot_index == int(slot_index),
+                )
+            ).all()
+        )
+        if row is None and logical_rows:
+            if len(logical_rows) != 1:
+                raise ValueError(
+                    "planning_slot_identity_ambiguous: plusieurs intentions durables "
+                    "existent pour le même slot logique."
+                )
+            row = logical_rows[0]
+            row.slot_identity_key = key
         if row is None:
             row = RequestRequirementPlanningIntent(
                 slot_identity_key=key,
@@ -85,10 +105,26 @@ class SqlRequestRequirementPlanningIntentRepository:
             self.session.flush()
             return row
 
-        # Reapproval/rematerialization updates provenance/current binding, but not
-        # the stable identity or previously chosen operational intent.
+        # Reapproval/rematerialization updates physical provenance/current binding,
+        # but never creates a second logical slot or resets operational intent.
+        if current_resource_requirement_id:
+            other = self.session.scalar(
+                select(RequestRequirementPlanningIntent).where(
+                    RequestRequirementPlanningIntent.current_resource_requirement_id
+                    == current_resource_requirement_id,
+                    RequestRequirementPlanningIntent.id != row.id,
+                )
+            )
+            if other is not None:
+                raise ValueError(
+                    "planning_slot_binding_ambiguous: un ResourceRequirement ne peut "
+                    "être lié qu'à une seule intention durable."
+                )
+        row.source_request_line_id = source_request_line_id
+        row.source_period_id = source_period_id
         row.approval_revision_id = approval_revision_id
         row.current_resource_requirement_id = current_resource_requirement_id
+        self.session.flush()
         return row
 
     def active_reduction_total(self, planning_intent_id: str) -> Decimal:
