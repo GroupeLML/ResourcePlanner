@@ -16,6 +16,7 @@ from app.infrastructure.sql import (
     ResourceRequirement,
     Shift,
     SqlPlanningCommandAdapter,
+    SqlAllocationCommandAdapter,
     SqlPlannerQueryRepositoryWithLoadProfiles,
     SqlPeriodAwareApprovedDemandSyncAdapter,
     WorkforceRequest,
@@ -405,6 +406,123 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                     self.assertEqual(active, [])
             finally:
                 engine.dispose()
+
+
+    def test_preserved_survivor_consumes_capacity_before_other_requirement(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-778-p3-capacity",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._approve(client, 8)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    _request, requirement, intent = self._context(session, number)
+                    requirement.assigned_resource_id = "R-778-P3"
+                    intent.intent_mode = "PRESERVE_EXISTING"
+                    session.add(
+                        Shift(
+                            id="SHIFT-CAPACITY-778",
+                            legacy_allocation_id="ALLOC-CAPACITY-778",
+                            resource_requirement_id=requirement.id,
+                            resource_id="R-778-P3",
+                            work_date=requirement.start_date,
+                            hours=Decimal("8.00"),
+                            source="AUTO",
+                            locked=False,
+                        )
+                    )
+                    other = ResourceRequirement(
+                        id="REQ-CAPACITY-OTHER-778",
+                        legacy_segment_id="SEG-CAPACITY-OTHER-778",
+                        project_id=requirement.project_id,
+                        start_date=requirement.start_date,
+                        end_date=requirement.start_date,
+                        planned_hours=Decimal("8.00"),
+                        status="Planifié",
+                        origin="AD_HOC",
+                        assigned_resource_id="R-778-P3",
+                        planning_type="Flexible",
+                    )
+                    session.add(other)
+                    session.flush()
+
+                    summary = SqlPlanningCommandAdapter(session).rebuild()
+                    self.assertEqual(summary["allocated_hours"], 8.0)
+                    self.assertGreaterEqual(summary["unallocated_hours"], 8.0)
+                    other_after = SqlPlannerQueryRepositoryWithLoadProfiles(
+                        session
+                    ).get_segment(other.id)
+                    self.assertIsNotNone(other_after)
+                    self.assertEqual(other_after.covered_hours, 0.0)
+                    self.assertEqual(other_after.remaining_hours, 8.0)
+                    survivor = session.get(Shift, "SHIFT-CAPACITY-778")
+                    self.assertIsNotNone(survivor)
+                    self.assertEqual(survivor.hours, Decimal("8.00"))
+            finally:
+                engine.dispose()
+
+    def test_queued_work_can_be_explicitly_placed_and_remains_durable(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-778-p3-place",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._approve(client, 8)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    _request, requirement, intent = self._context(session, number)
+                    intent.intent_mode = "QUEUED"
+                    intent.target_mode = "EXPLICIT_NONE"
+                    intent.target_resource_id = None
+                    requirement.assigned_resource_id = None
+                    session.query(Shift).filter_by(
+                        resource_requirement_id=requirement.id
+                    ).delete(synchronize_session=False)
+                    session.flush()
+
+                    SqlAllocationCommandAdapter(session).assign_segment(
+                        requirement.id,
+                        "R-778-P3",
+                    )
+                    shifts = session.scalars(
+                        select(Shift).where(
+                            Shift.resource_requirement_id == requirement.id
+                        )
+                    ).all()
+                    self.assertTrue(shifts)
+                    self.assertEqual(
+                        sum((row.hours for row in shifts), Decimal("0")),
+                        Decimal("8.00"),
+                    )
+                    self.assertEqual({row.resource_id for row in shifts}, {"R-778-P3"})
+                    self.assertEqual(intent.intent_mode, "PRESERVE_EXISTING")
+                    self.assertEqual(intent.target_mode, "EXPLICIT_RESOURCE")
+                    self.assertEqual(intent.target_resource_id, "R-778-P3")
+
+                    shift_ids = {row.id for row in shifts}
+                    SqlPlanningCommandAdapter(session).rebuild()
+                    reloaded = session.scalars(
+                        select(Shift).where(
+                            Shift.resource_requirement_id == requirement.id
+                        )
+                    ).all()
+                    self.assertEqual({row.id for row in reloaded}, shift_ids)
+            finally:
+                engine.dispose()
+
 
 
 if __name__ == "__main__":
