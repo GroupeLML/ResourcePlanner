@@ -281,7 +281,7 @@ class SameResourcePeriodPlanningTests(unittest.TestCase):
                     ),
                 ]
             )
-            root.planned_hours = Decimal("0.00")
+            historical_hours = root.planned_hours
             root.status = "Terminé"
             session.flush()
 
@@ -290,7 +290,7 @@ class SameResourcePeriodPlanningTests(unittest.TestCase):
             self.assertEqual(summary["same_resource_groups"], 1)
             self.assertEqual(child.assigned_resource_id, "R1")
             self.assertEqual(root.status, "Terminé")
-            self.assertEqual(root.planned_hours, Decimal("0.00"))
+            self.assertEqual(root.planned_hours, historical_hours)
 
     def test_unassigned_component_remains_unresolved_without_inventing_a_resource(self) -> None:
         with transactional_session(self.factory) as session:
