@@ -22,6 +22,7 @@ from ...domain.operational_contacts import (
 from .demand_period_models import WorkforceRequestPeriod, WorkforceRequestPeriodRequirement
 from .segment_asset_guard import assert_segment_asset_mutation_compatible
 from .operational_contact_repository import SqlOperationalContactRepository
+from .planning_intent_repository import SqlRequestRequirementPlanningIntentRepository
 from .models import (
     ORIGIN_REQUEST,
     Project,
@@ -89,13 +90,19 @@ class SqlSegmentRepository(SegmentRepositoryPort):
             .outerjoin(Resource, ResourceRequirement.assigned_resource_id == Resource.id)
         )
 
-    @staticmethod
     def _read_model(
+        self,
         requirement: ResourceRequirement,
         project: Project,
         request: WorkforceRequest | None,
         resource: Resource | None,
     ) -> SegmentReadModel:
+        effective_need = SqlRequestRequirementPlanningIntentRepository(
+            self._session
+        ).current_effective_need_for_requirement(
+            requirement.id,
+            fallback_hours=requirement.planned_hours,
+        )
         return SegmentReadModel(
             segment_id=_text(requirement.legacy_segment_id) or requirement.id,
             demand_number=(
@@ -113,7 +120,7 @@ class SqlSegmentRepository(SegmentRepositoryPort):
             ),
             start_date=requirement.start_date,
             end_date=requirement.end_date,
-            planned_hours=float(requirement.planned_hours),
+            planned_hours=float(effective_need),
             status=_text(requirement.status),
             description=_optional_text(requirement.description),
             origin=_optional_text(requirement.origin),
