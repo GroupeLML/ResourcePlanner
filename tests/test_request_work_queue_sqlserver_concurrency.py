@@ -21,6 +21,7 @@ from app.infrastructure.sql import (
     PlanningWorkQueueRelease,
     RequestCompletionReduction,
     SqlPeriodAwareApprovedDemandSyncAdapter,
+    SqlPlannerQueryRepositoryWithLoadProfiles,
     Project,
     RequestOperationalState,
     RequestRequirementPlanningIntent,
@@ -55,7 +56,6 @@ from app.infrastructure.sql.identity_models import AppUser
 from app.infrastructure.sql.planning_audit import SqlPlanningAuditJournal
 from app.infrastructure.sql.planning_version import SqlPlanningMutationVersionRepository
 from app.infrastructure.sql.planning_intent_repository import SqlRequestRequirementPlanningIntentRepository
-from app.infrastructure.sql.query_repository import SqlPlannerQueryRepositoryWithLoadProfiles
 from app.infrastructure.sql.resource_class_models import ResourceClassConfig
 from app.infrastructure.sql.request_work_queue_commands import SqlRequestWorkQueueCommandAdapter
 from app.infrastructure.sql.request_version import acquire_request_aggregate_version
