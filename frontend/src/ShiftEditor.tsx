@@ -8,6 +8,7 @@ import {
   ResourceReadModel,
   RequestWorkQueuePreview,
   ShiftReadModel,
+  getDemandDetail,
   getRequestWorkQueuePreview,
   permanentlyReduceShiftHours,
   returnSegmentToWorkQueue,
