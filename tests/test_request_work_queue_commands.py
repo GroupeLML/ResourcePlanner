@@ -437,6 +437,9 @@ class RequestWorkQueueCommandTests(unittest.TestCase):
             self.assertEqual(result["effective_need_after"], 32.0)
             self.assertIsNone(session.get(Shift, "S4"))
             self.assertEqual(session.query(RequestCompletionReduction).count(), 1)
+            candidate = session.get(RequestApprovalCycle, "C2")
+            self.assertEqual(candidate.state, "INVALIDATED")
+            self.assertEqual(candidate.invalidation_reason, "POST_APPROVAL_REDUCTION")
 
     def test_same_stable_actor_key_replays_after_shift_is_gone(self) -> None:
         payload = {
@@ -493,6 +496,50 @@ class RequestWorkQueueCommandTests(unittest.TestCase):
             )
             self.assertEqual(replay, first)
             self.assertEqual(session.query(PlanningWorkQueueRelease).count(), 1)
+
+    def test_permanent_reduction_to_zero_marks_completion_not_cancellation(self) -> None:
+        with transactional_session(self.factory) as session:
+            revision = session.get(RequestApprovalRevision, "REV1")
+            revision.payload_text = json.dumps(
+                {
+                    "authorization": {
+                        "entries": [
+                            {
+                                "identity": ENTRY_KEY,
+                                "hours": "8.00",
+                                "slot_count": 1,
+                                "start_date": DAY.isoformat(),
+                                "end_date": DAY.isoformat(),
+                            }
+                        ]
+                    }
+                },
+                separators=(",", ":"),
+            )
+            requirement = session.get(ResourceRequirement, "REQ1")
+            requirement.planned_hours = Decimal("8.00")
+            requirement.end_date = DAY
+            session.query(Shift).filter(
+                Shift.id.in_(("S2", "S3", "S4", "S5"))
+            ).delete(synchronize_session=False)
+
+        with transactional_session(self.factory) as session:
+            adapter, _planning = self._adapter(session)
+            result = adapter.permanently_reduce_shift(
+                PermanentlyReduceShiftHoursCommand(
+                    allocation_id="A1",
+                    expected_planning_version=1,
+                    expected_request_version=1,
+                    expected_approval_revision_id="REV1",
+                    expected_operational_version=1,
+                    command_id="reduce-to-zero-778",
+                )
+            )
+            requirement = session.get(ResourceRequirement, "REQ1")
+            self.assertEqual(result["effective_need_after"], 0.0)
+            self.assertEqual(requirement.planned_hours, Decimal("0.00"))
+            self.assertEqual(requirement.status, "Terminé")
+            self.assertIsNone(session.get(Shift, "S1"))
 
     def test_stale_planning_version_rolls_back_without_release(self) -> None:
         with self.assertRaises(ApplicationConflictError):
