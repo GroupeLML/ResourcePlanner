@@ -877,10 +877,18 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                     ResourceRequirement.status != "Annulé",
                 )
             ).all()
+            intent_repository = SqlRequestRequirementPlanningIntentRepository(
+                self._session
+            )
             current_plan_hours = round(
                 sum(
                     projected_hours_in_window(
-                        float(requirement.planned_hours),
+                        float(
+                            intent_repository.current_effective_need_for_requirement(
+                                requirement.id,
+                                fallback_hours=requirement.planned_hours,
+                            )
+                        ),
                         requirement.start_date,
                         requirement.end_date,
                         start,
@@ -1278,7 +1286,17 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         for requirement, resource in requirements:
             segment_id = _text(requirement.legacy_segment_id) or requirement.id
             allocated, outside = full_shift_totals.get(requirement.id, (0.0, 0.0))
-            planned = round(float(requirement.planned_hours), 2)
+            planned = round(
+                float(
+                    SqlRequestRequirementPlanningIntentRepository(
+                        self._session
+                    ).current_effective_need_for_requirement(
+                        requirement.id,
+                        fallback_hours=requirement.planned_hours,
+                    )
+                ),
+                2,
+            )
             unplaced = round(max(planned - allocated, 0.0), 2)
             diagnostics.append(
                 PlanningSegmentCapacityDiagnosticReadModel(
