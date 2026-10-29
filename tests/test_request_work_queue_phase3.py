@@ -853,7 +853,7 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
             finally:
                 engine.dispose()
 
-    def test_locked_preserved_survivor_consumes_capacity(self) -> None:
+    def test_auto_locked_survivor_consumes_capacity_exactly_once(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
             app = create_api_app(
@@ -870,7 +870,7 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                 with factory.begin() as session:
                     _request, requirement, intent = self._context(session, number)
                     requirement.assigned_resource_id = "R-778-P3"
-                    intent.intent_mode = "PRESERVE_EXISTING"
+                    intent.intent_mode = "AUTO"
                     session.add(
                         Shift(
                             id="SHIFT-LOCKED-CAPACITY-778",
@@ -878,7 +878,7 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                             resource_requirement_id=requirement.id,
                             resource_id="R-778-P3",
                             work_date=requirement.start_date,
-                            hours=Decimal("8.00"),
+                            hours=Decimal("4.00"),
                             source="MANUAL",
                             locked=True,
                         )
@@ -889,7 +889,7 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                         project_id=requirement.project_id,
                         start_date=requirement.start_date,
                         end_date=requirement.start_date,
-                        planned_hours=Decimal("8.00"),
+                        planned_hours=Decimal("4.00"),
                         status="Planifié",
                         origin="AD_HOC",
                         assigned_resource_id="R-778-P3",
@@ -898,22 +898,24 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                     session.add(other)
                     session.flush()
 
-                    SqlPlanningCommandAdapter(session).rebuild()
+                    SqlPlanningCommandAdapter(session).rebuild(
+                        preserve_shift_ids=("SHIFT-LOCKED-CAPACITY-778",)
+                    )
                     competing = session.scalars(
                         select(Shift).where(
                             Shift.resource_requirement_id == other.id,
                             Shift.allocation_type != MISSING_ALLOCATION_TYPE,
                         )
                     ).all()
-                    self.assertEqual(competing, [])
+                    self.assertEqual(sum((row.hours for row in competing), Decimal("0")), Decimal("4.00"))
                     survivor = session.get(Shift, "SHIFT-LOCKED-CAPACITY-778")
                     self.assertIsNotNone(survivor)
                     self.assertTrue(survivor.locked)
-                    self.assertEqual(survivor.hours, Decimal("8.00"))
+                    self.assertEqual(survivor.hours, Decimal("4.00"))
             finally:
                 engine.dispose()
 
-    def test_asset_locked_preserved_survivor_consumes_capacity(self) -> None:
+    def test_auto_asset_locked_survivor_consumes_capacity_exactly_once(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
             app = create_api_app(
@@ -930,14 +932,14 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                 with factory.begin() as session:
                     _request, requirement, intent = self._context(session, number)
                     requirement.assigned_resource_id = "R-778-P3"
-                    intent.intent_mode = "PRESERVE_EXISTING"
+                    intent.intent_mode = "AUTO"
                     shift = Shift(
                         id="SHIFT-ASSET-LOCKED-CAPACITY-778",
                         legacy_allocation_id="ALLOC-ASSET-LOCKED-CAPACITY-778",
                         resource_requirement_id=requirement.id,
                         resource_id="R-778-P3",
                         work_date=requirement.start_date,
-                        hours=Decimal("8.00"),
+                        hours=Decimal("4.00"),
                         source="MANUAL",
                         locked=True,
                     )
@@ -989,7 +991,7 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                         project_id=requirement.project_id,
                         start_date=requirement.start_date,
                         end_date=requirement.start_date,
-                        planned_hours=Decimal("8.00"),
+                        planned_hours=Decimal("4.00"),
                         status="Planifié",
                         origin="AD_HOC",
                         assigned_resource_id="R-778-P3",
@@ -998,14 +1000,16 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                     session.add(other)
                     session.flush()
 
-                    SqlPlanningCommandAdapter(session).rebuild()
+                    SqlPlanningCommandAdapter(session).rebuild(
+                        preserve_shift_ids=(shift.id,)
+                    )
                     competing = session.scalars(
                         select(Shift).where(
                             Shift.resource_requirement_id == other.id,
                             Shift.allocation_type != MISSING_ALLOCATION_TYPE,
                         )
                     ).all()
-                    self.assertEqual(competing, [])
+                    self.assertEqual(sum((row.hours for row in competing), Decimal("0")), Decimal("4.00"))
                     self.assertIsNotNone(session.get(AssetAllocation, "AA-ASSET-LOCKED-778"))
                     self.assertTrue(session.get(Shift, shift.id).locked)
             finally:
