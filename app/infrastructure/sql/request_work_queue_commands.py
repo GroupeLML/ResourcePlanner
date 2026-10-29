@@ -478,7 +478,12 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
             if resource_class
             else set()
         )
-        current_scope_ids = task_scope_ids or class_scope_ids or historical_scope_ids
+        if task_ref:
+            current_scope_ids = task_scope_ids
+        elif resource_class:
+            current_scope_ids = class_scope_ids
+        else:
+            current_scope_ids = historical_scope_ids
         if len(current_scope_ids) != 1:
             raise ApplicationAuthorizationError(
                 "Le périmètre d'approbation courant de la source est absent ou ambigu.",
