@@ -127,6 +127,30 @@ class SqlRequestRequirementPlanningIntentRepository:
         self.session.flush()
         return row
 
+    def current_effective_need_for_requirement(
+        self,
+        requirement_id: str,
+        *,
+        fallback_hours: object,
+    ) -> Decimal:
+        intent = self.session.scalar(
+            select(RequestRequirementPlanningIntent).where(
+                RequestRequirementPlanningIntent.current_resource_requirement_id
+                == str(requirement_id)
+            )
+        )
+        if intent is None:
+            return Decimal(str(fallback_hours)).quantize(Decimal("0.01"))
+        active_after = self.session.scalar(
+            select(func.min(RequestCompletionReduction.effective_need_after)).where(
+                RequestCompletionReduction.planning_intent_id == intent.id,
+                RequestCompletionReduction.reconciliation_state == "ACTIVE",
+            )
+        )
+        if active_after is None:
+            return Decimal(str(fallback_hours)).quantize(Decimal("0.01"))
+        return Decimal(str(active_after)).quantize(Decimal("0.01"))
+
     def active_reduction_total(self, planning_intent_id: str) -> Decimal:
         total = self.session.scalar(
             select(func.coalesce(func.sum(RequestCompletionReduction.reduction_hours), 0)).where(
