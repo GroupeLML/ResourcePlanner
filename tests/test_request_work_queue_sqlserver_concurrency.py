@@ -11,6 +11,7 @@ import unittest
 from sqlalchemy import delete, select
 
 from app.application.errors import ApplicationConflictError
+from app.domain.approval_envelope import EnvelopeEntryIdentity
 from app.application.request_work_queue import (
     PermanentlyReduceShiftHoursCommand,
     ReturnShiftToWorkQueueCommand,
@@ -98,7 +99,7 @@ class RequestWorkQueueSqlServerConcurrencyTests(unittest.TestCase):
         allocation_id = f"A778-{marker}"
         intent_id = f"INT778-{marker}"
         actor_id = f"USR778-{marker}"
-        entry_key = json.dumps(["LINE", line_id, ""], separators=(",", ":"))
+        entry_key = EnvelopeEntryIdentity(line_id=line_id).stable_key
         payload = json.dumps(
             {
                 "authorization": {
@@ -397,7 +398,7 @@ class RequestWorkQueueSqlServerConcurrencyTests(unittest.TestCase):
         availability_id = f"AV778R-{marker}"
         cycle_id = f"CYCLE778R-{marker}"
         approval_requirement_id = f"AR778R-{marker}"
-        entry_key = json.dumps(["LINE", line_id, ""], separators=(",", ":"))
+        entry_key = EnvelopeEntryIdentity(line_id=line_id).stable_key
         payload = json.dumps(
             {
                 "format_version": 1,
@@ -858,7 +859,7 @@ class RequestWorkQueueSqlServerConcurrencyTests(unittest.TestCase):
         availability_id = f"AV778X-{marker}"
         cycle_id = f"CYCLE778X-{marker}"
         approval_requirement_id = f"AR778X-{marker}"
-        entry_key = json.dumps(["LINE", line_id, ""], separators=(",", ":"))
+        entry_key = EnvelopeEntryIdentity(line_id=line_id).stable_key
         payload = json.dumps(
             {
                 "format_version": 1,
