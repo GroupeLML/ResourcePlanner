@@ -566,7 +566,12 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             if intent is not None
             else None
         )
-        if intent is not None and active_release is not None:
+        if (
+            intent is not None
+            and active_release is not None
+            and intent.intent_mode
+            in (PLANNING_INTENT_PRESERVE_EXISTING, PLANNING_INTENT_QUEUED)
+        ):
             effective_need = self._current_effective_need(requirement)
             covered = self._counted_coverage(requirement.id)
             residual = max(effective_need - covered, Decimal("0.00"))
