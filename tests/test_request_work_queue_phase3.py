@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import time
 from decimal import Decimal
 from tempfile import TemporaryDirectory
@@ -16,6 +17,7 @@ from app.infrastructure.sql import (
     RequestLine,
     Resource,
     ResourceAvailabilityRule,
+    RequestOperationalState,
     RequestRequirementPlanningIntent,
     ResourceRequirement,
     Shift,
@@ -28,6 +30,7 @@ from app.infrastructure.sql import (
     create_sql_engine,
 )
 from app.infrastructure.sql.request_plan_preparation import SqlRequestPlanPreparer
+from app.infrastructure.sql.planning_intent_repository import SqlRequestRequirementPlanningIntentRepository
 from app.infrastructure.sql.idempotency import SqlCommandIdempotencyAdapter
 from app.infrastructure.sql.asset_models import Asset, AssetAllocation, AssetRequirement, AssetType
 from app.domain.planning_engine import MISSING_ALLOCATION_TYPE
@@ -1012,6 +1015,211 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                     self.assertEqual(sum((row.hours for row in competing), Decimal("0")), Decimal("4.00"))
                     self.assertIsNotNone(session.get(AssetAllocation, "AA-ASSET-LOCKED-778"))
                     self.assertTrue(session.get(Shift, shift.id).locked)
+            finally:
+                engine.dispose()
+
+    def test_current_override_projects_materialized_need_not_historical_snapshot(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-778-current-override",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._approve(client, 40)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    request, requirement, intent = self._context(session, number)
+                    self._reduce(
+                        session,
+                        request,
+                        requirement,
+                        intent,
+                        Decimal("8.00"),
+                    )
+                    SqlPeriodAwareApprovedDemandSyncAdapter(
+                        session
+                    ).sync_operational_choices(number)
+                    self.assertEqual(requirement.planned_hours, Decimal("32.00"))
+
+                    state = session.get(RequestOperationalState, request.id)
+                    self.assertIsNotNone(state)
+                    state.budget_overrides_text = json.dumps(
+                        {intent.approved_entry_key: 36.0},
+                        separators=(",", ":"),
+                    )
+                    session.flush()
+                    SqlPeriodAwareApprovedDemandSyncAdapter(
+                        session
+                    ).sync_operational_choices(number)
+                    session.flush()
+
+                    self.assertEqual(requirement.planned_hours, Decimal("28.00"))
+                    current_need = (
+                        SqlRequestRequirementPlanningIntentRepository(
+                            session
+                        ).current_effective_need_for_requirement(
+                            requirement.id,
+                            fallback_hours=requirement.planned_hours,
+                        )
+                    )
+                    self.assertEqual(current_need, Decimal("28.00"))
+                    segment = SqlPlannerQueryRepositoryWithLoadProfiles(
+                        session
+                    ).get_segment(requirement.id)
+                    self.assertIsNotNone(segment)
+                    self.assertEqual(segment.planned_hours, 28.0)
+            finally:
+                engine.dispose()
+
+    def test_controlled_placement_rejects_above_residual_and_accepts_exact_residual(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-778-placement-bound",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._approve(client, 8)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    request, requirement, intent = self._context(session, number)
+                    session.query(Shift).filter_by(
+                        resource_requirement_id=requirement.id
+                    ).delete(synchronize_session=False)
+                    survivor = Shift(
+                        id="SHIFT-PLACEMENT-SURVIVOR-778",
+                        legacy_allocation_id="ALLOC-PLACEMENT-SURVIVOR-778",
+                        resource_requirement_id=requirement.id,
+                        resource_id="R-778-P3",
+                        work_date=requirement.start_date,
+                        hours=Decimal("4.00"),
+                        source="AUTO",
+                        locked=False,
+                    )
+                    release = PlanningWorkQueueRelease(
+                        id="REL-PLACEMENT-778",
+                        planning_intent_id=intent.id,
+                        resource_requirement_id=requirement.id,
+                        original_shift_id="SHIFT-PLACEMENT-RETURNED-778",
+                        workforce_request_id=request.id,
+                        approval_revision_id=requirement.approval_revision_id,
+                        approved_entry_key=intent.approved_entry_key,
+                        resource_id="R-778-P3",
+                        work_date=requirement.start_date,
+                        hours=Decimal("4.00"),
+                        shift_snapshot_text="{}",
+                        actor_user_id=TEST_ADMIN_USER_ID,
+                        command_id="release-placement-778",
+                        active=True,
+                    )
+                    session.add_all((survivor, release))
+                    session.flush()
+
+                    allocation = SqlAllocationCommandAdapter(session)
+                    with self.assertRaises(ApplicationConflictError) as raised:
+                        allocation.create_manual(
+                            requirement.id,
+                            "R-778-P3",
+                            requirement.start_date,
+                            Decimal("8.00"),
+                        )
+                    self.assertEqual(
+                        raised.exception.code,
+                        "request_work_queue_placement_exceeds_residual",
+                    )
+                    self.assertTrue(release.active)
+                    self.assertEqual(
+                        session.query(Shift).filter_by(
+                            resource_requirement_id=requirement.id
+                        ).count(),
+                        1,
+                    )
+
+                    allocation.create_manual(
+                        requirement.id,
+                        "R-778-P3",
+                        requirement.start_date,
+                        Decimal("4.00"),
+                    )
+                    self.assertFalse(release.active)
+                    counted = sum(
+                        (
+                            row.hours
+                            for row in session.scalars(
+                                select(Shift).where(
+                                    Shift.resource_requirement_id == requirement.id,
+                                    (Shift.allocation_type.is_(None))
+                                    | (Shift.allocation_type != MISSING_ALLOCATION_TYPE),
+                                )
+                            ).all()
+                        ),
+                        Decimal("0"),
+                    )
+                    self.assertEqual(counted, Decimal("8.00"))
+            finally:
+                engine.dispose()
+
+    def test_partial_controlled_placement_leaves_residual_and_release_active(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-778-placement-partial",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._approve(client, 8)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    request, requirement, intent = self._context(session, number)
+                    session.query(Shift).filter_by(
+                        resource_requirement_id=requirement.id
+                    ).delete(synchronize_session=False)
+                    release = PlanningWorkQueueRelease(
+                        id="REL-PLACEMENT-PARTIAL-778",
+                        planning_intent_id=intent.id,
+                        resource_requirement_id=requirement.id,
+                        original_shift_id="SHIFT-PLACEMENT-PARTIAL-RETURNED-778",
+                        workforce_request_id=request.id,
+                        approval_revision_id=requirement.approval_revision_id,
+                        approved_entry_key=intent.approved_entry_key,
+                        resource_id="R-778-P3",
+                        work_date=requirement.start_date,
+                        hours=Decimal("8.00"),
+                        shift_snapshot_text="{}",
+                        actor_user_id=TEST_ADMIN_USER_ID,
+                        command_id="release-placement-partial-778",
+                        active=True,
+                    )
+                    session.add(release)
+                    session.flush()
+
+                    allocation = SqlAllocationCommandAdapter(session)
+                    allocation.create_manual(
+                        requirement.id,
+                        "R-778-P3",
+                        requirement.start_date,
+                        Decimal("4.00"),
+                    )
+                    self.assertTrue(release.active)
+                    segment = SqlPlannerQueryRepositoryWithLoadProfiles(
+                        session
+                    ).get_segment(requirement.id)
+                    self.assertIsNotNone(segment)
+                    self.assertEqual(segment.covered_hours, 4.0)
+                    self.assertEqual(segment.remaining_hours, 4.0)
             finally:
                 engine.dispose()
 
