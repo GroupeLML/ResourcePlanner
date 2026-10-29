@@ -6,9 +6,9 @@ import { useAuth } from "./AuthContext";
 import {
   ApiError,
   ResourceReadModel,
-  DemandDetailReadModel,
+  RequestWorkQueuePreview,
   ShiftReadModel,
-  getDemandDetail,
+  getRequestWorkQueuePreview,
   permanentlyReduceShiftHours,
   returnSegmentToWorkQueue,
   returnShiftToWorkQueue,
@@ -50,12 +50,7 @@ type AtomicAction = {
 type WorkQueueActionMode = "return_shift" | "return_segment" | "permanent_reduction";
 type WorkQueueAction = {
   mode: WorkQueueActionMode;
-  detail: DemandDetailReadModel;
-  expectedPlanningVersion: number;
-  expectedApprovalRevisionId: string;
-  expectedOperationalVersion: number;
-  expectedRequestVersion: number;
-  sourceRequestLineId: string | null;
+  preview: RequestWorkQueuePreview;
   idempotencyKey: string;
   ambiguousRetry: boolean;
 };
@@ -501,27 +496,21 @@ export default function ShiftEditor({
     setWorkQueuePreparing(true);
     setError(null);
     try {
-      const detail = await getDemandDetail(shift.demand_number);
-      const activeRevisionId = detail.approval_state?.active_revision_id ?? null;
-      const operationalVersion = detail.approval_state?.operational_version ?? null;
-      const expectedRequestVersion = detail.policy.expected_request_version;
-      if (!activeRevisionId || operationalVersion == null) {
-        onStale();
+      const preview = await getRequestWorkQueuePreview(shift.allocation_id);
+      const capability = mode === "return_shift"
+        ? [preview.return_shift_allowed, preview.return_shift_block_code] as const
+        : mode === "return_segment"
+          ? [preview.return_segment_allowed, preview.return_segment_block_code] as const
+          : [preview.permanent_reduction_allowed, preview.permanent_reduction_block_code] as const;
+      if (!capability[0]) {
+        setError(
+          `Action non disponible selon le backend${capability[1] ? ` (${capability[1]})` : ""}.`,
+        );
         return;
       }
-      const materialized = detail.materialized_plan.requirements.find(
-        (row) =>
-          row.requirement_id === shift.requirement_id
-          || row.segment_id === shift.segment_id,
-      );
       setWorkQueueAction({
         mode,
-        detail,
-        expectedPlanningVersion: planningVersion,
-        expectedApprovalRevisionId: activeRevisionId,
-        expectedOperationalVersion: operationalVersion,
-        expectedRequestVersion,
-        sourceRequestLineId: materialized?.source_request_line_id ?? null,
+        preview,
         idempotencyKey: newAtomicIdempotencyKey(),
         ambiguousRetry: false,
       });
@@ -543,9 +532,9 @@ export default function ShiftEditor({
     setWorkQueueAction((current) => current ? { ...current, ambiguousRetry: false } : current);
     try {
       const common = {
-        expected_planning_version: workQueueAction.expectedPlanningVersion,
-        expected_approval_revision_id: workQueueAction.expectedApprovalRevisionId,
-        expected_operational_version: workQueueAction.expectedOperationalVersion,
+        expected_planning_version: workQueueAction.preview.planning_version,
+        expected_approval_revision_id: workQueueAction.preview.approval_revision_id,
+        expected_operational_version: workQueueAction.preview.operational_version,
       };
       if (workQueueAction.mode === "return_shift") {
         await returnShiftToWorkQueue(
@@ -564,7 +553,7 @@ export default function ShiftEditor({
           shift.allocation_id,
           {
             ...common,
-            expected_request_version: workQueueAction.expectedRequestVersion,
+            expected_request_version: workQueueAction.preview.request_version,
           },
           workQueueAction.idempotencyKey,
         );
@@ -647,7 +636,7 @@ export default function ShiftEditor({
     return (
       <SegmentEditor
         open
-        segmentId={shift.requirement_id || shift.segment_id}
+        segmentId={shift.requirement_id || workQueueAction?.preview.segment_id ?? shift.segment_id}
         demand={null}
         resources={resources}
         onClose={() => setSegmentOpen(false)}
@@ -785,7 +774,7 @@ export default function ShiftEditor({
             </div>
           )}
 
-          {workQueueAction && (
+          {workQueueAction && workQueueAction.mode !== "permanent_reduction" && (
             <div className="atomic-action-section" data-testid="request-work-queue-confirmation">
               <div className="atomic-action-heading">
                 <div>
@@ -798,27 +787,13 @@ export default function ShiftEditor({
                   </strong>
                   <span>
                     {workQueueAction.mode === "return_shift"
-                      ? `Le quart de ${hoursLabel(shift.hours)} h sera retiré. Le segment ${shift.segment_id} conservera son besoin approuvé et les heures redeviendront à planifier.`
+                      ? `Le quart de ${hoursLabel(workQueueAction?.preview.shift_hours ?? shift.hours)} h sera retiré. Le segment ${workQueueAction?.preview.segment_id ?? shift.segment_id} conservera son besoin approuvé et les heures redeviendront à planifier.`
                       : workQueueAction.mode === "return_segment"
-                        ? `Tous les quarts opérationnels du segment ${shift.segment_id} seront retirés et le besoin complet reviendra dans la File de Travail.`
-                        : `Vous êtes sur le point de supprimer définitivement ce quart de ${hoursLabel(shift.hours)} h.`}
+                        ? `Tous les quarts opérationnels du segment ${workQueueAction?.preview.segment_id ?? shift.segment_id} seront retirés et le besoin complet reviendra dans la File de Travail.`
+                        : `Vous êtes sur le point de supprimer définitivement ce quart de ${hoursLabel(workQueueAction?.preview.shift_hours ?? shift.hours)} h.`}
                   </span>
                 </div>
               </div>
-              {workQueueAction.mode === "permanent_reduction" && (
-                <div className="confirmation-help">
-                  <span>Ces {hoursLabel(shift.hours)} h seront également retirées :</span>
-                  <strong>• du segment {shift.segment_id};</strong>
-                  <strong>
-                    • de la demande {shift.demand_number}
-                    {workQueueAction.sourceRequestLineId
-                      ? ` / ligne ${workQueueAction.sourceRequestLineId}`
-                      : " / ligne concernée"}.
-                  </strong>
-                  <span>Elles ne retourneront pas dans la File de Travail et ne seront plus planifiées.</span>
-                  <strong>Voulez-vous vraiment continuer?</strong>
-                </div>
-              )}
               {workQueueAction.ambiguousRetry && (
                 <div className="atomic-retry-note" role="status">
                   Le résultat réseau est incertain. Réessayer conservera la même clé idempotente et les mêmes versions capturées.
@@ -897,7 +872,7 @@ export default function ShiftEditor({
           )}
 
           <div className="dialog-context-grid">
-            <div><span>Segment</span><strong>{shift.segment_id}</strong></div>
+            <div><span>Segment</span><strong>{workQueueAction?.preview.segment_id ?? shift.segment_id}</strong></div>
             <div><span>Responsable projet</span><strong>{shift.project_manager || "—"}</strong></div>
             <div><span>Demandeur</span><strong>{shift.requester || "—"}</strong></div>
             <div><span>État</span><strong>{shift.locked ? "Verrouillé" : "Automatique"}</strong></div>
@@ -1233,6 +1208,76 @@ export default function ShiftEditor({
           </div>
         </form>
       </section>
+
+      {workQueueAction?.mode === "permanent_reduction" && (
+        <div className="dialog-backdrop" role="presentation" data-testid="permanent-reduction-backdrop">
+          <section
+            className="shift-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="permanent-reduction-title"
+            data-testid="permanent-reduction-confirmation-dialog"
+          >
+            <div className="dialog-heading">
+              <div>
+                <span className="eyebrow">Action irréversible</span>
+                <h2 id="permanent-reduction-title">Supprimer définitivement ce quart?</h2>
+              </div>
+            </div>
+            <div className="confirmation-help">
+              <span>
+                Vous êtes sur le point de supprimer définitivement ce quart de {hoursLabel(workQueueAction.preview.shift_hours)} h.
+              </span>
+              <strong>• Segment {workQueueAction.preview.segment_id}</strong>
+              <strong>
+                • Demande {workQueueAction.preview.demand_number}
+                {workQueueAction.preview.source_request_line_id
+                  ? ` / ligne ${workQueueAction.preview.source_request_line_id}`
+                  : " / ligne concernée"}
+              </strong>
+              <span>
+                Besoin effectif : {hoursLabel(workQueueAction.preview.effective_need)} h → {hoursLabel(workQueueAction.preview.effective_need_after_reduction)} h.
+              </span>
+              <span>
+                Reliquat File de Travail après suppression : {hoursLabel(workQueueAction.preview.remaining_after_reduction)} h.
+              </span>
+              <strong>
+                Ces heures ne retourneront pas dans la File de Travail et ne seront plus planifiées.
+              </strong>
+            </div>
+            {workQueueAction.ambiguousRetry && (
+              <div className="atomic-retry-note" role="status">
+                Le résultat réseau est incertain. Réessayer conservera la même clé idempotente et les mêmes versions capturées.
+              </div>
+            )}
+            <div className="dialog-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={saving}
+                onClick={() => {
+                  setWorkQueueAction(null);
+                  setError(null);
+                }}
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                className="danger-button"
+                disabled={saving}
+                onClick={() => void executeWorkQueueAction()}
+              >
+                {saving
+                  ? "Traitement…"
+                  : workQueueAction.ambiguousRetry
+                    ? "Réessayer la même commande"
+                    : "Supprimer définitivement"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }
