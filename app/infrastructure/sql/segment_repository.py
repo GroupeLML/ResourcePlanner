@@ -7,7 +7,7 @@ import json
 import re
 from typing import Any
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.orm import Session
 
 from ...application.read_models import SegmentReadModel
@@ -78,8 +78,8 @@ class SqlSegmentRepository(SegmentRepositoryPort):
         self._actor_name = _text(actor_name)
 
     def _row_query(self):
-        effective_need = (
-            select(func.min(RequestCompletionReduction.effective_need_after))
+        active_reduction = (
+            select(func.coalesce(func.sum(RequestCompletionReduction.reduction_hours), 0))
             .select_from(RequestRequirementPlanningIntent)
             .join(
                 RequestCompletionReduction,
@@ -94,16 +94,18 @@ class SqlSegmentRepository(SegmentRepositoryPort):
             .correlate(ResourceRequirement)
             .scalar_subquery()
         )
+        current_need = ResourceRequirement.planned_hours - active_reduction
+        effective_need = case(
+            (current_need < 0, Decimal("0.00")),
+            else_=current_need,
+        )
         return (
             select(
                 ResourceRequirement,
                 Project,
                 WorkforceRequest,
                 Resource,
-                func.coalesce(
-                    effective_need,
-                    ResourceRequirement.planned_hours,
-                ).label("effective_need"),
+                effective_need.label("effective_need"),
             )
             .join(Project, ResourceRequirement.project_id == Project.id)
             .outerjoin(
