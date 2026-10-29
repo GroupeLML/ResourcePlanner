@@ -1069,7 +1069,14 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
 
         requirement.project_id = project.id
         requirement.workforce_request_id = request.id
-        requirement.source_request_line_id = spec.source_request_line_id
+        source_line = (
+            self._session.get(RequestLine, spec.source_request_line_id)
+            if spec.source_request_line_id
+            else None
+        )
+        requirement.source_request_line_id = (
+            source_line.id if source_line is not None else None
+        )
         requirement.start_date = spec.start_date
         requirement.end_date = spec.end_date
         requirement.planned_hours = spec.planned_hours
@@ -1087,11 +1094,6 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             else request.priority or "Normale"
         )
         requirement.origin = ORIGIN_REQUEST
-        source_line = (
-            self._session.get(RequestLine, spec.source_request_line_id)
-            if spec.source_request_line_id
-            else None
-        )
         self._capture_approved_contact_context(
             request,
             requirement,
