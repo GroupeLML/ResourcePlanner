@@ -78,8 +78,8 @@ class SqlSegmentRepository(SegmentRepositoryPort):
         self._actor_name = _text(actor_name)
 
     def _row_query(self):
-        active_reduction = (
-            select(func.coalesce(func.sum(RequestCompletionReduction.reduction_hours), 0))
+        zero_effective = (
+            select(func.count())
             .select_from(RequestRequirementPlanningIntent)
             .join(
                 RequestCompletionReduction,
@@ -90,14 +90,16 @@ class SqlSegmentRepository(SegmentRepositoryPort):
                 RequestRequirementPlanningIntent.current_resource_requirement_id
                 == ResourceRequirement.id,
                 RequestCompletionReduction.reconciliation_state == "ACTIVE",
+                RequestCompletionReduction.effective_need_after <= 0,
+                RequestCompletionReduction.effective_need_before
+                == ResourceRequirement.planned_hours,
             )
             .correlate(ResourceRequirement)
             .scalar_subquery()
         )
-        current_need = ResourceRequirement.planned_hours - active_reduction
         effective_need = case(
-            (current_need < 0, Decimal("0.00")),
-            else_=current_need,
+            (zero_effective > 0, Decimal("0.00")),
+            else_=ResourceRequirement.planned_hours,
         )
         return (
             select(
