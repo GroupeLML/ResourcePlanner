@@ -174,11 +174,6 @@ class RequestWorkQueuePreviewResult(ApplicationResult):
 class RequestWorkQueueCommandPort(Protocol):
     def preview_shift(self, allocation_id: str) -> Mapping[str, Any]: ...
 
-    def preview_shift(self, allocation_id: str) -> RequestWorkQueuePreviewResult:
-        return RequestWorkQueuePreviewResult.from_mapping(
-            self._commands.preview_shift(allocation_id)
-        )
-
     def return_shift(
         self,
         command: ReturnShiftToWorkQueueCommand,
@@ -198,6 +193,11 @@ class RequestWorkQueueCommandPort(Protocol):
 class RequestWorkQueueService:
     def __init__(self, commands: RequestWorkQueueCommandPort) -> None:
         self._commands = commands
+
+    def preview_shift(self, allocation_id: str) -> RequestWorkQueuePreviewResult:
+        return RequestWorkQueuePreviewResult.from_mapping(
+            self._commands.preview_shift(allocation_id)
+        )
 
     def return_shift(
         self,
