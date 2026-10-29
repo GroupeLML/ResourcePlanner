@@ -66,7 +66,7 @@ from app.infrastructure.sql.planning_version import (
     SqlPlanningMutationVersionRepository,
 )
 from app.infrastructure.sql.resource_class_models import ResourceClassConfig
-from app.infrastructure.sql.query_repository import SqlPlannerQueryRepositoryWithLoadProfiles
+from app.infrastructure.sql.load_profile_query_repository import SqlPlannerQueryRepositoryWithLoadProfiles
 from app.infrastructure.sql.request_work_queue_commands import (
     SqlRequestWorkQueueCommandAdapter,
 )
