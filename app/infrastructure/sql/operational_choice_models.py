@@ -81,6 +81,12 @@ class RequestRequirementPlanningIntent(TimestampMixin, Base):
     __tablename__ = "request_requirement_planning_intents"
     __table_args__ = (
         UniqueConstraint("slot_identity_key", name="uq_request_requirement_planning_intent_slot"),
+        UniqueConstraint(
+            "workforce_request_id",
+            "approved_entry_key",
+            "slot_index",
+            name="uq_request_requirement_planning_intent_logical_slot",
+        ),
         CheckConstraint(
             "intent_mode IN ('AUTO','PRESERVE_EXISTING','QUEUED')",
             name="request_requirement_planning_intent_mode",
@@ -97,6 +103,13 @@ class RequestRequirementPlanningIntent(TimestampMixin, Base):
         CheckConstraint("slot_index >= 0", name="request_requirement_planning_slot_index"),
         Index("ix_request_requirement_planning_intent_request", "workforce_request_id"),
         Index("ix_request_requirement_planning_intent_requirement", "current_resource_requirement_id"),
+        Index(
+            "uq_request_requirement_planning_intent_current_requirement",
+            "current_resource_requirement_id",
+            unique=True,
+            sqlite_where=text("current_resource_requirement_id IS NOT NULL"),
+            mssql_where=text("current_resource_requirement_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True, default=new_id)
@@ -223,5 +236,11 @@ class RequestCompletionReduction(TimestampMixin, Base):
         String(32), nullable=False, server_default=text("'ACTIVE'")
     )
     absorbed_by_revision_id: Mapped[str | None] = mapped_column(
+        String(ID_LENGTH), ForeignKey("request_approval_revisions.id"), nullable=True
+    )
+    authorization_fingerprint: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    reconciled_approval_revision_id: Mapped[str | None] = mapped_column(
         String(ID_LENGTH), ForeignKey("request_approval_revisions.id"), nullable=True
     )
