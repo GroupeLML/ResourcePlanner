@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 const BASE_URL = process.env.RESOURCEPLANNER_E2E_BASE_URL || "http://127.0.0.1:8765";
 
-test("778 expose les trois actions ADR-034 et confirme leurs mutations", async ({ browser }) => {
+test("778 expose les trois actions ADR-034 et confirme leurs mutations", async ({ browser, request }) => {
   test.setTimeout(120_000);
   const context = await browser.newContext({
     baseURL: BASE_URL,
@@ -20,7 +20,7 @@ test("778 expose les trois actions ADR-034 et confirme leurs mutations", async (
   let lastIdempotencyKey: string | null = null;
 
   await page.route("**/api/v1/planning/snapshot?**", async (route) => {
-    const response = await context.request.get(route.request().url());
+    const response = await request.get(route.request().url(), { headers: { "X-E2E-Role": "COORDINATOR" } });
     const body = await response.json() as Record<string, any>;
     const resource = body.resources?.[0];
     if (!resource) {
