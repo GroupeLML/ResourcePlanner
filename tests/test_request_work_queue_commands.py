@@ -653,6 +653,43 @@ class RequestWorkQueueCommandTests(unittest.TestCase):
                 "Terminé",
             )
 
+            SqlPlanningCommandAdapter(
+                session,
+                versioning=SqlPlanningMutationVersionRepository(session),
+            ).rebuild()
+            survivor_ids_after_second_rebuild = set(
+                session.scalars(
+                    select(Shift.id).where(
+                        Shift.resource_requirement_id == "REQ1"
+                    )
+                ).all()
+            )
+            self.assertEqual(
+                survivor_ids_after_second_rebuild,
+                {"S1", "S2", "S3", "S5"},
+            )
+            self.assertEqual(
+                sum(
+                    (
+                        row.hours
+                        for row in session.scalars(
+                            select(Shift).where(
+                                Shift.resource_requirement_id == "REQ1",
+                                (Shift.allocation_type.is_(None))
+                                | (Shift.allocation_type != MISSING_ALLOCATION_TYPE),
+                            )
+                        ).all()
+                    ),
+                    Decimal("0"),
+                ),
+                Decimal("32"),
+            )
+            self.assertIsNone(session.get(Shift, "S4"))
+            self.assertEqual(
+                session.get(ResourceRequirement, "REQ1").status,
+                "Terminé",
+            )
+
     def test_diagnostic_shift_is_excluded_from_coverage_and_rejected_as_target(self) -> None:
         with transactional_session(self.factory) as session:
             session.get(Shift, "S4").allocation_type = MISSING_ALLOCATION_TYPE
