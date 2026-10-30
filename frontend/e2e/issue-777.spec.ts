@@ -136,22 +136,76 @@ test("777 glisse un reliquat approuvé sur une ressource/journée via le vrai ba
       .filter((row) => row.demand_number === demandNumber && row.allocation_type !== "Hors horaire requis");
     expect(beforeDrop).toHaveLength(4);
     const survivorIds = beforeDrop.map((row) => String(row.allocation_id)).sort();
+    const survivorState = beforeDrop
+      .map((row) => ({
+        allocation_id: String(row.allocation_id),
+        work_date: String(row.work_date),
+        hours: Number(row.hours),
+      }))
+      .sort((left, right) => left.allocation_id.localeCompare(right.allocation_id));
 
     await page.goto("/");
     await page.locator(".main-nav").getByRole("button", { name: /Planning opérationnel/i }).click();
     await page.getByRole("button", { name: "Suivante →" }).click();
 
-    const approvedCard = page.locator(".approved-unplanned-card")
-      .filter({ hasText: demandNumber })
-      .first();
+    const approvedCard = page
+      .locator(".planning-work-queue .planning-action-card.action-assignment")
+      .filter({ hasText: demandNumber });
+    await expect(approvedCard).toHaveCount(1);
     await expect(approvedCard).toBeVisible();
     await expect(approvedCard).toHaveAttribute("draggable", "true");
+    const segmentId = await approvedCard.getAttribute("data-segment-id");
+    expect(segmentId).toBeTruthy();
 
     const targetCell = page.locator(
       `.planning-drop-day[data-resource-id="${resourceIds[1]}"][data-day="${d4}"]`,
     );
     await expect(targetCell).toBeVisible();
+
+    const previewPath = `/api/v1/segments/${encodeURIComponent(segmentId!)}/place-from-drop/preview`;
+    const mutationPath = `/api/v1/segments/${encodeURIComponent(segmentId!)}/place-from-drop`;
+    const previewRequestPromise = page.waitForRequest(
+      (request) => request.method() === "POST" && new URL(request.url()).pathname === previewPath,
+    );
+    const previewResponsePromise = page.waitForResponse(
+      (response) => response.request().method() === "POST" && new URL(response.url()).pathname === previewPath,
+    );
+    const mutationRequestPromise = page.waitForRequest(
+      (request) => request.method() === "POST" && new URL(request.url()).pathname === mutationPath,
+    );
+    const mutationResponsePromise = page.waitForResponse(
+      (response) => response.request().method() === "POST" && new URL(response.url()).pathname === mutationPath,
+    );
+
     await approvedCard.dragTo(targetCell);
+
+    const previewRequest = await previewRequestPromise;
+    const previewResponse = await previewResponsePromise;
+    expect(previewResponse.status(), await previewResponse.text()).toBe(200);
+    const previewPayload = previewRequest.postDataJSON() as Record<string, any>;
+    expect(previewPayload).toMatchObject({
+      resource_id: resourceIds[1],
+      dropped_date: d4,
+    });
+    const previewResult = await previewResponse.json() as Record<string, any>;
+    expect(previewResult.allowed).toBe(true);
+    expect(previewResult.segment_id).toBe(segmentId);
+    expect(previewResult.resource_id).toBe(resourceIds[1]);
+    expect(previewResult.proposed_placement_not_before_date).toBe(d4);
+
+    const mutationRequest = await mutationRequestPromise;
+    const mutationResponse = await mutationResponsePromise;
+    expect(mutationResponse.status(), await mutationResponse.text()).toBe(200);
+    const mutationPayload = mutationRequest.postDataJSON() as Record<string, any>;
+    expect(mutationPayload).toEqual({
+      resource_id: resourceIds[1],
+      dropped_date: d4,
+      expected_planning_version: previewResult.planning_version,
+      expected_approval_revision_id: previewResult.approval_revision_id,
+      expected_operational_version: previewResult.operational_version,
+    });
+    const idempotencyKey = mutationRequest.headers()["idempotency-key"];
+    expect(idempotencyKey).toBeTruthy();
 
     await expect(page.locator(".planning-drag-feedback"))
       .toContainText(`Besoin assigné à ${targetName} à partir du ${d4}`);
@@ -166,6 +220,15 @@ test("777 glisse un reliquat approuvé sur une ressource/journée via le vrai ba
       .filter((row) => survivorIds.includes(String(row.allocation_id)))
       .map((row) => String(row.allocation_id)).sort();
     expect(survivorsAfter).toEqual(survivorIds);
+    const survivorStateAfter = afterDrop
+      .filter((row) => survivorIds.includes(String(row.allocation_id)))
+      .map((row) => ({
+        allocation_id: String(row.allocation_id),
+        work_date: String(row.work_date),
+        hours: Number(row.hours),
+      }))
+      .sort((left, right) => left.allocation_id.localeCompare(right.allocation_id));
+    expect(survivorStateAfter).toEqual(survivorState);
 
     const generated = afterDrop.filter(
       (row) => !survivorIds.includes(String(row.allocation_id)),
@@ -174,6 +237,11 @@ test("777 glisse un reliquat approuvé sur une ressource/journée via le vrai ba
     expect(generated.every((row) => row.resource_id === resourceIds[1])).toBeTruthy();
     expect(generated.every((row) => String(row.work_date) >= d4)).toBeTruthy();
     expect(generated.reduce((sum, row) => sum + Number(row.hours), 0)).toBe(8);
+    expect(afterDrop.reduce((sum, row) => sum + Number(row.hours), 0)).toBe(40);
+
+    await expect(approvedCard).toHaveCount(0);
+    await expect(page.locator(".planning-drag-feedback"))
+      .toContainText(`Besoin assigné à ${targetName} à partir du ${d4}`);
   } finally {
     for (const ruleId of availabilityIds) {
       try {
