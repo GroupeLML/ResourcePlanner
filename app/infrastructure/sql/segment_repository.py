@@ -10,9 +10,12 @@ from typing import Any
 from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.orm import Session
 
+from ...application.errors import ApplicationValidationError
 from ...application.read_models import SegmentReadModel
 from ...application.repository_ports import SegmentRepositoryPort
 from ...domain.confirmation import CONFIRMATION_CONFIRMED, normalize_confirmation
+from ...domain.effective_need import resolve_effective_slot_need
+from ...domain.planning_engine import MISSING_ALLOCATION_TYPE
 from ...domain.load_profiles import normalize_load_profile
 from ...domain.operational_contacts import (
     PROVENANCE_OPERATIONAL_CAPTURE,
@@ -23,6 +26,7 @@ from .demand_period_models import WorkforceRequestPeriod, WorkforceRequestPeriod
 from .segment_asset_guard import assert_segment_asset_mutation_compatible
 from .operational_contact_repository import SqlOperationalContactRepository
 from .operational_choice_models import (
+    PLANNING_INTENT_PRESERVE_EXISTING,
     RequestCompletionReduction,
     RequestRequirementPlanningIntent,
 )
@@ -34,6 +38,7 @@ from .models import (
     Resource,
     ResourceRequirement,
     ResourceRequirementCompetency,
+    Shift,
     WorkforceRequest,
     WorkPackage,
 )
@@ -527,6 +532,65 @@ class SqlSegmentRepository(SegmentRepositoryPort):
         self._session.flush()
         return identifier
 
+    def _validate_preserved_survivor_effective_need(
+        self,
+        requirement: ResourceRequirement,
+        proposed_base_hours: Decimal,
+    ) -> None:
+        if requirement.origin != ORIGIN_REQUEST:
+            return
+        intent = self._session.scalar(
+            select(RequestRequirementPlanningIntent).where(
+                RequestRequirementPlanningIntent.current_resource_requirement_id
+                == requirement.id
+            )
+        )
+        if (
+            intent is None
+            or intent.intent_mode != PLANNING_INTENT_PRESERVE_EXISTING
+        ):
+            return
+
+        active_reductions = tuple(
+            Decimal(str(value)).quantize(Decimal("0.01"))
+            for value in self._session.scalars(
+                select(RequestCompletionReduction.reduction_hours).where(
+                    RequestCompletionReduction.planning_intent_id == intent.id,
+                    RequestCompletionReduction.reconciliation_state == "ACTIVE",
+                )
+            ).all()
+        )
+        effective_need = resolve_effective_slot_need(
+            proposed_base_hours,
+            active_reductions,
+        )
+        retained_coverage = Decimal(
+            str(
+                self._session.scalar(
+                    select(func.coalesce(func.sum(Shift.hours), 0)).where(
+                        Shift.resource_requirement_id == requirement.id,
+                        (Shift.allocation_type.is_(None))
+                        | (Shift.allocation_type != MISSING_ALLOCATION_TYPE),
+                    )
+                )
+                or 0
+            )
+        ).quantize(Decimal("0.01"))
+        if retained_coverage > effective_need + Decimal("0.001"):
+            raise ApplicationValidationError(
+                "Les heures prévues produiraient un besoin effectif inférieur aux quarts conservés.",
+                code="segment_overallocation_choice_required",
+                context={
+                    "segment_id": _text(requirement.legacy_segment_id) or requirement.id,
+                    "base_planned_hours": float(proposed_base_hours),
+                    "effective_need": float(effective_need),
+                    "retained_coverage_hours": float(retained_coverage),
+                    "active_reduction_hours": float(
+                        sum(active_reductions, Decimal("0.00"))
+                    ),
+                },
+            )
+
     def update(self, segment_id: str, updates: Mapping[str, Any]) -> None:
         requirement = self._requirement(segment_id)
 
@@ -585,6 +649,12 @@ class SqlSegmentRepository(SegmentRepositoryPort):
             effective_source_effort,
             project_id=requirement.project_id,
         )
+
+        if "HeuresPrevues" in updates:
+            self._validate_preserved_survivor_effective_need(
+                requirement,
+                _decimal(updates.get("HeuresPrevues")),
+            )
 
         if "Technicien" in updates:
             resource = self._resource(updates.get("Technicien"))
