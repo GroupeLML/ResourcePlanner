@@ -25,6 +25,18 @@ class LoadProfileAuditedSegmentRepository(SegmentRepositoryPort):
     def create(self, values: Mapping[str, Any]) -> str:
         return self._delegate.create(values)
 
+    def planned_hours_overallocation_context(
+        self,
+        segment_id: str,
+        proposed_base_hours: float,
+    ) -> Mapping[str, Any] | None:
+        action = getattr(self._delegate, "planned_hours_overallocation_context", None)
+        return (
+            action(segment_id, proposed_base_hours)
+            if callable(action)
+            else None
+        )
+
     def update(self, segment_id: str, updates: Mapping[str, Any]) -> None:
         before = self._delegate.get(segment_id)
         self._delegate.update(segment_id, updates)
