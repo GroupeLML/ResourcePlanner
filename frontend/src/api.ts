@@ -963,6 +963,7 @@ export type SegmentReadModel = {
   start_date: string | null;
   end_date: string | null;
   planned_hours: number;
+  operational_base_hours?: number | null;
   status: string;
   description: string | null;
   origin: string | null;
