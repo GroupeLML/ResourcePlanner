@@ -218,6 +218,14 @@ class SegmentPlacementMutationResult(ApplicationResult):
             generated_shift_ids=tuple(source.get("generated_shift_ids") or ()),
         )
 
+    def to_dict(self) -> dict[str, Any]:
+        payload = super().to_dict()
+        for field in ("authorized_start_date", "authorized_end_date", "placement_not_before_date"):
+            value = payload.get(field)
+            if isinstance(value, date):
+                payload[field] = value.isoformat()
+        return payload
+
 
 @dataclass(frozen=True, slots=True)
 class RequestWorkQueueMutationResult(ApplicationResult):
