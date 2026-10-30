@@ -64,7 +64,7 @@ import {
   writeSegmentDrag,
   writeShiftDrag,
 } from "./planningDragDrop";
-import { assignSegment } from "./segments-api";
+import { assignSegment, placeSegmentFromDrop } from "./segments-api";
 import {
   OverallocationApiError,
   OverallocationContext,
@@ -656,7 +656,7 @@ function ResourceRow({
   dragEnabled: boolean;
   manualOrder?: ManualResourceOrderControls;
   onDropShift: (payload: ShiftDragPayload, resource: ResourceReadModel, day: string) => void;
-  onDropSegment: (payload: SegmentDragPayload, resource: ResourceReadModel) => void;
+  onDropSegment: (payload: SegmentDragPayload, resource: ResourceReadModel, day?: string) => void;
 }) {
   const total = shifts
     .filter((shift) => shift.allocation_type !== "Hors horaire requis")
@@ -750,7 +750,10 @@ function ResourceRow({
                   : undefined
             }
             onDragOver={(event) => {
-              if (!dragEnabled || !hasShiftDrag(event.dataTransfer)) return;
+              if (
+                !dragEnabled
+                || (!hasShiftDrag(event.dataTransfer) && !hasSegmentDrag(event.dataTransfer))
+              ) return;
               event.preventDefault();
               event.dataTransfer.dropEffect = "move";
               event.currentTarget.classList.add("is-drop-target");
@@ -759,6 +762,12 @@ function ResourceRow({
             onDrop={(event) => {
               event.currentTarget.classList.remove("is-drop-target");
               if (!dragEnabled) return;
+              const segmentPayload = readSegmentDrag(event.dataTransfer);
+              if (segmentPayload) {
+                event.preventDefault();
+                onDropSegment(segmentPayload, resource, iso);
+                return;
+              }
               const payload = readShiftDrag(event.dataTransfer);
               if (!payload) return;
               event.preventDefault();
@@ -1798,19 +1807,62 @@ export default function PlanningPage({
   async function assignSegmentFromDrop(
     payload: SegmentDragPayload,
     targetResource: ResourceReadModel,
+    droppedDate?: string,
   ) {
     if (!canManagePlanning || dropBusy) return;
     setDropBusy(`segment:${payload.segment_id}`);
     setDragFeedback(null);
     try {
-      await assignSegment(payload.segment_id, targetResource.id);
+      if (!droppedDate) {
+        await assignSegment(payload.segment_id, targetResource.id);
+        setDragFeedback({
+          tone: "success",
+          message: `Cible automatique de ${payload.segment_id} définie à ${resourceDisplayName(targetResource.name)}; le reliquat a été recalculé.`,
+        });
+        refreshAfterMutation();
+        return;
+      }
+
+      const action = actions.find(
+        (row) => row.kind === "ASSIGNMENT" && row.segment_id === payload.segment_id,
+      );
+      if (
+        !snapshot
+        || !action?.approval_revision_id
+        || action.operational_version === null
+      ) {
+        setDragFeedback({
+          tone: "info",
+          message: "Le contexte approuvé du besoin n’est plus complet. Le planning a été actualisé; recommence le drag-and-drop.",
+        });
+        setRefreshKey((value) => value + 1);
+        return;
+      }
+
+      const result = await placeSegmentFromDrop(
+        payload.segment_id,
+        {
+          resource_id: targetResource.id,
+          dropped_date: droppedDate,
+          expected_planning_version: snapshot.planning_version,
+          expected_approval_revision_id: action.approval_revision_id,
+          expected_operational_version: action.operational_version,
+        },
+        createClientId(),
+      );
       setDragFeedback({
         tone: "success",
-        message: `Cible automatique de ${payload.segment_id} définie à ${resourceDisplayName(targetResource.name)}; le reliquat a été recalculé.`,
+        message: `Besoin assigné à ${resourceDisplayName(targetResource.name)} à partir du ${droppedDate}. Reliquat restant : ${hours(result.remaining_hours)} h.`,
       });
       refreshAfterMutation();
     } catch (reason: unknown) {
-      if (reason instanceof ApiError) {
+      if (reason instanceof ApiError && reason.code && STALE_DROP_CODES.has(reason.code)) {
+        setDragFeedback({
+          tone: "info",
+          message: "Le planning ou l’autorisation a changé. Le snapshot a été actualisé; recommence le drag-and-drop.",
+        });
+        setRefreshKey((value) => value + 1);
+      } else if (reason instanceof ApiError) {
         setDragFeedback({
           tone: "error",
           message: `${reason.message}${reason.code ? ` (${reason.code})` : ""}`,
