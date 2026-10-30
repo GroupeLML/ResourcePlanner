@@ -1086,6 +1086,79 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_auto_locked_reduction_uses_effective_exception_budget_through_resync(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                app = create_api_app(database_url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_40(client)
+                    target = self._snapshot(client, number)["demand_shifts"][0]
+                    segment_id = target["requirement_id"]
+                    preview = client.get(
+                        f"/api/v1/allocations/{target['allocation_id']}/work-queue-preview"
+                    ).json()
+                    reduced = client.post(
+                        f"/api/v1/allocations/{target['allocation_id']}/permanent-reduction",
+                        headers={"Idempotency-Key": "auto-locked-reduction"},
+                        json={
+                            "expected_planning_version": preview["planning_version"],
+                            "expected_request_version": preview["request_version"],
+                            "expected_approval_revision_id": preview["approval_revision_id"],
+                            "expected_operational_version": preview["operational_version"],
+                        },
+                    )
+                    self.assertEqual(reduced.status_code, 200, reduced.text)
+                    with factory.begin() as session:
+                        rows = session.scalars(select(Shift).where(
+                            Shift.resource_requirement_id == segment_id
+                        )).all()
+                        self.assertEqual(len(rows), 4)
+                        survivor_ids = sorted(row.id for row in rows)
+                        for row in rows:
+                            row.source = "MANUAL"
+                            row.locked = True
+
+                    rejected = client.patch(
+                        f"/api/v1/segments/{segment_id}", json={"planned_hours": 36}
+                    )
+                    self.assertEqual(rejected.status_code, 422, rejected.text)
+                    self.assertEqual(rejected.json()["error"]["code"], "segment_overallocation_choice_required")
+                    context = rejected.json()["error"]["context"]
+                    self.assertEqual(context["planned_hours"], 28)
+                    self.assertEqual(context["excess_hours"], 4)
+                    self.assertEqual(context["safe_operational_base_hours"], 40)
+                    for payload in (
+                        {"planned_hours": 36, "allow_locked_overallocation": True},
+                        {"planned_hours": 36},
+                    ):
+                        saved = client.patch(f"/api/v1/segments/{segment_id}", json=payload)
+                        self.assertEqual(saved.status_code, 200, saved.text)
+                    increased = client.patch(
+                        f"/api/v1/segments/{segment_id}", json={"planned_hours": 32}
+                    )
+                    self.assertEqual(increased.status_code, 422, increased.text)
+                    self.assertEqual(increased.json()["error"]["context"]["current_excess_hours"], 4)
+                    self.assertEqual(increased.json()["error"]["context"]["excess_hours"], 8)
+                    with factory.begin() as session:
+                        SqlPeriodAwareApprovedDemandSyncAdapter(session).sync_operational_choices(number)
+                    rebuilt = client.post("/api/v1/planning/rebuild")
+                    self.assertEqual(rebuilt.status_code, 200, rebuilt.text)
+                    segment = self._snapshot(client, number)["demand_segments"][0]
+                    self.assertEqual(segment["planned_hours"], 28)
+                    self.assertEqual(segment["covered_hours"], 32)
+                    self.assertEqual(segment["remaining_hours"], 0)
+                    with factory() as session:
+                        rows = session.scalars(select(Shift).where(
+                            Shift.resource_requirement_id == segment_id
+                        )).all()
+                        self.assertEqual(sorted(row.id for row in rows), survivor_ids)
+                        self.assertTrue(all(row.locked and row.source == "MANUAL" for row in rows))
+            finally:
+                engine.dispose()
+
     def test_acknowledged_locked_survivors_survive_atomic_sync_and_later_resync(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)

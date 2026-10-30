@@ -57,7 +57,6 @@ class SegmentService:
 
     def create_command(self, command: SegmentCreateCommand) -> tuple[str, dict[str, Any]]:
         values = command.to_repository_values()
-        pre_mutation_effective_hours_by_segment: dict[str, float] = {}
         if self._authorization is not None:
             call_application_port(
                 lambda: self._authorization.authorize_segment_create(values),
@@ -111,6 +110,7 @@ class SegmentService:
             )
 
         values = command.to_repository_values()
+        pre_mutation_effective_hours_by_segment: dict[str, float] = {}
         if "NoDemande" in values and not str(values["NoDemande"] or "").strip():
             raise ApplicationValidationError(
                 "La demande est requise.",
@@ -170,6 +170,8 @@ class SegmentService:
                             "planned_hours": round(proposed_hours, 2),
                             "current_planned_hours": round(float(existing.planned_hours), 2),
                             "locked_hours": round(locked_hours, 2),
+                            "operational_base_hours": round(float(existing.planned_hours), 2),
+                            "safe_operational_base_hours": round(locked_hours, 2),
                             "current_excess_hours": round(current_excess, 2),
                             "excess_hours": round(proposed_excess, 2),
                         },

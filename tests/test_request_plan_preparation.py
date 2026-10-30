@@ -233,6 +233,8 @@ class SharedRequestPlanPreparationTests(unittest.TestCase):
                 line_mode=True,
                 status="Soumise",
             )
+            session.add(request)
+            session.flush()
             line = RequestLine(
                 id="L-BEFORE-STATE",
                 workforce_request_id=request.id,
@@ -245,6 +247,8 @@ class SharedRequestPlanPreparationTests(unittest.TestCase):
                 confirmation="Confirmée",
                 active=True,
             )
+            session.add(line)
+            session.flush()
             requirement = ResourceRequirement(
                 id="REQ-BEFORE-STATE",
                 project_id="P1",
@@ -257,7 +261,7 @@ class SharedRequestPlanPreparationTests(unittest.TestCase):
                 status="Planifié",
                 origin="REQUEST",
             )
-            session.add_all([request, line, requirement])
+            session.add(requirement)
             session.flush()
             for index in range(3):
                 session.add(
@@ -273,11 +277,12 @@ class SharedRequestPlanPreparationTests(unittest.TestCase):
                     )
                 )
             session.flush()
-            session.expire_all()
+            session.expunge_all()
             reloaded_request = session.get(WorkforceRequest, request.id)
             reloaded_requirement = session.get(ResourceRequirement, requirement.id)
             self.assertIsNotNone(reloaded_request)
             self.assertIsNotNone(reloaded_requirement)
+            self.assertIsNot(reloaded_requirement, requirement)
 
             preparer = SqlRequestPlanPreparer(session)
             plan = preparer.prepare(
@@ -294,9 +299,10 @@ class SharedRequestPlanPreparationTests(unittest.TestCase):
             )
             self.assertEqual(conflicts, ())
 
-            line.estimated_hours = Decimal("16")
+            reloaded_line = session.get(RequestLine, line.id)
+            reloaded_line.estimated_hours = Decimal("16")
             session.flush()
-            session.expire_all()
+            session.expunge_all()
             reloaded_request = session.get(WorkforceRequest, request.id)
             reloaded_requirement = session.get(ResourceRequirement, requirement.id)
             plan = preparer.prepare(

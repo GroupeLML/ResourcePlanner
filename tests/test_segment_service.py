@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 import unittest
@@ -110,6 +111,58 @@ class SegmentServiceTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, "segment_date_window_invalid")
         self.assertEqual(segments.events, [])
+
+    def test_update_passes_before_state_without_reusing_acknowledgment(self) -> None:
+        segments = _Segments()
+        segments.record = replace(segments.record, origin="REQUEST", planned_hours=20)
+        projection = {
+            "current_planned_hours": 20,
+            "current_excess_hours": 4,
+            "excess_hours": 4,
+        }
+        segments.planned_hours_overallocation_context = lambda *_: dict(projection)
+
+        class Sync:
+            def __init__(self):
+                self.calls = []
+
+            def sync_operational_choices(self, number, **kwargs):
+                self.calls.append((number, kwargs))
+
+        sync = Sync()
+        service = SegmentService(segments, _Planning(segments.events), approved_sync=sync)
+        service.update_command(SegmentUpdateCommand(
+            segment_id="SEG-1", planned_hours=28, allow_locked_overallocation=True,
+        ))
+        service.update_command(SegmentUpdateCommand(segment_id="SEG-1", planned_hours=28))
+        segments.record = replace(segments.record, planned_hours=24)
+        projection.update(current_planned_hours=24, current_excess_hours=0, excess_hours=0)
+        service.update_command(SegmentUpdateCommand(segment_id="SEG-1", planned_hours=32))
+
+        self.assertEqual(sync.calls, [
+            ("DMO-1", {
+                "acknowledged_overallocation_segment_ids": ("SEG-1",),
+                "pre_mutation_effective_hours_by_segment": {"SEG-1": 20.0},
+            }),
+            ("DMO-1", {"pre_mutation_effective_hours_by_segment": {"SEG-1": 20.0}}),
+            ("DMO-1", {"pre_mutation_effective_hours_by_segment": {"SEG-1": 24.0}}),
+        ])
+
+    def test_quick_shift_choice_provides_safe_base_for_existing_adjustment_flow(self) -> None:
+        segments = _Segments()
+        segments.record = replace(
+            segments.record, origin="QUICK_SHIFT", demand_number=None,
+            planned_hours=12, locked_hours=10,
+        )
+        service = SegmentService(segments, _Planning(segments.events))
+        with self.assertRaises(ApplicationValidationError) as raised:
+            service.update_command(SegmentUpdateCommand(segment_id="SEG-1", planned_hours=8))
+        self.assertEqual(raised.exception.code, "segment_overallocation_choice_required")
+        safe_base = raised.exception.context["safe_operational_base_hours"]
+        self.assertEqual(safe_base, 10)
+        self.assertEqual(segments.events, [])
+        service.update_command(SegmentUpdateCommand(segment_id="SEG-1", planned_hours=safe_base))
+        self.assertEqual(segments.events[0], ("update", "SEG-1", {"HeuresPrevues": 10}))
 
     def test_update_without_demand_requires_canonical_adhoc_origin(self) -> None:
         orphan_request = SegmentReadModel(

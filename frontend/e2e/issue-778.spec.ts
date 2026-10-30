@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { randomUUID } from "node:crypto";
 
 const BASE_URL = process.env.RESOURCEPLANNER_E2E_BASE_URL || "http://127.0.0.1:8765";
 
@@ -328,7 +329,15 @@ test("778 SegmentEditor conserve la base opérationnelle et utilise les choix ba
   const d5 = localIso(addDays(monday, 4));
   let resourceId: string | null = null;
   let availabilityRuleId: string | null = null;
-  const resourceName = "Ressource E2E 778 isolée";
+  const fixtureKey = randomUUID();
+  const resourceName = `Ressource E2E 778 ${fixtureKey}`;
+  const resourcesBefore = await page.request.get("/api/v1/resources?active_only=true");
+  expect(resourcesBefore.ok(), await resourcesBefore.text()).toBeTruthy();
+  const originalResourceIds = (await resourcesBefore.json() as Array<{ id: string }>)
+    .map((row) => row.id).sort();
+  const orderBefore = await page.request.get("/api/v1/planning/resource-order");
+  expect(orderBefore.ok(), await orderBefore.text()).toBeTruthy();
+  const originalOrder = (await orderBefore.json()).positions;
 
   const openSegmentEditor = async (demandNumber: string) => {
     await page.goto("/");
@@ -364,7 +373,7 @@ test("778 SegmentEditor conserve la base opérationnelle et utilise les choix ba
     const availabilityCreate = await page.request.post("/api/v1/availability-rules", {
       headers: {
         "X-E2E-Role": "ADMIN",
-        "Idempotency-Key": "issue-778-isolated-availability",
+        "Idempotency-Key": `${fixtureKey}-availability`,
       },
       data: {
         availability_type: "Horaire standard",
@@ -427,7 +436,7 @@ test("778 SegmentEditor conserve la base opérationnelle et utilise les choix ba
     const reduced = await page.request.post(
       `/api/v1/allocations/${encodeURIComponent(reductionTarget.allocation_id)}/permanent-reduction`,
       {
-        headers: { "Idempotency-Key": "e2e-778-base-reduction" },
+        headers: { "Idempotency-Key": `${fixtureKey}-reduction` },
         data: {
           expected_planning_version: reductionContract.planning_version,
           expected_request_version: reductionContract.request_version,
@@ -456,7 +465,7 @@ test("778 SegmentEditor conserve la base opérationnelle et utilise les choix ba
     const returned = await page.request.post(
       `/api/v1/allocations/${encodeURIComponent(returnTarget.allocation_id)}/return-to-work-queue`,
       {
-        headers: { "Idempotency-Key": "e2e-778-base-return" },
+        headers: { "Idempotency-Key": `${fixtureKey}-return` },
         data: {
           expected_planning_version: returnContract.planning_version,
           expected_approval_revision_id: returnContract.approval_revision_id,
@@ -497,7 +506,15 @@ test("778 SegmentEditor conserve la base opérationnelle et utilise les choix ba
     let dialog = await openSegmentEditor(demandNumber);
     await expect(dialog.getByLabel("Heures prévues")).toHaveValue("40");
     await dialog.getByLabel("Description").fill("Description seulement #778");
-    await dialog.getByRole("button", { name: "Enregistrer", exact: true }).click();
+    const [descriptionSave] = await Promise.all([
+      page.waitForResponse((response) => response.request().method() === "PATCH"
+        && new URL(response.url()).pathname.startsWith("/api/v1/segments/")),
+      dialog.getByRole("button", { name: "Enregistrer", exact: true }).click(),
+    ]);
+    expect(descriptionSave.status(), await descriptionSave.text()).toBe(200);
+    expect(descriptionSave.request().postDataJSON()).toMatchObject({
+      planned_hours: 40, description: "Description seulement #778",
+    });
     await expect(dialog).toBeHidden();
 
     segmentResponse = await page.request.get(
@@ -538,7 +555,15 @@ test("778 SegmentEditor conserve la base opérationnelle et utilise les choix ba
     await expect(exceptionChoice).toContainText("Heures prévues proposées : 20 h");
     await exceptionChoice.getByRole("button", { name: /Conserver la dérogation/ }).click();
     await expect(dialog).toContainText("Dérogation de surallocation sélectionnée");
-    await dialog.getByRole("button", { name: "Enregistrer", exact: true }).click();
+    const [exceptionSave] = await Promise.all([
+      page.waitForResponse((response) => response.request().method() === "PATCH"
+        && new URL(response.url()).pathname.startsWith("/api/v1/segments/")),
+      dialog.getByRole("button", { name: "Enregistrer", exact: true }).click(),
+    ]);
+    expect(exceptionSave.status(), await exceptionSave.text()).toBe(200);
+    expect(exceptionSave.request().postDataJSON()).toMatchObject({
+      planned_hours: 28, allow_locked_overallocation: true,
+    });
     await expect(dialog).toBeHidden();
 
     segmentResponse = await page.request.get(
@@ -556,18 +581,25 @@ test("778 SegmentEditor conserve la base opérationnelle et utilise les choix ba
     expect(finalShifts.map((row) => Number(row.hours)).sort()).toEqual([8, 8, 8]);
   } finally {
     try {
-      if (availabilityRuleId) {
-        await page.request.post(
-          `/api/v1/availability-rules/${encodeURIComponent(availabilityRuleId)}/deactivate`,
-          { headers: { "X-E2E-Role": "ADMIN" } },
-        );
+      const cleanupPaths = [
+        availabilityRuleId && `/api/v1/availability-rules/${encodeURIComponent(availabilityRuleId)}/deactivate`,
+        resourceId && `/api/v1/resources/${encodeURIComponent(resourceId)}/deactivate`,
+      ].filter((path): path is string => Boolean(path));
+      for (const path of cleanupPaths) {
+        try {
+          const result = await page.request.post(path, { headers: { "X-E2E-Role": "ADMIN" } });
+          expect.soft(result.ok(), `${path}: ${await result.text()}`).toBeTruthy();
+        } catch (reason) {
+          expect.soft(reason, `Nettoyage de ${path}`).toBeUndefined();
+        }
       }
-      if (resourceId) {
-        await page.request.post(
-          `/api/v1/resources/${encodeURIComponent(resourceId)}/deactivate`,
-          { headers: { "X-E2E-Role": "ADMIN" } },
-        );
-      }
+      const resourcesAfter = await page.request.get("/api/v1/resources?active_only=true");
+      expect.soft(resourcesAfter.ok(), await resourcesAfter.text()).toBeTruthy();
+      expect.soft((await resourcesAfter.json() as Array<{ id: string }>).map((row) => row.id).sort())
+        .toEqual(originalResourceIds);
+      const orderAfter = await page.request.get("/api/v1/planning/resource-order");
+      expect.soft(orderAfter.ok(), await orderAfter.text()).toBeTruthy();
+      expect.soft((await orderAfter.json()).positions).toEqual(originalOrder);
     } finally {
       await context.close();
     }

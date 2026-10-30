@@ -7,7 +7,7 @@ import json
 import re
 from typing import Any
 
-from sqlalchemy import case, delete, func, select, update
+from sqlalchemy import case, delete, func, select, true, update
 from sqlalchemy.orm import Session
 
 from ...application.read_models import SegmentReadModel
@@ -106,6 +106,22 @@ class SqlSegmentRepository(SegmentRepositoryPort):
             (zero_effective > 0, Decimal("0.00")),
             else_=ResourceRequirement.planned_hours,
         )
+        active_reduction_hours = (
+            select(func.coalesce(func.sum(RequestCompletionReduction.reduction_hours), 0))
+            .select_from(RequestRequirementPlanningIntent)
+            .join(
+                RequestCompletionReduction,
+                RequestCompletionReduction.planning_intent_id
+                == RequestRequirementPlanningIntent.id,
+            )
+            .where(
+                RequestRequirementPlanningIntent.current_resource_requirement_id
+                == ResourceRequirement.id,
+                RequestCompletionReduction.reconciliation_state == "ACTIVE",
+            )
+            .correlate(ResourceRequirement)
+            .scalar_subquery()
+        )
         return (
             select(
                 ResourceRequirement,
@@ -113,6 +129,7 @@ class SqlSegmentRepository(SegmentRepositoryPort):
                 WorkforceRequest,
                 Resource,
                 effective_need.label("effective_need"),
+                active_reduction_hours.label("active_reduction_hours"),
             )
             .join(Project, ResourceRequirement.project_id == Project.id)
             .outerjoin(
@@ -144,18 +161,13 @@ class SqlSegmentRepository(SegmentRepositoryPort):
             ).all()
         )
 
+    @staticmethod
     def _operational_base_hours(
-        self,
-        requirement: ResourceRequirement,
         *,
         effective_need: Decimal,
+        active_reduction_hours: Decimal,
     ) -> Decimal:
-        reductions = self._active_reduction_hours(requirement)
-        if not reductions:
-            return effective_need
-        return (
-            effective_need + sum(reductions, Decimal("0.00"))
-        ).quantize(Decimal("0.01"))
+        return (effective_need + active_reduction_hours).quantize(Decimal("0.01"))
 
     def _read_model(
         self,
@@ -165,10 +177,11 @@ class SqlSegmentRepository(SegmentRepositoryPort):
         resource: Resource | None,
         *,
         effective_need: Decimal,
+        active_reduction_hours: Decimal,
     ) -> SegmentReadModel:
         operational_base_hours = self._operational_base_hours(
-            requirement,
             effective_need=effective_need,
+            active_reduction_hours=active_reduction_hours,
         )
         return SegmentReadModel(
             segment_id=_text(requirement.legacy_segment_id) or requirement.id,
@@ -228,8 +241,9 @@ class SqlSegmentRepository(SegmentRepositoryPort):
                 request,
                 resource,
                 effective_need=Decimal(str(effective_need)).quantize(Decimal("0.01")),
+                active_reduction_hours=Decimal(str(active_reduction_hours)),
             )
-            for requirement, project, request, resource, effective_need in rows
+            for requirement, project, request, resource, effective_need, active_reduction_hours in rows
         )
 
     def get(self, segment_id: str) -> SegmentReadModel | None:
@@ -244,13 +258,14 @@ class SqlSegmentRepository(SegmentRepositoryPort):
         ).one_or_none()
         if row is None:
             return None
-        requirement, project, request, resource, effective_need = row
+        requirement, project, request, resource, effective_need, active_reduction_hours = row
         return self._read_model(
             requirement,
             project,
             request,
             resource,
             effective_need=Decimal(str(effective_need)).quantize(Decimal("0.01")),
+            active_reduction_hours=Decimal(str(active_reduction_hours)),
         )
 
     def _requirement(self, segment_id: str) -> ResourceRequirement:
@@ -586,7 +601,7 @@ class SqlSegmentRepository(SegmentRepositoryPort):
                 == requirement.id
             )
         )
-        if intent is None or intent.intent_mode != PLANNING_INTENT_PRESERVE_EXISTING:
+        if intent is None:
             return None
 
         active_reductions = self._active_reduction_hours(requirement)
@@ -600,13 +615,22 @@ class SqlSegmentRepository(SegmentRepositoryPort):
             Decimal(str(proposed_base_hours)).quantize(Decimal("0.01")),
             active_reductions,
         )
+        retained_shift_filters = [
+            Shift.resource_requirement_id == requirement.id,
+            (Shift.allocation_type.is_(None))
+            | (Shift.allocation_type != MISSING_ALLOCATION_TYPE),
+        ]
+        if (
+            intent.intent_mode != PLANNING_INTENT_PRESERVE_EXISTING
+            and requirement.status != "Terminé"
+        ):
+            # AUTO may regenerate unlocked work; locked/asset-promoted work survives.
+            retained_shift_filters.append(Shift.locked == true())
         retained_coverage = Decimal(
             str(
                 self._session.scalar(
                     select(func.coalesce(func.sum(Shift.hours), 0)).where(
-                        Shift.resource_requirement_id == requirement.id,
-                        (Shift.allocation_type.is_(None))
-                        | (Shift.allocation_type != MISSING_ALLOCATION_TYPE),
+                        *retained_shift_filters,
                     )
                 )
                 or 0
@@ -632,8 +656,8 @@ class SqlSegmentRepository(SegmentRepositoryPort):
             "base_planned_hours": float(proposed_base_hours),
             "operational_base_hours": float(
                 self._operational_base_hours(
-                    requirement,
                     effective_need=current_effective_need,
+                    active_reduction_hours=sum(active_reductions, Decimal("0.00")),
                 )
             ),
             "safe_operational_base_hours": float(
