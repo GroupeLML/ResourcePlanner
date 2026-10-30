@@ -64,7 +64,11 @@ import {
   writeSegmentDrag,
   writeShiftDrag,
 } from "./planningDragDrop";
-import { assignSegment, placeSegmentFromDrop } from "./segments-api";
+import {
+  assignSegment,
+  placeSegmentFromDrop,
+  previewSegmentFromDrop,
+} from "./segments-api";
 import {
   OverallocationApiError,
   OverallocationContext,
@@ -1823,19 +1827,21 @@ export default function PlanningPage({
         return;
       }
 
-      const action = actions.find(
-        (row) => row.kind === "ASSIGNMENT" && row.segment_id === payload.segment_id,
+      const preview = await previewSegmentFromDrop(
+        payload.segment_id,
+        {
+          resource_id: targetResource.id,
+          dropped_date: droppedDate,
+        },
       );
-      if (
-        !snapshot
-        || !action?.approval_revision_id
-        || action.operational_version == null
-      ) {
+      if (!preview.allowed) {
+        const actionsLabel = preview.available_actions.length
+          ? ` Actions disponibles : ${preview.available_actions.join(", ")}.`
+          : "";
         setDragFeedback({
-          tone: "info",
-          message: "Le contexte approuvé du besoin n’est plus complet. Le planning a été actualisé; recommence le drag-and-drop.",
+          tone: "error",
+          message: `${preview.refusal_message || "Placement refusé par le backend."}${actionsLabel}`,
         });
-        setRefreshKey((value) => value + 1);
         return;
       }
 
@@ -1844,9 +1850,9 @@ export default function PlanningPage({
         {
           resource_id: targetResource.id,
           dropped_date: droppedDate,
-          expected_planning_version: snapshot.planning_version,
-          expected_approval_revision_id: action.approval_revision_id,
-          expected_operational_version: action.operational_version,
+          expected_planning_version: preview.planning_version,
+          expected_approval_revision_id: preview.approval_revision_id,
+          expected_operational_version: preview.operational_version,
         },
         createClientId(),
       );
