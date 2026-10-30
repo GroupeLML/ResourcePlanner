@@ -989,9 +989,9 @@ export type SegmentReadModel = {
   active_day_target_met: boolean | null;
   active_day_diagnostic: string | null;
   load_profile: string;
-  approval_revision_id: string | null;
-  operational_version: number | null;
-  placement_not_before_date: string | null;
+  approval_revision_id?: string | null;
+  operational_version?: number | null;
+  placement_not_before_date?: string | null;
 };
 
 export type ShiftAssetReservationReadModel = {
@@ -1180,9 +1180,9 @@ export type PlanningActionReadModel = {
   project_manager: string | null;
   requester: string | null;
   emergency_override_active: boolean;
-  approval_revision_id: string | null;
-  operational_version: number | null;
-  placement_not_before_date: string | null;
+  approval_revision_id?: string | null;
+  operational_version?: number | null;
+  placement_not_before_date?: string | null;
 };
 
 export type CoordinatorDashboardKpiReadModel = {
