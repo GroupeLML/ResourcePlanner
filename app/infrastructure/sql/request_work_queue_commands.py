@@ -762,8 +762,20 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
             intent.intent_mode = "AUTO"
         self._session.flush()
 
+        active_release_dates = tuple(
+            self._session.scalars(
+                select(PlanningWorkQueueRelease.work_date).where(
+                    PlanningWorkQueueRelease.planning_intent_id == intent.id,
+                    PlanningWorkQueueRelease.resource_id == resource.id,
+                    PlanningWorkQueueRelease.active.is_(True),
+                )
+            ).all()
+        )
         self._planning.rebuild(
             preserve_shift_ids=counted_survivors if preserve_existing else (),
+            temporary_excluded_dates_by_segment={
+                (_text(requirement.legacy_segment_id) or requirement.id): active_release_dates
+            },
         )
         SqlSameResourcePeriodCoordinator(self._session).assert_shift_invariant()
 
