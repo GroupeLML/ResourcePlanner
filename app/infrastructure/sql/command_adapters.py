@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any, Mapping, Sequence
@@ -117,6 +118,7 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
         self,
         *,
         preserve_shift_ids: Sequence[str] = (),
+        temporary_excluded_dates_by_segment: Mapping[str, Sequence[date]] | None = None,
     ) -> Mapping[str, Any]:
         self._versioning.acquire()
         same_resource = SqlSameResourcePeriodCoordinator(self._session)
@@ -196,8 +198,19 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
             for shift, requirement, resource in preserved_rows
         )
 
+        temporary_exclusions = {
+            str(segment_id): frozenset(days)
+            for segment_id, days in (temporary_excluded_dates_by_segment or {}).items()
+            if str(segment_id)
+        }
         engine_segments = tuple(
-            segment
+            replace(
+                segment,
+                excluded_dates=(
+                    segment.excluded_dates
+                    | temporary_exclusions.get(segment.segment_id, frozenset())
+                ),
+            )
             for segment in calculation.segments
             if segment.segment_id not in suppressed_segment_ids
         )
