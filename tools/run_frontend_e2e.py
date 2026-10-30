@@ -414,6 +414,18 @@ def _seed(database_url: str) -> None:
                         active=True,
                         sort_order=20,
                     ),
+                    # Dedicated #778 Planning resource: isolated from Alice/Bob
+                    # acceptance capacity so the real-backend #778 scenario cannot
+                    # contaminate later V2 tests even if it fails before cleanup.
+                    Resource(
+                        id="R-778-E2E",
+                        external_id="EMP-778-E2E",
+                        name="Ressource E2E 778",
+                        resource_class="PROGRAMMEUR",
+                        competencies="SCADA",
+                        active=True,
+                        sort_order=778,
+                    ),
                 ]
             )
             session.flush()
@@ -424,9 +436,14 @@ def _seed(database_url: str) -> None:
                     ResourceCompetency(resource_id="R-775", competency_id="C-SCADA"),
                     ResourceCompetency(resource_id="R-BOB", competency_id="C-PLC"),
                     ResourceCompetency(resource_id="R-BOB", competency_id="C-SCADA"),
+                    ResourceCompetency(resource_id="R-778-E2E", competency_id="C-SCADA"),
                 ]
             )
-            for resource_id, suffix in (("R-ALICE", "ALICE"), ("R-BOB", "BOB")):
+            for resource_id, suffix in (
+                ("R-ALICE", "ALICE"),
+                ("R-BOB", "BOB"),
+                ("R-778-E2E", "778"),
+            ):
                 session.add(
                     ResourceAvailabilityRule(
                         id=f"E2E-STD-{suffix}",
