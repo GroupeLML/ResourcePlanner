@@ -322,6 +322,120 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_dated_drop_auto_partial_capacity_and_cutoff_replacement(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_40(client)
+                    approved = self._snapshot(client, number)
+                    segment = approved["demand_segments"][0]
+                    requirement_id = segment["requirement_id"]
+                    with factory.begin() as session:
+                        session.execute(
+                            Shift.__table__.delete().where(
+                                Shift.resource_requirement_id == requirement_id
+                            )
+                        )
+                    action = self._actions(client, number)[0]
+                    current = self._snapshot(client, number)
+                    placed = client.post(
+                        f"/api/v1/segments/{action['segment_id']}/place-from-drop",
+                        headers={"Idempotency-Key": "777-auto-partial"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": THURSDAY,
+                            "expected_planning_version": current["planning_version"],
+                            "expected_approval_revision_id": action["approval_revision_id"],
+                            "expected_operational_version": action["operational_version"],
+                        },
+                    )
+                    self.assertEqual(placed.status_code, 200, placed.text)
+                    result = placed.json()
+                    self.assertEqual(result["covered_hours"], 16)
+                    self.assertEqual(result["remaining_hours"], 24)
+                    counted = [
+                        row
+                        for row in self._snapshot(client, number)["demand_shifts"]
+                        if row["allocation_type"] != "Hors horaire requis"
+                    ]
+                    self.assertEqual(sum(row["hours"] for row in counted), 16)
+                    self.assertTrue(all(row["work_date"] >= THURSDAY for row in counted))
+                    survivor_ids = {row["allocation_id"] for row in counted}
+                    with factory() as session:
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement_id
+                            )
+                        )
+                        self.assertEqual(intent.intent_mode, "AUTO")
+                        self.assertEqual(intent.placement_not_before_date.isoformat(), THURSDAY)
+
+                    # A later dated drop replaces, rather than max-merges, the cutoff.
+                    action = self._actions(client, number)[0]
+                    current = self._snapshot(client, number)
+                    later = client.post(
+                        f"/api/v1/segments/{action['segment_id']}/place-from-drop",
+                        headers={"Idempotency-Key": "777-cutoff-later"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": END,
+                            "expected_planning_version": current["planning_version"],
+                            "expected_approval_revision_id": action["approval_revision_id"],
+                            "expected_operational_version": action["operational_version"],
+                        },
+                    )
+                    self.assertEqual(later.status_code, 200, later.text)
+                    self.assertEqual(later.json()["placement_not_before_date"], END)
+                    after_later = [
+                        row
+                        for row in self._snapshot(client, number)["demand_shifts"]
+                        if row["allocation_type"] != "Hors horaire requis"
+                    ]
+                    self.assertEqual(
+                        {row["allocation_id"] for row in after_later},
+                        survivor_ids,
+                    )
+
+                    action = self._actions(client, number)[0]
+                    current = self._snapshot(client, number)
+                    earlier = client.post(
+                        f"/api/v1/segments/{action['segment_id']}/place-from-drop",
+                        headers={"Idempotency-Key": "777-cutoff-earlier"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": THURSDAY,
+                            "expected_planning_version": current["planning_version"],
+                            "expected_approval_revision_id": action["approval_revision_id"],
+                            "expected_operational_version": action["operational_version"],
+                        },
+                    )
+                    self.assertEqual(earlier.status_code, 200, earlier.text)
+                    self.assertEqual(earlier.json()["placement_not_before_date"], THURSDAY)
+                    self.assertEqual(
+                        {
+                            row["allocation_id"]
+                            for row in self._snapshot(client, number)["demand_shifts"]
+                            if row["allocation_type"] != "Hors horaire requis"
+                        },
+                        survivor_ids,
+                    )
+                    with factory() as session:
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement_id
+                            )
+                        )
+                        self.assertEqual(intent.intent_mode, "PRESERVE_EXISTING")
+                        self.assertEqual(intent.placement_not_before_date.isoformat(), THURSDAY)
+            finally:
+                engine.dispose()
+
     def test_dated_drop_rejects_before_window_and_explicit_reset_is_non_regenerating(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
