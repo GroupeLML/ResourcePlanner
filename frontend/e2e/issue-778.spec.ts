@@ -353,7 +353,7 @@ test("778 SegmentEditor conserve la base opérationnelle et utilise les choix ba
         desired_end: d5,
         estimated_hours: 40,
         task_code: "210",
-        proposed_technician: "Alice",
+        proposed_technician: "Ressource E2E 778",
         description: "Base opérationnelle #778",
         submit: true,
       },
