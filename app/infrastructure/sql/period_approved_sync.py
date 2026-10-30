@@ -1171,6 +1171,24 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             current_resource_requirement_id=requirement.id,
         )
         if (
+            intent.placement_not_before_date is not None
+            and requirement.status not in {"Terminé", "Annulé"}
+            and Decimal(str(requirement.planned_hours)) > Decimal("0.001")
+            and requirement.end_date < intent.placement_not_before_date
+        ):
+            raise ApplicationConflictError(
+                "La nouvelle fenêtre autorisée ne contient plus le début opérationnel "
+                "de placement conservé pour ce slot.",
+                code="placement_cutoff_reconciliation_required",
+                context={
+                    "requirement_id": requirement.id,
+                    "placement_not_before_date": intent.placement_not_before_date.isoformat(),
+                    "authorized_start_date": requirement.start_date.isoformat(),
+                    "authorized_end_date": requirement.end_date.isoformat(),
+                    "approval_revision_id": approval_revision_id,
+                },
+            )
+        if (
             intent.intent_mode == PLANNING_INTENT_QUEUED
             or intent.target_mode == PLANNING_TARGET_EXPLICIT_NONE
         ):
