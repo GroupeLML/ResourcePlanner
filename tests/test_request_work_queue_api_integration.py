@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import time
+from datetime import date, timedelta, time
 from decimal import Decimal
 import json
 from tempfile import TemporaryDirectory
@@ -26,6 +26,7 @@ from app.infrastructure.sql import (
     RequestApprovalRevision,
     Shift,
     SqlPeriodAwareApprovedDemandSyncAdapter,
+    SqlPlanningWindowOverrideRepository,
     WorkforceRequest,
     create_session_factory,
     create_sql_engine,
@@ -357,6 +358,87 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                             )
                         self.assertIsNotNone(release)
                         self.assertTrue(release.active)
+            finally:
+                engine.dispose()
+
+    def test_dated_drop_accepts_date_inside_existing_adr022_widened_window(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_40(client)
+                    target = min(
+                        self._snapshot(client, number)["demand_shifts"],
+                        key=lambda row: row["work_date"],
+                    )
+                    preview = client.get(
+                        f"/api/v1/allocations/{target['allocation_id']}/work-queue-preview"
+                    ).json()
+                    returned = client.post(
+                        f"/api/v1/allocations/{target['allocation_id']}/return-to-work-queue",
+                        headers={"Idempotency-Key": "777-widen-return"},
+                        json={
+                            "expected_planning_version": preview["planning_version"],
+                            "expected_approval_revision_id": preview["approval_revision_id"],
+                            "expected_operational_version": preview["operational_version"],
+                        },
+                    )
+                    self.assertEqual(returned.status_code, 200, returned.text)
+
+                    with factory.begin() as session:
+                        requirement = session.get(
+                            ResourceRequirement,
+                            returned.json()["requirement_id"],
+                        )
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement.id
+                            )
+                        )
+                        widened_end = requirement.end_date + timedelta(days=1)
+                        SqlPlanningWindowOverrideRepository(session).apply_widening(
+                            requirement,
+                            approval_revision_id=requirement.approval_revision_id,
+                            approved_entry_key=intent.approved_entry_key,
+                            approved_start_date=requirement.start_date,
+                            approved_end_date=requirement.end_date,
+                            effective_start_date=requirement.start_date,
+                            effective_end_date=widened_end,
+                            actor_user_id=TEST_ADMIN_USER_ID,
+                            reason="Extension E2E #777",
+                            correlation_id="777-existing-window-override",
+                        )
+                        requirement.end_date = widened_end
+
+                    action = self._actions(client, number)[0]
+                    snapshot = self._snapshot(client, number)
+                    widened_date = (
+                        date.fromisoformat(END) + timedelta(days=1)
+                    ).isoformat()
+                    placed = client.post(
+                        f"/api/v1/segments/{action['segment_id']}/place-from-drop",
+                        headers={"Idempotency-Key": "777-drop-inside-widened"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": widened_date,
+                            "expected_planning_version": snapshot["planning_version"],
+                            "expected_approval_revision_id": action["approval_revision_id"],
+                            "expected_operational_version": action["operational_version"],
+                        },
+                    )
+                    self.assertEqual(placed.status_code, 200, placed.text)
+                    self.assertEqual(
+                        placed.json()["placement_not_before_date"],
+                        widened_date,
+                    )
+                    self.assertEqual(
+                        placed.json()["authorized_end_date"],
+                        widened_date,
+                    )
             finally:
                 engine.dispose()
 
