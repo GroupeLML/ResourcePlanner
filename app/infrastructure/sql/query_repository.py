@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from datetime import date, timedelta
 import unicodedata
 
-from sqlalchemy import and_, case, false, or_, select, true
+from sqlalchemy import case, false, or_, select, true
 from sqlalchemy.orm import Session, aliased
 
 from ...application.project_manager_color import project_manager_color_marker
@@ -96,10 +96,6 @@ from .models import (
 from .segment_repository import SqlSegmentRepository
 from .planning_version import SqlPlanningMutationVersionRepository
 from .planning_intent_repository import SqlRequestRequirementPlanningIntentRepository
-from .operational_choice_models import (
-    RequestOperationalState,
-    RequestRequirementPlanningIntent,
-)
 from .project_manager_resolution_repository import SqlProjectManagerResolutionRepository
 
 
@@ -1410,48 +1406,6 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             demand_ids=demand_ids,
             resource_ids=resource_ids,
         )
-        requirement_ids = tuple(
-            dict.fromkeys(
-                requirement_id
-                for segment in assignment_segments
-                for requirement_id in (_optional_text(segment.requirement_id),)
-                if requirement_id
-            )
-        )
-        placement_context: dict[str, tuple[str | None, int | None, date | None]] = {}
-        if requirement_ids:
-            context_rows = self._session.execute(
-                select(
-                    ResourceRequirement.id,
-                    ResourceRequirement.approval_revision_id,
-                    RequestOperationalState.version,
-                    RequestRequirementPlanningIntent.placement_not_before_date,
-                )
-                .outerjoin(
-                    RequestRequirementPlanningIntent,
-                    RequestRequirementPlanningIntent.current_resource_requirement_id
-                    == ResourceRequirement.id,
-                )
-                .outerjoin(
-                    RequestOperationalState,
-                    and_(
-                        RequestOperationalState.workforce_request_id
-                        == ResourceRequirement.workforce_request_id,
-                        RequestOperationalState.approval_revision_id
-                        == ResourceRequirement.approval_revision_id,
-                    ),
-                )
-                .where(ResourceRequirement.id.in_(requirement_ids))
-            ).all()
-            placement_context = {
-                str(requirement_id): (
-                    _optional_text(approval_revision_id),
-                    int(operational_version) if operational_version is not None else None,
-                    cutoff,
-                )
-                for requirement_id, approval_revision_id, operational_version, cutoff in context_rows
-            }
-
         for segment in assignment_segments:
             if segment.remaining_hours <= 0.01:
                 # #693: the work queue follows actual counted Shift coverage, not the
@@ -1479,12 +1433,6 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                     continue
             if segment.start_date is None or segment.end_date is None:
                 continue
-            requirement_id = _optional_text(segment.requirement_id)
-            approval_revision_id, operational_version, placement_cutoff = (
-                placement_context.get(requirement_id, (None, None, None))
-                if requirement_id is not None
-                else (None, None, None)
-            )
             result.append(
                 PlanningActionReadModel(
                     kind="ASSIGNMENT",
@@ -1511,9 +1459,9 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                         if demand is not None
                         else False
                     ),
-                    approval_revision_id=approval_revision_id,
-                    operational_version=operational_version,
-                    placement_not_before_date=placement_cutoff,
+                    approval_revision_id=segment.approval_revision_id,
+                    operational_version=segment.operational_version,
+                    placement_not_before_date=segment.placement_not_before_date,
                 )
             )
 
