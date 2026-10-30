@@ -10,6 +10,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.infrastructure.sql import (
+    PlanningWorkQueueRelease,
+    PlanningWorkQueueRestoration,
     Project,
     Resource,
     ResourceAvailabilityRule,
@@ -23,6 +25,7 @@ from app.infrastructure.sql import (
 )
 from app.server import create_api_app
 from tests.approval_test_support import (
+    TEST_ADMIN_USER_ID,
     routed_demand_payload,
     seed_test_approval_routing,
 )
@@ -268,6 +271,404 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                     {"R-778-B"},
                 )
                 self.assertEqual(self._actions(client, number), [])
+
+    def test_resolved_release_still_bounds_fresh_placement_and_keep_exception_is_canonical(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-778-api-resolved",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._approve_40(client)
+                before = self._snapshot(client, number)
+                target = next(
+                    row for row in before["demand_shifts"]
+                    if row["work_date"] == THURSDAY
+                )
+                segment_id = target["requirement_id"] or target["segment_id"]
+                preview = client.get(
+                    f"/api/v1/allocations/{target['allocation_id']}/work-queue-preview"
+                ).json()
+                returned = client.post(
+                    f"/api/v1/allocations/{target['allocation_id']}/return-to-work-queue",
+                    headers={"Idempotency-Key": "api-resolved-return-778"},
+                    json={
+                        "expected_planning_version": preview["planning_version"],
+                        "expected_approval_revision_id": preview["approval_revision_id"],
+                        "expected_operational_version": preview["operational_version"],
+                    },
+                )
+                self.assertEqual(returned.status_code, 200, returned.text)
+
+                restored = client.post(
+                    f"/api/v1/segments/{segment_id}/allocations",
+                    headers={"Idempotency-Key": "api-resolved-restore-778"},
+                    json={
+                        "resource_id": "R-778-A",
+                        "day": THURSDAY,
+                        "hours": 8,
+                    },
+                )
+                self.assertEqual(restored.status_code, 201, restored.text)
+
+                blocked = client.post(
+                    f"/api/v1/segments/{segment_id}/allocations",
+                    headers={"Idempotency-Key": "api-resolved-blocked-778"},
+                    json={
+                        "resource_id": "R-778-A",
+                        "day": THURSDAY,
+                        "hours": 4,
+                    },
+                )
+                self.assertEqual(blocked.status_code, 409, blocked.text)
+                self.assertEqual(
+                    blocked.json()["error"]["code"],
+                    "request_work_queue_placement_exceeds_residual",
+                )
+                full = self._snapshot(client, number)
+                self.assertEqual(
+                    sum(row["hours"] for row in full["demand_shifts"]),
+                    40.0,
+                )
+
+                kept = client.post(
+                    f"/api/v1/segments/{segment_id}/allocations",
+                    headers={"Idempotency-Key": "api-resolved-keep-778"},
+                    json={
+                        "resource_id": "R-778-A",
+                        "day": THURSDAY,
+                        "hours": 4,
+                        "overallocation_policy": "KEEP_EXCEPTION",
+                    },
+                )
+                self.assertEqual(kept.status_code, 201, kept.text)
+                over = self._snapshot(client, number)
+                self.assertEqual(
+                    sum(row["hours"] for row in over["demand_shifts"]),
+                    44.0,
+                )
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory() as session:
+                    releases = session.scalars(
+                        select(PlanningWorkQueueRelease).order_by(
+                            PlanningWorkQueueRelease.created_at,
+                            PlanningWorkQueueRelease.id,
+                        )
+                    ).all()
+                    self.assertEqual(len(releases), 1)
+                    self.assertFalse(releases[0].active)
+                    restored_hours = session.scalar(
+                        select(
+                            __import__("sqlalchemy").func.coalesce(
+                                __import__("sqlalchemy").func.sum(
+                                    PlanningWorkQueueRestoration.restored_hours
+                                ),
+                                0,
+                            )
+                        ).where(
+                            PlanningWorkQueueRestoration.release_id == releases[0].id
+                        )
+                    )
+                    self.assertEqual(Decimal(str(restored_hours)), Decimal("8.00"))
+            finally:
+                engine.dispose()
+
+    def test_return_segment_full_assignment_rejects_fresh_ordinary_placement(self) -> None:
+        with TemporaryDirectory() as directory:
+            app = create_api_app(
+                self._database(directory),
+                actor_name="admin-778-api-return-segment-bound",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._approve_40(client)
+                before = self._snapshot(client, number)
+                target = before["demand_shifts"][0]
+                segment_id = target["requirement_id"] or target["segment_id"]
+                preview = client.get(
+                    f"/api/v1/allocations/{target['allocation_id']}/work-queue-preview"
+                ).json()
+                returned = client.post(
+                    f"/api/v1/segments/{segment_id}/return-to-work-queue",
+                    headers={"Idempotency-Key": "api-return-segment-bound-778"},
+                    json={
+                        "expected_planning_version": preview["planning_version"],
+                        "expected_approval_revision_id": preview["approval_revision_id"],
+                        "expected_operational_version": preview["operational_version"],
+                    },
+                )
+                self.assertEqual(returned.status_code, 200, returned.text)
+                assigned = client.post(
+                    f"/api/v1/segments/{segment_id}/assign",
+                    json={"resource_id": "R-778-B"},
+                )
+                self.assertEqual(assigned.status_code, 200, assigned.text)
+
+                blocked = client.post(
+                    f"/api/v1/segments/{segment_id}/allocations",
+                    headers={"Idempotency-Key": "api-return-segment-fresh-778"},
+                    json={
+                        "resource_id": "R-778-B",
+                        "day": START,
+                        "hours": 4,
+                    },
+                )
+                self.assertEqual(blocked.status_code, 409, blocked.text)
+                self.assertEqual(
+                    blocked.json()["error"]["code"],
+                    "request_work_queue_placement_exceeds_residual",
+                )
+                final = self._snapshot(client, number)
+                self.assertEqual(
+                    sum(row["hours"] for row in final["demand_shifts"]),
+                    40.0,
+                )
+
+    def test_partial_restorations_accumulate_on_one_release_and_replay_is_idempotent(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-778-api-partial-release",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._approve_40(client)
+                before = self._snapshot(client, number)
+                target = next(
+                    row for row in before["demand_shifts"]
+                    if row["work_date"] == THURSDAY
+                )
+                segment_id = target["requirement_id"] or target["segment_id"]
+                preview = client.get(
+                    f"/api/v1/allocations/{target['allocation_id']}/work-queue-preview"
+                ).json()
+                returned = client.post(
+                    f"/api/v1/allocations/{target['allocation_id']}/return-to-work-queue",
+                    headers={"Idempotency-Key": "api-partial-return-778"},
+                    json={
+                        "expected_planning_version": preview["planning_version"],
+                        "expected_approval_revision_id": preview["approval_revision_id"],
+                        "expected_operational_version": preview["operational_version"],
+                    },
+                )
+                self.assertEqual(returned.status_code, 200, returned.text)
+
+                first_payload = {
+                    "resource_id": "R-778-A",
+                    "day": THURSDAY,
+                    "hours": 4,
+                }
+                first = client.post(
+                    f"/api/v1/segments/{segment_id}/allocations",
+                    headers={"Idempotency-Key": "api-partial-first-778"},
+                    json=first_payload,
+                )
+                self.assertEqual(first.status_code, 201, first.text)
+                replay = client.post(
+                    f"/api/v1/segments/{segment_id}/allocations",
+                    headers={"Idempotency-Key": "api-partial-first-778"},
+                    json=first_payload,
+                )
+                self.assertEqual(replay.status_code, 201, replay.text)
+                self.assertEqual(replay.json(), first.json())
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    release_a = session.scalar(
+                        select(PlanningWorkQueueRelease).order_by(
+                            PlanningWorkQueueRelease.created_at,
+                            PlanningWorkQueueRelease.id,
+                        )
+                    )
+                    self.assertIsNotNone(release_a)
+                    self.assertTrue(release_a.active)
+                    restored = session.scalars(
+                        select(PlanningWorkQueueRestoration).where(
+                            PlanningWorkQueueRestoration.release_id == release_a.id
+                        )
+                    ).all()
+                    self.assertEqual(len(restored), 1)
+                    self.assertEqual(
+                        sum((row.restored_hours for row in restored), Decimal("0")),
+                        Decimal("4.00"),
+                    )
+                    sibling = PlanningWorkQueueRelease(
+                        planning_intent_id=release_a.planning_intent_id,
+                        resource_requirement_id=release_a.resource_requirement_id,
+                        original_shift_id="SIBLING-RELEASE-SHIFT-778",
+                        workforce_request_id=release_a.workforce_request_id,
+                        approval_revision_id=release_a.approval_revision_id,
+                        approved_entry_key=release_a.approved_entry_key,
+                        resource_id=release_a.resource_id,
+                        work_date=release_a.work_date,
+                        hours=Decimal("4.00"),
+                        shift_snapshot_text="{}",
+                        actor_user_id=TEST_ADMIN_USER_ID,
+                        command_id="api-partial-sibling-778",
+                        active=True,
+                    )
+                    session.add(sibling)
+                    session.flush()
+                    sibling_id = sibling.id
+                    release_a_id = release_a.id
+            finally:
+                engine.dispose()
+
+            with TestClient(app, raise_server_exceptions=False) as client:
+                second = client.post(
+                    f"/api/v1/segments/{segment_id}/allocations",
+                    headers={"Idempotency-Key": "api-partial-second-778"},
+                    json={
+                        "resource_id": "R-778-A",
+                        "day": THURSDAY,
+                        "hours": 4,
+                    },
+                )
+                self.assertEqual(second.status_code, 201, second.text)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory() as session:
+                    release_a = session.get(PlanningWorkQueueRelease, release_a_id)
+                    sibling = session.get(PlanningWorkQueueRelease, sibling_id)
+                    self.assertFalse(release_a.active)
+                    self.assertTrue(sibling.active)
+                    restored = session.scalars(
+                        select(PlanningWorkQueueRestoration).where(
+                            PlanningWorkQueueRestoration.release_id == release_a_id
+                        )
+                    ).all()
+                    self.assertEqual(len(restored), 2)
+                    self.assertEqual(
+                        sum((row.restored_hours for row in restored), Decimal("0")),
+                        Decimal("8.00"),
+                    )
+                    sibling_restorations = session.scalars(
+                        select(PlanningWorkQueueRestoration).where(
+                            PlanningWorkQueueRestoration.release_id == sibling_id
+                        )
+                    ).all()
+                    self.assertEqual(sibling_restorations, [])
+            finally:
+                engine.dispose()
+
+    def test_public_segment_patch_materializes_base_minus_active_reduction(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-778-api-patch-effective",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._approve_40(client)
+                before = self._snapshot(client, number)
+                target = next(
+                    row for row in before["demand_shifts"]
+                    if row["work_date"] == THURSDAY
+                )
+                segment_id = target["requirement_id"] or target["segment_id"]
+                preview = client.get(
+                    f"/api/v1/allocations/{target['allocation_id']}/work-queue-preview"
+                ).json()
+                reduced = client.post(
+                    f"/api/v1/allocations/{target['allocation_id']}/permanent-reduction",
+                    headers={"Idempotency-Key": "api-patch-reduce-778"},
+                    json={
+                        "expected_planning_version": preview["planning_version"],
+                        "expected_request_version": preview["request_version"],
+                        "expected_approval_revision_id": preview["approval_revision_id"],
+                        "expected_operational_version": preview["operational_version"],
+                    },
+                )
+                self.assertEqual(reduced.status_code, 200, reduced.text)
+
+                patched = client.patch(
+                    f"/api/v1/segments/{segment_id}",
+                    json={"planned_hours": 36},
+                )
+                self.assertEqual(patched.status_code, 200, patched.text)
+
+                current = client.get(f"/api/v1/segments/{segment_id}")
+                self.assertEqual(current.status_code, 200, current.text)
+                self.assertEqual(current.json()["planned_hours"], 28.0)
+                snapshot = self._snapshot(client, number)
+                segment = snapshot["demand_segments"][0]
+                self.assertEqual(segment["planned_hours"], 28.0)
+                self.assertEqual(segment["covered_hours"], 28.0)
+                self.assertEqual(segment["remaining_hours"], 0.0)
+                detail = client.get(f"/api/v1/demands/{number}")
+                self.assertEqual(detail.status_code, 200, detail.text)
+                active_line = next(
+                    row for row in detail.json()["lines"]
+                    if row.get("active", True)
+                )
+                self.assertEqual(float(active_line["estimated_hours"]), 28.0)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory() as session:
+                    request = session.scalar(
+                        select(WorkforceRequest).where(
+                            WorkforceRequest.legacy_demand_number == number
+                        )
+                    )
+                    self.assertIsNotNone(request)
+                    revision = session.scalar(
+                        select(RequestApprovalRevision)
+                        .where(
+                            RequestApprovalRevision.workforce_request_id == request.id
+                        )
+                        .order_by(RequestApprovalRevision.created_at)
+                    )
+                    payload = json.loads(revision.payload_text)
+                    self.assertEqual(
+                        sum(
+                            Decimal(str(row["hours"]))
+                            for row in payload["authorization"]["entries"]
+                            if row.get("hours") is not None
+                        ),
+                        Decimal("40.00"),
+                    )
+                    reductions = session.scalars(
+                        select(__import__(
+                            "app.infrastructure.sql.operational_choice_models",
+                            fromlist=["RequestCompletionReduction"],
+                        ).RequestCompletionReduction).where(
+                            __import__(
+                                "app.infrastructure.sql.operational_choice_models",
+                                fromlist=["RequestCompletionReduction"],
+                            ).RequestCompletionReduction.workforce_request_id
+                            == request.id
+                        )
+                    ).all()
+                    self.assertEqual(len(reductions), 1)
+                    self.assertEqual(reductions[0].reconciliation_state, "ACTIVE")
+                    state = session.get(
+                        __import__(
+                            "app.infrastructure.sql.operational_choice_models",
+                            fromlist=["RequestOperationalState"],
+                        ).RequestOperationalState,
+                        request.id,
+                    )
+                    self.assertIsNotNone(state)
+                    overrides = json.loads(state.budget_overrides_text)
+                    self.assertEqual(
+                        float(overrides[reductions[0].approved_entry_key]),
+                        36.0,
+                    )
+            finally:
+                engine.dispose()
 
     def test_c_permanent_reduction_40_to_32_keeps_historical_approval_and_no_queue_residual(self) -> None:
         with TemporaryDirectory() as directory:
