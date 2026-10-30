@@ -278,6 +278,13 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                     )
                     self.assertEqual(replay.status_code, 200, replay.text)
                     self.assertEqual(replay.json(), result)
+                    stale = client.post(
+                        f"/api/v1/segments/{segment_id}/assign-from-drop",
+                        headers={"Idempotency-Key": "777-stale-new-command"},
+                        json=payload,
+                    )
+                    self.assertEqual(stale.status_code, 409, stale.text)
+                    self.assertEqual(stale.json()["error"]["code"], "planning_version_conflict")
 
                     with factory() as session:
                         requirement = session.scalar(
@@ -521,6 +528,101 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                     )
                     self.assertEqual(reset.status_code, 200, reset.text)
                     self.assertIsNone(reset.json()["placement_not_before_date"])
+            finally:
+                engine.dispose()
+
+    def test_777_return_segment_retains_cutoff_and_does_not_regenerate(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_unassigned_40(client)
+                    initial = self._snapshot(client, number)
+                    segment_id = self._actions(client, number)[0]["segment_id"]
+                    revision, operational = self._approved_versions(client, number)
+                    placed = client.post(
+                        f"/api/v1/segments/{segment_id}/assign-from-drop",
+                        headers={"Idempotency-Key": "777-return-segment-place"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": THURSDAY,
+                            "expected_planning_version": initial["planning_version"],
+                            "expected_approval_revision_id": revision,
+                            "expected_operational_version": operational,
+                        },
+                    )
+                    self.assertEqual(placed.status_code, 200, placed.text)
+                    after_place = self._snapshot(client, number)
+                    target = next(
+                        row for row in after_place["demand_shifts"]
+                        if row["allocation_type"] != "Hors horaire requis"
+                    )
+                    preview_response = client.get(
+                        f"/api/v1/allocations/{target['allocation_id']}/work-queue-preview"
+                    )
+                    self.assertEqual(preview_response.status_code, 200, preview_response.text)
+                    preview = preview_response.json()
+                    returned = client.post(
+                        f"/api/v1/segments/{segment_id}/return-to-work-queue",
+                        headers={"Idempotency-Key": "777-return-segment"},
+                        json={
+                            "expected_planning_version": preview["planning_version"],
+                            "expected_approval_revision_id": preview["approval_revision_id"],
+                            "expected_operational_version": preview["operational_version"],
+                        },
+                    )
+                    self.assertEqual(returned.status_code, 200, returned.text)
+                    after_return = self._snapshot(client, number)
+                    self.assertEqual(
+                        [
+                            row for row in after_return["demand_shifts"]
+                            if row["allocation_type"] != "Hors horaire requis"
+                        ],
+                        [],
+                    )
+                    with factory() as session:
+                        requirement = session.scalar(
+                            select(ResourceRequirement).where(
+                                ResourceRequirement.legacy_segment_id == segment_id
+                            )
+                        )
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement.id
+                            )
+                        )
+                        self.assertEqual(intent.intent_mode, "QUEUED")
+                        self.assertEqual(
+                            intent.placement_not_before_date,
+                            date.fromisoformat(THURSDAY),
+                        )
+
+                    # An explicit reset clears only the cutoff. QUEUED remains queued.
+                    snapshot = self._snapshot(client, number)
+                    revision, operational = self._approved_versions(client, number)
+                    reset = client.post(
+                        f"/api/v1/segments/{segment_id}/placement-cutoff/reset",
+                        headers={"Idempotency-Key": "777-return-segment-reset"},
+                        json={
+                            "expected_planning_version": snapshot["planning_version"],
+                            "expected_approval_revision_id": revision,
+                            "expected_operational_version": operational,
+                        },
+                    )
+                    self.assertEqual(reset.status_code, 200, reset.text)
+                    self.assertIsNone(reset.json()["placement_not_before_date"])
+                    after_reset = self._snapshot(client, number)
+                    self.assertEqual(
+                        [
+                            row for row in after_reset["demand_shifts"]
+                            if row["allocation_type"] != "Hors horaire requis"
+                        ],
+                        [],
+                    )
             finally:
                 engine.dispose()
 
