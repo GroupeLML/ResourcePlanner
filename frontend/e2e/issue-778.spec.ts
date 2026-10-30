@@ -326,6 +326,9 @@ test("778 SegmentEditor conserve la base opérationnelle et utilise les choix ba
   const monday = addDays(startOfWeek(new Date()), 7);
   const d1 = localIso(monday);
   const d5 = localIso(addDays(monday, 4));
+  let resourceId: string | null = null;
+  let availabilityRuleId: string | null = null;
+  const resourceName = "Ressource E2E 778 isolée";
 
   const openSegmentEditor = async (demandNumber: string) => {
     await page.goto("/");
@@ -346,6 +349,35 @@ test("778 SegmentEditor conserve la base opérationnelle et utilise les choix ba
   };
 
   try {
+    const resourceCreate = await page.request.post("/api/v1/resources", {
+      headers: { "X-E2E-Role": "ADMIN" },
+      data: {
+        name: resourceName,
+        resource_class: "PROGRAMMEUR",
+        competencies: "SCADA",
+        sort_order: 778,
+      },
+    });
+    expect(resourceCreate.status(), await resourceCreate.text()).toBe(201);
+    resourceId = String((await resourceCreate.json()).resource_id);
+
+    const availabilityCreate = await page.request.post("/api/v1/availability-rules", {
+      headers: {
+        "X-E2E-Role": "ADMIN",
+        "Idempotency-Key": "issue-778-isolated-availability",
+      },
+      data: {
+        availability_type: "Horaire standard",
+        resource_id: resourceId,
+        weekdays: "Lun,Mar,Mer,Jeu,Ven,Sam,Dim",
+        start_time: "08:00:00",
+        end_time: "16:00:00",
+        active: true,
+      },
+    });
+    expect(availabilityCreate.status(), await availabilityCreate.text()).toBe(201);
+    availabilityRuleId = String((await availabilityCreate.json()).rule_id);
+
     const created = await page.request.post("/api/v1/demands", {
       data: {
         project_number: "P-251",
@@ -353,7 +385,7 @@ test("778 SegmentEditor conserve la base opérationnelle et utilise les choix ba
         desired_end: d5,
         estimated_hours: 40,
         task_code: "210",
-        proposed_technician: "Ressource E2E 778",
+        proposed_technician: resourceName,
         description: "Base opérationnelle #778",
         submit: true,
       },
@@ -406,35 +438,16 @@ test("778 SegmentEditor conserve la base opérationnelle et utilise les choix ba
     );
     expect(reduced.status(), await reduced.text()).toBe(200);
 
-    let segmentResponse = await page.request.get(
-      `/api/v1/segments/${encodeURIComponent(segmentId)}`,
-    );
-    expect(segmentResponse.ok(), await segmentResponse.text()).toBeTruthy();
-    let segment = await segmentResponse.json() as Record<string, any>;
-    expect(segment.planned_hours).toBe(32);
-    expect(segment.operational_base_hours).toBe(40);
-
-    let dialog = await openSegmentEditor(demandNumber);
-    await expect(dialog.getByLabel("Heures prévues")).toHaveValue("40");
-    await dialog.getByLabel("Description").fill("Description seulement #778");
-    await dialog.getByRole("button", { name: "Enregistrer", exact: true }).click();
-    await expect(dialog).toBeHidden();
-
-    segmentResponse = await page.request.get(
-      `/api/v1/segments/${encodeURIComponent(segmentId)}`,
-    );
-    segment = await segmentResponse.json() as Record<string, any>;
-    expect(segment.description).toBe("Description seulement #778");
-    expect(segment.operational_base_hours).toBe(40);
-    expect(segment.planned_hours).toBe(32);
-
-    const remainingShiftsResponse = await page.request.get(
+    const afterReductionShiftsResponse = await page.request.get(
       `/api/v1/shifts?start=${d1}&end=${d5}`,
     );
-    const remainingShifts = (await remainingShiftsResponse.json() as Array<any>)
+    expect(afterReductionShiftsResponse.ok(), await afterReductionShiftsResponse.text()).toBeTruthy();
+    const afterReductionShifts = (await afterReductionShiftsResponse.json() as Array<any>)
       .filter((row) => row.demand_number === demandNumber && row.allocation_type !== "Hors horaire requis");
-    expect(remainingShifts).toHaveLength(4);
-    const returnTarget = remainingShifts[0];
+    expect(afterReductionShifts).toHaveLength(4);
+    expect(afterReductionShifts.map((row) => Number(row.hours)).sort()).toEqual([8, 8, 8, 8]);
+
+    const returnTarget = afterReductionShifts[0];
     const returnPreview = await page.request.get(
       `/api/v1/allocations/${encodeURIComponent(returnTarget.allocation_id)}/work-queue-preview`,
     );
@@ -452,6 +465,48 @@ test("778 SegmentEditor conserve la base opérationnelle et utilise les choix ba
       },
     );
     expect(returned.status(), await returned.text()).toBe(200);
+
+    const preservedShiftsResponse = await page.request.get(
+      `/api/v1/shifts?start=${d1}&end=${d5}`,
+    );
+    expect(preservedShiftsResponse.ok(), await preservedShiftsResponse.text()).toBeTruthy();
+    const preservedShifts = (await preservedShiftsResponse.json() as Array<any>)
+      .filter((row) => row.demand_number === demandNumber && row.allocation_type !== "Hors horaire requis");
+    expect(preservedShifts).toHaveLength(3);
+    expect(preservedShifts.map((row) => Number(row.hours)).sort()).toEqual([8, 8, 8]);
+    const survivorIds = preservedShifts.map((row) => String(row.allocation_id)).sort();
+
+    let segmentResponse = await page.request.get(
+      `/api/v1/segments/${encodeURIComponent(segmentId)}`,
+    );
+    expect(segmentResponse.ok(), await segmentResponse.text()).toBeTruthy();
+    let segment = await segmentResponse.json() as Record<string, any>;
+    expect(segment.planned_hours).toBe(32);
+    expect(segment.operational_base_hours).toBe(40);
+    const preservedSnapshotResponse = await page.request.get(
+      `/api/v1/planning/snapshot?start=${d1}&end=${d5}&scope=global`,
+    );
+    expect(preservedSnapshotResponse.ok(), await preservedSnapshotResponse.text()).toBeTruthy();
+    const preservedSnapshot = await preservedSnapshotResponse.json() as Record<string, any>;
+    const preservedSegment = (preservedSnapshot.segments as Array<any>)
+      .find((row) => row.demand_number === demandNumber);
+    expect(preservedSegment?.planned_hours).toBe(32);
+    expect(preservedSegment?.covered_hours).toBe(24);
+    expect(preservedSegment?.remaining_hours).toBe(8);
+
+    let dialog = await openSegmentEditor(demandNumber);
+    await expect(dialog.getByLabel("Heures prévues")).toHaveValue("40");
+    await dialog.getByLabel("Description").fill("Description seulement #778");
+    await dialog.getByRole("button", { name: "Enregistrer", exact: true }).click();
+    await expect(dialog).toBeHidden();
+
+    segmentResponse = await page.request.get(
+      `/api/v1/segments/${encodeURIComponent(segmentId)}`,
+    );
+    segment = await segmentResponse.json() as Record<string, any>;
+    expect(segment.description).toBe("Description seulement #778");
+    expect(segment.operational_base_hours).toBe(40);
+    expect(segment.planned_hours).toBe(32);
 
     dialog = await openSegmentEditor(demandNumber);
     await expect(dialog.getByLabel("Heures prévues")).toHaveValue("40");
@@ -492,7 +547,29 @@ test("778 SegmentEditor conserve la base opérationnelle et utilise les choix ba
     segment = await segmentResponse.json() as Record<string, any>;
     expect(segment.operational_base_hours).toBe(28);
     expect(segment.planned_hours).toBe(20);
+    const finalShiftsResponse = await page.request.get(
+      `/api/v1/shifts?start=${d1}&end=${d5}`,
+    );
+    const finalShifts = (await finalShiftsResponse.json() as Array<any>)
+      .filter((row) => row.demand_number === demandNumber && row.allocation_type !== "Hors horaire requis");
+    expect(finalShifts.map((row) => String(row.allocation_id)).sort()).toEqual(survivorIds);
+    expect(finalShifts.map((row) => Number(row.hours)).sort()).toEqual([8, 8, 8]);
   } finally {
-    await context.close();
+    try {
+      if (availabilityRuleId) {
+        await page.request.post(
+          `/api/v1/availability-rules/${encodeURIComponent(availabilityRuleId)}/deactivate`,
+          { headers: { "X-E2E-Role": "ADMIN" } },
+        );
+      }
+      if (resourceId) {
+        await page.request.post(
+          `/api/v1/resources/${encodeURIComponent(resourceId)}/deactivate`,
+          { headers: { "X-E2E-Role": "ADMIN" } },
+        );
+      }
+    } finally {
+      await context.close();
+    }
   }
 });
