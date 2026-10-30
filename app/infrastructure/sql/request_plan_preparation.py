@@ -1065,6 +1065,7 @@ class SqlRequestPlanPreparer:
         specs: Sequence[PreparedRequirementSpec],
         *,
         target_project_id: str | None = None,
+        acknowledged_overallocation_requirement_ids: Sequence[str] = (),
     ) -> tuple[LockedPlanningConflict, ...]:
         matches, obsolete = self.match_current(request, current, specs)
         requirement_ids = {row.id for row in current}
@@ -1133,7 +1134,19 @@ class SqlRequestPlanPreparer:
                 (shift.hours for shift in locked),
                 Decimal("0"),
             )
-            if locked_hours > match.spec.planned_hours + Decimal("0.001"):
+            current_excess = max(
+                locked_hours - Decimal(str(requirement.planned_hours)),
+                Decimal("0.00"),
+            )
+            projected_excess = max(
+                locked_hours - match.spec.planned_hours,
+                Decimal("0.00"),
+            )
+            acknowledged_ids = set(acknowledged_overallocation_requirement_ids)
+            if (
+                projected_excess > current_excess + Decimal("0.001")
+                and requirement.id not in acknowledged_ids
+            ):
                 conflicts.append(
                     LockedPlanningConflict(
                         code=LOCKED_HOURS_EXCEED_BUDGET,
@@ -1142,7 +1155,7 @@ class SqlRequestPlanPreparer:
                         shift_ids=tuple(row.id for row in locked),
                         message=(
                             "Les heures verrouillées dépassent les heures prévues par le nouveau besoin. "
-                            "Réduis ou libère les quarts manuels avant d'approuver."
+                            "Réduis ou libère ces quarts ou confirme explicitement la dérogation."
                         ),
                     )
                 )
@@ -1236,12 +1249,16 @@ class SqlRequestPlanPreparer:
         specs: Sequence[PreparedRequirementSpec],
         *,
         target_project_id: str | None = None,
+        acknowledged_overallocation_requirement_ids: Sequence[str] = (),
     ) -> None:
         conflicts = self.locked_conflicts(
             request,
             current,
             specs,
             target_project_id=target_project_id,
+            acknowledged_overallocation_requirement_ids=(
+                acknowledged_overallocation_requirement_ids
+            ),
         )
         if conflicts:
             raise ValueError(conflicts[0].message)
