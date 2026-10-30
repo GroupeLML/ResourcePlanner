@@ -747,6 +747,146 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_public_patch_respects_post_reduction_preserved_survivor_boundary(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-778-api-patch-survivor-boundary",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._approve_40(client)
+                before = self._snapshot(client, number)
+                reduced_target = next(
+                    row for row in before["demand_shifts"]
+                    if row["work_date"] == THURSDAY
+                )
+                segment_id = (
+                    reduced_target["requirement_id"]
+                    or reduced_target["segment_id"]
+                )
+                reduction_preview = client.get(
+                    f"/api/v1/allocations/{reduced_target['allocation_id']}/work-queue-preview"
+                ).json()
+                reduced = client.post(
+                    f"/api/v1/allocations/{reduced_target['allocation_id']}/permanent-reduction",
+                    headers={"Idempotency-Key": "api-patch-boundary-reduce-778"},
+                    json={
+                        "expected_planning_version": reduction_preview["planning_version"],
+                        "expected_request_version": reduction_preview["request_version"],
+                        "expected_approval_revision_id": reduction_preview["approval_revision_id"],
+                        "expected_operational_version": reduction_preview["operational_version"],
+                    },
+                )
+                self.assertEqual(reduced.status_code, 200, reduced.text)
+
+                after_reduction = self._snapshot(client, number)
+                returned_target = next(
+                    row for row in after_reduction["demand_shifts"]
+                    if row["work_date"] != THURSDAY
+                )
+                return_preview = client.get(
+                    f"/api/v1/allocations/{returned_target['allocation_id']}/work-queue-preview"
+                ).json()
+                returned = client.post(
+                    f"/api/v1/allocations/{returned_target['allocation_id']}/return-to-work-queue",
+                    headers={"Idempotency-Key": "api-patch-boundary-return-778"},
+                    json={
+                        "expected_planning_version": return_preview["planning_version"],
+                        "expected_approval_revision_id": return_preview["approval_revision_id"],
+                        "expected_operational_version": return_preview["operational_version"],
+                    },
+                )
+                self.assertEqual(returned.status_code, 200, returned.text)
+
+                preserved_before = self._snapshot(client, number)
+                segment_before = preserved_before["demand_segments"][0]
+                self.assertEqual(segment_before["planned_hours"], 32.0)
+                self.assertEqual(segment_before["covered_hours"], 24.0)
+                self.assertEqual(segment_before["remaining_hours"], 8.0)
+                survivor_state_before = sorted(
+                    (
+                        row["allocation_id"],
+                        row.get("source"),
+                        row.get("locked"),
+                        row.get("asset_allocation_id"),
+                        row["hours"],
+                    )
+                    for row in preserved_before["demand_shifts"]
+                )
+
+                rejected = client.patch(
+                    f"/api/v1/segments/{segment_id}",
+                    json={"planned_hours": 28},
+                )
+                self.assertEqual(rejected.status_code, 422, rejected.text)
+                self.assertEqual(
+                    rejected.json()["error"]["code"],
+                    "segment_overallocation_choice_required",
+                )
+                rejected_context = rejected.json()["error"]["context"]
+                self.assertEqual(rejected_context["effective_need"], 20.0)
+                self.assertEqual(
+                    rejected_context["retained_coverage_hours"],
+                    24.0,
+                )
+
+                unchanged = self._snapshot(client, number)
+                unchanged_segment = unchanged["demand_segments"][0]
+                self.assertEqual(unchanged_segment["planned_hours"], 32.0)
+                self.assertEqual(unchanged_segment["covered_hours"], 24.0)
+                self.assertEqual(unchanged_segment["remaining_hours"], 8.0)
+                self.assertEqual(
+                    sorted(
+                        (
+                            row["allocation_id"],
+                            row.get("source"),
+                            row.get("locked"),
+                            row.get("asset_allocation_id"),
+                            row["hours"],
+                        )
+                        for row in unchanged["demand_shifts"]
+                    ),
+                    survivor_state_before,
+                )
+
+                exact = client.patch(
+                    f"/api/v1/segments/{segment_id}",
+                    json={"planned_hours": 32},
+                )
+                self.assertEqual(exact.status_code, 200, exact.text)
+                exact_snapshot = self._snapshot(client, number)
+                exact_segment = exact_snapshot["demand_segments"][0]
+                self.assertEqual(exact_segment["planned_hours"], 24.0)
+                self.assertEqual(exact_segment["covered_hours"], 24.0)
+                self.assertEqual(exact_segment["remaining_hours"], 0.0)
+
+                above = client.patch(
+                    f"/api/v1/segments/{segment_id}",
+                    json={"planned_hours": 36},
+                )
+                self.assertEqual(above.status_code, 200, above.text)
+                above_snapshot = self._snapshot(client, number)
+                above_segment = above_snapshot["demand_segments"][0]
+                self.assertEqual(above_segment["planned_hours"], 28.0)
+                self.assertEqual(above_segment["covered_hours"], 24.0)
+                self.assertEqual(above_segment["remaining_hours"], 4.0)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory() as session:
+                    reductions = session.scalars(
+                        select(RequestCompletionReduction).where(
+                            RequestCompletionReduction.reconciliation_state == "ACTIVE"
+                        )
+                    ).all()
+                    self.assertEqual(len(reductions), 1)
+                    self.assertEqual(reductions[0].reduction_hours, Decimal("8.00"))
+            finally:
+                engine.dispose()
+
     def test_c_permanent_reduction_40_to_32_keeps_historical_approval_and_no_queue_residual(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
