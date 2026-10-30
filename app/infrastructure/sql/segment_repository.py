@@ -122,6 +122,41 @@ class SqlSegmentRepository(SegmentRepositoryPort):
             .outerjoin(Resource, ResourceRequirement.assigned_resource_id == Resource.id)
         )
 
+    def _active_reduction_hours(
+        self,
+        requirement: ResourceRequirement,
+    ) -> tuple[Decimal, ...]:
+        intent = self._session.scalar(
+            select(RequestRequirementPlanningIntent).where(
+                RequestRequirementPlanningIntent.current_resource_requirement_id
+                == requirement.id
+            )
+        )
+        if intent is None:
+            return ()
+        return tuple(
+            Decimal(str(value)).quantize(Decimal("0.01"))
+            for value in self._session.scalars(
+                select(RequestCompletionReduction.reduction_hours).where(
+                    RequestCompletionReduction.planning_intent_id == intent.id,
+                    RequestCompletionReduction.reconciliation_state == "ACTIVE",
+                )
+            ).all()
+        )
+
+    def _operational_base_hours(
+        self,
+        requirement: ResourceRequirement,
+        *,
+        effective_need: Decimal,
+    ) -> Decimal:
+        reductions = self._active_reduction_hours(requirement)
+        if not reductions:
+            return effective_need
+        return (
+            effective_need + sum(reductions, Decimal("0.00"))
+        ).quantize(Decimal("0.01"))
+
     def _read_model(
         self,
         requirement: ResourceRequirement,
@@ -131,6 +166,10 @@ class SqlSegmentRepository(SegmentRepositoryPort):
         *,
         effective_need: Decimal,
     ) -> SegmentReadModel:
+        operational_base_hours = self._operational_base_hours(
+            requirement,
+            effective_need=effective_need,
+        )
         return SegmentReadModel(
             segment_id=_text(requirement.legacy_segment_id) or requirement.id,
             demand_number=(
@@ -149,6 +188,7 @@ class SqlSegmentRepository(SegmentRepositoryPort):
             start_date=requirement.start_date,
             end_date=requirement.end_date,
             planned_hours=float(effective_need),
+            operational_base_hours=float(operational_base_hours),
             status=_text(requirement.status),
             description=_optional_text(requirement.description),
             origin=_optional_text(requirement.origin),
@@ -549,15 +589,7 @@ class SqlSegmentRepository(SegmentRepositoryPort):
         if intent is None or intent.intent_mode != PLANNING_INTENT_PRESERVE_EXISTING:
             return None
 
-        active_reductions = tuple(
-            Decimal(str(value)).quantize(Decimal("0.01"))
-            for value in self._session.scalars(
-                select(RequestCompletionReduction.reduction_hours).where(
-                    RequestCompletionReduction.planning_intent_id == intent.id,
-                    RequestCompletionReduction.reconciliation_state == "ACTIVE",
-                )
-            ).all()
-        )
+        active_reductions = self._active_reduction_hours(requirement)
         current_effective_need = SqlRequestRequirementPlanningIntentRepository(
             self._session
         ).current_effective_need_for_requirement(
@@ -598,6 +630,18 @@ class SqlSegmentRepository(SegmentRepositoryPort):
             "current_excess_hours": float(current_excess),
             "excess_hours": float(projected_excess),
             "base_planned_hours": float(proposed_base_hours),
+            "operational_base_hours": float(
+                self._operational_base_hours(
+                    requirement,
+                    effective_need=current_effective_need,
+                )
+            ),
+            "safe_operational_base_hours": float(
+                (
+                    retained_coverage
+                    + sum(active_reductions, Decimal("0.00"))
+                ).quantize(Decimal("0.01"))
+            ),
             "active_reduction_hours": float(
                 sum(active_reductions, Decimal("0.00"))
             ),
