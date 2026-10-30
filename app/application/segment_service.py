@@ -57,6 +57,7 @@ class SegmentService:
 
     def create_command(self, command: SegmentCreateCommand) -> tuple[str, dict[str, Any]]:
         values = command.to_repository_values()
+        pre_mutation_effective_hours_by_segment: dict[str, float] = {}
         if self._authorization is not None:
             call_application_port(
                 lambda: self._authorization.authorize_segment_create(values),
@@ -137,6 +138,11 @@ class SegmentService:
                 else None
             )
             if projection is not None:
+                current_effective = projection.get("current_planned_hours")
+                if current_effective is not None:
+                    pre_mutation_effective_hours_by_segment[identifier] = float(
+                        current_effective
+                    )
                 current_excess = float(projection.get("current_excess_hours", 0.0))
                 proposed_excess = float(projection.get("excess_hours", 0.0))
                 if (
@@ -195,18 +201,17 @@ class SegmentService:
             and existing.origin == "REQUEST"
             and str(existing.demand_number or "").strip()
         ):
-            call_application_port(
-                (
-                    lambda: self._approved_sync.sync_operational_choices(
-                        str(existing.demand_number).strip(),
-                        acknowledged_overallocation_segment_ids=(identifier,),
-                    )
+            sync_kwargs: dict[str, Any] = {}
+            if command.allow_locked_overallocation:
+                sync_kwargs["acknowledged_overallocation_segment_ids"] = (identifier,)
+            if pre_mutation_effective_hours_by_segment:
+                sync_kwargs["pre_mutation_effective_hours_by_segment"] = dict(
+                    pre_mutation_effective_hours_by_segment
                 )
-                if command.allow_locked_overallocation
-                else (
-                    lambda: self._approved_sync.sync_operational_choices(
-                        str(existing.demand_number).strip()
-                    )
+            call_application_port(
+                lambda: self._approved_sync.sync_operational_choices(
+                    str(existing.demand_number).strip(),
+                    **sync_kwargs,
                 ),
                 code_prefix="segment_update_effective_need_sync",
                 context={"segment_id": identifier},
