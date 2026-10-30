@@ -586,7 +586,7 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                     self.assertEqual(reset.status_code, 200, reset.text)
                     self.assertIsNone(reset.json()["placement_not_before_date"])
                     self.assertEqual(self._snapshot(client, number)["demand_shifts"], [])
-                    with create_session_factory(create_sql_engine(database_url))() as session:
+                    with create_session_factory(engine)() as session:
                         intent = session.scalar(
                             select(RequestRequirementPlanningIntent).where(
                                 RequestRequirementPlanningIntent.current_resource_requirement_id
