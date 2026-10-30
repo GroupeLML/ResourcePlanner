@@ -111,7 +111,9 @@ function formFromSegment(segment: SegmentReadModel): FormState {
   return {
     start_date: segment.start_date ?? "",
     end_date: segment.end_date ?? segment.start_date ?? "",
-    planned_hours: String(segment.planned_hours || ""),
+    planned_hours: String(
+      segment.operational_base_hours ?? segment.planned_hours ?? "",
+    ),
     status: segment.status || "À assigner",
     description: segment.description ?? "",
     required_competency_id: segment.required_competency_id ?? "",
@@ -524,12 +526,23 @@ export default function SegmentEditor({
                     type="button"
                     className="primary-button"
                     onClick={() => {
-                      setField("planned_hours", String(overallocationChoice.locked_hours ?? overallocationChoice.planned_hours));
+                      setField(
+                        "planned_hours",
+                        String(
+                          overallocationChoice.safe_operational_base_hours
+                          ?? overallocationChoice.operational_base_hours
+                          ?? overallocationChoice.planned_hours,
+                        ),
+                      );
                       setOverallocationChoice(null);
                       setAllowLockedOverallocation(false);
                     }}
                   >
-                    Ajuster les heures prévues à {hoursLabel(overallocationChoice.locked_hours)} h
+                    Ajuster les heures prévues à {hoursLabel(
+                      overallocationChoice.safe_operational_base_hours
+                      ?? overallocationChoice.operational_base_hours
+                      ?? overallocationChoice.planned_hours
+                    )} h
                   </button>
                   <button
                     type="button"
