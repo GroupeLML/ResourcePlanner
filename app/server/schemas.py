@@ -450,6 +450,20 @@ class SegmentAssignRequest(ResourceReferenceRequest):
     pass
 
 
+class SegmentDatedDropRequest(StrictRequest):
+    resource_id: str = Field(min_length=1)
+    dropped_date: date
+    expected_planning_version: int = Field(ge=1)
+    expected_approval_revision_id: str = Field(min_length=1)
+    expected_operational_version: int = Field(ge=1)
+
+
+class SegmentPlacementCutoffResetRequest(StrictRequest):
+    expected_planning_version: int = Field(ge=1)
+    expected_approval_revision_id: str = Field(min_length=1)
+    expected_operational_version: int = Field(ge=1)
+
+
 class AllocationMoveRequest(ResourceReferenceRequest):
     day: date
     outside_standard_hours: bool = False
