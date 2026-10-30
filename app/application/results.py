@@ -292,6 +292,54 @@ class PlanningWindowOverrideMutationResult(ApplicationResult):
 
 
 @dataclass(frozen=True, slots=True)
+class SegmentPlacementMutationResult(ApplicationResult):
+    operation: str
+    segment_id: str
+    requirement_id: str
+    resource_id: str | None
+    placement_not_before_date: str | None
+    planning_version: int
+    approval_revision_id: str
+    operational_version: int
+    effective_need: float
+    covered_hours: float
+    remaining_hours: float
+    preserved_shift_ids: tuple[str, ...] = ()
+    generated_shift_ids: tuple[str, ...] = ()
+
+    @classmethod
+    def from_mapping(cls, values: Mapping[str, Any]) -> "SegmentPlacementMutationResult":
+        source = dict(values)
+        return cls(
+            operation=str(source.get("operation") or ""),
+            segment_id=str(source.get("segment_id") or ""),
+            requirement_id=str(source.get("requirement_id") or ""),
+            resource_id=(
+                str(source.get("resource_id"))
+                if source.get("resource_id") is not None
+                else None
+            ),
+            placement_not_before_date=(
+                str(source.get("placement_not_before_date"))
+                if source.get("placement_not_before_date") is not None
+                else None
+            ),
+            planning_version=_integer(source.get("planning_version")),
+            approval_revision_id=str(source.get("approval_revision_id") or ""),
+            operational_version=_integer(source.get("operational_version")),
+            effective_need=_number(source.get("effective_need")),
+            covered_hours=_number(source.get("covered_hours")),
+            remaining_hours=_number(source.get("remaining_hours")),
+            preserved_shift_ids=tuple(
+                str(value) for value in source.get("preserved_shift_ids") or ()
+            ),
+            generated_shift_ids=tuple(
+                str(value) for value in source.get("generated_shift_ids") or ()
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class CompositeAllocationMutationResult(ApplicationResult):
     operation: str
     source_allocation_id: str
