@@ -224,6 +224,98 @@ class SharedRequestPlanPreparationTests(unittest.TestCase):
             LOCKED_HOURS_EXCEED_BUDGET,
         )
 
+    def test_locked_budget_uses_explicit_pre_mutation_effective_after_orm_reload(self) -> None:
+        with transactional_session(self.factory) as session:
+            request = WorkforceRequest(
+                id="D-BEFORE-STATE",
+                legacy_demand_number="DEM-BEFORE-STATE",
+                project_id="P1",
+                line_mode=True,
+                status="Soumise",
+            )
+            line = RequestLine(
+                id="L-BEFORE-STATE",
+                workforce_request_id=request.id,
+                position=0,
+                kind="WORKFORCE",
+                slot_count=1,
+                desired_start=D1,
+                desired_end=D1,
+                estimated_hours=Decimal("20"),
+                confirmation="Confirmée",
+                active=True,
+            )
+            requirement = ResourceRequirement(
+                id="REQ-BEFORE-STATE",
+                project_id="P1",
+                workforce_request_id=request.id,
+                source_request_line_id=line.id,
+                assigned_resource_id="R1",
+                start_date=D1,
+                end_date=D1,
+                planned_hours=Decimal("28"),
+                status="Planifié",
+                origin="REQUEST",
+            )
+            session.add_all([request, line, requirement])
+            session.flush()
+            for index in range(3):
+                session.add(
+                    Shift(
+                        id=f"SHIFT-BEFORE-{index}",
+                        resource_requirement_id=requirement.id,
+                        resource_id="R1",
+                        work_date=D1,
+                        hours=Decimal("8"),
+                        allocation_type="Flexible",
+                        source="MANUAL",
+                        locked=True,
+                    )
+                )
+            session.flush()
+            session.expire_all()
+            reloaded_request = session.get(WorkforceRequest, request.id)
+            reloaded_requirement = session.get(ResourceRequirement, requirement.id)
+            self.assertIsNotNone(reloaded_request)
+            self.assertIsNotNone(reloaded_requirement)
+
+            preparer = SqlRequestPlanPreparer(session)
+            plan = preparer.prepare(
+                reloaded_request,
+                current=[reloaded_requirement],
+            )
+            conflicts = preparer.locked_conflicts(
+                reloaded_request,
+                [reloaded_requirement],
+                plan.specs,
+                pre_mutation_effective_hours_by_requirement={
+                    reloaded_requirement.id: 20.0,
+                },
+            )
+            self.assertEqual(conflicts, ())
+
+            line.estimated_hours = Decimal("16")
+            session.flush()
+            session.expire_all()
+            reloaded_request = session.get(WorkforceRequest, request.id)
+            reloaded_requirement = session.get(ResourceRequirement, requirement.id)
+            plan = preparer.prepare(
+                reloaded_request,
+                current=[reloaded_requirement],
+            )
+            conflicts = preparer.locked_conflicts(
+                reloaded_request,
+                [reloaded_requirement],
+                plan.specs,
+                pre_mutation_effective_hours_by_requirement={
+                    reloaded_requirement.id: 20.0,
+                },
+            )
+            self.assertEqual(
+                [row.code for row in conflicts],
+                [LOCKED_HOURS_EXCEED_BUDGET],
+            )
+
     def test_removal_of_locked_requirement_is_rejected_for_legacy_slots(self) -> None:
         with transactional_session(self.factory) as session:
             request = WorkforceRequest(
