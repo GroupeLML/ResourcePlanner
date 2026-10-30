@@ -409,12 +409,8 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                     self.assertTrue(all(row["work_date"] >= THURSDAY for row in bob))
 
                     with factory() as session:
-                        release = session.scalar(
-                            select(PlanningWorkQueueRelease).where(
-                                PlanningWorkQueueRelease.shift_id
-                                == returned_shift["shift_id"]
-                            )
-                        )
+                        release_id = returned.json()["release_id"]
+                        release = session.get(PlanningWorkQueueRelease, release_id)
                         self.assertIsNotNone(release)
                         self.assertTrue(release.active)
                         restoration_count = session.scalar(
