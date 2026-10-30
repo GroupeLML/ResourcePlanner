@@ -696,9 +696,9 @@ class SqlRequestPlanPreparer:
                 "",
             )
             description = (
-                _text(source_period.note if source_period is not None else None)
+                previous_description
+                or _text(source_period.note if source_period is not None else None)
                 or _text(source_line.description if source_line is not None else None)
-                or previous_description
                 or _text(request.description)
                 or "Besoin approuvé"
             )
@@ -1134,8 +1134,17 @@ class SqlRequestPlanPreparer:
                 (shift.hours for shift in locked),
                 Decimal("0"),
             )
+            previous_effective_hours = Decimal(
+                str(
+                    getattr(
+                        requirement,
+                        "_pre_mutation_effective_hours",
+                        requirement.planned_hours,
+                    )
+                )
+            ).quantize(Decimal("0.01"))
             current_excess = max(
-                locked_hours - Decimal(str(requirement.planned_hours)),
+                locked_hours - previous_effective_hours,
                 Decimal("0.00"),
             )
             projected_excess = max(
