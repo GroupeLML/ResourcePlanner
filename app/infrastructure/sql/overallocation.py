@@ -68,6 +68,13 @@ def _segment_metrics(session: Session, identifier: str) -> dict[str, float] | No
             Shift.locked == true(),
         )
     )
+    covered = session.scalar(
+        select(func.coalesce(func.sum(Shift.hours), 0)).where(
+            Shift.resource_requirement_id == requirement.id,
+            (Shift.allocation_type.is_(None))
+            | (Shift.allocation_type != MISSING_ALLOCATION_TYPE),
+        )
+    )
     planned = float(
         SqlRequestRequirementPlanningIntentRepository(session).current_effective_need_for_requirement(
             requirement.id,
@@ -75,9 +82,12 @@ def _segment_metrics(session: Session, identifier: str) -> dict[str, float] | No
         )
     )
     locked_hours = float(locked or 0)
+    covered_hours = float(covered or 0)
     return {
         "planned_hours": round(planned, 2),
         "locked_hours": round(locked_hours, 2),
+        "covered_hours": round(covered_hours, 2),
+        "excess_hours": round(max(covered_hours - planned, 0.0), 2),
         "overallocated_hours": round(max(locked_hours - planned, 0.0), 2),
     }
 
@@ -619,11 +629,18 @@ def append_overallocation_audit(
 
     before_excess = float(before_metrics.get("overallocated_hours", 0.0))
     after_excess = float(after_metrics.get("overallocated_hours", 0.0))
+    before_coverage_excess = float(before_metrics.get("excess_hours", 0.0))
+    after_coverage_excess = float(after_metrics.get("excess_hours", 0.0))
     before_planned = float(before_metrics.get("planned_hours", 0.0))
     after_planned = float(after_metrics.get("planned_hours", 0.0))
     action: str | None = None
     if policy == INCREASE_PLANNED and after_planned > before_planned + TOLERANCE_HOURS:
         action = "Augmentation heures prévues depuis quart manuel"
+    elif (
+        policy == KEEP_EXCEPTION
+        and after_coverage_excess > before_coverage_excess + TOLERANCE_HOURS
+    ):
+        action = "Dérogation surallocation manuelle"
     elif after_excess > before_excess + TOLERANCE_HOURS:
         action = "Dérogation surallocation manuelle"
     elif before_excess > after_excess + TOLERANCE_HOURS:
