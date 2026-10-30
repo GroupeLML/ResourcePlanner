@@ -197,7 +197,12 @@ class SegmentService:
         ):
             call_application_port(
                 lambda: self._approved_sync.sync_operational_choices(
-                    str(existing.demand_number).strip()
+                    str(existing.demand_number).strip(),
+                    acknowledged_overallocation_segment_ids=(
+                        (identifier,)
+                        if command.allow_locked_overallocation
+                        else ()
+                    ),
                 ),
                 code_prefix="segment_update_effective_need_sync",
                 context={"segment_id": identifier},
