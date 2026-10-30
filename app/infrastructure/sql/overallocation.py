@@ -884,6 +884,12 @@ class OverallocationAuditedSegmentRepository(SegmentRepositoryPort):
     def update(self, segment_id: str, updates: Mapping[str, Any]) -> None:
         before_row = self._delegate.get(segment_id)
         before_snapshot = self._journal.requirement_snapshot(segment_id)
+        projection = None
+        if "HeuresPrevues" in updates and updates.get("HeuresPrevues") is not None:
+            projection = self.planned_hours_overallocation_context(
+                segment_id,
+                float(updates["HeuresPrevues"]),
+            )
         self._delegate.update(segment_id, updates)
         after_row = self._delegate.get(segment_id)
         after_snapshot = self._journal.requirement_snapshot(segment_id)
@@ -894,6 +900,38 @@ class OverallocationAuditedSegmentRepository(SegmentRepositoryPort):
             or after_snapshot is None
         ):
             return
+
+        entity_id, entity_reference, before_values = before_snapshot
+        _, _, after_values = after_snapshot
+        if projection is not None:
+            before_excess = float(projection.get("current_excess_hours", 0.0))
+            after_excess = float(projection.get("excess_hours", 0.0))
+            if abs(after_excess - before_excess) > TOLERANCE_HOURS:
+                action = (
+                    "Dérogation surallocation manuelle"
+                    if after_excess > before_excess
+                    else "Régularisation surallocation manuelle"
+                    if after_excess <= TOLERANCE_HOURS
+                    else "Réduction surallocation manuelle"
+                )
+                self._journal.append(
+                    entity_type=ENTITY_SEGMENT,
+                    entity_id=entity_id,
+                    entity_reference=entity_reference,
+                    action=action,
+                    before={
+                        **before_values,
+                        "planned_hours": projection.get("current_planned_hours"),
+                        "overallocated_hours": before_excess,
+                    },
+                    after={
+                        **after_values,
+                        "planned_hours": projection.get("planned_hours"),
+                        "overallocated_hours": after_excess,
+                    },
+                )
+            return
+
         before_excess = float(before_row.overallocated_hours)
         after_excess = float(after_row.overallocated_hours)
         if abs(after_excess - before_excess) <= TOLERANCE_HOURS:
@@ -905,8 +943,6 @@ class OverallocationAuditedSegmentRepository(SegmentRepositoryPort):
             if after_excess <= TOLERANCE_HOURS
             else "Réduction surallocation manuelle"
         )
-        entity_id, entity_reference, before_values = before_snapshot
-        _, _, after_values = after_snapshot
         self._journal.append(
             entity_type=ENTITY_SEGMENT,
             entity_id=entity_id,
