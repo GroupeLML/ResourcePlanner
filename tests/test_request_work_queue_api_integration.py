@@ -10,6 +10,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from app.infrastructure.sql import (
+    Asset,
+    AssetAllocation,
+    AssetType,
     PlanningWorkQueueRelease,
     PlanningWorkQueueRestoration,
     RequestCompletionReduction,
@@ -29,6 +32,7 @@ from app.infrastructure.sql.planning_audit import PlanningChangeHistory
 from app.server import create_api_app
 from tests.approval_test_support import (
     TEST_ADMIN_USER_ID,
+    map_asset_type_to_test_approval_scope,
     routed_demand_payload,
     seed_test_approval_routing,
 )
@@ -76,7 +80,39 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                     active=True,
                 )
             )
+        session.add(
+            AssetType(
+                id="TYPE-778-API",
+                code="VEH-778-API",
+                label="Véhicule 778 API",
+                category="VEHICLE",
+            )
+        )
+        session.flush()
+        session.add_all(
+            [
+                Asset(
+                    id="ASSET-778-A",
+                    code="A-778",
+                    label="Actif 778 A",
+                    asset_type_id="TYPE-778-API",
+                ),
+                Asset(
+                    id="ASSET-778-B",
+                    code="B-778",
+                    label="Actif 778 B",
+                    asset_type_id="TYPE-778-API",
+                ),
+                Asset(
+                    id="ASSET-778-C",
+                    code="C-778",
+                    label="Actif 778 C",
+                    asset_type_id="TYPE-778-API",
+                ),
+            ]
+        )
         seed_test_approval_routing(session, map_existing_tasks=True)
+        map_asset_type_to_test_approval_scope(session, "TYPE-778-API")
 
     @classmethod
     def setUpClass(cls) -> None:
