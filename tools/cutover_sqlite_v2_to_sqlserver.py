@@ -226,7 +226,7 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
     "request_approval_revisions": _keep("Révisions approuvées historisées."),
     "request_operational_states": _keep("Choix opérationnels locaux des demandes."),
     "request_requirement_planning_intents": _keep(
-        "Identité stable de slot et intention Planning ADR-034."
+        "Identité stable de slot, intention Planning ADR-034 et cutoff de placement ADR-035."
     ),
     "planning_work_queue_releases": _keep(
         "Décisions durables de retour de quart vers la File de Travail ADR-034."
