@@ -145,6 +145,7 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                             "estimated_hours": 40,
                             "confirmation": "Confirmée",
                             "proposed_resource_id": "R-778-A",
+                            "description": "Description approuvée source #778",
                         }
                     ],
                 }
@@ -791,6 +792,10 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                 self.assertEqual(
                     after_description.json()["operational_base_hours"],
                     40.0,
+                )
+                self.assertEqual(
+                    after_description.json()["description"],
+                    "Description seulement après réduction",
                 )
 
                 patched = client.patch(
