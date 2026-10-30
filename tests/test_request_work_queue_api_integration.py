@@ -711,6 +711,38 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                 )
                 self.assertEqual(reduced.status_code, 200, reduced.text)
 
+                current_before_edit = client.get(f"/api/v1/segments/{segment_id}")
+                self.assertEqual(
+                    current_before_edit.status_code,
+                    200,
+                    current_before_edit.text,
+                )
+                self.assertEqual(current_before_edit.json()["planned_hours"], 32.0)
+                self.assertEqual(
+                    current_before_edit.json()["operational_base_hours"],
+                    40.0,
+                )
+
+                description_only = client.patch(
+                    f"/api/v1/segments/{segment_id}",
+                    json={
+                        "planned_hours": 40,
+                        "description": "Description seulement après réduction",
+                    },
+                )
+                self.assertEqual(
+                    description_only.status_code,
+                    200,
+                    description_only.text,
+                )
+                after_description = client.get(f"/api/v1/segments/{segment_id}")
+                self.assertEqual(after_description.status_code, 200, after_description.text)
+                self.assertEqual(after_description.json()["planned_hours"], 32.0)
+                self.assertEqual(
+                    after_description.json()["operational_base_hours"],
+                    40.0,
+                )
+
                 patched = client.patch(
                     f"/api/v1/segments/{segment_id}",
                     json={"planned_hours": 36},
@@ -720,6 +752,7 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                 current = client.get(f"/api/v1/segments/{segment_id}")
                 self.assertEqual(current.status_code, 200, current.text)
                 self.assertEqual(current.json()["planned_hours"], 28.0)
+                self.assertEqual(current.json()["operational_base_hours"], 36.0)
                 snapshot = self._snapshot(client, number)
                 segment = snapshot["demand_segments"][0]
                 self.assertEqual(segment["planned_hours"], 28.0)
