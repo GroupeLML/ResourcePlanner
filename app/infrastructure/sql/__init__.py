@@ -163,6 +163,7 @@ from .identity_constraints import (
 from .resource_identity_constraints import RESOURCE_EXTERNAL_ID_INDEX
 from .operational_choice_models import (
     PlanningWorkQueueRelease,
+    PlanningWorkQueueRestoration,
     RequestCompletionReduction,
     RequestOperationalState,
     RequestRequirementPlanningIntent,
