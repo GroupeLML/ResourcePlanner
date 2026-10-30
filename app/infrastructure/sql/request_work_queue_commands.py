@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from decimal import Decimal
 from typing import Any, Mapping, Sequence
 
@@ -32,6 +33,10 @@ from ...application.security import (
     permissions_for_roles,
 )
 from ...application.user_view_context import UserViewContextService
+from ...domain.availability_rules import (
+    availability_hours_for_day,
+    outside_schedule_eligible_for_day,
+)
 from ...domain.effective_need import allocate_entry_budget
 from ...domain.planning_engine import MISSING_ALLOCATION_TYPE
 from ...domain.request_reduction import reduction_subject_fingerprint
@@ -59,6 +64,7 @@ from .operational_choice_models import (
 )
 from .planning_audit import ENTITY_SEGMENT, ENTITY_SHIFT, SqlPlanningAuditJournal
 from .planning_intent_repository import SqlRequestRequirementPlanningIntentRepository
+from .planning_repository import SqlPlanningReadRepository
 from .same_resource_periods import SqlSameResourcePeriodCoordinator
 from .planning_version import SqlPlanningMutationVersionRepository
 from .request_version import acquire_request_aggregate_version
@@ -563,6 +569,187 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
             "covered_hours_after": float(covered_after),
             "remaining_hours_after": float(max(effective_need_after - covered_after, Decimal("0.00"))),
             "no_op": no_op,
+        }
+
+    def _current_approval_and_operational(
+        self,
+        requirement: ResourceRequirement,
+        request: WorkforceRequest,
+    ) -> tuple[RequestApprovalRevision, RequestOperationalState]:
+        reference = self._session.get(RequestApprovalReference, request.id)
+        if (
+            reference is None
+            or reference.status != APPROVAL_REFERENCE_CAPTURED
+            or not reference.active_revision_id
+            or requirement.approval_revision_id != reference.active_revision_id
+            or requirement.approval_reference_status != APPROVAL_REFERENCE_CAPTURED
+        ):
+            raise ApplicationConflictError(
+                "L'autorisation approuvée active n'est pas disponible pour le placement.",
+                code="planning_authorization_revision_conflict",
+            )
+        revision = self._session.get(
+            RequestApprovalRevision,
+            reference.active_revision_id,
+        )
+        state = self._session.get(RequestOperationalState, request.id)
+        if (
+            revision is None
+            or state is None
+            or state.approval_revision_id != revision.id
+        ):
+            raise ApplicationConflictError(
+                "Le contexte opérationnel approuvé est incomplet.",
+                code="operational_choice_version_conflict",
+            )
+        return revision, state
+
+    def preview_segment_drop(
+        self,
+        segment_id: str,
+        resource_id: str,
+        dropped_date,
+    ) -> Mapping[str, Any]:
+        actor = self._actor()
+        requirement = self._requirement(segment_id)
+        self._assert_return_lifecycle(requirement)
+        self._assert_planning_scope(actor, requirement)
+        request = self._request(requirement)
+        revision, state = self._current_approval_and_operational(
+            requirement,
+            request,
+        )
+        intent = self._intent(requirement)
+        resource = self._placement_resource(
+            resource_id,
+            requirement=requirement,
+        )
+        effective_need = self._current_need(intent, revision, state)
+        covered = self._covered_hours(requirement.id)
+        residual = max(effective_need - covered, Decimal("0.00"))
+        planning_version = self._versioning.current_version()
+
+        allowed = True
+        refusal_code = None
+        refusal_message = None
+        available_actions: tuple[str, ...] = ()
+        generation_start = max(requirement.start_date, dropped_date)
+        generation_end = requirement.end_date
+        if dropped_date < requirement.start_date:
+            allowed = False
+            refusal_code = "segment_placement_before_authorized_window"
+            refusal_message = (
+                "La date déposée précède la fenêtre opérationnelle autorisée."
+            )
+            generation_start = None
+            generation_end = None
+        elif dropped_date > requirement.end_date:
+            allowed = False
+            refusal_code = "segment_placement_window_extension_required"
+            refusal_message = (
+                "La date déposée dépasse la fenêtre opérationnelle autorisée. "
+                "Une extension explicite ou une réapprobation est requise."
+            )
+            available_actions = (
+                "PLANNING_WINDOW_OVERRIDE",
+                "PROPOSE_WINDOW_EXTENSION",
+            )
+            generation_start = None
+            generation_end = None
+        elif effective_need <= TOLERANCE or residual <= TOLERANCE:
+            allowed = False
+            refusal_code = (
+                "segment_placement_no_effective_need"
+                if effective_need <= TOLERANCE
+                else "segment_placement_no_residual"
+            )
+            refusal_message = (
+                "Le besoin courant ne contient plus de reliquat planifiable."
+            )
+
+        placeable = Decimal("0.00")
+        if allowed and generation_start is not None and generation_end is not None:
+            snapshot = SqlPlanningReadRepository(self._session).capture()
+            used_by_day = {
+                day: Decimal(str(total or 0))
+                for day, total in self._session.execute(
+                    select(Shift.work_date, func.sum(Shift.hours))
+                    .where(
+                        Shift.resource_id == resource.id,
+                        Shift.work_date >= generation_start,
+                        Shift.work_date <= generation_end,
+                        or_(
+                            Shift.allocation_type.is_(None),
+                            Shift.allocation_type != MISSING_ALLOCATION_TYPE,
+                        ),
+                    )
+                    .group_by(Shift.work_date)
+                ).all()
+            }
+            release_dates = set(
+                self._session.scalars(
+                    select(PlanningWorkQueueRelease.work_date).where(
+                        PlanningWorkQueueRelease.planning_intent_id == intent.id,
+                        PlanningWorkQueueRelease.resource_id == resource.id,
+                        PlanningWorkQueueRelease.active.is_(True),
+                    )
+                ).all()
+            )
+            standard_free = Decimal("0.00")
+            outside_slots = 0
+            cursor = generation_start
+            while cursor <= generation_end:
+                if cursor not in release_dates:
+                    capacity = Decimal(
+                        str(
+                            availability_hours_for_day(
+                                snapshot.availability,
+                                resource.name,
+                                cursor,
+                                resource_class=resource.resource_class,
+                            )
+                        )
+                    )
+                    standard_free += max(
+                        capacity - used_by_day.get(cursor, Decimal("0.00")),
+                        Decimal("0.00"),
+                    )
+                    if (
+                        requirement.outside_standard_hours_allowed
+                        and outside_schedule_eligible_for_day(
+                            snapshot.availability,
+                            resource.name,
+                            cursor,
+                        )
+                    ):
+                        outside_slots += 1
+                cursor += timedelta(days=1)
+            available = standard_free
+            if requirement.outside_standard_hours_allowed:
+                available += Decimal(outside_slots * 8)
+            placeable = min(residual, available).quantize(CENT)
+
+        return {
+            "allowed": allowed,
+            "refusal_code": refusal_code,
+            "refusal_message": refusal_message,
+            "requirement_id": requirement.id,
+            "segment_id": _text(requirement.legacy_segment_id) or requirement.id,
+            "resource_id": resource.id,
+            "planning_version": planning_version,
+            "approval_revision_id": revision.id,
+            "operational_version": int(state.version or 1),
+            "authorized_start_date": requirement.start_date,
+            "authorized_end_date": requirement.end_date,
+            "current_placement_not_before_date": intent.placement_not_before_date,
+            "proposed_placement_not_before_date": dropped_date,
+            "generation_start_date": generation_start,
+            "generation_end_date": generation_end,
+            "effective_need": float(effective_need),
+            "covered_hours": float(covered),
+            "remaining_hours": float(residual),
+            "placeable_hours": float(placeable),
+            "available_actions": available_actions,
         }
 
     def _placement_resource(
