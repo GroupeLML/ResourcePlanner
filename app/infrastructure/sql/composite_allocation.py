@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import json
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select, true
+from sqlalchemy import false, func, select, true
 from sqlalchemy.orm import Session
 
 from ...application.command_ports import CompositeAllocationCommandPort, PlanningCommandPort
@@ -15,6 +16,8 @@ from ...application.commands import (
     AllocationSplitCommand,
     AllocationWindowOverrideMoveCommand,
     PlanningWindowOverrideExtendCommand,
+    SegmentDatedDropCommand,
+    SegmentPlacementCutoffResetCommand,
 )
 from ...application.errors import (
     ApplicationAuthorizationError,
@@ -23,9 +26,11 @@ from ...application.errors import (
 )
 from ...application.idempotency import request_fingerprint
 from ...application.security import (
+    AuthPrincipal,
     PERMISSION_MANAGE_PLANNING,
     PERMISSION_OVERRIDE_PLANNING_WINDOW,
 )
+from ...application.user_view_context import UserViewContextService
 from ...application.repository_ports import PlanningAuthorizationPort, PlanningMutationVersionPort
 from ...domain.approval_envelope import envelope_entry_identity_from_stable_key
 from ...domain.manual_overallocation import (
@@ -53,17 +58,28 @@ from .models import (
     Shift,
     WorkforceRequest,
 )
-from .operational_choice_models import RequestOperationalState
+from .operational_choice_models import (
+    PLANNING_INTENT_AUTO,
+    PLANNING_INTENT_PRESERVE_EXISTING,
+    PLANNING_INTENT_QUEUED,
+    PLANNING_TARGET_EXPLICIT_RESOURCE,
+    RequestOperationalState,
+    RequestRequirementPlanningIntent,
+)
 from .overallocation import (
     _segment_metrics,
     append_overallocation_audit,
     evaluate_projected_manual_state,
     validate_projected_manual_state,
 )
-from .planning_audit import ENTITY_SHIFT, SqlPlanningAuditJournal
+from .planning_audit import ENTITY_SEGMENT, ENTITY_SHIFT, SqlPlanningAuditJournal
+from .planning_intent_repository import SqlRequestRequirementPlanningIntentRepository
 from .planning_version import SqlPlanningMutationVersionRepository
+from .operational_choice_repository import SqlRequestOperationalChoiceRepository
 from .planning_window_override_repository import SqlPlanningWindowOverrideRepository
 from .segment_asset_guard import assert_segment_asset_mutation_compatible
+from .same_resource_periods import SqlSameResourcePeriodCoordinator
+from .user_view_context_repository import SqlUserViewContextRepository
 
 
 _HOUR = Decimal("0.01")
@@ -130,6 +146,175 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
                 code="planning_window_override_actor_required",
             )
         return actor.id
+
+    def _planning_actor(self) -> AppUser:
+        if PERMISSION_MANAGE_PLANNING not in self._permissions:
+            raise ApplicationAuthorizationError(
+                "La permission manage_planning est requise.",
+                code="planning_command_permission_denied",
+                context={"missing_permissions": [PERMISSION_MANAGE_PLANNING]},
+            )
+        actor_id = _text(self._actor_user_id)
+        actor = self._session.get(AppUser, actor_id) if actor_id else None
+        if actor is None or not actor.active:
+            raise ApplicationAuthorizationError(
+                "Une identité AppUser active et stable est requise.",
+                code="planning_actor_identity_required",
+            )
+        return actor
+
+    @staticmethod
+    def _principal(actor: AppUser) -> AuthPrincipal:
+        try:
+            raw_roles = json.loads(actor.roles_json or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw_roles = []
+        roles = tuple(str(value) for value in raw_roles if str(value))
+        return AuthPrincipal.from_roles(
+            local_user_id=actor.id,
+            issuer=_text(actor.issuer) or "local",
+            subject=_text(actor.subject) or actor.id,
+            display_name=_text(actor.display_name) or actor.id,
+            email=_text(actor.email) or None,
+            employee_external_id=_text(actor.employee_external_id) or None,
+            roles=roles,
+            auth_mode="internal",
+        )
+
+    def _assert_planning_scope(
+        self,
+        actor: AppUser,
+        requirement: ResourceRequirement,
+    ) -> None:
+        scope = UserViewContextService(
+            SqlUserViewContextRepository(self._session)
+        ).resolve_project_scope(self._principal(actor))
+        if scope.project_ids is not None and requirement.project_id not in set(scope.project_ids):
+            raise ApplicationAuthorizationError(
+                "Le besoin n'est pas visible dans le périmètre Planning courant.",
+                code="planning_scope_denied",
+                context={
+                    "project_id": requirement.project_id,
+                    "requirement_id": requirement.id,
+                },
+            )
+
+    def _planning_intent(
+        self,
+        requirement: ResourceRequirement,
+    ) -> RequestRequirementPlanningIntent:
+        intent = self._session.scalar(
+            select(RequestRequirementPlanningIntent).where(
+                RequestRequirementPlanningIntent.current_resource_requirement_id
+                == requirement.id
+            )
+        )
+        if intent is None:
+            raise ApplicationConflictError(
+                "L'identité opérationnelle stable du besoin est introuvable.",
+                code="planning_slot_binding_missing",
+                context={"requirement_id": requirement.id},
+            )
+        return intent
+
+    def _counted_coverage(self, requirement_id: str) -> Decimal:
+        value = self._session.scalar(
+            select(func.coalesce(func.sum(Shift.hours), 0)).where(
+                Shift.resource_requirement_id == requirement_id,
+                (Shift.allocation_type.is_(None))
+                | (Shift.allocation_type != MISSING_ALLOCATION_TYPE),
+            )
+        )
+        return _hours(value or 0)
+
+    def _counted_shift_ids(self, requirement_id: str) -> tuple[str, ...]:
+        return tuple(
+            self._session.scalars(
+                select(Shift.id)
+                .where(
+                    Shift.resource_requirement_id == requirement_id,
+                    (Shift.allocation_type.is_(None))
+                    | (Shift.allocation_type != MISSING_ALLOCATION_TYPE),
+                )
+                .order_by(Shift.id)
+            ).all()
+        )
+
+    def _advance_operational_version(
+        self,
+        requirement: ResourceRequirement,
+        *,
+        expected_version: int,
+        approval_revision_id: str,
+    ) -> int:
+        if not requirement.workforce_request_id:
+            raise ApplicationConflictError(
+                "Le besoin REQUEST ne possède pas de demande source.",
+                code="planning_authorization_unknown",
+            )
+        SqlRequestOperationalChoiceRepository(
+            self._session
+        ).state_for_request_id(requirement.workforce_request_id)
+        state = self._session.get(
+            RequestOperationalState,
+            requirement.workforce_request_id,
+        )
+        if state is None:
+            raise ApplicationConflictError(
+                "L'état opérationnel approuvé est introuvable.",
+                code="operational_choice_version_conflict",
+            )
+        current = max(int(state.version or 1), 1)
+        if current != int(expected_version) or _text(state.approval_revision_id) != approval_revision_id:
+            raise ApplicationConflictError(
+                "Les choix opérationnels ont été modifiés depuis leur lecture.",
+                code="operational_choice_version_conflict",
+                context={
+                    "expected_version": int(expected_version),
+                    "current_version": current,
+                },
+            )
+        state.version = current + 1
+        self._session.flush()
+        return current + 1
+
+    def _placement_result(
+        self,
+        requirement: ResourceRequirement,
+        intent: RequestRequirementPlanningIntent,
+        *,
+        operation: str,
+        approval_revision_id: str,
+        operational_version: int,
+        preserved_shift_ids: Sequence[str] = (),
+        generated_shift_ids: Sequence[str] = (),
+    ) -> Mapping[str, Any]:
+        effective_need = SqlRequestRequirementPlanningIntentRepository(
+            self._session
+        ).current_effective_need_for_requirement(
+            requirement.id,
+            fallback_hours=requirement.planned_hours,
+        )
+        covered = self._counted_coverage(requirement.id)
+        return {
+            "operation": operation,
+            "segment_id": self._segment_reference(requirement),
+            "requirement_id": requirement.id,
+            "resource_id": intent.target_resource_id,
+            "placement_not_before_date": (
+                intent.placement_not_before_date.isoformat()
+                if intent.placement_not_before_date is not None
+                else None
+            ),
+            "planning_version": self._versioning.current_version(),
+            "approval_revision_id": approval_revision_id,
+            "operational_version": operational_version,
+            "effective_need": float(effective_need),
+            "covered_hours": float(covered),
+            "remaining_hours": float(max(effective_need - covered, Decimal("0.00"))),
+            "preserved_shift_ids": tuple(preserved_shift_ids),
+            "generated_shift_ids": tuple(generated_shift_ids),
+        }
 
     def _requirement_by_identifier(self, identifier: str) -> ResourceRequirement:
         wanted = _text(identifier)
@@ -1030,6 +1215,264 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
             "operational_version": self._current_operational_version(requirement),
             "auto_source_converted": _text(shift_before.get("source")).upper() == "AUTO",
         }
+
+    def assign_segment_from_drop(
+        self,
+        command: SegmentDatedDropCommand,
+    ) -> Mapping[str, Any]:
+        """Apply one ADR-035 resource/day decision under the global Planning CAS."""
+
+        self._versioning.acquire(command.expected_planning_version)
+        actor = self._planning_actor()
+        requirement = self._requirement_by_identifier(command.segment_id)
+        self._assert_planning_scope(actor, requirement)
+        if requirement.origin != ORIGIN_REQUEST or not requirement.workforce_request_id:
+            raise ApplicationValidationError(
+                "Le drop daté s'applique uniquement à un besoin REQUEST approuvé.",
+                code="segment_dated_drop_request_required",
+                context={"segment_id": self._segment_reference(requirement)},
+            )
+        resource = self._resource(command.resource_id)
+        intent = self._planning_intent(requirement)
+
+        (
+            approval_revision_id,
+            _approved_entry_key,
+            _approved_start,
+            _approved_end,
+            _operational_version,
+        ) = self._planning_window_context(
+            requirement,
+            expected_approval_revision_id=command.expected_approval_revision_id,
+            expected_operational_version=command.expected_operational_version,
+        )
+
+        target_day = command.dropped_date
+        if target_day < requirement.start_date:
+            raise ApplicationValidationError(
+                "La date déposée précède la fenêtre opérationnelle autorisée.",
+                code="segment_dated_drop_before_window",
+                context={
+                    "segment_id": self._segment_reference(requirement),
+                    "target_day": target_day.isoformat(),
+                    "window_start": requirement.start_date.isoformat(),
+                    "window_end": requirement.end_date.isoformat(),
+                },
+            )
+        if target_day > requirement.end_date:
+            raise ApplicationConflictError(
+                "La date déposée dépasse la fenêtre opérationnelle autorisée. "
+                "Utilise d'abord le parcours explicite d'extension/réapprobation.",
+                code="segment_dated_drop_window_extension_required",
+                context={
+                    "segment_id": self._segment_reference(requirement),
+                    "target_day": target_day.isoformat(),
+                    "window_start": requirement.start_date.isoformat(),
+                    "window_end": requirement.end_date.isoformat(),
+                    "planning_window_override_available": self._can_override_planning_window(),
+                    "fresh_drop_required_after_extension": True,
+                },
+            )
+
+        effective_need = SqlRequestRequirementPlanningIntentRepository(
+            self._session
+        ).current_effective_need_for_requirement(
+            requirement.id,
+            fallback_hours=requirement.planned_hours,
+        )
+        before_coverage = self._counted_coverage(requirement.id)
+        residual = max(effective_need - before_coverage, Decimal("0.00"))
+        if effective_need <= Decimal("0.001") or residual <= Decimal("0.001"):
+            raise ApplicationConflictError(
+                "Ce besoin ne possède plus de reliquat plaçable.",
+                code="segment_dated_drop_no_residual",
+                context={
+                    "effective_need": float(effective_need),
+                    "covered_hours": float(before_coverage),
+                    "remaining_hours": float(residual),
+                },
+            )
+
+        survivor_ids = self._counted_shift_ids(requirement.id)
+        before_intent = {
+            "intent_mode": intent.intent_mode,
+            "target_mode": intent.target_mode,
+            "target_resource_id": intent.target_resource_id,
+            "placement_not_before_date": (
+                intent.placement_not_before_date.isoformat()
+                if intent.placement_not_before_date is not None
+                else None
+            ),
+        }
+        before_shift_ids = set(
+            self._session.scalars(
+                select(Shift.id).where(
+                    Shift.resource_requirement_id == requirement.id
+                )
+            ).all()
+        )
+
+        initial_mode = intent.intent_mode
+        preserve_after = bool(survivor_ids) or initial_mode in (
+            PLANNING_INTENT_QUEUED,
+            PLANNING_INTENT_PRESERVE_EXISTING,
+        )
+
+        # The target may affect the SAME_AS_PERIOD component, while the cutoff is
+        # intentionally local to this durable slot.
+        grouped = SqlSameResourcePeriodCoordinator(self._session).retarget_component(
+            requirement.id,
+            resource.id,
+        )
+        if not grouped:
+            requirement.assigned_resource_id = resource.id
+            requirement.status = "Planifié"
+
+        intent.intent_mode = PLANNING_INTENT_AUTO
+        intent.target_mode = PLANNING_TARGET_EXPLICIT_RESOURCE
+        intent.target_resource_id = resource.id
+        intent.placement_not_before_date = target_day
+
+        new_operational_version = self._advance_operational_version(
+            requirement,
+            expected_version=command.expected_operational_version,
+            approval_revision_id=approval_revision_id,
+        )
+        self._session.flush()
+
+        self._planning.rebuild(preserve_shift_ids=survivor_ids)
+
+        generated = tuple(
+            self._session.scalars(
+                select(Shift.id)
+                .where(
+                    Shift.resource_requirement_id == requirement.id,
+                    Shift.id.not_in(before_shift_ids) if before_shift_ids else true(),
+                    (Shift.allocation_type.is_(None))
+                    | (Shift.allocation_type != MISSING_ALLOCATION_TYPE),
+                )
+                .order_by(Shift.id)
+            ).all()
+        )
+
+        if preserve_after:
+            intent.intent_mode = PLANNING_INTENT_PRESERVE_EXISTING
+            intent.target_mode = PLANNING_TARGET_EXPLICIT_RESOURCE
+            intent.target_resource_id = resource.id
+            self._session.flush()
+
+        persisted_survivors = set(
+            self._session.scalars(
+                select(Shift.id).where(Shift.id.in_(survivor_ids))
+            ).all()
+        ) if survivor_ids else set()
+        if persisted_survivors != set(survivor_ids):
+            raise RuntimeError(
+                "Le drop daté aurait remplacé des Shift survivants protégés."
+            )
+
+        invalid_new = self._session.scalar(
+            select(Shift.id).where(
+                Shift.resource_requirement_id == requirement.id,
+                Shift.id.in_(generated) if generated else false(),
+                Shift.work_date < target_day,
+            )
+        ) if generated else None
+        if invalid_new is not None:
+            raise RuntimeError(
+                "Le moteur a créé un nouveau Shift avant le cutoff ADR-035."
+            )
+
+        after_result = self._placement_result(
+            requirement,
+            intent,
+            operation="SEGMENT_DATED_DROP",
+            approval_revision_id=approval_revision_id,
+            operational_version=new_operational_version,
+            preserved_shift_ids=survivor_ids,
+            generated_shift_ids=generated,
+        )
+        self._journal.append(
+            entity_type=ENTITY_SEGMENT,
+            entity_id=requirement.id,
+            entity_reference=self._segment_reference(requirement),
+            parent_reference=requirement.workforce_request_id,
+            action="Placement daté du reliquat approuvé",
+            before=before_intent,
+            after={
+                **dict(after_result),
+                "intent_mode": intent.intent_mode,
+                "target_mode": intent.target_mode,
+                "correlation_id": _text(command.correlation_id) or None,
+            },
+        )
+        return after_result
+
+    def reset_segment_placement_cutoff(
+        self,
+        command: SegmentPlacementCutoffResetCommand,
+    ) -> Mapping[str, Any]:
+        self._versioning.acquire(command.expected_planning_version)
+        actor = self._planning_actor()
+        requirement = self._requirement_by_identifier(command.segment_id)
+        self._assert_planning_scope(actor, requirement)
+        if requirement.origin != ORIGIN_REQUEST or not requirement.workforce_request_id:
+            raise ApplicationValidationError(
+                "Le reset du cutoff s'applique uniquement à un besoin REQUEST approuvé.",
+                code="segment_placement_cutoff_request_required",
+            )
+        intent = self._planning_intent(requirement)
+        (
+            approval_revision_id,
+            _approved_entry_key,
+            _approved_start,
+            _approved_end,
+            _operational_version,
+        ) = self._planning_window_context(
+            requirement,
+            expected_approval_revision_id=command.expected_approval_revision_id,
+            expected_operational_version=command.expected_operational_version,
+        )
+        before_cutoff = intent.placement_not_before_date
+        intent.placement_not_before_date = None
+        new_operational_version = self._advance_operational_version(
+            requirement,
+            expected_version=command.expected_operational_version,
+            approval_revision_id=approval_revision_id,
+        )
+        self._session.flush()
+
+        # QUEUED/PRESERVE_EXISTING remain suppressed by the canonical rebuild;
+        # AUTO may legitimately regain eligibility from W.start.
+        self._planning.rebuild()
+        result = self._placement_result(
+            requirement,
+            intent,
+            operation="SEGMENT_PLACEMENT_CUTOFF_RESET",
+            approval_revision_id=approval_revision_id,
+            operational_version=new_operational_version,
+        )
+        self._journal.append(
+            entity_type=ENTITY_SEGMENT,
+            entity_id=requirement.id,
+            entity_reference=self._segment_reference(requirement),
+            parent_reference=requirement.workforce_request_id,
+            action="Reset du début opérationnel de placement",
+            before={
+                "placement_not_before_date": (
+                    before_cutoff.isoformat() if before_cutoff is not None else None
+                ),
+                "intent_mode": intent.intent_mode,
+                "target_resource_id": intent.target_resource_id,
+            },
+            after={
+                **dict(result),
+                "intent_mode": intent.intent_mode,
+                "target_resource_id": intent.target_resource_id,
+                "correlation_id": _text(command.correlation_id) or None,
+            },
+        )
+        return result
 
     def extend_planning_window(
         self,
