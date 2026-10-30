@@ -311,6 +311,9 @@ class SegmentReadModel:
     active_day_diagnostic: str | None = None
     load_profile: str = "UNIFORM"
     operational_base_hours: float | None = None
+    approval_revision_id: str | None = None
+    operational_version: int | None = None
+    placement_not_before_date: date | None = None
 
     @classmethod
     def from_mapping(cls, row: Mapping[str, Any]) -> "SegmentReadModel":
