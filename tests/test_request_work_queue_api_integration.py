@@ -517,8 +517,90 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                     )
                     session.add(sibling)
                     session.flush()
+
+                    restored_shift_id = restored[0].shift_id
+                    sibling_source = session.scalar(
+                        select(Shift)
+                        .where(
+                            Shift.resource_requirement_id
+                            == release_a.resource_requirement_id,
+                            Shift.id != restored_shift_id,
+                            Shift.hours == Decimal("8.00"),
+                        )
+                        .order_by(Shift.work_date, Shift.id)
+                    )
+                    self.assertIsNotNone(sibling_source)
+                    sibling_source.hours = Decimal("4.00")
+                    session.flush()
+
                     sibling_id = sibling.id
                     release_a_id = release_a.id
+                    shift_ids_before_rejection = set(
+                        session.scalars(
+                            select(Shift.id).where(
+                                Shift.resource_requirement_id
+                                == release_a.resource_requirement_id
+                            )
+                        ).all()
+                    )
+            finally:
+                engine.dispose()
+
+            blocked_payload = {
+                "resource_id": "R-778-A",
+                "day": THURSDAY,
+                "hours": 8,
+            }
+            with TestClient(app, raise_server_exceptions=False) as client:
+                blocked = client.post(
+                    f"/api/v1/segments/{segment_id}/allocations",
+                    headers={"Idempotency-Key": "api-partial-over-release-778"},
+                    json=blocked_payload,
+                )
+                self.assertEqual(blocked.status_code, 409, blocked.text)
+                self.assertEqual(
+                    blocked.json()["error"]["code"],
+                    "request_work_queue_restoration_exceeds_release_outstanding",
+                )
+                replay_blocked = client.post(
+                    f"/api/v1/segments/{segment_id}/allocations",
+                    headers={"Idempotency-Key": "api-partial-over-release-778"},
+                    json=blocked_payload,
+                )
+                self.assertEqual(replay_blocked.status_code, 409, replay_blocked.text)
+                self.assertEqual(
+                    replay_blocked.json()["error"]["code"],
+                    "request_work_queue_restoration_exceeds_release_outstanding",
+                )
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory() as session:
+                    release_a = session.get(PlanningWorkQueueRelease, release_a_id)
+                    sibling = session.get(PlanningWorkQueueRelease, sibling_id)
+                    self.assertTrue(release_a.active)
+                    self.assertTrue(sibling.active)
+                    restored = session.scalars(
+                        select(PlanningWorkQueueRestoration).where(
+                            PlanningWorkQueueRestoration.release_id == release_a_id
+                        )
+                    ).all()
+                    self.assertEqual(
+                        sum((row.restored_hours for row in restored), Decimal("0")),
+                        Decimal("4.00"),
+                    )
+                    self.assertEqual(
+                        set(
+                            session.scalars(
+                                select(Shift.id).where(
+                                    Shift.resource_requirement_id
+                                    == release_a.resource_requirement_id
+                                )
+                            ).all()
+                        ),
+                        shift_ids_before_rejection,
+                    )
             finally:
                 engine.dispose()
 
