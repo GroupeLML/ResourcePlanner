@@ -292,6 +292,48 @@ class SameResourcePeriodPlanningTests(unittest.TestCase):
             self.assertEqual(root.status, "Terminé")
             self.assertEqual(root.planned_hours, historical_hours)
 
+    def test_777_same_component_retarget_does_not_copy_slot_local_cutoff(self) -> None:
+        with transactional_session(self.factory) as session:
+            root, child = self._same_as_plan(session, root_target="R1")
+            root_intent = RequestRequirementPlanningIntent(
+                id="INT-777-SAME-ROOT",
+                slot_identity_key='["D-SAME","777-A",0]',
+                workforce_request_id="D-SAME",
+                approved_entry_key="777-A",
+                source_period_id="PER-A",
+                slot_index=0,
+                current_resource_requirement_id=root.id,
+                intent_mode="AUTO",
+                target_mode="EXPLICIT_RESOURCE",
+                target_resource_id="R1",
+                placement_not_before_date=D1,
+            )
+            child_intent = RequestRequirementPlanningIntent(
+                id="INT-777-SAME-CHILD",
+                slot_identity_key='["D-SAME","777-B",0]',
+                workforce_request_id="D-SAME",
+                approved_entry_key="777-B",
+                source_period_id="PER-B",
+                slot_index=0,
+                current_resource_requirement_id=child.id,
+                intent_mode="AUTO",
+                target_mode="INHERIT",
+                placement_not_before_date=None,
+            )
+            session.add_all([root_intent, child_intent])
+            session.flush()
+
+            changed = SqlSameResourcePeriodCoordinator(session).retarget_component(
+                root.id,
+                "R2",
+            )
+
+            self.assertTrue(changed)
+            self.assertEqual(root.assigned_resource_id, "R2")
+            self.assertEqual(child.assigned_resource_id, "R2")
+            self.assertEqual(root_intent.placement_not_before_date, D1)
+            self.assertIsNone(child_intent.placement_not_before_date)
+
     def test_unassigned_component_remains_unresolved_without_inventing_a_resource(self) -> None:
         with transactional_session(self.factory) as session:
             root, child = self._same_as_plan(session, root_target=None)
