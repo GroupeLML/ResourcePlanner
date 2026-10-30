@@ -384,6 +384,51 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             )
         return rows[0] if rows else None
 
+    def _selected_release_outstanding(
+        self,
+        intent: RequestRequirementPlanningIntent | None,
+        *,
+        resource_id: str,
+        work_date: date,
+    ) -> tuple[PlanningWorkQueueRelease | None, Decimal]:
+        if intent is None:
+            return None, Decimal("0.00")
+        release = self._session.scalar(
+            select(PlanningWorkQueueRelease)
+            .where(
+                PlanningWorkQueueRelease.planning_intent_id == intent.id,
+                PlanningWorkQueueRelease.active == true(),
+                PlanningWorkQueueRelease.resource_id == resource_id,
+                PlanningWorkQueueRelease.work_date == work_date,
+            )
+            .order_by(
+                PlanningWorkQueueRelease.created_at,
+                PlanningWorkQueueRelease.id,
+            )
+        )
+        if release is None:
+            return None, Decimal("0.00")
+        restored = Decimal(
+            str(
+                self._session.scalar(
+                    select(
+                        func.coalesce(
+                            func.sum(PlanningWorkQueueRestoration.restored_hours),
+                            0,
+                        )
+                    ).where(
+                        PlanningWorkQueueRestoration.release_id == release.id
+                    )
+                )
+                or 0
+            )
+        )
+        outstanding = max(
+            Decimal(str(release.hours)) - restored,
+            Decimal("0.00"),
+        )
+        return release, outstanding
+
     def _resolve_covered_releases(
         self,
         intent: RequestRequirementPlanningIntent | None,
@@ -405,45 +450,35 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             if already_attributed is not None:
                 continue
 
-            release = self._session.scalar(
-                select(PlanningWorkQueueRelease)
-                .where(
-                    PlanningWorkQueueRelease.planning_intent_id == intent.id,
-                    PlanningWorkQueueRelease.active == true(),
-                    PlanningWorkQueueRelease.resource_id == shift.resource_id,
-                    PlanningWorkQueueRelease.work_date == shift.work_date,
-                )
-                .order_by(
-                    PlanningWorkQueueRelease.created_at,
-                    PlanningWorkQueueRelease.id,
-                )
+            release, remaining = self._selected_release_outstanding(
+                intent,
+                resource_id=shift.resource_id,
+                work_date=shift.work_date,
             )
             if release is None:
                 continue
 
-            restored_before = Decimal(
-                str(
-                    self._session.scalar(
-                        select(
-                            func.coalesce(
-                                func.sum(PlanningWorkQueueRestoration.restored_hours),
-                                0,
-                            )
-                        ).where(
-                            PlanningWorkQueueRestoration.release_id == release.id
-                        )
-                    )
-                    or 0
-                )
-            )
             release_hours = Decimal(str(release.hours))
-            remaining = max(release_hours - restored_before, Decimal("0.00"))
+            restored_before = release_hours - remaining
             if remaining <= tolerance:
                 release.active = False
                 release.resolved_at = release.resolved_at or utc_now()
                 continue
 
-            attributed = min(Decimal(str(shift.hours)), remaining)
+            shift_hours = Decimal(str(shift.hours))
+            if shift_hours > remaining + tolerance:
+                raise ApplicationConflictError(
+                    "Le placement dépasse les heures encore attribuables au retour sélectionné.",
+                    code="request_work_queue_restoration_exceeds_release_outstanding",
+                    context={
+                        "release_id": release.id,
+                        "release_hours": float(release_hours),
+                        "restored_hours": float(restored_before),
+                        "outstanding_hours": float(remaining),
+                        "requested_hours": float(shift_hours),
+                    },
+                )
+            attributed = shift_hours
             if attributed <= tolerance:
                 continue
             self._session.add(
@@ -633,6 +668,24 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
                         "requested_hours": float(hours),
                     },
                 )
+        selected_release, selected_outstanding = self._selected_release_outstanding(
+            intent,
+            resource_id=resource.id,
+            work_date=day,
+        )
+        if (
+            selected_release is not None
+            and hours > selected_outstanding + Decimal("0.001")
+        ):
+            raise ApplicationConflictError(
+                "Le placement dépasse les heures encore attribuables au retour sélectionné.",
+                code="request_work_queue_restoration_exceeds_release_outstanding",
+                context={
+                    "release_id": selected_release.id,
+                    "outstanding_hours": float(selected_outstanding),
+                    "requested_hours": float(hours),
+                },
+            )
         if intent is not None and intent.intent_mode == PLANNING_INTENT_QUEUED:
             intent.intent_mode = PLANNING_INTENT_PRESERVE_EXISTING
             intent.target_mode = PLANNING_TARGET_EXPLICIT_NONE
