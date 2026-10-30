@@ -169,6 +169,7 @@ class SegmentService:
         if (
             "HeuresPrevues" in values
             and self._approved_sync is not None
+            and existing.origin == "REQUEST"
             and str(existing.demand_number or "").strip()
         ):
             call_application_port(
