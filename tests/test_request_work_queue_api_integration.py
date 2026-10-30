@@ -25,6 +25,7 @@ from app.infrastructure.sql import (
     create_session_factory,
     create_sql_engine,
 )
+from app.infrastructure.sql.planning_audit import PlanningChangeHistory
 from app.server import create_api_app
 from tests.approval_test_support import (
     TEST_ADMIN_USER_ID,
@@ -826,11 +827,11 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                     "segment_overallocation_choice_required",
                 )
                 rejected_context = rejected.json()["error"]["context"]
-                self.assertEqual(rejected_context["effective_need"], 20.0)
-                self.assertEqual(
-                    rejected_context["retained_coverage_hours"],
-                    24.0,
-                )
+                self.assertEqual(rejected_context["planned_hours"], 20.0)
+                self.assertEqual(rejected_context["current_planned_hours"], 32.0)
+                self.assertEqual(rejected_context["current_excess_hours"], 0.0)
+                self.assertEqual(rejected_context["excess_hours"], 4.0)
+                self.assertEqual(rejected_context["locked_hours"], 24.0)
 
                 unchanged = self._snapshot(client, number)
                 unchanged_segment = unchanged["demand_segments"][0]
@@ -850,6 +851,53 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                     ),
                     survivor_state_before,
                 )
+
+                acknowledged = client.patch(
+                    f"/api/v1/segments/{segment_id}",
+                    json={
+                        "planned_hours": 28,
+                        "allow_locked_overallocation": True,
+                    },
+                )
+                self.assertEqual(acknowledged.status_code, 200, acknowledged.text)
+                acknowledged_snapshot = self._snapshot(client, number)
+                acknowledged_segment = acknowledged_snapshot["demand_segments"][0]
+                self.assertEqual(acknowledged_segment["planned_hours"], 20.0)
+                self.assertEqual(acknowledged_segment["covered_hours"], 24.0)
+                self.assertEqual(acknowledged_segment["remaining_hours"], 0.0)
+
+                unchanged_exception = client.patch(
+                    f"/api/v1/segments/{segment_id}",
+                    json={"planned_hours": 28},
+                )
+                self.assertEqual(
+                    unchanged_exception.status_code,
+                    200,
+                    unchanged_exception.text,
+                )
+
+                increased = client.patch(
+                    f"/api/v1/segments/{segment_id}",
+                    json={"planned_hours": 24},
+                )
+                self.assertEqual(increased.status_code, 422, increased.text)
+                increased_context = increased.json()["error"]["context"]
+                self.assertEqual(increased_context["current_excess_hours"], 4.0)
+                self.assertEqual(increased_context["excess_hours"], 8.0)
+
+                reduced_exception = client.patch(
+                    f"/api/v1/segments/{segment_id}",
+                    json={"planned_hours": 30},
+                )
+                self.assertEqual(
+                    reduced_exception.status_code,
+                    200,
+                    reduced_exception.text,
+                )
+                reduced_snapshot = self._snapshot(client, number)
+                reduced_segment = reduced_snapshot["demand_segments"][0]
+                self.assertEqual(reduced_segment["planned_hours"], 22.0)
+                self.assertEqual(reduced_segment["covered_hours"], 24.0)
 
                 exact = client.patch(
                     f"/api/v1/segments/{segment_id}",
@@ -884,6 +932,13 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                     ).all()
                     self.assertEqual(len(reductions), 1)
                     self.assertEqual(reductions[0].reduction_hours, Decimal("8.00"))
+                    exception_events = session.scalars(
+                        select(PlanningChangeHistory).where(
+                            PlanningChangeHistory.action
+                            == "Dérogation surallocation manuelle"
+                        )
+                    ).all()
+                    self.assertGreaterEqual(len(exception_events), 1)
             finally:
                 engine.dispose()
 
