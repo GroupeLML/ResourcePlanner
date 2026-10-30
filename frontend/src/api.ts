@@ -964,6 +964,7 @@ export type SegmentReadModel = {
   end_date: string | null;
   planned_hours: number;
   operational_base_hours?: number | null;
+  placement_not_before_date?: string | null;
   status: string;
   description: string | null;
   origin: string | null;
