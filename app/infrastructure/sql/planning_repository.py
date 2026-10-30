@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from ...application.repository_ports import PlanningReadRepositoryPort
 from ...domain.planning_snapshot import PlanningSnapshot
 from .availability_class_scope import availability_class_codes_by_rule
+from .operational_choice_models import RequestRequirementPlanningIntent
 from .models import (
     ORIGIN_QUICK_SHIFT,
     Project,
@@ -48,13 +49,24 @@ class SqlPlanningReadRepository(PlanningReadRepositoryPort):
 
     def _segments(self) -> list[dict[str, Any]]:
         rows = self._session.execute(
-            select(ResourceRequirement, Project, WorkforceRequest, Resource)
+            select(
+                ResourceRequirement,
+                Project,
+                WorkforceRequest,
+                Resource,
+                RequestRequirementPlanningIntent,
+            )
             .join(Project, ResourceRequirement.project_id == Project.id)
             .outerjoin(
                 WorkforceRequest,
                 ResourceRequirement.workforce_request_id == WorkforceRequest.id,
             )
             .outerjoin(Resource, ResourceRequirement.assigned_resource_id == Resource.id)
+            .outerjoin(
+                RequestRequirementPlanningIntent,
+                RequestRequirementPlanningIntent.current_resource_requirement_id
+                == ResourceRequirement.id,
+            )
             .order_by(ResourceRequirement.start_date, ResourceRequirement.id)
         ).all()
         exclusion_rows = self._session.execute(
@@ -93,13 +105,18 @@ class SqlPlanningReadRepository(PlanningReadRepositoryPort):
                 "Priorite": requirement.priority,
                 "HorsHoraireAutorise": requirement.outside_standard_hours_allowed,
                 "OrigineSegment": requirement.origin,
+                "PlacementNotBeforeDate": (
+                    intent.placement_not_before_date
+                    if intent is not None
+                    else None
+                ),
                 "DatesExclues": (
                     tuple(exclusions_by_requirement.get(requirement.id, ()))
                     if requirement.origin == ORIGIN_QUICK_SHIFT
                     else ()
                 ),
             }
-            for requirement, project, request, resource in rows
+            for requirement, project, request, resource, intent in rows
         ]
 
     def _demands(self) -> list[dict[str, Any]]:
