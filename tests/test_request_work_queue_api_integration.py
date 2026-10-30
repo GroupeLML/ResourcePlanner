@@ -901,6 +901,14 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                 self.assertEqual(rejected_context["current_excess_hours"], 0.0)
                 self.assertEqual(rejected_context["excess_hours"], 4.0)
                 self.assertEqual(rejected_context["locked_hours"], 24.0)
+                self.assertEqual(
+                    rejected_context["operational_base_hours"],
+                    40.0,
+                )
+                self.assertEqual(
+                    rejected_context["safe_operational_base_hours"],
+                    32.0,
+                )
 
                 unchanged = self._snapshot(client, number)
                 unchanged_segment = unchanged["demand_segments"][0]
@@ -934,6 +942,13 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                 self.assertEqual(acknowledged_segment["planned_hours"], 20.0)
                 self.assertEqual(acknowledged_segment["covered_hours"], 24.0)
                 self.assertEqual(acknowledged_segment["remaining_hours"], 0.0)
+                acknowledged_read = client.get(f"/api/v1/segments/{segment_id}")
+                self.assertEqual(acknowledged_read.status_code, 200, acknowledged_read.text)
+                self.assertEqual(acknowledged_read.json()["planned_hours"], 20.0)
+                self.assertEqual(
+                    acknowledged_read.json()["operational_base_hours"],
+                    28.0,
+                )
 
                 unchanged_exception = client.patch(
                     f"/api/v1/segments/{segment_id}",
@@ -944,6 +959,11 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                     200,
                     unchanged_exception.text,
                 )
+                rebuilt = client.post("/api/v1/planning/rebuild")
+                self.assertEqual(rebuilt.status_code, 200, rebuilt.text)
+                after_rebuild = self._snapshot(client, number)
+                self.assertEqual(after_rebuild["demand_segments"][0]["planned_hours"], 20.0)
+                self.assertEqual(after_rebuild["demand_segments"][0]["covered_hours"], 24.0)
 
                 increased = client.patch(
                     f"/api/v1/segments/{segment_id}",
