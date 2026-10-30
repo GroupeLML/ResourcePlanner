@@ -379,4 +379,11 @@ class SegmentReadModel:
                 if row.get("HeuresBaseOperationnelles") is not None
                 else planned_hours
             ),
+            approval_revision_id=_optional_text(row.get("ApprovalRevisionID")),
+            operational_version=(
+                int(_number(row.get("OperationalVersion")))
+                if row.get("OperationalVersion") not in (None, "")
+                else None
+            ),
+            placement_not_before_date=_date(row.get("PlacementNotBeforeDate")),
         )
