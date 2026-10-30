@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -67,7 +68,12 @@ class EmergencyAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                 after=current[1] if current is not None else None,
             )
 
-    def sync_operational_choices(self, demand_number: str) -> None:
+    def sync_operational_choices(
+        self,
+        demand_number: str,
+        *,
+        acknowledged_overallocation_segment_ids: Sequence[str] = (),
+    ) -> None:
         self._versioning.acquire()
         action = getattr(self._delegate, "sync_operational_choices", None)
         if not callable(action):
@@ -75,7 +81,10 @@ class EmergencyAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                 "Le runtime ne supporte pas la synchronisation des choix opérationnels."
             )
         before = self._journal.request_requirements(demand_number)
-        action(demand_number)
+        action(
+            demand_number,
+            acknowledged_overallocation_segment_ids=acknowledged_overallocation_segment_ids,
+        )
         after = self._journal.request_requirements(demand_number)
         for entity_id in sorted(set(before) | set(after)):
             previous = before.get(entity_id)
