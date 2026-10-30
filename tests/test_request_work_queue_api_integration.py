@@ -1081,6 +1081,200 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_acknowledged_locked_survivors_survive_atomic_sync_and_later_resync(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-778-api-locked-sync",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number, segment_id, survivors = self._prepare_reduced_returned_24(
+                    client,
+                    key_prefix="api-locked-sync-778",
+                )
+
+                engine = create_sql_engine(database_url)
+                factory = create_session_factory(engine)
+                try:
+                    with factory.begin() as session:
+                        survivor_rows = session.scalars(
+                            select(Shift).where(
+                                Shift.resource_requirement_id == segment_id
+                            )
+                        ).all()
+                        self.assertEqual(len(survivor_rows), 3)
+                        for shift in survivor_rows:
+                            shift.locked = True
+                            shift.source = "MANUAL"
+                        survivor_ids = tuple(sorted(shift.id for shift in survivor_rows))
+                finally:
+                    engine.dispose()
+
+                rejected = client.patch(
+                    f"/api/v1/segments/{segment_id}",
+                    json={"planned_hours": 28},
+                )
+                self.assertEqual(rejected.status_code, 422, rejected.text)
+                self.assertEqual(
+                    rejected.json()["error"]["code"],
+                    "segment_overallocation_choice_required",
+                )
+
+                acknowledged = client.patch(
+                    f"/api/v1/segments/{segment_id}",
+                    json={
+                        "planned_hours": 28,
+                        "allow_locked_overallocation": True,
+                    },
+                )
+                self.assertEqual(acknowledged.status_code, 200, acknowledged.text)
+                current = client.get(f"/api/v1/segments/{segment_id}")
+                self.assertEqual(current.status_code, 200, current.text)
+                self.assertEqual(current.json()["operational_base_hours"], 28.0)
+                self.assertEqual(current.json()["planned_hours"], 20.0)
+
+                after = self._snapshot(client, number)
+                segment = after["demand_segments"][0]
+                self.assertEqual(segment["covered_hours"], 24.0)
+                self.assertEqual(segment["planned_hours"], 20.0)
+                self.assertEqual(segment["excess_hours"], 4.0)
+
+                unchanged = client.patch(
+                    f"/api/v1/segments/{segment_id}",
+                    json={"planned_hours": 28},
+                )
+                self.assertEqual(unchanged.status_code, 200, unchanged.text)
+                rebuilt = client.post("/api/v1/planning/rebuild")
+                self.assertEqual(rebuilt.status_code, 200, rebuilt.text)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory() as session:
+                    survivor_rows = session.scalars(
+                        select(Shift).where(
+                            Shift.resource_requirement_id == segment_id
+                        )
+                    ).all()
+                    self.assertEqual(
+                        tuple(sorted(shift.id for shift in survivor_rows)),
+                        survivor_ids,
+                    )
+                    self.assertTrue(all(shift.locked for shift in survivor_rows))
+                    self.assertTrue(all(shift.source == "MANUAL" for shift in survivor_rows))
+                    exception_events = session.scalars(
+                        select(PlanningChangeHistory).where(
+                            PlanningChangeHistory.action
+                            == "Dérogation surallocation manuelle"
+                        )
+                    ).all()
+                    self.assertGreaterEqual(len(exception_events), 1)
+            finally:
+                engine.dispose()
+
+    def test_acknowledged_asset_promoted_survivors_keep_assets_through_sync_and_rebuild(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-778-api-asset-sync",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number, segment_id, _survivors = self._prepare_reduced_returned_24(
+                    client,
+                    key_prefix="api-asset-sync-778",
+                )
+
+                engine = create_sql_engine(database_url)
+                factory = create_session_factory(engine)
+                try:
+                    with factory() as session:
+                        survivor_rows = session.scalars(
+                            select(Shift)
+                            .where(Shift.resource_requirement_id == segment_id)
+                            .order_by(Shift.work_date, Shift.id)
+                        ).all()
+                        self.assertEqual(len(survivor_rows), 3)
+                        survivor_ids = tuple(shift.id for shift in survivor_rows)
+                finally:
+                    engine.dispose()
+
+                for index, (shift_id, asset_id) in enumerate(
+                    zip(
+                        survivor_ids,
+                        ("ASSET-778-A", "ASSET-778-B", "ASSET-778-C"),
+                        strict=True,
+                    )
+                ):
+                    version_response = client.get("/api/v1/assets/requirements")
+                    self.assertEqual(
+                        version_response.status_code,
+                        200,
+                        version_response.text,
+                    )
+                    assigned = client.put(
+                        f"/api/v1/assets/shifts/{shift_id}/assignment",
+                        headers={
+                            "Idempotency-Key": f"api-asset-promote-778-{index}"
+                        },
+                        json={
+                            "asset_id": asset_id,
+                            "expected_planning_version": version_response.json()[
+                                "planning_version"
+                            ],
+                        },
+                    )
+                    self.assertEqual(assigned.status_code, 200, assigned.text)
+
+                acknowledged = client.patch(
+                    f"/api/v1/segments/{segment_id}",
+                    json={
+                        "planned_hours": 28,
+                        "allow_locked_overallocation": True,
+                    },
+                )
+                self.assertEqual(acknowledged.status_code, 200, acknowledged.text)
+                current = client.get(f"/api/v1/segments/{segment_id}")
+                self.assertEqual(current.status_code, 200, current.text)
+                self.assertEqual(current.json()["operational_base_hours"], 28.0)
+                self.assertEqual(current.json()["planned_hours"], 20.0)
+
+                later_sync = client.patch(
+                    f"/api/v1/segments/{segment_id}",
+                    json={"planned_hours": 28},
+                )
+                self.assertEqual(later_sync.status_code, 200, later_sync.text)
+                rebuilt = client.post("/api/v1/planning/rebuild")
+                self.assertEqual(rebuilt.status_code, 200, rebuilt.text)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory() as session:
+                    survivor_rows = session.scalars(
+                        select(Shift)
+                        .where(Shift.resource_requirement_id == segment_id)
+                        .order_by(Shift.work_date, Shift.id)
+                    ).all()
+                    self.assertEqual(
+                        tuple(shift.id for shift in survivor_rows),
+                        survivor_ids,
+                    )
+                    self.assertTrue(all(shift.locked for shift in survivor_rows))
+                    allocations = session.scalars(
+                        select(AssetAllocation).where(
+                            AssetAllocation.asset_id.in_(
+                                ("ASSET-778-A", "ASSET-778-B", "ASSET-778-C")
+                            )
+                        )
+                    ).all()
+                    self.assertEqual(len(allocations), 3)
+            finally:
+                engine.dispose()
+
     def test_c_permanent_reduction_40_to_32_keeps_historical_approval_and_no_queue_residual(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
