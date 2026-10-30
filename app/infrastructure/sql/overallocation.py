@@ -486,6 +486,9 @@ class SqlOverallocationAllocationCommandAdapter(SqlAllocationCommandAdapter):
         self._authorization = authorization
         self._active_policy: str | None = None
 
+    def _residual_overallocation_authorized(self) -> bool:
+        return self._active_policy == KEEP_EXCEPTION
+
     @staticmethod
     def _policy(value: object) -> str | None:
         try:
