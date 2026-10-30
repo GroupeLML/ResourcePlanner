@@ -361,6 +361,72 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_dated_drop_rejects_stale_planning_and_operational_versions_atomically(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+            engine = create_sql_engine(database_url)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_40(client)
+                    target = min(
+                        self._snapshot(client, number)["demand_shifts"],
+                        key=lambda row: row["work_date"],
+                    )
+                    preview = client.get(
+                        f"/api/v1/allocations/{target['allocation_id']}/work-queue-preview"
+                    ).json()
+                    returned = client.post(
+                        f"/api/v1/allocations/{target['allocation_id']}/return-to-work-queue",
+                        headers={"Idempotency-Key": "777-cas-return"},
+                        json={
+                            "expected_planning_version": preview["planning_version"],
+                            "expected_approval_revision_id": preview["approval_revision_id"],
+                            "expected_operational_version": preview["operational_version"],
+                        },
+                    )
+                    self.assertEqual(returned.status_code, 200, returned.text)
+                    action = self._actions(client, number)[0]
+                    before = self._snapshot(client, number)
+
+                    stale_planning = client.post(
+                        f"/api/v1/segments/{action['segment_id']}/place-from-drop",
+                        headers={"Idempotency-Key": "777-stale-planning"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": THURSDAY,
+                            "expected_planning_version": before["planning_version"] - 1,
+                            "expected_approval_revision_id": action["approval_revision_id"],
+                            "expected_operational_version": action["operational_version"],
+                        },
+                    )
+                    self.assertEqual(stale_planning.status_code, 409, stale_planning.text)
+                    self.assertEqual(
+                        stale_planning.json()["error"]["code"],
+                        "planning_version_conflict",
+                    )
+                    self.assertEqual(self._snapshot(client, number), before)
+
+                    stale_operational = client.post(
+                        f"/api/v1/segments/{action['segment_id']}/place-from-drop",
+                        headers={"Idempotency-Key": "777-stale-operational"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": THURSDAY,
+                            "expected_planning_version": before["planning_version"],
+                            "expected_approval_revision_id": action["approval_revision_id"],
+                            "expected_operational_version": action["operational_version"] + 1,
+                        },
+                    )
+                    self.assertEqual(stale_operational.status_code, 409, stale_operational.text)
+                    self.assertEqual(
+                        stale_operational.json()["error"]["code"],
+                        "operational_choice_version_conflict",
+                    )
+                    self.assertEqual(self._snapshot(client, number), before)
+            finally:
+                engine.dispose()
+
     def test_dated_drop_accepts_date_inside_existing_adr022_widened_window(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
