@@ -13,6 +13,7 @@ from sqlalchemy import select
 
 from app.infrastructure.sql import (
     PlanningWorkQueueRelease,
+    PlanningWorkQueueRestoration,
     RequestCompletionReduction,
     RequestLine,
     Resource,
@@ -1378,6 +1379,81 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                     self.assertEqual(
                         sum((row.hours for row in counted), Decimal("0.00")),
                         Decimal("4.00"),
+                    )
+            finally:
+                engine.dispose()
+
+    def test_unrelated_preexisting_coverage_does_not_resolve_release(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-778-p3-unrelated-coverage",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._approve(client, 12)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    request, requirement, intent = self._context(session, number)
+                    intent.intent_mode = "PRESERVE_EXISTING"
+                    intent.target_mode = "EXPLICIT_RESOURCE"
+                    intent.target_resource_id = "R-778-P3"
+                    session.query(Shift).filter_by(
+                        resource_requirement_id=requirement.id
+                    ).delete(synchronize_session=False)
+
+                    preexisting = Shift(
+                        id="SHIFT-UNRELATED-PREEXISTING-778",
+                        legacy_allocation_id="ALLOC-UNRELATED-PREEXISTING-778",
+                        resource_requirement_id=requirement.id,
+                        resource_id="R-778-P3",
+                        work_date=requirement.start_date,
+                        hours=Decimal("8.00"),
+                        source="MANUAL",
+                        locked=True,
+                    )
+                    release = PlanningWorkQueueRelease(
+                        id="REL-UNRELATED-COVERAGE-778",
+                        planning_intent_id=intent.id,
+                        resource_requirement_id=requirement.id,
+                        original_shift_id="SHIFT-RETURNED-UNRELATED-778",
+                        workforce_request_id=request.id,
+                        approval_revision_id=requirement.approval_revision_id,
+                        approved_entry_key=intent.approved_entry_key,
+                        resource_id="R-778-P3",
+                        work_date=requirement.start_date,
+                        hours=Decimal("8.00"),
+                        shift_snapshot_text="{}",
+                        actor_user_id=TEST_ADMIN_USER_ID,
+                        command_id="release-unrelated-coverage-778",
+                        active=True,
+                    )
+                    session.add_all((preexisting, release))
+                    session.flush()
+
+                    allocation = SqlAllocationCommandAdapter(session)
+                    allocation.create_manual(
+                        requirement.id,
+                        "R-778-P3",
+                        requirement.start_date,
+                        Decimal("4.00"),
+                    )
+
+                    self.assertTrue(release.active)
+                    restorations = session.scalars(
+                        select(PlanningWorkQueueRestoration).where(
+                            PlanningWorkQueueRestoration.release_id == release.id
+                        )
+                    ).all()
+                    self.assertEqual(len(restorations), 1)
+                    self.assertEqual(restorations[0].restored_hours, Decimal("4.00"))
+                    self.assertNotEqual(
+                        restorations[0].shift_id,
+                        preexisting.id,
                     )
             finally:
                 engine.dispose()
