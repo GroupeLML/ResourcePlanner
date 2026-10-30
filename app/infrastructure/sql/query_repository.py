@@ -1496,10 +1496,13 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         if requirement is None:
             return ()
 
-        start = segment.start_date
+        start = max(
+            segment.start_date,
+            segment.placement_not_before_date or segment.start_date,
+        )
         end = segment.end_date
         if end < start:
-            start, end = end, start
+            return ()
         # ADR-034 recommendations operate on canonical uncovered effective need,
         # not the automatic rebuild budget. Returned work can therefore be placed
         # explicitly even while automatic regeneration is suppressed.
