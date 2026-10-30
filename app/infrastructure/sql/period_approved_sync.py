@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from collections import defaultdict
 from dataclasses import dataclass
 from decimal import Decimal
@@ -1268,11 +1269,29 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
         )
         self._session.flush()
 
-    def sync_operational_choices(self, demand_number: str) -> None:
+    def sync_operational_choices(
+        self,
+        demand_number: str,
+        *,
+        acknowledged_overallocation_segment_ids: Sequence[str] = (),
+    ) -> None:
         """Resync active planning from approved authorization, never from candidate data."""
 
         request = self._guarded_materialization_request(demand_number)
         current = self._active_requirements(request.id)
+        acknowledged_public_ids = {
+            _text(value)
+            for value in acknowledged_overallocation_segment_ids
+            if _text(value)
+        }
+        acknowledged_requirement_ids = {
+            requirement.id
+            for requirement in current
+            if (
+                requirement.id in acknowledged_public_ids
+                or _text(requirement.legacy_segment_id) in acknowledged_public_ids
+            )
+        }
         prepared = self._plan_preparer.prepare_active(
             request,
             current=current,
@@ -1282,6 +1301,9 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             current,
             prepared.specs,
             target_project_id=prepared.project_id,
+            acknowledged_overallocation_requirement_ids=(
+                tuple(acknowledged_requirement_ids)
+            ),
         )
         matches, obsolete = self._plan_preparer.match_current(
             request,
