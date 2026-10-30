@@ -31,6 +31,38 @@ export type SegmentMutationResult = {
   technician?: string | null;
 };
 
+export type SegmentPlacementDropWrite = {
+  resource_id: string;
+  dropped_date: string;
+  expected_planning_version: number;
+  expected_approval_revision_id: string;
+  expected_operational_version: number;
+};
+
+export type SegmentPlacementResetWrite = {
+  expected_planning_version: number;
+  expected_approval_revision_id: string;
+  expected_operational_version: number;
+};
+
+export type SegmentPlacementMutationResult = {
+  operation: string;
+  requirement_id: string;
+  segment_id: string;
+  resource_id: string | null;
+  planning_version: number;
+  approval_revision_id: string;
+  operational_version: number;
+  authorized_start_date: string;
+  authorized_end_date: string;
+  placement_not_before_date: string | null;
+  effective_need: number;
+  covered_hours: number;
+  remaining_hours: number;
+  preserved_shift_ids: string[];
+  generated_shift_ids: string[];
+};
+
 type ApiErrorPayload = {
   error?: {
     code?: string;
@@ -131,5 +163,32 @@ export function assignSegment(segmentId: string, resourceId: string) {
     `/api/v1/segments/${encodeURIComponent(segmentId)}/assign`,
     "POST",
     { resource_id: resourceId },
+  );
+}
+
+
+export function placeSegmentFromDrop(
+  segmentId: string,
+  payload: SegmentPlacementDropWrite,
+  idempotencyKey: string,
+) {
+  return sendJson<SegmentPlacementMutationResult>(
+    `/api/v1/segments/${encodeURIComponent(segmentId)}/place-from-drop`,
+    "POST",
+    payload,
+    { "Idempotency-Key": idempotencyKey },
+  );
+}
+
+export function resetSegmentPlacementCutoff(
+  segmentId: string,
+  payload: SegmentPlacementResetWrite,
+  idempotencyKey: string,
+) {
+  return sendJson<SegmentPlacementMutationResult>(
+    `/api/v1/segments/${encodeURIComponent(segmentId)}/placement-cutoff/reset`,
+    "POST",
+    payload,
+    { "Idempotency-Key": idempotencyKey },
   );
 }
