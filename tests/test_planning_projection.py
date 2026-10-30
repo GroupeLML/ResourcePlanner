@@ -194,6 +194,71 @@ class PlanningProjectionTests(unittest.TestCase):
         self.assertTrue(calculation.persisted_allocations[0].locked)
         self.assertEqual(calculation.persisted_allocations[0].allocation_type, "Locked")
 
+    def test_777_cutoff_changes_only_new_generation_interval_not_preserved_history(self) -> None:
+        snapshot = PlanningSnapshot.capture(
+            segments=[
+                {
+                    "IDSegment": "S-777",
+                    "NoDemande": "D-777",
+                    "Technicien": "R1",
+                    "DateDebut": D1,
+                    "DateFin": D2,
+                    "PlacementNotBeforeDate": D2,
+                    "HeuresPrevues": 12,
+                    "Statut": "Planifié",
+                    "TypePlanification": "Flexible",
+                }
+            ],
+            demands=[{"NoDemande": "D-777", "Priorite": "Normale"}],
+            allocations=[
+                {
+                    "IDAllocation": "A-777-SURVIVOR",
+                    "IDSegment": "S-777",
+                    "Technicien": "R1",
+                    "Date": D1,
+                    "Heures": 4,
+                    "Verrouillee": "Oui",
+                    "HorsHoraire": "Non",
+                    "TypeAllocation": "Flexible",
+                }
+            ],
+            availability=[
+                {
+                    "ID": "STD-R1-777",
+                    "Type": "Horaire standard",
+                    "Actif": "Oui",
+                    "Technicien": "R1",
+                    "JoursSemaine": "Lun,Mar",
+                    "HeureDebut": "08:00",
+                    "HeureFin": "16:00",
+                }
+            ],
+            technicians=[{"name": "R1"}],
+        )
+
+        calculation = project_planning_snapshot(snapshot)
+
+        self.assertEqual(len(calculation.segments), 1)
+        self.assertEqual(calculation.segments[0].start, D2)
+        self.assertEqual(calculation.segments[0].end, D2)
+        self.assertEqual(calculation.locked_allocations[0].day, D1)
+        result = __import__(
+            "app.domain.planning_engine", fromlist=["build_allocation_plan"]
+        ).build_allocation_plan(
+            calculation.segments,
+            calculation.locked_allocations,
+            calculation.capacity_by_resource_day,
+            preserve_locked_segment_ids=calculation.preserved_segment_ids,
+            outside_schedule_eligible_by_resource_day=(
+                calculation.outside_schedule_eligible_by_resource_day
+            ),
+        )
+        counted = [row for row in result.allocations if row.counts_as_allocated]
+        self.assertEqual(
+            [(row.day, row.hours, row.locked) for row in counted],
+            [(D1, 4.0, True), (D2, 8.0, False)],
+        )
+
     def test_capacity_and_eligibility_maps_are_read_only(self) -> None:
         calculation = project_planning_snapshot(self._source_snapshot())
 
