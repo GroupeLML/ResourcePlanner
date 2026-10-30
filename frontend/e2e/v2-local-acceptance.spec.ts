@@ -799,7 +799,63 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     const reopened = page.getByRole("dialog", { name: "Modifier le segment" });
     await expect(labelled(reopened, "Profil de charge", "select")).toHaveValue("BELL");
     await expect(reopened.getByLabel("Historique des changements")).toContainText("Coordonnateur E2E");
-    await reopened.getByRole("button", { name: "Fermer" }).first().click();
+
+    let segmentPatchAttempts = 0;
+    let acknowledgedPayload: Record<string, unknown> | null = null;
+    await page.route("**/api/v1/segments/*", async (route) => {
+      if (route.request().method() !== "PATCH") {
+        await route.continue();
+        return;
+      }
+      const payload = route.request().postDataJSON() as Record<string, unknown>;
+      if (typeof payload.planned_hours !== "number") {
+        await route.continue();
+        return;
+      }
+      segmentPatchAttempts += 1;
+      if (segmentPatchAttempts === 1) {
+        await route.fulfill({
+          status: 422,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: {
+              code: "segment_overallocation_choice_required",
+              message: "Choix explicite requis.",
+              context: {
+                segment_id: "SEG-E2E-778",
+                planned_hours: 14,
+                current_planned_hours: 16,
+                locked_hours: 18,
+                current_locked_hours: 18,
+                projected_locked_hours: 18,
+                current_excess_hours: 0,
+                excess_hours: 4,
+              },
+            },
+          }),
+        });
+        return;
+      }
+      acknowledgedPayload = payload;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ planning_version: 778 }),
+      });
+    });
+
+    await labelled(reopened, "Heures prévues", "input").fill("14");
+    await reopened.getByRole("button", { name: "Enregistrer", exact: true }).click();
+    const segmentChoice = reopened.getByRole("alert");
+    await expect(segmentChoice).toContainText("Heures prévues proposées : 14 h");
+    await expect(segmentChoice).toContainText("excédent : +4 h");
+    await segmentChoice.getByRole("button", { name: /Conserver la dérogation/ }).click();
+    await expect(reopened).toContainText("Dérogation de surallocation sélectionnée");
+    await reopened.getByRole("button", { name: "Enregistrer", exact: true }).click();
+    await expect(reopened).toBeHidden();
+    expect(segmentPatchAttempts).toBe(2);
+    expect(acknowledgedPayload?.allow_locked_overallocation).toBe(true);
+    await page.unroute("**/api/v1/segments/*");
 
     await closeContext(context);
   });
