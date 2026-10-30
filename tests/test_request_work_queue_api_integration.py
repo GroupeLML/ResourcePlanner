@@ -361,6 +361,85 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_dated_drop_rolls_back_target_cutoff_and_rebuild_when_audit_fails(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_40(client)
+                    target = min(
+                        self._snapshot(client, number)["demand_shifts"],
+                        key=lambda row: row["work_date"],
+                    )
+                    preview = client.get(
+                        f"/api/v1/allocations/{target['allocation_id']}/work-queue-preview"
+                    ).json()
+                    returned = client.post(
+                        f"/api/v1/allocations/{target['allocation_id']}/return-to-work-queue",
+                        headers={"Idempotency-Key": "777-rollback-return"},
+                        json={
+                            "expected_planning_version": preview["planning_version"],
+                            "expected_approval_revision_id": preview["approval_revision_id"],
+                            "expected_operational_version": preview["operational_version"],
+                        },
+                    )
+                    self.assertEqual(returned.status_code, 200, returned.text)
+                    action = self._actions(client, number)[0]
+                    before = self._snapshot(client, number)
+                    with factory() as session:
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == returned.json()["requirement_id"]
+                            )
+                        )
+                        before_intent = (
+                            intent.intent_mode,
+                            intent.target_mode,
+                            intent.target_resource_id,
+                            intent.placement_not_before_date,
+                        )
+
+                    with patch.object(
+                        SqlPlanningAuditJournal,
+                        "append",
+                        side_effect=RuntimeError("777 injected audit failure"),
+                    ):
+                        failed = client.post(
+                            f"/api/v1/segments/{action['segment_id']}/place-from-drop",
+                            headers={"Idempotency-Key": "777-rollback-drop"},
+                            json={
+                                "resource_id": "R-778-B",
+                                "dropped_date": THURSDAY,
+                                "expected_planning_version": before["planning_version"],
+                                "expected_approval_revision_id": action["approval_revision_id"],
+                                "expected_operational_version": action["operational_version"],
+                            },
+                        )
+                    self.assertEqual(failed.status_code, 500, failed.text)
+                    self.assertEqual(self._snapshot(client, number), before)
+                    with factory() as session:
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == returned.json()["requirement_id"]
+                            )
+                        )
+                        self.assertEqual(
+                            (
+                                intent.intent_mode,
+                                intent.target_mode,
+                                intent.target_resource_id,
+                                intent.placement_not_before_date,
+                            ),
+                            before_intent,
+                        )
+            finally:
+                engine.dispose()
+
     def test_dated_drop_preview_reports_authoritative_window_residual_and_placeable_hours(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
