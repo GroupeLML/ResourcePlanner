@@ -210,7 +210,12 @@ def build_sql_facade(
             approval_cycles=approval_cycle_service,
             approval_votes=approval_vote_service,
         ),
-        segments=SegmentService(segments, planning_commands, planning_authorization),
+        segments=SegmentService(
+            segments,
+            planning_commands,
+            planning_authorization,
+            approved_sync,
+        ),
         allocations=AllocationService(allocation_commands),
         quick_shifts=QuickShiftService(segments, allocation_commands),
         composite_allocations=CompositeAllocationService(composite_allocation_commands),
