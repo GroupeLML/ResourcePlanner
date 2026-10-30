@@ -15,6 +15,7 @@ import {
   PlanningSnapshotReadModel,
   ResourceReadModel,
   ShiftReadModel,
+  getDemandDetail,
   getPlanningActions,
   getPlanningCapacityGrid,
   getPlanningResourceOrder,
@@ -64,7 +65,7 @@ import {
   writeSegmentDrag,
   writeShiftDrag,
 } from "./planningDragDrop";
-import { assignSegment } from "./segments-api";
+import { assignSegment, assignSegmentFromDrop as assignSegmentFromDropApi } from "./segments-api";
 import {
   OverallocationApiError,
   OverallocationContext,
@@ -642,6 +643,7 @@ function ResourceRow({
   manualOrder,
   onDropShift,
   onDropSegment,
+  onDropSegmentDay,
 }: {
   resource: ResourceReadModel;
   days: Date[];
@@ -657,6 +659,7 @@ function ResourceRow({
   manualOrder?: ManualResourceOrderControls;
   onDropShift: (payload: ShiftDragPayload, resource: ResourceReadModel, day: string) => void;
   onDropSegment: (payload: SegmentDragPayload, resource: ResourceReadModel) => void;
+  onDropSegmentDay: (payload: SegmentDragPayload, resource: ResourceReadModel, day: string) => void;
 }) {
   const total = shifts
     .filter((shift) => shift.allocation_type !== "Hors horaire requis")
@@ -746,11 +749,14 @@ function ResourceRow({
               cellCapacity?.reason_code === "HOLIDAY"
                 ? `Jour férié — ${cellCapacity.reason_label || "Jour férié"}`
                 : dragEnabled
-                  ? `Déposer un quart sur ${resourceDisplayName(resource.name)}, ${iso}`
+                  ? `Déposer un quart ou un besoin sur ${resourceDisplayName(resource.name)}, ${iso}`
                   : undefined
             }
             onDragOver={(event) => {
-              if (!dragEnabled || !hasShiftDrag(event.dataTransfer)) return;
+              if (
+                !dragEnabled
+                || (!hasShiftDrag(event.dataTransfer) && !hasSegmentDrag(event.dataTransfer))
+              ) return;
               event.preventDefault();
               event.dataTransfer.dropEffect = "move";
               event.currentTarget.classList.add("is-drop-target");
@@ -759,6 +765,12 @@ function ResourceRow({
             onDrop={(event) => {
               event.currentTarget.classList.remove("is-drop-target");
               if (!dragEnabled) return;
+              const segmentPayload = readSegmentDrag(event.dataTransfer);
+              if (segmentPayload) {
+                event.preventDefault();
+                onDropSegmentDay(segmentPayload, resource, iso);
+                return;
+              }
               const payload = readShiftDrag(event.dataTransfer);
               if (!payload) return;
               event.preventDefault();
@@ -1826,6 +1838,74 @@ export default function PlanningPage({
     }
   }
 
+  async function assignSegmentFromDayDrop(
+    payload: SegmentDragPayload,
+    targetResource: ResourceReadModel,
+    droppedDate: string,
+  ) {
+    if (!canManagePlanning || dropBusy || !snapshot) return;
+    const action = visiblePlanningAssignments.find(
+      (row) => row.segment_id === payload.segment_id,
+    );
+    if (!action?.demand_number) {
+      setDragFeedback({
+        tone: "error",
+        message: "Le besoin doit provenir de la File de Travail approuvée pour utiliser un dépôt daté.",
+      });
+      return;
+    }
+
+    setDropBusy(`segment-day:${payload.segment_id}`);
+    setDragFeedback(null);
+    try {
+      const detail = await getDemandDetail(
+        action.demand_number,
+        undefined,
+        scope ?? undefined,
+      );
+      const approvalRevisionId = detail.approval_state?.active_revision_id;
+      const operationalVersion = detail.approval_state?.operational_version;
+      if (!approvalRevisionId || operationalVersion == null) {
+        throw new ApiError(
+          "Le contexte approuvé du besoin n’est plus disponible. Actualise le planning.",
+          409,
+          "planning_authorization_unknown",
+        );
+      }
+      const result = await assignSegmentFromDropApi(
+        payload.segment_id,
+        {
+          resource_id: targetResource.id,
+          dropped_date: droppedDate,
+          expected_planning_version: snapshot.planning_version,
+          expected_approval_revision_id: approvalRevisionId,
+          expected_operational_version: operationalVersion,
+        },
+        createClientId(),
+      );
+      setDragFeedback({
+        tone: "success",
+        message: `Besoin assigné à ${resourceDisplayName(targetResource.name)} à partir du ${droppedDate}. Reliquat restant : ${hours(result.remaining_hours)} h.`,
+      });
+      refreshAfterMutation();
+    } catch (reason: unknown) {
+      if (reason instanceof ApiError) {
+        setDragFeedback({
+          tone: "error",
+          message: `${reason.message}${reason.code ? ` (${reason.code})` : ""}`,
+        });
+        if (reason.status === 409) refreshAfterMutation();
+      } else {
+        setDragFeedback({
+          tone: "error",
+          message: reason instanceof Error ? reason.message : "Impossible de placer le besoin à cette date.",
+        });
+      }
+    } finally {
+      setDropBusy(null);
+    }
+  }
+
   const dropSourceShift = dropDialog && snapshot
     ? snapshot.shifts.find((shift) => shift.allocation_id === dropDialog.payload.allocation_id) ?? null
     : null;
@@ -2172,6 +2252,7 @@ export default function PlanningPage({
                     } : undefined}
                     onDropShift={(payload, target, day) => void moveShiftFromDrop(payload, target, day)}
                     onDropSegment={(payload, target) => void assignSegmentFromDrop(payload, target)}
+                    onDropSegmentDay={(payload, target, day) => void assignSegmentFromDayDrop(payload, target, day)}
                     key={resource.id}
                   />
                 );
