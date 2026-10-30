@@ -134,7 +134,7 @@ test("777 glisse un reliquat approuvé sur une ressource/journée via le vrai ba
     expect(result.covered_hours).toBe(16);
     expect(result.remaining_hours).toBe(24);
 
-    const feedback = page.locator(".planning-feedback").first();
+    const feedback = page.locator(".planning-drag-feedback").first();
     await expect(feedback).toContainText(resourceName);
     await expect(feedback).toContainText(d4);
 
