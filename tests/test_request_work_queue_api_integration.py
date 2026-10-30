@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import time
+from datetime import date, time
 from decimal import Decimal
 import json
 from tempfile import TemporaryDirectory
@@ -18,6 +18,7 @@ from app.infrastructure.sql import (
     PlanningWorkQueueRestoration,
     RequestCompletionReduction,
     RequestOperationalState,
+    RequestRequirementPlanningIntent,
     Project,
     Resource,
     ResourceAvailabilityRule,
@@ -162,6 +163,43 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
         return number
 
     @staticmethod
+    def _approve_unassigned_40(client: TestClient) -> str:
+        created = client.post(
+            "/api/v1/demands",
+            json=routed_demand_payload(
+                {
+                    "project_number": "P-778-API",
+                    "submit": True,
+                    "lines": [
+                        {
+                            "desired_start": START,
+                            "desired_end": END,
+                            "estimated_hours": 40,
+                            "confirmation": "Confirmée",
+                            "description": "Besoin daté #777",
+                        }
+                    ],
+                }
+            ),
+        )
+        assert created.status_code == 201, created.text
+        number = created.json()["demand_number"]
+        approved = client.post(
+            f"/api/v1/demands/{number}/approve",
+            json={"comment": "Approbation API #777"},
+        )
+        assert approved.status_code == 200, approved.text
+        return number
+
+    @staticmethod
+    def _approved_versions(client: TestClient, number: str) -> tuple[str, int]:
+        detail = client.get(f"/api/v1/demands/{number}/detail")
+        assert detail.status_code == 200, detail.text
+        state = detail.json()["approval_state"]
+        assert state and state["active_revision_id"] and state["operational_version"]
+        return str(state["active_revision_id"]), int(state["operational_version"])
+
+    @staticmethod
     def _snapshot(client: TestClient, number: str) -> dict:
         response = client.get(
             "/api/v1/planning/snapshot",
@@ -185,6 +223,310 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
             for row in response.json()
             if row.get("demand_number") == number and row.get("kind") == "ASSIGNMENT"
         ]
+
+    def test_777_dated_drop_is_atomic_idempotent_and_cutoff_limits_new_generation(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_unassigned_40(client)
+                    snapshot = self._snapshot(client, number)
+                    self.assertEqual(snapshot["demand_shifts"], [])
+                    action = self._actions(client, number)[0]
+                    segment_id = action["segment_id"]
+                    approval_revision_id, operational_version = self._approved_versions(
+                        client, number
+                    )
+                    payload = {
+                        "resource_id": "R-778-B",
+                        "dropped_date": THURSDAY,
+                        "expected_planning_version": snapshot["planning_version"],
+                        "expected_approval_revision_id": approval_revision_id,
+                        "expected_operational_version": operational_version,
+                    }
+                    placed = client.post(
+                        f"/api/v1/segments/{segment_id}/assign-from-drop",
+                        headers={"Idempotency-Key": "777-first-drop"},
+                        json=payload,
+                    )
+                    self.assertEqual(placed.status_code, 200, placed.text)
+                    result = placed.json()
+                    self.assertEqual(result["placement_not_before_date"], THURSDAY)
+                    self.assertEqual(result["resource_id"], "R-778-B")
+                    self.assertEqual(result["effective_need"], 40.0)
+                    self.assertEqual(result["covered_hours"], 16.0)
+                    self.assertEqual(result["remaining_hours"], 24.0)
+
+                    after = self._snapshot(client, number)
+                    counted = [
+                        row
+                        for row in after["demand_shifts"]
+                        if row["allocation_type"] != "Hors horaire requis"
+                    ]
+                    self.assertEqual(sum(float(row["hours"]) for row in counted), 16.0)
+                    self.assertTrue(
+                        all(row["work_date"] >= THURSDAY for row in counted),
+                        counted,
+                    )
+                    replay = client.post(
+                        f"/api/v1/segments/{segment_id}/assign-from-drop",
+                        headers={"Idempotency-Key": "777-first-drop"},
+                        json=payload,
+                    )
+                    self.assertEqual(replay.status_code, 200, replay.text)
+                    self.assertEqual(replay.json(), result)
+
+                    with factory() as session:
+                        requirement = session.scalar(
+                            select(ResourceRequirement).where(
+                                ResourceRequirement.legacy_segment_id == segment_id
+                            )
+                        )
+                        self.assertIsNotNone(requirement)
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement.id
+                            )
+                        )
+                        self.assertEqual(
+                            intent.placement_not_before_date,
+                            date.fromisoformat(THURSDAY),
+                        )
+
+                    # Resource-only assignment is deliberately distinct and must not
+                    # interpret omission of a cutoff as reset.
+                    reassigned = client.post(
+                        f"/api/v1/segments/{segment_id}/assign",
+                        json={"resource_id": "R-778-A"},
+                    )
+                    self.assertEqual(reassigned.status_code, 200, reassigned.text)
+                    with factory() as session:
+                        requirement = session.scalar(
+                            select(ResourceRequirement).where(
+                                ResourceRequirement.legacy_segment_id == segment_id
+                            )
+                        )
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement.id
+                            )
+                        )
+                        self.assertEqual(
+                            intent.placement_not_before_date,
+                            date.fromisoformat(THURSDAY),
+                        )
+            finally:
+                engine.dispose()
+
+    def test_777_returned_residual_moves_to_other_resource_without_consuming_release(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_40(client)
+                    initial = self._snapshot(client, number)
+                    counted = [
+                        row for row in initial["demand_shifts"]
+                        if row["allocation_type"] != "Hors horaire requis"
+                    ]
+                    self.assertEqual(len(counted), 5)
+                    returned_shift = next(
+                        row for row in counted if row["work_date"] == THURSDAY
+                    )
+                    survivor_ids = {
+                        row["allocation_id"]
+                        for row in counted
+                        if row["allocation_id"] != returned_shift["allocation_id"]
+                    }
+                    preview_response = client.get(
+                        f"/api/v1/allocations/{returned_shift['allocation_id']}/work-queue-preview"
+                    )
+                    self.assertEqual(preview_response.status_code, 200, preview_response.text)
+                    preview = preview_response.json()
+                    returned = client.post(
+                        f"/api/v1/allocations/{returned_shift['allocation_id']}/return-to-work-queue",
+                        headers={"Idempotency-Key": "777-return-thursday"},
+                        json={
+                            "expected_planning_version": preview["planning_version"],
+                            "expected_approval_revision_id": preview["approval_revision_id"],
+                            "expected_operational_version": preview["operational_version"],
+                        },
+                    )
+                    self.assertEqual(returned.status_code, 200, returned.text)
+
+                    queued = self._snapshot(client, number)
+                    self.assertEqual(
+                        sum(
+                            float(row["hours"])
+                            for row in queued["demand_shifts"]
+                            if row["allocation_type"] != "Hors horaire requis"
+                        ),
+                        32.0,
+                    )
+                    segment_id = queued["demand_segments"][0]["segment_id"]
+                    approval_revision_id, operational_version = self._approved_versions(
+                        client, number
+                    )
+                    placed = client.post(
+                        f"/api/v1/segments/{segment_id}/assign-from-drop",
+                        headers={"Idempotency-Key": "777-place-returned-residual"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": THURSDAY,
+                            "expected_planning_version": queued["planning_version"],
+                            "expected_approval_revision_id": approval_revision_id,
+                            "expected_operational_version": operational_version,
+                        },
+                    )
+                    self.assertEqual(placed.status_code, 200, placed.text)
+                    result = placed.json()
+                    self.assertEqual(result["remaining_hours"], 0.0)
+                    self.assertEqual(set(result["preserved_shift_ids"]), survivor_ids)
+
+                    final = self._snapshot(client, number)
+                    final_counted = [
+                        row for row in final["demand_shifts"]
+                        if row["allocation_type"] != "Hors horaire requis"
+                    ]
+                    self.assertEqual(
+                        {
+                            row["allocation_id"]
+                            for row in final_counted
+                            if row["resource_id"] == "R-778-A"
+                        },
+                        survivor_ids,
+                    )
+                    bob = [row for row in final_counted if row["resource_id"] == "R-778-B"]
+                    self.assertEqual(sum(float(row["hours"]) for row in bob), 8.0)
+                    self.assertTrue(all(row["work_date"] >= THURSDAY for row in bob))
+
+                    with factory() as session:
+                        release = session.scalar(
+                            select(PlanningWorkQueueRelease).where(
+                                PlanningWorkQueueRelease.shift_id
+                                == returned_shift["shift_id"]
+                            )
+                        )
+                        self.assertIsNotNone(release)
+                        self.assertTrue(release.active)
+                        restoration_count = session.scalar(
+                            select(func.count(PlanningWorkQueueRestoration.id)).where(
+                                PlanningWorkQueueRestoration.release_id == release.id
+                            )
+                        )
+                        self.assertEqual(int(restoration_count or 0), 0)
+                        intent = session.get(
+                            RequestRequirementPlanningIntent,
+                            release.planning_intent_id,
+                        )
+                        self.assertEqual(intent.intent_mode, "PRESERVE_EXISTING")
+                        self.assertEqual(
+                            intent.placement_not_before_date,
+                            date.fromisoformat(THURSDAY),
+                        )
+            finally:
+                engine.dispose()
+
+    def test_777_cutoff_replacement_reset_and_window_guards_use_fresh_versions(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+            engine = create_sql_engine(database_url)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_unassigned_40(client)
+                    initial = self._snapshot(client, number)
+                    segment_id = self._actions(client, number)[0]["segment_id"]
+                    revision, operational = self._approved_versions(client, number)
+
+                    early = client.post(
+                        f"/api/v1/segments/{segment_id}/assign-from-drop",
+                        headers={"Idempotency-Key": "777-early"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": "2026-11-01",
+                            "expected_planning_version": initial["planning_version"],
+                            "expected_approval_revision_id": revision,
+                            "expected_operational_version": operational,
+                        },
+                    )
+                    self.assertEqual(early.status_code, 422, early.text)
+
+                    late = client.post(
+                        f"/api/v1/segments/{segment_id}/assign-from-drop",
+                        headers={"Idempotency-Key": "777-late"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": "2026-11-07",
+                            "expected_planning_version": initial["planning_version"],
+                            "expected_approval_revision_id": revision,
+                            "expected_operational_version": operational,
+                        },
+                    )
+                    self.assertEqual(late.status_code, 409, late.text)
+                    self.assertEqual(
+                        late.json()["error"]["code"],
+                        "segment_dated_drop_window_extension_required",
+                    )
+                    self.assertTrue(
+                        late.json()["error"]["context"]["fresh_drop_required_after_extension"]
+                    )
+
+                    first = client.post(
+                        f"/api/v1/segments/{segment_id}/assign-from-drop",
+                        headers={"Idempotency-Key": "777-cutoff-thursday"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": THURSDAY,
+                            "expected_planning_version": initial["planning_version"],
+                            "expected_approval_revision_id": revision,
+                            "expected_operational_version": operational,
+                        },
+                    )
+                    self.assertEqual(first.status_code, 200, first.text)
+
+                    snapshot = self._snapshot(client, number)
+                    revision, operational = self._approved_versions(client, number)
+                    moved = client.post(
+                        f"/api/v1/segments/{segment_id}/assign-from-drop",
+                        headers={"Idempotency-Key": "777-cutoff-wednesday"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": "2026-11-04",
+                            "expected_planning_version": snapshot["planning_version"],
+                            "expected_approval_revision_id": revision,
+                            "expected_operational_version": operational,
+                        },
+                    )
+                    self.assertEqual(moved.status_code, 200, moved.text)
+                    self.assertEqual(
+                        moved.json()["placement_not_before_date"],
+                        "2026-11-04",
+                    )
+
+                    snapshot = self._snapshot(client, number)
+                    revision, operational = self._approved_versions(client, number)
+                    reset = client.post(
+                        f"/api/v1/segments/{segment_id}/placement-cutoff/reset",
+                        headers={"Idempotency-Key": "777-cutoff-reset"},
+                        json={
+                            "expected_planning_version": snapshot["planning_version"],
+                            "expected_approval_revision_id": revision,
+                            "expected_operational_version": operational,
+                        },
+                    )
+                    self.assertEqual(reset.status_code, 200, reset.text)
+                    self.assertIsNone(reset.json()["placement_not_before_date"])
+            finally:
+                engine.dispose()
 
     def test_demand_update_validates_all_preserved_survivors_and_reuses_canonical_exception(self) -> None:
         for survivor_kind in ("unlocked", "manual", "asset"):
