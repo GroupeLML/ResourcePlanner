@@ -834,6 +834,10 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                 with factory.begin() as session:
                     request, requirement, intent = self._context(session, number)
                     original_cutoff = requirement.start_date + timedelta(days=1)
+                    requirement.assigned_resource_id = "R-778-P3"
+                    requirement.status = "Planifié"
+                    intent.target_mode = "EXPLICIT_RESOURCE"
+                    intent.target_resource_id = "R-778-P3"
                     intent.placement_not_before_date = original_cutoff
                     line = session.get(RequestLine, intent.source_request_line_id)
                     self.assertIsNotNone(line)
