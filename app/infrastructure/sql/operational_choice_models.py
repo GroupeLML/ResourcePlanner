@@ -140,6 +140,10 @@ class RequestRequirementPlanningIntent(TimestampMixin, Base):
     target_resource_id: Mapped[str | None] = mapped_column(
         String(ID_LENGTH), ForeignKey("resources.id"), nullable=True
     )
+    placement_not_before_date: Mapped[date | None] = mapped_column(
+        Date,
+        nullable=True,
+    )
 
 
 class PlanningWorkQueueRelease(TimestampMixin, Base):
