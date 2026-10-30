@@ -126,9 +126,15 @@ class SegmentService:
             )
         if "HeuresPrevues" in values:
             proposed_hours = float(values["HeuresPrevues"])
-            projection = self._segments.planned_hours_overallocation_context(
-                identifier,
-                proposed_hours,
+            projection_action = getattr(
+                self._segments,
+                "planned_hours_overallocation_context",
+                None,
+            )
+            projection = (
+                projection_action(identifier, proposed_hours)
+                if callable(projection_action)
+                else None
             )
             if projection is not None:
                 current_excess = float(projection.get("current_excess_hours", 0.0))
