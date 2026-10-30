@@ -218,6 +218,7 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
 
                     action = self._actions(client, number)[0]
                     segment_id = action["segment_id"]
+                    placement_snapshot = self._snapshot(client, number)
                     survivors_before = {
                         row["allocation_id"]: (
                             row["resource_id"],
@@ -237,7 +238,7 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                         json={
                             "resource_id": "R-778-B",
                             "dropped_date": THURSDAY,
-                            "expected_planning_version": before["planning_version"] + 1,
+                            "expected_planning_version": placement_snapshot["planning_version"],
                             "expected_approval_revision_id": action["approval_revision_id"],
                             "expected_operational_version": action["operational_version"],
                         },
