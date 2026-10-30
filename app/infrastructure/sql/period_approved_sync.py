@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from collections import defaultdict
 from dataclasses import dataclass
 from decimal import Decimal
@@ -1274,6 +1274,7 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
         demand_number: str,
         *,
         acknowledged_overallocation_segment_ids: Sequence[str] = (),
+        pre_mutation_effective_hours_by_segment: Mapping[str, float] | None = None,
     ) -> None:
         """Resync active planning from approved authorization, never from candidate data."""
 
@@ -1292,6 +1293,21 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                 or _text(requirement.legacy_segment_id) in acknowledged_public_ids
             )
         }
+        provided_effective = dict(pre_mutation_effective_hours_by_segment or {})
+        pre_mutation_effective_hours_by_requirement = {
+            requirement.id: float(
+                provided_effective.get(
+                    requirement.id,
+                    provided_effective.get(_text(requirement.legacy_segment_id)),
+                )
+            )
+            for requirement in current
+            if provided_effective.get(
+                requirement.id,
+                provided_effective.get(_text(requirement.legacy_segment_id)),
+            )
+            is not None
+        }
         prepared = self._plan_preparer.prepare_active(
             request,
             current=current,
@@ -1303,6 +1319,9 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             target_project_id=prepared.project_id,
             acknowledged_overallocation_requirement_ids=(
                 tuple(acknowledged_requirement_ids)
+            ),
+            pre_mutation_effective_hours_by_requirement=(
+                pre_mutation_effective_hours_by_requirement
             ),
         )
         matches, obsolete = self._plan_preparer.match_current(
