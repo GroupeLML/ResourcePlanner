@@ -183,6 +183,50 @@ class SegmentAssignCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class SegmentDatedDropCommand:
+    segment_id: str
+    resource_id: str
+    dropped_date: date
+    expected_planning_version: int
+    expected_approval_revision_id: str
+    expected_operational_version: int
+    correlation_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if int(self.expected_planning_version) < 1:
+            raise ApplicationValidationError(
+                "La version attendue du planning doit être au moins 1.",
+                code="planning_version_invalid",
+            )
+        if int(self.expected_operational_version) < 1:
+            raise ApplicationValidationError(
+                "La version opérationnelle attendue doit être au moins 1.",
+                code="operational_choice_version_invalid",
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class SegmentPlacementCutoffResetCommand:
+    segment_id: str
+    expected_planning_version: int
+    expected_approval_revision_id: str
+    expected_operational_version: int
+    correlation_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if int(self.expected_planning_version) < 1:
+            raise ApplicationValidationError(
+                "La version attendue du planning doit être au moins 1.",
+                code="planning_version_invalid",
+            )
+        if int(self.expected_operational_version) < 1:
+            raise ApplicationValidationError(
+                "La version opérationnelle attendue doit être au moins 1.",
+                code="operational_choice_version_invalid",
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class AllocationSplitCommand:
     allocation_id: str
     resource_id: str
