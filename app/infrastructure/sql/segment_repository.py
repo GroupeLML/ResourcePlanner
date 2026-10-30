@@ -128,6 +128,7 @@ class SqlSegmentRepository(SegmentRepositoryPort):
                 Project,
                 WorkforceRequest,
                 Resource,
+                RequestRequirementPlanningIntent,
                 effective_need.label("effective_need"),
                 active_reduction_hours.label("active_reduction_hours"),
             )
@@ -137,6 +138,11 @@ class SqlSegmentRepository(SegmentRepositoryPort):
                 ResourceRequirement.workforce_request_id == WorkforceRequest.id,
             )
             .outerjoin(Resource, ResourceRequirement.assigned_resource_id == Resource.id)
+            .outerjoin(
+                RequestRequirementPlanningIntent,
+                RequestRequirementPlanningIntent.current_resource_requirement_id
+                == ResourceRequirement.id,
+            )
         )
 
     def _active_reduction_hours(
@@ -175,6 +181,7 @@ class SqlSegmentRepository(SegmentRepositoryPort):
         project: Project,
         request: WorkforceRequest | None,
         resource: Resource | None,
+        intent: RequestRequirementPlanningIntent | None,
         *,
         effective_need: Decimal,
         active_reduction_hours: Decimal,
@@ -221,6 +228,9 @@ class SqlSegmentRepository(SegmentRepositoryPort):
             ),
             desired_active_days=requirement.desired_active_days,
             load_profile=normalize_load_profile(requirement.load_profile),
+            placement_not_before_date=(
+                intent.placement_not_before_date if intent is not None else None
+            ),
         )
 
     def list(self, *, include_cancelled: bool = True) -> Sequence[SegmentReadModel]:
@@ -240,10 +250,11 @@ class SqlSegmentRepository(SegmentRepositoryPort):
                 project,
                 request,
                 resource,
+                intent,
                 effective_need=Decimal(str(effective_need)).quantize(Decimal("0.01")),
                 active_reduction_hours=Decimal(str(active_reduction_hours)),
             )
-            for requirement, project, request, resource, effective_need, active_reduction_hours in rows
+            for requirement, project, request, resource, intent, effective_need, active_reduction_hours in rows
         )
 
     def get(self, segment_id: str) -> SegmentReadModel | None:
@@ -258,12 +269,13 @@ class SqlSegmentRepository(SegmentRepositoryPort):
         ).one_or_none()
         if row is None:
             return None
-        requirement, project, request, resource, effective_need, active_reduction_hours = row
+        requirement, project, request, resource, intent, effective_need, active_reduction_hours = row
         return self._read_model(
             requirement,
             project,
             request,
             resource,
+            intent,
             effective_need=Decimal(str(effective_need)).quantize(Decimal("0.01")),
             active_reduction_hours=Decimal(str(active_reduction_hours)),
         )
