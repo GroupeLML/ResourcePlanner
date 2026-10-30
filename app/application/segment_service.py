@@ -184,12 +184,8 @@ class SegmentService:
                 context={"segment_id": identifier},
             )
 
-        repository_values = dict(values)
-        repository_values["__allow_locked_overallocation"] = bool(
-            command.allow_locked_overallocation
-        )
         call_application_port(
-            lambda: self._segments.update(identifier, repository_values),
+            lambda: self._segments.update(identifier, values),
             code_prefix="segment_update",
             context={"segment_id": identifier},
         )
