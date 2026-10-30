@@ -219,7 +219,7 @@ class SegmentPlacementMutationResult(ApplicationResult):
         )
 
     def to_dict(self) -> dict[str, Any]:
-        payload = super().to_dict()
+        payload = ApplicationResult.to_dict(self)
         for field in ("authorized_start_date", "authorized_end_date", "placement_not_before_date"):
             value = payload.get(field)
             if isinstance(value, date):
