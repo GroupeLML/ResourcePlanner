@@ -184,6 +184,56 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
             if row.get("demand_number") == number and row.get("kind") == "ASSIGNMENT"
         ]
 
+    def _prepare_reduced_returned_24(
+        self,
+        client: TestClient,
+        *,
+        key_prefix: str,
+    ) -> tuple[str, str, list[dict]]:
+        number = self._approve_40(client)
+        before = self._snapshot(client, number)
+        reduced_target = next(
+            row for row in before["demand_shifts"]
+            if row["work_date"] == THURSDAY
+        )
+        segment_id = reduced_target["requirement_id"] or reduced_target["segment_id"]
+        reduction_preview = client.get(
+            f"/api/v1/allocations/{reduced_target['allocation_id']}/work-queue-preview"
+        ).json()
+        reduced = client.post(
+            f"/api/v1/allocations/{reduced_target['allocation_id']}/permanent-reduction",
+            headers={"Idempotency-Key": f"{key_prefix}-reduce"},
+            json={
+                "expected_planning_version": reduction_preview["planning_version"],
+                "expected_request_version": reduction_preview["request_version"],
+                "expected_approval_revision_id": reduction_preview["approval_revision_id"],
+                "expected_operational_version": reduction_preview["operational_version"],
+            },
+        )
+        self.assertEqual(reduced.status_code, 200, reduced.text)
+        after_reduction = self._snapshot(client, number)
+        returned_target = next(
+            row for row in after_reduction["demand_shifts"]
+            if row["work_date"] != THURSDAY
+        )
+        return_preview = client.get(
+            f"/api/v1/allocations/{returned_target['allocation_id']}/work-queue-preview"
+        ).json()
+        returned = client.post(
+            f"/api/v1/allocations/{returned_target['allocation_id']}/return-to-work-queue",
+            headers={"Idempotency-Key": f"{key_prefix}-return"},
+            json={
+                "expected_planning_version": return_preview["planning_version"],
+                "expected_approval_revision_id": return_preview["approval_revision_id"],
+                "expected_operational_version": return_preview["operational_version"],
+            },
+        )
+        self.assertEqual(returned.status_code, 200, returned.text)
+        snapshot = self._snapshot(client, number)
+        self.assertEqual(snapshot["demand_segments"][0]["planned_hours"], 32.0)
+        self.assertEqual(snapshot["demand_segments"][0]["covered_hours"], 24.0)
+        return number, segment_id, snapshot["demand_shifts"]
+
     def test_a_return_shift_preserves_40_exposes_8_and_allows_controlled_bob_placement(self) -> None:
         with TemporaryDirectory() as directory:
             app = create_api_app(
