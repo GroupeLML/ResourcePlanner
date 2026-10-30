@@ -12,6 +12,8 @@ from .allocation import (
     ManualAllocationReleaseCommand,
     ManualAllocationUpdateCommand,
     SegmentAssignCommand,
+    SegmentDatedDropCommand,
+    SegmentPlacementCutoffResetCommand,
 )
 from .demand import (
     DemandApproveCommand,
@@ -66,6 +68,8 @@ __all__ = [
     "PlanningRebuildCommand",
     "QuickShiftCreateCommand",
     "SegmentAssignCommand",
+    "SegmentDatedDropCommand",
+    "SegmentPlacementCutoffResetCommand",
     "SegmentCancelCommand",
     "SegmentCreateCommand",
     "SegmentUpdateCommand",
