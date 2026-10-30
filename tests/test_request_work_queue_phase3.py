@@ -799,6 +799,89 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
 
 
 
+    def test_compatible_reapproval_with_later_start_retains_cutoff(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-777-later-start",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                created = client.post(
+                    "/api/v1/demands",
+                    json=routed_demand_payload(
+                        {
+                            "project_number": "P-778-P3",
+                            "desired_start": "2026-10-28",
+                            "desired_end": "2026-10-30",
+                            "estimated_hours": 24,
+                            "submit": True,
+                        }
+                    ),
+                )
+                self.assertEqual(created.status_code, 201, created.text)
+                number = created.json()["demand_number"]
+                approved = client.post(
+                    f"/api/v1/demands/{number}/approve",
+                    json={"comment": "Approbation initiale cutoff #777"},
+                )
+                self.assertEqual(approved.status_code, 200, approved.text)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    request, requirement, intent = self._context(session, number)
+                    original_cutoff = requirement.start_date + timedelta(days=1)
+                    intent.placement_not_before_date = original_cutoff
+                    line = session.get(RequestLine, intent.source_request_line_id)
+                    self.assertIsNotNone(line)
+                    line.desired_start = requirement.start_date + timedelta(days=2)
+                    line.desired_end = requirement.start_date + timedelta(days=2)
+                    session.flush()
+
+                    SqlPeriodAwareApprovedDemandSyncAdapter(session).sync_approved(
+                        number,
+                        approved_request_version=int(request.aggregate_version or 1),
+                    )
+                    session.flush()
+
+                    rebound = session.get(
+                        RequestRequirementPlanningIntent,
+                        intent.id,
+                    )
+                    current_requirement = session.get(
+                        ResourceRequirement,
+                        rebound.current_resource_requirement_id,
+                    )
+                    self.assertEqual(
+                        rebound.placement_not_before_date,
+                        original_cutoff,
+                    )
+                    self.assertEqual(
+                        current_requirement.start_date,
+                        original_cutoff + timedelta(days=1),
+                    )
+                    SqlPlanningCommandAdapter(session).rebuild()
+                    generated = session.scalars(
+                        select(Shift).where(
+                            Shift.resource_requirement_id
+                            == current_requirement.id,
+                            Shift.allocation_type != "Hors horaire requis",
+                        )
+                    ).all()
+                    self.assertTrue(generated)
+                    self.assertTrue(
+                        all(
+                            row.work_date >= current_requirement.start_date
+                            for row in generated
+                        )
+                    )
+            finally:
+                engine.dispose()
+
+
     def test_compatible_reapproval_preserves_cutoff_and_no_interval_fails_closed(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
