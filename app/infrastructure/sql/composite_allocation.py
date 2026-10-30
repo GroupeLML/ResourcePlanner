@@ -53,7 +53,10 @@ from .models import (
     Shift,
     WorkforceRequest,
 )
-from .operational_choice_models import RequestOperationalState
+from .operational_choice_models import (
+    RequestOperationalState,
+    RequestRequirementPlanningIntent,
+)
 from .overallocation import (
     _segment_metrics,
     append_overallocation_audit,
@@ -528,6 +531,35 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
             "target_asset_assignment_inherited": False,
         }
 
+    def _assert_placement_cutoff(
+        self,
+        requirement: ResourceRequirement,
+        target_day,
+        *,
+        existing_day=None,
+    ) -> None:
+        intent = self._session.scalar(
+            select(RequestRequirementPlanningIntent).where(
+                RequestRequirementPlanningIntent.current_resource_requirement_id
+                == requirement.id
+            )
+        )
+        cutoff = intent.placement_not_before_date if intent is not None else None
+        if (
+            cutoff is not None
+            and target_day < cutoff
+            and (existing_day is None or target_day != existing_day)
+        ):
+            raise ApplicationConflictError(
+                "La nouvelle mise en place précède le cutoff opérationnel du segment.",
+                code="segment_placement_before_cutoff",
+                context={
+                    "segment_id": self._segment_reference(requirement),
+                    "placement_not_before_date": cutoff.isoformat(),
+                    "target_day": target_day.isoformat(),
+                },
+            )
+
     def _drop_request_context(
         self,
         requirement: ResourceRequirement,
@@ -808,6 +840,11 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
         self._validate_source(source)
         target_resource = self._resource(command.resource_id)
         target_day = command.day
+        self._assert_placement_cutoff(
+            requirement,
+            target_day,
+            existing_day=source.work_date,
+        )
         auto_extend_window = requirement.origin in _AUTO_EXTEND_REQUIREMENT_ORIGINS
         if requirement.origin == ORIGIN_REQUEST:
             if not command.confirm_window_extension:
@@ -1242,6 +1279,11 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
         self._validate_source(source)
         target_resource = self._resource(command.resource_id)
         target_day = command.day
+        self._assert_placement_cutoff(
+            requirement,
+            target_day,
+            existing_day=source.work_date,
+        )
         (
             approval_revision_id,
             approved_entry_key,
@@ -1497,6 +1539,7 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
             if command.outside_standard_hours is None
             else bool(command.outside_standard_hours)
         )
+        self._assert_placement_cutoff(requirement, command.day)
         target_day, _impact, availability = validate_projected_manual_state(
             self._session,
             requirement,
@@ -1621,6 +1664,7 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
             if command.outside_standard_hours is None
             else bool(command.outside_standard_hours)
         )
+        self._assert_placement_cutoff(requirement, command.day)
         target_day, _impact, availability = validate_projected_manual_state(
             self._session,
             requirement,
