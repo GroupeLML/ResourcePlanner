@@ -5,7 +5,7 @@ from datetime import timedelta
 from decimal import Decimal
 from typing import Any, Mapping, Sequence
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, or_, select, true, update
 from sqlalchemy.orm import Session
 
 from ...application.approval_scopes import (
@@ -691,7 +691,7 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
                     select(PlanningWorkQueueRelease.work_date).where(
                         PlanningWorkQueueRelease.planning_intent_id == intent.id,
                         PlanningWorkQueueRelease.resource_id == resource.id,
-                        PlanningWorkQueueRelease.active.is_(True),
+                        PlanningWorkQueueRelease.active == true(),
                     )
                 ).all()
             )
@@ -771,7 +771,7 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
             .where(
                 ResourceAvailabilityRule.resource_id == resource.id,
                 ResourceAvailabilityRule.availability_type == "Horaire standard",
-                ResourceAvailabilityRule.active.is_(True),
+                ResourceAvailabilityRule.active == true(),
                 or_(
                     ResourceAvailabilityRule.start_date.is_(None),
                     ResourceAvailabilityRule.start_date <= requirement.end_date,
@@ -954,7 +954,7 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
                 select(PlanningWorkQueueRelease.work_date).where(
                     PlanningWorkQueueRelease.planning_intent_id == intent.id,
                     PlanningWorkQueueRelease.resource_id == resource.id,
-                    PlanningWorkQueueRelease.active.is_(True),
+                    PlanningWorkQueueRelease.active == true(),
                 )
             ).all()
         )
