@@ -2,6 +2,22 @@ import { expect, test } from "@playwright/test";
 
 const BASE_URL = process.env.RESOURCEPLANNER_E2E_BASE_URL || "http://127.0.0.1:8765";
 
+function addDays(value: Date, days: number) {
+  const next = new Date(value);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function localIso(value: Date) {
+  const adjusted = new Date(value.getTime() - value.getTimezoneOffset() * 60_000);
+  return adjusted.toISOString().slice(0, 10);
+}
+
+function startOfWeek(value: Date) {
+  const day = value.getDay();
+  return addDays(value, -(day === 0 ? 6 : day - 1));
+}
+
 test("778 expose les trois actions ADR-034 et confirme leurs mutations", async ({ browser, request }) => {
   test.setTimeout(120_000);
   const context = await browser.newContext({
@@ -293,6 +309,189 @@ test("778 expose les trois actions ADR-034 et confirme leurs mutations", async (
       expected_operational_version: 7,
       expected_request_version: 14,
     });
+  } finally {
+    await context.close();
+  }
+});
+
+
+test("778 SegmentEditor conserve la base opérationnelle et utilise les choix backend réels", async ({ browser }) => {
+  test.setTimeout(180_000);
+  const context = await browser.newContext({
+    baseURL: BASE_URL,
+    locale: "fr-CA",
+    extraHTTPHeaders: { "X-E2E-Role": "COORDINATOR" },
+  });
+  const page = await context.newPage();
+  const monday = addDays(startOfWeek(new Date()), 7);
+  const d1 = localIso(monday);
+  const d5 = localIso(addDays(monday, 4));
+
+  const openSegmentEditor = async (demandNumber: string) => {
+    await page.goto("/");
+    await page.locator(".main-nav").getByRole("button", { name: /Demandes/i }).click();
+    await page.getByRole("button", { name: "Segments", exact: true }).click();
+    const demandCard = page.locator(".segment-demand-card").filter({ hasText: demandNumber }).first();
+    await expect(demandCard).toBeVisible();
+    await demandCard.click();
+    const segmentCard = page.locator(".segment-list .segment-card")
+      .filter({ hasText: d1 })
+      .filter({ hasText: d5 })
+      .first();
+    await expect(segmentCard).toBeVisible();
+    await segmentCard.click();
+    const dialog = page.getByRole("dialog", { name: "Modifier le segment" });
+    await expect(dialog).toBeVisible();
+    return dialog;
+  };
+
+  try {
+    const created = await page.request.post("/api/v1/demands", {
+      data: {
+        project_number: "P-251",
+        desired_start: d1,
+        desired_end: d5,
+        estimated_hours: 40,
+        task_code: "210",
+        proposed_technician: "Alice",
+        description: "Base opérationnelle #778",
+        submit: true,
+      },
+    });
+    expect(created.status(), await created.text()).toBe(201);
+    const demandNumber = String((await created.json()).demand_number);
+
+    const approvalSnapshot = await page.request.get(
+      `/api/v1/planning/snapshot?start=${d1}&end=${d5}&scope=global`,
+    );
+    expect(approvalSnapshot.ok(), await approvalSnapshot.text()).toBeTruthy();
+    const planningVersion = Number((await approvalSnapshot.json()).planning_version);
+    const approved = await page.request.post(
+      `/api/v1/demands/${encodeURIComponent(demandNumber)}/approve`,
+      {
+        data: {
+          comment: "Approbation E2E base #778",
+          expected_planning_version: planningVersion,
+        },
+      },
+    );
+    expect(approved.status(), await approved.text()).toBe(200);
+
+    const shiftsResponse = await page.request.get(
+      `/api/v1/shifts?start=${d1}&end=${d5}`,
+    );
+    expect(shiftsResponse.ok(), await shiftsResponse.text()).toBeTruthy();
+    const approvedShifts = (await shiftsResponse.json() as Array<any>)
+      .filter((row) => row.demand_number === demandNumber && row.allocation_type !== "Hors horaire requis");
+    expect(approvedShifts).toHaveLength(5);
+    const segmentId = String(approvedShifts[0].requirement_id || approvedShifts[0].segment_id);
+
+    const reductionTarget = approvedShifts[approvedShifts.length - 1];
+    const reductionPreview = await page.request.get(
+      `/api/v1/allocations/${encodeURIComponent(reductionTarget.allocation_id)}/work-queue-preview`,
+    );
+    expect(reductionPreview.ok(), await reductionPreview.text()).toBeTruthy();
+    const reductionContract = await reductionPreview.json() as Record<string, any>;
+    const reduced = await page.request.post(
+      `/api/v1/allocations/${encodeURIComponent(reductionTarget.allocation_id)}/permanent-reduction`,
+      {
+        headers: { "Idempotency-Key": "e2e-778-base-reduction" },
+        data: {
+          expected_planning_version: reductionContract.planning_version,
+          expected_request_version: reductionContract.request_version,
+          expected_approval_revision_id: reductionContract.approval_revision_id,
+          expected_operational_version: reductionContract.operational_version,
+        },
+      },
+    );
+    expect(reduced.status(), await reduced.text()).toBe(200);
+
+    let segmentResponse = await page.request.get(
+      `/api/v1/segments/${encodeURIComponent(segmentId)}`,
+    );
+    expect(segmentResponse.ok(), await segmentResponse.text()).toBeTruthy();
+    let segment = await segmentResponse.json() as Record<string, any>;
+    expect(segment.planned_hours).toBe(32);
+    expect(segment.operational_base_hours).toBe(40);
+
+    let dialog = await openSegmentEditor(demandNumber);
+    await expect(dialog.getByLabel("Heures prévues")).toHaveValue("40");
+    await dialog.getByLabel("Description").fill("Description seulement #778");
+    await dialog.getByRole("button", { name: "Enregistrer", exact: true }).click();
+    await expect(dialog).toBeHidden();
+
+    segmentResponse = await page.request.get(
+      `/api/v1/segments/${encodeURIComponent(segmentId)}`,
+    );
+    segment = await segmentResponse.json() as Record<string, any>;
+    expect(segment.description).toBe("Description seulement #778");
+    expect(segment.operational_base_hours).toBe(40);
+    expect(segment.planned_hours).toBe(32);
+
+    const remainingShiftsResponse = await page.request.get(
+      `/api/v1/shifts?start=${d1}&end=${d5}`,
+    );
+    const remainingShifts = (await remainingShiftsResponse.json() as Array<any>)
+      .filter((row) => row.demand_number === demandNumber && row.allocation_type !== "Hors horaire requis");
+    expect(remainingShifts).toHaveLength(4);
+    const returnTarget = remainingShifts[0];
+    const returnPreview = await page.request.get(
+      `/api/v1/allocations/${encodeURIComponent(returnTarget.allocation_id)}/work-queue-preview`,
+    );
+    expect(returnPreview.ok(), await returnPreview.text()).toBeTruthy();
+    const returnContract = await returnPreview.json() as Record<string, any>;
+    const returned = await page.request.post(
+      `/api/v1/allocations/${encodeURIComponent(returnTarget.allocation_id)}/return-to-work-queue`,
+      {
+        headers: { "Idempotency-Key": "e2e-778-base-return" },
+        data: {
+          expected_planning_version: returnContract.planning_version,
+          expected_approval_revision_id: returnContract.approval_revision_id,
+          expected_operational_version: returnContract.operational_version,
+        },
+      },
+    );
+    expect(returned.status(), await returned.text()).toBe(200);
+
+    dialog = await openSegmentEditor(demandNumber);
+    await expect(dialog.getByLabel("Heures prévues")).toHaveValue("40");
+    await dialog.getByLabel("Heures prévues").fill("28");
+    await dialog.getByRole("button", { name: "Enregistrer", exact: true }).click();
+    const adjustChoice = dialog.getByRole("alert");
+    await expect(adjustChoice).toContainText("Heures prévues proposées : 20 h");
+    await expect(adjustChoice).toContainText("excédent : +4 h");
+    const adjustButton = adjustChoice.getByRole("button", {
+      name: /Ajuster les heures prévues à 32 h/,
+    });
+    await expect(adjustButton).toBeVisible();
+    await adjustButton.click();
+    await expect(dialog.getByLabel("Heures prévues")).toHaveValue("32");
+    await dialog.getByRole("button", { name: "Enregistrer", exact: true }).click();
+    await expect(dialog).toBeHidden();
+
+    segmentResponse = await page.request.get(
+      `/api/v1/segments/${encodeURIComponent(segmentId)}`,
+    );
+    segment = await segmentResponse.json() as Record<string, any>;
+    expect(segment.operational_base_hours).toBe(32);
+    expect(segment.planned_hours).toBe(24);
+
+    dialog = await openSegmentEditor(demandNumber);
+    await dialog.getByLabel("Heures prévues").fill("28");
+    await dialog.getByRole("button", { name: "Enregistrer", exact: true }).click();
+    const exceptionChoice = dialog.getByRole("alert");
+    await expect(exceptionChoice).toContainText("Heures prévues proposées : 20 h");
+    await exceptionChoice.getByRole("button", { name: /Conserver la dérogation/ }).click();
+    await expect(dialog).toContainText("Dérogation de surallocation sélectionnée");
+    await dialog.getByRole("button", { name: "Enregistrer", exact: true }).click();
+    await expect(dialog).toBeHidden();
+
+    segmentResponse = await page.request.get(
+      `/api/v1/segments/${encodeURIComponent(segmentId)}`,
+    );
+    segment = await segmentResponse.json() as Record<string, any>;
+    expect(segment.operational_base_hours).toBe(28);
+    expect(segment.planned_hours).toBe(20);
   } finally {
     await context.close();
   }
