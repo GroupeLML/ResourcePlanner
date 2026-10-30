@@ -30,6 +30,8 @@ from .commands import (
     PlanningRebuildCommand,
     QuickShiftCreateCommand,
     SegmentAssignCommand,
+    SegmentDatedDropCommand,
+    SegmentPlacementCutoffResetCommand,
     SegmentCancelCommand,
     SegmentCreateCommand,
     SegmentUpdateCommand,
@@ -74,6 +76,7 @@ from .results import (
     PlanningResult,
     QuickShiftCreatedResult,
     SegmentMutationResult,
+    SegmentPlacementMutationResult,
     WorkPackageMutationResult,
 )
 from .segment_service import SegmentService
@@ -458,6 +461,18 @@ class ApplicationFacade:
             planning=PlanningResult.from_mapping(summary),
             technician=_identifier(command.technician) or None,
         )
+
+    def assign_segment_from_drop(
+        self,
+        command: SegmentDatedDropCommand,
+    ) -> SegmentPlacementMutationResult:
+        return self._composite_allocation_service().assign_segment_from_drop_command(command)
+
+    def reset_segment_placement_cutoff(
+        self,
+        command: SegmentPlacementCutoffResetCommand,
+    ) -> SegmentPlacementMutationResult:
+        return self._composite_allocation_service().reset_segment_placement_cutoff_command(command)
 
     def create_allocation(
         self,
