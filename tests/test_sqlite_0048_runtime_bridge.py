@@ -120,6 +120,7 @@ def _reshape_as_0048(path: Path) -> None:
             DROP TABLE IF EXISTS project_co_managers;
             DROP TABLE IF EXISTS task_catalog_preferred_resource_audit;
             DROP TABLE IF EXISTS quick_shift_planning_exclusions;
+            DROP TABLE IF EXISTS planning_work_queue_restorations;
             DROP TABLE IF EXISTS planning_work_queue_releases;
             DROP TABLE IF EXISTS request_completion_reductions;
             DROP TABLE IF EXISTS request_requirement_planning_intents;
