@@ -1066,6 +1066,7 @@ class SqlRequestPlanPreparer:
         *,
         target_project_id: str | None = None,
         acknowledged_overallocation_requirement_ids: Sequence[str] = (),
+        pre_mutation_effective_hours_by_requirement: Mapping[str, float] | None = None,
     ) -> tuple[LockedPlanningConflict, ...]:
         matches, obsolete = self.match_current(request, current, specs)
         requirement_ids = {row.id for row in current}
@@ -1134,14 +1135,9 @@ class SqlRequestPlanPreparer:
                 (shift.hours for shift in locked),
                 Decimal("0"),
             )
+            before_state = pre_mutation_effective_hours_by_requirement or {}
             previous_effective_hours = Decimal(
-                str(
-                    getattr(
-                        requirement,
-                        "_pre_mutation_effective_hours",
-                        requirement.planned_hours,
-                    )
-                )
+                str(before_state.get(requirement.id, requirement.planned_hours))
             ).quantize(Decimal("0.01"))
             current_excess = max(
                 locked_hours - previous_effective_hours,
@@ -1259,6 +1255,7 @@ class SqlRequestPlanPreparer:
         *,
         target_project_id: str | None = None,
         acknowledged_overallocation_requirement_ids: Sequence[str] = (),
+        pre_mutation_effective_hours_by_requirement: Mapping[str, float] | None = None,
     ) -> None:
         conflicts = self.locked_conflicts(
             request,
@@ -1267,6 +1264,9 @@ class SqlRequestPlanPreparer:
             target_project_id=target_project_id,
             acknowledged_overallocation_requirement_ids=(
                 acknowledged_overallocation_requirement_ids
+            ),
+            pre_mutation_effective_hours_by_requirement=(
+                pre_mutation_effective_hours_by_requirement
             ),
         )
         if conflicts:
