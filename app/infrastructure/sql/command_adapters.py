@@ -45,6 +45,7 @@ from .operational_choice_models import (
     PLANNING_TARGET_EXPLICIT_NONE,
     PLANNING_TARGET_EXPLICIT_RESOURCE,
     PlanningWorkQueueRelease,
+    PlanningWorkQueueRestoration,
     RequestRequirementPlanningIntent,
 )
 from .segment_asset_guard import assert_segment_asset_mutation_compatible
@@ -391,38 +392,94 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
     ) -> None:
         if intent is None or not restored_shifts:
             return
-        restored_hours: dict[tuple[str, date], Decimal] = {}
+        tolerance = Decimal("0.001")
         for shift in restored_shifts:
             if shift.allocation_type == MISSING_ALLOCATION_TYPE:
                 continue
-            key = (shift.resource_id, shift.work_date)
-            restored_hours[key] = restored_hours.get(key, Decimal("0.00")) + Decimal(
-                str(shift.hours)
+            already_attributed = self._session.scalar(
+                select(PlanningWorkQueueRestoration.id).where(
+                    PlanningWorkQueueRestoration.shift_id == shift.id
+                )
             )
-
-        releases = self._session.scalars(
-            select(PlanningWorkQueueRelease)
-            .where(
-                PlanningWorkQueueRelease.planning_intent_id == intent.id,
-                PlanningWorkQueueRelease.active == true(),
-            )
-            .order_by(
-                PlanningWorkQueueRelease.created_at,
-                PlanningWorkQueueRelease.id,
-            )
-        ).all()
-        for release in releases:
-            key = (release.resource_id, release.work_date)
-            available = restored_hours.get(key, Decimal("0.00"))
-            release_hours = Decimal(str(release.hours))
-            if available + Decimal("0.001") < release_hours:
+            if already_attributed is not None:
                 continue
-            release.active = False
-            release.resolved_at = utc_now()
-            restored_hours[key] = max(
-                available - release_hours,
-                Decimal("0.00"),
+
+            release = self._session.scalar(
+                select(PlanningWorkQueueRelease)
+                .where(
+                    PlanningWorkQueueRelease.planning_intent_id == intent.id,
+                    PlanningWorkQueueRelease.active == true(),
+                    PlanningWorkQueueRelease.resource_id == shift.resource_id,
+                    PlanningWorkQueueRelease.work_date == shift.work_date,
+                )
+                .order_by(
+                    PlanningWorkQueueRelease.created_at,
+                    PlanningWorkQueueRelease.id,
+                )
             )
+            if release is None:
+                continue
+
+            restored_before = Decimal(
+                str(
+                    self._session.scalar(
+                        select(
+                            func.coalesce(
+                                func.sum(PlanningWorkQueueRestoration.restored_hours),
+                                0,
+                            )
+                        ).where(
+                            PlanningWorkQueueRestoration.release_id == release.id
+                        )
+                    )
+                    or 0
+                )
+            )
+            release_hours = Decimal(str(release.hours))
+            remaining = max(release_hours - restored_before, Decimal("0.00"))
+            if remaining <= tolerance:
+                release.active = False
+                release.resolved_at = release.resolved_at or utc_now()
+                continue
+
+            attributed = min(Decimal(str(shift.hours)), remaining)
+            if attributed <= tolerance:
+                continue
+            self._session.add(
+                PlanningWorkQueueRestoration(
+                    release_id=release.id,
+                    shift_id=shift.id,
+                    restored_hours=attributed,
+                )
+            )
+            restored_after = restored_before + attributed
+            if restored_after + tolerance >= release_hours:
+                release.active = False
+                release.resolved_at = utc_now()
+
+    def _residual_overallocation_authorized(self) -> bool:
+        """Hook for the canonical over-allocation adapter after it validates policy."""
+
+        return False
+
+    def _controlled_work_queue_placement(
+        self,
+        intent: RequestRequirementPlanningIntent | None,
+    ) -> bool:
+        if intent is None:
+            return False
+        release_history = self._session.scalar(
+            select(PlanningWorkQueueRelease.id).where(
+                PlanningWorkQueueRelease.planning_intent_id == intent.id
+            )
+        )
+        if release_history is not None:
+            return True
+        return (
+            intent.intent_mode
+            in (PLANNING_INTENT_PRESERVE_EXISTING, PLANNING_INTENT_QUEUED)
+            and intent.target_mode != PLANNING_TARGET_INHERIT
+        )
 
     def _current_effective_need(
         self,
@@ -556,21 +613,9 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
 
 
         intent = self._request_intent(requirement)
-        active_release = (
-            self._session.scalar(
-                select(PlanningWorkQueueRelease.id).where(
-                    PlanningWorkQueueRelease.planning_intent_id == intent.id,
-                    PlanningWorkQueueRelease.active == true(),
-                )
-            )
-            if intent is not None
-            else None
-        )
         if (
-            intent is not None
-            and active_release is not None
-            and intent.intent_mode
-            in (PLANNING_INTENT_PRESERVE_EXISTING, PLANNING_INTENT_QUEUED)
+            self._controlled_work_queue_placement(intent)
+            and not self._residual_overallocation_authorized()
         ):
             effective_need = self._current_effective_need(requirement)
             covered = self._counted_coverage(requirement.id)
