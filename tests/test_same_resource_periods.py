@@ -416,11 +416,55 @@ class SameResourcePeriodPlanningTests(unittest.TestCase):
     def test_explicit_target_change_retargets_the_component_atomically(self) -> None:
         with transactional_session(self.factory) as session:
             root, child = self._same_as_plan(session, root_target="R1")
+            session.add_all(
+                [
+                    RequestRequirementPlanningIntent(
+                        id="INT-SAME-LOCAL-ROOT",
+                        slot_identity_key="same-local-root",
+                        workforce_request_id="D-SAME",
+                        source_request_line_id="L-SAME",
+                        approved_entry_key='["PERIOD","L-SAME","A"]',
+                        source_period_id="PER-A",
+                        slot_index=0,
+                        current_resource_requirement_id=root.id,
+                        intent_mode="AUTO",
+                        target_mode="EXPLICIT_RESOURCE",
+                        target_resource_id="R1",
+                    ),
+                    RequestRequirementPlanningIntent(
+                        id="INT-SAME-LOCAL-CHILD",
+                        slot_identity_key="same-local-child",
+                        workforce_request_id="D-SAME",
+                        source_request_line_id="L-SAME",
+                        approved_entry_key='["PERIOD","L-SAME","B"]',
+                        source_period_id="PER-B",
+                        slot_index=0,
+                        current_resource_requirement_id=child.id,
+                        intent_mode="AUTO",
+                        target_mode="INHERIT",
+                        placement_not_before_date=D2,
+                    ),
+                ]
+            )
+            session.flush()
 
             SqlAllocationCommandAdapter(session).assign_segment(child.id, "R2")
 
             self.assertEqual(root.assigned_resource_id, "R2")
             self.assertEqual(child.assigned_resource_id, "R2")
+            self.assertIsNone(
+                session.get(
+                    RequestRequirementPlanningIntent,
+                    "INT-SAME-LOCAL-ROOT",
+                ).placement_not_before_date
+            )
+            self.assertEqual(
+                session.get(
+                    RequestRequirementPlanningIntent,
+                    "INT-SAME-LOCAL-CHILD",
+                ).placement_not_before_date,
+                D2,
+            )
             SqlSameResourcePeriodCoordinator(session).assert_shift_invariant()
             shifts = session.scalars(
                 select(Shift).where(
