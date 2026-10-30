@@ -2229,7 +2229,7 @@ export default function PlanningPage({
                       onMove: (direction) => void moveResourceInManualOrder(resource, direction),
                     } : undefined}
                     onDropShift={(payload, target, day) => void moveShiftFromDrop(payload, target, day)}
-                    onDropSegment={(payload, target) => void assignSegmentFromDrop(payload, target)}
+                    onDropSegment={(payload, target, day) => void assignSegmentFromDrop(payload, target, day)}
                     key={resource.id}
                   />
                 );
