@@ -361,6 +361,81 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_dated_drop_preview_reports_authoritative_window_residual_and_placeable_hours(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+            engine = create_sql_engine(database_url)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_40(client)
+                    target = min(
+                        self._snapshot(client, number)["demand_shifts"],
+                        key=lambda row: row["work_date"],
+                    )
+                    work_queue = client.get(
+                        f"/api/v1/allocations/{target['allocation_id']}/work-queue-preview"
+                    ).json()
+                    returned = client.post(
+                        f"/api/v1/allocations/{target['allocation_id']}/return-to-work-queue",
+                        headers={"Idempotency-Key": "777-preview-return"},
+                        json={
+                            "expected_planning_version": work_queue["planning_version"],
+                            "expected_approval_revision_id": work_queue["approval_revision_id"],
+                            "expected_operational_version": work_queue["operational_version"],
+                        },
+                    )
+                    self.assertEqual(returned.status_code, 200, returned.text)
+                    action = self._actions(client, number)[0]
+
+                    preview = client.post(
+                        f"/api/v1/segments/{action['segment_id']}/place-from-drop/preview",
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": THURSDAY,
+                        },
+                    )
+                    self.assertEqual(preview.status_code, 200, preview.text)
+                    payload = preview.json()
+                    self.assertTrue(payload["allowed"])
+                    self.assertEqual(payload["authorized_start_date"], START)
+                    self.assertEqual(payload["authorized_end_date"], END)
+                    self.assertEqual(payload["generation_start_date"], THURSDAY)
+                    self.assertEqual(payload["generation_end_date"], END)
+                    self.assertEqual(payload["effective_need"], 40)
+                    self.assertEqual(payload["covered_hours"], 32)
+                    self.assertEqual(payload["remaining_hours"], 8)
+                    self.assertEqual(payload["placeable_hours"], 8)
+                    self.assertEqual(
+                        payload["approval_revision_id"],
+                        action["approval_revision_id"],
+                    )
+                    self.assertEqual(
+                        payload["operational_version"],
+                        action["operational_version"],
+                    )
+
+                    outside = client.post(
+                        f"/api/v1/segments/{action['segment_id']}/place-from-drop/preview",
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": "2026-11-07",
+                        },
+                    )
+                    self.assertEqual(outside.status_code, 200, outside.text)
+                    refusal = outside.json()
+                    self.assertFalse(refusal["allowed"])
+                    self.assertEqual(
+                        refusal["refusal_code"],
+                        "segment_placement_window_extension_required",
+                    )
+                    self.assertIn(
+                        "PROPOSE_WINDOW_EXTENSION",
+                        refusal["available_actions"],
+                    )
+            finally:
+                engine.dispose()
+
     def test_dated_drop_rejects_stale_planning_and_operational_versions_atomically(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
