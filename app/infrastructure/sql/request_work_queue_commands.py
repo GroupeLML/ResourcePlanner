@@ -4,7 +4,7 @@ import json
 from decimal import Decimal
 from typing import Any, Mapping, Sequence
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from ...application.approval_scopes import (
@@ -47,7 +47,7 @@ from .segment_asset_guard import assert_segment_asset_mutation_compatible
 from .base import new_id, utc_now
 from .command_adapters import SqlPlanningCommandAdapter
 from .identity_models import AppUser
-from .models import ORIGIN_REQUEST, RequestLine, Resource, ResourceRequirement, Shift, WorkforceRequest, WorkforceRequestHistory
+from .models import ORIGIN_REQUEST, RequestLine, Resource, ResourceAvailabilityRule, ResourceRequirement, Shift, WorkforceRequest, WorkforceRequestHistory
 from .operational_choice_models import (
     PLANNING_INTENT_PRESERVE_EXISTING,
     PLANNING_INTENT_QUEUED,
@@ -565,7 +565,12 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
             "no_op": no_op,
         }
 
-    def _placement_resource(self, resource_id: str) -> Resource:
+    def _placement_resource(
+        self,
+        resource_id: str,
+        *,
+        requirement: ResourceRequirement,
+    ) -> Resource:
         wanted = _text(resource_id)
         resource = self._session.get(Resource, wanted)
         if resource is None or not resource.active or not resource.erp_active:
@@ -573,6 +578,44 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
                 "La ressource ciblée est absente ou inactive.",
                 code="segment_placement_resource_unavailable",
                 context={"resource_id": wanted},
+            )
+        scheduled = self._session.scalar(
+            select(ResourceAvailabilityRule.id)
+            .where(
+                ResourceAvailabilityRule.resource_id == resource.id,
+                ResourceAvailabilityRule.availability_type == "Horaire standard",
+                ResourceAvailabilityRule.active.is_(True),
+                or_(
+                    ResourceAvailabilityRule.start_date.is_(None),
+                    ResourceAvailabilityRule.start_date <= requirement.end_date,
+                ),
+                or_(
+                    ResourceAvailabilityRule.end_date.is_(None),
+                    ResourceAvailabilityRule.end_date >= requirement.start_date,
+                ),
+            )
+            .limit(1)
+        )
+        if scheduled is None:
+            raise ApplicationAuthorizationError(
+                "La ressource ciblée n'est pas visible dans le Planning pour cette fenêtre.",
+                code="planning_resource_scope_denied",
+                context={
+                    "resource_id": resource.id,
+                    "authorized_start_date": requirement.start_date.isoformat(),
+                    "authorized_end_date": requirement.end_date.isoformat(),
+                },
+            )
+        required_class = _text(requirement.required_resource_class)
+        if required_class and _text(resource.resource_class) != required_class:
+            raise ApplicationConflictError(
+                "La ressource ciblée n'appartient pas à la classe requise par le besoin.",
+                code="segment_placement_resource_class_mismatch",
+                context={
+                    "resource_id": resource.id,
+                    "required_resource_class": required_class,
+                    "resource_class": _text(resource.resource_class) or None,
+                },
             )
         return resource
 
@@ -626,7 +669,10 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
             expected_operational_version=command.expected_operational_version,
         )
         intent = self._intent(requirement)
-        resource = self._placement_resource(command.resource_id)
+        resource = self._placement_resource(
+            command.resource_id,
+            requirement=requirement,
+        )
         dropped_date = command.dropped_date
         if dropped_date < requirement.start_date:
             raise ApplicationConflictError(
