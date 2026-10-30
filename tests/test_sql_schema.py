@@ -79,6 +79,7 @@ EXPECTED_TABLES = {
     "request_operational_states",
     "request_requirement_planning_intents",
     "planning_work_queue_releases",
+    "planning_work_queue_restorations",
     "request_completion_reductions",
     "request_lines",
     "request_line_competencies",
