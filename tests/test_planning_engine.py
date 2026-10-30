@@ -80,6 +80,52 @@ class PlanningEngineTests(unittest.TestCase):
         overtime = [row for row in result.allocations if row.outside_schedule]
         self.assertEqual([(row.day, row.hours, row.allocation_type) for row in overtime], [(D1, 4, "Flexible")])
 
+    def test_placement_cutoff_constrains_standard_and_overtime_generation(self) -> None:
+        cutoff = date(2026, 8, 18)
+        segment = SegmentInput(
+            "S-CUTOFF",
+            "R1",
+            D1,
+            cutoff,
+            12,
+            "Flexible",
+            overtime_allowed=True,
+            placement_not_before_date=cutoff,
+        )
+        result = build_allocation_plan(
+            [segment],
+            [],
+            {("R1", D1): 8, ("R1", cutoff): 8},
+            outside_schedule_eligible_by_resource_day={
+                ("R1", D1): True,
+                ("R1", cutoff): True,
+            },
+        )
+        counted = [row for row in result.allocations if row.counts_as_allocated]
+        self.assertTrue(counted)
+        self.assertTrue(all(row.day >= cutoff for row in counted))
+        self.assertEqual(sum(row.hours for row in counted), 12)
+
+    def test_cutoff_with_no_eligible_interval_leaves_work_unallocated(self) -> None:
+        cutoff = date(2026, 8, 19)
+        result = build_allocation_plan(
+            [
+                SegmentInput(
+                    "S-CUTOFF-NONE",
+                    "R1",
+                    D1,
+                    D2,
+                    8,
+                    "Flexible",
+                    placement_not_before_date=cutoff,
+                )
+            ],
+            [],
+            {("R1", D1): 8, ("R1", D2): 8},
+        )
+        self.assertEqual(result.allocated_hours, 0)
+        self.assertEqual(result.unallocated_hours, 8)
+
     def test_fixed_work_consumes_capacity_before_flexible_work(self) -> None:
         result = build_allocation_plan(
             [
