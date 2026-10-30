@@ -517,6 +517,22 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             and intent.target_mode != PLANNING_TARGET_INHERIT
         )
 
+    @staticmethod
+    def _assert_new_placement_cutoff(
+        intent: RequestRequirementPlanningIntent | None,
+        day: date,
+    ) -> None:
+        cutoff = intent.placement_not_before_date if intent is not None else None
+        if cutoff is not None and day < cutoff:
+            raise ApplicationConflictError(
+                "La nouvelle mise en place précède le cutoff opérationnel du segment.",
+                code="segment_placement_before_cutoff",
+                context={
+                    "placement_not_before_date": cutoff.isoformat(),
+                    "requested_date": day.isoformat(),
+                },
+            )
+
     def _current_effective_need(
         self,
         requirement: ResourceRequirement,
@@ -647,8 +663,8 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             bool(hors_horaire),
         )
 
-
         intent = self._request_intent(requirement)
+        self._assert_new_placement_cutoff(intent, day)
         if (
             self._controlled_work_queue_placement(intent)
             and not self._residual_overallocation_authorized()
@@ -747,6 +763,9 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             bool(hors_horaire),
             exclude_shift_id=shift.id,
         )
+        intent = self._request_intent(requirement)
+        if day != shift.work_date:
+            self._assert_new_placement_cutoff(intent, day)
 
         shift.resource_id = resource.id
         shift.work_date = day
@@ -795,6 +814,9 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             bool(outside_standard_hours),
             exclude_shift_id=shift.id,
         )
+        intent = self._request_intent(requirement)
+        if day != shift.work_date:
+            self._assert_new_placement_cutoff(intent, day)
 
         shift.resource_id = resource.id
         shift.work_date = day
