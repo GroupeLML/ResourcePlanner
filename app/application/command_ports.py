@@ -10,6 +10,8 @@ from .commands import (
     AllocationWindowOverrideMoveCommand,
     AllocationSplitCommand,
     PlanningWindowOverrideExtendCommand,
+    SegmentDatedDropCommand,
+    SegmentPlacementCutoffResetCommand,
 )
 
 
@@ -80,6 +82,16 @@ class CompositeAllocationCommandPort(Protocol):
     def override_and_move(
         self,
         command: AllocationWindowOverrideMoveCommand,
+    ) -> Mapping[str, Any]: ...
+
+    def assign_segment_from_drop(
+        self,
+        command: SegmentDatedDropCommand,
+    ) -> Mapping[str, Any]: ...
+
+    def reset_segment_placement_cutoff(
+        self,
+        command: SegmentPlacementCutoffResetCommand,
     ) -> Mapping[str, Any]: ...
 
 
