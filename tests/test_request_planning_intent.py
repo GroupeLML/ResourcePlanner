@@ -276,6 +276,7 @@ class RequestPlanningIntentRepositoryTests(unittest.TestCase):
                 current_resource_requirement_id="REQ1",
             )
             intent.intent_mode = "PRESERVE_EXISTING"
+            intent.placement_not_before_date = DAY
             session.flush()
             rebound = repo.ensure(
                 workforce_request_id="D1",
@@ -288,6 +289,7 @@ class RequestPlanningIntentRepositoryTests(unittest.TestCase):
             )
             self.assertEqual(rebound.id, intent.id)
             self.assertEqual(rebound.intent_mode, "PRESERVE_EXISTING")
+            self.assertEqual(rebound.placement_not_before_date, DAY)
             self.assertEqual(rebound.current_resource_requirement_id, "REQ2")
             self.assertEqual(
                 session.query(RequestRequirementPlanningIntent).count(),
