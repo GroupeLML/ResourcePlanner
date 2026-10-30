@@ -18,6 +18,8 @@ from ...application.errors import (
 )
 from ...application.request_work_queue import (
     PermanentlyReduceShiftHoursCommand,
+    PlaceSegmentFromDropCommand,
+    ResetSegmentPlacementCutoffCommand,
     RequestWorkQueueCommandPort,
     ReturnSegmentToWorkQueueCommand,
     ReturnShiftToWorkQueueCommand,
@@ -45,7 +47,7 @@ from .segment_asset_guard import assert_segment_asset_mutation_compatible
 from .base import new_id, utc_now
 from .command_adapters import SqlPlanningCommandAdapter
 from .identity_models import AppUser
-from .models import ORIGIN_REQUEST, RequestLine, ResourceRequirement, Shift, WorkforceRequest, WorkforceRequestHistory
+from .models import ORIGIN_REQUEST, RequestLine, Resource, ResourceRequirement, Shift, WorkforceRequest, WorkforceRequestHistory
 from .operational_choice_models import (
     PLANNING_INTENT_PRESERVE_EXISTING,
     PLANNING_INTENT_QUEUED,
@@ -57,6 +59,7 @@ from .operational_choice_models import (
 )
 from .planning_audit import ENTITY_SEGMENT, ENTITY_SHIFT, SqlPlanningAuditJournal
 from .planning_intent_repository import SqlRequestRequirementPlanningIntentRepository
+from .same_resource_periods import SqlSameResourcePeriodCoordinator
 from .planning_version import SqlPlanningMutationVersionRepository
 from .request_version import acquire_request_aggregate_version
 from .user_view_context_repository import SqlUserViewContextRepository
@@ -561,6 +564,307 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
             "remaining_hours_after": float(max(effective_need_after - covered_after, Decimal("0.00"))),
             "no_op": no_op,
         }
+
+    def _placement_resource(self, resource_id: str) -> Resource:
+        wanted = _text(resource_id)
+        resource = self._session.get(Resource, wanted)
+        if resource is None or not resource.active or not resource.erp_active:
+            raise ApplicationConflictError(
+                "La ressource ciblée est absente ou inactive.",
+                code="segment_placement_resource_unavailable",
+                context={"resource_id": wanted},
+            )
+        return resource
+
+    def _placement_result(
+        self,
+        *,
+        operation: str,
+        requirement: ResourceRequirement,
+        intent: RequestRequirementPlanningIntent,
+        resource_id: str | None,
+        planning_version: int,
+        revision: RequestApprovalRevision,
+        state: RequestOperationalState,
+        effective_need: Decimal,
+        preserved_shift_ids: Sequence[str] = (),
+        generated_shift_ids: Sequence[str] = (),
+    ) -> Mapping[str, Any]:
+        covered = self._covered_hours(requirement.id)
+        return {
+            "operation": operation,
+            "requirement_id": requirement.id,
+            "segment_id": _text(requirement.legacy_segment_id) or requirement.id,
+            "resource_id": resource_id,
+            "planning_version": planning_version,
+            "approval_revision_id": revision.id,
+            "operational_version": int(state.version or 1),
+            "authorized_start_date": requirement.start_date,
+            "authorized_end_date": requirement.end_date,
+            "placement_not_before_date": intent.placement_not_before_date,
+            "effective_need": float(effective_need),
+            "covered_hours": float(covered),
+            "remaining_hours": float(max(effective_need - covered, Decimal("0.00"))),
+            "preserved_shift_ids": tuple(preserved_shift_ids),
+            "generated_shift_ids": tuple(generated_shift_ids),
+        }
+
+    def place_segment_from_drop(
+        self,
+        command: PlaceSegmentFromDropCommand,
+    ) -> Mapping[str, Any]:
+        planning_version = self._versioning.acquire(command.expected_planning_version)
+        actor = self._actor()
+        requirement = self._requirement(command.segment_id)
+        self._assert_return_lifecycle(requirement)
+        self._assert_planning_scope(actor, requirement)
+        request = self._request(requirement)
+        revision, state = self._approval_and_operational(
+            requirement,
+            request,
+            expected_revision_id=command.expected_approval_revision_id,
+            expected_operational_version=command.expected_operational_version,
+        )
+        intent = self._intent(requirement)
+        resource = self._placement_resource(command.resource_id)
+        dropped_date = command.dropped_date
+        if dropped_date < requirement.start_date:
+            raise ApplicationConflictError(
+                "La date déposée précède la fenêtre opérationnelle autorisée.",
+                code="segment_placement_before_authorized_window",
+                context={
+                    "authorized_start_date": requirement.start_date.isoformat(),
+                    "authorized_end_date": requirement.end_date.isoformat(),
+                    "dropped_date": dropped_date.isoformat(),
+                },
+            )
+        if dropped_date > requirement.end_date:
+            raise ApplicationConflictError(
+                "La date déposée dépasse la fenêtre opérationnelle autorisée. Une extension explicite ou une réapprobation est requise.",
+                code="segment_placement_window_extension_required",
+                context={
+                    "authorized_start_date": requirement.start_date.isoformat(),
+                    "authorized_end_date": requirement.end_date.isoformat(),
+                    "dropped_date": dropped_date.isoformat(),
+                    "available_actions": [
+                        "PLANNING_WINDOW_OVERRIDE",
+                        "PROPOSE_WINDOW_EXTENSION",
+                    ],
+                },
+            )
+
+        effective_need = self._current_need(intent, revision, state)
+        if effective_need <= TOLERANCE:
+            raise ApplicationConflictError(
+                "Le besoin courant ne contient plus de reliquat planifiable.",
+                code="segment_placement_no_effective_need",
+            )
+        covered_before = self._covered_hours(requirement.id)
+        residual_before = max(effective_need - covered_before, Decimal("0.00"))
+        if residual_before <= TOLERANCE:
+            raise ApplicationConflictError(
+                "Le segment ne contient plus de reliquat à placer.",
+                code="segment_placement_no_residual",
+                context={
+                    "effective_need": float(effective_need),
+                    "covered_hours": float(covered_before),
+                },
+            )
+
+        counted_survivors = tuple(
+            self._session.scalars(
+                select(Shift.id)
+                .where(
+                    Shift.resource_requirement_id == requirement.id,
+                    (Shift.allocation_type.is_(None))
+                    | (Shift.allocation_type != MISSING_ALLOCATION_TYPE),
+                )
+                .order_by(Shift.work_date, Shift.id)
+            ).all()
+        )
+        before_shift_ids = set(
+            self._session.scalars(
+                select(Shift.id).where(
+                    Shift.resource_requirement_id == requirement.id
+                )
+            ).all()
+        )
+        old_target = intent.target_resource_id
+        old_cutoff = intent.placement_not_before_date
+        old_mode = intent.intent_mode
+
+        # The cutoff is slot-local. SAME_AS_PERIOD may retarget sibling automatic
+        # targets, but it must never copy this date to sibling intents.
+        grouped = SqlSameResourcePeriodCoordinator(self._session).retarget_component(
+            requirement.id,
+            resource.id,
+        )
+        if not grouped:
+            requirement.assigned_resource_id = resource.id
+            requirement.status = "Planifié"
+
+        intent.target_mode = "EXPLICIT_RESOURCE"
+        intent.target_resource_id = resource.id
+        intent.placement_not_before_date = dropped_date
+
+        preserve_existing = bool(counted_survivors) or intent.intent_mode in (
+            PLANNING_INTENT_PRESERVE_EXISTING,
+            PLANNING_INTENT_QUEUED,
+        )
+        if preserve_existing:
+            # AUTO is temporary for exactly one authoritative residual generation.
+            intent.intent_mode = "AUTO"
+        self._session.flush()
+
+        self._planning.rebuild(
+            preserve_shift_ids=counted_survivors if preserve_existing else (),
+        )
+        SqlSameResourcePeriodCoordinator(self._session).assert_shift_invariant()
+
+        if preserve_existing:
+            intent.intent_mode = PLANNING_INTENT_PRESERVE_EXISTING
+        intent.target_mode = "EXPLICIT_RESOURCE"
+        intent.target_resource_id = resource.id
+        intent.placement_not_before_date = dropped_date
+        self._session.flush()
+
+        after_shifts = list(
+            self._session.scalars(
+                select(Shift)
+                .where(Shift.resource_requirement_id == requirement.id)
+                .order_by(Shift.work_date, Shift.id)
+            ).all()
+        )
+        generated = tuple(
+            shift.id
+            for shift in after_shifts
+            if shift.id not in before_shift_ids
+            and shift.allocation_type != MISSING_ALLOCATION_TYPE
+        )
+        generated_before_cutoff = [
+            shift.id
+            for shift in after_shifts
+            if shift.id in generated and shift.work_date < dropped_date
+        ]
+        if generated_before_cutoff:
+            raise ApplicationConflictError(
+                "Le rebuild a produit du travail avant le cutoff de placement.",
+                code="segment_placement_cutoff_invariant_failed",
+                context={"shift_ids": generated_before_cutoff},
+            )
+        for survivor_id in counted_survivors:
+            if self._session.get(Shift, survivor_id) is None:
+                raise ApplicationConflictError(
+                    "Un quart survivant a été perdu pendant le placement du reliquat.",
+                    code="segment_placement_survivor_invariant_failed",
+                    context={"shift_id": survivor_id},
+                )
+
+        covered_after = self._covered_hours(requirement.id)
+        if covered_after > effective_need + TOLERANCE:
+            raise ApplicationConflictError(
+                "Le placement daté dépasserait le besoin courant effectif.",
+                code="segment_placement_overcoverage_conflict",
+                context={
+                    "effective_need": float(effective_need),
+                    "covered_hours": float(covered_after),
+                },
+            )
+
+        self._journal.append(
+            entity_type=ENTITY_SEGMENT,
+            entity_id=requirement.id,
+            entity_reference=_text(requirement.legacy_segment_id) or requirement.id,
+            action="Placement daté du reliquat",
+            before={
+                "target_resource_id": old_target,
+                "placement_not_before_date": old_cutoff.isoformat() if old_cutoff else None,
+                "intent_mode": old_mode,
+            },
+            after={
+                "target_resource_id": resource.id,
+                "placement_not_before_date": dropped_date.isoformat(),
+                "intent_mode": intent.intent_mode,
+                "preserved_shift_ids": list(counted_survivors),
+                "generated_shift_ids": list(generated),
+                "effective_need": float(effective_need),
+                "covered_hours": float(covered_after),
+                "remaining_hours": float(max(effective_need - covered_after, Decimal("0.00"))),
+            },
+        )
+        return self._placement_result(
+            operation="PLACE_SEGMENT_FROM_DROP",
+            requirement=requirement,
+            intent=intent,
+            resource_id=resource.id,
+            planning_version=planning_version,
+            revision=revision,
+            state=state,
+            effective_need=effective_need,
+            preserved_shift_ids=counted_survivors,
+            generated_shift_ids=generated,
+        )
+
+    def reset_segment_placement_cutoff(
+        self,
+        command: ResetSegmentPlacementCutoffCommand,
+    ) -> Mapping[str, Any]:
+        planning_version = self._versioning.acquire(command.expected_planning_version)
+        actor = self._actor()
+        requirement = self._requirement(command.segment_id)
+        self._assert_return_lifecycle(requirement)
+        self._assert_planning_scope(actor, requirement)
+        request = self._request(requirement)
+        revision, state = self._approval_and_operational(
+            requirement,
+            request,
+            expected_revision_id=command.expected_approval_revision_id,
+            expected_operational_version=command.expected_operational_version,
+        )
+        intent = self._intent(requirement)
+        effective_need = self._current_need(intent, revision, state)
+        old_cutoff = intent.placement_not_before_date
+        survivor_ids = tuple(
+            self._session.scalars(
+                select(Shift.id).where(
+                    Shift.resource_requirement_id == requirement.id
+                )
+            ).all()
+        )
+        intent.placement_not_before_date = None
+        self._session.flush()
+        self._planning.rebuild(
+            preserve_shift_ids=(
+                survivor_ids
+                if intent.intent_mode == PLANNING_INTENT_PRESERVE_EXISTING
+                else ()
+            )
+        )
+        self._journal.append(
+            entity_type=ENTITY_SEGMENT,
+            entity_id=requirement.id,
+            entity_reference=_text(requirement.legacy_segment_id) or requirement.id,
+            action="Réinitialisation cutoff de placement",
+            before={
+                "placement_not_before_date": old_cutoff.isoformat() if old_cutoff else None,
+                "intent_mode": intent.intent_mode,
+            },
+            after={
+                "placement_not_before_date": None,
+                "intent_mode": intent.intent_mode,
+            },
+        )
+        return self._placement_result(
+            operation="RESET_SEGMENT_PLACEMENT_CUTOFF",
+            requirement=requirement,
+            intent=intent,
+            resource_id=intent.target_resource_id,
+            planning_version=planning_version,
+            revision=revision,
+            state=state,
+            effective_need=effective_need,
+            preserved_shift_ids=survivor_ids,
+        )
 
     def preview_shift(self, allocation_id: str) -> Mapping[str, Any]:
         actor = self._actor()
