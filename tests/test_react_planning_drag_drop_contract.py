@@ -91,12 +91,14 @@ class ReactPlanningDragDropContractTests(unittest.TestCase):
 
         self.assertIn("hasSegmentDrag(event.dataTransfer)", page)
         self.assertIn("onDropSegment(segmentPayload, resource, iso)", page)
+        self.assertIn("previewSegmentFromDrop(", page)
         self.assertIn("placeSegmentFromDrop(", page)
-        self.assertIn("expected_planning_version: snapshot.planning_version", page)
-        self.assertIn("expected_approval_revision_id: action.approval_revision_id", page)
-        self.assertIn("expected_operational_version: action.operational_version", page)
+        self.assertIn("expected_planning_version: preview.planning_version", page)
+        self.assertIn("expected_approval_revision_id: preview.approval_revision_id", page)
+        self.assertIn("expected_operational_version: preview.operational_version", page)
         self.assertIn("dropped_date: droppedDate", page)
         self.assertNotIn("placement_not_before_date: droppedDate", page)
+        self.assertIn("/place-from-drop/preview", api)
         self.assertIn("/place-from-drop", api)
         self.assertIn('"Idempotency-Key"', api)
 
