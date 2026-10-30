@@ -8,12 +8,15 @@ from .commands import (
     AllocationWindowOverrideMoveCommand,
     AllocationSplitCommand,
     PlanningWindowOverrideExtendCommand,
+    SegmentDatedDropCommand,
+    SegmentPlacementCutoffResetCommand,
 )
 from .errors import ApplicationOperationError, call_application_port
 from .results import (
     CompositeAllocationMutationResult,
     PlanningDropEvaluationResult,
     PlanningWindowOverrideMutationResult,
+    SegmentPlacementMutationResult,
 )
 
 
@@ -99,3 +102,29 @@ class CompositeAllocationService:
             context={"allocation_id": command.allocation_id},
         )
         return PlanningWindowOverrideMutationResult.from_mapping(result)
+
+    def assign_segment_from_drop_command(
+        self,
+        command: SegmentDatedDropCommand,
+    ) -> SegmentPlacementMutationResult:
+        result = call_application_port(
+            lambda: self._commands.assign_segment_from_drop(command),
+            code_prefix="segment_dated_drop",
+            context={
+                "segment_id": command.segment_id,
+                "resource_id": command.resource_id,
+                "dropped_date": command.dropped_date.isoformat(),
+            },
+        )
+        return SegmentPlacementMutationResult.from_mapping(result)
+
+    def reset_segment_placement_cutoff_command(
+        self,
+        command: SegmentPlacementCutoffResetCommand,
+    ) -> SegmentPlacementMutationResult:
+        result = call_application_port(
+            lambda: self._commands.reset_segment_placement_cutoff(command),
+            code_prefix="segment_placement_cutoff_reset",
+            context={"segment_id": command.segment_id},
+        )
+        return SegmentPlacementMutationResult.from_mapping(result)
