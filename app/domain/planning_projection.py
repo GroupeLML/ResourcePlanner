@@ -122,8 +122,14 @@ def _segment_inputs(
             continue
 
         segment_id = str(row.get("IDSegment") or "").strip()
-        start = date_from_value(row.get("DateDebut"))
-        end = date_from_value(row.get("DateFin")) or start
+        authorized_start = date_from_value(row.get("DateDebut"))
+        end = date_from_value(row.get("DateFin")) or authorized_start
+        cutoff = date_from_value(row.get("PlacementNotBeforeDate"))
+        start = (
+            max(authorized_start, cutoff)
+            if authorized_start is not None and cutoff is not None
+            else authorized_start
+        )
         if not segment_id or not start or not end:
             if segment_id:
                 unsupported.append(segment_id)
