@@ -63,6 +63,8 @@ from .commands import (
     PlanningRebuildCommand,
     QuickShiftCreateCommand,
     SegmentAssignCommand,
+    SegmentDatedDropCommand,
+    SegmentPlacementCutoffResetCommand,
     SegmentCancelCommand,
     SegmentCreateCommand,
     SegmentUpdateCommand,
@@ -288,6 +290,7 @@ from .results import (
     PlanningResult,
     QuickShiftCreatedResult,
     SegmentMutationResult,
+    SegmentPlacementMutationResult,
     WorkPackageMutationResult,
 )
 from .work_package_service import WorkPackageService
