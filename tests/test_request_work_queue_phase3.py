@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import time
+from datetime import timedelta, time
 from decimal import Decimal
 from tempfile import TemporaryDirectory
 import unittest
@@ -797,6 +797,96 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+
+
+    def test_compatible_reapproval_preserves_cutoff_and_no_interval_fails_closed(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-777-compatible-reapproval",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._approve(client, 8)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    request, requirement, intent = self._context(session, number)
+                    cutoff = requirement.start_date
+                    intent.placement_not_before_date = cutoff
+                    intent_id = intent.id
+                    session.flush()
+                    SqlPeriodAwareApprovedDemandSyncAdapter(session).sync_approved(
+                        number,
+                        approved_request_version=int(request.aggregate_version or 1),
+                    )
+                    rebound = session.get(RequestRequirementPlanningIntent, intent_id)
+                    self.assertEqual(rebound.placement_not_before_date, cutoff)
+
+                with factory.begin() as session:
+                    request, requirement, intent = self._context(session, number)
+                    intent.placement_not_before_date = requirement.end_date + timedelta(days=1)
+                    session.flush()
+                    with self.assertRaises(ApplicationConflictError) as raised:
+                        SqlPeriodAwareApprovedDemandSyncAdapter(session).sync_approved(
+                            number,
+                            approved_request_version=int(request.aggregate_version or 1),
+                        )
+                    self.assertEqual(
+                        raised.exception.code,
+                        "placement_not_before_reconciliation_required",
+                    )
+            finally:
+                engine.dispose()
+
+    def test_zero_effective_terminal_slot_keeps_dormant_cutoff(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-777-zero-cutoff",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._approve(client, 8)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    request, requirement, intent = self._context(session, number)
+                    cutoff = requirement.start_date
+                    intent.placement_not_before_date = cutoff
+                    self._reduce(
+                        session,
+                        request,
+                        requirement,
+                        intent,
+                        Decimal("8.00"),
+                    )
+                    SqlPeriodAwareApprovedDemandSyncAdapter(
+                        session
+                    ).sync_operational_choices(number)
+                    self.assertEqual(requirement.status, "Annulé")
+                    self.assertEqual(intent.placement_not_before_date, cutoff)
+
+                with factory.begin() as session:
+                    request = session.scalar(
+                        select(WorkforceRequest).where(
+                            WorkforceRequest.legacy_demand_number == number
+                        )
+                    )
+                    SqlPeriodAwareApprovedDemandSyncAdapter(session).sync_approved(
+                        number,
+                        approved_request_version=int(request.aggregate_version or 1),
+                    )
+                    intent = session.scalar(select(RequestRequirementPlanningIntent))
+                    self.assertEqual(intent.placement_not_before_date, cutoff)
+            finally:
+                engine.dispose()
 
 
     def test_incompatible_resource_class_reapproval_fails_closed(self) -> None:
