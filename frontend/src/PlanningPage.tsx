@@ -1829,7 +1829,7 @@ export default function PlanningPage({
       if (
         !snapshot
         || !action?.approval_revision_id
-        || action.operational_version === null
+        || action.operational_version == null
       ) {
         setDragFeedback({
           tone: "info",
