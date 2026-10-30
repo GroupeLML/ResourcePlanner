@@ -21,7 +21,7 @@ MIGRATIONS = ROOT / "migrations"
 VERSIONS = MIGRATIONS / "versions"
 BASELINE_FILE = VERSIONS / "0001_v2_production_baseline.py"
 BASELINE_REVISION = "v2_production_baseline"
-HEAD_REVISION = "0025_request_work_queue_architect_corrections"
+HEAD_REVISION = "0026_request_work_queue_restorations"
 
 
 def alembic_config(database_path: Path) -> Config:
@@ -94,6 +94,7 @@ class SqlMigrationTests(unittest.TestCase):
                 "0023_request_work_queue_intent.py",
                 "0024_request_work_queue_command_identity.py",
                 "0025_request_work_queue_architect_corrections.py",
+                "0026_request_work_queue_restorations.py",
             ],
         )
 
@@ -112,6 +113,7 @@ class SqlMigrationTests(unittest.TestCase):
             [revision.revision for revision in script.walk_revisions()],
             [
                 HEAD_REVISION,
+                "0025_request_work_queue_architect_corrections",
                 "0024_request_work_queue_command_identity",
                 "0023_request_work_queue_intent",
                 "0022_continuous_vehicle_resource_period",
@@ -1169,6 +1171,22 @@ class SqlMigrationTests(unittest.TestCase):
         self.assertNotIn("DROP COLUMN AUTHORIZATION_FINGERPRINT", generated)
         self.assertNotIn("DROP COLUMN RECONCILED_APPROVAL_REVISION_ID", generated)
 
+    def test_0026_offline_downgrade_refuses_restoration_provenance_drop(self) -> None:
+        output = StringIO()
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "refuses offline downgrade",
+        ):
+            command.downgrade(
+                offline_config("mssql+pyodbc://", output),
+                "0026_request_work_queue_restorations:0025_request_work_queue_architect_corrections",
+                sql=True,
+            )
+        self.assertNotIn(
+            "DROP TABLE PLANNING_WORK_QUEUE_RESTORATIONS",
+            output.getvalue().upper(),
+        )
+
     def test_head_compiles_offline_for_mssql(self) -> None:
         output = StringIO()
         command.upgrade(
@@ -1214,6 +1232,7 @@ class SqlMigrationTests(unittest.TestCase):
             "SHIFT_AD_HOC",
             "UX_ASSET_REQUIREMENTS_SHIFT_AD_HOC",
             "CREATE TABLE COMPETENCY_RESOURCE_CLASS_AUDIT",
+            "CREATE TABLE PLANNING_WORK_QUEUE_RESTORATIONS",
             "RESOURCE_CLASS_VERSION",
             "FK_COMPETENCIES_RESOURCE_CLASS_CODE_RESOURCE_CLASS_CONFIGS",
         ):
