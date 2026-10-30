@@ -44,6 +44,7 @@ from .operational_choice_models import (
     PLANNING_INTENT_QUEUED,
     PLANNING_TARGET_EXPLICIT_NONE,
     PLANNING_TARGET_EXPLICIT_RESOURCE,
+    PLANNING_TARGET_INHERIT,
     PlanningWorkQueueRelease,
     PlanningWorkQueueRestoration,
     RequestRequirementPlanningIntent,
