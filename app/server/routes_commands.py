@@ -47,6 +47,8 @@ from ..application import (
     ResourceReorderCommand,
     ResourceUpdateCommand,
     SegmentAssignCommand,
+    SegmentDatedDropCommand,
+    SegmentPlacementCutoffResetCommand,
     SegmentCancelCommand,
     SegmentCreateCommand,
     SegmentUpdateCommand,
@@ -94,6 +96,8 @@ from .schemas import (
     ResourceReorderRequest,
     ResourceUpdateRequest,
     SegmentAssignRequest,
+    SegmentDatedDropRequest,
+    SegmentPlacementCutoffResetRequest,
     SegmentCreateRequest,
     SegmentUpdateRequest,
     WorkPackageCreateRequest,
@@ -939,6 +943,63 @@ def build_command_router(
                     resource_id=body.resource_id,
                 )
             )
+        )
+
+
+    @router.post("/segments/{segment_id}/assign-from-drop")
+    def assign_segment_from_drop(
+        segment_id: str,
+        body: SegmentDatedDropRequest,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        facade: ApplicationFacade = Depends(facade_dependency),
+        idempotency: IdempotentCommandExecutor = Depends(stable_idempotency),
+    ) -> dict[str, Any]:
+        request_payload = {
+            "operation": "SEGMENT_DATED_DROP",
+            "segment_id": segment_id,
+            "body": _json_body(body),
+        }
+        return idempotency.execute(
+            scope="segment.assign_from_drop",
+            key=idempotency_key,
+            request_payload=request_payload,
+            action=lambda: _payload(
+                facade.assign_segment_from_drop(
+                    SegmentDatedDropCommand(
+                        segment_id=segment_id,
+                        correlation_id=idempotency_key,
+                        **body.model_dump(),
+                    )
+                )
+            ),
+        )
+
+    @router.post("/segments/{segment_id}/placement-cutoff/reset")
+    def reset_segment_placement_cutoff(
+        segment_id: str,
+        body: SegmentPlacementCutoffResetRequest,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        facade: ApplicationFacade = Depends(facade_dependency),
+        idempotency: IdempotentCommandExecutor = Depends(stable_idempotency),
+    ) -> dict[str, Any]:
+        request_payload = {
+            "operation": "SEGMENT_PLACEMENT_CUTOFF_RESET",
+            "segment_id": segment_id,
+            "body": _json_body(body),
+        }
+        return idempotency.execute(
+            scope="segment.placement_cutoff_reset",
+            key=idempotency_key,
+            request_payload=request_payload,
+            action=lambda: _payload(
+                facade.reset_segment_placement_cutoff(
+                    SegmentPlacementCutoffResetCommand(
+                        segment_id=segment_id,
+                        correlation_id=idempotency_key,
+                        **body.model_dump(),
+                    )
+                )
+            ),
         )
 
     @router.post("/segments/{segment_id}/allocations", status_code=status.HTTP_201_CREATED)
