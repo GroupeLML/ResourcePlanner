@@ -10,7 +10,6 @@ from typing import Any
 from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.orm import Session
 
-from ...application.errors import ApplicationValidationError
 from ...application.read_models import SegmentReadModel
 from ...application.repository_ports import SegmentRepositoryPort
 from ...domain.confirmation import CONFIRMATION_CONFIRMED, normalize_confirmation
@@ -25,6 +24,7 @@ from ...domain.operational_contacts import (
 from .demand_period_models import WorkforceRequestPeriod, WorkforceRequestPeriodRequirement
 from .segment_asset_guard import assert_segment_asset_mutation_compatible
 from .operational_contact_repository import SqlOperationalContactRepository
+from .planning_intent_repository import SqlRequestRequirementPlanningIntentRepository
 from .operational_choice_models import (
     PLANNING_INTENT_PRESERVE_EXISTING,
     RequestCompletionReduction,
@@ -532,24 +532,22 @@ class SqlSegmentRepository(SegmentRepositoryPort):
         self._session.flush()
         return identifier
 
-    def _validate_preserved_survivor_effective_need(
+    def planned_hours_overallocation_context(
         self,
-        requirement: ResourceRequirement,
-        proposed_base_hours: Decimal,
-    ) -> None:
+        segment_id: str,
+        proposed_base_hours: float,
+    ) -> Mapping[str, Any] | None:
+        requirement = self._requirement(segment_id)
         if requirement.origin != ORIGIN_REQUEST:
-            return
+            return None
         intent = self._session.scalar(
             select(RequestRequirementPlanningIntent).where(
                 RequestRequirementPlanningIntent.current_resource_requirement_id
                 == requirement.id
             )
         )
-        if (
-            intent is None
-            or intent.intent_mode != PLANNING_INTENT_PRESERVE_EXISTING
-        ):
-            return
+        if intent is None or intent.intent_mode != PLANNING_INTENT_PRESERVE_EXISTING:
+            return None
 
         active_reductions = tuple(
             Decimal(str(value)).quantize(Decimal("0.01"))
@@ -560,8 +558,14 @@ class SqlSegmentRepository(SegmentRepositoryPort):
                 )
             ).all()
         )
-        effective_need = resolve_effective_slot_need(
-            proposed_base_hours,
+        current_effective_need = SqlRequestRequirementPlanningIntentRepository(
+            self._session
+        ).current_effective_need_for_requirement(
+            requirement.id,
+            fallback_hours=requirement.planned_hours,
+        )
+        projected_effective_need = resolve_effective_slot_need(
+            Decimal(str(proposed_base_hours)).quantize(Decimal("0.01")),
             active_reductions,
         )
         retained_coverage = Decimal(
@@ -576,20 +580,28 @@ class SqlSegmentRepository(SegmentRepositoryPort):
                 or 0
             )
         ).quantize(Decimal("0.01"))
-        if retained_coverage > effective_need + Decimal("0.001"):
-            raise ApplicationValidationError(
-                "Les heures prévues produiraient un besoin effectif inférieur aux quarts conservés.",
-                code="segment_overallocation_choice_required",
-                context={
-                    "segment_id": _text(requirement.legacy_segment_id) or requirement.id,
-                    "base_planned_hours": float(proposed_base_hours),
-                    "effective_need": float(effective_need),
-                    "retained_coverage_hours": float(retained_coverage),
-                    "active_reduction_hours": float(
-                        sum(active_reductions, Decimal("0.00"))
-                    ),
-                },
-            )
+        current_excess = max(
+            retained_coverage - current_effective_need,
+            Decimal("0.00"),
+        )
+        projected_excess = max(
+            retained_coverage - projected_effective_need,
+            Decimal("0.00"),
+        )
+        return {
+            "segment_id": _text(requirement.legacy_segment_id) or requirement.id,
+            "planned_hours": float(projected_effective_need),
+            "current_planned_hours": float(current_effective_need),
+            "locked_hours": float(retained_coverage),
+            "current_locked_hours": float(retained_coverage),
+            "projected_locked_hours": float(retained_coverage),
+            "current_excess_hours": float(current_excess),
+            "excess_hours": float(projected_excess),
+            "base_planned_hours": float(proposed_base_hours),
+            "active_reduction_hours": float(
+                sum(active_reductions, Decimal("0.00"))
+            ),
+        }
 
     def update(self, segment_id: str, updates: Mapping[str, Any]) -> None:
         requirement = self._requirement(segment_id)
@@ -649,12 +661,6 @@ class SqlSegmentRepository(SegmentRepositoryPort):
             effective_source_effort,
             project_id=requirement.project_id,
         )
-
-        if "HeuresPrevues" in updates:
-            self._validate_preserved_survivor_effective_need(
-                requirement,
-                _decimal(updates.get("HeuresPrevues")),
-            )
 
         if "Technicien" in updates:
             resource = self._resource(updates.get("Technicien"))
