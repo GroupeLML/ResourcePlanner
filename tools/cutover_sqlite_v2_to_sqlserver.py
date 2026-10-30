@@ -71,6 +71,7 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
             "quick_shift_planning_exclusions",
             "request_requirement_planning_intents",
             "planning_work_queue_releases",
+            "planning_work_queue_restorations",
             "request_completion_reductions",
         },
         "missing_columns": {
@@ -230,6 +231,9 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
     "planning_work_queue_releases": _keep(
         "Décisions durables de retour de quart vers la File de Travail ADR-034."
     ),
+    "planning_work_queue_restorations": _keep(
+        "Attribution durable des heures restaurées aux retours File de Travail ADR-034."
+    ),
     "request_completion_reductions": _keep(
         "Réductions post-approbation append-only du besoin courant ADR-034."
     ),
@@ -345,6 +349,10 @@ RELATIONSHIP_CONTROLS: dict[str, tuple[str, ...]] = {
         "resource_id",
         "actor_user_id",
         "resolved_by_user_id",
+    ),
+    "planning_work_queue_restorations": (
+        "id",
+        "release_id",
     ),
     "request_completion_reductions": (
         "id",
