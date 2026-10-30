@@ -98,4 +98,5 @@ class ApprovedDemandSyncPort(Protocol):
         demand_number: str,
         *,
         acknowledged_overallocation_segment_ids: Sequence[str] = (),
+        pre_mutation_effective_hours_by_segment: Mapping[str, float] | None = None,
     ) -> None: ...
