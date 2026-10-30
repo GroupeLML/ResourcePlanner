@@ -465,6 +465,11 @@ class ManualAllocationRequest(ResourceReferenceRequest):
     overallocation_policy: OverallocationPolicy | None = None
 
 
+class SegmentPlacementPreviewRequest(StrictRequest):
+    resource_id: str = Field(min_length=1)
+    dropped_date: date
+
+
 class SegmentPlacementDropRequest(StrictRequest):
     resource_id: str = Field(min_length=1)
     dropped_date: date
