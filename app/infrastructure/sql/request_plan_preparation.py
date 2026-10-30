@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 from datetime import date
 import json
 from decimal import Decimal
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from sqlalchemy import select, true
 from sqlalchemy.orm import Session
