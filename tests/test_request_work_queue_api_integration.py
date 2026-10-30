@@ -606,6 +606,7 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                 self.assertEqual(segment["planned_hours"], 28.0)
                 self.assertEqual(segment["covered_hours"], 28.0)
                 self.assertEqual(segment["remaining_hours"], 0.0)
+                self.assertEqual(self._actions(client, number), [])
                 detail = client.get(f"/api/v1/demands/{number}/detail")
                 self.assertEqual(detail.status_code, 200, detail.text)
                 self.assertEqual(
