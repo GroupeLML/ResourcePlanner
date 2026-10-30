@@ -81,10 +81,13 @@ class EmergencyAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                 "Le runtime ne supporte pas la synchronisation des choix opérationnels."
             )
         before = self._journal.request_requirements(demand_number)
-        action(
-            demand_number,
-            acknowledged_overallocation_segment_ids=acknowledged_overallocation_segment_ids,
-        )
+        if acknowledged_overallocation_segment_ids:
+            action(
+                demand_number,
+                acknowledged_overallocation_segment_ids=acknowledged_overallocation_segment_ids,
+            )
+        else:
+            action(demand_number)
         after = self._journal.request_requirements(demand_number)
         for entity_id in sorted(set(before) | set(after)):
             previous = before.get(entity_id)
