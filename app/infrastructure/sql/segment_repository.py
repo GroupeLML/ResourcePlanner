@@ -714,6 +714,9 @@ class SqlSegmentRepository(SegmentRepositoryPort):
         if "DateFin" in updates:
             requirement.end_date = updates.get("DateFin")
         if "HeuresPrevues" in updates:
+            requirement._pre_mutation_effective_hours = Decimal(
+                str(requirement.planned_hours)
+            ).quantize(Decimal("0.01"))
             requirement.planned_hours = _decimal(updates.get("HeuresPrevues"))
         if "JoursActifsCibles" in updates:
             requirement.desired_active_days = _optional_positive_int(
