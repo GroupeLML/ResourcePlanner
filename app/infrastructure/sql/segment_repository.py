@@ -7,7 +7,7 @@ import json
 import re
 from typing import Any
 
-from sqlalchemy import case, delete, func, select, true, update
+from sqlalchemy import and_, case, delete, func, select, true, update
 from sqlalchemy.orm import Session
 
 from ...application.read_models import SegmentReadModel
@@ -28,6 +28,7 @@ from .planning_intent_repository import SqlRequestRequirementPlanningIntentRepos
 from .operational_choice_models import (
     PLANNING_INTENT_PRESERVE_EXISTING,
     RequestCompletionReduction,
+    RequestOperationalState,
     RequestRequirementPlanningIntent,
 )
 from .models import (
@@ -130,6 +131,8 @@ class SqlSegmentRepository(SegmentRepositoryPort):
                 Resource,
                 effective_need.label("effective_need"),
                 active_reduction_hours.label("active_reduction_hours"),
+                RequestRequirementPlanningIntent.placement_not_before_date,
+                RequestOperationalState.version.label("operational_version"),
             )
             .join(Project, ResourceRequirement.project_id == Project.id)
             .outerjoin(
@@ -137,6 +140,20 @@ class SqlSegmentRepository(SegmentRepositoryPort):
                 ResourceRequirement.workforce_request_id == WorkforceRequest.id,
             )
             .outerjoin(Resource, ResourceRequirement.assigned_resource_id == Resource.id)
+            .outerjoin(
+                RequestRequirementPlanningIntent,
+                RequestRequirementPlanningIntent.current_resource_requirement_id
+                == ResourceRequirement.id,
+            )
+            .outerjoin(
+                RequestOperationalState,
+                and_(
+                    RequestOperationalState.workforce_request_id
+                    == ResourceRequirement.workforce_request_id,
+                    RequestOperationalState.approval_revision_id
+                    == ResourceRequirement.approval_revision_id,
+                ),
+            )
         )
 
     def _active_reduction_hours(
@@ -178,6 +195,8 @@ class SqlSegmentRepository(SegmentRepositoryPort):
         *,
         effective_need: Decimal,
         active_reduction_hours: Decimal,
+        placement_not_before_date: date | None,
+        operational_version: int | None,
     ) -> SegmentReadModel:
         operational_base_hours = self._operational_base_hours(
             effective_need=effective_need,
@@ -221,6 +240,11 @@ class SqlSegmentRepository(SegmentRepositoryPort):
             ),
             desired_active_days=requirement.desired_active_days,
             load_profile=normalize_load_profile(requirement.load_profile),
+            approval_revision_id=_optional_text(requirement.approval_revision_id),
+            operational_version=(
+                int(operational_version) if operational_version is not None else None
+            ),
+            placement_not_before_date=placement_not_before_date,
         )
 
     def list(self, *, include_cancelled: bool = True) -> Sequence[SegmentReadModel]:
@@ -242,8 +266,19 @@ class SqlSegmentRepository(SegmentRepositoryPort):
                 resource,
                 effective_need=Decimal(str(effective_need)).quantize(Decimal("0.01")),
                 active_reduction_hours=Decimal(str(active_reduction_hours)),
+                placement_not_before_date=placement_not_before_date,
+                operational_version=operational_version,
             )
-            for requirement, project, request, resource, effective_need, active_reduction_hours in rows
+            for (
+                requirement,
+                project,
+                request,
+                resource,
+                effective_need,
+                active_reduction_hours,
+                placement_not_before_date,
+                operational_version,
+            ) in rows
         )
 
     def get(self, segment_id: str) -> SegmentReadModel | None:
@@ -258,7 +293,16 @@ class SqlSegmentRepository(SegmentRepositoryPort):
         ).one_or_none()
         if row is None:
             return None
-        requirement, project, request, resource, effective_need, active_reduction_hours = row
+        (
+            requirement,
+            project,
+            request,
+            resource,
+            effective_need,
+            active_reduction_hours,
+            placement_not_before_date,
+            operational_version,
+        ) = row
         return self._read_model(
             requirement,
             project,
@@ -266,6 +310,8 @@ class SqlSegmentRepository(SegmentRepositoryPort):
             resource,
             effective_need=Decimal(str(effective_need)).quantize(Decimal("0.01")),
             active_reduction_hours=Decimal(str(active_reduction_hours)),
+            placement_not_before_date=placement_not_before_date,
+            operational_version=operational_version,
         )
 
     def _requirement(self, segment_id: str) -> ResourceRequirement:
