@@ -423,6 +423,74 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_zero_reduction_keeps_lifecycle_and_cannot_rematerialize_after_rebuild_or_reapproval(self) -> None:
+        for previous_status, expected_status in (("Planifié", "Annulé"), ("Terminé", "Terminé")):
+            with self.subTest(previous=previous_status), TemporaryDirectory() as directory:
+                database_url = self._database(directory)
+                app = create_api_app(database_url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+                engine = create_sql_engine(database_url)
+                factory = create_session_factory(engine)
+                try:
+                    with TestClient(app, raise_server_exceptions=False) as client:
+                        number = self._approve(client, 8)
+                        with factory() as session:
+                            _, requirement, _ = self._context(session, number)
+                            requirement_id = requirement.id
+                        assigned = client.post(f"/api/v1/segments/{requirement_id}/assign",
+                                               json={"resource_id": "R-778-P3"})
+                        self.assertEqual(assigned.status_code, 200, assigned.text)
+                        with factory.begin() as session:
+                            request, requirement, intent = self._context(session, number)
+                            request_id, requirement_id, intent_id = request.id, requirement.id, intent.id
+                            requirement.status = previous_status
+                            shift = session.scalar(select(Shift).where(Shift.resource_requirement_id == requirement_id))
+                            self.assertIsNotNone(shift)
+                            shift_id = shift.legacy_allocation_id or shift.id
+                            original_revision = requirement.approval_revision_id
+                            original_history = session.get(RequestApprovalRevision, original_revision).payload_text
+                        preview = client.get(f"/api/v1/allocations/{shift_id}/work-queue-preview").json()
+                        reduced = client.post(
+                            f"/api/v1/allocations/{shift_id}/permanent-reduction",
+                            headers={"Idempotency-Key": f"zero-lifecycle-{expected_status == 'Terminé'}"},
+                            json={"expected_planning_version": preview["planning_version"],
+                                  "expected_request_version": preview["request_version"],
+                                  "expected_approval_revision_id": preview["approval_revision_id"],
+                                  "expected_operational_version": preview["operational_version"]},
+                        )
+                        self.assertEqual(reduced.status_code, 200, reduced.text)
+                        self.assertEqual(reduced.json()["effective_need_after"], 0)
+                        for synchronize in (None, "sync_operational_choices", "sync_approved"):
+                            if synchronize:
+                                with factory.begin() as session:
+                                    getattr(SqlPeriodAwareApprovedDemandSyncAdapter(session), synchronize)(number)
+                            rebuilt = client.post("/api/v1/planning/rebuild")
+                            self.assertEqual(rebuilt.status_code, 200, rebuilt.text)
+                            with factory() as session:
+                                self.assertEqual(session.get(ResourceRequirement, requirement_id).status, expected_status)
+                                self.assertEqual(session.scalars(select(Shift).join(ResourceRequirement).where(
+                                    ResourceRequirement.workforce_request_id == request_id
+                                )).all(), [])
+                                intent = session.get(RequestRequirementPlanningIntent, intent_id)
+                                current_id = intent.current_resource_requirement_id
+                                current = session.get(ResourceRequirement, current_id)
+                                self.assertEqual(current.status, expected_status)
+                                self.assertEqual(SqlRequestRequirementPlanningIntentRepository(session)
+                                                 .current_effective_need_for_requirement(current_id, fallback_hours=current.planned_hours),
+                                                 Decimal("0.00"))
+                                self.assertEqual(session.get(RequestApprovalRevision, original_revision).payload_text, original_history)
+                                self.assertEqual(len(session.scalars(select(RequestCompletionReduction).where(
+                                    RequestCompletionReduction.planning_intent_id == intent_id,
+                                    RequestCompletionReduction.reconciliation_state == "ACTIVE",
+                                )).all()), 1)
+                                if synchronize is None:
+                                    # Both current zero projections and immutable history are observable immediately.
+                                    response = client.get(f"/api/v1/segments/{requirement_id}")
+                                    self.assertEqual(response.status_code, 200, response.text)
+                                    self.assertEqual(response.json()["planned_hours"], 0)
+                                    self.assertEqual(response.json()["remaining_hours"], 0)
+                finally:
+                    engine.dispose()
+
 
 
 

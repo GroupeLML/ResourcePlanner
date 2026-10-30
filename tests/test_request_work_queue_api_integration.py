@@ -5,6 +5,7 @@ from decimal import Decimal
 import json
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
@@ -28,7 +29,7 @@ from app.infrastructure.sql import (
     create_session_factory,
     create_sql_engine,
 )
-from app.infrastructure.sql.planning_audit import PlanningChangeHistory
+from app.infrastructure.sql.planning_audit import PlanningChangeHistory, SqlPlanningAuditJournal
 from app.server import create_api_app
 from tests.approval_test_support import (
     TEST_ADMIN_USER_ID,
@@ -184,6 +185,176 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
             for row in response.json()
             if row.get("demand_number") == number and row.get("kind") == "ASSIGNMENT"
         ]
+
+    def test_demand_update_validates_all_preserved_survivors_and_reuses_canonical_exception(self) -> None:
+        for survivor_kind in ("unlocked", "manual", "asset"):
+            with self.subTest(survivors=survivor_kind), TemporaryDirectory() as directory:
+                database_url = self._database(directory)
+                app = create_api_app(database_url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+                engine = create_sql_engine(database_url)
+                factory = create_session_factory(engine)
+                try:
+                    with TestClient(app, raise_server_exceptions=False) as client:
+                        number = self._approve_40(client)
+                        target = self._snapshot(client, number)["demand_shifts"][0]
+                        segment_id = target["requirement_id"]
+                        preview = client.get(f"/api/v1/allocations/{target['allocation_id']}/work-queue-preview").json()
+                        returned = client.post(
+                            f"/api/v1/allocations/{target['allocation_id']}/return-to-work-queue",
+                            headers={"Idempotency-Key": f"demand-return-{survivor_kind}"},
+                            json={"expected_planning_version": preview["planning_version"],
+                                  "expected_approval_revision_id": preview["approval_revision_id"],
+                                  "expected_operational_version": preview["operational_version"]},
+                        )
+                        self.assertEqual(returned.status_code, 200, returned.text)
+                        if survivor_kind == "manual":
+                            with factory.begin() as session:
+                                for shift in session.scalars(select(Shift).where(Shift.resource_requirement_id == segment_id)):
+                                    shift.locked, shift.source = True, "MANUAL"
+                        if survivor_kind == "asset":
+                            shifts = self._snapshot(client, number)["demand_shifts"]
+                            for index, shift in enumerate(shifts):
+                                version = client.get("/api/v1/assets/requirements").json()["planning_version"]
+                                assigned = client.put(
+                                    f"/api/v1/assets/shifts/{shift['allocation_id']}/assignment",
+                                    headers={"Idempotency-Key": f"demand-asset-{index}"},
+                                    json={"asset_id": "ASSET-778-A", "expected_planning_version": version},
+                                )
+                                self.assertEqual(assigned.status_code, 200, assigned.text)
+                        before = self._snapshot(client, number)
+                        self.assertEqual(before["demand_segments"][0]["covered_hours"], 32)
+                        survivor_state = [(row["allocation_id"], row["resource_id"], row["work_date"],
+                                           row["hours"], row["source"], row["locked"])
+                                          for row in before["demand_shifts"]]
+                        demand = client.get(f"/api/v1/demands/{number}").json()
+                        line_id = demand["lines"][0]["line_id"]
+
+                        def update_hours(hours):
+                            current = client.get(f"/api/v1/demands/{number}").json()
+                            return client.patch(f"/api/v1/demands/{number}", json=routed_demand_payload({
+                                "expected_version": current["version"],
+                                "lines": [{"id": line_id, "desired_start": START, "desired_end": END,
+                                           "estimated_hours": hours, "confirmation": "Confirmée",
+                                           "proposed_resource_id": "R-778-A",
+                                           "description": "Description approuvée source #778"}],
+                            }))
+
+                        denied = update_hours(16)
+                        self.assertEqual(denied.status_code, 422, denied.text)
+                        error = denied.json()["error"]
+                        self.assertEqual(error["code"], "segment_overallocation_choice_required")
+                        self.assertEqual(error["context"]["planned_hours"], 16)
+                        self.assertEqual(error["context"]["current_excess_hours"], 0)
+                        self.assertEqual(error["context"]["excess_hours"], 16)
+                        self.assertEqual(client.get(f"/api/v1/demands/{number}").json(), demand)
+                        self.assertEqual(self._snapshot(client, number), before)
+
+                        # Acknowledge through the existing authorized/audited Segment workflow.
+                        acknowledged = client.patch(f"/api/v1/segments/{segment_id}", json={
+                            "planned_hours": 16, "allow_locked_overallocation": True,
+                        })
+                        self.assertEqual(acknowledged.status_code, 200, acknowledged.text)
+                        for hours, excess in ((16, 16), (20, 12)):
+                            saved = update_hours(hours)
+                            self.assertEqual(saved.status_code, 200, saved.text)
+                            current = self._snapshot(client, number)
+                            self.assertEqual(current["demand_segments"][0]["planned_hours"], hours)
+                            self.assertEqual(current["demand_segments"][0]["excess_hours"], excess)
+                        increased = update_hours(12)
+                        self.assertEqual(increased.status_code, 422, increased.text)
+                        self.assertEqual(increased.json()["error"]["context"]["current_excess_hours"], 12)
+                        self.assertEqual(increased.json()["error"]["context"]["excess_hours"], 20)
+                        with factory.begin() as session:
+                            SqlPeriodAwareApprovedDemandSyncAdapter(session).sync_operational_choices(number)
+                        rebuilt = client.post("/api/v1/planning/rebuild")
+                        self.assertEqual(rebuilt.status_code, 200, rebuilt.text)
+                        after = self._snapshot(client, number)
+                        self.assertEqual([(row["allocation_id"], row["resource_id"], row["work_date"],
+                                           row["hours"], row["source"], row["locked"])
+                                          for row in after["demand_shifts"]], survivor_state)
+                        with factory() as session:
+                            events = session.scalars(select(PlanningChangeHistory).where(
+                                PlanningChangeHistory.action == "Dérogation surallocation manuelle"
+                            )).all()
+                            self.assertEqual(len(events), 1)
+                            if survivor_kind == "asset":
+                                self.assertEqual(session.scalar(select(func.count()).select_from(AssetAllocation)), 4)
+                finally:
+                    engine.dispose()
+
+    def test_return_segment_audits_each_assignment_atomically_and_replay_does_not_duplicate(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_40(client)
+                    initial = self._snapshot(client, number)
+                    segment_id = initial["demand_shifts"][0]["requirement_id"]
+                    with factory.begin() as session:
+                        shifts = session.scalars(select(Shift).where(
+                            Shift.resource_requirement_id == segment_id
+                        ).order_by(Shift.work_date, Shift.id)).all()
+                        shifts[0].hours, shifts[1].hours = Decimal("4"), Decimal("12")
+                        shifts[0].resource_id, shifts[0].source, shifts[0].locked = "R-778-B", "MANUAL", True
+                        shifts[0].confirmation, shifts[0].note = "Tentative", "Assignment removed by segment return"
+                        expected = {row.id: {"allocation_id": row.legacy_allocation_id or row.id,
+                                    "resource_id": row.resource_id, "work_date": row.work_date.isoformat(),
+                                    "hours": float(row.hours), "source": row.source, "locked": row.locked,
+                                    "confirmation": row.confirmation, "note": row.note,
+                                    "outside_standard_hours": row.outside_standard_hours,
+                                    "allocation_type": row.allocation_type}
+                                    for row in shifts}
+                        history_before = set(session.scalars(select(PlanningChangeHistory.id)).all())
+                    before = self._snapshot(client, number)
+                    target = before["demand_shifts"][0]["allocation_id"]
+                    preview = client.get(f"/api/v1/allocations/{target}/work-queue-preview").json()
+                    payload = {"expected_planning_version": preview["planning_version"],
+                               "expected_approval_revision_id": preview["approval_revision_id"],
+                               "expected_operational_version": preview["operational_version"]}
+                    url = f"/api/v1/segments/{segment_id}/return-to-work-queue"
+                    headers = {"Idempotency-Key": "segment-audit-atomic-replay"}
+                    append = SqlPlanningAuditJournal.append
+                    seen = []
+
+                    def fail_after_second_shift(journal, **kwargs):
+                        append(journal, **kwargs)
+                        if kwargs["entity_type"] == "SHIFT":
+                            seen.append(kwargs["entity_id"])
+                            if len(seen) == 2:
+                                raise RuntimeError("Injected audit failure")
+
+                    with patch.object(SqlPlanningAuditJournal, "append", fail_after_second_shift):
+                        failed = client.post(url, headers=headers, json=payload)
+                    self.assertEqual(failed.status_code, 500, failed.text)
+                    self.assertEqual(len(seen), 2)
+                    self.assertEqual(self._snapshot(client, number), before)
+                    with factory() as session:
+                        self.assertEqual(set(session.scalars(select(PlanningChangeHistory.id)).all()), history_before)
+                    returned = client.post(url, headers=headers, json=payload)
+                    self.assertEqual(returned.status_code, 200, returned.text)
+                    self.assertEqual(returned.json()["removed_shift_count"], 5)
+                    replay = client.post(url, headers=headers, json=payload)
+                    self.assertEqual(replay.status_code, 200, replay.text)
+                    self.assertEqual(replay.json(), returned.json())
+                    self.assertEqual(self._snapshot(client, number)["demand_shifts"], [])
+                    with factory() as session:
+                        history = session.scalars(select(PlanningChangeHistory).where(
+                            PlanningChangeHistory.action == "Retour segment à la File de Travail",
+                            PlanningChangeHistory.entity_type == "SHIFT",
+                        )).all()
+                        self.assertEqual(len(history), 5)
+                        self.assertEqual({row.entity_id for row in history}, set(expected))
+                        for row in history:
+                            snapshot = json.loads(row.details)["before"]
+                            for field, value in expected[row.entity_id].items():
+                                self.assertEqual(snapshot[field], value, field)
+                            self.assertEqual(row.parent_reference, snapshot["segment_id"])
+                            self.assertTrue(snapshot["technician"])
+            finally:
+                engine.dispose()
 
     def _prepare_reduced_returned_24(
         self,

@@ -548,7 +548,7 @@ class RequestWorkQueueCommandTests(unittest.TestCase):
             self.assertEqual(replay, first)
             self.assertEqual(session.query(PlanningWorkQueueRelease).count(), 1)
 
-    def test_permanent_reduction_to_zero_marks_completion_not_cancellation(self) -> None:
+    def test_permanent_reduction_to_zero_cancels_active_requirement(self) -> None:
         with transactional_session(self.factory) as session:
             revision = session.get(RequestApprovalRevision, "REV1")
             revision.payload_text = json.dumps(
@@ -592,7 +592,7 @@ class RequestWorkQueueCommandTests(unittest.TestCase):
             requirement = session.get(ResourceRequirement, "REQ1")
             self.assertEqual(result["effective_need_after"], 0.0)
             self.assertEqual(requirement.planned_hours, Decimal("8.00"))
-            self.assertEqual(requirement.status, "Terminé")
+            self.assertEqual(requirement.status, "Annulé")
             self.assertIsNone(session.get(Shift, "S1"))
             queries = SqlPlannerQueryRepositoryWithLoadProfiles(session)
             segment = queries.get_segment("REQ1")
@@ -600,9 +600,7 @@ class RequestWorkQueueCommandTests(unittest.TestCase):
             self.assertEqual(segment.planned_hours, 0.0)
             self.assertEqual(segment.remaining_hours, 0.0)
             materialized = queries.list_demand_requirements("DMO-778")
-            self.assertEqual(len(materialized), 1)
-            self.assertEqual(materialized[0].planned_hours, 0.0)
-            self.assertEqual(materialized[0].remaining_hours, 0.0)
+            self.assertEqual(tuple(materialized), ())  # Cancelled slots leave the current plan.
             historical = json.loads(
                 session.get(RequestApprovalRevision, "REV1").payload_text
             )

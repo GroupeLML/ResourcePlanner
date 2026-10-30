@@ -151,6 +151,7 @@ export type OverallocationContext = {
   locked_hours?: number;
   current_excess_hours?: number;
   excess_hours: number;
+  base_planned_hours?: number;
   operational_base_hours?: number;
   safe_operational_base_hours?: number;
 };

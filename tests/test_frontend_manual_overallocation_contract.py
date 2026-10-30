@@ -31,7 +31,7 @@ class FrontendManualOverallocationContractTests(unittest.TestCase):
         self.assertIn("segment_overallocation_choice_required", source)
         self.assertIn("allowLockedOverallocation", source)
         self.assertIn("Conserver la dérogation", source)
-        self.assertIn("Ajuster les heures prévues", source)
+        self.assertIn("Ajuster les heures de base opérationnelles", source)
         self.assertIn("overallocated_hours", source)
 
     def test_operational_views_surface_requirement_overallocation(self) -> None:

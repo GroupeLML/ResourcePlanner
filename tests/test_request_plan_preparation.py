@@ -4,8 +4,9 @@ from datetime import date, time
 from decimal import Decimal
 import unittest
 
-from sqlalchemy import select
+from sqlalchemy import event, select
 
+from app.domain.planning_engine import MISSING_ALLOCATION_TYPE
 from app.infrastructure.sql import (
     Asset,
     AssetAllocation,
@@ -13,7 +14,12 @@ from app.infrastructure.sql import (
     AssetType,
     Base,
     Project,
+    RequestApprovalReference,
+    RequestApprovalRevision,
+    RequestCompletionReduction,
     RequestLine,
+    RequestOperationalState,
+    RequestRequirementPlanningIntent,
     Resource,
     ResourceAvailabilityRule,
     ResourceRequirement,
@@ -38,6 +44,7 @@ from app.infrastructure.sql.request_plan_preparation import (
     SEGMENT_ASSET_REQUIREMENT_REMOVAL,
     SqlRequestPlanPreparer,
 )
+from app.infrastructure.sql.identity_models import AppUser
 
 
 D1 = date(2026, 9, 21)
@@ -52,6 +59,7 @@ class SharedRequestPlanPreparationTests(unittest.TestCase):
         with transactional_session(self.factory) as session:
             session.add(Project(id="P1", number="P-1", name="Projet 13C"))
             session.add(Resource(id="R1", name="Alice", active=True))
+            session.add(AppUser(id="U-PERF", display_name="Preparation test", roles_json="[]", active=True))
             session.add(
                 AssetType(
                     id="AT-SEG",
@@ -85,6 +93,74 @@ class SharedRequestPlanPreparationTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.engine.dispose()
+
+    def test_approved_preparation_bulk_loads_reductions_without_slot_query_growth(self) -> None:
+        import json
+        from datetime import datetime, timezone
+
+        counts = []
+        for has_reduction in (False, True):
+            for slot_count in (1, 5):
+                with self.subTest(reductions=has_reduction, slots=slot_count):
+                    key = f"PERF-{has_reduction}-{slot_count}"
+                    entry_key = json.dumps(["PERIOD", "", key])
+                    with transactional_session(self.factory) as session:
+                        request = WorkforceRequest(id=key, project_id="P1", status="En planification")
+                        session.add(request)
+                        session.flush()
+                        session.add(RequestApprovalRevision(
+                            id=f"REV-{key}", workforce_request_id=key, request_version=1,
+                            approved_at=datetime.now(timezone.utc), authorization_fingerprint="a" * 64,
+                            payload_text=json.dumps({"request": {"line_mode": False}, "authorization": {
+                                "entries": [{"identity": entry_key, "hours": "40.00",
+                                             "slot_count": slot_count, "start_date": D1.isoformat(),
+                                             "end_date": D2.isoformat()}],
+                            }}),
+                        ))
+                        session.flush()
+                        session.add(RequestApprovalReference(
+                            workforce_request_id=key, active_revision_id=f"REV-{key}", status="CAPTURED",
+                        ))
+                        session.add(RequestOperationalState(
+                            workforce_request_id=key, approval_revision_id=f"REV-{key}",
+                            version=1, selections_text="{}", confirmations_text="{}", budget_overrides_text="{}",
+                        ))
+                        for index in range(slot_count):
+                            session.add(RequestRequirementPlanningIntent(
+                                id=f"INT-{key}-{index}", workforce_request_id=key,
+                                slot_identity_key=json.dumps([key, entry_key, index]),
+                                approved_entry_key=entry_key, approval_revision_id=f"REV-{key}",
+                                slot_index=index, intent_mode="AUTO", target_mode="INHERIT",
+                            ))
+                        session.flush()
+                        if has_reduction:
+                            session.add(RequestCompletionReduction(
+                                planning_intent_id=f"INT-{key}-0", workforce_request_id=key,
+                                historical_approval_revision_id=f"REV-{key}", approved_entry_key=entry_key,
+                                original_shift_id=f"SHIFT-{key}", shift_snapshot_text="{}",
+                                reduction_hours=Decimal("8"), effective_need_before=Decimal("40"),
+                                effective_need_after=Decimal("32"), command_id=key,
+                                actor_user_id="U-PERF",
+                                reconciliation_state="ACTIVE",
+                            ))
+                        session.flush()
+                        session.expunge_all()
+                        request = session.get(WorkforceRequest, key)
+                        reduction_selects = []
+
+                        def capture(_connection, _cursor, statement, _parameters, _context, _many):
+                            if statement.lstrip().upper().startswith("SELECT") and "request_completion_reductions" in statement:
+                                reduction_selects.append(statement)
+
+                        event.listen(self.engine, "before_cursor_execute", capture)
+                        try:
+                            plan = SqlRequestPlanPreparer(session).prepare_active(request)
+                        finally:
+                            event.remove(self.engine, "before_cursor_execute", capture)
+                        counts.append(len(reduction_selects))
+                        self.assertEqual(sum((spec.planned_hours for spec in plan.specs), Decimal("0")),
+                                         Decimal("32" if has_reduction else "40"))
+        self.assertEqual(counts, [1, 1, 1, 1])
 
     @staticmethod
     def _locked_shift(
@@ -223,6 +299,61 @@ class SharedRequestPlanPreparationTests(unittest.TestCase):
             self._line_conflict(hours="4", start=D1),
             LOCKED_HOURS_EXCEED_BUDGET,
         )
+
+    def test_preserved_unlocked_work_protects_quantity_window_and_removal_without_counting_diagnostics(self) -> None:
+        with transactional_session(self.factory) as session:
+            request = WorkforceRequest(id="D-PRESERVED", project_id="P1", line_mode=True, status="Soumise")
+            session.add(request)
+            session.flush()
+            line = RequestLine(
+                id="L-PRESERVED", workforce_request_id=request.id, position=0, kind="WORKFORCE",
+                desired_start=D2, desired_end=D2, estimated_hours=Decimal("8"), active=True,
+            )
+            session.add(line)
+            session.flush()
+            requirement = ResourceRequirement(
+                id="REQ-PRESERVED", project_id="P1", workforce_request_id=request.id,
+                source_request_line_id=line.id, start_date=D1, end_date=D2,
+                planned_hours=Decimal("8"), status="Planifié", origin="REQUEST",
+            )
+            session.add(requirement)
+            session.flush()
+            session.add(RequestRequirementPlanningIntent(
+                workforce_request_id=request.id, approved_entry_key="ENTRY-PRESERVED",
+                slot_identity_key="SLOT-PRESERVED", current_resource_requirement_id=requirement.id,
+                intent_mode="PRESERVE_EXISTING", target_mode="INHERIT",
+            ))
+            survivor = Shift(
+                id="S-PRESERVED", resource_requirement_id=requirement.id, resource_id="R1",
+                work_date=D1, hours=Decimal("4"), source="AUTO", locked=False,
+            )
+            session.add_all([survivor, Shift(
+                id="S-DIAGNOSTIC", resource_requirement_id=requirement.id, resource_id="R1",
+                work_date=D1, hours=Decimal("40"), source="AUTO", locked=True,
+                allocation_type=MISSING_ALLOCATION_TYPE,
+            )])
+            session.flush()
+            preparer = SqlRequestPlanPreparer(session)
+            plan = preparer.prepare(request, current=[requirement])
+            outside = preparer.locked_conflicts(request, [requirement], plan.specs)
+            self.assertEqual([(row.code, row.shift_ids) for row in outside],
+                             [(LOCKED_SHIFT_OUTSIDE_WINDOW, (survivor.id,))])
+            line.desired_start, line.estimated_hours = D1, Decimal("4")
+            session.flush()
+            plan = preparer.prepare(request, current=[requirement])
+            self.assertEqual(preparer.locked_conflicts(request, [requirement], plan.specs), ())
+            line.estimated_hours = Decimal("2")
+            session.flush()
+            plan = preparer.prepare(request, current=[requirement])
+            budget = preparer.locked_conflicts(request, [requirement], plan.specs)
+            self.assertEqual([(row.code, row.shift_ids) for row in budget],
+                             [(LOCKED_HOURS_EXCEED_BUDGET, (survivor.id,))])
+            self.assertEqual(budget[0].overallocation_context["locked_hours"], 4)
+            removal = preparer.locked_conflicts(request, [requirement], ())
+            self.assertEqual([(row.code, row.shift_ids) for row in removal],
+                             [(LOCKED_REQUIREMENT_REMOVAL, (survivor.id,))])
+            self.assertFalse(survivor.locked)
+            self.assertEqual(survivor.source, "AUTO")
 
     def test_locked_budget_uses_explicit_pre_mutation_effective_after_orm_reload(self) -> None:
         with transactional_session(self.factory) as session:

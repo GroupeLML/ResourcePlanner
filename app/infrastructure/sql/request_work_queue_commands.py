@@ -797,6 +797,7 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
             )
 
         before = self._journal.requirement_snapshot(requirement.id)
+        shift_snapshots = [self._journal.shift_snapshot(shift.id) for shift in shifts]
         removed_hours = sum((_decimal(row.hours) for row in shifts), Decimal("0.00"))
         intent.intent_mode = PLANNING_INTENT_QUEUED
         intent.target_mode = PLANNING_TARGET_EXPLICIT_NONE
@@ -808,6 +809,17 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
             self._session.delete(shift)
         self._session.flush()
         self._planning.rebuild()
+        for snapshot in shift_snapshots:
+            if snapshot is not None:
+                entity_id, entity_reference, parent_reference, values = snapshot
+                self._journal.append(
+                    entity_type=ENTITY_SHIFT,
+                    entity_id=entity_id,
+                    entity_reference=entity_reference,
+                    parent_reference=parent_reference,
+                    action="Retour segment à la File de Travail",
+                    before=values,
+                )
         if before is not None:
             entity_id, entity_reference, before_values = before
             after = self._journal.requirement_snapshot(requirement.id)
@@ -956,7 +968,8 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
             # The physical row must retain a positive quantity because of the
             # ResourceRequirement constraint. The active zero-hour reduction is
             # projected canonically while terminal topology remains preserved.
-            requirement.status = "Terminé"
+            if _text(requirement.status) != "Terminé":
+                requirement.status = "Annulé"
         self._session.flush()
         self._planning.rebuild(preserve_shift_ids=survivor_ids)
         if previous is not None:

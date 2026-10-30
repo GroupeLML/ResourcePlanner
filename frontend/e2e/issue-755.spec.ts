@@ -98,7 +98,7 @@ test("755 supprimer un jour Quick Shift réduit le besoin sans recréer le jour"
 
     let segmentDialog = page.getByRole("dialog", { name: "Modifier le segment" });
     await segmentDialog.getByLabel("Date de fin").fill(thursday);
-    await segmentDialog.getByLabel("Heures prévues").fill("32");
+    await segmentDialog.getByLabel("Heures de base opérationnelles").fill("32");
     await segmentDialog.getByRole("button", { name: "Enregistrer", exact: true }).click();
     await expect(segmentDialog).toBeHidden();
 
@@ -172,7 +172,7 @@ test("755 supprimer un jour Quick Shift réduit le besoin sans recréer le jour"
     shiftDialog = page.getByRole("dialog", { name: "Modifier le quart" });
     await shiftDialog.getByRole("button", { name: "Modifier le segment parent" }).click();
     segmentDialog = page.getByRole("dialog", { name: "Modifier le segment" });
-    await expect(segmentDialog.getByLabel("Heures prévues")).toHaveValue("24");
+    await expect(segmentDialog.getByLabel("Heures de base opérationnelles")).toHaveValue("24");
   } finally {
     await context.close();
   }

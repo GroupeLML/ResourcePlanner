@@ -504,7 +504,9 @@ test("778 SegmentEditor conserve la base opérationnelle et utilise les choix ba
     expect(preservedSegment?.remaining_hours).toBe(8);
 
     let dialog = await openSegmentEditor(demandNumber);
-    await expect(dialog.getByLabel("Heures prévues")).toHaveValue("40");
+    await expect(dialog.getByLabel("Heures de base opérationnelles")).toHaveValue("40");
+    await expect(dialog.getByTestId("segment-effective-need"))
+      .toHaveText("Besoin actuel après ajustements : 32 h");
     await dialog.getByLabel("Description").fill("Description seulement #778");
     const [descriptionSave] = await Promise.all([
       page.waitForResponse((response) => response.request().method() === "PATCH"
@@ -526,18 +528,18 @@ test("778 SegmentEditor conserve la base opérationnelle et utilise les choix ba
     expect(segment.planned_hours).toBe(32);
 
     dialog = await openSegmentEditor(demandNumber);
-    await expect(dialog.getByLabel("Heures prévues")).toHaveValue("40");
-    await dialog.getByLabel("Heures prévues").fill("28");
+    await expect(dialog.getByLabel("Heures de base opérationnelles")).toHaveValue("40");
+    await dialog.getByLabel("Heures de base opérationnelles").fill("28");
     await dialog.getByRole("button", { name: "Enregistrer", exact: true }).click();
     const adjustChoice = dialog.getByRole("alert");
-    await expect(adjustChoice).toContainText("Heures prévues proposées : 20 h");
+    await expect(adjustChoice).toContainText("Base opérationnelle proposée : 28 h · besoin résultant après ajustements : 20 h");
     await expect(adjustChoice).toContainText("excédent : +4 h");
     const adjustButton = adjustChoice.getByRole("button", {
-      name: /Ajuster les heures prévues à 32 h/,
+      name: /Ajuster les heures de base opérationnelles à 32 h/,
     });
     await expect(adjustButton).toBeVisible();
     await adjustButton.click();
-    await expect(dialog.getByLabel("Heures prévues")).toHaveValue("32");
+    await expect(dialog.getByLabel("Heures de base opérationnelles")).toHaveValue("32");
     await dialog.getByRole("button", { name: "Enregistrer", exact: true }).click();
     await expect(dialog).toBeHidden();
 
@@ -549,10 +551,12 @@ test("778 SegmentEditor conserve la base opérationnelle et utilise les choix ba
     expect(segment.planned_hours).toBe(24);
 
     dialog = await openSegmentEditor(demandNumber);
-    await dialog.getByLabel("Heures prévues").fill("28");
+    await dialog.getByLabel("Heures de base opérationnelles").fill("28");
+    await expect(dialog.getByTestId("segment-effective-need"))
+      .toHaveText("Besoin actuel après ajustements : 24 h");
     await dialog.getByRole("button", { name: "Enregistrer", exact: true }).click();
     const exceptionChoice = dialog.getByRole("alert");
-    await expect(exceptionChoice).toContainText("Heures prévues proposées : 20 h");
+    await expect(exceptionChoice).toContainText("Base opérationnelle proposée : 28 h · besoin résultant après ajustements : 20 h");
     await exceptionChoice.getByRole("button", { name: /Conserver la dérogation/ }).click();
     await expect(dialog).toContainText("Dérogation de surallocation sélectionnée");
     const [exceptionSave] = await Promise.all([

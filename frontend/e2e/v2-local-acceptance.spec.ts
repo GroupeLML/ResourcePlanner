@@ -844,10 +844,10 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
       });
     });
 
-    await labelled(reopened, "Heures prévues", "input").fill("14");
+    await labelled(reopened, "Heures de base opérationnelles", "input").fill("14");
     await reopened.getByRole("button", { name: "Enregistrer", exact: true }).click();
     const segmentChoice = reopened.getByRole("alert");
-    await expect(segmentChoice).toContainText("Heures prévues proposées : 14 h");
+    await expect(segmentChoice).toContainText("Base opérationnelle proposée : 14 h · besoin résultant après ajustements : 14 h");
     await expect(segmentChoice).toContainText("excédent : +4 h");
     await segmentChoice.getByRole("button", { name: /Conserver la dérogation/ }).click();
     await expect(reopened).toContainText("Dérogation de surallocation sélectionnée");
