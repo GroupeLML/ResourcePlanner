@@ -1221,6 +1221,22 @@ class SqlMigrationTests(unittest.TestCase):
             output.getvalue().upper(),
         )
 
+    def test_0027_offline_downgrade_refuses_placement_cutoff_drop(self) -> None:
+        output = StringIO()
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "refuses offline downgrade",
+        ):
+            command.downgrade(
+                offline_config("mssql+pyodbc://", output),
+                "0027_placement_not_before_date:0026_request_work_queue_restorations",
+                sql=True,
+            )
+        self.assertNotIn(
+            "DROP COLUMN PLACEMENT_NOT_BEFORE_DATE",
+            output.getvalue().upper(),
+        )
+
     def test_head_compiles_offline_for_mssql(self) -> None:
         output = StringIO()
         command.upgrade(
