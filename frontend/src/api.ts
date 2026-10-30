@@ -963,6 +963,7 @@ export type SegmentReadModel = {
   start_date: string | null;
   end_date: string | null;
   planned_hours: number;
+  operational_base_hours?: number | null;
   status: string;
   description: string | null;
   origin: string | null;
@@ -1511,6 +1512,63 @@ export type DemandMutationResult = {
   demand_number: string;
   status: string | null;
   reapproval_required: boolean;
+};
+
+export type RequestWorkQueuePreview = {
+  allocation_id: string;
+  requirement_id: string;
+  segment_id: string;
+  demand_number: string;
+  source_request_line_id: string | null;
+  planning_version: number;
+  request_version: number;
+  approval_revision_id: string;
+  operational_version: number;
+  shift_hours: number;
+  effective_need: number;
+  covered_hours: number;
+  remaining_hours: number;
+  return_shift_allowed: boolean;
+  return_shift_block_code: string | null;
+  return_segment_allowed: boolean;
+  return_segment_block_code: string | null;
+  permanent_reduction_allowed: boolean;
+  permanent_reduction_block_code: string | null;
+  effective_need_after_reduction: number;
+  remaining_after_return_shift: number;
+  remaining_after_return_segment: number;
+  remaining_after_reduction: number;
+};
+
+export type RequestWorkQueueReturnWrite = {
+  expected_planning_version: number;
+  expected_approval_revision_id: string;
+  expected_operational_version: number;
+};
+
+export type RequestPermanentReductionWrite = RequestWorkQueueReturnWrite & {
+  expected_request_version: number;
+};
+
+export type RequestWorkQueueMutationResult = {
+  operation: string;
+  requirement_id: string;
+  segment_id: string;
+  demand_number: string;
+  planning_version: number;
+  approval_revision_id: string;
+  operational_version: number;
+  request_version: number | null;
+  shift_id: string | null;
+  release_id: string | null;
+  reduction_id: string | null;
+  removed_shift_count: number;
+  removed_hours: number;
+  effective_need_before: number;
+  effective_need_after: number;
+  covered_hours_after: number;
+  remaining_hours_after: number;
+  no_op: boolean;
 };
 
 export type AllocationMoveWrite = {
@@ -2439,6 +2497,55 @@ export function selectDemandLineAlternative(
     `/api/v1/demands/${encodeURIComponent(number)}/lines/${encodeURIComponent(lineId)}/alternative-groups/${encodeURIComponent(alternativeGroup)}/selection`,
     "PUT",
     { period_id: periodId },
+  );
+}
+
+export function getRequestWorkQueuePreview(
+  allocationId: string,
+  signal?: AbortSignal,
+) {
+  return getJson<RequestWorkQueuePreview>(
+    `/api/v1/allocations/${encodeURIComponent(allocationId)}/work-queue-preview`,
+    signal,
+  );
+}
+
+export function returnShiftToWorkQueue(
+  allocationId: string,
+  payload: RequestWorkQueueReturnWrite,
+  idempotencyKey: string,
+) {
+  return sendJson<RequestWorkQueueMutationResult>(
+    `/api/v1/allocations/${encodeURIComponent(allocationId)}/return-to-work-queue`,
+    "POST",
+    payload,
+    { "Idempotency-Key": idempotencyKey },
+  );
+}
+
+export function returnSegmentToWorkQueue(
+  segmentId: string,
+  payload: RequestWorkQueueReturnWrite,
+  idempotencyKey: string,
+) {
+  return sendJson<RequestWorkQueueMutationResult>(
+    `/api/v1/segments/${encodeURIComponent(segmentId)}/return-to-work-queue`,
+    "POST",
+    payload,
+    { "Idempotency-Key": idempotencyKey },
+  );
+}
+
+export function permanentlyReduceShiftHours(
+  allocationId: string,
+  payload: RequestPermanentReductionWrite,
+  idempotencyKey: string,
+) {
+  return sendJson<RequestWorkQueueMutationResult>(
+    `/api/v1/allocations/${encodeURIComponent(allocationId)}/permanent-reduction`,
+    "POST",
+    payload,
+    { "Idempotency-Key": idempotencyKey },
   );
 }
 

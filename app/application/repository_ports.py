@@ -277,6 +277,12 @@ class SegmentRepositoryPort(Protocol):
 
     def create(self, values: Mapping[str, Any]) -> str: ...
 
+    def planned_hours_overallocation_context(
+        self,
+        segment_id: str,
+        proposed_base_hours: float,
+    ) -> Mapping[str, Any] | None: ...
+
     def update(self, segment_id: str, updates: Mapping[str, Any]) -> None: ...
 
 

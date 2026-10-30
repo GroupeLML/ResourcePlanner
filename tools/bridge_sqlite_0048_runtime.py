@@ -57,6 +57,10 @@ SOURCE_MISSING_TABLES = {
     "verification_test_executions",
     "verification_evidence_links",
     "quick_shift_planning_exclusions",
+    "request_requirement_planning_intents",
+    "planning_work_queue_releases",
+    "planning_work_queue_restorations",
+    "request_completion_reductions",
 }
 SOURCE_MISSING_COLUMNS = {
     "projects": {

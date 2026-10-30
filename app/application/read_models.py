@@ -310,6 +310,7 @@ class SegmentReadModel:
     active_day_target_met: bool | None = None
     active_day_diagnostic: str | None = None
     load_profile: str = "UNIFORM"
+    operational_base_hours: float | None = None
 
     @classmethod
     def from_mapping(cls, row: Mapping[str, Any]) -> "SegmentReadModel":
@@ -370,4 +371,9 @@ class SegmentReadModel:
             active_day_target_met=target_met,
             active_day_diagnostic=_optional_text(row.get("DiagnosticJoursActifs")),
             load_profile=_text(row.get("ProfilCharge")) or "UNIFORM",
+            operational_base_hours=(
+                _optional_number(row.get("HeuresBaseOperationnelles"))
+                if row.get("HeuresBaseOperationnelles") is not None
+                else planned_hours
+            ),
         )

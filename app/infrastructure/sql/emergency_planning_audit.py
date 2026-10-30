@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -67,7 +68,13 @@ class EmergencyAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                 after=current[1] if current is not None else None,
             )
 
-    def sync_operational_choices(self, demand_number: str) -> None:
+    def sync_operational_choices(
+        self,
+        demand_number: str,
+        *,
+        acknowledged_overallocation_segment_ids: Sequence[str] = (),
+        pre_mutation_effective_hours_by_segment: Mapping[str, float] | None = None,
+    ) -> None:
         self._versioning.acquire()
         action = getattr(self._delegate, "sync_operational_choices", None)
         if not callable(action):
@@ -75,7 +82,16 @@ class EmergencyAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                 "Le runtime ne supporte pas la synchronisation des choix opérationnels."
             )
         before = self._journal.request_requirements(demand_number)
-        action(demand_number)
+        sync_kwargs: dict[str, object] = {}
+        if acknowledged_overallocation_segment_ids:
+            sync_kwargs["acknowledged_overallocation_segment_ids"] = (
+                acknowledged_overallocation_segment_ids
+            )
+        if pre_mutation_effective_hours_by_segment:
+            sync_kwargs["pre_mutation_effective_hours_by_segment"] = dict(
+                pre_mutation_effective_hours_by_segment
+            )
+        action(demand_number, **sync_kwargs)
         after = self._journal.request_requirements(demand_number)
         for entity_id in sorted(set(before) | set(after)):
             previous = before.get(entity_id)

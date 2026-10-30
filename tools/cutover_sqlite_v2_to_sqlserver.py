@@ -69,6 +69,10 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
             "verification_evidence_links",
             "task_catalog_preferred_resource_audit",
             "quick_shift_planning_exclusions",
+            "request_requirement_planning_intents",
+            "planning_work_queue_releases",
+            "planning_work_queue_restorations",
+            "request_completion_reductions",
         },
         "missing_columns": {
             "auth_sessions": {
@@ -221,6 +225,18 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
     "request_approval_references": _keep("Références approuvées historisées."),
     "request_approval_revisions": _keep("Révisions approuvées historisées."),
     "request_operational_states": _keep("Choix opérationnels locaux des demandes."),
+    "request_requirement_planning_intents": _keep(
+        "Identité stable de slot et intention Planning ADR-034."
+    ),
+    "planning_work_queue_releases": _keep(
+        "Décisions durables de retour de quart vers la File de Travail ADR-034."
+    ),
+    "planning_work_queue_restorations": _keep(
+        "Attribution durable des heures restaurées aux retours File de Travail ADR-034."
+    ),
+    "request_completion_reductions": _keep(
+        "Réductions post-approbation append-only du besoin courant ADR-034."
+    ),
     "request_lines": _keep("Lignes métier des demandes V2."),
     "request_line_competencies": _keep("Compétences demandées par ligne."),
     "resource_requirement_competencies": _keep("Snapshot des compétences matérialisées."),
@@ -315,6 +331,38 @@ RELATIONSHIP_CONTROLS: dict[str, tuple[str, ...]] = {
         "resource_requirement_id",
         "approval_revision_id",
         "actor_user_id",
+    ),
+    "request_requirement_planning_intents": (
+        "id",
+        "workforce_request_id",
+        "source_request_line_id",
+        "approval_revision_id",
+        "source_period_id",
+        "current_resource_requirement_id",
+        "target_resource_id",
+    ),
+    "planning_work_queue_releases": (
+        "id",
+        "planning_intent_id",
+        "workforce_request_id",
+        "approval_revision_id",
+        "resource_id",
+        "actor_user_id",
+        "resolved_by_user_id",
+    ),
+    "planning_work_queue_restorations": (
+        "id",
+        "release_id",
+    ),
+    "request_completion_reductions": (
+        "id",
+        "planning_intent_id",
+        "workforce_request_id",
+        "historical_approval_revision_id",
+        "source_request_line_id",
+        "actor_user_id",
+        "absorbed_by_revision_id",
+        "reconciled_approval_revision_id",
     ),
     "shifts": ("id", "resource_requirement_id", "resource_id"),
     "delivery_plans": ("id", "work_package_id"),

@@ -19,6 +19,7 @@ from app.infrastructure.sql import (
     create_session_factory,
     create_sql_engine,
 )
+from app.infrastructure.sql.overallocation import _allocation_projection_metrics
 from app.server import create_api_app
 from tests.http_test_auth import TEST_ADMIN_AUTH_RESOLVER
 
@@ -188,6 +189,28 @@ class SegmentCoverageMetricsTests(unittest.TestCase):
                 # The persisted "Hors horaire requis" proposal on tomorrow is not
                 # counted as coverage or as a planned active day.
                 self.assertEqual(segment["planned_active_days"], 1)
+
+    def test_partial_projection_override_falls_back_to_canonical_effective_need(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url, _ = self._database(directory)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory() as session:
+                    requirements = session.query(ResourceRequirement).order_by(
+                        ResourceRequirement.id
+                    ).all()
+                    metrics = _allocation_projection_metrics(
+                        session,
+                        requirements,
+                        planned_hours_by_reference={"SEG-1": 40.0},
+                    )
+            finally:
+                engine.dispose()
+
+            self.assertEqual(metrics["SEG-1"]["planned_hours"], 40.0)
+            self.assertEqual(metrics["SEG-2"]["planned_hours"], 8.0)
+            self.assertEqual(metrics["SEG-2"]["remaining_hours"], 0.0)
 
     def test_coverage_excess_is_distinct_from_locked_overallocation(self) -> None:
         with TemporaryDirectory() as directory:

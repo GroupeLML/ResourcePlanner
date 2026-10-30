@@ -29,6 +29,7 @@ async function sortedShiftTexts(page: Page) {
 test("595 — le mode Manuel réordonne, persiste et reste cohérent sous filtre", async ({ browser }) => {
   test.setTimeout(120_000);
   const { context, page } = await openCoordinator(browser);
+  let originalProgrammeurOrder: string[] | null = null;
 
   try {
     await navigateMain(page, "Planning opérationnel");
@@ -38,6 +39,7 @@ test("595 — le mode Manuel réordonne, persiste et reste cohérent sous filtre
 
     const programmeurGroup = page.locator('.resource-group[data-resource-class="PROGRAMMEUR"]').first();
     await expect.poll(() => resourceNames(programmeurGroup)).toEqual(["Alice", "Bob"]);
+    originalProgrammeurOrder = await resourceNames(programmeurGroup);
     const shiftsBefore = await sortedShiftTexts(page);
 
     await page.getByRole("button", { name: "Monter Bob", exact: true }).click();
@@ -74,8 +76,21 @@ test("595 — le mode Manuel réordonne, persiste et reste cohérent sous filtre
       if (await sort.isVisible()) await sort.selectOption("manual");
       const search = page.getByLabel("Recherche");
       if (await search.isVisible()) await search.fill("");
-      const bobDown = page.getByRole("button", { name: "Descendre Bob", exact: true });
-      if (await bobDown.isVisible() && await bobDown.isEnabled()) await bobDown.click();
+      if (originalProgrammeurOrder) {
+        const group = page.locator('.resource-group[data-resource-class="PROGRAMMEUR"]').first();
+        for (let targetIndex = 0; targetIndex < originalProgrammeurOrder.length; targetIndex += 1) {
+          const targetName = originalProgrammeurOrder[targetIndex];
+          let current = await resourceNames(group);
+          let currentIndex = current.indexOf(targetName);
+          while (currentIndex > targetIndex) {
+            const up = page.getByRole("button", { name: `Monter ${targetName}`, exact: true });
+            if (!(await up.isVisible()) || !(await up.isEnabled())) break;
+            await up.click();
+            current = await resourceNames(group);
+            currentIndex = current.indexOf(targetName);
+          }
+        }
+      }
     } catch {
       // Best-effort restoration so other E2E specs keep their canonical seed order.
     }

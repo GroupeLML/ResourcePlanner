@@ -337,6 +337,10 @@ def _reshape_source_as_0048(path: Path) -> None:
             DROP TABLE IF EXISTS availability_rule_resource_classes;
             DROP TABLE IF EXISTS planning_window_overrides;
             DROP TABLE IF EXISTS planning_resource_user_orders;
+            DROP TABLE IF EXISTS request_completion_reductions;
+            DROP TABLE IF EXISTS planning_work_queue_restorations;
+            DROP TABLE IF EXISTS planning_work_queue_releases;
+            DROP TABLE IF EXISTS request_requirement_planning_intents;
             DROP TABLE IF EXISTS verification_change_history;
             DROP TABLE IF EXISTS verification_retest_requests;
             DROP TABLE IF EXISTS story_verification_decision_requirements;

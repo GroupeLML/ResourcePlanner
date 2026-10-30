@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from datetime import date
 from typing import Any
 
-from .command_ports import PlanningCommandPort
+from .command_ports import ApprovedDemandSyncPort, PlanningCommandPort
 from .commands import SegmentCancelCommand, SegmentCreateCommand, SegmentUpdateCommand
 from .errors import (
     ApplicationNotFoundError,
@@ -23,10 +23,12 @@ class SegmentService:
         segments: SegmentRepositoryPort,
         planning: PlanningCommandPort,
         authorization: PlanningAuthorizationPort | None = None,
+        approved_sync: ApprovedDemandSyncPort | None = None,
     ) -> None:
         self._segments = segments
         self._planning = planning
         self._authorization = authorization
+        self._approved_sync = approved_sync
 
     @staticmethod
     def _identifier(value: object) -> str:
@@ -108,6 +110,7 @@ class SegmentService:
             )
 
         values = command.to_repository_values()
+        pre_mutation_effective_hours_by_segment: dict[str, float] = {}
         if "NoDemande" in values and not str(values["NoDemande"] or "").strip():
             raise ApplicationValidationError(
                 "La demande est requise.",
@@ -124,25 +127,55 @@ class SegmentService:
             )
         if "HeuresPrevues" in values:
             proposed_hours = float(values["HeuresPrevues"])
-            locked_hours = float(existing.locked_hours or 0.0)
-            current_excess = max(locked_hours - float(existing.planned_hours), 0.0)
-            proposed_excess = max(locked_hours - proposed_hours, 0.0)
-            if (
-                proposed_excess > current_excess + 0.001
-                and not command.allow_locked_overallocation
-            ):
-                raise ApplicationValidationError(
-                    "Les heures prévues seraient inférieures aux quarts manuels verrouillés. Choisis explicitement d'ajuster les heures prévues ou de conserver la surallocation comme dérogation.",
-                    code="segment_overallocation_choice_required",
-                    context={
-                        "segment_id": identifier,
-                        "planned_hours": round(proposed_hours, 2),
-                        "current_planned_hours": round(float(existing.planned_hours), 2),
-                        "locked_hours": round(locked_hours, 2),
-                        "current_excess_hours": round(current_excess, 2),
-                        "excess_hours": round(proposed_excess, 2),
-                    },
-                )
+            projection_action = getattr(
+                self._segments,
+                "planned_hours_overallocation_context",
+                None,
+            )
+            projection = (
+                projection_action(identifier, proposed_hours)
+                if callable(projection_action)
+                else None
+            )
+            if projection is not None:
+                current_effective = projection.get("current_planned_hours")
+                if current_effective is not None:
+                    pre_mutation_effective_hours_by_segment[identifier] = float(
+                        current_effective
+                    )
+                current_excess = float(projection.get("current_excess_hours", 0.0))
+                proposed_excess = float(projection.get("excess_hours", 0.0))
+                if (
+                    proposed_excess > current_excess + 0.001
+                    and not command.allow_locked_overallocation
+                ):
+                    raise ApplicationValidationError(
+                        "Les heures prévues augmenteraient la surallocation existante. Choisis explicitement de conserver la surallocation comme dérogation.",
+                        code="segment_overallocation_choice_required",
+                        context=dict(projection),
+                    )
+            else:
+                locked_hours = float(existing.locked_hours or 0.0)
+                current_excess = max(locked_hours - float(existing.planned_hours), 0.0)
+                proposed_excess = max(locked_hours - proposed_hours, 0.0)
+                if (
+                    proposed_excess > current_excess + 0.001
+                    and not command.allow_locked_overallocation
+                ):
+                    raise ApplicationValidationError(
+                        "Les heures prévues seraient inférieures aux quarts manuels verrouillés. Choisis explicitement d'ajuster les heures prévues ou de conserver la surallocation comme dérogation.",
+                        code="segment_overallocation_choice_required",
+                        context={
+                            "segment_id": identifier,
+                            "planned_hours": round(proposed_hours, 2),
+                            "current_planned_hours": round(float(existing.planned_hours), 2),
+                            "locked_hours": round(locked_hours, 2),
+                            "operational_base_hours": round(float(existing.planned_hours), 2),
+                            "safe_operational_base_hours": round(locked_hours, 2),
+                            "current_excess_hours": round(current_excess, 2),
+                            "excess_hours": round(proposed_excess, 2),
+                        },
+                    )
         start = values.get("DateDebut", existing.start_date)
         end = values.get("DateFin", existing.end_date)
         self._validate_window(
@@ -164,6 +197,27 @@ class SegmentService:
             code_prefix="segment_update",
             context={"segment_id": identifier},
         )
+        if (
+            "HeuresPrevues" in values
+            and self._approved_sync is not None
+            and existing.origin == "REQUEST"
+            and str(existing.demand_number or "").strip()
+        ):
+            sync_kwargs: dict[str, Any] = {}
+            if command.allow_locked_overallocation:
+                sync_kwargs["acknowledged_overallocation_segment_ids"] = (identifier,)
+            if pre_mutation_effective_hours_by_segment:
+                sync_kwargs["pre_mutation_effective_hours_by_segment"] = dict(
+                    pre_mutation_effective_hours_by_segment
+                )
+            call_application_port(
+                lambda: self._approved_sync.sync_operational_choices(
+                    str(existing.demand_number).strip(),
+                    **sync_kwargs,
+                ),
+                code_prefix="segment_update_effective_need_sync",
+                context={"segment_id": identifier},
+            )
         return dict(
             call_application_port(
                 self._planning.rebuild,

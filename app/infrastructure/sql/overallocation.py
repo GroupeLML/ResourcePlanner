@@ -40,6 +40,7 @@ from .planning_audit import (
     SqlPlanningAuditJournal,
 )
 from .planning_repository import SqlPlanningReadRepository
+from .planning_intent_repository import SqlRequestRequirementPlanningIntentRepository
 from .segment_repository import SqlSegmentRepository
 
 
@@ -67,11 +68,26 @@ def _segment_metrics(session: Session, identifier: str) -> dict[str, float] | No
             Shift.locked == true(),
         )
     )
-    planned = float(requirement.planned_hours)
+    covered = session.scalar(
+        select(func.coalesce(func.sum(Shift.hours), 0)).where(
+            Shift.resource_requirement_id == requirement.id,
+            (Shift.allocation_type.is_(None))
+            | (Shift.allocation_type != MISSING_ALLOCATION_TYPE),
+        )
+    )
+    planned = float(
+        SqlRequestRequirementPlanningIntentRepository(session).current_effective_need_for_requirement(
+            requirement.id,
+            fallback_hours=requirement.planned_hours,
+        )
+    )
     locked_hours = float(locked or 0)
+    covered_hours = float(covered or 0)
     return {
         "planned_hours": round(planned, 2),
         "locked_hours": round(locked_hours, 2),
+        "covered_hours": round(covered_hours, 2),
+        "excess_hours": round(max(covered_hours - planned, 0.0), 2),
         "overallocated_hours": round(max(locked_hours - planned, 0.0), 2),
     }
 
@@ -79,6 +95,8 @@ def _segment_metrics(session: Session, identifier: str) -> dict[str, float] | No
 def _allocation_projection_metrics(
     session: Session,
     requirements: Sequence[ResourceRequirement],
+    *,
+    planned_hours_by_reference: Mapping[str, float] | None = None,
 ) -> dict[str, dict[str, object]]:
     """Build additive #331A coverage metrics from counted persisted shifts."""
 
@@ -146,9 +164,30 @@ def _allocation_projection_metrics(
         resource_metrics[key] += amount
 
     result: dict[str, dict[str, object]] = {}
+    missing_effective_need_fallbacks = {
+        requirement.id: requirement.planned_hours
+        for requirement in rows
+        if planned_hours_by_reference is None
+        or (_text(requirement.legacy_segment_id) or requirement.id)
+        not in planned_hours_by_reference
+    }
+    effective_need_by_requirement = (
+        SqlRequestRequirementPlanningIntentRepository(
+            session
+        ).current_effective_need_by_requirement(
+            missing_effective_need_fallbacks
+        )
+        if missing_effective_need_fallbacks
+        else {}
+    )
     for requirement in rows:
         reference = _text(requirement.legacy_segment_id) or requirement.id
-        planned = float(requirement.planned_hours)
+        planned = (
+            float(planned_hours_by_reference[reference])
+            if planned_hours_by_reference is not None
+            and reference in planned_hours_by_reference
+            else float(effective_need_by_requirement[requirement.id])
+        )
         metrics = by_requirement[requirement.id]
         locked = float(metrics["locked_hours"])
         replaceable = float(metrics["replaceable_hours"])
@@ -223,13 +262,17 @@ class SqlSegmentRepositoryWithAllocationMetrics(SqlSegmentRepository):
         super().__init__(session, actor_name=actor_name)
         self._overallocation_session = session
 
-    def _metric_map(self) -> dict[str, dict[str, object]]:
+    def _metric_map(
+        self,
+        planned_hours_by_reference: Mapping[str, float],
+    ) -> dict[str, dict[str, object]]:
         requirements = self._overallocation_session.scalars(
             select(ResourceRequirement)
         ).all()
         return _allocation_projection_metrics(
             self._overallocation_session,
             requirements,
+            planned_hours_by_reference=planned_hours_by_reference,
         )
 
     @staticmethod
@@ -263,14 +306,33 @@ class SqlSegmentRepositoryWithAllocationMetrics(SqlSegmentRepository):
 
     def list(self, *, include_cancelled: bool = True) -> Sequence[SegmentReadModel]:
         rows = super().list(include_cancelled=include_cancelled)
-        metrics = self._metric_map()
+        metrics = self._metric_map(
+            {row.segment_id: float(row.planned_hours) for row in rows}
+        )
         return tuple(self._enrich(row, metrics.get(row.segment_id)) for row in rows)
 
     def get(self, segment_id: str) -> SegmentReadModel | None:
         row = super().get(segment_id)
         if row is None:
             return None
-        return self._enrich(row, _segment_projection_metrics(self._overallocation_session, row.segment_id))
+        requirement = self._overallocation_session.scalar(
+            select(ResourceRequirement).where(
+                (ResourceRequirement.id == row.requirement_id)
+                | (ResourceRequirement.legacy_segment_id == row.segment_id)
+            )
+        )
+        metrics = (
+            _allocation_projection_metrics(
+                self._overallocation_session,
+                (requirement,),
+                planned_hours_by_reference={
+                    row.segment_id: float(row.planned_hours)
+                },
+            ).get(row.segment_id)
+            if requirement is not None
+            else None
+        )
+        return self._enrich(row, metrics)
 
 
 def evaluate_projected_manual_state(
@@ -434,6 +496,9 @@ class SqlOverallocationAllocationCommandAdapter(SqlAllocationCommandAdapter):
         self._authorization = authorization
         self._active_policy: str | None = None
 
+    def _residual_overallocation_authorized(self) -> bool:
+        return self._active_policy == KEEP_EXCEPTION
+
     @staticmethod
     def _policy(value: object) -> str | None:
         try:
@@ -564,11 +629,18 @@ def append_overallocation_audit(
 
     before_excess = float(before_metrics.get("overallocated_hours", 0.0))
     after_excess = float(after_metrics.get("overallocated_hours", 0.0))
+    before_coverage_excess = float(before_metrics.get("excess_hours", 0.0))
+    after_coverage_excess = float(after_metrics.get("excess_hours", 0.0))
     before_planned = float(before_metrics.get("planned_hours", 0.0))
     after_planned = float(after_metrics.get("planned_hours", 0.0))
     action: str | None = None
     if policy == INCREASE_PLANNED and after_planned > before_planned + TOLERANCE_HOURS:
         action = "Augmentation heures prévues depuis quart manuel"
+    elif (
+        policy == KEEP_EXCEPTION
+        and after_coverage_excess > before_coverage_excess + TOLERANCE_HOURS
+    ):
+        action = "Dérogation surallocation manuelle"
     elif after_excess > before_excess + TOLERANCE_HOURS:
         action = "Dérogation surallocation manuelle"
     elif before_excess > after_excess + TOLERANCE_HOURS:
@@ -797,9 +869,27 @@ class OverallocationAuditedSegmentRepository(SegmentRepositoryPort):
     def create(self, values: Mapping[str, Any]) -> str:
         return self._delegate.create(values)
 
+    def planned_hours_overallocation_context(
+        self,
+        segment_id: str,
+        proposed_base_hours: float,
+    ) -> Mapping[str, Any] | None:
+        action = getattr(self._delegate, "planned_hours_overallocation_context", None)
+        return (
+            action(segment_id, proposed_base_hours)
+            if callable(action)
+            else None
+        )
+
     def update(self, segment_id: str, updates: Mapping[str, Any]) -> None:
         before_row = self._delegate.get(segment_id)
         before_snapshot = self._journal.requirement_snapshot(segment_id)
+        projection = None
+        if "HeuresPrevues" in updates and updates.get("HeuresPrevues") is not None:
+            projection = self.planned_hours_overallocation_context(
+                segment_id,
+                float(updates["HeuresPrevues"]),
+            )
         self._delegate.update(segment_id, updates)
         after_row = self._delegate.get(segment_id)
         after_snapshot = self._journal.requirement_snapshot(segment_id)
@@ -810,6 +900,38 @@ class OverallocationAuditedSegmentRepository(SegmentRepositoryPort):
             or after_snapshot is None
         ):
             return
+
+        entity_id, entity_reference, before_values = before_snapshot
+        _, _, after_values = after_snapshot
+        if projection is not None:
+            before_excess = float(projection.get("current_excess_hours", 0.0))
+            after_excess = float(projection.get("excess_hours", 0.0))
+            if abs(after_excess - before_excess) > TOLERANCE_HOURS:
+                action = (
+                    "Dérogation surallocation manuelle"
+                    if after_excess > before_excess
+                    else "Régularisation surallocation manuelle"
+                    if after_excess <= TOLERANCE_HOURS
+                    else "Réduction surallocation manuelle"
+                )
+                self._journal.append(
+                    entity_type=ENTITY_SEGMENT,
+                    entity_id=entity_id,
+                    entity_reference=entity_reference,
+                    action=action,
+                    before={
+                        **before_values,
+                        "planned_hours": projection.get("current_planned_hours"),
+                        "overallocated_hours": before_excess,
+                    },
+                    after={
+                        **after_values,
+                        "planned_hours": projection.get("planned_hours"),
+                        "overallocated_hours": after_excess,
+                    },
+                )
+            return
+
         before_excess = float(before_row.overallocated_hours)
         after_excess = float(after_row.overallocated_hours)
         if abs(after_excess - before_excess) <= TOLERANCE_HOURS:
@@ -821,8 +943,6 @@ class OverallocationAuditedSegmentRepository(SegmentRepositoryPort):
             if after_excess <= TOLERANCE_HOURS
             else "Réduction surallocation manuelle"
         )
-        entity_id, entity_reference, before_values = before_snapshot
-        _, _, after_values = after_snapshot
         self._journal.append(
             entity_type=ENTITY_SEGMENT,
             entity_id=entity_id,

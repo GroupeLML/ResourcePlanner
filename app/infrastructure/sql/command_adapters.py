@@ -7,6 +7,7 @@ from typing import Any, Mapping, Sequence
 from sqlalchemy import func, select, true
 from sqlalchemy.orm import Session
 
+from ...application.errors import ApplicationConflictError
 from ...application.command_ports import (
     AllocationCommandPort,
     ApprovedDemandSyncPort,
@@ -36,6 +37,18 @@ from .models import (
     WorkforceRequestHistory,
 )
 from .planning_repository import SqlPlanningReadRepository
+from .planning_intent_repository import SqlRequestRequirementPlanningIntentRepository
+from .operational_choice_models import (
+    PLANNING_INTENT_AUTO,
+    PLANNING_INTENT_PRESERVE_EXISTING,
+    PLANNING_INTENT_QUEUED,
+    PLANNING_TARGET_EXPLICIT_NONE,
+    PLANNING_TARGET_EXPLICIT_RESOURCE,
+    PLANNING_TARGET_INHERIT,
+    PlanningWorkQueueRelease,
+    PlanningWorkQueueRestoration,
+    RequestRequirementPlanningIntent,
+)
 from .segment_asset_guard import assert_segment_asset_mutation_compatible
 from .planning_version import SqlPlanningMutationVersionRepository
 from .segment_repository import SqlSegmentRepository
@@ -110,6 +123,28 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
         same_resource_summary = same_resource.enforce_targets()
         snapshot = SqlPlanningReadRepository(self._session).capture()
         calculation = project_planning_snapshot(snapshot)
+        intent_rows = self._session.execute(
+            select(RequestRequirementPlanningIntent, ResourceRequirement)
+            .join(
+                ResourceRequirement,
+                RequestRequirementPlanningIntent.current_resource_requirement_id
+                == ResourceRequirement.id,
+            )
+            .where(
+                RequestRequirementPlanningIntent.intent_mode.in_(
+                    (PLANNING_INTENT_PRESERVE_EXISTING, PLANNING_INTENT_QUEUED)
+                )
+            )
+        ).all()
+        suppressed_segment_ids = {
+            _text(requirement.legacy_segment_id) or requirement.id
+            for _intent, requirement in intent_rows
+        }
+        preserve_requirement_ids = {
+            requirement.id
+            for intent, requirement in intent_rows
+            if intent.intent_mode == PLANNING_INTENT_PRESERVE_EXISTING
+        }
         if calculation.unsupported_segment_ids:
             raise RuntimeError(
                 "Le moteur pur ne peut pas recalculer des segments actifs non supportés: "
@@ -117,6 +152,24 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
             )
 
         preserve_ids = {str(value) for value in preserve_shift_ids if str(value)}
+        terminal_survivor_ids = set(
+            self._session.scalars(
+                select(Shift.id)
+                .join(
+                    ResourceRequirement,
+                    Shift.resource_requirement_id == ResourceRequirement.id,
+                )
+                .where(ResourceRequirement.status == "Terminé")
+            ).all()
+        )
+        if preserve_requirement_ids:
+            preserve_ids.update(
+                self._session.scalars(
+                    select(Shift.id).where(
+                        Shift.resource_requirement_id.in_(preserve_requirement_ids)
+                    )
+                ).all()
+            )
         preserved_rows = []
         if preserve_ids:
             preserved_rows = list(
@@ -127,10 +180,7 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
                         Shift.resource_requirement_id == ResourceRequirement.id,
                     )
                     .join(Resource, Shift.resource_id == Resource.id)
-                    .where(
-                        Shift.id.in_(preserve_ids),
-                        ResourceRequirement.status.not_in(INACTIVE_REQUIREMENT_STATUSES),
-                    )
+                    .where(Shift.id.in_(preserve_ids))
                 ).all()
             )
         temporary_inputs = tuple(
@@ -144,24 +194,68 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
                 counts_as_allocated=shift.allocation_type != MISSING_ALLOCATION_TYPE,
             )
             for shift, requirement, resource in preserved_rows
-            if not shift.locked
         )
 
+        engine_segments = tuple(
+            segment
+            for segment in calculation.segments
+            if segment.segment_id not in suppressed_segment_ids
+        )
+        preserved_locked_counts: dict[tuple[str, str, date, float], int] = {}
+        for item in temporary_inputs:
+            if not item.locked:
+                continue
+            key = (
+                item.segment_id,
+                item.resource_id,
+                item.day,
+                round(float(item.hours), 4),
+            )
+            preserved_locked_counts[key] = preserved_locked_counts.get(key, 0) + 1
+
+        engine_locked_rows = []
+        for allocation in calculation.locked_allocations:
+            if allocation.segment_id in suppressed_segment_ids:
+                continue
+            key = (
+                allocation.segment_id,
+                allocation.resource_id,
+                allocation.day,
+                round(float(allocation.hours), 4),
+            )
+            duplicate_count = preserved_locked_counts.get(key, 0)
+            if duplicate_count:
+                preserved_locked_counts[key] = duplicate_count - 1
+                continue
+            engine_locked_rows.append(allocation)
+        engine_locked = tuple(engine_locked_rows)
+        preserved_capacity_segment_ids = {
+            item.segment_id for item in temporary_inputs
+        }
         result = build_allocation_plan(
-            calculation.segments,
-            calculation.locked_allocations,
+            engine_segments,
+            engine_locked,
             calculation.capacity_by_resource_day,
+            # ADR-034: suppressed PRESERVE_EXISTING segments must not regenerate
+            # residual work, but their surviving Shifts still consume capacity.
             preserved_allocations=temporary_inputs,
-            preserve_locked_segment_ids=calculation.preserved_segment_ids,
+            preserve_locked_segment_ids=(
+                set(calculation.preserved_segment_ids)
+                | preserved_capacity_segment_ids
+            ),
             outside_schedule_eligible_by_resource_day=(
                 calculation.outside_schedule_eligible_by_resource_day
             ),
         )
 
         protected = self._active_locked_shifts()
-        protected_ids = {shift.id for shift in protected} | {
-            shift.id for shift, _requirement, _resource in preserved_rows
-        }
+        protected_ids = (
+            {shift.id for shift in protected}
+            | {
+                shift.id for shift, _requirement, _resource in preserved_rows
+            }
+            | terminal_survivor_ids
+        )
 
         # Keep active locked user decisions plus the narrowly scoped survivor rows
         # explicitly preserved for this one mutation. Other automatic rows remain
@@ -269,6 +363,180 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             session,
             versioning=self._versioning,
         )
+
+    def _request_intent(
+        self,
+        requirement: ResourceRequirement,
+    ) -> RequestRequirementPlanningIntent | None:
+        if requirement.origin != ORIGIN_REQUEST:
+            return None
+        rows = self._session.scalars(
+            select(RequestRequirementPlanningIntent).where(
+                RequestRequirementPlanningIntent.current_resource_requirement_id
+                == requirement.id
+            )
+        ).all()
+        if len(rows) > 1:
+            raise ApplicationConflictError(
+                "Le segment possède plusieurs intentions Planning durables.",
+                code="planning_slot_binding_ambiguous",
+                context={"requirement_id": requirement.id},
+            )
+        return rows[0] if rows else None
+
+    def _selected_release_outstanding(
+        self,
+        intent: RequestRequirementPlanningIntent | None,
+        *,
+        resource_id: str,
+        work_date: date,
+    ) -> tuple[PlanningWorkQueueRelease | None, Decimal]:
+        if intent is None:
+            return None, Decimal("0.00")
+        release = self._session.scalar(
+            select(PlanningWorkQueueRelease)
+            .where(
+                PlanningWorkQueueRelease.planning_intent_id == intent.id,
+                PlanningWorkQueueRelease.active == true(),
+                PlanningWorkQueueRelease.resource_id == resource_id,
+                PlanningWorkQueueRelease.work_date == work_date,
+            )
+            .order_by(
+                PlanningWorkQueueRelease.created_at,
+                PlanningWorkQueueRelease.id,
+            )
+        )
+        if release is None:
+            return None, Decimal("0.00")
+        restored = Decimal(
+            str(
+                self._session.scalar(
+                    select(
+                        func.coalesce(
+                            func.sum(PlanningWorkQueueRestoration.restored_hours),
+                            0,
+                        )
+                    ).where(
+                        PlanningWorkQueueRestoration.release_id == release.id
+                    )
+                )
+                or 0
+            )
+        )
+        outstanding = max(
+            Decimal(str(release.hours)) - restored,
+            Decimal("0.00"),
+        )
+        return release, outstanding
+
+    def _resolve_covered_releases(
+        self,
+        intent: RequestRequirementPlanningIntent | None,
+        requirement: ResourceRequirement,
+        *,
+        restored_shifts: Sequence[Shift],
+    ) -> None:
+        if intent is None or not restored_shifts:
+            return
+        tolerance = Decimal("0.001")
+        for shift in restored_shifts:
+            if shift.allocation_type == MISSING_ALLOCATION_TYPE:
+                continue
+            already_attributed = self._session.scalar(
+                select(PlanningWorkQueueRestoration.id).where(
+                    PlanningWorkQueueRestoration.shift_id == shift.id
+                )
+            )
+            if already_attributed is not None:
+                continue
+
+            release, remaining = self._selected_release_outstanding(
+                intent,
+                resource_id=shift.resource_id,
+                work_date=shift.work_date,
+            )
+            if release is None:
+                continue
+
+            release_hours = Decimal(str(release.hours))
+            restored_before = release_hours - remaining
+            if remaining <= tolerance:
+                release.active = False
+                release.resolved_at = release.resolved_at or utc_now()
+                continue
+
+            shift_hours = Decimal(str(shift.hours))
+            if shift_hours > remaining + tolerance:
+                raise ApplicationConflictError(
+                    "Le placement dépasse les heures encore attribuables au retour sélectionné.",
+                    code="request_work_queue_restoration_exceeds_release_outstanding",
+                    context={
+                        "release_id": release.id,
+                        "release_hours": float(release_hours),
+                        "restored_hours": float(restored_before),
+                        "outstanding_hours": float(remaining),
+                        "requested_hours": float(shift_hours),
+                    },
+                )
+            attributed = shift_hours
+            if attributed <= tolerance:
+                continue
+            self._session.add(
+                PlanningWorkQueueRestoration(
+                    release_id=release.id,
+                    shift_id=shift.id,
+                    restored_hours=attributed,
+                )
+            )
+            restored_after = restored_before + attributed
+            if restored_after + tolerance >= release_hours:
+                release.active = False
+                release.resolved_at = utc_now()
+
+    def _residual_overallocation_authorized(self) -> bool:
+        """Hook for the canonical over-allocation adapter after it validates policy."""
+
+        return False
+
+    def _controlled_work_queue_placement(
+        self,
+        intent: RequestRequirementPlanningIntent | None,
+    ) -> bool:
+        if intent is None:
+            return False
+        release_history = self._session.scalar(
+            select(PlanningWorkQueueRelease.id).where(
+                PlanningWorkQueueRelease.planning_intent_id == intent.id
+            )
+        )
+        if release_history is not None:
+            return True
+        return (
+            intent.intent_mode
+            in (PLANNING_INTENT_PRESERVE_EXISTING, PLANNING_INTENT_QUEUED)
+            and intent.target_mode != PLANNING_TARGET_INHERIT
+        )
+
+    def _current_effective_need(
+        self,
+        requirement: ResourceRequirement,
+    ) -> Decimal:
+        return SqlRequestRequirementPlanningIntentRepository(
+            self._session
+        ).current_effective_need_for_requirement(
+            requirement.id,
+            fallback_hours=requirement.planned_hours,
+        )
+
+    def _counted_coverage(self, requirement_id: str) -> Decimal:
+        covered = self._session.scalar(
+            select(func.coalesce(func.sum(Shift.hours), 0)).where(
+                Shift.resource_requirement_id == requirement_id,
+                (Shift.allocation_type.is_(None))
+                | (Shift.allocation_type != MISSING_ALLOCATION_TYPE),
+            )
+        )
+        return _decimal(covered or 0)
 
     def _requirement(self, identifier: str) -> ResourceRequirement:
         wanted = _text(identifier)
@@ -380,6 +648,49 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
         )
 
 
+        intent = self._request_intent(requirement)
+        if (
+            self._controlled_work_queue_placement(intent)
+            and not self._residual_overallocation_authorized()
+        ):
+            effective_need = self._current_effective_need(requirement)
+            covered = self._counted_coverage(requirement.id)
+            residual = max(effective_need - covered, Decimal("0.00"))
+            if hours > residual + Decimal("0.001"):
+                raise ApplicationConflictError(
+                    "Le placement explicite dépasse le besoin courant non couvert.",
+                    code="request_work_queue_placement_exceeds_residual",
+                    context={
+                        "requirement_id": requirement.id,
+                        "effective_need": float(effective_need),
+                        "covered_hours": float(covered),
+                        "residual_hours": float(residual),
+                        "requested_hours": float(hours),
+                    },
+                )
+        selected_release, selected_outstanding = self._selected_release_outstanding(
+            intent,
+            resource_id=resource.id,
+            work_date=day,
+        )
+        if (
+            selected_release is not None
+            and hours > selected_outstanding + Decimal("0.001")
+        ):
+            raise ApplicationConflictError(
+                "Le placement dépasse les heures encore attribuables au retour sélectionné.",
+                code="request_work_queue_restoration_exceeds_release_outstanding",
+                context={
+                    "release_id": selected_release.id,
+                    "outstanding_hours": float(selected_outstanding),
+                    "requested_hours": float(hours),
+                },
+            )
+        if intent is not None and intent.intent_mode == PLANNING_INTENT_QUEUED:
+            intent.intent_mode = PLANNING_INTENT_PRESERVE_EXISTING
+            intent.target_mode = PLANNING_TARGET_EXPLICIT_NONE
+            intent.target_resource_id = None
+
         identifier = f"MAN-{new_id()}"
         shift = Shift(
             legacy_allocation_id=identifier,
@@ -399,6 +710,12 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
         self._session.add(shift)
         self._session.flush()
         self._planning.rebuild()
+        self._resolve_covered_releases(
+            intent,
+            requirement,
+            restored_shifts=(shift,),
+        )
+        self._session.flush()
         return identifier
 
     def update_manual(
@@ -497,6 +814,13 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
         shift = self._shift(allocation_id)
         if shift is None:
             return
+        requirement = self._requirement(shift.resource_requirement_id)
+        if requirement.origin == ORIGIN_REQUEST:
+            raise ApplicationConflictError(
+                "Un quart issu d'une demande approuvée doit utiliser la commande explicite de retour à la File de Travail.",
+                code="request_shift_action_requires_explicit_command",
+                context={"allocation_id": allocation_id, "requirement_id": requirement.id},
+            )
         SqlAssetService(
             self._session,
             actor="planning",
@@ -511,6 +835,12 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
         if shift is None:
             return
         requirement = self._requirement(shift.resource_requirement_id)
+        if requirement.origin == ORIGIN_REQUEST:
+            raise ApplicationConflictError(
+                "Un quart issu d'une demande approuvée doit utiliser une commande #778 explicite.",
+                code="request_shift_action_requires_explicit_command",
+                context={"allocation_id": allocation_id, "requirement_id": requirement.id},
+            )
         if requirement.origin != ORIGIN_QUICK_SHIFT:
             SqlAssetService(
                 self._session,
@@ -584,6 +914,28 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
         self._versioning.acquire()
         requirement = self._requirement(segment_id)
         resource = self._resource(technician)
+        intent = self._request_intent(requirement)
+        controlled_restore = (
+            intent is not None
+            and intent.intent_mode
+            in (PLANNING_INTENT_QUEUED, PLANNING_INTENT_PRESERVE_EXISTING)
+        )
+        survivor_ids = (
+            tuple(
+                self._session.scalars(
+                    select(Shift.id).where(
+                        Shift.resource_requirement_id == requirement.id
+                    )
+                ).all()
+            )
+            if controlled_restore
+            else ()
+        )
+        if controlled_restore and intent is not None:
+            intent.intent_mode = PLANNING_INTENT_AUTO
+            intent.target_mode = PLANNING_TARGET_EXPLICIT_RESOURCE
+            intent.target_resource_id = resource.id
+
         grouped = SqlSameResourcePeriodCoordinator(self._session).retarget_component(
             requirement.id,
             resource.id,
@@ -591,8 +943,35 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
         if not grouped:
             requirement.assigned_resource_id = resource.id
             requirement.status = "Planifié"
+        self._session.flush()
+        before_shift_ids = set(
+            self._session.scalars(
+                select(Shift.id).where(
+                    Shift.resource_requirement_id == requirement.id
+                )
+            ).all()
+        )
+        result = self._planning.rebuild(preserve_shift_ids=survivor_ids)
+
+        if controlled_restore and intent is not None:
+            intent.intent_mode = PLANNING_INTENT_PRESERVE_EXISTING
+            intent.target_mode = PLANNING_TARGET_EXPLICIT_RESOURCE
+            intent.target_resource_id = resource.id
+            restored_shifts = tuple(
+                self._session.scalars(
+                    select(Shift).where(
+                        Shift.resource_requirement_id == requirement.id,
+                        Shift.id.not_in(before_shift_ids) if before_shift_ids else true(),
+                    )
+                ).all()
+            )
+            self._resolve_covered_releases(
+                intent,
+                requirement,
+                restored_shifts=restored_shifts,
+            )
             self._session.flush()
-        return self._planning.rebuild()
+        return result
 
 
 class SqlApprovedDemandSyncAdapter(ApprovedDemandSyncPort):

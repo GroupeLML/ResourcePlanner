@@ -5,14 +5,17 @@ from dataclasses import dataclass, replace
 from datetime import date
 import json
 from decimal import Decimal
-from typing import Sequence
+from typing import Mapping, Sequence
 
-from sqlalchemy import select, true
+from sqlalchemy import func, or_, select, true
 from sqlalchemy.orm import Session
 
+from ...application.errors import ApplicationValidationError
 from ...domain.active_days import normalize_active_day_target, split_total_workforce_hours
 from ...domain.approval_envelope import EnvelopeEntryIdentity
 from ...domain.confirmation import CONFIRMATION_CONFIRMED, normalize_confirmation
+from ...domain.effective_need import resolve_effective_slot_need
+from ...domain.planning_engine import MISSING_ALLOCATION_TYPE
 from ...domain.demand_periods import PERIOD_KIND_CUMULATIVE, resolve_period_authority
 from .demand_period_models import (
     WorkforceRequestPeriod,
@@ -20,6 +23,12 @@ from .demand_period_models import (
     WorkforceRequestPeriodSelection,
 )
 from .operational_choice_repository import SqlRequestOperationalChoiceRepository
+from .operational_choice_models import (
+    PLANNING_INTENT_PRESERVE_EXISTING,
+    RequestCompletionReduction,
+    RequestRequirementPlanningIntent,
+)
+from .planning_intent_repository import stable_planning_slot_key
 from .segment_asset_guard import segment_asset_dependencies
 from .approval_revision_models import RequestApprovalRevision
 from .planning_window_override_repository import SqlPlanningWindowOverrideRepository
@@ -95,6 +104,7 @@ class LockedPlanningConflict:
     spec_key: tuple[str, ...] | None
     shift_ids: tuple[str, ...]
     message: str
+    overallocation_context: Mapping[str, object] | None = None
 
 
 class SqlRequestPlanPreparer:
@@ -102,7 +112,7 @@ class SqlRequestPlanPreparer:
 
     This component deliberately does not mutate planning state. It translates the
     candidate request definition plus active operational selections into effective
-    requirement specifications and evaluates locked-work compatibility.
+    requirement specifications and evaluates retained-work compatibility.
     """
 
     def __init__(self, session: Session) -> None:
@@ -644,6 +654,33 @@ class SqlRequestPlanPreparer:
         for rows in current_by_entry.values():
             rows.sort(key=lambda row: (row.created_at, row.id))
 
+        intents_by_entry: dict[str, dict[int, RequestRequirementPlanningIntent]] = defaultdict(dict)
+        for intent in self._session.scalars(
+            select(RequestRequirementPlanningIntent).where(
+                RequestRequirementPlanningIntent.workforce_request_id == request.id,
+            )
+        ).all():
+            intents_by_entry[intent.approved_entry_key][int(intent.slot_index)] = intent
+        reductions_by_intent: dict[str, list[Decimal]] = defaultdict(list)
+        for intent_id, hours in self._session.execute(
+            select(
+                RequestCompletionReduction.planning_intent_id,
+                RequestCompletionReduction.reduction_hours,
+            )
+            .join(
+                RequestRequirementPlanningIntent,
+                RequestCompletionReduction.planning_intent_id
+                == RequestRequirementPlanningIntent.id,
+            )
+            .where(
+                RequestRequirementPlanningIntent.workforce_request_id == request.id,
+                RequestCompletionReduction.reconciliation_state == "ACTIVE",
+            )
+        ).all():
+            reductions_by_intent[intent_id].append(
+                Decimal(str(hours)).quantize(Decimal("0.01"))
+            )
+
         specs: list[PreparedRequirementSpec] = []
         unresolved_groups = 0
         groups_seen: set[str] = set()
@@ -693,9 +730,9 @@ class SqlRequestPlanPreparer:
                 "",
             )
             description = (
-                _text(source_period.note if source_period is not None else None)
+                previous_description
+                or _text(source_period.note if source_period is not None else None)
                 or _text(source_line.description if source_line is not None else None)
-                or previous_description
                 or _text(request.description)
                 or "Besoin approuvé"
             )
@@ -729,6 +766,23 @@ class SqlRequestPlanPreparer:
                 else (1 if line_mode else max(int(row.get("slot_count") or 1), 1))
             )
             split_hours = split_total_workforce_hours(total_hours, slot_count)
+            persisted_intents = intents_by_entry.get(identity_key, {})
+            active_reductions_by_slot: dict[int, tuple[Decimal, ...]] = {}
+            for slot_index, intent in persisted_intents.items():
+                reductions = tuple(reductions_by_intent.get(intent.id, ()))
+                if reductions:
+                    active_reductions_by_slot[slot_index] = reductions
+            if active_reductions_by_slot and any(index >= slot_count for index in active_reductions_by_slot):
+                raise ValueError(
+                    "reduction_rebase_required: la topologie approuvée ne correspond plus aux réductions actives."
+                )
+            split_hours = tuple(
+                resolve_effective_slot_need(
+                    hours,
+                    active_reductions_by_slot.get(index, ()),
+                )
+                for index, hours in enumerate(split_hours)
+            )
             base_key = (
                 ("PERIOD", line_id, period_key)
                 if period_key is not None
@@ -739,6 +793,8 @@ class SqlRequestPlanPreparer:
                 default=CONFIRMATION_CONFIRMED,
             )
             for index, hours in enumerate(split_hours):
+                if Decimal(str(hours)).quantize(Decimal("0.01")) <= 0:
+                    continue
                 spec_key = (
                     base_key
                     if line_mode and slot_count == 1
@@ -759,7 +815,14 @@ class SqlRequestPlanPreparer:
                         desired_active_days=(
                             int(row["desired_active_days"])
                             if row.get("desired_active_days") is not None
-                            else None
+                            else next(
+                                (
+                                    int(item.desired_active_days)
+                                    for item in previous_rows
+                                    if item.desired_active_days is not None
+                                ),
+                                None,
+                            )
                         ),
                         confirmation=confirmation,
                         proposed_resource_id=(
@@ -926,32 +989,92 @@ class SqlRequestPlanPreparer:
         current: Sequence[ResourceRequirement],
         specs: Sequence[PreparedRequirementSpec],
     ) -> tuple[tuple[PreparedRequirementMatch, ...], tuple[ResourceRequirement, ...]]:
-        current_by_key = self._current_by_base_key(request, current)
+        current_by_id = {row.id: row for row in current}
+        claimed_requirement_ids: set[str] = set()
+        matches_by_spec_key: dict[tuple[str, ...], PreparedRequirementMatch] = {}
+
+        # ADR-034: durable logical-slot bindings are authoritative. Never reorder
+        # slots because assignment, creation time, or physical row ids changed.
+        for spec in specs:
+            slot_key = stable_planning_slot_key(
+                workforce_request_id=request.id,
+                approved_entry_key=spec.approved_entry_key,
+                slot_index=spec.slot_index,
+                source_request_line_id=spec.source_request_line_id,
+                source_period_id=spec.source_period_id,
+            )
+            intent = self._session.scalar(
+                select(RequestRequirementPlanningIntent).where(
+                    RequestRequirementPlanningIntent.slot_identity_key == slot_key
+                )
+            )
+            if intent is None:
+                logical = self._session.scalars(
+                    select(RequestRequirementPlanningIntent).where(
+                        RequestRequirementPlanningIntent.workforce_request_id == request.id,
+                        RequestRequirementPlanningIntent.approved_entry_key == spec.approved_entry_key,
+                        RequestRequirementPlanningIntent.slot_index == int(spec.slot_index),
+                    )
+                ).all()
+                if len(logical) > 1:
+                    raise ValueError(
+                        "planning_slot_identity_ambiguous: plusieurs intentions durables "
+                        "existent pour le même slot logique."
+                    )
+                intent = logical[0] if logical else None
+            if intent is None or not intent.current_resource_requirement_id:
+                continue
+            requirement = current_by_id.get(intent.current_resource_requirement_id)
+            if requirement is None:
+                continue
+            if requirement.id in claimed_requirement_ids:
+                raise ValueError(
+                    "planning_slot_binding_ambiguous: plusieurs slots logiques "
+                    "réclament le même ResourceRequirement."
+                )
+            claimed_requirement_ids.add(requirement.id)
+            matches_by_spec_key[spec.key] = PreparedRequirementMatch(
+                spec=spec,
+                requirement=requirement,
+            )
+
+        # Only never-bound slots use the historical base-key fallback. Already
+        # claimed requirements are excluded so mutable assignment/order cannot
+        # swap durable slots.
+        remaining_current = [
+            row for row in current if row.id not in claimed_requirement_ids
+        ]
+        current_by_key = self._current_by_base_key(request, remaining_current)
         specs_by_key: dict[tuple[str, ...], list[PreparedRequirementSpec]] = defaultdict(list)
         for spec in specs:
-            specs_by_key[spec.base_key].append(spec)
+            if spec.key not in matches_by_spec_key:
+                specs_by_key[spec.base_key].append(spec)
         for rows in specs_by_key.values():
             rows.sort(key=lambda row: (row.slot_index, row.key))
 
-        matches: list[PreparedRequirementMatch] = []
         obsolete: list[ResourceRequirement] = []
         all_keys = set(current_by_key) | set(specs_by_key)
         for base_key in sorted(all_keys):
             current_rows = current_by_key.get(base_key, [])
             desired_rows = specs_by_key.get(base_key, [])
             for index, spec in enumerate(desired_rows):
-                matches.append(
-                    PreparedRequirementMatch(
-                        spec=spec,
-                        requirement=(
-                            current_rows[index]
-                            if index < len(current_rows)
-                            else None
-                        ),
-                    )
+                requirement = current_rows[index] if index < len(current_rows) else None
+                if requirement is not None:
+                    claimed_requirement_ids.add(requirement.id)
+                matches_by_spec_key[spec.key] = PreparedRequirementMatch(
+                    spec=spec,
+                    requirement=requirement,
                 )
             obsolete.extend(current_rows[len(desired_rows):])
-        return tuple(matches), tuple(obsolete)
+
+        ordered = tuple(matches_by_spec_key[spec.key] for spec in specs)
+        obsolete.extend(
+            row
+            for row in current
+            if row.id not in claimed_requirement_ids
+            and row not in obsolete
+        )
+        return ordered, tuple(obsolete)
 
     def locked_conflicts(
         self,
@@ -960,15 +1083,33 @@ class SqlRequestPlanPreparer:
         specs: Sequence[PreparedRequirementSpec],
         *,
         target_project_id: str | None = None,
+        acknowledged_overallocation_requirement_ids: Sequence[str] = (),
+        pre_mutation_effective_hours_by_requirement: Mapping[str, float] | None = None,
     ) -> tuple[LockedPlanningConflict, ...]:
         matches, obsolete = self.match_current(request, current, specs)
         requirement_ids = {row.id for row in current}
+        # PRESERVE_EXISTING/completed history is protected even when physically
+        # unlocked. Select each counted Shift once; intent is an existence filter.
+        preserved_requirement_ids = select(
+            RequestRequirementPlanningIntent.current_resource_requirement_id
+        ).where(
+            RequestRequirementPlanningIntent.workforce_request_id == request.id,
+            RequestRequirementPlanningIntent.intent_mode == PLANNING_INTENT_PRESERVE_EXISTING,
+        )
         locked_rows = (
             self._session.scalars(
                 select(Shift)
                 .where(
                     Shift.resource_requirement_id.in_(requirement_ids),
-                    Shift.locked == true(),
+                    or_(
+                        Shift.locked == true(),
+                        Shift.resource_requirement_id.in_(preserved_requirement_ids),
+                        Shift.resource_requirement_id.in_(
+                            row.id for row in current if row.status == "Terminé"
+                        ),
+                    ),
+                    (Shift.allocation_type.is_(None))
+                    | (Shift.allocation_type != MISSING_ALLOCATION_TYPE),
                 )
                 .order_by(Shift.resource_requirement_id, Shift.work_date, Shift.id)
             ).all()
@@ -991,7 +1132,7 @@ class SqlRequestPlanPreparer:
                     spec_key=None,
                     shift_ids=tuple(row.id for row in locked),
                     message=(
-                        "La réapprobation supprimerait un besoin contenant des quarts verrouillés. "
+                        "La réapprobation supprimerait un besoin contenant des quarts verrouillés ou conservés. "
                         "Libère ou déplace ces quarts manuels avant d'approuver."
                     ),
                 )
@@ -1018,7 +1159,7 @@ class SqlRequestPlanPreparer:
                         spec_key=match.spec.key,
                         shift_ids=tuple(row.id for row in outside),
                         message=(
-                            "La nouvelle fenêtre d'un besoin exclut un quart verrouillé existant. "
+                            "La nouvelle fenêtre d'un besoin exclut un quart verrouillé ou conservé existant. "
                             "Libère ou déplace ce quart avant d'approuver."
                         ),
                     )
@@ -1028,7 +1169,32 @@ class SqlRequestPlanPreparer:
                 (shift.hours for shift in locked),
                 Decimal("0"),
             )
-            if locked_hours > match.spec.planned_hours + Decimal("0.001"):
+            before_state = pre_mutation_effective_hours_by_requirement or {}
+            previous_effective_hours = Decimal(
+                str(before_state.get(requirement.id, requirement.planned_hours))
+            ).quantize(Decimal("0.01"))
+            current_excess = max(
+                locked_hours - previous_effective_hours,
+                Decimal("0.00"),
+            )
+            projected_excess = max(
+                locked_hours - match.spec.planned_hours,
+                Decimal("0.00"),
+            )
+            acknowledged_ids = set(acknowledged_overallocation_requirement_ids)
+            if (
+                projected_excess > current_excess + Decimal("0.001")
+                and requirement.id not in acknowledged_ids
+            ):
+                reduction_hours = self._session.scalar(
+                    select(func.coalesce(func.sum(RequestCompletionReduction.reduction_hours), 0))
+                    .join(RequestRequirementPlanningIntent,
+                          RequestCompletionReduction.planning_intent_id == RequestRequirementPlanningIntent.id)
+                    .where(
+                        RequestRequirementPlanningIntent.current_resource_requirement_id == requirement.id,
+                        RequestCompletionReduction.reconciliation_state == "ACTIVE",
+                    )
+                ) or Decimal("0.00")
                 conflicts.append(
                     LockedPlanningConflict(
                         code=LOCKED_HOURS_EXCEED_BUDGET,
@@ -1036,9 +1202,22 @@ class SqlRequestPlanPreparer:
                         spec_key=match.spec.key,
                         shift_ids=tuple(row.id for row in locked),
                         message=(
-                            "Les heures verrouillées dépassent les heures prévues par le nouveau besoin. "
-                            "Réduis ou libère les quarts manuels avant d'approuver."
+                            "Les heures verrouillées ou conservées dépassent les heures prévues par le nouveau besoin. "
+                            "Réduis ou libère ces quarts ou confirme explicitement la dérogation."
                         ),
+                        overallocation_context={
+                            "segment_id": _text(requirement.legacy_segment_id) or requirement.id,
+                            "planned_hours": float(match.spec.planned_hours),
+                            "current_planned_hours": float(previous_effective_hours),
+                            "locked_hours": float(locked_hours),
+                            "current_locked_hours": float(locked_hours),
+                            "projected_locked_hours": float(locked_hours),
+                            "current_excess_hours": float(current_excess),
+                            "excess_hours": float(projected_excess),
+                            "base_planned_hours": float(match.spec.planned_hours + reduction_hours),
+                            "operational_base_hours": float(previous_effective_hours + reduction_hours),
+                            "safe_operational_base_hours": float(locked_hours + reduction_hours),
+                        },
                     )
                 )
         dependencies_by_requirement: dict[str, list] = defaultdict(list)
@@ -1131,12 +1310,26 @@ class SqlRequestPlanPreparer:
         specs: Sequence[PreparedRequirementSpec],
         *,
         target_project_id: str | None = None,
+        acknowledged_overallocation_requirement_ids: Sequence[str] = (),
+        pre_mutation_effective_hours_by_requirement: Mapping[str, float] | None = None,
     ) -> None:
         conflicts = self.locked_conflicts(
             request,
             current,
             specs,
             target_project_id=target_project_id,
+            acknowledged_overallocation_requirement_ids=(
+                acknowledged_overallocation_requirement_ids
+            ),
+            pre_mutation_effective_hours_by_requirement=(
+                pre_mutation_effective_hours_by_requirement
+            ),
         )
         if conflicts:
+            if conflicts[0].overallocation_context is not None:
+                raise ApplicationValidationError(
+                    conflicts[0].message,
+                    code="segment_overallocation_choice_required",
+                    context=conflicts[0].overallocation_context,
+                )
             raise ValueError(conflicts[0].message)

@@ -111,7 +111,9 @@ function formFromSegment(segment: SegmentReadModel): FormState {
   return {
     start_date: segment.start_date ?? "",
     end_date: segment.end_date ?? segment.start_date ?? "",
-    planned_hours: String(segment.planned_hours || ""),
+    planned_hours: String(
+      segment.operational_base_hours ?? segment.planned_hours ?? "",
+    ),
     status: segment.status || "À assigner",
     description: segment.description ?? "",
     required_competency_id: segment.required_competency_id ?? "",
@@ -509,7 +511,7 @@ export default function SegmentEditor({
             {currentExcess > 0 && (
               <div className="overallocation-warning" role="status">
                 <strong>⚠ Surallocation manuelle active : +{hoursLabel(currentExcess)} h</strong>
-                <span>{hoursLabel(planningSegment?.locked_hours)} h verrouillées pour {hoursLabel(segment?.planned_hours)} h prévues. Les quarts verrouillés sont préservés par le moteur.</span>
+                <span>{hoursLabel(planningSegment?.locked_hours)} h verrouillées pour un besoin actuel de {hoursLabel(segment?.planned_hours)} h. Les quarts verrouillés sont préservés par le moteur.</span>
               </div>
             )}
 
@@ -517,19 +519,30 @@ export default function SegmentEditor({
               <div className="overallocation-choice" role="alert">
                 <strong>Cette réduction créerait ou augmenterait une surallocation manuelle.</strong>
                 <span>
-                  Heures prévues proposées : {hoursLabel(overallocationChoice.planned_hours)} h · quarts verrouillés : {hoursLabel(overallocationChoice.locked_hours)} h · excédent : +{hoursLabel(overallocationChoice.excess_hours)} h.
+                  Base opérationnelle proposée : {hoursLabel(overallocationChoice.base_planned_hours ?? overallocationChoice.planned_hours)} h · besoin résultant après ajustements : {hoursLabel(overallocationChoice.planned_hours)} h · couverture conservée : {hoursLabel(overallocationChoice.locked_hours)} h · excédent : +{hoursLabel(overallocationChoice.excess_hours)} h.
                 </span>
                 <div className="overallocation-choice-actions">
                   <button
                     type="button"
                     className="primary-button"
                     onClick={() => {
-                      setField("planned_hours", String(overallocationChoice.locked_hours ?? overallocationChoice.planned_hours));
+                      setField(
+                        "planned_hours",
+                        String(
+                          overallocationChoice.safe_operational_base_hours
+                          ?? overallocationChoice.operational_base_hours
+                          ?? overallocationChoice.planned_hours,
+                        ),
+                      );
                       setOverallocationChoice(null);
                       setAllowLockedOverallocation(false);
                     }}
                   >
-                    Ajuster les heures prévues à {hoursLabel(overallocationChoice.locked_hours)} h
+                    Ajuster les heures de base opérationnelles à {hoursLabel(
+                      overallocationChoice.safe_operational_base_hours
+                      ?? overallocationChoice.operational_base_hours
+                      ?? overallocationChoice.planned_hours
+                    )} h
                   </button>
                   <button
                     type="button"
@@ -549,7 +562,7 @@ export default function SegmentEditor({
             {allowLockedOverallocation && (
               <div className="overallocation-warning">
                 <strong>Dérogation de surallocation sélectionnée</strong>
-                <span>L'enregistrement conservera les heures prévues saisies même si elles sont inférieures aux quarts verrouillés.</span>
+                <span>L'enregistrement conservera la base opérationnelle saisie et la couverture existante, même si celle-ci dépasse le besoin résultant après ajustements.</span>
               </div>
             )}
 
@@ -581,13 +594,18 @@ export default function SegmentEditor({
                 <input type="date" value={form.end_date} onChange={(event) => setField("end_date", event.target.value)} required />
               </label>
               <label>
-                <span>Heures prévues</span>
+                <span>Heures de base opérationnelles</span>
                 <input type="number" min="0.25" step="0.25" value={form.planned_hours} onChange={(event) => {
                   setField("planned_hours", event.target.value);
                   setOverallocationChoice(null);
                   setAllowLockedOverallocation(false);
                 }} required />
               </label>
+              {segment && (
+                <div className="segment-help" data-testid="segment-effective-need">
+                  Besoin actuel après ajustements : {hoursLabel(segment.planned_hours)} h
+                </div>
+              )}
               <label>
                 <span>Statut</span>
                 <input value={form.status} onChange={(event) => setField("status", event.target.value)} />

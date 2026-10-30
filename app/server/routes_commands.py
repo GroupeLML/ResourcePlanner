@@ -38,6 +38,9 @@ from ..application import (
     ManualAllocationReleaseCommand,
     ManualAllocationUpdateCommand,
     PlanningRebuildCommand,
+    PermanentlyReduceShiftHoursCommand,
+    ReturnSegmentToWorkQueueCommand,
+    ReturnShiftToWorkQueueCommand,
     PlanningWindowOverrideExtendCommand,
     QuickShiftCreateCommand,
     ResourceCreateCommand,
@@ -83,6 +86,8 @@ from .schemas import (
     ManualAllocationRequest,
     OptionalCommentRequest,
     PlanningWindowOverrideExtendRequest,
+    RequestPermanentReductionRequest,
+    RequestWorkQueueReturnRequest,
     QuickShiftRequest,
     RequiredCommentRequest,
     ResourceCreateRequest,
@@ -1205,6 +1210,96 @@ def build_command_router(
                 "body": _json_body(body),
             },
             action=action,
+        )
+
+    @router.get("/allocations/{allocation_id}/work-queue-preview")
+    def preview_request_work_queue_actions(
+        allocation_id: str,
+        facade: ApplicationFacade = Depends(facade_dependency),
+    ) -> dict[str, Any]:
+        return _payload(
+            facade.preview_request_work_queue_actions(allocation_id)
+        )
+
+    @router.post("/allocations/{allocation_id}/return-to-work-queue")
+    def return_shift_to_work_queue(
+        allocation_id: str,
+        body: RequestWorkQueueReturnRequest,
+        idempotency_key: str = Header(alias="Idempotency-Key", min_length=1),
+        facade: ApplicationFacade = Depends(facade_dependency),
+        idempotency: IdempotentCommandExecutor = Depends(stable_idempotency),
+    ) -> dict[str, Any]:
+        return idempotency.execute(
+            scope="request_work_queue.return_shift",
+            key=idempotency_key,
+            request_payload={
+                "operation": "RETURN_SHIFT_TO_WORK_QUEUE",
+                "allocation_id": allocation_id,
+                "body": _json_body(body),
+            },
+            action=lambda: _payload(
+                facade.return_shift_to_work_queue(
+                    ReturnShiftToWorkQueueCommand(
+                        allocation_id=allocation_id,
+                        command_id=idempotency_key,
+                        **body.model_dump(),
+                    )
+                )
+            ),
+        )
+
+    @router.post("/segments/{segment_id}/return-to-work-queue")
+    def return_segment_to_work_queue(
+        segment_id: str,
+        body: RequestWorkQueueReturnRequest,
+        idempotency_key: str = Header(alias="Idempotency-Key", min_length=1),
+        facade: ApplicationFacade = Depends(facade_dependency),
+        idempotency: IdempotentCommandExecutor = Depends(stable_idempotency),
+    ) -> dict[str, Any]:
+        return idempotency.execute(
+            scope="request_work_queue.return_segment",
+            key=idempotency_key,
+            request_payload={
+                "operation": "RETURN_SEGMENT_TO_WORK_QUEUE",
+                "segment_id": segment_id,
+                "body": _json_body(body),
+            },
+            action=lambda: _payload(
+                facade.return_segment_to_work_queue(
+                    ReturnSegmentToWorkQueueCommand(
+                        segment_id=segment_id,
+                        command_id=idempotency_key,
+                        **body.model_dump(),
+                    )
+                )
+            ),
+        )
+
+    @router.post("/allocations/{allocation_id}/permanent-reduction")
+    def permanently_reduce_shift_hours(
+        allocation_id: str,
+        body: RequestPermanentReductionRequest,
+        idempotency_key: str = Header(alias="Idempotency-Key", min_length=1),
+        facade: ApplicationFacade = Depends(facade_dependency),
+        idempotency: IdempotentCommandExecutor = Depends(stable_idempotency),
+    ) -> dict[str, Any]:
+        return idempotency.execute(
+            scope="request_work_queue.permanent_reduction",
+            key=idempotency_key,
+            request_payload={
+                "operation": "PERMANENTLY_REDUCE_SHIFT_HOURS",
+                "allocation_id": allocation_id,
+                "body": _json_body(body),
+            },
+            action=lambda: _payload(
+                facade.permanently_reduce_shift_hours(
+                    PermanentlyReduceShiftHoursCommand(
+                        allocation_id=allocation_id,
+                        command_id=idempotency_key,
+                        **body.model_dump(),
+                    )
+                )
+            ),
         )
 
     @router.post("/allocations/{allocation_id}/release")

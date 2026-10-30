@@ -17,6 +17,7 @@ from ..application import (
     PlannerQueryPort,
     PlanningService,
     ResourceAdminService,
+    RequestWorkQueueService,
     WorkPackageService,
 )
 from ..application.approval_cycles import ApprovalCycleService
@@ -70,6 +71,7 @@ from ..infrastructure.sql import (
     SqlUserIdentityRepository,
     SqlWorkPackageRepository,
 )
+from ..infrastructure.sql.request_work_queue_commands import SqlRequestWorkQueueCommandAdapter
 from ..infrastructure.sql.communication_repository import SqlCommunicationRepository
 from ..infrastructure.sql.project_manager_admin_repository import (
     SqlProjectManagerAdminProjectRepository,
@@ -132,6 +134,16 @@ def build_sql_facade(
         ),
         journal,
         session,
+    )
+    request_work_queue_commands = SqlRequestWorkQueueCommandAdapter(
+        session,
+        planning=planning_commands,
+        versioning=planning_versions,
+        journal=journal,
+        actor_user_id=actor_user_id,
+        actor_name=actor,
+        permissions=permissions,
+        roles=roles,
     )
     composite_allocation_commands = SqlCompositeAllocationCommandAdapter(
         session,
@@ -198,7 +210,12 @@ def build_sql_facade(
             approval_cycles=approval_cycle_service,
             approval_votes=approval_vote_service,
         ),
-        segments=SegmentService(segments, planning_commands, planning_authorization),
+        segments=SegmentService(
+            segments,
+            planning_commands,
+            planning_authorization,
+            approved_sync,
+        ),
         allocations=AllocationService(allocation_commands),
         quick_shifts=QuickShiftService(segments, allocation_commands),
         composite_allocations=CompositeAllocationService(composite_allocation_commands),
@@ -208,6 +225,7 @@ def build_sql_facade(
             resources,
             current_user_id=actor_user_id,
         ),
+        request_work_queue=RequestWorkQueueService(request_work_queue_commands),
         planning_versions=planning_versions,
     )
 

@@ -294,6 +294,18 @@ class AuditedSegmentRepository(SegmentRepositoryPort):
             )
         return reference
 
+    def planned_hours_overallocation_context(
+        self,
+        segment_id: str,
+        proposed_base_hours: float,
+    ) -> Mapping[str, Any] | None:
+        action = getattr(self._delegate, "planned_hours_overallocation_context", None)
+        return (
+            action(segment_id, proposed_base_hours)
+            if callable(action)
+            else None
+        )
+
     def update(self, segment_id: str, updates: Mapping[str, Any]) -> None:
         previous = self._journal.requirement_snapshot(segment_id)
         self._delegate.update(segment_id, updates)

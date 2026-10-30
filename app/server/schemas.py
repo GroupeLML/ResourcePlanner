@@ -465,6 +465,16 @@ class ManualAllocationRequest(ResourceReferenceRequest):
     overallocation_policy: OverallocationPolicy | None = None
 
 
+class RequestWorkQueueReturnRequest(StrictRequest):
+    expected_planning_version: int = Field(ge=1)
+    expected_approval_revision_id: str = Field(min_length=1)
+    expected_operational_version: int = Field(ge=1)
+
+
+class RequestPermanentReductionRequest(RequestWorkQueueReturnRequest):
+    expected_request_version: int = Field(ge=1)
+
+
 class AllocationDropEvaluateRequest(StrictRequest):
     resource_id: str = Field(min_length=1)
     day: date

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from collections import defaultdict
 from dataclasses import dataclass
 from decimal import Decimal
@@ -11,6 +12,7 @@ from sqlalchemy.orm import Session
 from ...application.command_ports import ApprovedDemandSyncPort
 from ...application.errors import ApplicationConflictError
 from ...application.operational_contacts import OperationalContactService
+from ...domain.request_reduction import reduction_subject_fingerprint
 from ...domain.operational_contacts import (
     PROVENANCE_APPROVAL_CAPTURE,
     PROVENANCE_LEGACY_UNKNOWN,
@@ -22,6 +24,7 @@ from ...domain.confirmation import CONFIRMATION_CONFIRMED, normalize_confirmatio
 from ...domain.demand_periods import PERIOD_KIND_CUMULATIVE, resolve_period_authority
 from .approval_revision_models import (
     APPROVAL_REFERENCE_CAPTURED,
+    RequestApprovalReference,
     RequestApprovalRevision,
 )
 from .approval_revision_repository import SqlRequestApprovalRevisionRepository
@@ -51,6 +54,15 @@ from .request_plan_preparation import (
     SqlRequestPlanPreparer,
 )
 from .planning_version import SqlPlanningMutationVersionRepository
+from .planning_intent_repository import SqlRequestRequirementPlanningIntentRepository
+from .operational_choice_models import (
+    PLANNING_INTENT_AUTO,
+    PLANNING_INTENT_QUEUED,
+    PLANNING_TARGET_EXPLICIT_NONE,
+    PLANNING_TARGET_EXPLICIT_RESOURCE,
+    RequestCompletionReduction,
+    RequestRequirementPlanningIntent,
+)
 from .planning_window_override_repository import SqlPlanningWindowOverrideRepository
 from .operational_contact_repository import SqlOperationalContactRepository
 from .segment_repository import SqlSegmentRepository
@@ -443,6 +455,39 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                 )
                 .order_by(ResourceRequirement.created_at, ResourceRequirement.id)
             ).all()
+        )
+
+    def _preserve_zero_effective_terminal(
+        self,
+        requirement: ResourceRequirement,
+    ) -> bool:
+        if _text(requirement.status) != "Terminé":
+            return False
+        intent = self._session.scalar(
+            select(RequestRequirementPlanningIntent).where(
+                RequestRequirementPlanningIntent.current_resource_requirement_id
+                == requirement.id
+            )
+        )
+        if intent is None:
+            return False
+        latest = self._session.scalar(
+            select(RequestCompletionReduction)
+            .where(
+                RequestCompletionReduction.planning_intent_id == intent.id,
+                RequestCompletionReduction.reconciliation_state == "ACTIVE",
+            )
+            .order_by(
+                RequestCompletionReduction.created_at.desc(),
+                RequestCompletionReduction.id.desc(),
+            )
+        )
+        return bool(
+            latest is not None
+            and Decimal(str(latest.effective_need_after)).quantize(
+                Decimal("0.01")
+            )
+            <= 0
         )
 
     def _requirement_links(self, requirement_ids: set[str]) -> dict[str, str]:
@@ -1059,7 +1104,14 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
 
         requirement.project_id = project.id
         requirement.workforce_request_id = request.id
-        requirement.source_request_line_id = spec.source_request_line_id
+        source_line = (
+            self._session.get(RequestLine, spec.source_request_line_id)
+            if spec.source_request_line_id
+            else None
+        )
+        requirement.source_request_line_id = (
+            source_line.id if source_line is not None else None
+        )
         requirement.start_date = spec.start_date
         requirement.end_date = spec.end_date
         requirement.planned_hours = spec.planned_hours
@@ -1077,11 +1129,6 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             else request.priority or "Normale"
         )
         requirement.origin = ORIGIN_REQUEST
-        source_line = (
-            self._session.get(RequestLine, spec.source_request_line_id)
-            if spec.source_request_line_id
-            else None
-        )
         self._capture_approved_contact_context(
             request,
             requirement,
@@ -1097,6 +1144,46 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
         )
         self._update_period_link(requirement, source_period)
         return requirement
+
+    def _bind_planning_intent(
+        self,
+        request: WorkforceRequest,
+        requirement: ResourceRequirement,
+        spec: PreparedRequirementSpec,
+        *,
+        approval_revision_id: str | None,
+    ) -> None:
+        if not approval_revision_id:
+            return
+        source_line_id = (
+            spec.source_request_line_id
+            if spec.source_request_line_id
+            and self._session.get(RequestLine, spec.source_request_line_id) is not None
+            else None
+        )
+        intent = SqlRequestRequirementPlanningIntentRepository(self._session).ensure(
+            workforce_request_id=request.id,
+            approved_entry_key=spec.approved_entry_key,
+            slot_index=spec.slot_index,
+            source_request_line_id=source_line_id,
+            source_period_id=spec.source_period_id,
+            approval_revision_id=approval_revision_id,
+            current_resource_requirement_id=requirement.id,
+        )
+        if (
+            intent.intent_mode == PLANNING_INTENT_QUEUED
+            or intent.target_mode == PLANNING_TARGET_EXPLICIT_NONE
+        ):
+            requirement.assigned_resource_id = None
+            if requirement.status not in {"Terminé", "Annulé"}:
+                requirement.status = "À assigner"
+        elif (
+            intent.target_mode == PLANNING_TARGET_EXPLICIT_RESOURCE
+            and intent.target_resource_id
+        ):
+            requirement.assigned_resource_id = intent.target_resource_id
+            if requirement.status not in {"Terminé", "Annulé"}:
+                requirement.status = "Planifié"
 
     def _sync_request_lines(
         self,
@@ -1127,18 +1214,28 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
         )
         obsolete = list(obsolete_rows)
         for requirement in obsolete:
-            requirement.status = "Annulé"
+            if not self._preserve_zero_effective_terminal(requirement):
+                requirement.status = "Annulé"
 
         materialized: list[ResourceRequirement] = []
         for match in matches:
-            materialized.append(
-                self._apply_line_spec(
-                    request,
-                    project,
-                    match.requirement,
-                    match.spec,
-                )
+            requirement = self._apply_line_spec(
+                request,
+                project,
+                match.requirement,
+                match.spec,
             )
+            if self._responsibility_revision_id:
+                requirement.approval_revision_id = self._responsibility_revision_id
+                requirement.approved_entry_key = match.spec.approved_entry_key
+                requirement.approval_reference_status = APPROVAL_REFERENCE_CAPTURED
+            self._bind_planning_intent(
+                request,
+                requirement,
+                match.spec,
+                approval_revision_id=self._responsibility_revision_id,
+            )
+            materialized.append(requirement)
 
         emergency = self._emergency_materialization(request)
         self._session.add(
@@ -1172,11 +1269,45 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
         )
         self._session.flush()
 
-    def sync_operational_choices(self, demand_number: str) -> None:
+    def sync_operational_choices(
+        self,
+        demand_number: str,
+        *,
+        acknowledged_overallocation_segment_ids: Sequence[str] = (),
+        pre_mutation_effective_hours_by_segment: Mapping[str, float] | None = None,
+    ) -> None:
         """Resync active planning from approved authorization, never from candidate data."""
 
         request = self._guarded_materialization_request(demand_number)
         current = self._active_requirements(request.id)
+        acknowledged_public_ids = {
+            _text(value)
+            for value in acknowledged_overallocation_segment_ids
+            if _text(value)
+        }
+        acknowledged_requirement_ids = {
+            requirement.id
+            for requirement in current
+            if (
+                requirement.id in acknowledged_public_ids
+                or _text(requirement.legacy_segment_id) in acknowledged_public_ids
+            )
+        }
+        provided_effective = dict(pre_mutation_effective_hours_by_segment or {})
+        pre_mutation_effective_hours_by_requirement = {
+            requirement.id: float(
+                provided_effective.get(
+                    requirement.id,
+                    provided_effective.get(_text(requirement.legacy_segment_id)),
+                )
+            )
+            for requirement in current
+            if provided_effective.get(
+                requirement.id,
+                provided_effective.get(_text(requirement.legacy_segment_id)),
+            )
+            is not None
+        }
         prepared = self._plan_preparer.prepare_active(
             request,
             current=current,
@@ -1186,6 +1317,12 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             current,
             prepared.specs,
             target_project_id=prepared.project_id,
+            acknowledged_overallocation_requirement_ids=(
+                tuple(acknowledged_requirement_ids)
+            ),
+            pre_mutation_effective_hours_by_requirement=(
+                pre_mutation_effective_hours_by_requirement
+            ),
         )
         matches, obsolete = self._plan_preparer.match_current(
             request,
@@ -1224,7 +1361,8 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
         self._restore_approved_responsibility_only = True
 
         for requirement in obsolete:
-            requirement.status = "Annulé"
+            if not self._preserve_zero_effective_terminal(requirement):
+                requirement.status = "Annulé"
 
         materialized: list[ResourceRequirement] = []
         for match in matches:
@@ -1238,6 +1376,12 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             requirement.approval_revision_id = prepared.approval_revision_id
             requirement.approved_entry_key = match.spec.approved_entry_key
             requirement.approval_reference_status = APPROVAL_REFERENCE_CAPTURED
+            self._bind_planning_intent(
+                request,
+                requirement,
+                match.spec,
+                approval_revision_id=prepared.approval_revision_id,
+            )
             materialized.append(requirement)
 
         self._session.add(
@@ -1300,6 +1444,131 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                 requirement.status = "Annulé"
         self._session.flush()
 
+    def _assert_reduction_reapproval_compatible(
+        self,
+        request: WorkforceRequest,
+        candidate_specs: tuple[PreparedRequirementSpec, ...] | list[PreparedRequirementSpec],
+    ) -> None:
+        reduced_intents = self._session.scalars(
+            select(RequestRequirementPlanningIntent)
+            .join(
+                RequestCompletionReduction,
+                RequestCompletionReduction.planning_intent_id
+                == RequestRequirementPlanningIntent.id,
+            )
+            .where(
+                RequestRequirementPlanningIntent.workforce_request_id == request.id,
+                RequestCompletionReduction.reconciliation_state == "ACTIVE",
+            )
+            .distinct()
+        ).all()
+        if not reduced_intents:
+            return
+
+        reference = self._session.get(RequestApprovalReference, request.id)
+        if reference is None or not reference.active_revision_id:
+            raise ApplicationConflictError(
+                "Les réductions actives ne peuvent pas être réconciliées sans révision approuvée active.",
+                code="reduction_rebase_required",
+            )
+        active_revision = self._session.get(
+            RequestApprovalRevision,
+            reference.active_revision_id,
+        )
+        if active_revision is None:
+            raise ApplicationConflictError(
+                "La révision approuvée active est introuvable pour réconcilier les réductions.",
+                code="reduction_rebase_required",
+            )
+
+        candidate_envelope = self._approval_revisions.candidate_envelope(request)
+        candidate_entries = {
+            entry.identity.stable_key: entry.authorization_payload()
+            for entry in candidate_envelope.entries
+        }
+        candidate_request_context = {
+            "project_id": request.project_id,
+            "site_client": request.site_client,
+            "location": request.location,
+            "line_mode": bool(request.line_mode),
+        }
+        active_payload = json.loads(active_revision.payload_text)
+        active_entries = {
+            _text(row.get("identity")): row
+            for row in active_payload.get("authorization", {}).get("entries", [])
+            if isinstance(row, dict) and _text(row.get("identity"))
+        }
+        active_request_context = (
+            active_payload.get("request")
+            if isinstance(active_payload.get("request"), dict)
+            else {}
+        )
+
+        for intent in reduced_intents:
+            active_entry = active_entries.get(intent.approved_entry_key)
+            candidate_entry = candidate_entries.get(intent.approved_entry_key)
+            if active_entry is None or candidate_entry is None:
+                raise ApplicationConflictError(
+                    "Une réduction active ne correspond plus au même slot autorisé.",
+                    code="reduction_rebase_required",
+                    context={"planning_intent_id": intent.id},
+                )
+
+            slot_count = max(int(candidate_entry.get("slot_count") or 1), 1)
+            if intent.slot_index < 0 or intent.slot_index >= slot_count:
+                raise ApplicationConflictError(
+                    "La topologie autorisée a changé pour un slot réduit.",
+                    code="reduction_rebase_required",
+                    context={
+                        "planning_intent_id": intent.id,
+                        "slot_index": int(intent.slot_index),
+                        "slot_count": slot_count,
+                    },
+                )
+
+            historical_fingerprint = reduction_subject_fingerprint(
+                request_context=active_request_context,
+                authorization_entry=active_entry,
+            )
+            candidate_fingerprint = reduction_subject_fingerprint(
+                request_context=candidate_request_context,
+                authorization_entry=candidate_entry,
+            )
+            stored_fingerprints = {
+                _text(value)
+                for value in self._session.scalars(
+                    select(RequestCompletionReduction.authorization_fingerprint)
+                    .where(
+                        RequestCompletionReduction.planning_intent_id == intent.id,
+                        RequestCompletionReduction.reconciliation_state == "ACTIVE",
+                    )
+                ).all()
+                if _text(value)
+            }
+            if len(stored_fingerprints) > 1:
+                raise ApplicationConflictError(
+                    "Les réductions actives du slot portent des sujets d'autorisation incompatibles.",
+                    code="reduction_rebase_required",
+                    context={"planning_intent_id": intent.id},
+                )
+            if stored_fingerprints and stored_fingerprints != {historical_fingerprint}:
+                raise ApplicationConflictError(
+                    "La provenance d'une réduction active ne correspond plus à l'autorisation historique.",
+                    code="reduction_rebase_required",
+                    context={"planning_intent_id": intent.id},
+                )
+            if candidate_fingerprint != historical_fingerprint:
+                raise ApplicationConflictError(
+                    "La nouvelle autorisation change le sujet métier d'un slot réduit; une réconciliation explicite est requise.",
+                    code="reduction_rebase_required",
+                    context={
+                        "planning_intent_id": intent.id,
+                        "approved_entry_key": intent.approved_entry_key,
+                        "slot_index": int(intent.slot_index),
+                    },
+                )
+
+
     def sync_approved(
         self,
         demand_number: str,
@@ -1323,6 +1592,10 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             current_before,
             prepared.specs,
             target_project_id=request.project_id,
+        )
+        self._assert_reduction_reapproval_compatible(
+            request,
+            prepared.specs,
         )
         if not bool(request.line_mode) and not periods:
             self._legacy.prevalidate_approved(demand_number)
@@ -1403,7 +1676,93 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                 request,
                 revision,
             )
+            rebound_current = self._active_requirements(request.id)
+            rebound_matches, _rebound_obsolete = self._plan_preparer.match_current(
+                request,
+                rebound_current,
+                prepared.specs,
+            )
+            for match in rebound_matches:
+                if match.requirement is None:
+                    continue
+                self._bind_planning_intent(
+                    request,
+                    match.requirement,
+                    match.spec,
+                    approval_revision_id=revision.id,
+                )
             self._approval_revisions.activate_revision(request, revision)
+            active_reductions = self._session.scalars(
+                select(RequestCompletionReduction)
+                .where(
+                    RequestCompletionReduction.workforce_request_id == request.id,
+                    RequestCompletionReduction.reconciliation_state == "ACTIVE",
+                )
+            ).all()
+            for reduction in active_reductions:
+                reduction.reconciled_approval_revision_id = revision.id
+                intent = self._session.get(
+                    RequestRequirementPlanningIntent,
+                    reduction.planning_intent_id,
+                )
+                if intent is not None:
+                    intent.approval_revision_id = revision.id
+                    if intent.current_resource_requirement_id:
+                        terminal_requirement = self._session.get(
+                            ResourceRequirement,
+                            intent.current_resource_requirement_id,
+                        )
+                        if (
+                            terminal_requirement is not None
+                            and self._preserve_zero_effective_terminal(
+                                terminal_requirement
+                            )
+                        ):
+                            terminal_requirement.approval_revision_id = revision.id
+                            terminal_requirement.approved_entry_key = (
+                                intent.approved_entry_key
+                            )
+                            terminal_requirement.approval_reference_status = (
+                                APPROVAL_REFERENCE_CAPTURED
+                            )
+                if reduction.authorization_fingerprint is None:
+                    intent = self._session.get(
+                        RequestRequirementPlanningIntent,
+                        reduction.planning_intent_id,
+                    )
+                    if intent is None:
+                        raise ApplicationConflictError(
+                            "La réduction active ne possède plus de slot durable.",
+                            code="reduction_rebase_required",
+                        )
+                    payload = json.loads(revision.payload_text)
+                    current_entry = next(
+                        (
+                            row
+                            for row in payload.get("authorization", {}).get("entries", [])
+                            if isinstance(row, dict)
+                            and _text(row.get("identity")) == intent.approved_entry_key
+                        ),
+                        None,
+                    )
+                    if current_entry is None:
+                        raise ApplicationConflictError(
+                            "La réduction active ne correspond plus à une entrée approuvée.",
+                            code="reduction_rebase_required",
+                        )
+                    request_context = (
+                        payload.get("request")
+                        if isinstance(payload.get("request"), dict)
+                        else {}
+                    )
+                    reduction.authorization_fingerprint = reduction_subject_fingerprint(
+                        request_context=request_context,
+                        authorization_entry=current_entry,
+                    )
+            self._session.flush()
+            self.sync_operational_choices(
+                _text(request.legacy_demand_number) or request.id
+            )
             self._session.add(
                 WorkforceRequestHistory(
                     workforce_request_id=request.id,

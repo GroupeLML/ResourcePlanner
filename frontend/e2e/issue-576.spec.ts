@@ -96,7 +96,7 @@ test("Quick Shift sans demande peut étendre son segment à la semaine sans mult
     await expect(confirmation).toHaveValue("Tentative");
     await expect(confirmation.getByRole("option", { name: "Héritée de la demande" })).toHaveCount(0);
     await segmentDialog.getByLabel("Date de fin").fill(targetFriday);
-    await expect(segmentDialog.getByLabel("Heures prévues")).toHaveValue("8");
+    await expect(segmentDialog.getByLabel("Heures de base opérationnelles")).toHaveValue("8");
     await segmentDialog.getByRole("button", { name: "Enregistrer", exact: true }).click();
     await expect(segmentDialog).toBeHidden();
 

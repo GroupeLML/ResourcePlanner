@@ -161,8 +161,19 @@ from .identity_constraints import (
     WORKFORCE_REQUEST_NUMBER_INDEX,
 )
 from .resource_identity_constraints import RESOURCE_EXTERNAL_ID_INDEX
-from .operational_choice_models import RequestOperationalState
+from .operational_choice_models import (
+    PlanningWorkQueueRelease,
+    PlanningWorkQueueRestoration,
+    RequestCompletionReduction,
+    RequestOperationalState,
+    RequestRequirementPlanningIntent,
+)
 from .operational_choice_repository import SqlRequestOperationalChoiceRepository
+from .request_work_queue_commands import SqlRequestWorkQueueCommandAdapter
+from .planning_intent_repository import (
+    SqlRequestRequirementPlanningIntentRepository,
+    stable_planning_slot_key,
+)
 from .operational_contact_repository import SqlOperationalContactRepository
 from .operational_responsibility_mutation_repository import (
     SqlOperationalResponsibilityMutationRepository,
@@ -271,6 +282,9 @@ __all__ = [
     "RequestApprovalReference",
     "RequestApprovalRevision",
     "RequestOperationalState",
+    "RequestRequirementPlanningIntent",
+    "PlanningWorkQueueRelease",
+    "RequestCompletionReduction",
     "RequestLineCompetency",
     "RESOURCE_EXTERNAL_ID_INDEX",
     "RESOURCE_REQUIREMENT_NUMBER_INDEX",
@@ -317,6 +331,8 @@ __all__ = [
     "SqlOperationalContactRepository",
     "SqlOperationalResponsibilityMutationRepository",
     "SqlRequestOperationalChoiceRepository",
+    "SqlRequestRequirementPlanningIntentRepository",
+    "stable_planning_slot_key",
     "SqlProjectCommunicationRepository",
     "SqlProjectCoManagerRepository",
     "SqlProjectManagerResolutionRepository",
@@ -330,6 +346,7 @@ __all__ = [
     "SqlPlanningCommandAdapter",
     "SqlPlanningWindowOverrideRepository",
     "SqlRequestPlanningAuthorizationRepository",
+    "SqlRequestWorkQueueCommandAdapter",
     "SqlPlanningReadRepository",
     "SqlPlanningMutationVersionRepository",
     "SqlProjectSyncRepository",

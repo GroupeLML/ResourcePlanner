@@ -215,6 +215,7 @@ test("760 distingue disponibilité, qualification et autorité avant soumission"
     await submit.click();
     expect(submitted).toBeTruthy();
   } finally {
+    await page.unrouteAll({ behavior: "wait" });
     await context.close();
   }
 });

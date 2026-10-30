@@ -43,6 +43,14 @@ from .errors import ApplicationConflictError, ApplicationOperationError
 from .planning_service import PlanningService
 from .repository_ports import PlanningMutationVersionPort
 from .quick_shift_service import QuickShiftService
+from .request_work_queue import (
+    PermanentlyReduceShiftHoursCommand,
+    RequestWorkQueueMutationResult,
+    RequestWorkQueuePreviewResult,
+    RequestWorkQueueService,
+    ReturnSegmentToWorkQueueCommand,
+    ReturnShiftToWorkQueueCommand,
+)
 from .resource_admin import (
     AvailabilityRuleCreateCommand,
     AvailabilityRuleMutationResult,
@@ -94,6 +102,7 @@ class ApplicationFacade:
         planning: PlanningService,
         work_packages: WorkPackageService | None = None,
         resource_admin: ResourceAdminService | None = None,
+        request_work_queue: RequestWorkQueueService | None = None,
         planning_versions: PlanningMutationVersionPort | None = None,
     ) -> None:
         self._demands = demands
@@ -104,6 +113,7 @@ class ApplicationFacade:
         self._planning = planning
         self._work_packages = work_packages
         self._resource_admin = resource_admin
+        self._request_work_queue = request_work_queue
         self._planning_versions = planning_versions
 
     def _acquire_planning_version(self, expected_version: int | None = None) -> int | None:
@@ -126,6 +136,14 @@ class ApplicationFacade:
                 code="composite_allocation_commands_unavailable",
             )
         return self._composite_allocations
+
+    def _request_work_queue_service(self) -> RequestWorkQueueService:
+        if self._request_work_queue is None:
+            raise ApplicationOperationError(
+                "Les commandes ADR-034 de File de Travail ne sont pas configurées.",
+                code="request_work_queue_commands_unavailable",
+            )
+        return self._request_work_queue
 
     def _resource_admin_service(self) -> ResourceAdminService:
         if self._resource_admin is None:
@@ -480,6 +498,30 @@ class ApplicationFacade:
         self._acquire_planning_version(command.expected_planning_version)
         self._allocations.delete_manual_command(command)
         return AllocationMutationResult(_identifier(command.allocation_id), action="deleted")
+
+    def preview_request_work_queue_actions(
+        self,
+        allocation_id: str,
+    ) -> RequestWorkQueuePreviewResult:
+        return self._request_work_queue_service().preview_shift(allocation_id)
+
+    def return_shift_to_work_queue(
+        self,
+        command: ReturnShiftToWorkQueueCommand,
+    ) -> RequestWorkQueueMutationResult:
+        return self._request_work_queue_service().return_shift(command)
+
+    def return_segment_to_work_queue(
+        self,
+        command: ReturnSegmentToWorkQueueCommand,
+    ) -> RequestWorkQueueMutationResult:
+        return self._request_work_queue_service().return_segment(command)
+
+    def permanently_reduce_shift_hours(
+        self,
+        command: PermanentlyReduceShiftHoursCommand,
+    ) -> RequestWorkQueueMutationResult:
+        return self._request_work_queue_service().permanently_reduce_shift(command)
 
     def evaluate_allocation_drop(
         self,

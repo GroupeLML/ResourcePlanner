@@ -250,6 +250,15 @@ from .task_catalog import (
     TaskCatalogSyncResult,
     TaskCatalogSyncService,
 )
+from .request_work_queue import (
+    PermanentlyReduceShiftHoursCommand,
+    RequestWorkQueueCommandPort,
+    RequestWorkQueueMutationResult,
+    RequestWorkQueuePreviewResult,
+    RequestWorkQueueService,
+    ReturnSegmentToWorkQueueCommand,
+    ReturnShiftToWorkQueueCommand,
+)
 from .resource_admin import (
     AVAILABILITY_HOLIDAY,
     AVAILABILITY_STANDARD,
@@ -427,6 +436,13 @@ __all__ = [
     "ProjectSyncService",
     "QuickShiftCreateCommand",
     "QuickShiftCreatedResult",
+    "PermanentlyReduceShiftHoursCommand",
+    "RequestWorkQueueCommandPort",
+    "RequestWorkQueueMutationResult",
+    "RequestWorkQueuePreviewResult",
+    "RequestWorkQueueService",
+    "ReturnSegmentToWorkQueueCommand",
+    "ReturnShiftToWorkQueueCommand",
     "RequestLineContactContext",
     "RequestLineContactResolution",
     "ResourceAdminRepositoryPort",

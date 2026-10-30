@@ -7,12 +7,14 @@ import json
 import re
 from typing import Any
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import case, delete, func, select, true, update
 from sqlalchemy.orm import Session
 
 from ...application.read_models import SegmentReadModel
 from ...application.repository_ports import SegmentRepositoryPort
 from ...domain.confirmation import CONFIRMATION_CONFIRMED, normalize_confirmation
+from ...domain.effective_need import resolve_effective_slot_need
+from ...domain.planning_engine import MISSING_ALLOCATION_TYPE
 from ...domain.load_profiles import normalize_load_profile
 from ...domain.operational_contacts import (
     PROVENANCE_OPERATIONAL_CAPTURE,
@@ -22,6 +24,12 @@ from ...domain.operational_contacts import (
 from .demand_period_models import WorkforceRequestPeriod, WorkforceRequestPeriodRequirement
 from .segment_asset_guard import assert_segment_asset_mutation_compatible
 from .operational_contact_repository import SqlOperationalContactRepository
+from .planning_intent_repository import SqlRequestRequirementPlanningIntentRepository
+from .operational_choice_models import (
+    PLANNING_INTENT_PRESERVE_EXISTING,
+    RequestCompletionReduction,
+    RequestRequirementPlanningIntent,
+)
 from .models import (
     ORIGIN_REQUEST,
     Project,
@@ -30,6 +38,7 @@ from .models import (
     Resource,
     ResourceRequirement,
     ResourceRequirementCompetency,
+    Shift,
     WorkforceRequest,
     WorkPackage,
 )
@@ -74,12 +83,53 @@ class SqlSegmentRepository(SegmentRepositoryPort):
         self._actor_name = _text(actor_name)
 
     def _row_query(self):
+        zero_effective = (
+            select(func.count())
+            .select_from(RequestRequirementPlanningIntent)
+            .join(
+                RequestCompletionReduction,
+                RequestCompletionReduction.planning_intent_id
+                == RequestRequirementPlanningIntent.id,
+            )
+            .where(
+                RequestRequirementPlanningIntent.current_resource_requirement_id
+                == ResourceRequirement.id,
+                RequestCompletionReduction.reconciliation_state == "ACTIVE",
+                RequestCompletionReduction.effective_need_after <= 0,
+                RequestCompletionReduction.effective_need_before
+                == ResourceRequirement.planned_hours,
+            )
+            .correlate(ResourceRequirement)
+            .scalar_subquery()
+        )
+        effective_need = case(
+            (zero_effective > 0, Decimal("0.00")),
+            else_=ResourceRequirement.planned_hours,
+        )
+        active_reduction_hours = (
+            select(func.coalesce(func.sum(RequestCompletionReduction.reduction_hours), 0))
+            .select_from(RequestRequirementPlanningIntent)
+            .join(
+                RequestCompletionReduction,
+                RequestCompletionReduction.planning_intent_id
+                == RequestRequirementPlanningIntent.id,
+            )
+            .where(
+                RequestRequirementPlanningIntent.current_resource_requirement_id
+                == ResourceRequirement.id,
+                RequestCompletionReduction.reconciliation_state == "ACTIVE",
+            )
+            .correlate(ResourceRequirement)
+            .scalar_subquery()
+        )
         return (
             select(
                 ResourceRequirement,
                 Project,
                 WorkforceRequest,
                 Resource,
+                effective_need.label("effective_need"),
+                active_reduction_hours.label("active_reduction_hours"),
             )
             .join(Project, ResourceRequirement.project_id == Project.id)
             .outerjoin(
@@ -89,13 +139,50 @@ class SqlSegmentRepository(SegmentRepositoryPort):
             .outerjoin(Resource, ResourceRequirement.assigned_resource_id == Resource.id)
         )
 
+    def _active_reduction_hours(
+        self,
+        requirement: ResourceRequirement,
+    ) -> tuple[Decimal, ...]:
+        intent = self._session.scalar(
+            select(RequestRequirementPlanningIntent).where(
+                RequestRequirementPlanningIntent.current_resource_requirement_id
+                == requirement.id
+            )
+        )
+        if intent is None:
+            return ()
+        return tuple(
+            Decimal(str(value)).quantize(Decimal("0.01"))
+            for value in self._session.scalars(
+                select(RequestCompletionReduction.reduction_hours).where(
+                    RequestCompletionReduction.planning_intent_id == intent.id,
+                    RequestCompletionReduction.reconciliation_state == "ACTIVE",
+                )
+            ).all()
+        )
+
     @staticmethod
+    def _operational_base_hours(
+        *,
+        effective_need: Decimal,
+        active_reduction_hours: Decimal,
+    ) -> Decimal:
+        return (effective_need + active_reduction_hours).quantize(Decimal("0.01"))
+
     def _read_model(
+        self,
         requirement: ResourceRequirement,
         project: Project,
         request: WorkforceRequest | None,
         resource: Resource | None,
+        *,
+        effective_need: Decimal,
+        active_reduction_hours: Decimal,
     ) -> SegmentReadModel:
+        operational_base_hours = self._operational_base_hours(
+            effective_need=effective_need,
+            active_reduction_hours=active_reduction_hours,
+        )
         return SegmentReadModel(
             segment_id=_text(requirement.legacy_segment_id) or requirement.id,
             demand_number=(
@@ -113,7 +200,8 @@ class SqlSegmentRepository(SegmentRepositoryPort):
             ),
             start_date=requirement.start_date,
             end_date=requirement.end_date,
-            planned_hours=float(requirement.planned_hours),
+            planned_hours=float(effective_need),
+            operational_base_hours=float(operational_base_hours),
             status=_text(requirement.status),
             description=_optional_text(requirement.description),
             origin=_optional_text(requirement.origin),
@@ -147,8 +235,15 @@ class SqlSegmentRepository(SegmentRepositoryPort):
             )
         ).all()
         return tuple(
-            self._read_model(requirement, project, request, resource)
-            for requirement, project, request, resource in rows
+            self._read_model(
+                requirement,
+                project,
+                request,
+                resource,
+                effective_need=Decimal(str(effective_need)).quantize(Decimal("0.01")),
+                active_reduction_hours=Decimal(str(active_reduction_hours)),
+            )
+            for requirement, project, request, resource, effective_need, active_reduction_hours in rows
         )
 
     def get(self, segment_id: str) -> SegmentReadModel | None:
@@ -163,8 +258,15 @@ class SqlSegmentRepository(SegmentRepositoryPort):
         ).one_or_none()
         if row is None:
             return None
-        requirement, project, request, resource = row
-        return self._read_model(requirement, project, request, resource)
+        requirement, project, request, resource, effective_need, active_reduction_hours = row
+        return self._read_model(
+            requirement,
+            project,
+            request,
+            resource,
+            effective_need=Decimal(str(effective_need)).quantize(Decimal("0.01")),
+            active_reduction_hours=Decimal(str(active_reduction_hours)),
+        )
 
     def _requirement(self, segment_id: str) -> ResourceRequirement:
         wanted = _text(segment_id)
@@ -484,6 +586,90 @@ class SqlSegmentRepository(SegmentRepositoryPort):
 
         self._session.flush()
         return identifier
+
+    def planned_hours_overallocation_context(
+        self,
+        segment_id: str,
+        proposed_base_hours: float,
+    ) -> Mapping[str, Any] | None:
+        requirement = self._requirement(segment_id)
+        if requirement.origin != ORIGIN_REQUEST:
+            return None
+        intent = self._session.scalar(
+            select(RequestRequirementPlanningIntent).where(
+                RequestRequirementPlanningIntent.current_resource_requirement_id
+                == requirement.id
+            )
+        )
+        if intent is None:
+            return None
+
+        active_reductions = self._active_reduction_hours(requirement)
+        current_effective_need = SqlRequestRequirementPlanningIntentRepository(
+            self._session
+        ).current_effective_need_for_requirement(
+            requirement.id,
+            fallback_hours=requirement.planned_hours,
+        )
+        projected_effective_need = resolve_effective_slot_need(
+            Decimal(str(proposed_base_hours)).quantize(Decimal("0.01")),
+            active_reductions,
+        )
+        retained_shift_filters = [
+            Shift.resource_requirement_id == requirement.id,
+            (Shift.allocation_type.is_(None))
+            | (Shift.allocation_type != MISSING_ALLOCATION_TYPE),
+        ]
+        if (
+            intent.intent_mode != PLANNING_INTENT_PRESERVE_EXISTING
+            and requirement.status != "Terminé"
+        ):
+            # AUTO may regenerate unlocked work; locked/asset-promoted work survives.
+            retained_shift_filters.append(Shift.locked == true())
+        retained_coverage = Decimal(
+            str(
+                self._session.scalar(
+                    select(func.coalesce(func.sum(Shift.hours), 0)).where(
+                        *retained_shift_filters,
+                    )
+                )
+                or 0
+            )
+        ).quantize(Decimal("0.01"))
+        current_excess = max(
+            retained_coverage - current_effective_need,
+            Decimal("0.00"),
+        )
+        projected_excess = max(
+            retained_coverage - projected_effective_need,
+            Decimal("0.00"),
+        )
+        return {
+            "segment_id": _text(requirement.legacy_segment_id) or requirement.id,
+            "planned_hours": float(projected_effective_need),
+            "current_planned_hours": float(current_effective_need),
+            "locked_hours": float(retained_coverage),
+            "current_locked_hours": float(retained_coverage),
+            "projected_locked_hours": float(retained_coverage),
+            "current_excess_hours": float(current_excess),
+            "excess_hours": float(projected_excess),
+            "base_planned_hours": float(proposed_base_hours),
+            "operational_base_hours": float(
+                self._operational_base_hours(
+                    effective_need=current_effective_need,
+                    active_reduction_hours=sum(active_reductions, Decimal("0.00")),
+                )
+            ),
+            "safe_operational_base_hours": float(
+                (
+                    retained_coverage
+                    + sum(active_reductions, Decimal("0.00"))
+                ).quantize(Decimal("0.01"))
+            ),
+            "active_reduction_hours": float(
+                sum(active_reductions, Decimal("0.00"))
+            ),
+        }
 
     def update(self, segment_id: str, updates: Mapping[str, Any]) -> None:
         requirement = self._requirement(segment_id)

@@ -93,4 +93,10 @@ class ApprovedDemandSyncPort(Protocol):
         approved_request_version: int | None = None,
     ) -> None: ...
 
-    def sync_operational_choices(self, demand_number: str) -> None: ...
+    def sync_operational_choices(
+        self,
+        demand_number: str,
+        *,
+        acknowledged_overallocation_segment_ids: Sequence[str] = (),
+        pre_mutation_effective_hours_by_segment: Mapping[str, float] | None = None,
+    ) -> None: ...

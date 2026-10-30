@@ -95,6 +95,7 @@ from .models import (
 )
 from .segment_repository import SqlSegmentRepository
 from .planning_version import SqlPlanningMutationVersionRepository
+from .planning_intent_repository import SqlRequestRequirementPlanningIntentRepository
 from .project_manager_resolution_repository import SqlProjectManagerResolutionRepository
 
 
@@ -499,6 +500,17 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                 [],
             ).append(shift)
 
+        effective_need_by_requirement = (
+            SqlRequestRequirementPlanningIntentRepository(
+                self._session
+            ).current_effective_need_by_requirement(
+                {
+                    requirement.id: requirement.planned_hours
+                    for requirement in requirements
+                }
+            )
+        )
+
         result: list[DemandMaterializedRequirementReadModel] = []
         for requirement in requirements:
             grouped: dict[str, list[float]] = {}
@@ -531,7 +543,10 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             )
             covered = round(sum(row.allocated_hours for row in mobilized), 2)
             locked = round(sum(row.locked_hours for row in mobilized), 2)
-            planned = round(float(requirement.planned_hours), 2)
+            planned = round(
+                float(effective_need_by_requirement[requirement.id]),
+                2,
+            )
             target = resources.get(requirement.assigned_resource_id)
             result.append(
                 DemandMaterializedRequirementReadModel(
@@ -866,10 +881,21 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                     ResourceRequirement.status != "Annulé",
                 )
             ).all()
+            intent_repository = SqlRequestRequirementPlanningIntentRepository(
+                self._session
+            )
+            effective_need_by_requirement = (
+                intent_repository.current_effective_need_by_requirement(
+                    {
+                        requirement.id: requirement.planned_hours
+                        for requirement in current
+                    }
+                )
+            )
             current_plan_hours = round(
                 sum(
                     projected_hours_in_window(
-                        float(requirement.planned_hours),
+                        float(effective_need_by_requirement[requirement.id]),
                         requirement.start_date,
                         requirement.end_date,
                         start,
@@ -1263,11 +1289,24 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                 for requirement_id, values in accumulated.items()
             }
 
+        effective_need_by_requirement = (
+            SqlRequestRequirementPlanningIntentRepository(
+                self._session
+            ).current_effective_need_by_requirement(
+                {
+                    requirement.id: requirement.planned_hours
+                    for requirement, _resource in requirements
+                }
+            )
+        )
         diagnostics: list[PlanningSegmentCapacityDiagnosticReadModel] = []
         for requirement, resource in requirements:
             segment_id = _text(requirement.legacy_segment_id) or requirement.id
             allocated, outside = full_shift_totals.get(requirement.id, (0.0, 0.0))
-            planned = round(float(requirement.planned_hours), 2)
+            planned = round(
+                float(effective_need_by_requirement[requirement.id]),
+                2,
+            )
             unplaced = round(max(planned - allocated, 0.0), 2)
             diagnostics.append(
                 PlanningSegmentCapacityDiagnosticReadModel(
@@ -1377,9 +1416,20 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             if demand is not None and not (
                 demand.status == "En planification" or demand.emergency_override_active
             ):
-                # A submitted modification keeps the old plan visible, but should not
-                # invite assigning that stale plan until it is approved again.
-                continue
+                # ADR-034: a pending candidate must not hide residual work from the
+                # still-active approved plan. Only requirements without a captured
+                # active authorization are withheld while the candidate is pending.
+                requirement_id = _optional_text(segment.requirement_id)
+                active_requirement = (
+                    self._session.get(ResourceRequirement, requirement_id)
+                    if requirement_id is not None
+                    else None
+                )
+                if (
+                    active_requirement is None
+                    or active_requirement.approval_reference_status != "CAPTURED"
+                ):
+                    continue
             if segment.start_date is None or segment.end_date is None:
                 continue
             result.append(
@@ -1446,7 +1496,10 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         end = segment.end_date
         if end < start:
             start, end = end, start
-        required_hours = max(float(segment.automatic_rebuild_hours), 0.0)
+        # ADR-034 recommendations operate on canonical uncovered effective need,
+        # not the automatic rebuild budget. Returned work can therefore be placed
+        # explicitly even while automatic regeneration is suppressed.
+        required_hours = max(float(segment.remaining_hours), 0.0)
         if required_hours <= 0.01:
             return ()
 
