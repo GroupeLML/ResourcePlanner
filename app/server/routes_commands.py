@@ -97,6 +97,7 @@ from .schemas import (
     ResourceUpdateRequest,
     SegmentAssignRequest,
     SegmentPlacementDropRequest,
+    SegmentPlacementPreviewRequest,
     SegmentPlacementResetRequest,
     SegmentCreateRequest,
     SegmentUpdateRequest,
@@ -942,6 +943,20 @@ def build_command_router(
                     technician=getattr(body, "technician", None) or "",
                     resource_id=body.resource_id,
                 )
+            )
+        )
+
+    @router.post("/segments/{segment_id}/place-from-drop/preview")
+    def preview_segment_from_drop(
+        segment_id: str,
+        body: SegmentPlacementPreviewRequest,
+        facade: ApplicationFacade = Depends(facade_dependency),
+    ) -> dict[str, Any]:
+        return _payload(
+            facade.preview_segment_drop(
+                segment_id,
+                body.resource_id,
+                body.dropped_date,
             )
         )
 
