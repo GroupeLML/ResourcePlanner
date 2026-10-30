@@ -311,6 +311,7 @@ class SegmentReadModel:
     active_day_diagnostic: str | None = None
     load_profile: str = "UNIFORM"
     operational_base_hours: float | None = None
+    placement_not_before_date: date | None = None
 
     @classmethod
     def from_mapping(cls, row: Mapping[str, Any]) -> "SegmentReadModel":
@@ -376,4 +377,5 @@ class SegmentReadModel:
                 if row.get("HeuresBaseOperationnelles") is not None
                 else planned_hours
             ),
+            placement_not_before_date=_date(row.get("PlacementNotBeforeDate")),
         )
