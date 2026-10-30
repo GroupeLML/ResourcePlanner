@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import time
+from datetime import date, time
 from decimal import Decimal
 from tempfile import TemporaryDirectory
 import unittest
@@ -206,6 +206,53 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                         requirement.approval_revision_id,
                         prepared.approval_revision_id,
                     )
+            finally:
+                engine.dispose()
+
+    def test_777_compatible_resync_preserves_cutoff_and_no_eligible_window_fails_closed(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-777-p3-cutoff",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._approve(client, 8)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    request, requirement, intent = self._context(session, number)
+                    original_cutoff = requirement.start_date
+                    intent.placement_not_before_date = original_cutoff
+                    session.flush()
+
+                    SqlPeriodAwareApprovedDemandSyncAdapter(
+                        session
+                    ).sync_operational_choices(number)
+                    session.flush()
+                    self.assertEqual(intent.placement_not_before_date, original_cutoff)
+
+                    # Simulate a retained durable intent whose newly authorized W
+                    # no longer intersects the placement interval. The sync gate
+                    # must fail closed rather than erase or guess the intent.
+                    intent.placement_not_before_date = date(2026, 10, 29)
+                    session.flush()
+                    with self.assertRaises(ApplicationConflictError) as raised:
+                        SqlPeriodAwareApprovedDemandSyncAdapter(
+                            session
+                        ).sync_operational_choices(number)
+                    self.assertEqual(
+                        raised.exception.code,
+                        "placement_cutoff_reconciliation_required",
+                    )
+                    self.assertEqual(
+                        intent.placement_not_before_date,
+                        date(2026, 10, 29),
+                    )
+                    self.assertEqual(request.id, intent.workforce_request_id)
             finally:
                 engine.dispose()
 
