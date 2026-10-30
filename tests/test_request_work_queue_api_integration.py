@@ -7,11 +7,13 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.infrastructure.sql import (
     PlanningWorkQueueRelease,
     PlanningWorkQueueRestoration,
+    RequestCompletionReduction,
+    RequestOperationalState,
     Project,
     Resource,
     ResourceAvailabilityRule,
@@ -364,10 +366,8 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                     self.assertFalse(releases[0].active)
                     restored_hours = session.scalar(
                         select(
-                            __import__("sqlalchemy").func.coalesce(
-                                __import__("sqlalchemy").func.sum(
-                                    PlanningWorkQueueRestoration.restored_hours
-                                ),
+                            func.coalesce(
+                                func.sum(PlanningWorkQueueRestoration.restored_hours),
                                 0,
                             )
                         ).where(
@@ -606,13 +606,16 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                 self.assertEqual(segment["planned_hours"], 28.0)
                 self.assertEqual(segment["covered_hours"], 28.0)
                 self.assertEqual(segment["remaining_hours"], 0.0)
-                detail = client.get(f"/api/v1/demands/{number}")
+                detail = client.get(f"/api/v1/demands/{number}/detail")
                 self.assertEqual(detail.status_code, 200, detail.text)
-                active_line = next(
-                    row for row in detail.json()["lines"]
-                    if row.get("active", True)
+                self.assertEqual(
+                    float(detail.json()["materialized_plan"]["planned_hours"]),
+                    28.0,
                 )
-                self.assertEqual(float(active_line["estimated_hours"]), 28.0)
+                self.assertEqual(
+                    float(detail.json()["materialized_plan"]["covered_hours"]),
+                    28.0,
+                )
 
             engine = create_sql_engine(database_url)
             factory = create_session_factory(engine)
@@ -641,24 +644,15 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                         Decimal("40.00"),
                     )
                     reductions = session.scalars(
-                        select(__import__(
-                            "app.infrastructure.sql.operational_choice_models",
-                            fromlist=["RequestCompletionReduction"],
-                        ).RequestCompletionReduction).where(
-                            __import__(
-                                "app.infrastructure.sql.operational_choice_models",
-                                fromlist=["RequestCompletionReduction"],
-                            ).RequestCompletionReduction.workforce_request_id
+                        select(RequestCompletionReduction).where(
+                            RequestCompletionReduction.workforce_request_id
                             == request.id
                         )
                     ).all()
                     self.assertEqual(len(reductions), 1)
                     self.assertEqual(reductions[0].reconciliation_state, "ACTIVE")
                     state = session.get(
-                        __import__(
-                            "app.infrastructure.sql.operational_choice_models",
-                            fromlist=["RequestOperationalState"],
-                        ).RequestOperationalState,
+                        RequestOperationalState,
                         request.id,
                     )
                     self.assertIsNotNone(state)
