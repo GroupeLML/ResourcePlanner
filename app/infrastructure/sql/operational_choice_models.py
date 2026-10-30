@@ -186,6 +186,36 @@ class PlanningWorkQueueRelease(TimestampMixin, Base):
     )
 
 
+class PlanningWorkQueueRestoration(TimestampMixin, Base):
+    """Durable attribution of restored coverage to one work-queue release."""
+
+    __tablename__ = "planning_work_queue_restorations"
+    __table_args__ = (
+        CheckConstraint(
+            "restored_hours > 0",
+            name="planning_work_queue_restoration_hours_positive",
+        ),
+        UniqueConstraint(
+            "shift_id",
+            name="uq_planning_work_queue_restoration_shift",
+        ),
+        Index(
+            "ix_planning_work_queue_restoration_release",
+            "release_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True, default=new_id)
+    release_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("planning_work_queue_releases.id"),
+        nullable=False,
+    )
+    shift_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    restored_hours: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+
+
+
 class RequestCompletionReduction(TimestampMixin, Base):
     """Append-only post-approval reduction of the current effective need for one slot."""
 
