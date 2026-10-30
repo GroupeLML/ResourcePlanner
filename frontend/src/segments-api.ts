@@ -31,6 +31,34 @@ export type SegmentMutationResult = {
   technician?: string | null;
 };
 
+export type SegmentPlacementPreviewWrite = {
+  resource_id: string;
+  dropped_date: string;
+};
+
+export type SegmentPlacementPreviewResult = {
+  allowed: boolean;
+  refusal_code: string | null;
+  refusal_message: string | null;
+  requirement_id: string;
+  segment_id: string;
+  resource_id: string;
+  planning_version: number;
+  approval_revision_id: string;
+  operational_version: number;
+  authorized_start_date: string;
+  authorized_end_date: string;
+  current_placement_not_before_date: string | null;
+  proposed_placement_not_before_date: string;
+  generation_start_date: string | null;
+  generation_end_date: string | null;
+  effective_need: number;
+  covered_hours: number;
+  remaining_hours: number;
+  placeable_hours: number;
+  available_actions: string[];
+};
+
 export type SegmentPlacementDropWrite = {
   resource_id: string;
   dropped_date: string;
@@ -166,6 +194,17 @@ export function assignSegment(segmentId: string, resourceId: string) {
   );
 }
 
+
+export function previewSegmentFromDrop(
+  segmentId: string,
+  payload: SegmentPlacementPreviewWrite,
+) {
+  return sendJson<SegmentPlacementPreviewResult>(
+    `/api/v1/segments/${encodeURIComponent(segmentId)}/place-from-drop/preview`,
+    "POST",
+    payload,
+  );
+}
 
 export function placeSegmentFromDrop(
   segmentId: string,
