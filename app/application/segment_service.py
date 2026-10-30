@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from datetime import date
 from typing import Any
 
-from .command_ports import PlanningCommandPort
+from .command_ports import ApprovedDemandSyncPort, PlanningCommandPort
 from .commands import SegmentCancelCommand, SegmentCreateCommand, SegmentUpdateCommand
 from .errors import (
     ApplicationNotFoundError,
@@ -23,10 +23,12 @@ class SegmentService:
         segments: SegmentRepositoryPort,
         planning: PlanningCommandPort,
         authorization: PlanningAuthorizationPort | None = None,
+        approved_sync: ApprovedDemandSyncPort | None = None,
     ) -> None:
         self._segments = segments
         self._planning = planning
         self._authorization = authorization
+        self._approved_sync = approved_sync
 
     @staticmethod
     def _identifier(value: object) -> str:
@@ -164,6 +166,18 @@ class SegmentService:
             code_prefix="segment_update",
             context={"segment_id": identifier},
         )
+        if (
+            "HeuresPrevues" in values
+            and self._approved_sync is not None
+            and str(existing.demand_number or "").strip()
+        ):
+            call_application_port(
+                lambda: self._approved_sync.sync_operational_choices(
+                    str(existing.demand_number).strip()
+                ),
+                code_prefix="segment_update_effective_need_sync",
+                context={"segment_id": identifier},
+            )
         return dict(
             call_application_port(
                 self._planning.rebuild,
