@@ -295,6 +295,44 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                         len(after["demand_shifts"]),
                     )
 
+                    resource_only = client.post(
+                        f"/api/v1/segments/{segment_id}/assign",
+                        json={"resource_id": "R-778-B"},
+                    )
+                    self.assertEqual(resource_only.status_code, 200, resource_only.text)
+                    with factory() as session:
+                        persisted_intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == result["requirement_id"]
+                            )
+                        )
+                        self.assertEqual(
+                            persisted_intent.placement_not_before_date.isoformat(),
+                            THURSDAY,
+                        )
+
+                    # Restart/resync/rebuild reuse the same durable intent.
+                    with factory.begin() as session:
+                        SqlPeriodAwareApprovedDemandSyncAdapter(
+                            session
+                        ).sync_operational_choices(number)
+                    rebuilt = client.post("/api/v1/planning/rebuild")
+                    self.assertEqual(rebuilt.status_code, 200, rebuilt.text)
+                    after_resync = self._snapshot(client, number)
+                    counted_after_resync = [
+                        row
+                        for row in after_resync["demand_shifts"]
+                        if row["allocation_type"] != "Hors horaire requis"
+                    ]
+                    self.assertTrue(
+                        all(
+                            row["allocation_id"] in survivors_before
+                            or row["work_date"] >= THURSDAY
+                            for row in counted_after_resync
+                        )
+                    )
+
                     with factory() as session:
                         intent = session.scalar(
                             select(RequestRequirementPlanningIntent).where(
@@ -479,6 +517,27 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                         "segment_placement_before_authorized_window",
                     )
 
+                    late = client.post(
+                        f"/api/v1/segments/{action['segment_id']}/place-from-drop",
+                        headers={"Idempotency-Key": "777-too-late"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": "2026-11-07",
+                            "expected_planning_version": snap["planning_version"],
+                            "expected_approval_revision_id": action["approval_revision_id"],
+                            "expected_operational_version": action["operational_version"],
+                        },
+                    )
+                    self.assertEqual(late.status_code, 409, late.text)
+                    self.assertEqual(
+                        late.json()["error"]["code"],
+                        "segment_placement_window_extension_required",
+                    )
+                    self.assertIn(
+                        "PROPOSE_WINDOW_EXTENSION",
+                        late.json()["error"]["context"]["available_actions"],
+                    )
+
                     placed = client.post(
                         f"/api/v1/segments/{action['segment_id']}/place-from-drop",
                         headers={"Idempotency-Key": "777-valid-cutoff"},
@@ -508,6 +567,10 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                     )
                     self.assertEqual(returned_segment.status_code, 200, returned_segment.text)
                     queued_action = self._actions(client, number)[0]
+                    self.assertEqual(
+                        queued_action["placement_not_before_date"],
+                        THURSDAY,
+                    )
                     queued_snapshot = self._snapshot(client, number)
                     self.assertEqual(queued_snapshot["demand_shifts"], [])
 
@@ -523,6 +586,15 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                     self.assertEqual(reset.status_code, 200, reset.text)
                     self.assertIsNone(reset.json()["placement_not_before_date"])
                     self.assertEqual(self._snapshot(client, number)["demand_shifts"], [])
+                    with create_session_factory(create_sql_engine(database_url))() as session:
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == reset.json()["requirement_id"]
+                            )
+                        )
+                        self.assertEqual(intent.intent_mode, "QUEUED")
+                        self.assertIsNone(intent.placement_not_before_date)
             finally:
                 engine.dispose()
 
