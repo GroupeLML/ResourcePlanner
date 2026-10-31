@@ -25,6 +25,10 @@ from app.infrastructure.sql import (
     transactional_session,
 )
 from app.server import create_api_app
+from app.infrastructure.sql.operational_choice_models import (
+    PLANNING_TARGET_EXPLICIT_NONE,
+    RequestRequirementPlanningIntent,
+)
 from app.application.security import AuthPrincipal, ROLE_PROJECT_MANAGER
 from app.server.security import static_auth_resolver
 
@@ -420,6 +424,131 @@ class ServerCommandRouteTests(unittest.TestCase):
 
             self.assertEqual(approved.status_code, 200, approved.text)
             self.assertEqual(approved.json()["status"], "En planification")
+
+    def test_issue_781_four_case_matrix_keeps_proposal_advisory_and_residual_queued(self) -> None:
+        cases = (
+            ("default-proposed", None, "R1", 8.0, "DEFAULT_8H"),
+            ("default-none", None, None, 8.0, "DEFAULT_8H"),
+            ("explicit-proposed", 4, "R1", 4.0, "EXPLICIT"),
+            ("explicit-none", 4, None, 4.0, "EXPLICIT"),
+        )
+        with TemporaryDirectory() as directory:
+            database_url, _ = self._database(directory)
+            app = create_api_app(database_url)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    for label, explicit_hours, proposed_resource_id, expected_hours, source in cases:
+                        line = {
+                            "desired_start": WORK_DAY.isoformat(),
+                            "desired_end": WORK_DAY.isoformat(),
+                            "proposed_resource_id": proposed_resource_id,
+                        }
+                        if explicit_hours is None:
+                            line["desired_active_days"] = 1
+                        else:
+                            line["estimated_hours"] = explicit_hours
+
+                        created = client.post(
+                            "/api/v1/demands",
+                            json=routed_demand_payload({
+                                "project_number": "P-1",
+                                "description": f"#781 {label}",
+                                "submit": True,
+                                "lines": [line],
+                            }),
+                        )
+                        self.assertEqual(created.status_code, 201, created.text)
+                        number = created.json()["demand_number"]
+
+                        candidate = client.get(f"/api/v1/demands/{number}")
+                        self.assertEqual(candidate.status_code, 200, candidate.text)
+                        candidate_line = candidate.json()["lines"][0]
+                        self.assertEqual(candidate_line["estimated_hours"], expected_hours)
+                        self.assertEqual(candidate_line["estimated_hours_source"], source)
+                        self.assertEqual(
+                            candidate_line["proposed_resource_id"],
+                            proposed_resource_id,
+                        )
+
+                        approved = client.post(
+                            f"/api/v1/demands/{number}/approve",
+                            json={"comment": f"Approbation #781 {label}"},
+                        )
+                        self.assertEqual(approved.status_code, 200, approved.text)
+
+                        actions = client.get(
+                            "/api/v1/planning/actions",
+                            params={
+                                "start": WORK_DAY.isoformat(),
+                                "end": WORK_DAY.isoformat(),
+                                "scope": "global",
+                            },
+                        )
+                        self.assertEqual(actions.status_code, 200, actions.text)
+                        assignment = next(
+                            row
+                            for row in actions.json()
+                            if row["kind"] == "ASSIGNMENT"
+                            and row["demand_number"] == number
+                        )
+                        self.assertEqual(assignment["planned_hours"], expected_hours)
+
+                        segment = client.get(
+                            f"/api/v1/segments/{assignment['segment_id']}",
+                            params={"scope": "global"},
+                        )
+                        self.assertEqual(segment.status_code, 200, segment.text)
+                        segment_payload = segment.json()
+                        self.assertEqual(segment_payload["planned_hours"], expected_hours)
+                        self.assertEqual(segment_payload["covered_hours"], 0.0)
+                        self.assertEqual(segment_payload["remaining_hours"], expected_hours)
+                        self.assertIsNone(
+                            segment_payload["automatic_target_resource_id"]
+                        )
+
+                        with factory() as session:
+                            request = session.scalar(
+                                select(WorkforceRequest).where(
+                                    WorkforceRequest.legacy_demand_number == number
+                                )
+                            )
+                            self.assertIsNotNone(request)
+                            requirement = session.scalar(
+                                select(ResourceRequirement).where(
+                                    ResourceRequirement.workforce_request_id == request.id,
+                                    ResourceRequirement.status != "Annulé",
+                                )
+                            )
+                            self.assertIsNotNone(requirement)
+                            self.assertIsNone(requirement.assigned_resource_id)
+                            self.assertEqual(
+                                float(requirement.planned_hours),
+                                expected_hours,
+                            )
+                            intent = session.scalar(
+                                select(RequestRequirementPlanningIntent).where(
+                                    RequestRequirementPlanningIntent.current_resource_requirement_id
+                                    == requirement.id
+                                )
+                            )
+                            self.assertIsNotNone(intent)
+                            self.assertEqual(
+                                intent.target_mode,
+                                PLANNING_TARGET_EXPLICIT_NONE,
+                            )
+                            self.assertIsNone(intent.target_resource_id)
+                            shift_count = session.scalar(
+                                select(func.count())
+                                .select_from(Shift)
+                                .where(
+                                    Shift.resource_requirement_id == requirement.id
+                                )
+                            )
+                            self.assertEqual(int(shift_count or 0), 0)
+            finally:
+                engine.dispose()
 
     def test_unknown_project_returns_structured_not_found(self) -> None:
         with TemporaryDirectory() as directory:
