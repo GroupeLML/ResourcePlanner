@@ -51,6 +51,15 @@ class _Planning:
         return {"allocated_hours": 8.0, "unallocated_hours": 0.0}
 
 
+class _Targeting:
+    def __init__(self, events: list[object]) -> None:
+        self.events = events
+
+    def assign_segment(self, segment_id: str, technician: str):
+        self.events.append(("assign", segment_id, technician))
+        return {"allocated_hours": 8.0, "unallocated_hours": 0.0}
+
+
 class SegmentServiceTests(unittest.TestCase):
     def test_create_persists_typed_payload_then_rebuilds_once(self) -> None:
         segments = _Segments()
@@ -96,6 +105,43 @@ class SegmentServiceTests(unittest.TestCase):
                 ("rebuild",),
             ],
         )
+
+    def test_request_target_patch_uses_canonical_targeting_port(self) -> None:
+        segments = _Segments()
+        segments.record = replace(segments.record, origin="REQUEST")
+        planning = _Planning(segments.events)
+        targeting = _Targeting(segments.events)
+        service = SegmentService(segments, planning, targeting=targeting)
+
+        summary = service.update_command(
+            SegmentUpdateCommand(segment_id="SEG-1", technician="Bob")
+        )
+
+        self.assertEqual(
+            segments.events,
+            [
+                ("update", "SEG-1", {}),
+                ("assign", "SEG-1", "Bob"),
+            ],
+        )
+        self.assertEqual(summary["allocated_hours"], 8.0)
+
+    def test_request_target_clear_patch_is_rejected_before_mutation(self) -> None:
+        segments = _Segments()
+        segments.record = replace(segments.record, origin="REQUEST", resource_name="Alice")
+        service = SegmentService(
+            segments,
+            _Planning(segments.events),
+            targeting=_Targeting(segments.events),
+        )
+
+        with self.assertRaises(ApplicationValidationError) as raised:
+            service.update_command(
+                SegmentUpdateCommand(segment_id="SEG-1", technician=None)
+            )
+
+        self.assertEqual(raised.exception.code, "segment_target_clear_unsupported")
+        self.assertEqual(segments.events, [])
 
     def test_update_validates_window_against_existing_read_model(self) -> None:
         segments = _Segments()
