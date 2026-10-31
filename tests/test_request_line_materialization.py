@@ -28,6 +28,10 @@ from app.infrastructure.sql import (
     create_sql_engine,
 )
 from app.server import create_api_app
+from app.infrastructure.sql.operational_choice_models import (
+    PLANNING_TARGET_EXPLICIT_RESOURCE,
+    RequestRequirementPlanningIntent,
+)
 from tests.approval_test_support import routed_demand_payload, seed_test_approval_routing
 from tests.http_test_auth import (
     TEST_ADMIN_AUTH_RESOLVER,
@@ -174,6 +178,26 @@ class RequestLineMaterializationHttpTests(unittest.TestCase):
         assert response.status_code == 200, response.text
         return response.json()
 
+    @staticmethod
+    def _assign(client: TestClient, number: str, resource_id: str) -> str:
+        actions = client.get(
+            "/api/v1/planning/actions",
+            params={"start": D1.isoformat(), "end": D3.isoformat(), "scope": "global"},
+        )
+        assert actions.status_code == 200, actions.text
+        assignment = next(
+            row
+            for row in actions.json()
+            if row.get("demand_number") == number and row.get("kind") == "ASSIGNMENT"
+        )
+        segment_id = str(assignment["segment_id"])
+        assigned = client.post(
+            f"/api/v1/segments/{segment_id}/assign",
+            json={"resource_id": resource_id},
+        )
+        assert assigned.status_code == 200, assigned.text
+        return segment_id
+
     def test_approval_materializes_plain_lines_with_provenance_and_competencies(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
@@ -256,7 +280,7 @@ class RequestLineMaterializationHttpTests(unittest.TestCase):
                     )
                     self.assertEqual(
                         [row.assigned_resource_id for row in rows],
-                        ["R1", "R2"],
+                        [None, None],
                     )
                     links = session.execute(
                         select(
@@ -504,6 +528,7 @@ class RequestLineMaterializationHttpTests(unittest.TestCase):
                     json={"comment": "Version initiale"},
                 )
                 self.assertEqual(first_approval.status_code, 200, first_approval.text)
+                self._assign(client, number, "R1")
 
                 demand = self._demand(client, number)
                 line_id = demand["lines"][0]["line_id"]
@@ -566,7 +591,7 @@ class RequestLineMaterializationHttpTests(unittest.TestCase):
                                     "desired_end": D2.isoformat(),
                                     "estimated_hours": 8,
                                     "desired_active_days": 1,
-                                    "proposed_resource_id": "R1",
+                                    "proposed_resource_id": "R2",
                                     "task_code": "220",
                                 }
                             ],
@@ -637,6 +662,19 @@ class RequestLineMaterializationHttpTests(unittest.TestCase):
                     assert requirement is not None
                     self.assertEqual(requirement.start_date, D2)
                     self.assertEqual(requirement.source_request_line_id, line_id)
+                    self.assertEqual(requirement.assigned_resource_id, "R1")
+                    intent = session.scalar(
+                        select(RequestRequirementPlanningIntent).where(
+                            RequestRequirementPlanningIntent.current_resource_requirement_id
+                            == requirement.id
+                        )
+                    )
+                    assert intent is not None
+                    self.assertEqual(
+                        intent.target_mode,
+                        PLANNING_TARGET_EXPLICIT_RESOURCE,
+                    )
+                    self.assertEqual(intent.target_resource_id, "R1")
                     self.assertEqual(requirement.approved_task_catalog_item_id, "T220")
                     self.assertEqual(requirement.approved_request_version, 4)
                     self.assertEqual(
@@ -693,6 +731,7 @@ class RequestLineMaterializationHttpTests(unittest.TestCase):
                     json={"comment": "Plan initial"},
                 )
                 self.assertEqual(approved.status_code, 200, approved.text)
+                self._assign(client, number, "R1")
 
                 engine = create_sql_engine(database_url)
                 factory = create_session_factory(engine)
