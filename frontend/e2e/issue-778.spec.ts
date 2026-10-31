@@ -418,6 +418,29 @@ test("778 SegmentEditor conserve la base opérationnelle et utilise les choix ba
     );
     expect(approved.status(), await approved.text()).toBe(200);
 
+    const beforeAssignment = await page.request.get(
+      `/api/v1/shifts?start=${d1}&end=${d5}`,
+    );
+    expect(beforeAssignment.ok(), await beforeAssignment.text()).toBeTruthy();
+    expect(
+      (await beforeAssignment.json() as Array<any>)
+        .filter((row) => row.demand_number === demandNumber && row.allocation_type !== "Hors horaire requis"),
+    ).toHaveLength(0);
+
+    const actions = await page.request.get(
+      `/api/v1/planning/actions?start=${d1}&end=${d5}&scope=global`,
+    );
+    expect(actions.ok(), await actions.text()).toBeTruthy();
+    const assignment = (await actions.json() as Array<any>).find(
+      (row) => row.kind === "ASSIGNMENT" && row.demand_number === demandNumber,
+    );
+    expect(assignment).toBeTruthy();
+    const explicitlyAssigned = await page.request.post(
+      `/api/v1/segments/${encodeURIComponent(String(assignment.segment_id))}/assign`,
+      { data: { resource_id: resourceId } },
+    );
+    expect(explicitlyAssigned.status(), await explicitlyAssigned.text()).toBe(200);
+
     const shiftsResponse = await page.request.get(
       `/api/v1/shifts?start=${d1}&end=${d5}`,
     );
