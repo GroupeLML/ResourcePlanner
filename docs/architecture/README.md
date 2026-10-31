@@ -117,6 +117,8 @@ ADR-021 fixe la sémantique des fériés ciblés par classes sans modifier les f
 
 ADR-034 fixe les commandes REQUEST de retour vers la File de Travail et de réduction définitive : un slot approuvé porte une intention opérationnelle persistante (`AUTO`, `PRESERVE_EXISTING`, `QUEUED`), les retours préservent le besoin approuvé tout en contrôlant la génération, et une réduction post-approbation append-only diminue le besoin courant effectif sans réécrire l'autorisation historique. Le résolveur effectif est partagé par matérialisation, resync, moteur, File et lectures; les réapprobations conservent les réductions par défaut et ne les absorbent qu'explicitement.
 
+ADR-004 amendment #781 (Proposed) précise la frontière proposition → plan actif : une ressource proposée demeure advisory après approbation; seul un choix Planning autorisé peut établir la cible opérationnelle durable. Les plans historiques sont préservés pendant la transition et les décisions existantes de cible restent sous l'autorité de l'intention persistante.
+
 ADR-035 ajoute à ce même slot stable un `placement_not_before_date` nullable pour exprimer une restriction prospective de placement du reliquat. La fenêtre autorisée reste la projection approuvée + widening ADR-022; le cutoff ne la remplace ni ne la rétrécit. Les survivants antérieurs restent valides, tandis que toute nouvelle génération/placement respecte l'intervalle admissible dérivé.
 
 ADR-031 fixe la suppression partielle d'un `QUICK_SHIFT` : les heures du quart supprimé réduisent le besoin, les survivants sont préservés pendant le rebuild de suppression et la date retirée devient une exclusion persistante de génération automatique propre au requirement. Les rebuilds ultérieurs respectent cette exclusion sans modifier la disponibilité globale de la ressource; le dernier quart utilise le cycle canonique `Annulé` plutôt qu'un requirement à zéro heure.
@@ -256,7 +258,7 @@ Exemples qui ne nécessitent normalement pas d'ADR :
 | ADR-001 | séparer cible automatique du besoin et affectation réelle des quarts |
 | ADR-002 | périodes métier par `RequestLine` et identités stables |
 | ADR-003 | révision approuvée immuable comme preuve d'autorisation |
-| ADR-004 | séparer demande candidate, autorisation approuvée et plan actif |
+| ADR-004 | séparer demande candidate, autorisation approuvée et plan actif; amendement #781 proposé : une ressource proposée reste advisory jusqu'à une décision Planning explicite |
 | ADR-005 | identité canonique du demandeur distincte de l'acteur authentifié |
 | ADR-006 | sérialiser les mutations concurrentes du planning par une révision globale persistante/CAS SQL tant que le rebuild reste global |
 | ADR-007 | séparer les actifs réservables des ressources humaines tout en partageant l'orchestration Planning; occupation initiale exclusive à la journée |
