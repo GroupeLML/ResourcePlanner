@@ -818,6 +818,58 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
                 delete(Project).where(Project.id == str(fixture["project_id"]))
             )
 
+    @staticmethod
+    def _counted_coverage(session, requirement_id: str) -> Decimal:
+        value = session.scalar(
+            select(func.coalesce(func.sum(Shift.hours), 0)).where(
+                Shift.resource_requirement_id == requirement_id,
+                or_(
+                    Shift.allocation_type.is_(None),
+                    Shift.allocation_type != MISSING_ALLOCATION_TYPE,
+                ),
+            )
+        )
+        return Decimal(str(value or 0)).quantize(Decimal("0.01"))
+
+    def _run_race(
+        self,
+        fixture: dict[str, object],
+        participants: tuple[str, str],
+        first_worker,
+        second_worker,
+    ) -> tuple[tuple[str, str | None], tuple[str, str | None]]:
+        listener = self._install_cas_rendezvous(fixture, participants)
+        try:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                first = executor.submit(first_worker)
+                second = executor.submit(second_worker)
+                outcomes = (
+                    first.result(timeout=30),
+                    second.result(timeout=30),
+                )
+        finally:
+            self._remove_cas_rendezvous(fixture, listener)
+
+        spids = fixture["race_spids"]
+        self.assertEqual(set(spids), set(participants))
+        self.assertNotEqual(spids[participants[0]], spids[participants[1]])
+        self.assertEqual(
+            sorted(row[0] for row in outcomes),
+            ["conflict", "success"],
+        )
+        self.assertEqual(
+            next(row[1] for row in outcomes if row[0] == "conflict"),
+            "planning_version_conflict",
+        )
+        with fixture["factory"]() as session:
+            global_state = session.get(PlanningMutationState, PLANNING_STATE_ID)
+            self.assertIsNotNone(global_state)
+            self.assertEqual(
+                int(global_state.version),
+                int(fixture["planning_version"]) + 1,
+            )
+        return outcomes
+
     def test_drop_vs_drop_has_one_authoritative_winner(self) -> None:
         fixture = self._fixture()
         try:
