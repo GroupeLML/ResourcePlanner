@@ -1306,6 +1306,20 @@ test("COORDINATOR applies a REQUEST window override without contaminating the ca
   );
   expect(approved.status(), await approved.text()).toBe(200);
 
+  const requestActions = await page.request.get(
+    `/api/v1/planning/actions?start=${sourceDay}&end=${weekEnd}&scope=global`,
+  );
+  expect(requestActions.ok(), await requestActions.text()).toBeTruthy();
+  const requestAssignment = (await requestActions.json() as Array<any>).find(
+    (row) => row.kind === "ASSIGNMENT" && row.demand_number === demandNumber,
+  );
+  expect(requestAssignment).toBeTruthy();
+  const requestAssigned = await page.request.post(
+    `/api/v1/segments/${encodeURIComponent(String(requestAssignment.segment_id))}/assign`,
+    { data: { resource_id: "R-ALICE" } },
+  );
+  expect(requestAssigned.status(), await requestAssigned.text()).toBe(200);
+
   const shiftsResponse = await page.request.get(
     `/api/v1/shifts?start=${sourceDay}&end=${weekEnd}`,
   );
@@ -1767,7 +1781,7 @@ test("multi-line demand editor generates independent RequestLines and materializ
   const materialized = segments.filter((row) => row.demand_number === number);
   expect(materialized).toHaveLength(2);
   expect(materialized.map((row) => row.planned_hours).sort((a, b) => a - b)).toEqual([8, 8]);
-  expect(new Set(materialized.map((row) => row.resource_name))).toEqual(new Set(["Alice", "Bob"]));
+  expect(new Set(materialized.map((row) => row.resource_name))).toEqual(new Set([null]));
 
   await closeContext(coordinator.context);
 });
@@ -1993,6 +2007,24 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   await expect(coordinator.page.locator(".demand-notice").filter({ hasText: "Demande approuvée" })).toContainText(
     "Demande approuvée",
   );
+
+  const humanSegmentsResponse = await coordinator.page.request.get("/api/v1/segments?include_cancelled=false");
+  expect(humanSegmentsResponse.ok(), await humanSegmentsResponse.text()).toBeTruthy();
+  const humanSegments = (await humanSegmentsResponse.json() as Array<{
+    demand_number: string | null;
+    segment_id: string;
+    source_request_line_id: string | null;
+  }>).filter((row) => row.demand_number === demandNumber);
+  expect(humanSegments).toHaveLength(2);
+  for (const workforceLine of activeWorkforce) {
+    const segment = humanSegments.find((row) => row.source_request_line_id === workforceLine.line_id);
+    expect(segment).toBeTruthy();
+    const assigned = await coordinator.page.request.post(
+      `/api/v1/segments/${encodeURIComponent(segment!.segment_id)}/assign`,
+      { data: { resource_id: workforceLine.proposed_resource_id } },
+    );
+    expect(assigned.status(), await assigned.text()).toBe(200);
+  }
 
   const materializedAssets = coordinator.page.locator(".asset-detail-row").filter({ hasText: "LIFT496 — Nacelle" });
   await expect(materializedAssets).toHaveCount(2);
@@ -2277,6 +2309,19 @@ test("materialized demand cancellation is requested, reviewed, rejected or accep
   await approver.page.getByLabel(/Commentaire d’approbation/).fill("Matérialiser le plan #399D");
   await approver.page.getByRole("button", { name: "Approuver", exact: true }).click();
   await expect(approver.page.locator(".demand-notice").filter({ hasText: "Demande approuvée" }).first()).toContainText("Demande approuvée");
+  const cancellationActions = await approver.page.request.get(
+    `/api/v1/planning/actions?start=${d5}&end=${d5}&scope=global`,
+  );
+  expect(cancellationActions.ok(), await cancellationActions.text()).toBeTruthy();
+  const cancellationAssignment = (await cancellationActions.json() as Array<any>).find(
+    (row) => row.kind === "ASSIGNMENT" && row.demand_number === cancellationDemand,
+  );
+  expect(cancellationAssignment).toBeTruthy();
+  const cancellationAssigned = await approver.page.request.post(
+    `/api/v1/segments/${encodeURIComponent(String(cancellationAssignment.segment_id))}/assign`,
+    { data: { resource_id: "R-ALICE" } },
+  );
+  expect(cancellationAssigned.status(), await cancellationAssigned.text()).toBe(200);
   await navigateMain(approver.page, "Planning opérationnel");
   await approver.page.getByRole("button", { name: /Suivante/ }).click();
   await approver.page.getByRole("button", { name: /^Filtres/ }).click();
