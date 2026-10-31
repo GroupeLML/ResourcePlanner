@@ -335,7 +335,7 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                     with TestClient(pm_app, raise_server_exceptions=False) as pm_client:
                         changed = pm_client.patch(
                             f"/api/v1/demands/{number}",
-                            json={
+                            json=routed_demand_payload({
                                 "expected_version": demand["version"],
                                 "comment": "Déplacer le besoin approuvé au mardi",
                                 "lines": [
@@ -348,7 +348,7 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                                         "description": "Réapprobation PATCH #781",
                                     }
                                 ],
-                            },
+                            }),
                         )
                     self.assertEqual(changed.status_code, 200, changed.text)
                     self.assertTrue(changed.json()["reapproval_required"])
@@ -441,7 +441,7 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                     ) as mixed_pm_client:
                         changed = mixed_pm_client.patch(
                             f"/api/v1/demands/{mixed_number}",
-                            json={
+                            json=routed_demand_payload({
                                 "expected_version": mixed_demand["version"],
                                 "comment": "Réapprobation cible Bob #781",
                                 "lines": [
@@ -454,7 +454,7 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                                         "description": "Conserver Bob après reapproval",
                                     }
                                 ],
-                            },
+                            }),
                         )
                     self.assertEqual(changed.status_code, 200, changed.text)
                     self.assertTrue(changed.json()["reapproval_required"])
