@@ -39,6 +39,20 @@ async function openCoordinator(browser: Browser, disableBroadcast = false) {
   return { context, page };
 }
 
+async function expectDetachedUrlContext(
+  page: Page,
+  expected: { week: string; query: string; scope: "mine" | "global" },
+) {
+  await expect.poll(() => new URL(page.url()).pathname)
+    .toBe("/planning/resources-window");
+  await expect.poll(() => new URL(page.url()).searchParams.get("week"))
+    .toBe(expected.week);
+  await expect.poll(() => new URL(page.url()).searchParams.get("q"))
+    .toBe(expected.query);
+  await expect.poll(() => new URL(page.url()).searchParams.get("scope"))
+    .toBe(expected.scope);
+}
+
 async function chooseCombobox(scope: Locator, label: string, query: string, optionName: string) {
   const input = scope.getByRole("combobox", { name: label, exact: true });
   await input.click();
@@ -88,6 +102,10 @@ test("765 ouvre un Planning détaché avec contexte et synchronise les mutations
       await expect(page.locator(".planning-board-scroll")).not.toHaveClass(/is-loading/);
     }
 
+    const parentGlobalScope = page.getByRole("button", { name: "Vue globale" });
+    await parentGlobalScope.click();
+    await expect(parentGlobalScope).toHaveClass(/active/);
+
     await page.getByRole("button", { name: /^Filtres/ }).click();
     await page.getByLabel("Recherche").fill("Alice");
 
@@ -99,11 +117,11 @@ test("765 ouvre un Planning détaché avec contexte et synchronise les mutations
     await detached.waitForLoadState("domcontentloaded");
 
     await expect(detached).toHaveTitle("Ressources et quarts — ResourcePlanner");
-    const detachedUrl = new URL(detached.url());
-    expect(detachedUrl.pathname).toBe("/planning/resources-window");
-    expect(detachedUrl.searchParams.get("week")).toBe(monday);
-    expect(detachedUrl.searchParams.get("q")).toBe("Alice");
-    expect(detachedUrl.searchParams.get("scope")).toBeTruthy();
+    await expectDetachedUrlContext(detached, {
+      week: monday,
+      query: "Alice",
+      scope: "global",
+    });
 
     await expect(detached.locator(".app-sidebar")).toHaveCount(0);
     await expect(detached.locator(".metric-grid")).toHaveCount(0);
@@ -111,12 +129,7 @@ test("765 ouvre un Planning détaché avec contexte et synchronise les mutations
     await expect(detached.getByText("Ressources et quarts", { exact: true }).first()).toBeVisible();
     await expect(detached.getByLabel("Recherche")).toHaveValue("Alice");
 
-    const requestedScope = detachedUrl.searchParams.get("scope");
-    if (requestedScope === "mine") {
-      await expect(detached.getByRole("button", { name: "Mon périmètre" })).toHaveClass(/active/);
-    } else if (requestedScope === "global") {
-      await expect(detached.getByRole("button", { name: "Vue globale" })).toHaveClass(/active/);
-    }
+    await expect(detached.getByRole("button", { name: "Vue globale" })).toHaveClass(/active/);
 
     await detached.setViewportSize({ width: 1600, height: 900 });
     await expect(detached.locator(".planning-board-panel")).toBeVisible();
@@ -126,6 +139,12 @@ test("765 ouvre un Planning détaché avec contexte et synchronise les mutations
     await detached.reload();
     await expect(detached).toHaveTitle("Ressources et quarts — ResourcePlanner");
     await expect(detached.getByLabel("Recherche")).toHaveValue("Alice");
+    await expectDetachedUrlContext(detached, {
+      week: monday,
+      query: "Alice",
+      scope: "global",
+    });
+    await expect(detached.getByRole("button", { name: "Vue globale" })).toHaveClass(/active/);
 
     await createQuickShiftFromCell(
       detached,
@@ -156,9 +175,10 @@ test("765 ouvre un Planning détaché avec contexte et synchronise les mutations
     ).toHaveCount(1);
 
     await detached.getByRole("button", { name: /Suivante/ }).click();
-    expect(new URL(detached.url()).searchParams.get("week")).toBe(
-      localIso(addDays(weekStart, 7)),
-    );
+    await expect.poll(() => new URL(detached.url()).searchParams.get("week"))
+      .toBe(localIso(addDays(weekStart, 7)));
+    await expect.poll(() => new URL(detached.url()).searchParams.get("scope"))
+      .toBe("global");
     await expect(page.locator(".planning-sticky-heading h1")).toHaveText(mainWeekHeading);
 
     await detached.close();
@@ -177,6 +197,66 @@ test("765 ouvre un Planning détaché avec contexte et synchronise les mutations
     ).toHaveCount(1);
     await reopened.close();
   } finally {
+    await context.close();
+  }
+});
+
+test("765 conserve le scope mine pendant l’initialisation détachée et un reload", async ({ browser }) => {
+  test.setTimeout(120_000);
+  const { context, page } = await openCoordinator(browser);
+  let releasePolicy: (() => void) | null = null;
+  let policyReleased = false;
+  const policyGate = new Promise<void>((resolve) => {
+    releasePolicy = () => {
+      if (policyReleased) return;
+      policyReleased = true;
+      resolve();
+    };
+  });
+  let heldPolicyRequests = 0;
+
+  try {
+    const parentMineScope = page.getByRole("button", { name: "Mon périmètre" });
+    await parentMineScope.click();
+    await expect(parentMineScope).toHaveClass(/active/);
+
+    await context.route("**/api/v1/me/planning-policy", async (route) => {
+      heldPolicyRequests += 1;
+      const response = await route.fetch();
+      await policyGate;
+      try {
+        await route.fulfill({ response });
+      } catch {
+        // Reload legitimately cancels the first held browser request.
+      }
+    });
+
+    const [detached] = await Promise.all([
+      context.waitForEvent("page"),
+      page.getByRole("button", { name: "Ouvrir dans une fenêtre séparée" }).click(),
+    ]);
+    await detached.waitForLoadState("domcontentloaded");
+
+    await expect.poll(() => heldPolicyRequests).toBeGreaterThanOrEqual(1);
+    await expect.poll(() => new URL(detached.url()).searchParams.get("scope"))
+      .toBe("mine");
+
+    await detached.reload({ waitUntil: "domcontentloaded" });
+
+    await expect.poll(() => heldPolicyRequests).toBeGreaterThanOrEqual(2);
+    await expect.poll(() => new URL(detached.url()).searchParams.get("scope"))
+      .toBe("mine");
+
+    releasePolicy?.();
+
+    await expect(detached.getByRole("button", { name: "Mon périmètre" })).toHaveClass(/active/);
+    await expect.poll(() => new URL(detached.url()).searchParams.get("scope"))
+      .toBe("mine");
+
+    await detached.close();
+  } finally {
+    releasePolicy?.();
+    await context.unroute("**/api/v1/me/planning-policy");
     await context.close();
   }
 });
