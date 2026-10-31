@@ -391,6 +391,37 @@ class V2LocalAcceptanceTests(unittest.TestCase):
             self.assertEqual(approved.status_code, 200, approved.text)
             self.assertEqual(approved.json()["status"], "En planification")
 
+            pre_assignment_shifts = coordinator.get(
+                "/api/v1/shifts",
+                params={"start": d1.isoformat(), "end": d5.isoformat()},
+            )
+            self.assertEqual(
+                [
+                    row
+                    for row in pre_assignment_shifts.json()
+                    if row["demand_number"] == demand_number
+                ],
+                [],
+            )
+            actions = coordinator.get(
+                "/api/v1/planning/actions",
+                params={"start": d1.isoformat(), "end": d5.isoformat(), "scope": "global"},
+            )
+            self.assertEqual(actions.status_code, 200, actions.text)
+            assignments = [
+                row
+                for row in actions.json()
+                if row["kind"] == "ASSIGNMENT" and row["demand_number"] == demand_number
+            ]
+            self.assertEqual(len(assignments), 2)
+            for action in assignments:
+                target = "R-A" if action["start_date"] == d1.isoformat() else "R-B"
+                assigned = coordinator.post(
+                    f"/api/v1/segments/{action['segment_id']}/assign",
+                    json={"resource_id": target},
+                )
+                self.assertEqual(assigned.status_code, 200, assigned.text)
+
             segments = self._segments_for(coordinator, demand_number)
             self.assertEqual(len(segments), 2)
             cumulative = next(row for row in segments if row["start_date"] == d1.isoformat())
