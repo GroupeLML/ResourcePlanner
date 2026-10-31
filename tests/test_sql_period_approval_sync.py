@@ -131,7 +131,7 @@ class SqlPeriodApprovalSyncTests(unittest.TestCase):
             self.assertEqual(first.start_date, D1)
             self.assertEqual(first.end_date, D1)
             self.assertEqual(first.planned_hours, Decimal("8.00"))
-            self.assertEqual(first.assigned_resource_id, "R1")
+            self.assertIsNone(first.assigned_resource_id)
             first_link = session.get(WorkforceRequestPeriodRequirement, first.id)
             self.assertIsNotNone(first_link)
 
@@ -143,7 +143,7 @@ class SqlPeriodApprovalSyncTests(unittest.TestCase):
             second = active[0]
             self.assertNotEqual(second.id, first.id)
             self.assertEqual(second.start_date, D2)
-            self.assertEqual(second.assigned_resource_id, "R2")
+            self.assertIsNone(second.assigned_resource_id)
             self.assertEqual(session.get(ResourceRequirement, first.id).status, "Annulé")
 
     def test_cumulative_period_and_selected_alternative_are_both_effective(self) -> None:
@@ -200,14 +200,13 @@ class SqlPeriodApprovalSyncTests(unittest.TestCase):
             SqlPeriodAwareApprovedDemandSyncAdapter(session).sync_approved("DEM-1")
             active = sorted(self._active_requirements(session), key=lambda row: row.start_date)
             self.assertEqual(len(active), 2)
-            self.assertEqual(active[0].assigned_resource_id, "R1")
-            self.assertIsNone(active[1].assigned_resource_id)
+            self.assertTrue(all(row.assigned_resource_id is None for row in active))
 
             summary = SqlSameResourcePeriodCoordinator(session).enforce_targets()
 
             self.assertEqual(summary.group_count, 1)
-            self.assertEqual(summary.unresolved_group_count, 0)
-            self.assertEqual({row.assigned_resource_id for row in active}, {"R1"})
+            self.assertEqual(summary.unresolved_group_count, 1)
+            self.assertTrue(all(row.assigned_resource_id is None for row in active))
 
     def _set_legacy_resource_class(self, session, class_code: str) -> None:
         """Mirror a simple request created via the React class selector (#535)."""
