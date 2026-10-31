@@ -19,6 +19,7 @@ from app.infrastructure.sql import (
     ResourceRequirement,
     ResourceRequirementCompetency,
     Shift,
+    SqlPeriodAwareApprovedDemandSyncAdapter,
     TaskCatalogEntry,
     WorkforceRequest,
     WorkforceRequestPeriod,
@@ -529,6 +530,16 @@ class RequestLineMaterializationHttpTests(unittest.TestCase):
                 )
                 self.assertEqual(first_approval.status_code, 200, first_approval.text)
                 self._assign(client, number, "R1")
+
+                rebuilt = client.post("/api/v1/planning/rebuild")
+                self.assertEqual(rebuilt.status_code, 200, rebuilt.text)
+                engine = create_sql_engine(database_url)
+                factory = create_session_factory(engine)
+                with factory.begin() as session:
+                    SqlPeriodAwareApprovedDemandSyncAdapter(
+                        session
+                    ).sync_operational_choices(number)
+                engine.dispose()
 
                 demand = self._demand(client, number)
                 line_id = demand["lines"][0]["line_id"]
