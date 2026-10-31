@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from datetime import date
 from typing import Any
 
-from .command_ports import ApprovedDemandSyncPort, PlanningCommandPort
+from .command_ports import AllocationCommandPort, ApprovedDemandSyncPort, PlanningCommandPort
 from .commands import SegmentCancelCommand, SegmentCreateCommand, SegmentUpdateCommand
 from .errors import (
     ApplicationNotFoundError,
@@ -24,11 +24,13 @@ class SegmentService:
         planning: PlanningCommandPort,
         authorization: PlanningAuthorizationPort | None = None,
         approved_sync: ApprovedDemandSyncPort | None = None,
+        targeting: AllocationCommandPort | None = None,
     ) -> None:
         self._segments = segments
         self._planning = planning
         self._authorization = authorization
         self._approved_sync = approved_sync
+        self._targeting = targeting
 
     @staticmethod
     def _identifier(value: object) -> str:
@@ -182,6 +184,21 @@ class SegmentService:
             start if isinstance(start, date) else None,
             end if isinstance(end, date) else None,
         )
+        target_change = "Technicien" in values and origin == "REQUEST"
+        target_reference = str(values.get("Technicien") or "").strip() if target_change else ""
+        if target_change and not target_reference:
+            raise ApplicationValidationError(
+                "Le retrait de la cible automatique n'est pas pris en charge par PATCH /segments. Utilise la commande Planning appropriée.",
+                code="segment_target_clear_unsupported",
+                context={"segment_id": identifier},
+            )
+        if target_change and self._targeting is None:
+            raise ApplicationOperationError(
+                "La sélection de cible Planning n'est pas configurée pour cette mutation.",
+                code="segment_targeting_unavailable",
+                context={"segment_id": identifier},
+            )
+
         if self._authorization is not None:
             call_application_port(
                 lambda: self._authorization.authorize_segment_update(
@@ -192,11 +209,26 @@ class SegmentService:
                 context={"segment_id": identifier},
             )
 
+        repository_values = dict(values)
+        if target_change:
+            # ADR-004/#781: public target selection must go through the same
+            # authoritative operational command as POST /segments/{id}/assign.
+            repository_values.pop("Technicien", None)
         call_application_port(
-            lambda: self._segments.update(identifier, values),
+            lambda: self._segments.update(identifier, repository_values),
             code_prefix="segment_update",
             context={"segment_id": identifier},
         )
+
+        target_summary: dict[str, Any] | None = None
+        if target_change:
+            target_summary = dict(
+                call_application_port(
+                    lambda: self._targeting.assign_segment(identifier, target_reference),
+                    code_prefix="segment_target_update",
+                    context={"segment_id": identifier, "technician": target_reference},
+                )
+            )
         if (
             "HeuresPrevues" in values
             and self._approved_sync is not None
@@ -218,6 +250,8 @@ class SegmentService:
                 code_prefix="segment_update_effective_need_sync",
                 context={"segment_id": identifier},
             )
+        if target_summary is not None and "HeuresPrevues" not in values:
+            return target_summary
         return dict(
             call_application_port(
                 self._planning.rebuild,
