@@ -546,6 +546,43 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
                 },
             )
 
+    @staticmethod
+    def _assert_projected_placement_cutoff(
+        intent: RequestRequirementPlanningIntent | None,
+        shift: Shift,
+        *,
+        resource_id: str,
+        day: date,
+        hours: Decimal,
+    ) -> None:
+        """Reject only the newly introduced portion of placement before ADR-035 cutoff."""
+
+        cutoff = intent.placement_not_before_date if intent is not None else None
+        if cutoff is None or day >= cutoff:
+            return
+        old_counted = _text(shift.allocation_type) != MISSING_ALLOCATION_TYPE
+        old_hours = _decimal(shift.hours) if old_counted else Decimal("0")
+        same_placement_identity = (
+            old_counted
+            and shift.work_date == day
+            and _text(shift.resource_id) == _text(resource_id)
+        )
+        if same_placement_identity and hours <= old_hours + Decimal("0.001"):
+            return
+        raise ApplicationConflictError(
+            "La mutation ajouterait du nouveau placement avant le cutoff opérationnel du segment.",
+            code="segment_placement_before_cutoff",
+            context={
+                "placement_not_before_date": cutoff.isoformat(),
+                "requested_date": day.isoformat(),
+                "existing_date": shift.work_date.isoformat(),
+                "existing_resource_id": shift.resource_id,
+                "requested_resource_id": resource_id,
+                "existing_counted_hours": float(old_hours),
+                "requested_counted_hours": float(hours),
+            },
+        )
+
     def _current_effective_need(
         self,
         requirement: ResourceRequirement,
@@ -777,8 +814,13 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             exclude_shift_id=shift.id,
         )
         intent = self._request_intent(requirement)
-        if day != shift.work_date:
-            self._assert_new_placement_cutoff(intent, day)
+        self._assert_projected_placement_cutoff(
+            intent,
+            shift,
+            resource_id=resource.id,
+            day=day,
+            hours=hours,
+        )
 
         shift.resource_id = resource.id
         shift.work_date = day
@@ -828,8 +870,13 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             exclude_shift_id=shift.id,
         )
         intent = self._request_intent(requirement)
-        if day != shift.work_date:
-            self._assert_new_placement_cutoff(intent, day)
+        self._assert_projected_placement_cutoff(
+            intent,
+            shift,
+            resource_id=resource.id,
+            day=day,
+            hours=_decimal(shift.hours),
+        )
 
         shift.resource_id = resource.id
         shift.work_date = day
