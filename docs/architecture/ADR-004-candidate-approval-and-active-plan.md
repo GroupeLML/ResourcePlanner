@@ -136,9 +136,9 @@ Le plan actif peut continuer à évoluer contre l'ancienne révision approuvée 
 
 ---
 
-## Amendment proposed for #781 — proposed resource remains advisory
+## Amendment accepted for #781 — proposed resource remains advisory
 
-Amendment status: Proposed  
+Amendment status: Accepted  
 Date: 2026-10-31  
 WorkItem: #781
 
