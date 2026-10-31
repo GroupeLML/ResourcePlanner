@@ -418,6 +418,112 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                             36,
                         )
 
+                    # B. Alice -> Bob must remain durable through rebuild, resync,
+                    # and a compatible reapproval rather than restoring Alice.
+                    rebuilt = client.post("/api/v1/planning/rebuild")
+                    self.assertEqual(rebuilt.status_code, 200, rebuilt.text)
+                    with factory.begin() as session:
+                        SqlPeriodAwareApprovedDemandSyncAdapter(
+                            session
+                        ).sync_operational_choices(mixed_number)
+
+                    mixed_demand = client.get(
+                        f"/api/v1/demands/{mixed_number}"
+                    ).json()
+                    mixed_line = mixed_demand["lines"][0]
+                    mixed_pm_app = create_api_app(
+                        database_url,
+                        auth_resolver=TEST_PROJECT_MANAGER_AUTH_RESOLVER,
+                    )
+                    with TestClient(
+                        mixed_pm_app,
+                        raise_server_exceptions=False,
+                    ) as mixed_pm_client:
+                        changed = mixed_pm_client.patch(
+                            f"/api/v1/demands/{mixed_number}",
+                            json={
+                                "expected_version": mixed_demand["version"],
+                                "comment": "Réapprobation cible Bob #781",
+                                "lines": [
+                                    {
+                                        "id": mixed_line["line_id"],
+                                        "desired_start": START,
+                                        "desired_end": "2026-11-07",
+                                        "estimated_hours": 36,
+                                        "confirmation": "Confirmée",
+                                        "description": "Conserver Bob après reapproval",
+                                    }
+                                ],
+                            },
+                        )
+                    self.assertEqual(changed.status_code, 200, changed.text)
+                    self.assertTrue(changed.json()["reapproval_required"])
+                    self.assertEqual(changed.json()["status"], "Soumise")
+                    reapproved = client.post(
+                        f"/api/v1/demands/{mixed_number}/approve",
+                        json={"comment": "Réapprobation cible Bob #781"},
+                    )
+                    self.assertEqual(reapproved.status_code, 200, reapproved.text)
+                    with factory() as session:
+                        requirement = session.scalar(
+                            select(ResourceRequirement).where(
+                                ResourceRequirement.legacy_segment_id == mixed_segment_id
+                            )
+                        )
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement.id
+                            )
+                        )
+                        self.assertEqual(requirement.assigned_resource_id, "R-778-B")
+                        self.assertEqual(intent.target_mode, "EXPLICIT_RESOURCE")
+                        self.assertEqual(intent.target_resource_id, "R-778-B")
+                        self.assertEqual(requirement.planned_hours, Decimal("36.00"))
+
+                    # C failure path after the hours write is attempted:
+                    # invalid target lookup must roll back both the hours mutation
+                    # and any projected/shift side effects from this HTTP request.
+                    rollback_number = self._approve_40(client)
+                    rollback_before = self._snapshot(client, rollback_number)
+                    rollback_segment_id = rollback_before["demand_segments"][0]["segment_id"]
+                    rejected_after_write = client.patch(
+                        f"/api/v1/segments/{rollback_segment_id}",
+                        json={
+                            "technician": "Ressource inexistante #781",
+                            "planned_hours": 36,
+                        },
+                    )
+                    self.assertEqual(
+                        rejected_after_write.status_code,
+                        404,
+                        rejected_after_write.text,
+                    )
+                    self.assertEqual(
+                        rejected_after_write.json()["error"]["code"],
+                        "segment_target_update_not_found",
+                    )
+                    self.assertEqual(
+                        self._snapshot(client, rollback_number),
+                        rollback_before,
+                    )
+                    with factory() as session:
+                        requirement = session.scalar(
+                            select(ResourceRequirement).where(
+                                ResourceRequirement.legacy_segment_id
+                                == rollback_segment_id
+                            )
+                        )
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement.id
+                            )
+                        )
+                        self.assertEqual(requirement.planned_hours, Decimal("40.00"))
+                        self.assertEqual(requirement.assigned_resource_id, "R-778-A")
+                        self.assertEqual(intent.target_resource_id, "R-778-A")
+
                     # Failure path: valid target + positive hours rejected by
                     # overallocation must leave target, intent, hours and Shifts intact.
                     failed_number = self._approve_40(client)
