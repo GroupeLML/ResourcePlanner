@@ -456,6 +456,52 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                             ),
                             before_refusal["active_release_count"],
                         )
+
+                    valid_preview = client.post(
+                        f"/api/v1/segments/{segment_id}/place-from-drop/preview",
+                        json={
+                            "resource_id": "R-778-A",
+                            "dropped_date": THURSDAY,
+                        },
+                    )
+                    self.assertEqual(valid_preview.status_code, 200, valid_preview.text)
+                    valid_payload = valid_preview.json()
+                    self.assertTrue(valid_payload["allowed"])
+                    self.assertEqual(
+                        set(valid_payload["affected_requirement_ids"]),
+                        {requirement_id, f"REQ-777-FOLLOW-{requirement_id}"},
+                    )
+                    committed = client.post(
+                        f"/api/v1/segments/{segment_id}/place-from-drop",
+                        headers={"Idempotency-Key": "777-same-valid"},
+                        json={
+                            "resource_id": "R-778-A",
+                            "dropped_date": THURSDAY,
+                            "expected_planning_version": valid_payload["planning_version"],
+                            "expected_approval_revision_id": valid_payload["approval_revision_id"],
+                            "expected_operational_version": valid_payload["operational_version"],
+                        },
+                    )
+                    self.assertEqual(committed.status_code, 200, committed.text)
+                    with factory() as session:
+                        selected_intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement_id
+                            )
+                        )
+                        child_intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == f"REQ-777-FOLLOW-{requirement_id}"
+                            )
+                        )
+                        self.assertEqual(selected_intent.target_resource_id, "R-778-A")
+                        self.assertEqual(child_intent.target_resource_id, "R-778-A")
+                        self.assertEqual(
+                            child_intent.placement_not_before_date,
+                            date.fromisoformat(END),
+                        )
             finally:
                 engine.dispose()
 
