@@ -181,7 +181,7 @@ class V2LocalAcceptanceTests(unittest.TestCase):
             communication_transport=self.transport,
         )
 
-    def _seed_resources_through_api(self) -> None:
+    def _seed_resources_through_api(self) -> dict[str, str]:
         with TestClient(
             self._app(ROLE_ADMIN, display_name="Administrateur E2E"),
             raise_server_exceptions=False,
@@ -237,6 +237,7 @@ class V2LocalAcceptanceTests(unittest.TestCase):
                     },
                 )
                 self.assertEqual(response.status_code, 201, response.text)
+            return resource_ids
 
     @staticmethod
     def _segments_for(client: TestClient, demand_number: str) -> list[dict]:
@@ -288,7 +289,7 @@ class V2LocalAcceptanceTests(unittest.TestCase):
         }
 
     def test_complete_v2_local_api_acceptance_path(self) -> None:
-        self._seed_resources_through_api()
+        resource_ids = self._seed_resources_through_api()
         d1, d2, d3, d4, d5 = self.days
 
         # PROJECT_MANAGER: work package -> demand -> periods/alternatives -> submit.
@@ -415,7 +416,11 @@ class V2LocalAcceptanceTests(unittest.TestCase):
             ]
             self.assertEqual(len(assignments), 2)
             for action in assignments:
-                target = "R-A" if action["start_date"] == d1.isoformat() else "R-B"
+                target = (
+                    resource_ids["Alice"]
+                    if action["start_date"] == d1.isoformat()
+                    else resource_ids["Bob"]
+                )
                 assigned = coordinator.post(
                     f"/api/v1/segments/{action['segment_id']}/assign",
                     json={"resource_id": target},
