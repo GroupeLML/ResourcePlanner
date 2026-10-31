@@ -997,6 +997,12 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
         requirement = self._requirement(segment_id)
         resource = self._resource(technician)
         intent = self._request_intent(requirement)
+        if requirement.origin == ORIGIN_REQUEST and intent is None:
+            raise ApplicationConflictError(
+                "Le segment approuvé n'est pas lié à une intention Planning durable.",
+                code="planning_slot_intent_missing",
+                context={"requirement_id": requirement.id},
+            )
         controlled_restore = (
             intent is not None
             and intent.intent_mode
@@ -1013,8 +1019,9 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             if controlled_restore
             else ()
         )
-        if controlled_restore and intent is not None:
-            intent.intent_mode = PLANNING_INTENT_AUTO
+        if intent is not None:
+            if controlled_restore:
+                intent.intent_mode = PLANNING_INTENT_AUTO
             intent.target_mode = PLANNING_TARGET_EXPLICIT_RESOURCE
             intent.target_resource_id = resource.id
 
@@ -1035,8 +1042,9 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
         )
         result = self._planning.rebuild(preserve_shift_ids=survivor_ids)
 
-        if controlled_restore and intent is not None:
-            intent.intent_mode = PLANNING_INTENT_PRESERVE_EXISTING
+        if intent is not None:
+            if controlled_restore:
+                intent.intent_mode = PLANNING_INTENT_PRESERVE_EXISTING
             intent.target_mode = PLANNING_TARGET_EXPLICIT_RESOURCE
             intent.target_resource_id = resource.id
             restored_shifts = tuple(
@@ -1047,11 +1055,12 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
                     )
                 ).all()
             )
-            self._resolve_covered_releases(
-                intent,
-                requirement,
-                restored_shifts=restored_shifts,
-            )
+            if controlled_restore:
+                self._resolve_covered_releases(
+                    intent,
+                    requirement,
+                    restored_shifts=restored_shifts,
+                )
             self._session.flush()
         return result
 
