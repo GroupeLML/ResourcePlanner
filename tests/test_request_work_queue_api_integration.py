@@ -188,6 +188,105 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
             if row.get("demand_number") == number and row.get("kind") == "ASSIGNMENT"
         ]
 
+    def test_cutoff_rejects_new_same_day_manual_placement_but_allows_survivor_metadata(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_40(client)
+                    snapshot = self._snapshot(client, number)
+                    survivor = min(
+                        (
+                            row
+                            for row in snapshot["demand_shifts"]
+                            if row["work_date"] < THURSDAY
+                        ),
+                        key=lambda row: row["work_date"],
+                    )
+                    requirement_id = snapshot["demand_segments"][0]["requirement_id"]
+                    with factory.begin() as session:
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement_id
+                            )
+                        )
+                        self.assertIsNotNone(intent)
+                        intent.placement_not_before_date = date.fromisoformat(THURSDAY)
+
+                    base_payload = {
+                        "technician": survivor["resource_id"],
+                        "day": survivor["work_date"],
+                        "outside_standard_hours": False,
+                        "confirmation": survivor.get("confirmation"),
+                    }
+                    increased = client.put(
+                        f"/api/v1/allocations/{survivor['allocation_id']}",
+                        json={**base_payload, "hours": 12, "note": "augmentation interdite"},
+                    )
+                    self.assertEqual(increased.status_code, 409, increased.text)
+                    self.assertEqual(
+                        increased.json()["error"]["code"],
+                        "segment_placement_before_cutoff",
+                    )
+
+                    changed_resource = client.put(
+                        f"/api/v1/allocations/{survivor['allocation_id']}",
+                        json={
+                            **base_payload,
+                            "technician": "R-778-B",
+                            "hours": survivor["hours"],
+                            "note": "changement ressource interdit",
+                        },
+                    )
+                    self.assertEqual(changed_resource.status_code, 409, changed_resource.text)
+                    self.assertEqual(
+                        changed_resource.json()["error"]["code"],
+                        "segment_placement_before_cutoff",
+                    )
+
+                    descriptive = client.put(
+                        f"/api/v1/allocations/{survivor['allocation_id']}",
+                        json={
+                            **base_payload,
+                            "hours": survivor["hours"],
+                            "note": "survivant inchangé avant cutoff",
+                        },
+                    )
+                    self.assertEqual(descriptive.status_code, 200, descriptive.text)
+                    persisted = next(
+                        row
+                        for row in self._snapshot(client, number)["demand_shifts"]
+                        if row["allocation_id"] == survivor["allocation_id"]
+                    )
+                    self.assertEqual(persisted["resource_id"], survivor["resource_id"])
+                    self.assertEqual(persisted["work_date"], survivor["work_date"])
+                    self.assertEqual(float(persisted["hours"]), float(survivor["hours"]))
+                    self.assertEqual(persisted["note"], "survivant inchangé avant cutoff")
+
+                    at_cutoff = next(
+                        row
+                        for row in self._snapshot(client, number)["demand_shifts"]
+                        if row["work_date"] >= THURSDAY
+                    )
+                    allowed = client.put(
+                        f"/api/v1/allocations/{at_cutoff['allocation_id']}",
+                        json={
+                            "technician": "R-778-B",
+                            "day": at_cutoff["work_date"],
+                            "hours": at_cutoff["hours"],
+                            "outside_standard_hours": False,
+                            "note": "placement au cutoff",
+                            "confirmation": at_cutoff.get("confirmation"),
+                        },
+                    )
+                    self.assertEqual(allowed.status_code, 200, allowed.text)
+            finally:
+                engine.dispose()
+
     def test_dated_drop_places_only_residual_after_cutoff_and_preserves_release(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
