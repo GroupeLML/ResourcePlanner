@@ -126,6 +126,41 @@ class SegmentServiceTests(unittest.TestCase):
         )
         self.assertEqual(summary["allocated_hours"], 8.0)
 
+    def test_mixed_request_patch_syncs_effective_need_before_target_rebuild(self) -> None:
+        segments = _Segments()
+        segments.record = replace(segments.record, origin="REQUEST", planned_hours=40)
+        planning = _Planning(segments.events)
+        targeting = _Targeting(segments.events)
+
+        class Sync:
+            def sync_operational_choices(self, number, **kwargs):
+                segments.events.append(("sync", number, dict(kwargs)))
+
+        service = SegmentService(
+            segments,
+            planning,
+            approved_sync=Sync(),
+            targeting=targeting,
+        )
+
+        summary = service.update_command(
+            SegmentUpdateCommand(
+                segment_id="SEG-1",
+                technician="Bob",
+                planned_hours=36,
+            )
+        )
+
+        self.assertEqual(
+            segments.events,
+            [
+                ("update", "SEG-1", {"HeuresPrevues": 36}),
+                ("sync", "DMO-1", {}),
+                ("assign", "SEG-1", "Bob"),
+            ],
+        )
+        self.assertEqual(summary["allocated_hours"], 8.0)
+
     def test_request_target_clear_patch_is_rejected_before_mutation(self) -> None:
         segments = _Segments()
         segments.record = replace(segments.record, origin="REQUEST", resource_name="Alice")
