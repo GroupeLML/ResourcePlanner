@@ -522,20 +522,90 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
             roles=(ROLE_ADMIN,),
         )
 
+    @staticmethod
+    def _prepare_race_session(
+        session,
+        fixture: dict[str, object],
+        participant: str,
+    ) -> int:
+        connection = session.connection()
+        connection.exec_driver_sql("SET LOCK_TIMEOUT 15000")
+        spid = int(connection.exec_driver_sql("SELECT @@SPID").scalar_one())
+        connection.info["issue777_race_participant"] = participant
+        lock = fixture["race_spid_lock"]
+        with lock:
+            fixture["race_spids"][participant] = spid
+        return spid
+
+    @staticmethod
+    def _install_cas_rendezvous(
+        fixture: dict[str, object],
+        participants: tuple[str, str],
+    ):
+        barrier = Barrier(2, timeout=10)
+        seen: set[str] = set()
+        seen_lock = Lock()
+        participant_set = set(participants)
+
+        def before_cursor_execute(
+            conn,
+            cursor,
+            statement,
+            parameters,
+            context,
+            executemany,
+        ) -> None:
+            participant = conn.info.get("issue777_race_participant")
+            normalized = " ".join(str(statement).lower().split())
+            if (
+                participant not in participant_set
+                or not normalized.startswith("update")
+                or "planning_mutation_state" not in normalized
+            ):
+                return
+            with seen_lock:
+                if participant in seen:
+                    return
+                seen.add(participant)
+            barrier.wait()
+
+        event.listen(
+            fixture["engine"],
+            "before_cursor_execute",
+            before_cursor_execute,
+        )
+        return before_cursor_execute
+
+    @staticmethod
+    def _remove_cas_rendezvous(
+        fixture: dict[str, object],
+        listener,
+    ) -> None:
+        event.remove(
+            fixture["engine"],
+            "before_cursor_execute",
+            listener,
+        )
+
+    @staticmethod
+    def _expected_race_conflict(exc: ApplicationConflictError) -> tuple[str, str]:
+        if exc.code != "planning_version_conflict":
+            raise exc
+        return "conflict", exc.code
+
     def _drop(
         self,
         fixture: dict[str, object],
         *,
+        participant: str,
         resource_id: str,
         dropped_date: date,
         command_id: str,
-        barrier: Barrier | None = None,
     ) -> tuple[str, str | None]:
         factory = fixture["factory"]
-        with factory.begin() as session:
-            if barrier is not None:
-                barrier.wait(timeout=10)
-            try:
+        try:
+            with factory.begin() as session:
+                self._prepare_race_session(session, fixture, participant)
                 result = self._adapter(session, fixture).place_segment_from_drop(
                     PlaceSegmentFromDropCommand(
                         segment_id=str(fixture["segment_id"]),
@@ -547,89 +617,171 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
                         command_id=command_id,
                     )
                 )
-            except ApplicationConflictError as exc:
-                return "conflict", exc.code
             return "success", str(result["placement_not_before_date"])
+        except ApplicationConflictError as exc:
+            return self._expected_race_conflict(exc)
 
     def _cleanup(self, fixture: dict[str, object]) -> None:
         factory = fixture["factory"]
+        request_id = str(fixture["request_id"])
         with factory.begin() as session:
+            # Collect the canonical ownership graph before deleting any parent row.
+            line_ids = tuple(
+                session.scalars(
+                    select(RequestLine.id).where(
+                        RequestLine.workforce_request_id == request_id
+                    )
+                ).all()
+            )
+            revision_rows = tuple(
+                session.execute(
+                    select(
+                        RequestApprovalRevision.id,
+                        RequestApprovalRevision.previous_revision_id,
+                        RequestApprovalRevision.request_version,
+                    ).where(
+                        RequestApprovalRevision.workforce_request_id == request_id
+                    )
+                ).all()
+            )
+            requirement_ids = tuple(
+                session.scalars(
+                    select(ResourceRequirement.id).where(
+                        ResourceRequirement.workforce_request_id == request_id
+                    )
+                ).all()
+            )
+            intent_ids = tuple(
+                session.scalars(
+                    select(RequestRequirementPlanningIntent.id).where(
+                        RequestRequirementPlanningIntent.workforce_request_id
+                        == request_id
+                    )
+                ).all()
+            )
+            release_ids = tuple(
+                session.scalars(
+                    select(PlanningWorkQueueRelease.id).where(
+                        PlanningWorkQueueRelease.workforce_request_id == request_id
+                    )
+                ).all()
+            )
+            shift_ids = (
+                tuple(
+                    session.scalars(
+                        select(Shift.id).where(
+                            Shift.resource_requirement_id.in_(requirement_ids)
+                        )
+                    ).all()
+                )
+                if requirement_ids
+                else ()
+            )
+
             session.execute(
                 delete(PlanningChangeHistory).where(
                     PlanningChangeHistory.actor_name == str(fixture["actor_name"])
                 )
             )
-            session.execute(
-                delete(PlanningWorkQueueRestoration).where(
-                    PlanningWorkQueueRestoration.planning_intent_id
-                    == str(fixture["intent_id"])
+            if release_ids:
+                session.execute(
+                    delete(PlanningWorkQueueRestoration).where(
+                        PlanningWorkQueueRestoration.release_id.in_(release_ids)
+                    )
                 )
-            )
-            session.execute(
-                delete(PlanningWorkQueueRelease).where(
-                    PlanningWorkQueueRelease.planning_intent_id
-                    == str(fixture["intent_id"])
+                session.execute(
+                    delete(PlanningWorkQueueRelease).where(
+                        PlanningWorkQueueRelease.id.in_(release_ids)
+                    )
                 )
-            )
-            session.execute(
-                delete(RequestCompletionReduction).where(
-                    RequestCompletionReduction.planning_intent_id
-                    == str(fixture["intent_id"])
+            if intent_ids:
+                session.execute(
+                    delete(RequestCompletionReduction).where(
+                        RequestCompletionReduction.planning_intent_id.in_(intent_ids)
+                    )
                 )
-            )
-            session.execute(
-                delete(Shift).where(
-                    Shift.resource_requirement_id == str(fixture["requirement_id"])
+            else:
+                session.execute(
+                    delete(RequestCompletionReduction).where(
+                        RequestCompletionReduction.workforce_request_id == request_id
+                    )
                 )
-            )
-            session.execute(
-                delete(RequestRequirementPlanningIntent).where(
-                    RequestRequirementPlanningIntent.id == str(fixture["intent_id"])
+            if shift_ids:
+                session.execute(delete(Shift).where(Shift.id.in_(shift_ids)))
+            if intent_ids:
+                session.execute(
+                    delete(RequestRequirementPlanningIntent).where(
+                        RequestRequirementPlanningIntent.id.in_(intent_ids)
+                    )
                 )
-            )
-            session.execute(
-                delete(ResourceRequirement).where(
-                    ResourceRequirement.id == str(fixture["requirement_id"])
+            if requirement_ids:
+                session.execute(
+                    delete(ResourceRequirement).where(
+                        ResourceRequirement.id.in_(requirement_ids)
+                    )
                 )
-            )
+
             session.execute(
                 delete(RequestOperationalState).where(
-                    RequestOperationalState.workforce_request_id
-                    == str(fixture["request_id"])
+                    RequestOperationalState.workforce_request_id == request_id
                 )
             )
             session.execute(
                 delete(RequestApprovalReference).where(
-                    RequestApprovalReference.workforce_request_id
-                    == str(fixture["request_id"])
+                    RequestApprovalReference.workforce_request_id == request_id
                 )
             )
-            session.execute(
-                delete(RequestApprovalRevision).where(
-                    RequestApprovalRevision.workforce_request_id
-                    == str(fixture["request_id"])
+
+            # Delete revision descendants before their previous_revision_id parents.
+            remaining = {
+                str(row.id): (
+                    str(row.previous_revision_id)
+                    if row.previous_revision_id is not None
+                    else None
                 )
-            )
-            session.execute(
-                delete(RequestLine).where(
-                    RequestLine.id == str(fixture["line_id"])
+                for row in revision_rows
+            }
+            while remaining:
+                parents = {
+                    previous
+                    for previous in remaining.values()
+                    if previous in remaining
+                }
+                leaves = tuple(
+                    revision_id
+                    for revision_id in remaining
+                    if revision_id not in parents
                 )
-            )
+                if not leaves:
+                    raise AssertionError(
+                        "Cycle inattendu dans la chaîne de révisions #777."
+                    )
+                session.execute(
+                    delete(RequestApprovalRevision).where(
+                        RequestApprovalRevision.id.in_(leaves)
+                    )
+                )
+                for revision_id in leaves:
+                    remaining.pop(revision_id, None)
+
+            if line_ids:
+                session.execute(
+                    delete(RequestLine).where(RequestLine.id.in_(line_ids))
+                )
             session.execute(
                 delete(WorkforceRequestHistory).where(
-                    WorkforceRequestHistory.workforce_request_id
-                    == str(fixture["request_id"])
+                    WorkforceRequestHistory.workforce_request_id == request_id
                 )
             )
             session.execute(
-                delete(WorkforceRequest).where(
-                    WorkforceRequest.id == str(fixture["request_id"])
-                )
+                delete(WorkforceRequest).where(WorkforceRequest.id == request_id)
             )
-            for availability_id in fixture["availability_ids"].values():
+
+            availability_ids = tuple(fixture["availability_ids"].values())
+            if availability_ids:
                 session.execute(
                     delete(ResourceAvailabilityRule).where(
-                        ResourceAvailabilityRule.id == availability_id
+                        ResourceAvailabilityRule.id.in_(availability_ids)
                     )
                 )
             session.execute(
@@ -655,19 +807,16 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
                 )
             )
             session.execute(
-                delete(AppUser).where(
-                    AppUser.id == str(fixture["actor_id"])
-                )
-            )
-            session.execute(
                 delete(Resource).where(
                     Resource.id.in_(tuple(fixture["resources"].values()))
                 )
             )
             session.execute(
+                delete(AppUser).where(AppUser.id == str(fixture["actor_id"]))
+            )
+            session.execute(
                 delete(Project).where(Project.id == str(fixture["project_id"]))
             )
-        fixture["engine"].dispose()
 
     def test_drop_vs_drop_has_one_authoritative_winner(self) -> None:
         fixture = self._fixture()
