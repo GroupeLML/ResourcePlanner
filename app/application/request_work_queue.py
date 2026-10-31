@@ -149,6 +149,8 @@ class SegmentPlacementPreviewResult(ApplicationResult):
     remaining_hours: float
     placeable_hours: float
     available_actions: tuple[str, ...] = ()
+    affected_requirement_ids: tuple[str, ...] = ()
+    affected_planning_intent_ids: tuple[str, ...] = ()
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, Any]) -> "SegmentPlacementPreviewResult":
@@ -176,6 +178,8 @@ class SegmentPlacementPreviewResult(ApplicationResult):
             remaining_hours=float(source.get("remaining_hours") or 0.0),
             placeable_hours=float(source.get("placeable_hours") or 0.0),
             available_actions=tuple(source.get("available_actions") or ()),
+            affected_requirement_ids=tuple(source.get("affected_requirement_ids") or ()),
+            affected_planning_intent_ids=tuple(source.get("affected_planning_intent_ids") or ()),
         )
 
 
