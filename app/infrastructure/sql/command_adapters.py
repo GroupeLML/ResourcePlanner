@@ -997,9 +997,14 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
         requirement = self._requirement(segment_id)
         resource = self._resource(technician)
         intent = self._request_intent(requirement)
-        if requirement.origin == ORIGIN_REQUEST and intent is None:
+        if (
+            requirement.origin == ORIGIN_REQUEST
+            and intent is None
+            and requirement.approval_revision_id
+            and requirement.approved_entry_key
+        ):
             raise ApplicationConflictError(
-                "Le segment approuvé n'est pas lié à une intention Planning durable.",
+                "Le slot approuvé moderne n'est pas lié à son intention Planning durable.",
                 code="planning_slot_intent_missing",
                 context={"requirement_id": requirement.id},
             )
@@ -1226,11 +1231,9 @@ class SqlApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                     requirement.status = "Annulé"
             current = [row for row in ranked if row.id in keep_ids]
 
-        proposed = self._proposed_resource(request)
-        for index, requirement in enumerate(current[:desired]):
-            if index == 0 and not requirement.assigned_resource_id and proposed is not None:
-                requirement.assigned_resource_id = proposed.id
-
+        for requirement in current[:desired]:
+            # ADR-004/#781: preserve legacy operational targets already present,
+            # but never promote the advisory proposed resource during approval.
             if requirement.assigned_resource_id and requirement.status == "À assigner":
                 requirement.status = "Planifié"
             elif (
