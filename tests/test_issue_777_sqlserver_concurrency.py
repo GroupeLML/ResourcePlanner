@@ -1056,6 +1056,22 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
             requirement.assigned_resource_id = None
             requirement.status = "À assigner"
             requirement.planned_hours = Decimal("4.00")
+            request = session.get(WorkforceRequest, fixture["request_id"])
+            line = session.get(RequestLine, fixture["line_id"])
+            revision = session.get(RequestApprovalRevision, fixture["revision_id"])
+            self.assertIsNotNone(request)
+            self.assertIsNotNone(line)
+            self.assertIsNotNone(revision)
+            request.estimated_hours = Decimal("4.00")
+            line.estimated_hours = Decimal("4.00")
+            payload = json.loads(revision.payload_text)
+            payload["authorization"]["entries"][0]["hours"] = "4.00"
+            revision.payload_text = json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
             intent.intent_mode = "AUTO"
             intent.target_mode = "EXPLICIT_NONE"
             intent.target_resource_id = None
