@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, time, timedelta
-from threading import Barrier
+from threading import Barrier, Lock
 from decimal import Decimal
 import json
 import os
 from uuid import uuid4
 import unittest
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, event, func, or_, select, text
 
 from app.application.errors import ApplicationConflictError
 from app.application.request_work_queue import (
@@ -19,6 +19,7 @@ from app.application.request_work_queue import (
 )
 from app.application.security import ROLE_ADMIN, permissions_for_roles
 from app.domain.approval_envelope import EnvelopeEntryIdentity
+from app.domain.planning_engine import MISSING_ALLOCATION_TYPE
 from app.infrastructure.sql import (
     PlanningChangeHistory,
     PlanningWorkQueueRelease,
@@ -51,7 +52,14 @@ from app.infrastructure.sql.approval_revision_models import (
 from app.infrastructure.sql.base import utc_now
 from app.infrastructure.sql.identity_models import AppUser
 from app.infrastructure.sql.planning_audit import SqlPlanningAuditJournal
-from app.infrastructure.sql.planning_version import SqlPlanningMutationVersionRepository
+from app.infrastructure.sql.planning_intent_repository import (
+    SqlRequestRequirementPlanningIntentRepository,
+)
+from app.infrastructure.sql.planning_version import (
+    PLANNING_STATE_ID,
+    PlanningMutationState,
+    SqlPlanningMutationVersionRepository,
+)
 from app.infrastructure.sql.request_version import acquire_request_aggregate_version
 from app.infrastructure.sql.request_work_queue_commands import (
     SqlRequestWorkQueueCommandAdapter,
@@ -138,6 +146,35 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
 
         engine = create_sql_engine(DATABASE_URL)
         factory = create_session_factory(engine)
+        fixture: dict[str, object] = {
+            "marker": marker,
+            "engine": engine,
+            "factory": factory,
+            "project_id": project_id,
+            "request_id": request_id,
+            "request_number": request_number,
+            "line_id": line_id,
+            "revision_id": revision_id,
+            "requirement_id": requirement_id,
+            "segment_id": segment_id,
+            "intent_id": intent_id,
+            "actor_id": actor_id,
+            "actor_name": actor_name,
+            "scope_id": scope_id,
+            "class_code": class_code,
+            "resources": resources,
+            "availability_ids": availability_ids,
+            "shift_ids": shift_ids,
+            "allocation_ids": allocation_ids,
+            "release_id": release_id,
+            "planning_version": None,
+            "race_spids": {},
+            "race_spid_lock": Lock(),
+        }
+        # unittest cleanups are LIFO: row teardown executes before engine disposal.
+        self.addCleanup(engine.dispose)
+        self.addCleanup(self._cleanup, fixture)
+
         with factory.begin() as session:
             session.add(
                 Project(
@@ -372,29 +409,8 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
                 session
             ).current_version()
 
-        return {
-            "marker": marker,
-            "engine": engine,
-            "factory": factory,
-            "project_id": project_id,
-            "request_id": request_id,
-            "request_number": request_number,
-            "line_id": line_id,
-            "revision_id": revision_id,
-            "requirement_id": requirement_id,
-            "segment_id": segment_id,
-            "intent_id": intent_id,
-            "actor_id": actor_id,
-            "actor_name": actor_name,
-            "scope_id": scope_id,
-            "class_code": class_code,
-            "resources": resources,
-            "availability_ids": availability_ids,
-            "shift_ids": shift_ids,
-            "allocation_ids": allocation_ids,
-            "release_id": release_id,
-            "planning_version": planning_version,
-        }
+        fixture["planning_version"] = planning_version
+        return fixture
 
     @staticmethod
     def _adapter(session, fixture: dict[str, object]) -> SqlRequestWorkQueueCommandAdapter:
