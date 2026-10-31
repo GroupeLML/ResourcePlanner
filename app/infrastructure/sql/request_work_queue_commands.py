@@ -687,6 +687,9 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
                 same_coordinator.validate_retarget_component(
                     requirement.id,
                     resource.id,
+                    additionally_preserved_requirement_ids=(
+                        (requirement.id,) if covered > TOLERANCE else ()
+                    ),
                 )
             except ApplicationConflictError as exc:
                 if exc.code != "same_as_period_resource_conflict":
@@ -963,6 +966,9 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
         grouped = SqlSameResourcePeriodCoordinator(self._session).retarget_component(
             requirement.id,
             resource.id,
+            additionally_preserved_requirement_ids=(
+                (requirement.id,) if counted_survivors else ()
+            ),
         )
         if not grouped:
             requirement.assigned_resource_id = resource.id
