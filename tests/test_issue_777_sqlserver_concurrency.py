@@ -561,6 +561,7 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
     def test_drop_vs_drop_has_one_authoritative_winner(self) -> None:
         fixture = self._fixture()
         try:
+            barrier = Barrier(2)
             with ThreadPoolExecutor(max_workers=2) as executor:
                 first = executor.submit(
                     self._drop,
@@ -568,6 +569,7 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
                     resource_id=fixture["resources"]["A"],
                     dropped_date=DAY + timedelta(days=2),
                     command_id=f"drop-a-{fixture['marker']}",
+                    barrier=barrier,
                 )
                 second = executor.submit(
                     self._drop,
@@ -575,6 +577,7 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
                     resource_id=fixture["resources"]["B"],
                     dropped_date=DAY + timedelta(days=3),
                     command_id=f"drop-b-{fixture['marker']}",
+                    barrier=barrier,
                 )
                 outcomes = (first.result(timeout=30), second.result(timeout=30))
             self.assertEqual(
@@ -600,8 +603,10 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
     def test_drop_vs_return_shift_has_one_authoritative_winner(self) -> None:
         fixture = self._fixture()
         try:
+            barrier = Barrier(2)
             def return_shift() -> tuple[str, str | None]:
                 with fixture["factory"].begin() as session:
+                    barrier.wait(timeout=10)
                     try:
                         result = self._adapter(session, fixture).return_shift(
                             ReturnShiftToWorkQueueCommand(
@@ -623,6 +628,7 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
                     resource_id=fixture["resources"]["B"],
                     dropped_date=DAY + timedelta(days=3),
                     command_id=f"drop-return-race-{fixture['marker']}",
+                    barrier=barrier,
                 )
                 returned = executor.submit(return_shift)
                 outcomes = (drop.result(timeout=30), returned.result(timeout=30))
@@ -640,9 +646,11 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
     def test_drop_vs_reapproval_has_one_authoritative_winner(self) -> None:
         fixture = self._fixture()
         try:
+            barrier = Barrier(2)
             def reapprove() -> tuple[str, str | None]:
                 with fixture["factory"].begin() as session:
                     versioning = SqlPlanningMutationVersionRepository(session)
+                    barrier.wait(timeout=10)
                     try:
                         versioning.acquire(int(fixture["planning_version"]))
                         request = session.get(WorkforceRequest, fixture["request_id"])
@@ -664,6 +672,7 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
                     resource_id=fixture["resources"]["B"],
                     dropped_date=DAY + timedelta(days=3),
                     command_id=f"drop-reapproval-race-{fixture['marker']}",
+                    barrier=barrier,
                 )
                 approved = executor.submit(reapprove)
                 outcomes = (drop.result(timeout=30), approved.result(timeout=30))
@@ -681,8 +690,10 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
     def test_drop_vs_permanent_reduction_has_one_authoritative_winner(self) -> None:
         fixture = self._fixture()
         try:
+            barrier = Barrier(2)
             def reduce() -> tuple[str, str | None]:
                 with fixture["factory"].begin() as session:
+                    barrier.wait(timeout=10)
                     try:
                         result = self._adapter(session, fixture).permanently_reduce_shift(
                             PermanentlyReduceShiftHoursCommand(
@@ -705,6 +716,7 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
                     resource_id=fixture["resources"]["B"],
                     dropped_date=DAY + timedelta(days=3),
                     command_id=f"drop-reduction-race-{fixture['marker']}",
+                    barrier=barrier,
                 )
                 reduced = executor.submit(reduce)
                 outcomes = (drop.result(timeout=30), reduced.result(timeout=30))
