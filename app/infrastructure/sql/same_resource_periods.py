@@ -390,8 +390,9 @@ class SqlSameResourcePeriodCoordinator:
     ) -> bool:
         """Atomically retarget one SAME_AS_PERIOD component and its durable targets."""
 
+        wanted = _text(requirement_id)
         target_resource_id = _text(resource_id)
-        group = self.validate_retarget_component(requirement_id, target_resource_id)
+        group = self.validate_retarget_component(wanted, target_resource_id)
         if group is None:
             return False
         requirements = list(
@@ -417,7 +418,7 @@ class SqlSameResourcePeriodCoordinator:
             and intent.intent_mode == PLANNING_INTENT_QUEUED
         }
         for requirement in requirements:
-            if requirement.id in queued_requirement_ids:
+            if requirement.id in queued_requirement_ids and requirement.id != wanted:
                 requirement.assigned_resource_id = None
                 continue
             requirement.assigned_resource_id = target_resource_id
