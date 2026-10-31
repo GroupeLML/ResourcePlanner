@@ -197,7 +197,7 @@ class EstimatedDaysSqlSyncTests(unittest.TestCase):
             self.assertEqual([row.planned_hours for row in rows], [Decimal("24.00"), Decimal("24.00")])
             self.assertEqual(sum(row.planned_hours for row in rows), Decimal("48.00"))
             self.assertEqual([row.desired_active_days for row in rows], [3, 3])
-            self.assertEqual(sum(1 for row in rows if row.assigned_resource_id == "R1"), 1)
+            self.assertTrue(all(row.assigned_resource_id is None for row in rows))
 
     def test_days_only_new_request_is_rejected_without_inventing_hours(self) -> None:
         with self.assertRaisesRegex(ValueError, "ne définissent pas les heures"):
@@ -221,7 +221,7 @@ class EstimatedDaysSqlSyncTests(unittest.TestCase):
         with transactional_session(self.factory) as session:
             self.assertEqual(self._requirements(session, "D2"), [])
 
-    def test_period_48h_3days_2resources_splits_total_and_proposes_only_first(self) -> None:
+    def test_period_48h_3days_2resources_splits_total_without_promoting_proposal(self) -> None:
         with transactional_session(self.factory) as session:
             session.add(
                 WorkforceRequest(
@@ -259,8 +259,7 @@ class EstimatedDaysSqlSyncTests(unittest.TestCase):
             self.assertEqual(sum(row.planned_hours for row in rows), Decimal("48.00"))
             self.assertEqual(sorted(row.planned_hours for row in rows), [Decimal("24.00"), Decimal("24.00")])
             self.assertEqual([row.desired_active_days for row in rows], [3, 3])
-            self.assertEqual(sum(1 for row in rows if row.assigned_resource_id == "R1"), 1)
-            self.assertEqual(sum(1 for row in rows if row.assigned_resource_id is None), 1)
+            self.assertTrue(all(row.assigned_resource_id is None for row in rows))
 
 
 if __name__ == "__main__":
