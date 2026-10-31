@@ -419,7 +419,7 @@ class SqlCommandAdapterTests(unittest.TestCase):
                 sorted(row.planned_hours for row in active),
                 [Decimal("8.00"), Decimal("8.00")],
             )
-            self.assertEqual(sum(1 for row in active if row.assigned_resource_id == "R1"), 1)
+            self.assertTrue(all(row.assigned_resource_id is None for row in active))
 
             request.resource_count = 1
             request.estimated_hours = Decimal("10")
@@ -435,7 +435,7 @@ class SqlCommandAdapterTests(unittest.TestCase):
             cancelled = [row for row in all_requirements if row.status == "Annulé"]
             self.assertEqual(len(active), 1)
             self.assertEqual(len(cancelled), 1)
-            self.assertEqual(active[0].assigned_resource_id, "R1")
+            self.assertIsNone(active[0].assigned_resource_id)
             self.assertEqual(active[0].planned_hours, Decimal("10.00"))
             self.assertEqual(active[0].end_date, date(2026, 8, 26))
 
