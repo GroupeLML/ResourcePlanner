@@ -132,3 +132,128 @@ Le plan actif peut continuer à évoluer contre l'ancienne révision approuvée 
 - ADR-001
 - ADR-002
 - ADR-003
+
+
+---
+
+## Amendment proposed for #781 — proposed resource remains advisory
+
+Amendment status: Proposed  
+Date: 2026-10-31  
+WorkItem: #781
+
+### Context
+
+The #781 triage established that explicit versus default-derived hours do not select different approval or materialization paths. Both become the canonical total `RequestLine.estimated_hours`.
+
+The first meaningful split is whether `RequestLine.proposed_resource_id` is populated. The current approved-materialization path can promote that proposal into `ResourceRequirement.assigned_resource_id`, which ADR-001 treats as the automatic-generation target. Rebuild may then create real `Shift` rows on that resource and consume the approved residual.
+
+This behavior is internally consistent with the original ADR-004 wording that a proposed resource is not an authorization constraint, but it does not enforce the stricter product rule now selected for #781: approval authorizes the need; it does not select the proposed person as the operational target.
+
+### Amendment decision
+
+After this amendment is accepted:
+
+1. **A proposed resource remains advisory after approval.**
+   - Preserve `RequestLine.proposed_resource_id` and the immutable approved snapshot.
+   - The proposal may remain visible as recommendation/candidate context.
+   - Approval, rebuild, resync and compatible reapproval must not automatically promote that proposal into an operational target.
+
+2. **A newly approved slot without an applicable existing operational decision starts unselected.**
+   - Use the existing durable `RequestRequirementPlanningIntent`; do not introduce a second targeting authority.
+   - An unselected target is represented by the existing intent model, conceptually `AUTO + EXPLICIT_NONE`, without manufacturing a Return Segment operation.
+
+3. **Only an authorized Planning decision establishes the operational target.**
+   - Dated and undated assignment commands that select a resource must persist the durable target choice.
+   - Updating only the projected `ResourceRequirement.assigned_resource_id` is insufficient because later rebuild/resync may replace that projection.
+   - Public segment-target mutations must be reviewed so every explicit selection survives rebuild, resync and compatible reapproval.
+
+4. **Approval and operational targeting remain separate authorities.**
+   - ADR-003 remains authoritative for immutable approved authorization.
+   - ADR-001 remains authoritative for the distinction between automatic target and actual `Shift.resource_id`.
+   - Creating or editing an individual manual Shift remains distinct from retargeting the automatic residual.
+
+5. **File de Travail remains residual-based.**
+   - Approval replaces the candidate representation with the approved residual projection.
+   - For an unselected approved slot with `H > C`, the residual remains eligible for File de Travail under #693.
+   - Retaining the advisory proposal must not preserve a duplicate candidate charge or double-count work.
+
+6. **Compatible reapproval preserves operational decisions.**
+   - Existing durable target, cutoff, releases and reductions survive compatible reapproval.
+   - Changing the proposed resource alone neither overwrites nor clears an operational target.
+   - New unselected slots remain unselected.
+   - Incompatible rebinding continues to fail closed under the existing stable-slot/authorization rules.
+
+7. **SAME_AS_PERIOD remains governed by ADR-029.**
+   - Existing explicit component decisions remain applicable.
+   - Proposed-resource inheritance alone is not an operational SAME_AS_PERIOD decision.
+
+8. **Legacy approved plans are preserved during transition.**
+   - Deployment must not automatically unassign resources, delete Shifts, return work to File de Travail or alter counted coverage.
+   - Existing operational targets created under the former approval-implies-target behavior are preserved as legacy operational choices.
+   - Where durable intent backfill is required, bind by stable approved-slot/current operational identity, not names or resource-equality heuristics.
+   - Preserve explicit-none and queued states.
+   - Ambiguous bindings require reconciliation and must fail closed.
+   - Transition provenance must remain truthful: do not retroactively claim that a human explicitly selected a legacy target.
+
+9. **Existing boundaries remain unchanged.**
+   - ADR-034 coverage protections, releases, reductions and survivor rules remain authoritative.
+   - ADR-035 window/cutoff semantics remain unchanged.
+   - ADR-006 concurrency/CAS and ADR-027 authorization/visibility remain unchanged.
+
+### Alternatives considered
+
+#### Keep approval-implies-automatic-target behavior
+
+Rejected for #781. It makes the proposal operational as a side effect of approval and can consume the residual before an explicit Planning decision.
+
+#### Clear only the projected requirement target after approval
+
+Rejected. `ResourceRequirement.assigned_resource_id` is a projection of operational intent in modern flows; clearing only the projection would allow rebuild/resync to reintroduce stale or ambiguous behavior.
+
+#### Introduce a second proposal/target authority
+
+Rejected. The existing `RequestRequirementPlanningIntent` already provides the durable operational authority needed for explicit target choices.
+
+### Consequences
+
+#### Positive
+
+- approval no longer silently chooses the proposed person as the operational target;
+- advisory recommendation and operational decision become unambiguous;
+- approved residual work remains visible until covered or explicitly targeted;
+- proposal changes cannot overwrite an existing operational choice;
+- rebuild, resync and reapproval share one durable target authority.
+
+#### Trade-offs / negative
+
+- current materialization tests that encode approval-implies-target behavior must be updated;
+- every explicit assignment path must persist durable intent consistently;
+- legacy target preservation/backfill requires careful stable-slot reconciliation;
+- some historical data may require explicit reconciliation when binding is ambiguous.
+
+### Implementation notes
+
+The dependent #781 implementation must, at minimum:
+
+- remove proposal promotion from line, period and legacy approved-materialization/resync paths;
+- ensure dated and undated explicit assignment commands persist `EXPLICIT_RESOURCE` (or equivalent current canonical target intent);
+- preserve legacy coverage, Shift identity, locks, assets, releases and reductions;
+- add regression coverage for all four hours/proposal combinations;
+- prove proposal changes do not alter operational choices;
+- cover rebuild/resync/compatible reapproval, SAME_AS_PERIOD, queued suppression and ambiguous legacy binding;
+- keep the coordinator's separate “4 h + no proposed resource disappears” observation as a controlled reproduction task until a concrete backend boundary is demonstrated.
+
+### References
+
+- GitHub Issue #781
+- GitHub Issue #55
+- GitHub Issue #654
+- GitHub Issue #693
+- ADR-001
+- ADR-003
+- ADR-006
+- ADR-027
+- ADR-029
+- ADR-034
+- ADR-035
