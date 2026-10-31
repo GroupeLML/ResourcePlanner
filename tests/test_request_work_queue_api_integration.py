@@ -2701,6 +2701,280 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_mixed_patch_syncs_reduction_before_targeting_preserves_survivors(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-781-mixed-reduction",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number, segment_id, survivor_rows = self._prepare_reduced_returned_24(
+                        client,
+                        key_prefix="api-mixed-reduction-781",
+                    )
+                    survivor_state = {
+                        row["allocation_id"]: (
+                            row["resource_id"],
+                            row["work_date"],
+                            row["hours"],
+                            row.get("source"),
+                            row.get("locked"),
+                            row.get("asset_allocation_id"),
+                        )
+                        for row in survivor_rows
+                    }
+                    self.assertEqual(
+                        sum(Decimal(str(row["hours"])) for row in survivor_rows),
+                        Decimal("24.00"),
+                    )
+
+                    before = self._snapshot(client, number)
+                    before_segment = before["demand_segments"][0]
+                    self.assertEqual(before_segment["planned_hours"], 32.0)
+                    self.assertEqual(before_segment["covered_hours"], 24.0)
+                    self.assertEqual(before_segment["remaining_hours"], 8.0)
+
+                    with factory() as session:
+                        request = session.scalar(
+                            select(WorkforceRequest).where(
+                                WorkforceRequest.legacy_demand_number == number
+                            )
+                        )
+                        requirement = session.scalar(
+                            select(ResourceRequirement).where(
+                                ResourceRequirement.legacy_segment_id == segment_id
+                            )
+                        )
+                        self.assertIsNotNone(request)
+                        self.assertIsNotNone(requirement)
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement.id
+                            )
+                        )
+                        self.assertIsNotNone(intent)
+                        self.assertEqual(intent.intent_mode, "PRESERVE_EXISTING")
+                        self.assertEqual(intent.target_resource_id, "R-778-A")
+                        reductions = session.scalars(
+                            select(RequestCompletionReduction).where(
+                                RequestCompletionReduction.workforce_request_id == request.id,
+                                RequestCompletionReduction.reconciliation_state == "ACTIVE",
+                            )
+                        ).all()
+                        self.assertEqual(len(reductions), 1)
+                        self.assertEqual(reductions[0].reduction_hours, Decimal("8.00"))
+                        releases = session.scalars(
+                            select(PlanningWorkQueueRelease).where(
+                                PlanningWorkQueueRelease.workforce_request_id == request.id
+                            )
+                        ).all()
+                        self.assertEqual(len(releases), 1)
+                        self.assertTrue(releases[0].active)
+                        self.assertEqual(releases[0].hours, Decimal("8.00"))
+                        release_id = releases[0].id
+                        release_identity = (
+                            releases[0].resource_id,
+                            releases[0].work_date,
+                            releases[0].hours,
+                            releases[0].original_shift_id,
+                        )
+                        asset_state_before = tuple(
+                            sorted(
+                                (
+                                    row.id,
+                                    row.asset_requirement_id,
+                                    row.asset_id,
+                                    row.operator_resource_id,
+                                    row.start_date,
+                                    row.end_date,
+                                    row.locked,
+                                    row.source,
+                                )
+                                for row in session.scalars(
+                                    select(AssetAllocation)
+                                ).all()
+                            )
+                        )
+
+                    patched = client.patch(
+                        f"/api/v1/segments/{segment_id}",
+                        json={
+                            "technician": "Bob 778 API",
+                            "planned_hours": 36,
+                        },
+                    )
+                    self.assertEqual(patched.status_code, 200, patched.text)
+
+                    def assert_final_state() -> None:
+                        current = client.get(f"/api/v1/segments/{segment_id}")
+                        self.assertEqual(current.status_code, 200, current.text)
+                        self.assertEqual(current.json()["operational_base_hours"], 36.0)
+                        self.assertEqual(current.json()["planned_hours"], 28.0)
+                        self.assertEqual(current.json()["covered_hours"], 28.0)
+                        self.assertEqual(current.json()["remaining_hours"], 0.0)
+                        self.assertEqual(
+                            current.json()["automatic_target_resource_id"],
+                            "R-778-B",
+                        )
+
+                        snapshot = self._snapshot(client, number)
+                        segment = snapshot["demand_segments"][0]
+                        self.assertEqual(segment["planned_hours"], 28.0)
+                        self.assertEqual(segment["covered_hours"], 28.0)
+                        self.assertEqual(segment["remaining_hours"], 0.0)
+                        self.assertEqual(self._actions(client, number), [])
+
+                        by_allocation = {
+                            row["allocation_id"]: row
+                            for row in snapshot["demand_shifts"]
+                        }
+                        for allocation_id, expected in survivor_state.items():
+                            survivor = by_allocation.get(allocation_id)
+                            self.assertIsNotNone(survivor)
+                            self.assertEqual(
+                                (
+                                    survivor["resource_id"],
+                                    survivor["work_date"],
+                                    survivor["hours"],
+                                    survivor.get("source"),
+                                    survivor.get("locked"),
+                                    survivor.get("asset_allocation_id"),
+                                ),
+                                expected,
+                            )
+                        new_rows = [
+                            row
+                            for row in snapshot["demand_shifts"]
+                            if row["allocation_id"] not in survivor_state
+                        ]
+                        self.assertEqual(
+                            sum(
+                                Decimal(str(row["hours"]))
+                                for row in new_rows
+                                if row["resource_id"] == "R-778-B"
+                            ),
+                            Decimal("4.00"),
+                        )
+                        self.assertEqual(
+                            sum(
+                                Decimal(str(row["hours"]))
+                                for row in new_rows
+                            ),
+                            Decimal("4.00"),
+                        )
+                        self.assertTrue(
+                            all(
+                                Decimal(str(row["hours"])) <= Decimal("4.00")
+                                for row in new_rows
+                            )
+                        )
+
+                        with factory() as session:
+                            request = session.scalar(
+                                select(WorkforceRequest).where(
+                                    WorkforceRequest.legacy_demand_number == number
+                                )
+                            )
+                            requirement = session.scalar(
+                                select(ResourceRequirement).where(
+                                    ResourceRequirement.legacy_segment_id == segment_id
+                                )
+                            )
+                            intent = session.scalar(
+                                select(RequestRequirementPlanningIntent).where(
+                                    RequestRequirementPlanningIntent.current_resource_requirement_id
+                                    == requirement.id
+                                )
+                            )
+                            self.assertEqual(requirement.planned_hours, Decimal("28.00"))
+                            self.assertEqual(requirement.assigned_resource_id, "R-778-B")
+                            self.assertEqual(intent.intent_mode, "PRESERVE_EXISTING")
+                            self.assertEqual(intent.target_mode, "EXPLICIT_RESOURCE")
+                            self.assertEqual(intent.target_resource_id, "R-778-B")
+                            reductions = session.scalars(
+                                select(RequestCompletionReduction).where(
+                                    RequestCompletionReduction.workforce_request_id == request.id,
+                                    RequestCompletionReduction.reconciliation_state == "ACTIVE",
+                                )
+                            ).all()
+                            self.assertEqual(len(reductions), 1)
+                            self.assertEqual(reductions[0].reduction_hours, Decimal("8.00"))
+                            release = session.get(PlanningWorkQueueRelease, release_id)
+                            self.assertIsNotNone(release)
+                            self.assertTrue(release.active)
+                            self.assertEqual(
+                                (
+                                    release.resource_id,
+                                    release.work_date,
+                                    release.hours,
+                                    release.original_shift_id,
+                                ),
+                                release_identity,
+                            )
+                            restored_hours = session.scalar(
+                                select(func.coalesce(func.sum(PlanningWorkQueueRestoration.restored_hours), 0))
+                                .where(
+                                    PlanningWorkQueueRestoration.release_id == release_id
+                                )
+                            )
+                            self.assertEqual(
+                                Decimal(str(restored_hours or 0)),
+                                Decimal("4.00"),
+                            )
+                            asset_state_after = tuple(
+                                sorted(
+                                    (
+                                        row.id,
+                                        row.asset_requirement_id,
+                                        row.asset_id,
+                                        row.operator_resource_id,
+                                        row.start_date,
+                                        row.end_date,
+                                        row.locked,
+                                        row.source,
+                                    )
+                                    for row in session.scalars(
+                                        select(AssetAllocation)
+                                    ).all()
+                                )
+                            )
+                            self.assertEqual(asset_state_after, asset_state_before)
+
+                    assert_final_state()
+
+                    rebuilt = client.post("/api/v1/planning/rebuild")
+                    self.assertEqual(rebuilt.status_code, 200, rebuilt.text)
+                    with factory.begin() as session:
+                        SqlPeriodAwareApprovedDemandSyncAdapter(
+                            session
+                        ).sync_operational_choices(number)
+                    with factory.begin() as session:
+                        request = session.scalar(
+                            select(WorkforceRequest).where(
+                                WorkforceRequest.legacy_demand_number == number
+                            )
+                        )
+                        self.assertIsNotNone(request)
+                        SqlPeriodAwareApprovedDemandSyncAdapter(session).sync_approved(
+                            number,
+                            approved_request_version=int(request.aggregate_version or 1),
+                        )
+                    rebuilt_after_reapproval = client.post("/api/v1/planning/rebuild")
+                    self.assertEqual(
+                        rebuilt_after_reapproval.status_code,
+                        200,
+                        rebuilt_after_reapproval.text,
+                    )
+                    assert_final_state()
+            finally:
+                engine.dispose()
+
     def test_public_segment_patch_materializes_base_minus_active_reduction(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
