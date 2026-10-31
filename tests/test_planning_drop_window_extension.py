@@ -114,6 +114,29 @@ class PlanningDropWindowExtensionTests(unittest.TestCase):
         engine.dispose()
         return url
 
+    @staticmethod
+    def _assign_request_residual(
+        client: TestClient,
+        number: str,
+        resource_id: str = "R1",
+    ) -> str:
+        actions = client.get(
+            "/api/v1/planning/actions",
+            params={"start": DAY.isoformat(), "end": DAY.isoformat(), "scope": "global"},
+        )
+        assert actions.status_code == 200, actions.text
+        assignment = next(
+            row
+            for row in actions.json()
+            if row["kind"] == "ASSIGNMENT" and row["demand_number"] == number
+        )
+        assigned = client.post(
+            f"/api/v1/segments/{assignment['segment_id']}/assign",
+            json={"resource_id": resource_id},
+        )
+        assert assigned.status_code == 200, assigned.text
+        return str(assignment["segment_id"])
+
     def test_evaluate_drop_is_read_only_and_offers_atomic_extension_for_adhoc(self) -> None:
         with TemporaryDirectory() as directory:
             url = self._database(directory)
@@ -316,6 +339,7 @@ class PlanningDropWindowExtensionTests(unittest.TestCase):
                     json={"comment": "Approbation 333A"},
                 )
                 self.assertEqual(approved.status_code, 200, approved.text)
+                self._assign_request_residual(client, number)
 
             engine = create_sql_engine(url)
             factory = create_session_factory(engine)
@@ -401,6 +425,7 @@ class PlanningDropWindowExtensionTests(unittest.TestCase):
                     json={"comment": "Approbation initiale 333B"},
                 )
                 self.assertEqual(approved.status_code, 200, approved.text)
+                self._assign_request_residual(client, number)
 
             engine = create_sql_engine(url)
             factory = create_session_factory(engine)
@@ -505,6 +530,7 @@ class PlanningDropWindowExtensionTests(unittest.TestCase):
                     json={"comment": "Approbation initiale 333B normal"},
                 )
                 self.assertEqual(approved.status_code, 200, approved.text)
+                self._assign_request_residual(client, number)
 
             engine = create_sql_engine(url)
             factory = create_session_factory(engine)
