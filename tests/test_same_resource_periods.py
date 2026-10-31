@@ -452,17 +452,23 @@ class SameResourcePeriodPlanningTests(unittest.TestCase):
 
             self.assertEqual(root.assigned_resource_id, "R2")
             self.assertEqual(child.assigned_resource_id, "R2")
+            root_intent = session.get(
+                RequestRequirementPlanningIntent,
+                "INT-SAME-LOCAL-ROOT",
+            )
+            child_intent = session.get(
+                RequestRequirementPlanningIntent,
+                "INT-SAME-LOCAL-CHILD",
+            )
+            self.assertEqual(root_intent.target_mode, "EXPLICIT_RESOURCE")
+            self.assertEqual(root_intent.target_resource_id, "R2")
+            self.assertEqual(child_intent.target_mode, "EXPLICIT_RESOURCE")
+            self.assertEqual(child_intent.target_resource_id, "R2")
             self.assertIsNone(
-                session.get(
-                    RequestRequirementPlanningIntent,
-                    "INT-SAME-LOCAL-ROOT",
-                ).placement_not_before_date
+                root_intent.placement_not_before_date
             )
             self.assertEqual(
-                session.get(
-                    RequestRequirementPlanningIntent,
-                    "INT-SAME-LOCAL-CHILD",
-                ).placement_not_before_date,
+                child_intent.placement_not_before_date,
                 D2,
             )
             SqlSameResourcePeriodCoordinator(session).assert_shift_invariant()
