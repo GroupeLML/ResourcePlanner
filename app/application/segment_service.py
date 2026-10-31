@@ -201,11 +201,7 @@ class SegmentService:
             and target_reference
             and target_reference not in current_target_references
         )
-        target_clear = bool(
-            target_supplied
-            and not target_reference
-            and current_target_references
-        )
+        target_clear = bool(target_supplied and not target_reference)
         if target_clear:
             raise ApplicationValidationError(
                 "Le retrait de la cible automatique n'est pas pris en charge par PATCH /segments. Utilise la commande Planning appropriée.",
