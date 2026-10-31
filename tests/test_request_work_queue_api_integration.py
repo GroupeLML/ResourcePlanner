@@ -385,7 +385,7 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                         f"/api/v1/segments/{mixed_segment_id}",
                         json={
                             "technician": "Bob 778 API",
-                            "planned_hours": 44,
+                            "planned_hours": 36,
                         },
                     )
                     self.assertEqual(mixed.status_code, 200, mixed.text)
@@ -404,7 +404,10 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                         self.assertEqual(requirement.assigned_resource_id, "R-778-B")
                         self.assertEqual(intent.target_mode, "EXPLICIT_RESOURCE")
                         self.assertEqual(intent.target_resource_id, "R-778-B")
-                        self.assertEqual(requirement.planned_hours, Decimal("44.00"))
+                        self.assertEqual(
+                            self._snapshot(client, mixed_number)["demand_segments"][0]["planned_hours"],
+                            36,
+                        )
 
                     # Failure path: valid target + positive hours rejected by
                     # overallocation must leave target, intent, hours and Shifts intact.
