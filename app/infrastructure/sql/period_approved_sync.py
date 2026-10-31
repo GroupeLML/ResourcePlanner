@@ -1532,6 +1532,7 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             "project_id",
             "site_id",
             "location",
+            "slot_count",
             "line_kind",
             "required_resource_class",
             "competency_ids",
