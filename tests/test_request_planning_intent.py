@@ -5,6 +5,10 @@ from decimal import Decimal
 import unittest
 
 from app.infrastructure.sql.request_plan_preparation import PreparedRequirementSpec, SqlRequestPlanPreparer
+from app.infrastructure.sql.operational_choice_models import (
+    PLANNING_TARGET_EXPLICIT_NONE,
+    PLANNING_TARGET_INHERIT,
+)
 
 from app.infrastructure.sql import (
     Base,
@@ -158,6 +162,82 @@ class RequestPlanningIntentRepositoryTests(unittest.TestCase):
             )
             self.assertNotEqual(first.id, second.id)
             self.assertNotEqual(first.slot_identity_key, second.slot_identity_key)
+
+    def test_new_unselected_slot_is_explicit_none_but_legacy_target_inherits(self) -> None:
+        with transactional_session(self.factory) as session:
+            repo = SqlRequestRequirementPlanningIntentRepository(session)
+
+            new_slot = repo.ensure(
+                workforce_request_id="D1",
+                approved_entry_key='["LINE","L1",""]',
+                slot_index=0,
+                source_request_line_id="L1",
+                source_period_id=None,
+                approval_revision_id="REV1",
+                current_resource_requirement_id="REQ1",
+            )
+            self.assertEqual(new_slot.target_mode, PLANNING_TARGET_EXPLICIT_NONE)
+            self.assertIsNone(new_slot.target_resource_id)
+
+            session.get(ResourceRequirement, "REQ2").assigned_resource_id = "LEGACY-R"
+            legacy_slot = repo.ensure(
+                workforce_request_id="D1",
+                approved_entry_key='["LINE","L1",""]',
+                slot_index=1,
+                source_request_line_id="L1",
+                source_period_id=None,
+                approval_revision_id="REV1",
+                current_resource_requirement_id="REQ2",
+            )
+            self.assertEqual(legacy_slot.target_mode, PLANNING_TARGET_INHERIT)
+            self.assertIsNone(legacy_slot.target_resource_id)
+            self.assertEqual(
+                session.get(ResourceRequirement, "REQ2").assigned_resource_id,
+                "LEGACY-R",
+            )
+
+    def test_ambiguous_legacy_logical_slot_fails_closed(self) -> None:
+        with transactional_session(self.factory) as session:
+            session.add_all(
+                [
+                    RequestRequirementPlanningIntent(
+                        slot_identity_key="legacy-ambiguous-a",
+                        workforce_request_id="D1",
+                        source_request_line_id="L1",
+                        approval_revision_id="REV1",
+                        approved_entry_key='["LINE","L1","AMB"]',
+                        source_period_id=None,
+                        slot_index=0,
+                        current_resource_requirement_id="REQ1",
+                        intent_mode="AUTO",
+                        target_mode=PLANNING_TARGET_INHERIT,
+                    ),
+                    RequestRequirementPlanningIntent(
+                        slot_identity_key="legacy-ambiguous-b",
+                        workforce_request_id="D1",
+                        source_request_line_id="L1",
+                        approval_revision_id="REV1",
+                        approved_entry_key='["LINE","L1","AMB"]',
+                        source_period_id=None,
+                        slot_index=0,
+                        current_resource_requirement_id="REQ2",
+                        intent_mode="AUTO",
+                        target_mode=PLANNING_TARGET_INHERIT,
+                    ),
+                ]
+            )
+            session.flush()
+            repo = SqlRequestRequirementPlanningIntentRepository(session)
+            with self.assertRaisesRegex(ValueError, "planning_slot_identity_ambiguous"):
+                repo.ensure(
+                    workforce_request_id="D1",
+                    approved_entry_key='["LINE","L1","AMB"]',
+                    slot_index=0,
+                    source_request_line_id="L1",
+                    source_period_id=None,
+                    approval_revision_id="REV1",
+                    current_resource_requirement_id=None,
+                )
 
     def test_physical_period_version_change_reuses_same_logical_slot_intent(self) -> None:
         with transactional_session(self.factory) as session:
