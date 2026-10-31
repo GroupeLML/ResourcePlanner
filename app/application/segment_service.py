@@ -238,15 +238,10 @@ class SegmentService:
             context={"segment_id": identifier},
         )
 
-        target_summary: dict[str, Any] | None = None
-        if target_change:
-            target_summary = dict(
-                call_application_port(
-                    lambda: self._targeting.assign_segment(identifier, target_reference),
-                    code_prefix="segment_target_update",
-                    context={"segment_id": identifier, "technician": target_reference},
-                )
-            )
+        # For a mixed REQUEST PATCH, effective quantity must be authoritative
+        # before canonical targeting rebuilds/materializes work. Otherwise the
+        # target assignment can generate against the temporary raw operational
+        # base before active reductions/releases are reapplied.
         if (
             "HeuresPrevues" in values
             and self._approved_sync is not None
@@ -268,7 +263,21 @@ class SegmentService:
                 code_prefix="segment_update_effective_need_sync",
                 context={"segment_id": identifier},
             )
-        if target_summary is not None and "HeuresPrevues" not in values:
+
+        target_summary: dict[str, Any] | None = None
+        if target_change:
+            target_summary = dict(
+                call_application_port(
+                    lambda: self._targeting.assign_segment(identifier, target_reference),
+                    code_prefix="segment_target_update",
+                    context={"segment_id": identifier, "technician": target_reference},
+                )
+            )
+        if target_summary is not None:
+            # assign_segment() is the canonical target authority and already
+            # performs the authoritative rebuild. In mixed PATCHes it now runs
+            # only after effective-need synchronization, so a second rebuild is
+            # both redundant and able to obscure ordering defects.
             return target_summary
         return dict(
             call_application_port(
