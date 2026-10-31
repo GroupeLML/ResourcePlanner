@@ -16,6 +16,7 @@ from app.infrastructure.sql import (
     RequestApprovalRevision,
     RequestLine,
     RequestRequirementPlanningIntent,
+    Resource,
     ResourceRequirement,
     SqlRequestRequirementPlanningIntentRepository,
     WorkforceRequest,
@@ -36,6 +37,7 @@ class RequestPlanningIntentRepositoryTests(unittest.TestCase):
         self.factory = create_session_factory(self.engine)
         with transactional_session(self.factory) as session:
             session.add(Project(id="P1", number="P-1", name="Projet 778"))
+            session.add(Resource(id="LEGACY-R", name="Legacy", active=True))
             session.add(
                 WorkforceRequest(
                     id="D1",
@@ -196,47 +198,27 @@ class RequestPlanningIntentRepositoryTests(unittest.TestCase):
                 "LEGACY-R",
             )
 
-    def test_ambiguous_legacy_logical_slot_fails_closed(self) -> None:
+    def test_ambiguous_legacy_binding_fails_closed(self) -> None:
         with transactional_session(self.factory) as session:
-            session.add_all(
-                [
-                    RequestRequirementPlanningIntent(
-                        slot_identity_key="legacy-ambiguous-a",
-                        workforce_request_id="D1",
-                        source_request_line_id="L1",
-                        approval_revision_id="REV1",
-                        approved_entry_key='["LINE","L1","AMB"]',
-                        source_period_id=None,
-                        slot_index=0,
-                        current_resource_requirement_id="REQ1",
-                        intent_mode="AUTO",
-                        target_mode=PLANNING_TARGET_INHERIT,
-                    ),
-                    RequestRequirementPlanningIntent(
-                        slot_identity_key="legacy-ambiguous-b",
-                        workforce_request_id="D1",
-                        source_request_line_id="L1",
-                        approval_revision_id="REV1",
-                        approved_entry_key='["LINE","L1","AMB"]',
-                        source_period_id=None,
-                        slot_index=0,
-                        current_resource_requirement_id="REQ2",
-                        intent_mode="AUTO",
-                        target_mode=PLANNING_TARGET_INHERIT,
-                    ),
-                ]
-            )
-            session.flush()
             repo = SqlRequestRequirementPlanningIntentRepository(session)
-            with self.assertRaisesRegex(ValueError, "planning_slot_identity_ambiguous"):
+            repo.ensure(
+                workforce_request_id="D1",
+                approved_entry_key='["LINE","L1","LEGACY-A"]',
+                slot_index=0,
+                source_request_line_id="L1",
+                source_period_id=None,
+                approval_revision_id="REV1",
+                current_resource_requirement_id="REQ1",
+            )
+            with self.assertRaisesRegex(ValueError, "planning_slot_binding_ambiguous"):
                 repo.ensure(
                     workforce_request_id="D1",
-                    approved_entry_key='["LINE","L1","AMB"]',
+                    approved_entry_key='["LINE","L1","LEGACY-B"]',
                     slot_index=0,
                     source_request_line_id="L1",
                     source_period_id=None,
                     approval_revision_id="REV1",
-                    current_resource_requirement_id=None,
+                    current_resource_requirement_id="REQ1",
                 )
 
     def test_physical_period_version_change_reuses_same_logical_slot_intent(self) -> None:
