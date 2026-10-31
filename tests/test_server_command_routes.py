@@ -430,7 +430,10 @@ class ServerCommandRouteTests(unittest.TestCase):
             ("default-proposed", None, "R1", 8.0, "DEFAULT_8H"),
             ("default-none", None, None, 8.0, "DEFAULT_8H"),
             ("explicit-proposed", 4, "R1", 4.0, "EXPLICIT"),
-            ("explicit-none", 4, None, 4.0, "EXPLICIT"),
+            ("explicit-none-1h", 1, None, 1.0, "EXPLICIT"),
+            ("explicit-none-4h", 4, None, 4.0, "EXPLICIT"),
+            ("explicit-none-7h", 7, None, 7.0, "EXPLICIT"),
+            ("explicit-none-8h", 8, None, 8.0, "EXPLICIT"),
         )
         with TemporaryDirectory() as directory:
             database_url, _ = self._database(directory)
