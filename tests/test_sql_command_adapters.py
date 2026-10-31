@@ -474,7 +474,7 @@ class SqlCommandAdapterTests(unittest.TestCase):
             )
             summary = demand_service.approve(number, "OK")
             self.assertEqual(summary["planning_engine"], "pure")
-            self.assertEqual(summary["allocated_hours"], 8.0)
+            self.assertEqual(summary["allocated_hours"], 0.0)
 
             requirement = session.scalar(
                 select(ResourceRequirement).where(
@@ -485,6 +485,9 @@ class SqlCommandAdapterTests(unittest.TestCase):
             self.assertIsNotNone(requirement)
             assert requirement is not None
             segment_id = requirement.legacy_segment_id or requirement.id
+
+            explicitly_assigned = allocation_service.assign_segment(segment_id, "Alice")
+            self.assertEqual(explicitly_assigned["allocated_hours"], 8.0)
 
             rebuilt = planning_service.rebuild()
             self.assertEqual(rebuilt["allocated_hours"], 8.0)
