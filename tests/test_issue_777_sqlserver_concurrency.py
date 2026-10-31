@@ -870,269 +870,492 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
             )
         return outcomes
 
+    def _assert_seed_survivors(
+        self,
+        session,
+        fixture: dict[str, object],
+        *,
+        missing_allocation_ids: tuple[str, ...] = (),
+    ) -> None:
+        by_allocation = {
+            shift.legacy_allocation_id: shift
+            for shift in session.scalars(
+                select(Shift).where(
+                    Shift.resource_requirement_id == fixture["requirement_id"]
+                )
+            ).all()
+            if shift.legacy_allocation_id in fixture["allocation_ids"]
+        }
+        for index, allocation_id in enumerate(fixture["allocation_ids"], start=1):
+            if allocation_id in missing_allocation_ids:
+                self.assertNotIn(allocation_id, by_allocation)
+                continue
+            shift = by_allocation.get(allocation_id)
+            self.assertIsNotNone(shift)
+            self.assertEqual(shift.resource_id, fixture["resources"]["A"])
+            self.assertEqual(shift.work_date, DAY + timedelta(days=index))
+            self.assertEqual(shift.hours, Decimal("8.00"))
+            self.assertFalse(shift.locked)
+            self.assertEqual(shift.source, "AUTO")
+
+    def _assert_common_final_state(
+        self,
+        session,
+        fixture: dict[str, object],
+        *,
+        expected_revision_id: str,
+        expected_request_version: int,
+        expected_operational_version: int,
+        expected_effective_need: Decimal,
+        expected_coverage: Decimal,
+    ) -> tuple[
+        WorkforceRequest,
+        RequestOperationalState,
+        ResourceRequirement,
+        RequestRequirementPlanningIntent,
+    ]:
+        request = session.get(WorkforceRequest, fixture["request_id"])
+        operational = session.get(RequestOperationalState, fixture["request_id"])
+        requirement = session.get(ResourceRequirement, fixture["requirement_id"])
+        intent = session.get(RequestRequirementPlanningIntent, fixture["intent_id"])
+        reference = session.get(RequestApprovalReference, fixture["request_id"])
+        self.assertIsNotNone(request)
+        self.assertIsNotNone(operational)
+        self.assertIsNotNone(requirement)
+        self.assertIsNotNone(intent)
+        self.assertIsNotNone(reference)
+        self.assertEqual(int(request.aggregate_version), expected_request_version)
+        self.assertEqual(int(operational.version), expected_operational_version)
+        self.assertEqual(operational.approval_revision_id, expected_revision_id)
+        self.assertEqual(reference.active_revision_id, expected_revision_id)
+        self.assertEqual(requirement.approval_revision_id, expected_revision_id)
+        self.assertEqual(intent.approval_revision_id, expected_revision_id)
+        self.assertEqual(intent.intent_mode, "PRESERVE_EXISTING")
+        effective_need = SqlRequestRequirementPlanningIntentRepository(
+            session
+        ).current_effective_need_for_requirement(
+            requirement.id,
+            fallback_hours=requirement.planned_hours,
+        )
+        coverage = self._counted_coverage(session, requirement.id)
+        self.assertEqual(effective_need, expected_effective_need)
+        self.assertEqual(coverage, expected_coverage)
+        self.assertGreaterEqual(effective_need - coverage, Decimal("0.00"))
+
+        seeded_release = session.get(
+            PlanningWorkQueueRelease,
+            fixture["release_id"],
+        )
+        self.assertIsNotNone(seeded_release)
+        self.assertTrue(seeded_release.active)
+        self.assertEqual(seeded_release.hours, Decimal("8.00"))
+        self.assertEqual(seeded_release.resource_id, fixture["resources"]["A"])
+        self.assertEqual(seeded_release.work_date, DAY)
+        release_ids = tuple(
+            session.scalars(
+                select(PlanningWorkQueueRelease.id).where(
+                    PlanningWorkQueueRelease.workforce_request_id
+                    == fixture["request_id"]
+                )
+            ).all()
+        )
+        restorations = (
+            tuple(
+                session.scalars(
+                    select(PlanningWorkQueueRestoration).where(
+                        PlanningWorkQueueRestoration.release_id.in_(release_ids)
+                    )
+                ).all()
+            )
+            if release_ids
+            else ()
+        )
+        self.assertEqual(restorations, ())
+        self.assertGreater(
+            int(
+                session.scalar(
+                    select(func.count(PlanningChangeHistory.id)).where(
+                        PlanningChangeHistory.actor_name == fixture["actor_name"]
+                    )
+                )
+                or 0
+            ),
+            0,
+        )
+        return request, operational, requirement, intent
+
     def test_drop_vs_drop_has_one_authoritative_winner(self) -> None:
         fixture = self._fixture()
-        try:
-            barrier = Barrier(2)
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                first = executor.submit(
-                    self._drop,
-                    fixture,
-                    resource_id=fixture["resources"]["A"],
-                    dropped_date=DAY + timedelta(days=2),
-                    command_id=f"drop-a-{fixture['marker']}",
-                    barrier=barrier,
-                )
-                second = executor.submit(
-                    self._drop,
-                    fixture,
-                    resource_id=fixture["resources"]["B"],
-                    dropped_date=DAY + timedelta(days=3),
-                    command_id=f"drop-b-{fixture['marker']}",
-                    barrier=barrier,
-                )
-                outcomes = (first.result(timeout=30), second.result(timeout=30))
-            self.assertEqual(
-                sorted(row[0] for row in outcomes),
-                ["conflict", "success"],
+        participants = ("drop-a", "drop-b")
+        outcomes = self._run_race(
+            fixture,
+            participants,
+            lambda: self._drop(
+                fixture,
+                participant=participants[0],
+                resource_id=fixture["resources"]["A"],
+                dropped_date=DAY + timedelta(days=2),
+                command_id=f"drop-a-{fixture['marker']}",
+            ),
+            lambda: self._drop(
+                fixture,
+                participant=participants[1],
+                resource_id=fixture["resources"]["B"],
+                dropped_date=DAY + timedelta(days=3),
+                command_id=f"drop-b-{fixture['marker']}",
+            ),
+        )
+
+        with fixture["factory"]() as session:
+            drop_a_won = outcomes[0][0] == "success"
+            expected_target = (
+                fixture["resources"]["A"]
+                if drop_a_won
+                else fixture["resources"]["B"]
             )
-            self.assertEqual(
-                next(row[1] for row in outcomes if row[0] == "conflict"),
-                "planning_version_conflict",
+            expected_cutoff = (
+                DAY + timedelta(days=2)
+                if drop_a_won
+                else DAY + timedelta(days=3)
             )
-            with fixture["factory"]() as session:
-                intent = session.get(
-                    RequestRequirementPlanningIntent,
-                    fixture["intent_id"],
-                )
-                self.assertIsNotNone(intent)
-                expected = (
-                    (fixture["resources"]["A"], DAY + timedelta(days=2))
-                    if outcomes[0][0] == "success"
-                    else (fixture["resources"]["B"], DAY + timedelta(days=3))
-                )
+            expected_coverage = (
+                Decimal("32.00") if drop_a_won else Decimal("40.00")
+            )
+            _, _, requirement, intent = self._assert_common_final_state(
+                session,
+                fixture,
+                expected_revision_id=str(fixture["revision_id"]),
+                expected_request_version=1,
+                expected_operational_version=1,
+                expected_effective_need=Decimal("40.00"),
+                expected_coverage=expected_coverage,
+            )
+            self.assertEqual(requirement.assigned_resource_id, expected_target)
+            self.assertEqual(intent.target_resource_id, expected_target)
+            self.assertEqual(intent.placement_not_before_date, expected_cutoff)
+            self._assert_seed_survivors(session, fixture)
+
+            counted = list(
+                session.scalars(
+                    select(Shift).where(
+                        Shift.resource_requirement_id == fixture["requirement_id"],
+                        or_(
+                            Shift.allocation_type.is_(None),
+                            Shift.allocation_type != MISSING_ALLOCATION_TYPE,
+                        ),
+                    )
+                ).all()
+            )
+            generated = [
+                row for row in counted if row.id not in set(fixture["shift_ids"])
+            ]
+            if drop_a_won:
+                self.assertEqual(generated, [])
+                self.assertEqual(Decimal("40.00") - expected_coverage, Decimal("8.00"))
+            else:
                 self.assertEqual(
-                    (intent.target_resource_id, intent.placement_not_before_date),
-                    expected,
+                    sum((Decimal(str(row.hours)) for row in generated), Decimal("0")),
+                    Decimal("8.00"),
                 )
-                shifts = list(
-                    session.scalars(
-                        select(Shift).where(
-                            Shift.resource_requirement_id == fixture["requirement_id"]
+                self.assertTrue(
+                    all(row.resource_id == fixture["resources"]["B"] for row in generated)
+                )
+                self.assertTrue(
+                    all(row.work_date >= DAY + timedelta(days=3) for row in generated)
+                )
+                self.assertEqual(Decimal("40.00") - expected_coverage, Decimal("0.00"))
+
+            self.assertEqual(
+                int(
+                    session.scalar(
+                        select(func.count(RequestCompletionReduction.id)).where(
+                            RequestCompletionReduction.workforce_request_id
+                            == fixture["request_id"]
                         )
-                    ).all()
-                )
-                self.assertTrue(set(fixture["shift_ids"]).issubset({row.id for row in shifts}))
-                self.assertLessEqual(
-                    sum((Decimal(str(row.hours)) for row in shifts), Decimal("0")),
-                    Decimal("40.00"),
-                )
-        finally:
-            self._cleanup(fixture)
+                    )
+                    or 0
+                ),
+                0,
+            )
 
     def test_drop_vs_return_shift_has_one_authoritative_winner(self) -> None:
         fixture = self._fixture()
-        try:
-            barrier = Barrier(2)
-            def return_shift() -> tuple[str, str | None]:
+        participants = ("drop", "return")
+
+        def return_shift() -> tuple[str, str | None]:
+            try:
                 with fixture["factory"].begin() as session:
-                    barrier.wait(timeout=10)
-                    try:
-                        result = self._adapter(session, fixture).return_shift(
-                            ReturnShiftToWorkQueueCommand(
-                                allocation_id=fixture["allocation_ids"][0],
-                                expected_planning_version=int(fixture["planning_version"]),
-                                expected_approval_revision_id=str(fixture["revision_id"]),
-                                expected_operational_version=1,
-                                command_id=f"return-race-{fixture['marker']}",
-                            )
+                    self._prepare_race_session(session, fixture, participants[1])
+                    result = self._adapter(session, fixture).return_shift(
+                        ReturnShiftToWorkQueueCommand(
+                            allocation_id=fixture["allocation_ids"][0],
+                            expected_planning_version=int(fixture["planning_version"]),
+                            expected_approval_revision_id=str(fixture["revision_id"]),
+                            expected_operational_version=1,
+                            command_id=f"return-race-{fixture['marker']}",
                         )
-                    except ApplicationConflictError as exc:
-                        return "conflict", exc.code
-                    return "success", str(result["release_id"])
-
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                drop = executor.submit(
-                    self._drop,
-                    fixture,
-                    resource_id=fixture["resources"]["B"],
-                    dropped_date=DAY + timedelta(days=3),
-                    command_id=f"drop-return-race-{fixture['marker']}",
-                    barrier=barrier,
-                )
-                returned = executor.submit(return_shift)
-                outcomes = (drop.result(timeout=30), returned.result(timeout=30))
-            self.assertEqual(
-                sorted(row[0] for row in outcomes),
-                ["conflict", "success"],
-            )
-            self.assertEqual(
-                next(row[1] for row in outcomes if row[0] == "conflict"),
-                "planning_version_conflict",
-            )
-            with fixture["factory"]() as session:
-                intent = session.get(RequestRequirementPlanningIntent, fixture["intent_id"])
-                original_shift = session.scalar(
-                    select(Shift).where(
-                        Shift.legacy_allocation_id == fixture["allocation_ids"][0]
                     )
+                return "success", str(result["release_id"])
+            except ApplicationConflictError as exc:
+                return self._expected_race_conflict(exc)
+
+        outcomes = self._run_race(
+            fixture,
+            participants,
+            lambda: self._drop(
+                fixture,
+                participant=participants[0],
+                resource_id=fixture["resources"]["B"],
+                dropped_date=DAY + timedelta(days=3),
+                command_id=f"drop-return-race-{fixture['marker']}",
+            ),
+            return_shift,
+        )
+
+        with fixture["factory"]() as session:
+            drop_won = outcomes[0][0] == "success"
+            expected_coverage = Decimal("40.00") if drop_won else Decimal("24.00")
+            _, _, requirement, intent = self._assert_common_final_state(
+                session,
+                fixture,
+                expected_revision_id=str(fixture["revision_id"]),
+                expected_request_version=1,
+                expected_operational_version=1,
+                expected_effective_need=Decimal("40.00"),
+                expected_coverage=expected_coverage,
+            )
+            if drop_won:
+                self.assertEqual(requirement.assigned_resource_id, fixture["resources"]["B"])
+                self.assertEqual(intent.target_resource_id, fixture["resources"]["B"])
+                self.assertEqual(
+                    intent.placement_not_before_date,
+                    DAY + timedelta(days=3),
                 )
-                if outcomes[0][0] == "success":
-                    self.assertEqual(intent.target_resource_id, fixture["resources"]["B"])
-                    self.assertEqual(
-                        intent.placement_not_before_date,
-                        DAY + timedelta(days=3),
-                    )
-                    self.assertIsNotNone(original_shift)
-                else:
-                    release_id = outcomes[1][1]
-                    release = session.get(PlanningWorkQueueRelease, release_id)
-                    self.assertIsNotNone(release)
-                    self.assertTrue(release.active)
-                    self.assertIsNone(original_shift)
-                    self.assertIsNone(intent.placement_not_before_date)
-        finally:
-            self._cleanup(fixture)
-
-    def test_drop_vs_reapproval_has_one_authoritative_winner(self) -> None:
-        fixture = self._fixture()
-        try:
-            barrier = Barrier(2)
-            def reapprove() -> tuple[str, str | None]:
-                with fixture["factory"].begin() as session:
-                    versioning = SqlPlanningMutationVersionRepository(session)
-                    barrier.wait(timeout=10)
-                    try:
-                        versioning.acquire(int(fixture["planning_version"]))
-                        request = session.get(WorkforceRequest, fixture["request_id"])
-                        acquire_request_aggregate_version(session, request, 1)
-                        SqlPeriodAwareApprovedDemandSyncAdapter(
-                            session
-                        ).sync_approved(
-                            str(fixture["request_number"]),
-                            approved_request_version=2,
-                        )
-                    except ApplicationConflictError as exc:
-                        return "conflict", exc.code
-                    return "success", "reapproved"
-
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                drop = executor.submit(
-                    self._drop,
-                    fixture,
-                    resource_id=fixture["resources"]["B"],
-                    dropped_date=DAY + timedelta(days=3),
-                    command_id=f"drop-reapproval-race-{fixture['marker']}",
-                    barrier=barrier,
-                )
-                approved = executor.submit(reapprove)
-                outcomes = (drop.result(timeout=30), approved.result(timeout=30))
-            self.assertEqual(
-                sorted(row[0] for row in outcomes),
-                ["conflict", "success"],
-            )
-            self.assertEqual(
-                next(row[1] for row in outcomes if row[0] == "conflict"),
-                "planning_version_conflict",
-            )
-            with fixture["factory"]() as session:
-                reference = session.get(RequestApprovalReference, fixture["request_id"])
-                intent = session.get(RequestRequirementPlanningIntent, fixture["intent_id"])
-                self.assertIsNotNone(reference)
-                self.assertIsNotNone(intent)
-                if outcomes[0][0] == "success":
-                    self.assertEqual(reference.active_revision_id, fixture["revision_id"])
-                    self.assertEqual(intent.approval_revision_id, fixture["revision_id"])
-                    self.assertEqual(intent.target_resource_id, fixture["resources"]["B"])
-                    self.assertEqual(
-                        intent.placement_not_before_date,
-                        DAY + timedelta(days=3),
-                    )
-                else:
-                    self.assertNotEqual(reference.active_revision_id, fixture["revision_id"])
-                    self.assertEqual(intent.approval_revision_id, reference.active_revision_id)
-                    self.assertIsNone(intent.placement_not_before_date)
-        finally:
-            self._cleanup(fixture)
-
-    def test_drop_vs_permanent_reduction_has_one_authoritative_winner(self) -> None:
-        fixture = self._fixture()
-        try:
-            barrier = Barrier(2)
-            def reduce() -> tuple[str, str | None]:
-                with fixture["factory"].begin() as session:
-                    barrier.wait(timeout=10)
-                    try:
-                        result = self._adapter(session, fixture).permanently_reduce_shift(
-                            PermanentlyReduceShiftHoursCommand(
-                                allocation_id=fixture["allocation_ids"][0],
-                                expected_planning_version=int(fixture["planning_version"]),
-                                expected_request_version=1,
-                                expected_approval_revision_id=str(fixture["revision_id"]),
-                                expected_operational_version=1,
-                                command_id=f"reduce-race-{fixture['marker']}",
-                            )
-                        )
-                    except ApplicationConflictError as exc:
-                        return "conflict", exc.code
-                    return "success", str(result["reduction_id"])
-
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                drop = executor.submit(
-                    self._drop,
-                    fixture,
-                    resource_id=fixture["resources"]["B"],
-                    dropped_date=DAY + timedelta(days=3),
-                    command_id=f"drop-reduction-race-{fixture['marker']}",
-                    barrier=barrier,
-                )
-                reduced = executor.submit(reduce)
-                outcomes = (drop.result(timeout=30), reduced.result(timeout=30))
-            self.assertEqual(
-                sorted(row[0] for row in outcomes),
-                ["conflict", "success"],
-            )
-            self.assertEqual(
-                next(row[1] for row in outcomes if row[0] == "conflict"),
-                "planning_version_conflict",
-            )
-            with fixture["factory"]() as session:
-                intent = session.get(RequestRequirementPlanningIntent, fixture["intent_id"])
-                shifts = list(
+                self._assert_seed_survivors(session, fixture)
+                active_releases = tuple(
                     session.scalars(
-                        select(Shift).where(
-                            Shift.resource_requirement_id == fixture["requirement_id"]
+                        select(PlanningWorkQueueRelease).where(
+                            PlanningWorkQueueRelease.workforce_request_id
+                            == fixture["request_id"],
+                            PlanningWorkQueueRelease.active == True,
                         )
                     ).all()
                 )
-                covered = sum((Decimal(str(row.hours)) for row in shifts), Decimal("0"))
-                if outcomes[0][0] == "success":
-                    self.assertEqual(intent.target_resource_id, fixture["resources"]["B"])
-                    self.assertEqual(
-                        intent.placement_not_before_date,
-                        DAY + timedelta(days=3),
+                self.assertEqual({row.id for row in active_releases}, {fixture["release_id"]})
+            else:
+                self.assertEqual(requirement.assigned_resource_id, fixture["resources"]["A"])
+                self.assertEqual(intent.target_resource_id, fixture["resources"]["A"])
+                self.assertIsNone(intent.placement_not_before_date)
+                self._assert_seed_survivors(
+                    session,
+                    fixture,
+                    missing_allocation_ids=(fixture["allocation_ids"][0],),
+                )
+                active_releases = tuple(
+                    session.scalars(
+                        select(PlanningWorkQueueRelease).where(
+                            PlanningWorkQueueRelease.workforce_request_id
+                            == fixture["request_id"],
+                            PlanningWorkQueueRelease.active == True,
+                        )
+                    ).all()
+                )
+                self.assertEqual(len(active_releases), 2)
+                new_releases = [
+                    row for row in active_releases if row.id != fixture["release_id"]
+                ]
+                self.assertEqual(len(new_releases), 1)
+                self.assertEqual(new_releases[0].hours, Decimal("8.00"))
+                self.assertEqual(new_releases[0].work_date, DAY + timedelta(days=1))
+                self.assertEqual(new_releases[0].resource_id, fixture["resources"]["A"])
+                self.assertEqual(Decimal("40.00") - expected_coverage, Decimal("16.00"))
+
+    def test_drop_vs_reapproval_has_one_authoritative_winner(self) -> None:
+        fixture = self._fixture()
+        participants = ("drop", "reapprove")
+
+        def reapprove() -> tuple[str, str | None]:
+            try:
+                with fixture["factory"].begin() as session:
+                    self._prepare_race_session(session, fixture, participants[1])
+                    versioning = SqlPlanningMutationVersionRepository(session)
+                    versioning.acquire(int(fixture["planning_version"]))
+                    request = session.get(WorkforceRequest, fixture["request_id"])
+                    acquire_request_aggregate_version(session, request, 1)
+                    SqlPeriodAwareApprovedDemandSyncAdapter(session).sync_approved(
+                        str(fixture["request_number"]),
+                        approved_request_version=2,
                     )
-                    self.assertIsNone(
-                        session.scalar(
-                            select(RequestCompletionReduction).where(
-                                RequestCompletionReduction.command_id
-                                == f"reduce-race-{fixture['marker']}"
-                            )
+                return "success", "reapproved"
+            except ApplicationConflictError as exc:
+                return self._expected_race_conflict(exc)
+
+        outcomes = self._run_race(
+            fixture,
+            participants,
+            lambda: self._drop(
+                fixture,
+                participant=participants[0],
+                resource_id=fixture["resources"]["B"],
+                dropped_date=DAY + timedelta(days=3),
+                command_id=f"drop-reapproval-race-{fixture['marker']}",
+            ),
+            reapprove,
+        )
+
+        with fixture["factory"]() as session:
+            drop_won = outcomes[0][0] == "success"
+            revisions = tuple(
+                session.scalars(
+                    select(RequestApprovalRevision)
+                    .where(
+                        RequestApprovalRevision.workforce_request_id
+                        == fixture["request_id"]
+                    )
+                    .order_by(RequestApprovalRevision.request_version)
+                ).all()
+            )
+            if drop_won:
+                self.assertEqual(len(revisions), 1)
+                _, _, requirement, intent = self._assert_common_final_state(
+                    session,
+                    fixture,
+                    expected_revision_id=str(fixture["revision_id"]),
+                    expected_request_version=1,
+                    expected_operational_version=1,
+                    expected_effective_need=Decimal("40.00"),
+                    expected_coverage=Decimal("40.00"),
+                )
+                self.assertEqual(requirement.assigned_resource_id, fixture["resources"]["B"])
+                self.assertEqual(intent.target_resource_id, fixture["resources"]["B"])
+                self.assertEqual(
+                    intent.placement_not_before_date,
+                    DAY + timedelta(days=3),
+                )
+            else:
+                self.assertEqual(len(revisions), 2)
+                new_revision = revisions[-1]
+                self.assertEqual(new_revision.previous_revision_id, fixture["revision_id"])
+                self.assertEqual(int(new_revision.request_version), 2)
+                _, operational, requirement, intent = self._assert_common_final_state(
+                    session,
+                    fixture,
+                    expected_revision_id=new_revision.id,
+                    expected_request_version=2,
+                    expected_operational_version=2,
+                    expected_effective_need=Decimal("40.00"),
+                    expected_coverage=Decimal("32.00"),
+                )
+                self.assertEqual(requirement.assigned_resource_id, fixture["resources"]["A"])
+                self.assertEqual(intent.target_resource_id, fixture["resources"]["A"])
+                self.assertIsNone(intent.placement_not_before_date)
+                self.assertEqual(operational.approval_revision_id, new_revision.id)
+            self._assert_seed_survivors(session, fixture)
+            seeded_release = session.get(PlanningWorkQueueRelease, fixture["release_id"])
+            self.assertEqual(
+                seeded_release.approval_revision_id,
+                fixture["revision_id"],
+            )
+
+    def test_drop_vs_permanent_reduction_has_one_authoritative_winner(self) -> None:
+        fixture = self._fixture()
+        participants = ("drop", "reduce")
+
+        def reduce() -> tuple[str, str | None]:
+            try:
+                with fixture["factory"].begin() as session:
+                    self._prepare_race_session(session, fixture, participants[1])
+                    result = self._adapter(session, fixture).permanently_reduce_shift(
+                        PermanentlyReduceShiftHoursCommand(
+                            allocation_id=fixture["allocation_ids"][0],
+                            expected_planning_version=int(fixture["planning_version"]),
+                            expected_request_version=1,
+                            expected_approval_revision_id=str(fixture["revision_id"]),
+                            expected_operational_version=1,
+                            command_id=f"reduce-race-{fixture['marker']}",
                         )
                     )
-                    self.assertLessEqual(covered, Decimal("40.00"))
-                else:
-                    reduction_id = outcomes[1][1]
-                    reduction = session.get(RequestCompletionReduction, reduction_id)
-                    self.assertIsNotNone(reduction)
-                    self.assertEqual(reduction.reconciliation_state, "ACTIVE")
-                    self.assertIsNone(intent.placement_not_before_date)
-                    self.assertLessEqual(
-                        covered,
-                        Decimal(str(reduction.effective_need_after)),
-                    )
-        finally:
-            self._cleanup(fixture)
+                return "success", str(result["reduction_id"])
+            except ApplicationConflictError as exc:
+                return self._expected_race_conflict(exc)
+
+        outcomes = self._run_race(
+            fixture,
+            participants,
+            lambda: self._drop(
+                fixture,
+                participant=participants[0],
+                resource_id=fixture["resources"]["B"],
+                dropped_date=DAY + timedelta(days=3),
+                command_id=f"drop-reduction-race-{fixture['marker']}",
+            ),
+            reduce,
+        )
+
+        with fixture["factory"]() as session:
+            drop_won = outcomes[0][0] == "success"
+            if drop_won:
+                _, _, requirement, intent = self._assert_common_final_state(
+                    session,
+                    fixture,
+                    expected_revision_id=str(fixture["revision_id"]),
+                    expected_request_version=1,
+                    expected_operational_version=1,
+                    expected_effective_need=Decimal("40.00"),
+                    expected_coverage=Decimal("40.00"),
+                )
+                self.assertEqual(requirement.assigned_resource_id, fixture["resources"]["B"])
+                self.assertEqual(intent.target_resource_id, fixture["resources"]["B"])
+                self.assertEqual(
+                    intent.placement_not_before_date,
+                    DAY + timedelta(days=3),
+                )
+                self._assert_seed_survivors(session, fixture)
+                self.assertEqual(
+                    int(
+                        session.scalar(
+                            select(func.count(RequestCompletionReduction.id)).where(
+                                RequestCompletionReduction.workforce_request_id
+                                == fixture["request_id"]
+                            )
+                        )
+                        or 0
+                    ),
+                    0,
+                )
+            else:
+                _, _, requirement, intent = self._assert_common_final_state(
+                    session,
+                    fixture,
+                    expected_revision_id=str(fixture["revision_id"]),
+                    expected_request_version=2,
+                    expected_operational_version=1,
+                    expected_effective_need=Decimal("32.00"),
+                    expected_coverage=Decimal("24.00"),
+                )
+                self.assertEqual(requirement.assigned_resource_id, fixture["resources"]["A"])
+                self.assertEqual(intent.target_resource_id, fixture["resources"]["A"])
+                self.assertIsNone(intent.placement_not_before_date)
+                self._assert_seed_survivors(
+                    session,
+                    fixture,
+                    missing_allocation_ids=(fixture["allocation_ids"][0],),
+                )
+                reductions = tuple(
+                    session.scalars(
+                        select(RequestCompletionReduction).where(
+                            RequestCompletionReduction.workforce_request_id
+                            == fixture["request_id"]
+                        )
+                    ).all()
+                )
+                self.assertEqual(len(reductions), 1)
+                reduction = reductions[0]
+                self.assertEqual(reduction.reconciliation_state, "ACTIVE")
+                self.assertEqual(reduction.reduction_hours, Decimal("8.00"))
+                self.assertEqual(reduction.effective_need_before, Decimal("40.00"))
+                self.assertEqual(reduction.effective_need_after, Decimal("32.00"))
+                self.assertEqual(Decimal("32.00") - Decimal("24.00"), Decimal("8.00"))
 
 
 if __name__ == "__main__":
