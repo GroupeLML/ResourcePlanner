@@ -1087,6 +1087,46 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await coordinator.page.getByLabel(/Commentaire d’approbation/).fill("Régularisation après urgence");
     await coordinator.page.getByRole("button", { name: "Approuver", exact: true }).click();
     await expect(coordinator.page.locator(".demand-notice").filter({ hasText: "Demande approuvée" })).toContainText("Demande approuvée");
+
+    const urgentActions = await coordinator.page.request.get(
+      `/api/v1/planning/actions?start=${today}&end=${today}&scope=global`,
+    );
+    expect(urgentActions.ok(), await urgentActions.text()).toBeTruthy();
+    const urgentAssignment = (await urgentActions.json() as Array<{
+      kind: string;
+      demand_number: string | null;
+      segment_id: string | null;
+      planned_hours: number;
+    }>).find(
+      (row) => row.kind === "ASSIGNMENT" && row.demand_number === urgentNumber,
+    );
+    expect(urgentAssignment?.segment_id).toBeTruthy();
+    expect(urgentAssignment?.planned_hours).toBe(4);
+
+    const explicitlyAssigned = await coordinator.page.request.post(
+      `/api/v1/segments/${encodeURIComponent(String(urgentAssignment!.segment_id))}/assign`,
+      { data: { resource_id: "R-ALICE" } },
+    );
+    expect(explicitlyAssigned.status(), await explicitlyAssigned.text()).toBe(200);
+
+    const urgentShifts = await coordinator.page.request.get(
+      `/api/v1/shifts?start=${today}&end=${today}`,
+    );
+    expect(urgentShifts.ok(), await urgentShifts.text()).toBeTruthy();
+    const aliceUrgentShifts = (await urgentShifts.json() as Array<{
+      demand_number: string | null;
+      resource_id: string | null;
+      hours: number;
+      allocation_type: string | null;
+    }>).filter(
+      (row) =>
+        row.demand_number === urgentNumber
+        && row.resource_id === "R-ALICE"
+        && row.allocation_type !== "Hors horaire requis",
+    );
+    expect(aliceUrgentShifts).toHaveLength(1);
+    expect(Number(aliceUrgentShifts[0].hours)).toBe(4);
+
     await closeContext(coordinator.context);
   });
 
