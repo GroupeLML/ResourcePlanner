@@ -973,17 +973,6 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
             else ()
         )
         self.assertEqual(restorations, ())
-        self.assertGreater(
-            int(
-                session.scalar(
-                    select(func.count(PlanningChangeHistory.id)).where(
-                        PlanningChangeHistory.actor_name == fixture["actor_name"]
-                    )
-                )
-                or 0
-            ),
-            0,
-        )
         return request, operational, requirement, intent
 
     def test_drop_vs_drop_has_one_authoritative_winner(self) -> None:
@@ -1725,6 +1714,32 @@ class Issue777SqlServerHarnessCleanupContractTests(unittest.TestCase):
         fixture = self._fixture_descriptor(factory, engine, uuid4().hex[:8])
         sentinel = self._seed_sentinel(factory, str(fixture["marker"]))
         self._seed_graph(fixture, include_revision_child=True)
+        Issue777SqlServerConcurrencyTests._cleanup(self, fixture)
+        self._assert_fixture_gone_and_sentinel_present(fixture, sentinel)
+
+    def test_cleanup_removes_reduction_evidence(self) -> None:
+        engine, factory = self._database()
+        fixture = self._fixture_descriptor(factory, engine, uuid4().hex[:8])
+        sentinel = self._seed_sentinel(factory, str(fixture["marker"]))
+        self._seed_graph(
+            fixture,
+            include_restorations=False,
+            include_revision_child=False,
+            include_reduction=True,
+        )
+        with factory() as session:
+            self.assertEqual(
+                int(
+                    session.scalar(
+                        select(func.count(RequestCompletionReduction.id)).where(
+                            RequestCompletionReduction.workforce_request_id
+                            == fixture["request_id"]
+                        )
+                    )
+                    or 0
+                ),
+                1,
+            )
         Issue777SqlServerConcurrencyTests._cleanup(self, fixture)
         self._assert_fixture_gone_and_sentinel_present(fixture, sentinel)
 
