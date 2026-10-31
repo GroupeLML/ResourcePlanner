@@ -312,6 +312,9 @@ class PlanningActionReadModel:
     project_manager: str | None = None
     requester: str | None = None
     emergency_override_active: bool = False
+    approval_revision_id: str | None = None
+    operational_version: int | None = None
+    placement_not_before_date: date | None = None
 
 
 @dataclass(frozen=True, slots=True)

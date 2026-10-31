@@ -252,6 +252,10 @@ from .task_catalog import (
 )
 from .request_work_queue import (
     PermanentlyReduceShiftHoursCommand,
+    PlaceSegmentFromDropCommand,
+    ResetSegmentPlacementCutoffCommand,
+    SegmentPlacementMutationResult,
+    SegmentPlacementPreviewResult,
     RequestWorkQueueCommandPort,
     RequestWorkQueueMutationResult,
     RequestWorkQueuePreviewResult,
@@ -437,6 +441,10 @@ __all__ = [
     "QuickShiftCreateCommand",
     "QuickShiftCreatedResult",
     "PermanentlyReduceShiftHoursCommand",
+    "PlaceSegmentFromDropCommand",
+    "ResetSegmentPlacementCutoffCommand",
+    "SegmentPlacementMutationResult",
+    "SegmentPlacementPreviewResult",
     "RequestWorkQueueCommandPort",
     "RequestWorkQueueMutationResult",
     "RequestWorkQueuePreviewResult",

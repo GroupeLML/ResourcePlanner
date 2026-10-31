@@ -45,6 +45,10 @@ from .repository_ports import PlanningMutationVersionPort
 from .quick_shift_service import QuickShiftService
 from .request_work_queue import (
     PermanentlyReduceShiftHoursCommand,
+    PlaceSegmentFromDropCommand,
+    ResetSegmentPlacementCutoffCommand,
+    SegmentPlacementMutationResult,
+    SegmentPlacementPreviewResult,
     RequestWorkQueueMutationResult,
     RequestWorkQueuePreviewResult,
     RequestWorkQueueService,
@@ -498,6 +502,30 @@ class ApplicationFacade:
         self._acquire_planning_version(command.expected_planning_version)
         self._allocations.delete_manual_command(command)
         return AllocationMutationResult(_identifier(command.allocation_id), action="deleted")
+
+    def preview_segment_drop(
+        self,
+        segment_id: str,
+        resource_id: str,
+        dropped_date,
+    ) -> SegmentPlacementPreviewResult:
+        return self._request_work_queue_service().preview_segment_drop(
+            segment_id,
+            resource_id,
+            dropped_date,
+        )
+
+    def place_segment_from_drop(
+        self,
+        command: PlaceSegmentFromDropCommand,
+    ) -> SegmentPlacementMutationResult:
+        return self._request_work_queue_service().place_segment_from_drop(command)
+
+    def reset_segment_placement_cutoff(
+        self,
+        command: ResetSegmentPlacementCutoffCommand,
+    ) -> SegmentPlacementMutationResult:
+        return self._request_work_queue_service().reset_segment_placement_cutoff(command)
 
     def preview_request_work_queue_actions(
         self,

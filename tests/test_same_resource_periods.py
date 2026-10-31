@@ -8,6 +8,7 @@ import unittest
 
 from sqlalchemy import delete, select
 
+from app.application.errors import ApplicationConflictError
 from app.infrastructure.sql import (
     Base,
     Project,
@@ -358,6 +359,13 @@ class SameResourcePeriodPlanningTests(unittest.TestCase):
             ).all()
             self.assertEqual({shift.resource_id for shift in shifts}, {"R2"})
 
+            locked = session.get(Shift, "LOCK-B")
+            self.assertIsNotNone(locked)
+            self.assertTrue(locked.locked)
+            self.assertEqual(locked.source, "MANUAL")
+            self.assertEqual(locked.resource_id, "R2")
+            self.assertEqual(locked.hours, Decimal("4"))
+
     def test_locked_component_rejects_a_conflicting_explicit_retarget(self) -> None:
         with transactional_session(self.factory) as session:
             root, child = self._same_as_plan(session, root_target="R1")
@@ -375,8 +383,9 @@ class SameResourcePeriodPlanningTests(unittest.TestCase):
             )
             session.flush()
 
-            with self.assertRaisesRegex(ValueError, "fixe déjà la ressource"):
+            with self.assertRaises(ApplicationConflictError) as raised:
                 SqlAllocationCommandAdapter(session).assign_segment(child.id, "R2")
+            self.assertEqual(raised.exception.code, "same_as_period_resource_conflict")
 
             self.assertEqual(root.assigned_resource_id, "R1")
             self.assertIsNone(child.assigned_resource_id)
@@ -416,11 +425,61 @@ class SameResourcePeriodPlanningTests(unittest.TestCase):
     def test_explicit_target_change_retargets_the_component_atomically(self) -> None:
         with transactional_session(self.factory) as session:
             root, child = self._same_as_plan(session, root_target="R1")
+            session.add_all(
+                [
+                    RequestRequirementPlanningIntent(
+                        id="INT-SAME-LOCAL-ROOT",
+                        slot_identity_key="same-local-root",
+                        workforce_request_id="D-SAME",
+                        source_request_line_id="L-SAME",
+                        approved_entry_key='["PERIOD","L-SAME","A"]',
+                        source_period_id="PER-A",
+                        slot_index=0,
+                        current_resource_requirement_id=root.id,
+                        intent_mode="AUTO",
+                        target_mode="EXPLICIT_RESOURCE",
+                        target_resource_id="R1",
+                    ),
+                    RequestRequirementPlanningIntent(
+                        id="INT-SAME-LOCAL-CHILD",
+                        slot_identity_key="same-local-child",
+                        workforce_request_id="D-SAME",
+                        source_request_line_id="L-SAME",
+                        approved_entry_key='["PERIOD","L-SAME","B"]',
+                        source_period_id="PER-B",
+                        slot_index=0,
+                        current_resource_requirement_id=child.id,
+                        intent_mode="AUTO",
+                        target_mode="INHERIT",
+                        placement_not_before_date=D2,
+                    ),
+                ]
+            )
+            session.flush()
 
             SqlAllocationCommandAdapter(session).assign_segment(child.id, "R2")
 
             self.assertEqual(root.assigned_resource_id, "R2")
             self.assertEqual(child.assigned_resource_id, "R2")
+            root_intent = session.get(
+                RequestRequirementPlanningIntent,
+                "INT-SAME-LOCAL-ROOT",
+            )
+            child_intent = session.get(
+                RequestRequirementPlanningIntent,
+                "INT-SAME-LOCAL-CHILD",
+            )
+            self.assertEqual(root_intent.target_mode, "EXPLICIT_RESOURCE")
+            self.assertEqual(root_intent.target_resource_id, "R2")
+            self.assertEqual(child_intent.target_mode, "EXPLICIT_RESOURCE")
+            self.assertEqual(child_intent.target_resource_id, "R2")
+            self.assertIsNone(
+                root_intent.placement_not_before_date
+            )
+            self.assertEqual(
+                child_intent.placement_not_before_date,
+                D2,
+            )
             SqlSameResourcePeriodCoordinator(session).assert_shift_invariant()
             shifts = session.scalars(
                 select(Shift).where(
@@ -428,6 +487,29 @@ class SameResourcePeriodPlanningTests(unittest.TestCase):
                 )
             ).all()
             self.assertEqual({shift.resource_id for shift in shifts}, {"R2"})
+
+            child_shift = next(
+                shift for shift in shifts if shift.resource_requirement_id == child.id
+            )
+            SqlAllocationCommandAdapter(session).update_manual(
+                child_shift.legacy_allocation_id or child_shift.id,
+                "R2",
+                child_shift.work_date,
+                child_shift.hours,
+                note="édition inchangée après retarget SAME_AS_PERIOD",
+            )
+            self.assertEqual(root.assigned_resource_id, "R2")
+            self.assertEqual(child.assigned_resource_id, "R2")
+            self.assertEqual(root_intent.target_resource_id, "R2")
+            self.assertEqual(child_intent.target_resource_id, "R2")
+            self.assertIsNone(root_intent.placement_not_before_date)
+            self.assertEqual(child_intent.placement_not_before_date, D2)
+            SqlPlanningCommandAdapter(session).rebuild()
+            self.assertEqual(root.assigned_resource_id, "R2")
+            self.assertEqual(child.assigned_resource_id, "R2")
+            self.assertEqual(root_intent.target_resource_id, "R2")
+            self.assertEqual(child_intent.target_resource_id, "R2")
+            SqlSameResourcePeriodCoordinator(session).assert_shift_invariant()
 
 
 DATABASE_URL = str(os.getenv("RESOURCEPLANNER_SQLSERVER_TEST_URL") or "").strip()

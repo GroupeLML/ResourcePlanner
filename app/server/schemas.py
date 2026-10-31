@@ -465,6 +465,25 @@ class ManualAllocationRequest(ResourceReferenceRequest):
     overallocation_policy: OverallocationPolicy | None = None
 
 
+class SegmentPlacementPreviewRequest(StrictRequest):
+    resource_id: str = Field(min_length=1)
+    dropped_date: date
+
+
+class SegmentPlacementDropRequest(StrictRequest):
+    resource_id: str = Field(min_length=1)
+    dropped_date: date
+    expected_planning_version: int = Field(ge=1)
+    expected_approval_revision_id: str = Field(min_length=1)
+    expected_operational_version: int = Field(ge=1)
+
+
+class SegmentPlacementResetRequest(StrictRequest):
+    expected_planning_version: int = Field(ge=1)
+    expected_approval_revision_id: str = Field(min_length=1)
+    expected_operational_version: int = Field(ge=1)
+
+
 class RequestWorkQueueReturnRequest(StrictRequest):
     expected_planning_version: int = Field(ge=1)
     expected_approval_revision_id: str = Field(min_length=1)

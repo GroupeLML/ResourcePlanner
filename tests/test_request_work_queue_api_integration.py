@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import time
+from datetime import date, timedelta, time
 from decimal import Decimal
 import json
 from tempfile import TemporaryDirectory
@@ -18,6 +18,7 @@ from app.infrastructure.sql import (
     PlanningWorkQueueRestoration,
     RequestCompletionReduction,
     RequestOperationalState,
+    RequestRequirementPlanningIntent,
     Project,
     Resource,
     ResourceAvailabilityRule,
@@ -25,7 +26,10 @@ from app.infrastructure.sql import (
     RequestApprovalRevision,
     Shift,
     SqlPeriodAwareApprovedDemandSyncAdapter,
+    SqlPlanningWindowOverrideRepository,
     WorkforceRequest,
+    WorkforceRequestPeriod,
+    WorkforceRequestPeriodRequirement,
     create_session_factory,
     create_sql_engine,
 )
@@ -185,6 +189,1464 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
             for row in response.json()
             if row.get("demand_number") == number and row.get("kind") == "ASSIGNMENT"
         ]
+
+    def test_same_as_period_preview_refuses_selected_auto_survivor_conflict(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_40(client)
+                    approved = self._snapshot(client, number)
+                    segment = approved["demand_segments"][0]
+                    requirement_id = segment["requirement_id"]
+                    segment_id = segment["segment_id"]
+
+                    with factory.begin() as session:
+                        requirement = session.get(ResourceRequirement, requirement_id)
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement_id
+                            )
+                        )
+                        self.assertIsNotNone(requirement)
+                        self.assertIsNotNone(intent)
+                        request = session.get(WorkforceRequest, requirement.workforce_request_id)
+                        revision = session.get(
+                            RequestApprovalRevision,
+                            requirement.approval_revision_id,
+                        )
+                        self.assertIsNotNone(request)
+                        self.assertIsNotNone(revision)
+                        payload = json.loads(revision.payload_text)
+                        entries = payload["authorization"]["entries"]
+                        self.assertEqual(len(entries), 1)
+                        entries[0]["hours"] = "16.00"
+                        revision.payload_text = json.dumps(
+                            payload,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                        requirement.planned_hours = Decimal("16.00")
+                        requirement.assigned_resource_id = "R-778-A"
+                        requirement.status = "Planifié"
+                        intent.intent_mode = "AUTO"
+                        intent.target_mode = "EXPLICIT_RESOURCE"
+                        intent.target_resource_id = "R-778-A"
+                        intent.placement_not_before_date = None
+
+                        session.query(Shift).filter_by(
+                            resource_requirement_id=requirement_id
+                        ).delete(synchronize_session=False)
+                        session.add(
+                            Shift(
+                                id=f"SHIFT-777-AUTO-{requirement.id}",
+                                legacy_allocation_id=f"ALLOC-777-AUTO-{requirement.id}",
+                                resource_requirement_id=requirement.id,
+                                resource_id="R-778-A",
+                                work_date=date.fromisoformat(START),
+                                hours=Decimal("8.00"),
+                                allocation_type="Flexible",
+                                source="AUTO",
+                                locked=False,
+                            )
+                        )
+
+                        line_id = intent.source_request_line_id
+                        self.assertTrue(line_id)
+                        root_period = WorkforceRequestPeriod(
+                            id=f"PER-777-AUTO-ROOT-{requirement.id}",
+                            period_key="AUTO-ROOT-777",
+                            workforce_request_id=request.id,
+                            request_line_id=line_id,
+                            sequence=20,
+                            kind="CUMULATIVE",
+                            start_date=requirement.start_date,
+                            end_date=requirement.end_date,
+                            hours=Decimal("16.00"),
+                            inheritance_contract_version=1,
+                            confirmation_mode="EXPLICIT",
+                            confirmation="Confirmée",
+                            proposed_resource_mode="EXPLICIT",
+                            proposed_resource_id="R-778-A",
+                            resource_count=1,
+                            active=True,
+                        )
+                        child_period = WorkforceRequestPeriod(
+                            id=f"PER-777-AUTO-FOLLOW-{requirement.id}",
+                            period_key="AUTO-FOLLOW-777",
+                            workforce_request_id=request.id,
+                            request_line_id=line_id,
+                            sequence=21,
+                            kind="CUMULATIVE",
+                            start_date=requirement.start_date,
+                            end_date=requirement.end_date,
+                            hours=Decimal("8.00"),
+                            inheritance_contract_version=1,
+                            confirmation_mode="EXPLICIT",
+                            confirmation="Confirmée",
+                            proposed_resource_mode="SAME_AS_PERIOD",
+                            same_as_period_key="AUTO-ROOT-777",
+                            resource_count=1,
+                            active=True,
+                        )
+                        child_id = f"REQ-777-AUTO-FOLLOW-{requirement.id}"
+                        child = ResourceRequirement(
+                            id=child_id,
+                            legacy_segment_id=f"SEG-777-AUTO-FOLLOW-{requirement.id}",
+                            project_id=requirement.project_id,
+                            workforce_request_id=request.id,
+                            source_request_line_id=line_id,
+                            assigned_resource_id="R-778-A",
+                            start_date=requirement.start_date,
+                            end_date=requirement.end_date,
+                            planned_hours=Decimal("8.00"),
+                            status="Planifié",
+                            origin="REQUEST",
+                        )
+                        child_intent_id = f"INT-777-AUTO-FOLLOW-{requirement.id}"
+                        child_cutoff = date.fromisoformat(END)
+                        session.add_all([root_period, child_period, child])
+                        session.flush()
+                        session.add_all(
+                            [
+                                WorkforceRequestPeriodRequirement(
+                                    resource_requirement_id=requirement.id,
+                                    period_id=root_period.id,
+                                ),
+                                WorkforceRequestPeriodRequirement(
+                                    resource_requirement_id=child.id,
+                                    period_id=child_period.id,
+                                ),
+                                RequestRequirementPlanningIntent(
+                                    id=child_intent_id,
+                                    slot_identity_key=f"same-777-auto-follow-{requirement.id}",
+                                    workforce_request_id=request.id,
+                                    source_request_line_id=line_id,
+                                    approval_revision_id=requirement.approval_revision_id,
+                                    approved_entry_key=f"same-777-auto-follow-{requirement.id}",
+                                    source_period_id=child_period.id,
+                                    slot_index=0,
+                                    current_resource_requirement_id=child.id,
+                                    intent_mode="AUTO",
+                                    target_mode="EXPLICIT_RESOURCE",
+                                    target_resource_id="R-778-A",
+                                    placement_not_before_date=child_cutoff,
+                                ),
+                            ]
+                        )
+
+                    before_snapshot = self._snapshot(client, number)
+                    before_action = self._actions(client, number)[0]
+                    with factory() as session:
+                        selected_intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement_id
+                            )
+                        )
+                        child_intent = session.get(
+                            RequestRequirementPlanningIntent,
+                            child_intent_id,
+                        )
+                        before_state = {
+                            "planning_version": before_snapshot["planning_version"],
+                            "operational_version": before_action["operational_version"],
+                            "approval_revision_id": before_action["approval_revision_id"],
+                            "selected_target": selected_intent.target_resource_id,
+                            "selected_cutoff": selected_intent.placement_not_before_date,
+                            "child_target": child_intent.target_resource_id,
+                            "child_cutoff": child_intent.placement_not_before_date,
+                            "shifts": tuple(
+                                session.execute(
+                                    select(
+                                        Shift.id,
+                                        Shift.resource_id,
+                                        Shift.hours,
+                                    )
+                                    .where(
+                                        Shift.resource_requirement_id.in_(
+                                            (requirement_id, child_id)
+                                        )
+                                    )
+                                    .order_by(Shift.id)
+                                ).all()
+                            ),
+                            "release_count": int(
+                                session.scalar(
+                                    select(func.count(PlanningWorkQueueRelease.id)).where(
+                                        PlanningWorkQueueRelease.planning_intent_id
+                                        == selected_intent.id
+                                    )
+                                )
+                                or 0
+                            ),
+                            "reduction_count": int(
+                                session.scalar(
+                                    select(func.count(RequestCompletionReduction.id)).where(
+                                        RequestCompletionReduction.planning_intent_id
+                                        == selected_intent.id
+                                    )
+                                )
+                                or 0
+                            ),
+                        }
+
+                    preview = client.post(
+                        f"/api/v1/segments/{segment_id}/place-from-drop/preview",
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": START,
+                        },
+                    )
+                    self.assertEqual(preview.status_code, 200, preview.text)
+                    preview_payload = preview.json()
+                    self.assertFalse(preview_payload["allowed"])
+                    self.assertEqual(
+                        preview_payload["refusal_code"],
+                        "same_as_period_resource_conflict",
+                    )
+                    self.assertEqual(preview_payload["effective_need"], 16.0)
+                    self.assertEqual(preview_payload["covered_hours"], 8.0)
+                    self.assertEqual(preview_payload["remaining_hours"], 8.0)
+                    self.assertEqual(preview_payload["placeable_hours"], 0.0)
+                    self.assertEqual(
+                        set(preview_payload["affected_requirement_ids"]),
+                        {requirement_id, child_id},
+                    )
+
+                    refused = client.post(
+                        f"/api/v1/segments/{segment_id}/place-from-drop",
+                        headers={"Idempotency-Key": "777-auto-survivor-same-conflict"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": START,
+                            "expected_planning_version": preview_payload["planning_version"],
+                            "expected_approval_revision_id": preview_payload["approval_revision_id"],
+                            "expected_operational_version": preview_payload["operational_version"],
+                        },
+                    )
+                    self.assertEqual(refused.status_code, 409, refused.text)
+                    self.assertEqual(
+                        refused.json()["error"]["code"],
+                        "same_as_period_resource_conflict",
+                    )
+
+                    after_snapshot = self._snapshot(client, number)
+                    after_action = self._actions(client, number)[0]
+                    with factory() as session:
+                        selected_intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement_id
+                            )
+                        )
+                        child_intent = session.get(
+                            RequestRequirementPlanningIntent,
+                            child_intent_id,
+                        )
+                        self.assertEqual(
+                            after_snapshot["planning_version"],
+                            before_state["planning_version"],
+                        )
+                        self.assertEqual(
+                            after_action["operational_version"],
+                            before_state["operational_version"],
+                        )
+                        self.assertEqual(
+                            after_action["approval_revision_id"],
+                            before_state["approval_revision_id"],
+                        )
+                        self.assertEqual(
+                            selected_intent.target_resource_id,
+                            before_state["selected_target"],
+                        )
+                        self.assertEqual(
+                            selected_intent.placement_not_before_date,
+                            before_state["selected_cutoff"],
+                        )
+                        self.assertEqual(
+                            child_intent.target_resource_id,
+                            before_state["child_target"],
+                        )
+                        self.assertEqual(
+                            child_intent.placement_not_before_date,
+                            before_state["child_cutoff"],
+                        )
+                        self.assertEqual(
+                            tuple(
+                                session.execute(
+                                    select(
+                                        Shift.id,
+                                        Shift.resource_id,
+                                        Shift.hours,
+                                    )
+                                    .where(
+                                        Shift.resource_requirement_id.in_(
+                                            (requirement_id, child_id)
+                                        )
+                                    )
+                                    .order_by(Shift.id)
+                                ).all()
+                            ),
+                            before_state["shifts"],
+                        )
+                        self.assertEqual(
+                            int(
+                                session.scalar(
+                                    select(func.count(PlanningWorkQueueRelease.id)).where(
+                                        PlanningWorkQueueRelease.planning_intent_id
+                                        == selected_intent.id
+                                    )
+                                )
+                                or 0
+                            ),
+                            before_state["release_count"],
+                        )
+                        self.assertEqual(
+                            int(
+                                session.scalar(
+                                    select(func.count(RequestCompletionReduction.id)).where(
+                                        RequestCompletionReduction.planning_intent_id
+                                        == selected_intent.id
+                                    )
+                                )
+                                or 0
+                            ),
+                            before_state["reduction_count"],
+                        )
+            finally:
+                engine.dispose()
+
+    def test_same_as_period_preview_refuses_preserved_resource_conflict_and_commit_is_structured(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_40(client)
+                    before = self._snapshot(client, number)
+                    returned_shift = min(
+                        before["demand_shifts"],
+                        key=lambda row: row["work_date"],
+                    )
+                    return_preview = client.get(
+                        f"/api/v1/allocations/{returned_shift['allocation_id']}/work-queue-preview"
+                    ).json()
+                    returned = client.post(
+                        f"/api/v1/allocations/{returned_shift['allocation_id']}/return-to-work-queue",
+                        headers={"Idempotency-Key": "777-same-return"},
+                        json={
+                            "expected_planning_version": return_preview["planning_version"],
+                            "expected_approval_revision_id": return_preview["approval_revision_id"],
+                            "expected_operational_version": return_preview["operational_version"],
+                        },
+                    )
+                    self.assertEqual(returned.status_code, 200, returned.text)
+
+                    current = self._snapshot(client, number)
+                    segment = current["demand_segments"][0]
+                    requirement_id = segment["requirement_id"]
+                    segment_id = segment["segment_id"]
+                    with factory.begin() as session:
+                        requirement = session.get(ResourceRequirement, requirement_id)
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement_id
+                            )
+                        )
+                        self.assertIsNotNone(requirement)
+                        self.assertIsNotNone(intent)
+                        request = session.get(WorkforceRequest, requirement.workforce_request_id)
+                        self.assertIsNotNone(request)
+                        line_id = intent.source_request_line_id
+                        self.assertTrue(line_id)
+                        root_period = WorkforceRequestPeriod(
+                            id=f"PER-777-ROOT-{requirement.id}",
+                            period_key="ROOT-777",
+                            workforce_request_id=request.id,
+                            request_line_id=line_id,
+                            sequence=10,
+                            kind="CUMULATIVE",
+                            start_date=requirement.start_date,
+                            end_date=requirement.end_date,
+                            hours=Decimal("40"),
+                            inheritance_contract_version=1,
+                            confirmation_mode="EXPLICIT",
+                            confirmation="Confirmée",
+                            proposed_resource_mode="EXPLICIT",
+                            proposed_resource_id="R-778-A",
+                            resource_count=1,
+                            active=True,
+                        )
+                        child_period = WorkforceRequestPeriod(
+                            id=f"PER-777-FOLLOW-{requirement.id}",
+                            period_key="FOLLOW-777",
+                            workforce_request_id=request.id,
+                            request_line_id=line_id,
+                            sequence=11,
+                            kind="CUMULATIVE",
+                            start_date=requirement.start_date,
+                            end_date=requirement.end_date,
+                            hours=Decimal("8"),
+                            inheritance_contract_version=1,
+                            confirmation_mode="EXPLICIT",
+                            confirmation="Confirmée",
+                            proposed_resource_mode="SAME_AS_PERIOD",
+                            same_as_period_key="ROOT-777",
+                            resource_count=1,
+                            active=True,
+                        )
+                        child = ResourceRequirement(
+                            id=f"REQ-777-FOLLOW-{requirement.id}",
+                            legacy_segment_id=f"SEG-777-FOLLOW-{requirement.id}",
+                            project_id=requirement.project_id,
+                            workforce_request_id=request.id,
+                            source_request_line_id=line_id,
+                            assigned_resource_id="R-778-A",
+                            start_date=requirement.start_date,
+                            end_date=requirement.end_date,
+                            planned_hours=Decimal("8"),
+                            status="Planifié",
+                            origin="REQUEST",
+                        )
+                        session.add_all([root_period, child_period, child])
+                        session.flush()
+                        session.add_all(
+                            [
+                                WorkforceRequestPeriodRequirement(
+                                    resource_requirement_id=requirement.id,
+                                    period_id=root_period.id,
+                                ),
+                                WorkforceRequestPeriodRequirement(
+                                    resource_requirement_id=child.id,
+                                    period_id=child_period.id,
+                                ),
+                                RequestRequirementPlanningIntent(
+                                    id=f"INT-777-FOLLOW-{requirement.id}",
+                                    slot_identity_key=f"same-777-follow-{requirement.id}",
+                                    workforce_request_id=request.id,
+                                    source_request_line_id=line_id,
+                                    approval_revision_id=requirement.approval_revision_id,
+                                    approved_entry_key=f"same-777-follow-{requirement.id}",
+                                    source_period_id=child_period.id,
+                                    slot_index=0,
+                                    current_resource_requirement_id=child.id,
+                                    intent_mode="PRESERVE_EXISTING",
+                                    target_mode="EXPLICIT_RESOURCE",
+                                    target_resource_id="R-778-A",
+                                    placement_not_before_date=date.fromisoformat(END),
+                                ),
+                                Shift(
+                                    id=f"SHIFT-777-FOLLOW-{requirement.id}",
+                                    legacy_allocation_id=f"ALLOC-777-FOLLOW-{requirement.id}",
+                                    resource_requirement_id=child.id,
+                                    resource_id="R-778-A",
+                                    work_date=date.fromisoformat(THURSDAY),
+                                    hours=Decimal("8"),
+                                    allocation_type="Flexible",
+                                    source="MANUAL",
+                                    locked=True,
+                                ),
+                            ]
+                        )
+
+                    before_refusal = {}
+                    with factory() as session:
+                        selected_intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement_id
+                            )
+                        )
+                        child_intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == f"REQ-777-FOLLOW-{requirement_id}"
+                            )
+                        )
+                        before_refusal = {
+                            "selected_target": selected_intent.target_resource_id,
+                            "selected_cutoff": selected_intent.placement_not_before_date,
+                            "child_target": child_intent.target_resource_id,
+                            "child_cutoff": child_intent.placement_not_before_date,
+                            "shift_ids": tuple(
+                                session.scalars(
+                                    select(Shift.id)
+                                    .where(
+                                        Shift.resource_requirement_id.in_(
+                                            (requirement_id, f"REQ-777-FOLLOW-{requirement_id}")
+                                        )
+                                    )
+                                    .order_by(Shift.id)
+                                ).all()
+                            ),
+                            "active_release_count": session.scalar(
+                                select(func.count(PlanningWorkQueueRelease.id)).where(
+                                    PlanningWorkQueueRelease.planning_intent_id
+                                    == selected_intent.id,
+                                    PlanningWorkQueueRelease.active == True,
+                                )
+                            ),
+                        }
+
+                    preview = client.post(
+                        f"/api/v1/segments/{segment_id}/place-from-drop/preview",
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": THURSDAY,
+                        },
+                    )
+                    self.assertEqual(preview.status_code, 200, preview.text)
+                    preview_payload = preview.json()
+                    self.assertFalse(preview_payload["allowed"])
+                    self.assertEqual(
+                        preview_payload["refusal_code"],
+                        "same_as_period_resource_conflict",
+                    )
+                    self.assertEqual(
+                        set(preview_payload["affected_requirement_ids"]),
+                        {requirement_id, f"REQ-777-FOLLOW-{requirement_id}"},
+                    )
+                    self.assertEqual(
+                        len(preview_payload["affected_planning_intent_ids"]),
+                        2,
+                    )
+
+                    refused = client.post(
+                        f"/api/v1/segments/{segment_id}/place-from-drop",
+                        headers={"Idempotency-Key": "777-same-conflict"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": THURSDAY,
+                            "expected_planning_version": preview_payload["planning_version"],
+                            "expected_approval_revision_id": preview_payload["approval_revision_id"],
+                            "expected_operational_version": preview_payload["operational_version"],
+                        },
+                    )
+                    self.assertEqual(refused.status_code, 409, refused.text)
+                    self.assertEqual(
+                        refused.json()["error"]["code"],
+                        "same_as_period_resource_conflict",
+                    )
+
+                    with factory() as session:
+                        selected_intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement_id
+                            )
+                        )
+                        child_intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == f"REQ-777-FOLLOW-{requirement_id}"
+                            )
+                        )
+                        self.assertEqual(
+                            selected_intent.target_resource_id,
+                            before_refusal["selected_target"],
+                        )
+                        self.assertEqual(
+                            selected_intent.placement_not_before_date,
+                            before_refusal["selected_cutoff"],
+                        )
+                        self.assertEqual(
+                            child_intent.target_resource_id,
+                            before_refusal["child_target"],
+                        )
+                        self.assertEqual(
+                            child_intent.placement_not_before_date,
+                            before_refusal["child_cutoff"],
+                        )
+                        after_shift_ids = tuple(
+                            session.scalars(
+                                select(Shift.id)
+                                .where(
+                                    Shift.resource_requirement_id.in_(
+                                        (requirement_id, f"REQ-777-FOLLOW-{requirement_id}")
+                                    )
+                                )
+                                .order_by(Shift.id)
+                            ).all()
+                        )
+                        self.assertEqual(after_shift_ids, before_refusal["shift_ids"])
+                        self.assertEqual(
+                            session.scalar(
+                                select(func.count(PlanningWorkQueueRelease.id)).where(
+                                    PlanningWorkQueueRelease.planning_intent_id
+                                    == selected_intent.id,
+                                    PlanningWorkQueueRelease.active == True,
+                                )
+                            ),
+                            before_refusal["active_release_count"],
+                        )
+
+                    valid_preview = client.post(
+                        f"/api/v1/segments/{segment_id}/place-from-drop/preview",
+                        json={
+                            "resource_id": "R-778-A",
+                            "dropped_date": THURSDAY,
+                        },
+                    )
+                    self.assertEqual(valid_preview.status_code, 200, valid_preview.text)
+                    valid_payload = valid_preview.json()
+                    self.assertTrue(valid_payload["allowed"])
+                    self.assertEqual(
+                        set(valid_payload["affected_requirement_ids"]),
+                        {requirement_id, f"REQ-777-FOLLOW-{requirement_id}"},
+                    )
+                    committed = client.post(
+                        f"/api/v1/segments/{segment_id}/place-from-drop",
+                        headers={"Idempotency-Key": "777-same-valid"},
+                        json={
+                            "resource_id": "R-778-A",
+                            "dropped_date": THURSDAY,
+                            "expected_planning_version": valid_payload["planning_version"],
+                            "expected_approval_revision_id": valid_payload["approval_revision_id"],
+                            "expected_operational_version": valid_payload["operational_version"],
+                        },
+                    )
+                    self.assertEqual(committed.status_code, 200, committed.text)
+                    with factory() as session:
+                        selected_intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement_id
+                            )
+                        )
+                        child_intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == f"REQ-777-FOLLOW-{requirement_id}"
+                            )
+                        )
+                        self.assertEqual(selected_intent.target_resource_id, "R-778-A")
+                        self.assertEqual(child_intent.target_resource_id, "R-778-A")
+                        self.assertEqual(
+                            child_intent.placement_not_before_date,
+                            date.fromisoformat(END),
+                        )
+            finally:
+                engine.dispose()
+
+    def test_cutoff_rejects_new_same_day_manual_placement_but_allows_survivor_metadata(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_40(client)
+                    snapshot = self._snapshot(client, number)
+                    survivor = min(
+                        (
+                            row
+                            for row in snapshot["demand_shifts"]
+                            if row["work_date"] < THURSDAY
+                        ),
+                        key=lambda row: row["work_date"],
+                    )
+                    requirement_id = snapshot["demand_segments"][0]["requirement_id"]
+                    with factory.begin() as session:
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement_id
+                            )
+                        )
+                        self.assertIsNotNone(intent)
+                        intent.placement_not_before_date = date.fromisoformat(THURSDAY)
+
+                    base_payload = {
+                        "technician": survivor["resource_id"],
+                        "day": survivor["work_date"],
+                        "outside_standard_hours": False,
+                        "confirmation": survivor.get("confirmation"),
+                    }
+                    increased = client.put(
+                        f"/api/v1/allocations/{survivor['allocation_id']}",
+                        json={**base_payload, "hours": 12, "note": "augmentation interdite"},
+                    )
+                    self.assertEqual(increased.status_code, 409, increased.text)
+                    self.assertEqual(
+                        increased.json()["error"]["code"],
+                        "segment_placement_before_cutoff",
+                    )
+
+                    changed_resource = client.put(
+                        f"/api/v1/allocations/{survivor['allocation_id']}",
+                        json={
+                            **base_payload,
+                            "technician": "R-778-B",
+                            "hours": survivor["hours"],
+                            "note": "changement ressource interdit",
+                        },
+                    )
+                    self.assertEqual(changed_resource.status_code, 409, changed_resource.text)
+                    self.assertEqual(
+                        changed_resource.json()["error"]["code"],
+                        "segment_placement_before_cutoff",
+                    )
+
+                    descriptive = client.put(
+                        f"/api/v1/allocations/{survivor['allocation_id']}",
+                        json={
+                            **base_payload,
+                            "hours": survivor["hours"],
+                            "note": "survivant inchangé avant cutoff",
+                        },
+                    )
+                    self.assertEqual(descriptive.status_code, 200, descriptive.text)
+                    persisted = next(
+                        row
+                        for row in self._snapshot(client, number)["demand_shifts"]
+                        if row["allocation_id"] == survivor["allocation_id"]
+                    )
+                    self.assertEqual(persisted["resource_id"], survivor["resource_id"])
+                    self.assertEqual(persisted["work_date"], survivor["work_date"])
+                    self.assertEqual(float(persisted["hours"]), float(survivor["hours"]))
+                    self.assertEqual(persisted["note"], "survivant inchangé avant cutoff")
+
+                    at_cutoff = next(
+                        row
+                        for row in self._snapshot(client, number)["demand_shifts"]
+                        if row["work_date"] >= THURSDAY
+                    )
+                    allowed = client.put(
+                        f"/api/v1/allocations/{at_cutoff['allocation_id']}",
+                        json={
+                            "technician": "R-778-B",
+                            "day": at_cutoff["work_date"],
+                            "hours": at_cutoff["hours"],
+                            "outside_standard_hours": False,
+                            "note": "placement au cutoff",
+                            "confirmation": at_cutoff.get("confirmation"),
+                        },
+                    )
+                    self.assertEqual(allowed.status_code, 200, allowed.text)
+            finally:
+                engine.dispose()
+
+    def test_dated_drop_places_only_residual_after_cutoff_and_preserves_release(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_40(client)
+                    before = self._snapshot(client, number)
+                    self.assertEqual(len(before["demand_shifts"]), 5)
+                    returned_shift = min(
+                        before["demand_shifts"],
+                        key=lambda row: row["work_date"],
+                    )
+                    preview = client.get(
+                        f"/api/v1/allocations/{returned_shift['allocation_id']}/work-queue-preview"
+                    ).json()
+                    returned = client.post(
+                        f"/api/v1/allocations/{returned_shift['allocation_id']}/return-to-work-queue",
+                        headers={"Idempotency-Key": "777-return-one"},
+                        json={
+                            "expected_planning_version": preview["planning_version"],
+                            "expected_approval_revision_id": preview["approval_revision_id"],
+                            "expected_operational_version": preview["operational_version"],
+                        },
+                    )
+                    self.assertEqual(returned.status_code, 200, returned.text)
+
+                    action = self._actions(client, number)[0]
+                    segment_id = action["segment_id"]
+                    placement_snapshot = self._snapshot(client, number)
+                    survivors_before = {
+                        row["allocation_id"]: (
+                            row["resource_id"],
+                            row["work_date"],
+                            row["hours"],
+                            row["locked"],
+                            row["source"],
+                        )
+                        for row in self._snapshot(client, number)["demand_shifts"]
+                        if row["allocation_type"] != "Hors horaire requis"
+                    }
+                    self.assertEqual(sum(row[2] for row in survivors_before.values()), 32)
+
+                    dropped = client.post(
+                        f"/api/v1/segments/{segment_id}/place-from-drop",
+                        headers={"Idempotency-Key": "777-drop-bob-thursday"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": THURSDAY,
+                            "expected_planning_version": placement_snapshot["planning_version"],
+                            "expected_approval_revision_id": action["approval_revision_id"],
+                            "expected_operational_version": action["operational_version"],
+                        },
+                    )
+                    self.assertEqual(dropped.status_code, 200, dropped.text)
+                    result = dropped.json()
+                    self.assertEqual(result["placement_not_before_date"], THURSDAY)
+                    self.assertEqual(result["covered_hours"], 40)
+                    self.assertEqual(result["remaining_hours"], 0)
+                    self.assertEqual(set(result["preserved_shift_ids"]), set(survivors_before))
+
+                    after = self._snapshot(client, number)
+                    counted = [
+                        row for row in after["demand_shifts"]
+                        if row["allocation_type"] != "Hors horaire requis"
+                    ]
+                    for allocation_id, survivor in survivors_before.items():
+                        current = next(row for row in counted if row["allocation_id"] == allocation_id)
+                        self.assertEqual(
+                            (
+                                current["resource_id"],
+                                current["work_date"],
+                                current["hours"],
+                                current["locked"],
+                                current["source"],
+                            ),
+                            survivor,
+                        )
+                    new_rows = [
+                        row for row in counted
+                        if row["allocation_id"] not in survivors_before
+                    ]
+                    self.assertTrue(new_rows)
+                    self.assertTrue(all(row["resource_id"] == "R-778-B" for row in new_rows))
+                    self.assertTrue(all(row["work_date"] >= THURSDAY for row in new_rows))
+                    self.assertEqual(sum(row["hours"] for row in new_rows), 8)
+
+                    # Same idempotency key replays the first success and adds nothing.
+                    replay = client.post(
+                        f"/api/v1/segments/{segment_id}/place-from-drop",
+                        headers={"Idempotency-Key": "777-drop-bob-thursday"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": THURSDAY,
+                            "expected_planning_version": before["planning_version"] + 1,
+                            "expected_approval_revision_id": action["approval_revision_id"],
+                            "expected_operational_version": action["operational_version"],
+                        },
+                    )
+                    self.assertEqual(replay.status_code, 200, replay.text)
+                    self.assertEqual(replay.json(), result)
+                    self.assertEqual(
+                        len(self._snapshot(client, number)["demand_shifts"]),
+                        len(after["demand_shifts"]),
+                    )
+
+                    resource_only = client.post(
+                        f"/api/v1/segments/{segment_id}/assign",
+                        json={"resource_id": "R-778-B"},
+                    )
+                    self.assertEqual(resource_only.status_code, 200, resource_only.text)
+                    with factory() as session:
+                        persisted_intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == result["requirement_id"]
+                            )
+                        )
+                        self.assertEqual(
+                            persisted_intent.placement_not_before_date.isoformat(),
+                            THURSDAY,
+                        )
+
+                    # Restart/resync/rebuild reuse the same durable intent.
+                    with factory.begin() as session:
+                        SqlPeriodAwareApprovedDemandSyncAdapter(
+                            session
+                        ).sync_operational_choices(number)
+                    rebuilt = client.post("/api/v1/planning/rebuild")
+                    self.assertEqual(rebuilt.status_code, 200, rebuilt.text)
+                    after_resync = self._snapshot(client, number)
+                    counted_after_resync = [
+                        row
+                        for row in after_resync["demand_shifts"]
+                        if row["allocation_type"] != "Hors horaire requis"
+                    ]
+                    self.assertTrue(
+                        all(
+                            row["allocation_id"] in survivors_before
+                            or row["work_date"] >= THURSDAY
+                            for row in counted_after_resync
+                        )
+                    )
+
+                    with factory() as session:
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == result["requirement_id"]
+                            )
+                        )
+                        self.assertIsNotNone(intent)
+                        self.assertEqual(intent.placement_not_before_date.isoformat(), THURSDAY)
+                        release = session.scalar(
+                            select(PlanningWorkQueueRelease).where(
+                                PlanningWorkQueueRelease.original_shift_id
+                                == returned_shift["allocation_id"]
+                            )
+                        )
+                        # legacy allocation id and Shift id differ; locate the single active release instead.
+                        if release is None:
+                            release = session.scalar(
+                                select(PlanningWorkQueueRelease).where(
+                                    PlanningWorkQueueRelease.planning_intent_id == intent.id
+                                )
+                            )
+                        self.assertIsNotNone(release)
+                        self.assertTrue(release.active)
+            finally:
+                engine.dispose()
+
+    def test_dated_drop_rolls_back_target_cutoff_and_rebuild_when_audit_fails(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_40(client)
+                    target = min(
+                        self._snapshot(client, number)["demand_shifts"],
+                        key=lambda row: row["work_date"],
+                    )
+                    preview = client.get(
+                        f"/api/v1/allocations/{target['allocation_id']}/work-queue-preview"
+                    ).json()
+                    returned = client.post(
+                        f"/api/v1/allocations/{target['allocation_id']}/return-to-work-queue",
+                        headers={"Idempotency-Key": "777-rollback-return"},
+                        json={
+                            "expected_planning_version": preview["planning_version"],
+                            "expected_approval_revision_id": preview["approval_revision_id"],
+                            "expected_operational_version": preview["operational_version"],
+                        },
+                    )
+                    self.assertEqual(returned.status_code, 200, returned.text)
+                    action = self._actions(client, number)[0]
+                    before = self._snapshot(client, number)
+                    with factory() as session:
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == returned.json()["requirement_id"]
+                            )
+                        )
+                        before_intent = (
+                            intent.intent_mode,
+                            intent.target_mode,
+                            intent.target_resource_id,
+                            intent.placement_not_before_date,
+                        )
+
+                    with patch.object(
+                        SqlPlanningAuditJournal,
+                        "append",
+                        side_effect=RuntimeError("777 injected audit failure"),
+                    ):
+                        failed = client.post(
+                            f"/api/v1/segments/{action['segment_id']}/place-from-drop",
+                            headers={"Idempotency-Key": "777-rollback-drop"},
+                            json={
+                                "resource_id": "R-778-B",
+                                "dropped_date": THURSDAY,
+                                "expected_planning_version": before["planning_version"],
+                                "expected_approval_revision_id": action["approval_revision_id"],
+                                "expected_operational_version": action["operational_version"],
+                            },
+                        )
+                    self.assertEqual(failed.status_code, 500, failed.text)
+                    self.assertEqual(self._snapshot(client, number), before)
+                    with factory() as session:
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == returned.json()["requirement_id"]
+                            )
+                        )
+                        self.assertEqual(
+                            (
+                                intent.intent_mode,
+                                intent.target_mode,
+                                intent.target_resource_id,
+                                intent.placement_not_before_date,
+                            ),
+                            before_intent,
+                        )
+            finally:
+                engine.dispose()
+
+    def test_dated_drop_preview_reports_authoritative_window_residual_and_placeable_hours(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+            engine = create_sql_engine(database_url)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_40(client)
+                    target = min(
+                        self._snapshot(client, number)["demand_shifts"],
+                        key=lambda row: row["work_date"],
+                    )
+                    work_queue = client.get(
+                        f"/api/v1/allocations/{target['allocation_id']}/work-queue-preview"
+                    ).json()
+                    returned = client.post(
+                        f"/api/v1/allocations/{target['allocation_id']}/return-to-work-queue",
+                        headers={"Idempotency-Key": "777-preview-return"},
+                        json={
+                            "expected_planning_version": work_queue["planning_version"],
+                            "expected_approval_revision_id": work_queue["approval_revision_id"],
+                            "expected_operational_version": work_queue["operational_version"],
+                        },
+                    )
+                    self.assertEqual(returned.status_code, 200, returned.text)
+                    action = self._actions(client, number)[0]
+
+                    preview = client.post(
+                        f"/api/v1/segments/{action['segment_id']}/place-from-drop/preview",
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": THURSDAY,
+                        },
+                    )
+                    self.assertEqual(preview.status_code, 200, preview.text)
+                    payload = preview.json()
+                    self.assertTrue(payload["allowed"])
+                    self.assertEqual(payload["authorized_start_date"], START)
+                    self.assertEqual(payload["authorized_end_date"], END)
+                    self.assertEqual(payload["generation_start_date"], THURSDAY)
+                    self.assertEqual(payload["generation_end_date"], END)
+                    self.assertEqual(payload["effective_need"], 40)
+                    self.assertEqual(payload["covered_hours"], 32)
+                    self.assertEqual(payload["remaining_hours"], 8)
+                    self.assertEqual(payload["placeable_hours"], 8)
+                    self.assertEqual(
+                        payload["approval_revision_id"],
+                        action["approval_revision_id"],
+                    )
+                    self.assertEqual(
+                        payload["operational_version"],
+                        action["operational_version"],
+                    )
+
+                    outside = client.post(
+                        f"/api/v1/segments/{action['segment_id']}/place-from-drop/preview",
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": "2026-11-07",
+                        },
+                    )
+                    self.assertEqual(outside.status_code, 200, outside.text)
+                    refusal = outside.json()
+                    self.assertFalse(refusal["allowed"])
+                    self.assertEqual(
+                        refusal["refusal_code"],
+                        "segment_placement_window_extension_required",
+                    )
+                    self.assertIn(
+                        "PROPOSE_WINDOW_EXTENSION",
+                        refusal["available_actions"],
+                    )
+            finally:
+                engine.dispose()
+
+    def test_dated_drop_rejects_stale_planning_and_operational_versions_atomically(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+            engine = create_sql_engine(database_url)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_40(client)
+                    target = min(
+                        self._snapshot(client, number)["demand_shifts"],
+                        key=lambda row: row["work_date"],
+                    )
+                    preview = client.get(
+                        f"/api/v1/allocations/{target['allocation_id']}/work-queue-preview"
+                    ).json()
+                    returned = client.post(
+                        f"/api/v1/allocations/{target['allocation_id']}/return-to-work-queue",
+                        headers={"Idempotency-Key": "777-cas-return"},
+                        json={
+                            "expected_planning_version": preview["planning_version"],
+                            "expected_approval_revision_id": preview["approval_revision_id"],
+                            "expected_operational_version": preview["operational_version"],
+                        },
+                    )
+                    self.assertEqual(returned.status_code, 200, returned.text)
+                    action = self._actions(client, number)[0]
+                    before = self._snapshot(client, number)
+
+                    stale_planning = client.post(
+                        f"/api/v1/segments/{action['segment_id']}/place-from-drop",
+                        headers={"Idempotency-Key": "777-stale-planning"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": THURSDAY,
+                            "expected_planning_version": before["planning_version"] - 1,
+                            "expected_approval_revision_id": action["approval_revision_id"],
+                            "expected_operational_version": action["operational_version"],
+                        },
+                    )
+                    self.assertEqual(stale_planning.status_code, 409, stale_planning.text)
+                    self.assertEqual(
+                        stale_planning.json()["error"]["code"],
+                        "planning_version_conflict",
+                    )
+                    self.assertEqual(self._snapshot(client, number), before)
+
+                    stale_operational = client.post(
+                        f"/api/v1/segments/{action['segment_id']}/place-from-drop",
+                        headers={"Idempotency-Key": "777-stale-operational"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": THURSDAY,
+                            "expected_planning_version": before["planning_version"],
+                            "expected_approval_revision_id": action["approval_revision_id"],
+                            "expected_operational_version": action["operational_version"] + 1,
+                        },
+                    )
+                    self.assertEqual(stale_operational.status_code, 409, stale_operational.text)
+                    self.assertEqual(
+                        stale_operational.json()["error"]["code"],
+                        "operational_choice_version_conflict",
+                    )
+                    self.assertEqual(self._snapshot(client, number), before)
+            finally:
+                engine.dispose()
+
+    def test_dated_drop_accepts_date_inside_existing_adr022_widened_window(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_40(client)
+                    target = min(
+                        self._snapshot(client, number)["demand_shifts"],
+                        key=lambda row: row["work_date"],
+                    )
+                    preview = client.get(
+                        f"/api/v1/allocations/{target['allocation_id']}/work-queue-preview"
+                    ).json()
+                    returned = client.post(
+                        f"/api/v1/allocations/{target['allocation_id']}/return-to-work-queue",
+                        headers={"Idempotency-Key": "777-widen-return"},
+                        json={
+                            "expected_planning_version": preview["planning_version"],
+                            "expected_approval_revision_id": preview["approval_revision_id"],
+                            "expected_operational_version": preview["operational_version"],
+                        },
+                    )
+                    self.assertEqual(returned.status_code, 200, returned.text)
+
+                    with factory.begin() as session:
+                        requirement = session.get(
+                            ResourceRequirement,
+                            returned.json()["requirement_id"],
+                        )
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement.id
+                            )
+                        )
+                        widened_end = requirement.end_date + timedelta(days=1)
+                        SqlPlanningWindowOverrideRepository(session).apply_widening(
+                            requirement,
+                            approval_revision_id=requirement.approval_revision_id,
+                            approved_entry_key=intent.approved_entry_key,
+                            approved_start_date=requirement.start_date,
+                            approved_end_date=requirement.end_date,
+                            effective_start_date=requirement.start_date,
+                            effective_end_date=widened_end,
+                            actor_user_id=TEST_ADMIN_USER_ID,
+                            reason="Extension E2E #777",
+                            correlation_id="777-existing-window-override",
+                        )
+                        requirement.end_date = widened_end
+
+                    action = self._actions(client, number)[0]
+                    snapshot = self._snapshot(client, number)
+                    widened_date = (
+                        date.fromisoformat(END) + timedelta(days=1)
+                    ).isoformat()
+                    placed = client.post(
+                        f"/api/v1/segments/{action['segment_id']}/place-from-drop",
+                        headers={"Idempotency-Key": "777-drop-inside-widened"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": widened_date,
+                            "expected_planning_version": snapshot["planning_version"],
+                            "expected_approval_revision_id": action["approval_revision_id"],
+                            "expected_operational_version": action["operational_version"],
+                        },
+                    )
+                    self.assertEqual(placed.status_code, 200, placed.text)
+                    self.assertEqual(
+                        placed.json()["placement_not_before_date"],
+                        widened_date,
+                    )
+                    self.assertEqual(
+                        placed.json()["authorized_end_date"],
+                        widened_date,
+                    )
+            finally:
+                engine.dispose()
+
+    def test_dated_drop_auto_partial_capacity_and_cutoff_replacement(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_40(client)
+                    approved = self._snapshot(client, number)
+                    segment = approved["demand_segments"][0]
+                    requirement_id = segment["requirement_id"]
+                    with factory.begin() as session:
+                        session.execute(
+                            Shift.__table__.delete().where(
+                                Shift.resource_requirement_id == requirement_id
+                            )
+                        )
+                    action = self._actions(client, number)[0]
+                    current = self._snapshot(client, number)
+                    placed = client.post(
+                        f"/api/v1/segments/{action['segment_id']}/place-from-drop",
+                        headers={"Idempotency-Key": "777-auto-partial"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": THURSDAY,
+                            "expected_planning_version": current["planning_version"],
+                            "expected_approval_revision_id": action["approval_revision_id"],
+                            "expected_operational_version": action["operational_version"],
+                        },
+                    )
+                    self.assertEqual(placed.status_code, 200, placed.text)
+                    result = placed.json()
+                    self.assertEqual(result["covered_hours"], 16)
+                    self.assertEqual(result["remaining_hours"], 24)
+                    counted = [
+                        row
+                        for row in self._snapshot(client, number)["demand_shifts"]
+                        if row["allocation_type"] != "Hors horaire requis"
+                    ]
+                    self.assertEqual(sum(row["hours"] for row in counted), 16)
+                    self.assertTrue(all(row["work_date"] >= THURSDAY for row in counted))
+                    survivor_ids = {row["allocation_id"] for row in counted}
+                    with factory() as session:
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement_id
+                            )
+                        )
+                        self.assertEqual(intent.intent_mode, "AUTO")
+                        self.assertEqual(intent.placement_not_before_date.isoformat(), THURSDAY)
+
+                    # A later dated drop replaces, rather than max-merges, the cutoff.
+                    action = self._actions(client, number)[0]
+                    current = self._snapshot(client, number)
+                    later = client.post(
+                        f"/api/v1/segments/{action['segment_id']}/place-from-drop",
+                        headers={"Idempotency-Key": "777-cutoff-later"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": END,
+                            "expected_planning_version": current["planning_version"],
+                            "expected_approval_revision_id": action["approval_revision_id"],
+                            "expected_operational_version": action["operational_version"],
+                        },
+                    )
+                    self.assertEqual(later.status_code, 200, later.text)
+                    self.assertEqual(later.json()["placement_not_before_date"], END)
+                    after_later = [
+                        row
+                        for row in self._snapshot(client, number)["demand_shifts"]
+                        if row["allocation_type"] != "Hors horaire requis"
+                    ]
+                    self.assertEqual(
+                        {row["allocation_id"] for row in after_later},
+                        survivor_ids,
+                    )
+
+                    action = self._actions(client, number)[0]
+                    current = self._snapshot(client, number)
+                    earlier = client.post(
+                        f"/api/v1/segments/{action['segment_id']}/place-from-drop",
+                        headers={"Idempotency-Key": "777-cutoff-earlier"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": THURSDAY,
+                            "expected_planning_version": current["planning_version"],
+                            "expected_approval_revision_id": action["approval_revision_id"],
+                            "expected_operational_version": action["operational_version"],
+                        },
+                    )
+                    self.assertEqual(earlier.status_code, 200, earlier.text)
+                    self.assertEqual(earlier.json()["placement_not_before_date"], THURSDAY)
+                    self.assertEqual(
+                        {
+                            row["allocation_id"]
+                            for row in self._snapshot(client, number)["demand_shifts"]
+                            if row["allocation_type"] != "Hors horaire requis"
+                        },
+                        survivor_ids,
+                    )
+                    with factory() as session:
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement_id
+                            )
+                        )
+                        self.assertEqual(intent.intent_mode, "PRESERVE_EXISTING")
+                        self.assertEqual(intent.placement_not_before_date.isoformat(), THURSDAY)
+            finally:
+                engine.dispose()
+
+    def test_dated_drop_rejects_before_window_and_explicit_reset_is_non_regenerating(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+            engine = create_sql_engine(database_url)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_40(client)
+                    first = min(self._snapshot(client, number)["demand_shifts"], key=lambda row: row["work_date"])
+                    preview = client.get(
+                        f"/api/v1/allocations/{first['allocation_id']}/work-queue-preview"
+                    ).json()
+                    self.assertEqual(
+                        client.post(
+                            f"/api/v1/allocations/{first['allocation_id']}/return-to-work-queue",
+                            headers={"Idempotency-Key": "777-return-reset"},
+                            json={
+                                "expected_planning_version": preview["planning_version"],
+                                "expected_approval_revision_id": preview["approval_revision_id"],
+                                "expected_operational_version": preview["operational_version"],
+                            },
+                        ).status_code,
+                        200,
+                    )
+                    action = self._actions(client, number)[0]
+                    snap = self._snapshot(client, number)
+                    early = client.post(
+                        f"/api/v1/segments/{action['segment_id']}/place-from-drop",
+                        headers={"Idempotency-Key": "777-too-early"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": "2026-11-01",
+                            "expected_planning_version": snap["planning_version"],
+                            "expected_approval_revision_id": action["approval_revision_id"],
+                            "expected_operational_version": action["operational_version"],
+                        },
+                    )
+                    self.assertEqual(early.status_code, 409, early.text)
+                    self.assertEqual(
+                        early.json()["error"]["code"],
+                        "segment_placement_before_authorized_window",
+                    )
+
+                    late = client.post(
+                        f"/api/v1/segments/{action['segment_id']}/place-from-drop",
+                        headers={"Idempotency-Key": "777-too-late"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": "2026-11-07",
+                            "expected_planning_version": snap["planning_version"],
+                            "expected_approval_revision_id": action["approval_revision_id"],
+                            "expected_operational_version": action["operational_version"],
+                        },
+                    )
+                    self.assertEqual(late.status_code, 409, late.text)
+                    self.assertEqual(
+                        late.json()["error"]["code"],
+                        "segment_placement_window_extension_required",
+                    )
+                    self.assertIn(
+                        "PROPOSE_WINDOW_EXTENSION",
+                        late.json()["error"]["context"]["available_actions"],
+                    )
+
+                    placed = client.post(
+                        f"/api/v1/segments/{action['segment_id']}/place-from-drop",
+                        headers={"Idempotency-Key": "777-valid-cutoff"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": THURSDAY,
+                            "expected_planning_version": snap["planning_version"],
+                            "expected_approval_revision_id": action["approval_revision_id"],
+                            "expected_operational_version": action["operational_version"],
+                        },
+                    )
+                    self.assertEqual(placed.status_code, 200, placed.text)
+
+                    # Return Segment retains the cutoff and enters QUEUED.
+                    current_shift = self._snapshot(client, number)["demand_shifts"][0]
+                    current_preview = client.get(
+                        f"/api/v1/allocations/{current_shift['allocation_id']}/work-queue-preview"
+                    ).json()
+                    returned_segment = client.post(
+                        f"/api/v1/segments/{action['segment_id']}/return-to-work-queue",
+                        headers={"Idempotency-Key": "777-return-segment"},
+                        json={
+                            "expected_planning_version": current_preview["planning_version"],
+                            "expected_approval_revision_id": current_preview["approval_revision_id"],
+                            "expected_operational_version": current_preview["operational_version"],
+                        },
+                    )
+                    self.assertEqual(returned_segment.status_code, 200, returned_segment.text)
+                    queued_action = self._actions(client, number)[0]
+                    self.assertEqual(
+                        queued_action["placement_not_before_date"],
+                        THURSDAY,
+                    )
+                    queued_snapshot = self._snapshot(client, number)
+                    self.assertEqual(queued_snapshot["demand_shifts"], [])
+
+                    reset = client.post(
+                        f"/api/v1/segments/{action['segment_id']}/placement-cutoff/reset",
+                        headers={"Idempotency-Key": "777-reset-cutoff"},
+                        json={
+                            "expected_planning_version": queued_snapshot["planning_version"],
+                            "expected_approval_revision_id": queued_action["approval_revision_id"],
+                            "expected_operational_version": queued_action["operational_version"],
+                        },
+                    )
+                    self.assertEqual(reset.status_code, 200, reset.text)
+                    self.assertIsNone(reset.json()["placement_not_before_date"])
+                    self.assertEqual(self._snapshot(client, number)["demand_shifts"], [])
+                    with create_session_factory(engine)() as session:
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == reset.json()["requirement_id"]
+                            )
+                        )
+                        self.assertEqual(intent.intent_mode, "QUEUED")
+                        self.assertIsNone(intent.placement_not_before_date)
+            finally:
+                engine.dispose()
 
     def test_demand_update_validates_all_preserved_survivors_and_reuses_canonical_exception(self) -> None:
         for survivor_kind in ("unlocked", "manual", "asset"):

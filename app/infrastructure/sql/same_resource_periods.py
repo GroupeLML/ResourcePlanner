@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from sqlalchemy import or_, select, true
 from sqlalchemy.orm import Session
 
+from ...application.errors import ApplicationConflictError
+from ...domain.planning_engine import MISSING_ALLOCATION_TYPE
 from ...domain.demand_periods import (
     PERIOD_KIND_CUMULATIVE,
     PROPOSED_RESOURCE_MODE_SAME_AS_PERIOD,
@@ -16,7 +18,9 @@ from .demand_period_models import (
 )
 from .models import ResourceRequirement, Shift
 from .operational_choice_models import (
+    PLANNING_INTENT_PRESERVE_EXISTING,
     PLANNING_INTENT_QUEUED,
+    PLANNING_TARGET_EXPLICIT_RESOURCE,
     RequestRequirementPlanningIntent,
 )
 
@@ -209,6 +213,89 @@ class SqlSameResourcePeriodCoordinator:
         )
         return tuple(groups)
 
+    def component_for_requirement(
+        self,
+        requirement_id: str,
+    ) -> SameResourcePeriodGroup | None:
+        wanted = _text(requirement_id)
+        for group in self._groups():
+            if wanted in group.requirement_ids:
+                return group
+        return None
+
+    def validate_retarget_component(
+        self,
+        requirement_id: str,
+        resource_id: str,
+        *,
+        additionally_preserved_requirement_ids: tuple[str, ...] = (),
+    ) -> SameResourcePeriodGroup | None:
+        """Read-only ADR-029 validation shared by preview and commit."""
+
+        group = self.component_for_requirement(requirement_id)
+        if group is None:
+            return None
+        target_resource_id = _text(resource_id)
+        intents = list(
+            self._session.scalars(
+                select(RequestRequirementPlanningIntent).where(
+                    RequestRequirementPlanningIntent.current_resource_requirement_id.in_(
+                        group.requirement_ids
+                    )
+                )
+            ).all()
+        )
+        intent_by_requirement = {
+            intent.current_resource_requirement_id: intent
+            for intent in intents
+            if intent.current_resource_requirement_id
+        }
+        protected_requirement_ids = {
+            protected_requirement_id
+            for protected_requirement_id, intent in intent_by_requirement.items()
+            if intent.intent_mode == PLANNING_INTENT_PRESERVE_EXISTING
+        }
+        protected_requirement_ids.update(
+            requirement_id
+            for requirement_id in additionally_preserved_requirement_ids
+            if requirement_id in group.requirement_ids
+        )
+        locked_ids = self._locked_resource_ids(group.requirement_ids)
+        preserved_ids = {
+            _text(value)
+            for value in self._session.scalars(
+                select(Shift.resource_id).where(
+                    Shift.resource_requirement_id.in_(tuple(protected_requirement_ids)),
+                    (Shift.allocation_type.is_(None))
+                    | (Shift.allocation_type != MISSING_ALLOCATION_TYPE),
+                )
+            ).all()
+            if _text(value)
+        } if protected_requirement_ids else set()
+        fixed_ids = locked_ids | preserved_ids
+        if len(fixed_ids) > 1:
+            raise ApplicationConflictError(
+                "La composante SAME_AS_PERIOD contient des placements préservés sur plusieurs ressources.",
+                code="same_as_period_resource_conflict",
+                context={
+                    "affected_requirement_ids": list(group.requirement_ids),
+                    "affected_planning_intent_ids": [intent.id for intent in intents],
+                    "preserved_resource_ids": sorted(fixed_ids),
+                },
+            )
+        if fixed_ids and target_resource_id not in fixed_ids:
+            raise ApplicationConflictError(
+                "Un placement préservé fixe déjà la ressource de toute la composante SAME_AS_PERIOD.",
+                code="same_as_period_resource_conflict",
+                context={
+                    "affected_requirement_ids": list(group.requirement_ids),
+                    "affected_planning_intent_ids": [intent.id for intent in intents],
+                    "preserved_resource_ids": sorted(fixed_ids),
+                    "requested_resource_id": target_resource_id,
+                },
+            )
+        return group
+
     def _locked_resource_ids(
         self,
         requirement_ids: tuple[str, ...],
@@ -307,38 +394,56 @@ class SqlSameResourcePeriodCoordinator:
         self,
         requirement_id: str,
         resource_id: str,
+        *,
+        additionally_preserved_requirement_ids: tuple[str, ...] = (),
     ) -> bool:
-        """Atomically retarget a linked component unless a lock contradicts it."""
+        """Atomically retarget one SAME_AS_PERIOD component and its durable targets."""
 
         wanted = _text(requirement_id)
         target_resource_id = _text(resource_id)
-        for group in self._groups():
-            if wanted not in group.requirement_ids:
-                continue
-            locked_ids = self._locked_resource_ids(group.requirement_ids)
-            if len(locked_ids) > 1:
-                raise ValueError(
-                    "La composante SAME_AS_PERIOD contient des quarts verrouillés "
-                    "sur plusieurs ressources."
-                )
-            if locked_ids and target_resource_id not in locked_ids:
-                raise ValueError(
-                    "Un quart verrouillé fixe déjà la ressource de toute la composante "
-                    "SAME_AS_PERIOD. Libère ou déplace cette décision avant de changer "
-                    "la cible."
-                )
-            requirements = self._session.scalars(
+        group = self.validate_retarget_component(
+            wanted,
+            target_resource_id,
+            additionally_preserved_requirement_ids=additionally_preserved_requirement_ids,
+        )
+        if group is None:
+            return False
+        requirements = list(
+            self._session.scalars(
                 select(ResourceRequirement).where(
                     ResourceRequirement.id.in_(group.requirement_ids)
                 )
             ).all()
-            for requirement in requirements:
-                requirement.assigned_resource_id = target_resource_id
-                if requirement.status not in INACTIVE_REQUIREMENT_STATUSES:
-                    requirement.status = "Planifié"
-            self._session.flush()
-            return True
-        return False
+        )
+        intents = list(
+            self._session.scalars(
+                select(RequestRequirementPlanningIntent).where(
+                    RequestRequirementPlanningIntent.current_resource_requirement_id.in_(
+                        group.requirement_ids
+                    )
+                )
+            ).all()
+        )
+        queued_requirement_ids = {
+            intent.current_resource_requirement_id
+            for intent in intents
+            if intent.current_resource_requirement_id
+            and intent.intent_mode == PLANNING_INTENT_QUEUED
+        }
+        for requirement in requirements:
+            if requirement.id in queued_requirement_ids and requirement.id != wanted:
+                requirement.assigned_resource_id = None
+                continue
+            requirement.assigned_resource_id = target_resource_id
+            if requirement.status not in INACTIVE_REQUIREMENT_STATUSES:
+                requirement.status = "Planifié"
+        for intent in intents:
+            if intent.intent_mode == PLANNING_INTENT_QUEUED:
+                continue
+            intent.target_mode = PLANNING_TARGET_EXPLICIT_RESOURCE
+            intent.target_resource_id = target_resource_id
+        self._session.flush()
+        return True
 
     def assert_shift_invariant(self) -> None:
         """Fail the transaction when actual active shifts diverge inside a component."""

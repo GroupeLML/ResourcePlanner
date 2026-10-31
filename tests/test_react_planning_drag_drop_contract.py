@@ -85,6 +85,23 @@ class ReactPlanningDragDropContractTests(unittest.TestCase):
         self.assertIn("planning-drop-resource", page)
         self.assertIn("alternative clavier", page)
 
+    def test_777_day_cell_drop_sends_only_canonical_intent_and_versions(self) -> None:
+        page = (ROOT / "frontend" / "src" / "PlanningPage.tsx").read_text(encoding="utf-8")
+        api = (ROOT / "frontend" / "src" / "segments-api.ts").read_text(encoding="utf-8")
+
+        self.assertIn("hasSegmentDrag(event.dataTransfer)", page)
+        self.assertIn("onDropSegment(segmentPayload, resource, iso)", page)
+        self.assertIn("previewSegmentFromDrop(", page)
+        self.assertIn("placeSegmentFromDrop(", page)
+        self.assertIn("expected_planning_version: preview.planning_version", page)
+        self.assertIn("expected_approval_revision_id: preview.approval_revision_id", page)
+        self.assertIn("expected_operational_version: preview.operational_version", page)
+        self.assertIn("dropped_date: droppedDate", page)
+        self.assertNotIn("placement_not_before_date: droppedDate", page)
+        self.assertIn("/place-from-drop/preview", api)
+        self.assertIn("/place-from-drop", api)
+        self.assertIn('"Idempotency-Key"', api)
+
     def test_331e_frontend_keeps_actual_shift_resource_distinct_from_automatic_target(self) -> None:
         page = (ROOT / "frontend" / "src" / "PlanningPage.tsx").read_text(encoding="utf-8")
         panel = (ROOT / "frontend" / "src" / "PlanningActionPanel.tsx").read_text(encoding="utf-8")

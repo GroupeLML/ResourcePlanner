@@ -53,7 +53,10 @@ from .models import (
     Shift,
     WorkforceRequest,
 )
-from .operational_choice_models import RequestOperationalState
+from .operational_choice_models import (
+    RequestOperationalState,
+    RequestRequirementPlanningIntent,
+)
 from .overallocation import (
     _segment_metrics,
     append_overallocation_audit,
@@ -528,6 +531,48 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
             "target_asset_assignment_inherited": False,
         }
 
+    def _assert_placement_cutoff(
+        self,
+        requirement: ResourceRequirement,
+        target_day,
+        *,
+        existing_day=None,
+        existing_resource_id: str | None = None,
+        target_resource_id: str | None = None,
+    ) -> None:
+        intent = self._session.scalar(
+            select(RequestRequirementPlanningIntent).where(
+                RequestRequirementPlanningIntent.current_resource_requirement_id
+                == requirement.id
+            )
+        )
+        cutoff = intent.placement_not_before_date if intent is not None else None
+        if cutoff is None or target_day >= cutoff:
+            return
+        preserves_existing_placement = (
+            existing_day is not None
+            and target_day == existing_day
+            and existing_resource_id is not None
+            and target_resource_id is not None
+            and _text(existing_resource_id) == _text(target_resource_id)
+        )
+        if preserves_existing_placement:
+            return
+        raise ApplicationConflictError(
+            "La nouvelle mise en place précède le cutoff opérationnel du segment.",
+            code="segment_placement_before_cutoff",
+            context={
+                "segment_id": self._segment_reference(requirement),
+                "placement_not_before_date": cutoff.isoformat(),
+                "target_day": target_day.isoformat(),
+                "existing_day": (
+                    existing_day.isoformat() if existing_day is not None else None
+                ),
+                "existing_resource_id": existing_resource_id,
+                "target_resource_id": target_resource_id,
+            },
+        )
+
     def _drop_request_context(
         self,
         requirement: ResourceRequirement,
@@ -808,6 +853,13 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
         self._validate_source(source)
         target_resource = self._resource(command.resource_id)
         target_day = command.day
+        self._assert_placement_cutoff(
+            requirement,
+            target_day,
+            existing_day=source.work_date,
+            existing_resource_id=source.resource_id,
+            target_resource_id=target_resource.id,
+        )
         auto_extend_window = requirement.origin in _AUTO_EXTEND_REQUIREMENT_ORIGINS
         if requirement.origin == ORIGIN_REQUEST:
             if not command.confirm_window_extension:
@@ -1242,6 +1294,13 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
         self._validate_source(source)
         target_resource = self._resource(command.resource_id)
         target_day = command.day
+        self._assert_placement_cutoff(
+            requirement,
+            target_day,
+            existing_day=source.work_date,
+            existing_resource_id=source.resource_id,
+            target_resource_id=target_resource.id,
+        )
         (
             approval_revision_id,
             approved_entry_key,
@@ -1497,6 +1556,7 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
             if command.outside_standard_hours is None
             else bool(command.outside_standard_hours)
         )
+        self._assert_placement_cutoff(requirement, command.day)
         target_day, _impact, availability = validate_projected_manual_state(
             self._session,
             requirement,
@@ -1621,6 +1681,7 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
             if command.outside_standard_hours is None
             else bool(command.outside_standard_hours)
         )
+        self._assert_placement_cutoff(requirement, command.day)
         target_day, _impact, availability = validate_projected_manual_state(
             self._session,
             requirement,

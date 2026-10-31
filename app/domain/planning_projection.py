@@ -153,6 +153,9 @@ def _segment_inputs(
                     for day in (date_from_value(value),)
                     if day is not None
                 ),
+                placement_not_before_date=date_from_value(
+                    row.get("PlacementNotBeforeDate")
+                ),
             )
         )
 

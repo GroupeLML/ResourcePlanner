@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import time
+from datetime import timedelta, time
 from decimal import Decimal
 from tempfile import TemporaryDirectory
 import unittest
@@ -797,6 +797,251 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+
+
+    def test_cutoff_only_incompatible_reapproval_fails_closed(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-777-cutoff-reapproval",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._approve(client, 8)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    request, requirement, intent = self._context(session, number)
+                    intent.placement_not_before_date = requirement.start_date
+                    line = session.get(RequestLine, intent.source_request_line_id)
+                    self.assertIsNotNone(line)
+                    line.required_resource_class = "INCOMPATIBLE-777"
+                    session.flush()
+                    with self.assertRaises(ApplicationConflictError) as raised:
+                        SqlPeriodAwareApprovedDemandSyncAdapter(session).sync_approved(
+                            number,
+                            approved_request_version=int(request.aggregate_version or 1),
+                        )
+                    self.assertEqual(
+                        raised.exception.code,
+                        "placement_cutoff_rebase_required",
+                    )
+            finally:
+                engine.dispose()
+
+    def test_cutoff_only_ambiguous_candidate_rebinding_fails_closed(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-777-cutoff-ambiguous",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._approve(client, 8)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    request, requirement, intent = self._context(session, number)
+                    intent.placement_not_before_date = requirement.start_date
+                    adapter = SqlPeriodAwareApprovedDemandSyncAdapter(session)
+                    prepared = SqlRequestPlanPreparer(session).prepare(
+                        request,
+                        current=[requirement],
+                    )
+                    self.assertEqual(len(prepared.specs), 1)
+                    with self.assertRaises(ApplicationConflictError) as raised:
+                        adapter._assert_reduction_reapproval_compatible(
+                            request,
+                            [prepared.specs[0], prepared.specs[0]],
+                        )
+                    self.assertEqual(
+                        raised.exception.code,
+                        "placement_cutoff_rebase_required",
+                    )
+            finally:
+                engine.dispose()
+
+    def test_compatible_reapproval_with_later_start_retains_cutoff(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-777-later-start",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                created = client.post(
+                    "/api/v1/demands",
+                    json=routed_demand_payload(
+                        {
+                            "project_number": "P-778-P3",
+                            "desired_start": "2026-10-28",
+                            "desired_end": "2026-10-30",
+                            "estimated_hours": 24,
+                            "submit": True,
+                        }
+                    ),
+                )
+                self.assertEqual(created.status_code, 201, created.text)
+                number = created.json()["demand_number"]
+                approved = client.post(
+                    f"/api/v1/demands/{number}/approve",
+                    json={"comment": "Approbation initiale cutoff #777"},
+                )
+                self.assertEqual(approved.status_code, 200, approved.text)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    request, requirement, intent = self._context(session, number)
+                    original_cutoff = requirement.start_date + timedelta(days=1)
+                    requirement.assigned_resource_id = "R-778-P3"
+                    requirement.status = "Planifié"
+                    intent.target_mode = "EXPLICIT_RESOURCE"
+                    intent.target_resource_id = "R-778-P3"
+                    intent.placement_not_before_date = original_cutoff
+                    line = session.get(RequestLine, intent.source_request_line_id)
+                    self.assertIsNotNone(line)
+                    line.desired_start = requirement.start_date + timedelta(days=2)
+                    line.desired_end = requirement.start_date + timedelta(days=2)
+                    session.flush()
+
+                    SqlPeriodAwareApprovedDemandSyncAdapter(session).sync_approved(
+                        number,
+                        approved_request_version=int(request.aggregate_version or 1),
+                    )
+                    session.flush()
+
+                    rebound = session.get(
+                        RequestRequirementPlanningIntent,
+                        intent.id,
+                    )
+                    current_requirement = session.get(
+                        ResourceRequirement,
+                        rebound.current_resource_requirement_id,
+                    )
+                    self.assertEqual(
+                        rebound.placement_not_before_date,
+                        original_cutoff,
+                    )
+                    self.assertEqual(
+                        current_requirement.start_date,
+                        original_cutoff + timedelta(days=1),
+                    )
+                    SqlPlanningCommandAdapter(session).rebuild()
+                    generated = session.scalars(
+                        select(Shift).where(
+                            Shift.resource_requirement_id
+                            == current_requirement.id,
+                            Shift.allocation_type != "Hors horaire requis",
+                        )
+                    ).all()
+                    self.assertTrue(generated)
+                    self.assertTrue(
+                        all(
+                            row.work_date >= current_requirement.start_date
+                            for row in generated
+                        )
+                    )
+            finally:
+                engine.dispose()
+
+
+    def test_compatible_reapproval_preserves_cutoff_and_no_interval_fails_closed(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-777-compatible-reapproval",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._approve(client, 8)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    request, requirement, intent = self._context(session, number)
+                    cutoff = requirement.start_date
+                    intent.placement_not_before_date = cutoff
+                    intent_id = intent.id
+                    session.flush()
+                    SqlPeriodAwareApprovedDemandSyncAdapter(session).sync_approved(
+                        number,
+                        approved_request_version=int(request.aggregate_version or 1),
+                    )
+                    rebound = session.get(RequestRequirementPlanningIntent, intent_id)
+                    self.assertEqual(rebound.placement_not_before_date, cutoff)
+
+                with factory.begin() as session:
+                    request, requirement, intent = self._context(session, number)
+                    intent.placement_not_before_date = requirement.end_date + timedelta(days=1)
+                    session.flush()
+                    with self.assertRaises(ApplicationConflictError) as raised:
+                        SqlPeriodAwareApprovedDemandSyncAdapter(session).sync_approved(
+                            number,
+                            approved_request_version=int(request.aggregate_version or 1),
+                        )
+                    self.assertEqual(
+                        raised.exception.code,
+                        "placement_not_before_reconciliation_required",
+                    )
+            finally:
+                engine.dispose()
+
+    def test_zero_effective_terminal_slot_keeps_dormant_cutoff(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-777-zero-cutoff",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._approve(client, 8)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    request, requirement, intent = self._context(session, number)
+                    cutoff = requirement.start_date
+                    intent.placement_not_before_date = cutoff
+                    self._reduce(
+                        session,
+                        request,
+                        requirement,
+                        intent,
+                        Decimal("8.00"),
+                    )
+                    SqlPeriodAwareApprovedDemandSyncAdapter(
+                        session
+                    ).sync_operational_choices(number)
+                    self.assertEqual(requirement.status, "Annulé")
+                    self.assertEqual(intent.placement_not_before_date, cutoff)
+
+                with factory.begin() as session:
+                    request = session.scalar(
+                        select(WorkforceRequest).where(
+                            WorkforceRequest.legacy_demand_number == number
+                        )
+                    )
+                    SqlPeriodAwareApprovedDemandSyncAdapter(session).sync_approved(
+                        number,
+                        approved_request_version=int(request.aggregate_version or 1),
+                    )
+                    intent = session.scalar(select(RequestRequirementPlanningIntent))
+                    self.assertEqual(intent.placement_not_before_date, cutoff)
+            finally:
+                engine.dispose()
 
 
     def test_incompatible_resource_class_reapproval_fails_closed(self) -> None:

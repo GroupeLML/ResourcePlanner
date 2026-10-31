@@ -1398,14 +1398,15 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                 )
             )
 
-        for segment in self.list_segments(
+        assignment_segments = self.list_segments(
             start=start,
             end=end,
             include_cancelled=False,
             project_ids=project_ids,
             demand_ids=demand_ids,
             resource_ids=resource_ids,
-        ):
+        )
+        for segment in assignment_segments:
             if segment.remaining_hours <= 0.01:
                 # #693: the work queue follows actual counted Shift coverage, not the
                 # automatic target nor the replaceable/locked split.
@@ -1458,6 +1459,9 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                         if demand is not None
                         else False
                     ),
+                    approval_revision_id=segment.approval_revision_id,
+                    operational_version=segment.operational_version,
+                    placement_not_before_date=segment.placement_not_before_date,
                 )
             )
 
@@ -1492,10 +1496,13 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         if requirement is None:
             return ()
 
-        start = segment.start_date
+        start = max(
+            segment.start_date,
+            segment.placement_not_before_date or segment.start_date,
+        )
         end = segment.end_date
         if end < start:
-            start, end = end, start
+            return ()
         # ADR-034 recommendations operate on canonical uncovered effective need,
         # not the automatic rebuild budget. Returned work can therefore be placed
         # explicitly even while automatic regeneration is suppressed.

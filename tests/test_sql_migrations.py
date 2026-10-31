@@ -21,7 +21,7 @@ MIGRATIONS = ROOT / "migrations"
 VERSIONS = MIGRATIONS / "versions"
 BASELINE_FILE = VERSIONS / "0001_v2_production_baseline.py"
 BASELINE_REVISION = "v2_production_baseline"
-HEAD_REVISION = "0026_request_work_queue_restorations"
+HEAD_REVISION = "0027_placement_not_before_date"
 
 
 def alembic_config(database_path: Path) -> Config:
@@ -95,6 +95,7 @@ class SqlMigrationTests(unittest.TestCase):
                 "0024_request_work_queue_command_identity.py",
                 "0025_request_work_queue_architect_corrections.py",
                 "0026_request_work_queue_restorations.py",
+                "0027_placement_not_before_date.py",
             ],
         )
 
@@ -113,6 +114,7 @@ class SqlMigrationTests(unittest.TestCase):
             [revision.revision for revision in script.walk_revisions()],
             [
                 HEAD_REVISION,
+                "0026_request_work_queue_restorations",
                 "0025_request_work_queue_architect_corrections",
                 "0024_request_work_queue_command_identity",
                 "0023_request_work_queue_intent",
@@ -140,6 +142,38 @@ class SqlMigrationTests(unittest.TestCase):
                 BASELINE_REVISION,
             ],
         )
+
+    def test_placement_cutoff_migration_is_nullable_and_guards_populated_downgrade(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_path = Path(directory) / "placement-cutoff.db"
+            config = alembic_config(database_path)
+            command.upgrade(config, "head")
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            inspector = inspect(engine)
+            columns = {
+                row["name"]: row
+                for row in inspector.get_columns("request_requirement_planning_intents")
+            }
+            self.assertIn("placement_not_before_date", columns)
+            self.assertTrue(columns["placement_not_before_date"]["nullable"])
+            with engine.begin() as connection:
+                connection.execute(text(
+                    "INSERT INTO projects (id, number, name) VALUES ('P-777', 'P-777', 'Projet 777')"
+                ))
+                connection.execute(text(
+                    "INSERT INTO workforce_requests (id, project_id, legacy_demand_number, status, aggregate_version) "
+                    "VALUES ('D-777', 'P-777', 'D-777', 'En planification', 1)"
+                ))
+                connection.execute(text(
+                    "INSERT INTO request_requirement_planning_intents "
+                    "(id, slot_identity_key, workforce_request_id, approved_entry_key, slot_index, "
+                    "intent_mode, target_mode, placement_not_before_date, created_at, updated_at) "
+                    "VALUES ('I-777', 'slot-777', 'D-777', 'entry-777', 0, 'AUTO', 'INHERIT', "
+                    "'2026-10-30', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                ))
+            engine.dispose()
+            with self.assertRaises(RuntimeError):
+                command.downgrade(config, "0026_request_work_queue_restorations")
 
     def test_continuous_vehicle_migration_preserves_bounded_history_and_guards_downgrade(self) -> None:
         with TemporaryDirectory() as directory:
@@ -1184,6 +1218,22 @@ class SqlMigrationTests(unittest.TestCase):
             )
         self.assertNotIn(
             "DROP TABLE PLANNING_WORK_QUEUE_RESTORATIONS",
+            output.getvalue().upper(),
+        )
+
+    def test_0027_offline_downgrade_refuses_placement_cutoff_drop(self) -> None:
+        output = StringIO()
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "refuses offline downgrade",
+        ):
+            command.downgrade(
+                offline_config("mssql+pyodbc://", output),
+                "0027_placement_not_before_date:0026_request_work_queue_restorations",
+                sql=True,
+            )
+        self.assertNotIn(
+            "DROP COLUMN PLACEMENT_NOT_BEFORE_DATE",
             output.getvalue().upper(),
         )
 

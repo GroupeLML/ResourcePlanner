@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any, Mapping, Sequence
@@ -117,6 +118,7 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
         self,
         *,
         preserve_shift_ids: Sequence[str] = (),
+        temporary_excluded_dates_by_segment: Mapping[str, Sequence[date]] | None = None,
     ) -> Mapping[str, Any]:
         self._versioning.acquire()
         same_resource = SqlSameResourcePeriodCoordinator(self._session)
@@ -196,8 +198,19 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
             for shift, requirement, resource in preserved_rows
         )
 
+        temporary_exclusions = {
+            str(segment_id): frozenset(days)
+            for segment_id, days in (temporary_excluded_dates_by_segment or {}).items()
+            if str(segment_id)
+        }
         engine_segments = tuple(
-            segment
+            replace(
+                segment,
+                excluded_dates=(
+                    segment.excluded_dates
+                    | temporary_exclusions.get(segment.segment_id, frozenset())
+                ),
+            )
             for segment in calculation.segments
             if segment.segment_id not in suppressed_segment_ids
         )
@@ -517,6 +530,59 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             and intent.target_mode != PLANNING_TARGET_INHERIT
         )
 
+    @staticmethod
+    def _assert_new_placement_cutoff(
+        intent: RequestRequirementPlanningIntent | None,
+        day: date,
+    ) -> None:
+        cutoff = intent.placement_not_before_date if intent is not None else None
+        if cutoff is not None and day < cutoff:
+            raise ApplicationConflictError(
+                "La nouvelle mise en place précède le cutoff opérationnel du segment.",
+                code="segment_placement_before_cutoff",
+                context={
+                    "placement_not_before_date": cutoff.isoformat(),
+                    "requested_date": day.isoformat(),
+                },
+            )
+
+    @staticmethod
+    def _assert_projected_placement_cutoff(
+        intent: RequestRequirementPlanningIntent | None,
+        shift: Shift,
+        *,
+        resource_id: str,
+        day: date,
+        hours: Decimal,
+    ) -> None:
+        """Reject only the newly introduced portion of placement before ADR-035 cutoff."""
+
+        cutoff = intent.placement_not_before_date if intent is not None else None
+        if cutoff is None or day >= cutoff:
+            return
+        old_counted = _text(shift.allocation_type) != MISSING_ALLOCATION_TYPE
+        old_hours = _decimal(shift.hours) if old_counted else Decimal("0")
+        same_placement_identity = (
+            old_counted
+            and shift.work_date == day
+            and _text(shift.resource_id) == _text(resource_id)
+        )
+        if same_placement_identity and hours <= old_hours + Decimal("0.001"):
+            return
+        raise ApplicationConflictError(
+            "La mutation ajouterait du nouveau placement avant le cutoff opérationnel du segment.",
+            code="segment_placement_before_cutoff",
+            context={
+                "placement_not_before_date": cutoff.isoformat(),
+                "requested_date": day.isoformat(),
+                "existing_date": shift.work_date.isoformat(),
+                "existing_resource_id": shift.resource_id,
+                "requested_resource_id": resource_id,
+                "existing_counted_hours": float(old_hours),
+                "requested_counted_hours": float(hours),
+            },
+        )
+
     def _current_effective_need(
         self,
         requirement: ResourceRequirement,
@@ -647,8 +713,8 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             bool(hors_horaire),
         )
 
-
         intent = self._request_intent(requirement)
+        self._assert_new_placement_cutoff(intent, day)
         if (
             self._controlled_work_queue_placement(intent)
             and not self._residual_overallocation_authorized()
@@ -747,6 +813,14 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             bool(hors_horaire),
             exclude_shift_id=shift.id,
         )
+        intent = self._request_intent(requirement)
+        self._assert_projected_placement_cutoff(
+            intent,
+            shift,
+            resource_id=resource.id,
+            day=day,
+            hours=hours,
+        )
 
         shift.resource_id = resource.id
         shift.work_date = day
@@ -794,6 +868,14 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             shift.hours,
             bool(outside_standard_hours),
             exclude_shift_id=shift.id,
+        )
+        intent = self._request_intent(requirement)
+        self._assert_projected_placement_cutoff(
+            intent,
+            shift,
+            resource_id=resource.id,
+            day=day,
+            hours=_decimal(shift.hours),
         )
 
         shift.resource_id = resource.id

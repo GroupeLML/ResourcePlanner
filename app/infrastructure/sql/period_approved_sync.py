@@ -1171,6 +1171,22 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             current_resource_requirement_id=requirement.id,
         )
         if (
+            intent.placement_not_before_date is not None
+            and requirement.status not in {"Terminé", "Annulé"}
+            and spec.planned_hours > 0
+            and intent.placement_not_before_date > requirement.end_date
+        ):
+            raise ApplicationConflictError(
+                "La nouvelle fenêtre autorisée se termine avant le cutoff de placement durable.",
+                code="placement_not_before_reconciliation_required",
+                context={
+                    "requirement_id": requirement.id,
+                    "placement_not_before_date": intent.placement_not_before_date.isoformat(),
+                    "authorized_start_date": requirement.start_date.isoformat(),
+                    "authorized_end_date": requirement.end_date.isoformat(),
+                },
+            )
+        if (
             intent.intent_mode == PLANNING_INTENT_QUEUED
             or intent.target_mode == PLANNING_TARGET_EXPLICIT_NONE
         ):
@@ -1462,13 +1478,19 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             )
             .distinct()
         ).all()
-        if not reduced_intents:
+        cutoff_intents = self._session.scalars(
+            select(RequestRequirementPlanningIntent).where(
+                RequestRequirementPlanningIntent.workforce_request_id == request.id,
+                RequestRequirementPlanningIntent.placement_not_before_date.is_not(None),
+            )
+        ).all()
+        if not reduced_intents and not cutoff_intents:
             return
 
         reference = self._session.get(RequestApprovalReference, request.id)
         if reference is None or not reference.active_revision_id:
             raise ApplicationConflictError(
-                "Les réductions actives ne peuvent pas être réconciliées sans révision approuvée active.",
+                "Les intentions opérationnelles durables ne peuvent pas être réconciliées sans révision approuvée active.",
                 code="reduction_rebase_required",
             )
         active_revision = self._session.get(
@@ -1477,7 +1499,7 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
         )
         if active_revision is None:
             raise ApplicationConflictError(
-                "La révision approuvée active est introuvable pour réconcilier les réductions.",
+                "La révision approuvée active est introuvable pour réconcilier les intentions durables.",
                 code="reduction_rebase_required",
             )
 
@@ -1503,6 +1525,98 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             if isinstance(active_payload.get("request"), dict)
             else {}
         )
+
+        cutoff_request_keys = ("project_id", "site_client", "location", "line_mode")
+        cutoff_entry_keys = (
+            "identity",
+            "project_id",
+            "site_id",
+            "location",
+            "slot_count",
+            "line_kind",
+            "required_resource_class",
+            "competency_ids",
+            "task_ref",
+            "work_package_ref",
+            "kind",
+            "group",
+            "confirmation_mode",
+            "proposed_resource_mode",
+            "same_as_period_key",
+            "asset_type_id",
+            "occupancy_policy",
+        )
+
+        def cutoff_subject(
+            request_context: Mapping[str, object],
+            entry: Mapping[str, object],
+        ) -> str:
+            entry_values = {
+                key: entry.get(key)
+                for key in cutoff_entry_keys
+            }
+            competencies = entry_values.get("competency_ids")
+            if isinstance(competencies, (list, tuple)):
+                entry_values["competency_ids"] = sorted(
+                    str(value) for value in competencies if str(value)
+                )
+            return json.dumps(
+                {
+                    "request": {
+                        key: request_context.get(key)
+                        for key in cutoff_request_keys
+                    },
+                    "entry": entry_values,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+
+        for intent in cutoff_intents:
+            active_entry = active_entries.get(intent.approved_entry_key)
+            candidate_entry = candidate_entries.get(intent.approved_entry_key)
+            matching_specs = [
+                spec
+                for spec in candidate_specs
+                if spec.approved_entry_key == intent.approved_entry_key
+                and int(spec.slot_index) == int(intent.slot_index)
+            ]
+            if active_entry is None or candidate_entry is None or len(matching_specs) != 1:
+                raise ApplicationConflictError(
+                    "Le cutoff durable ne correspond plus à un slot autorisé stable et non ambigu.",
+                    code="placement_cutoff_rebase_required",
+                    context={
+                        "planning_intent_id": intent.id,
+                        "approved_entry_key": intent.approved_entry_key,
+                        "slot_index": int(intent.slot_index),
+                        "candidate_match_count": len(matching_specs),
+                    },
+                )
+            slot_count = max(int(candidate_entry.get("slot_count") or 1), 1)
+            if intent.slot_index < 0 or intent.slot_index >= slot_count:
+                raise ApplicationConflictError(
+                    "La topologie autorisée a changé pour un slot portant un cutoff durable.",
+                    code="placement_cutoff_rebase_required",
+                    context={
+                        "planning_intent_id": intent.id,
+                        "slot_index": int(intent.slot_index),
+                        "slot_count": slot_count,
+                    },
+                )
+            if cutoff_subject(active_request_context, active_entry) != cutoff_subject(
+                candidate_request_context,
+                candidate_entry,
+            ):
+                raise ApplicationConflictError(
+                    "La nouvelle autorisation change le sujet métier d'un slot portant un cutoff durable.",
+                    code="placement_cutoff_rebase_required",
+                    context={
+                        "planning_intent_id": intent.id,
+                        "approved_entry_key": intent.approved_entry_key,
+                        "slot_index": int(intent.slot_index),
+                    },
+                )
 
         for intent in reduced_intents:
             active_entry = active_entries.get(intent.approved_entry_key)

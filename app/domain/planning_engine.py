@@ -35,6 +35,7 @@ class SegmentInput:
     desired_active_days: int | None = None
     load_profile: str = LOAD_PROFILE_UNIFORM
     excluded_dates: frozenset[date] = frozenset()
+    placement_not_before_date: date | None = None
 
 
 @dataclass(frozen=True)
@@ -107,10 +108,14 @@ def _capacity_window(
     segment: SegmentInput,
     capacity_by_resource_day: Mapping[CapacityKey, float],
 ) -> list[tuple[date, float]]:
-    if segment.end < segment.start:
+    placement_start = max(
+        segment.start,
+        segment.placement_not_before_date or segment.start,
+    )
+    if segment.end < placement_start:
         return []
     result: list[tuple[date, float]] = []
-    cursor = segment.start
+    cursor = placement_start
     while cursor <= segment.end:
         if cursor not in segment.excluded_dates:
             result.append(
@@ -201,11 +206,15 @@ def _outside_schedule_slots(
     The adapter can mark individual days as ineligible (for example vacation); when no
     eligibility map is supplied every day in the segment window is considered eligible.
     """
-    if hours <= 0 or segment.end < segment.start:
+    placement_start = max(
+        segment.start,
+        segment.placement_not_before_date or segment.start,
+    )
+    if hours <= 0 or segment.end < placement_start:
         return []
 
     candidates: list[tuple[int, date, float]] = []
-    cursor = segment.start
+    cursor = placement_start
     while cursor <= segment.end:
         if cursor in segment.excluded_dates:
             cursor += timedelta(days=1)
