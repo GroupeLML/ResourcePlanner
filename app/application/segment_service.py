@@ -184,9 +184,29 @@ class SegmentService:
             start if isinstance(start, date) else None,
             end if isinstance(end, date) else None,
         )
-        target_change = "Technicien" in values and origin == "REQUEST"
-        target_reference = str(values.get("Technicien") or "").strip() if target_change else ""
-        if target_change and not target_reference:
+        target_supplied = "Technicien" in values and origin == "REQUEST"
+        target_reference = (
+            str(values.get("Technicien") or "").strip()
+            if target_supplied
+            else ""
+        )
+        current_target_references = {
+            str(existing.automatic_target_resource_id or "").strip(),
+            str(existing.automatic_target_resource_name or "").strip(),
+            str(existing.resource_name or "").strip(),
+        }
+        current_target_references.discard("")
+        target_change = bool(
+            target_supplied
+            and target_reference
+            and target_reference not in current_target_references
+        )
+        target_clear = bool(
+            target_supplied
+            and not target_reference
+            and current_target_references
+        )
+        if target_clear:
             raise ApplicationValidationError(
                 "Le retrait de la cible automatique n'est pas pris en charge par PATCH /segments. Utilise la commande Planning appropriée.",
                 code="segment_target_clear_unsupported",
@@ -210,9 +230,11 @@ class SegmentService:
             )
 
         repository_values = dict(values)
-        if target_change:
-            # ADR-004/#781: public target selection must go through the same
-            # authoritative operational command as POST /segments/{id}/assign.
+        if target_supplied:
+            # ADR-004/#781: REQUEST target fields are never projected directly.
+            # A real change goes through canonical assignment below; an unchanged
+            # value is a no-op so ordinary SegmentEditor saves cannot regenerate
+            # ADR-034 returned/reduced work.
             repository_values.pop("Technicien", None)
         call_application_port(
             lambda: self._segments.update(identifier, repository_values),
