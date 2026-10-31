@@ -388,26 +388,121 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
             )
 
         with factory() as session:
-            persisted_intent = session.get(RequestRequirementPlanningIntent, intent_id)
-            persisted_release = session.get(PlanningWorkQueueRelease, release_id)
+            persisted_request = session.get(WorkforceRequest, request_id)
+            persisted_line = session.get(RequestLine, line_id)
+            persisted_actor = session.get(AppUser, actor_id)
+            persisted_resources = {
+                key: session.get(Resource, resource_id)
+                for key, resource_id in resources.items()
+            }
+            persisted_schedules = tuple(
+                session.scalars(
+                    select(ResourceAvailabilityRule)
+                    .where(ResourceAvailabilityRule.id.in_(tuple(availability_ids.values())))
+                    .order_by(ResourceAvailabilityRule.id)
+                ).all()
+            )
+            persisted_reference = session.get(RequestApprovalReference, request_id)
+            persisted_operational = session.get(RequestOperationalState, request_id)
             persisted_requirement = session.get(ResourceRequirement, requirement_id)
+            persisted_intent = session.get(RequestRequirementPlanningIntent, intent_id)
             persisted_revision = session.get(RequestApprovalRevision, revision_id)
-            persisted_resource = session.get(Resource, resources["A"])
-            self.assertIsNotNone(persisted_intent)
-            self.assertIsNotNone(persisted_release)
-            self.assertEqual(persisted_release.planning_intent_id, persisted_intent.id)
+            persisted_release = session.get(PlanningWorkQueueRelease, release_id)
+            persisted_shifts = tuple(
+                session.scalars(
+                    select(Shift)
+                    .where(Shift.id.in_(shift_ids))
+                    .order_by(Shift.work_date, Shift.id)
+                ).all()
+            )
+            persisted_reductions = tuple(
+                session.scalars(
+                    select(RequestCompletionReduction).where(
+                        RequestCompletionReduction.workforce_request_id == request_id
+                    )
+                ).all()
+            )
+            release_ids = tuple(
+                session.scalars(
+                    select(PlanningWorkQueueRelease.id).where(
+                        PlanningWorkQueueRelease.workforce_request_id == request_id
+                    )
+                ).all()
+            )
+            persisted_restorations = tuple(
+                session.scalars(
+                    select(PlanningWorkQueueRestoration).where(
+                        PlanningWorkQueueRestoration.release_id.in_(release_ids)
+                    )
+                ).all()
+            ) if release_ids else ()
+            global_state = session.get(PlanningMutationState, PLANNING_STATE_ID)
+
+            self.assertIsNotNone(persisted_request)
+            self.assertIsNotNone(persisted_line)
+            self.assertIsNotNone(persisted_actor)
+            self.assertTrue(all(resource is not None for resource in persisted_resources.values()))
+            self.assertEqual(len(persisted_schedules), 2)
+            self.assertIsNotNone(persisted_reference)
+            self.assertEqual(persisted_reference.active_revision_id, revision_id)
+            self.assertIsNotNone(persisted_operational)
+            self.assertEqual(persisted_operational.approval_revision_id, revision_id)
+            self.assertEqual(int(persisted_operational.version), 1)
             self.assertIsNotNone(persisted_requirement)
+            self.assertEqual(persisted_requirement.approval_revision_id, revision_id)
+            self.assertIsNotNone(persisted_intent)
             self.assertEqual(
                 persisted_intent.current_resource_requirement_id,
                 persisted_requirement.id,
             )
+            self.assertEqual(persisted_intent.approval_revision_id, revision_id)
+            self.assertEqual(persisted_intent.approved_entry_key, entry_key)
+            self.assertEqual(int(persisted_intent.slot_index), 0)
             self.assertIsNotNone(persisted_revision)
-            self.assertEqual(persisted_intent.approval_revision_id, persisted_revision.id)
-            self.assertIsNotNone(persisted_resource)
-            self.assertEqual(persisted_release.resource_id, persisted_resource.id)
-            planning_version = SqlPlanningMutationVersionRepository(
+            self.assertEqual(persisted_revision.workforce_request_id, request_id)
+            self.assertEqual(int(persisted_revision.request_version), 1)
+            self.assertEqual(len(persisted_shifts), 4)
+            for index, persisted_shift in enumerate(persisted_shifts, start=1):
+                self.assertEqual(persisted_shift.resource_requirement_id, requirement_id)
+                self.assertEqual(persisted_shift.resource_id, resources["A"])
+                self.assertEqual(persisted_shift.work_date, DAY + timedelta(days=index))
+                self.assertEqual(persisted_shift.hours, Decimal("8.00"))
+                self.assertFalse(persisted_shift.locked)
+                self.assertEqual(persisted_shift.source, "AUTO")
+            self.assertIsNotNone(persisted_release)
+            self.assertEqual(persisted_release.planning_intent_id, persisted_intent.id)
+            self.assertEqual(persisted_release.resource_id, resources["A"])
+            self.assertEqual(persisted_release.work_date, DAY)
+            self.assertEqual(persisted_release.hours, Decimal("8.00"))
+            self.assertTrue(persisted_release.active)
+            self.assertEqual(persisted_reductions, ())
+            self.assertEqual(persisted_restorations, ())
+            self.assertIsNotNone(global_state)
+            planning_version = int(global_state.version)
+
+            effective_need = SqlRequestRequirementPlanningIntentRepository(
                 session
-            ).current_version()
+            ).current_effective_need_for_requirement(
+                requirement_id,
+                fallback_hours=persisted_requirement.planned_hours,
+            )
+            counted_coverage = Decimal(
+                str(
+                    session.scalar(
+                        select(func.coalesce(func.sum(Shift.hours), 0)).where(
+                            Shift.resource_requirement_id == requirement_id,
+                            or_(
+                                Shift.allocation_type.is_(None),
+                                Shift.allocation_type != MISSING_ALLOCATION_TYPE,
+                            ),
+                        )
+                    )
+                    or 0
+                )
+            )
+            self.assertEqual(effective_need, Decimal("40.00"))
+            self.assertEqual(counted_coverage, Decimal("32.00"))
+            self.assertEqual(effective_need - counted_coverage, Decimal("8.00"))
 
         fixture["planning_version"] = planning_version
         return fixture
