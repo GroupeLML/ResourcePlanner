@@ -57,6 +57,8 @@ export type SegmentPlacementPreviewResult = {
   remaining_hours: number;
   placeable_hours: number;
   available_actions: string[];
+  affected_requirement_ids: string[];
+  affected_planning_intent_ids: string[];
 };
 
 export type SegmentPlacementDropWrite = {
