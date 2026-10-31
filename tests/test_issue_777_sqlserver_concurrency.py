@@ -6,6 +6,7 @@ from threading import Barrier, Lock
 from decimal import Decimal
 import json
 import os
+from tempfile import TemporaryDirectory
 from uuid import uuid4
 import unittest
 
@@ -21,6 +22,7 @@ from app.application.security import ROLE_ADMIN, permissions_for_roles
 from app.domain.approval_envelope import EnvelopeEntryIdentity
 from app.domain.planning_engine import MISSING_ALLOCATION_TYPE
 from app.infrastructure.sql import (
+    Base,
     PlanningChangeHistory,
     PlanningWorkQueueRelease,
     PlanningWorkQueueRestoration,
@@ -1356,6 +1358,411 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
                 self.assertEqual(reduction.effective_need_before, Decimal("40.00"))
                 self.assertEqual(reduction.effective_need_after, Decimal("32.00"))
                 self.assertEqual(Decimal("32.00") - Decimal("24.00"), Decimal("8.00"))
+
+
+class Issue777SqlServerHarnessCleanupContractTests(unittest.TestCase):
+    def _fixture_descriptor(self, factory, engine, marker: str) -> dict[str, object]:
+        return {
+            "marker": marker,
+            "engine": engine,
+            "factory": factory,
+            "project_id": f"P-CLEAN-{marker}",
+            "request_id": f"D-CLEAN-{marker}",
+            "request_number": f"DMO-CLEAN-{marker}",
+            "line_id": f"L-CLEAN-{marker}",
+            "revision_id": f"REV-CLEAN-1-{marker}",
+            "requirement_id": f"REQ-CLEAN-{marker}",
+            "segment_id": f"SEG-CLEAN-{marker}",
+            "intent_id": f"INT-CLEAN-{marker}",
+            "actor_id": f"USR-CLEAN-{marker}",
+            "actor_name": f"Admin cleanup {marker}",
+            "scope_id": f"SCOPE-CLEAN-{marker}",
+            "class_code": f"CLASSCLEAN{marker}".upper(),
+            "resources": {
+                "A": f"R-CLEAN-A-{marker}",
+                "B": f"R-CLEAN-B-{marker}",
+            },
+            "availability_ids": {},
+            "shift_ids": (f"S-CLEAN-{marker}",),
+            "allocation_ids": (f"A-CLEAN-{marker}",),
+            "release_id": f"REL-CLEAN-A-{marker}",
+            "planning_version": None,
+            "race_spids": {},
+            "race_spid_lock": Lock(),
+        }
+
+    def _database(self):
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = os.path.join(directory.name, "issue777-cleanup.db")
+        engine = create_sql_engine(f"sqlite+pysqlite:///{path}")
+
+        @event.listens_for(engine, "connect")
+        def enable_foreign_keys(dbapi_connection, connection_record) -> None:
+            cursor = dbapi_connection.cursor()
+            try:
+                cursor.execute("PRAGMA foreign_keys=ON")
+            finally:
+                cursor.close()
+
+        Base.metadata.create_all(engine)
+        self.addCleanup(engine.dispose)
+        return engine, create_session_factory(engine)
+
+    def _seed_graph(
+        self,
+        fixture: dict[str, object],
+        *,
+        include_restorations: bool = True,
+        include_revision_child: bool = True,
+        include_reduction: bool = True,
+    ) -> dict[str, str]:
+        factory = fixture["factory"]
+        request_id = str(fixture["request_id"])
+        revision_id = str(fixture["revision_id"])
+        child_revision_id = f"REV-CLEAN-2-{fixture['marker']}"
+        second_release_id = f"REL-CLEAN-B-{fixture['marker']}"
+        with factory.begin() as session:
+            session.add_all(
+                [
+                    Project(
+                        id=fixture["project_id"],
+                        number=f"P-CLEAN-{fixture['marker']}",
+                        name="Cleanup contract",
+                    ),
+                    AppUser(
+                        id=fixture["actor_id"],
+                        issuer="urn:resourceplanner:test",
+                        subject=str(fixture["actor_id"]),
+                        display_name=str(fixture["actor_name"]),
+                        roles_json=json.dumps([ROLE_ADMIN]),
+                        active=True,
+                    ),
+                    Resource(
+                        id=fixture["resources"]["A"],
+                        name=f"Cleanup A {fixture['marker']}",
+                        active=True,
+                        erp_active=True,
+                    ),
+                    Resource(
+                        id=fixture["resources"]["B"],
+                        name=f"Cleanup B {fixture['marker']}",
+                        active=True,
+                        erp_active=True,
+                    ),
+                ]
+            )
+            session.flush()
+            session.add(
+                WorkforceRequest(
+                    id=request_id,
+                    legacy_demand_number=fixture["request_number"],
+                    project_id=fixture["project_id"],
+                    requester_user_id=fixture["actor_id"],
+                    requester_name=fixture["actor_name"],
+                    desired_start=DAY,
+                    desired_end=DAY,
+                    resource_count=1,
+                    estimated_hours=Decimal("8.00"),
+                    status="En planification",
+                    aggregate_version=2 if include_revision_child else 1,
+                    line_mode=True,
+                )
+            )
+            session.flush()
+            session.add(
+                RequestLine(
+                    id=fixture["line_id"],
+                    workforce_request_id=request_id,
+                    position=0,
+                    kind="WORKFORCE",
+                    slot_count=1,
+                    desired_start=DAY,
+                    desired_end=DAY,
+                    estimated_hours=Decimal("8.00"),
+                    active=True,
+                )
+            )
+            session.add(
+                RequestApprovalRevision(
+                    id=revision_id,
+                    workforce_request_id=request_id,
+                    request_version=1,
+                    approved_by_name=fixture["actor_name"],
+                    approved_at=utc_now(),
+                    provenance="APPROVAL",
+                    payload_format_version=1,
+                    payload_text="{}",
+                    authorization_fingerprint=("1" * 64),
+                )
+            )
+            session.flush()
+            active_revision_id = revision_id
+            if include_revision_child:
+                session.add(
+                    RequestApprovalRevision(
+                        id=child_revision_id,
+                        workforce_request_id=request_id,
+                        previous_revision_id=revision_id,
+                        request_version=2,
+                        approved_by_name=fixture["actor_name"],
+                        approved_at=utc_now(),
+                        provenance="APPROVAL",
+                        payload_format_version=1,
+                        payload_text="{}",
+                        authorization_fingerprint=("2" * 64),
+                    )
+                )
+                session.flush()
+                active_revision_id = child_revision_id
+            session.add_all(
+                [
+                    RequestApprovalReference(
+                        workforce_request_id=request_id,
+                        active_revision_id=active_revision_id,
+                        status=APPROVAL_REFERENCE_CAPTURED,
+                    ),
+                    RequestOperationalState(
+                        workforce_request_id=request_id,
+                        approval_revision_id=active_revision_id,
+                        version=2 if include_revision_child else 1,
+                        selections_text="{}",
+                        confirmations_text="{}",
+                        budget_overrides_text="{}",
+                    ),
+                    ResourceRequirement(
+                        id=fixture["requirement_id"],
+                        legacy_segment_id=fixture["segment_id"],
+                        project_id=fixture["project_id"],
+                        workforce_request_id=request_id,
+                        source_request_line_id=fixture["line_id"],
+                        approval_revision_id=active_revision_id,
+                        approved_entry_key=EnvelopeEntryIdentity(
+                            line_id=str(fixture["line_id"])
+                        ).stable_key,
+                        approval_reference_status=APPROVAL_REFERENCE_CAPTURED,
+                        start_date=DAY,
+                        end_date=DAY,
+                        planned_hours=Decimal("8.00"),
+                        status="Planifié",
+                        planning_type="Flexible",
+                        origin="REQUEST",
+                        assigned_resource_id=fixture["resources"]["A"],
+                    ),
+                ]
+            )
+            session.flush()
+            session.add(
+                RequestRequirementPlanningIntent(
+                    id=fixture["intent_id"],
+                    slot_identity_key=f"cleanup-{fixture['marker']}",
+                    workforce_request_id=request_id,
+                    source_request_line_id=fixture["line_id"],
+                    approval_revision_id=active_revision_id,
+                    approved_entry_key=EnvelopeEntryIdentity(
+                        line_id=str(fixture["line_id"])
+                    ).stable_key,
+                    slot_index=0,
+                    current_resource_requirement_id=fixture["requirement_id"],
+                    intent_mode="PRESERVE_EXISTING",
+                    target_mode="EXPLICIT_RESOURCE",
+                    target_resource_id=fixture["resources"]["A"],
+                )
+            )
+            session.flush()
+            session.add(
+                Shift(
+                    id=fixture["shift_ids"][0],
+                    legacy_allocation_id=fixture["allocation_ids"][0],
+                    resource_requirement_id=fixture["requirement_id"],
+                    resource_id=fixture["resources"]["A"],
+                    work_date=DAY,
+                    hours=Decimal("8.00"),
+                    allocation_type="Flexible",
+                    source="AUTO",
+                    locked=False,
+                )
+            )
+            session.add_all(
+                [
+                    PlanningWorkQueueRelease(
+                        id=fixture["release_id"],
+                        planning_intent_id=fixture["intent_id"],
+                        resource_requirement_id=fixture["requirement_id"],
+                        original_shift_id=f"RETURN-A-{fixture['marker']}",
+                        workforce_request_id=request_id,
+                        approval_revision_id=revision_id,
+                        approved_entry_key=EnvelopeEntryIdentity(
+                            line_id=str(fixture["line_id"])
+                        ).stable_key,
+                        resource_id=fixture["resources"]["A"],
+                        work_date=DAY,
+                        hours=Decimal("4.00"),
+                        shift_snapshot_text="{}",
+                        actor_user_id=fixture["actor_id"],
+                        command_id=f"release-a-{fixture['marker']}",
+                        active=True,
+                    ),
+                    PlanningWorkQueueRelease(
+                        id=second_release_id,
+                        planning_intent_id=fixture["intent_id"],
+                        resource_requirement_id=fixture["requirement_id"],
+                        original_shift_id=f"RETURN-B-{fixture['marker']}",
+                        workforce_request_id=request_id,
+                        approval_revision_id=revision_id,
+                        approved_entry_key=EnvelopeEntryIdentity(
+                            line_id=str(fixture["line_id"])
+                        ).stable_key,
+                        resource_id=fixture["resources"]["A"],
+                        work_date=DAY,
+                        hours=Decimal("4.00"),
+                        shift_snapshot_text="{}",
+                        actor_user_id=fixture["actor_id"],
+                        command_id=f"release-b-{fixture['marker']}",
+                        active=False,
+                    ),
+                ]
+            )
+            session.flush()
+            if include_restorations:
+                session.add_all(
+                    [
+                        PlanningWorkQueueRestoration(
+                            release_id=fixture["release_id"],
+                            shift_id=f"RESTORED-A-{fixture['marker']}",
+                            restored_hours=Decimal("2.00"),
+                        ),
+                        PlanningWorkQueueRestoration(
+                            release_id=second_release_id,
+                            shift_id=f"RESTORED-B-{fixture['marker']}",
+                            restored_hours=Decimal("2.00"),
+                        ),
+                    ]
+                )
+            if include_reduction:
+                session.add(
+                    RequestCompletionReduction(
+                        planning_intent_id=fixture["intent_id"],
+                        workforce_request_id=request_id,
+                        historical_approval_revision_id=revision_id,
+                        source_request_line_id=fixture["line_id"],
+                        approved_entry_key=EnvelopeEntryIdentity(
+                            line_id=str(fixture["line_id"])
+                        ).stable_key,
+                        resource_requirement_id=fixture["requirement_id"],
+                        original_shift_id=fixture["shift_ids"][0],
+                        shift_snapshot_text="{}",
+                        reduction_hours=Decimal("2.00"),
+                        effective_need_before=Decimal("8.00"),
+                        effective_need_after=Decimal("6.00"),
+                        actor_user_id=fixture["actor_id"],
+                        command_id=f"reduce-{fixture['marker']}",
+                        reconciliation_state="ACTIVE",
+                    )
+                )
+        return {
+            "child_revision_id": child_revision_id,
+            "second_release_id": second_release_id,
+        }
+
+    def _assert_fixture_gone_and_sentinel_present(
+        self,
+        fixture: dict[str, object],
+        sentinel_project_id: str,
+    ) -> None:
+        with fixture["factory"]() as session:
+            self.assertIsNone(session.get(WorkforceRequest, fixture["request_id"]))
+            self.assertEqual(
+                session.scalar(
+                    select(func.count(RequestApprovalRevision.id)).where(
+                        RequestApprovalRevision.workforce_request_id
+                        == fixture["request_id"]
+                    )
+                ),
+                0,
+            )
+            self.assertEqual(
+                session.scalar(
+                    select(func.count(PlanningWorkQueueRelease.id)).where(
+                        PlanningWorkQueueRelease.workforce_request_id
+                        == fixture["request_id"]
+                    )
+                ),
+                0,
+            )
+            self.assertIsNotNone(session.get(Project, sentinel_project_id))
+
+    def _seed_sentinel(self, factory, marker: str) -> str:
+        sentinel_project_id = f"P-SENTINEL-{marker}"
+        with factory.begin() as session:
+            session.add(
+                Project(
+                    id=sentinel_project_id,
+                    number=f"P-SENTINEL-{marker}",
+                    name="Unrelated sentinel",
+                )
+            )
+        return sentinel_project_id
+
+    def test_cleanup_handles_empty_restoration_table(self) -> None:
+        engine, factory = self._database()
+        fixture = self._fixture_descriptor(factory, engine, uuid4().hex[:8])
+        sentinel = self._seed_sentinel(factory, str(fixture["marker"]))
+        self._seed_graph(fixture, include_restorations=False)
+        Issue777SqlServerConcurrencyTests._cleanup(self, fixture)
+        self._assert_fixture_gone_and_sentinel_present(fixture, sentinel)
+
+    def test_cleanup_handles_multiple_releases_restorations_and_reduction(self) -> None:
+        engine, factory = self._database()
+        fixture = self._fixture_descriptor(factory, engine, uuid4().hex[:8])
+        sentinel = self._seed_sentinel(factory, str(fixture["marker"]))
+        self._seed_graph(fixture)
+        Issue777SqlServerConcurrencyTests._cleanup(self, fixture)
+        self._assert_fixture_gone_and_sentinel_present(fixture, sentinel)
+
+    def test_cleanup_deletes_revision_descendants_before_parent(self) -> None:
+        engine, factory = self._database()
+        fixture = self._fixture_descriptor(factory, engine, uuid4().hex[:8])
+        sentinel = self._seed_sentinel(factory, str(fixture["marker"]))
+        self._seed_graph(fixture, include_revision_child=True)
+        Issue777SqlServerConcurrencyTests._cleanup(self, fixture)
+        self._assert_fixture_gone_and_sentinel_present(fixture, sentinel)
+
+    def test_cleanup_is_safe_before_fixture_commit(self) -> None:
+        engine, factory = self._database()
+        fixture = self._fixture_descriptor(factory, engine, uuid4().hex[:8])
+        sentinel = self._seed_sentinel(factory, str(fixture["marker"]))
+        Issue777SqlServerConcurrencyTests._cleanup(self, fixture)
+        self._assert_fixture_gone_and_sentinel_present(fixture, sentinel)
+
+    def test_cleanup_is_safe_after_post_commit_verification_failure(self) -> None:
+        engine, factory = self._database()
+        fixture = self._fixture_descriptor(factory, engine, uuid4().hex[:8])
+        sentinel = self._seed_sentinel(factory, str(fixture["marker"]))
+        self._seed_graph(fixture)
+        try:
+            raise AssertionError("verification failure simulée")
+        except AssertionError:
+            Issue777SqlServerConcurrencyTests._cleanup(self, fixture)
+        self._assert_fixture_gone_and_sentinel_present(fixture, sentinel)
+
+    def test_cleanup_is_idempotent(self) -> None:
+        engine, factory = self._database()
+        fixture = self._fixture_descriptor(factory, engine, uuid4().hex[:8])
+        sentinel = self._seed_sentinel(factory, str(fixture["marker"]))
+        self._seed_graph(fixture)
+        Issue777SqlServerConcurrencyTests._cleanup(self, fixture)
+        Issue777SqlServerConcurrencyTests._cleanup(self, fixture)
+        self._assert_fixture_gone_and_sentinel_present(fixture, sentinel)
+
+    def test_cleanup_preserves_unrelated_sentinel_data(self) -> None:
+        engine, factory = self._database()
+        fixture = self._fixture_descriptor(factory, engine, uuid4().hex[:8])
+        sentinel = self._seed_sentinel(factory, str(fixture["marker"]))
+        self._seed_graph(fixture)
+        Issue777SqlServerConcurrencyTests._cleanup(self, fixture)
+        self._assert_fixture_gone_and_sentinel_present(fixture, sentinel)
+
 
 
 if __name__ == "__main__":
