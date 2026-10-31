@@ -227,6 +227,8 @@ class SqlSameResourcePeriodCoordinator:
         self,
         requirement_id: str,
         resource_id: str,
+        *,
+        additionally_preserved_requirement_ids: tuple[str, ...] = (),
     ) -> SameResourcePeriodGroup | None:
         """Read-only ADR-029 validation shared by preview and commit."""
 
@@ -249,10 +251,15 @@ class SqlSameResourcePeriodCoordinator:
             if intent.current_resource_requirement_id
         }
         protected_requirement_ids = {
-            requirement_id
-            for requirement_id, intent in intent_by_requirement.items()
+            protected_requirement_id
+            for protected_requirement_id, intent in intent_by_requirement.items()
             if intent.intent_mode == PLANNING_INTENT_PRESERVE_EXISTING
         }
+        protected_requirement_ids.update(
+            requirement_id
+            for requirement_id in additionally_preserved_requirement_ids
+            if requirement_id in group.requirement_ids
+        )
         locked_ids = self._locked_resource_ids(group.requirement_ids)
         preserved_ids = {
             _text(value)
@@ -387,12 +394,18 @@ class SqlSameResourcePeriodCoordinator:
         self,
         requirement_id: str,
         resource_id: str,
+        *,
+        additionally_preserved_requirement_ids: tuple[str, ...] = (),
     ) -> bool:
         """Atomically retarget one SAME_AS_PERIOD component and its durable targets."""
 
         wanted = _text(requirement_id)
         target_resource_id = _text(resource_id)
-        group = self.validate_retarget_component(wanted, target_resource_id)
+        group = self.validate_retarget_component(
+            wanted,
+            target_resource_id,
+            additionally_preserved_requirement_ids=additionally_preserved_requirement_ids,
+        )
         if group is None:
             return False
         requirements = list(
