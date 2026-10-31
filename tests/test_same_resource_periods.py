@@ -359,22 +359,12 @@ class SameResourcePeriodPlanningTests(unittest.TestCase):
             ).all()
             self.assertEqual({shift.resource_id for shift in shifts}, {"R2"})
 
-            child_shift = next(
-                shift for shift in shifts if shift.resource_requirement_id == child.id
-            )
-            SqlAllocationCommandAdapter(session).update_manual(
-                child_shift.legacy_allocation_id or child_shift.id,
-                "R2",
-                child_shift.work_date,
-                child_shift.hours,
-                note="édition inchangée après retarget SAME_AS_PERIOD",
-            )
-            self.assertEqual(root.assigned_resource_id, "R2")
-            self.assertEqual(child.assigned_resource_id, "R2")
-            self.assertEqual(root_intent.target_resource_id, "R2")
-            self.assertEqual(child_intent.target_resource_id, "R2")
-            self.assertEqual(child_intent.placement_not_before_date, D2)
-            SqlSameResourcePeriodCoordinator(session).assert_shift_invariant()
+            locked = session.get(Shift, "LOCK-B")
+            self.assertIsNotNone(locked)
+            self.assertTrue(locked.locked)
+            self.assertEqual(locked.source, "MANUAL")
+            self.assertEqual(locked.resource_id, "R2")
+            self.assertEqual(locked.hours, Decimal("4"))
 
     def test_locked_component_rejects_a_conflicting_explicit_retarget(self) -> None:
         with transactional_session(self.factory) as session:
@@ -497,6 +487,29 @@ class SameResourcePeriodPlanningTests(unittest.TestCase):
                 )
             ).all()
             self.assertEqual({shift.resource_id for shift in shifts}, {"R2"})
+
+            child_shift = next(
+                shift for shift in shifts if shift.resource_requirement_id == child.id
+            )
+            SqlAllocationCommandAdapter(session).update_manual(
+                child_shift.legacy_allocation_id or child_shift.id,
+                "R2",
+                child_shift.work_date,
+                child_shift.hours,
+                note="édition inchangée après retarget SAME_AS_PERIOD",
+            )
+            self.assertEqual(root.assigned_resource_id, "R2")
+            self.assertEqual(child.assigned_resource_id, "R2")
+            self.assertEqual(root_intent.target_resource_id, "R2")
+            self.assertEqual(child_intent.target_resource_id, "R2")
+            self.assertIsNone(root_intent.placement_not_before_date)
+            self.assertEqual(child_intent.placement_not_before_date, D2)
+            SqlPlanningCommandAdapter(session).rebuild()
+            self.assertEqual(root.assigned_resource_id, "R2")
+            self.assertEqual(child.assigned_resource_id, "R2")
+            self.assertEqual(root_intent.target_resource_id, "R2")
+            self.assertEqual(child_intent.target_resource_id, "R2")
+            SqlSameResourcePeriodCoordinator(session).assert_shift_invariant()
 
 
 DATABASE_URL = str(os.getenv("RESOURCEPLANNER_SQLSERVER_TEST_URL") or "").strip()
