@@ -334,6 +334,26 @@ class EmergencyOverrideHttpTests(unittest.TestCase):
                     json={"comment": "Régularisation formelle"},
                 )
                 self.assertEqual(approved.status_code, 200, approved.text)
+                actions = client.get(
+                    "/api/v1/planning/actions",
+                    params={
+                        "start": today.isoformat(),
+                        "end": today.isoformat(),
+                        "scope": "global",
+                    },
+                )
+                self.assertEqual(actions.status_code, 200, actions.text)
+                assignment = next(
+                    row
+                    for row in actions.json()
+                    if row["kind"] == "ASSIGNMENT"
+                    and row["demand_number"] == number
+                )
+                assigned = client.post(
+                    f"/api/v1/segments/{assignment['segment_id']}/assign",
+                    json={"resource_id": "R1"},
+                )
+                self.assertEqual(assigned.status_code, 200, assigned.text)
 
                 regularized = client.get(f"/api/v1/demands/{number}").json()
                 self.assertEqual(regularized["status"], "En planification")
