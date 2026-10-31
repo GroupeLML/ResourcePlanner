@@ -28,6 +28,8 @@ from app.infrastructure.sql import (
     SqlPeriodAwareApprovedDemandSyncAdapter,
     SqlPlanningWindowOverrideRepository,
     WorkforceRequest,
+    WorkforceRequestPeriod,
+    WorkforceRequestPeriodRequirement,
     create_session_factory,
     create_sql_engine,
 )
@@ -187,6 +189,275 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
             for row in response.json()
             if row.get("demand_number") == number and row.get("kind") == "ASSIGNMENT"
         ]
+
+    def test_same_as_period_preview_refuses_preserved_resource_conflict_and_commit_is_structured(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_40(client)
+                    before = self._snapshot(client, number)
+                    returned_shift = min(
+                        before["demand_shifts"],
+                        key=lambda row: row["work_date"],
+                    )
+                    return_preview = client.get(
+                        f"/api/v1/allocations/{returned_shift['allocation_id']}/work-queue-preview"
+                    ).json()
+                    returned = client.post(
+                        f"/api/v1/allocations/{returned_shift['allocation_id']}/return-to-work-queue",
+                        headers={"Idempotency-Key": "777-same-return"},
+                        json={
+                            "expected_planning_version": return_preview["planning_version"],
+                            "expected_approval_revision_id": return_preview["approval_revision_id"],
+                            "expected_operational_version": return_preview["operational_version"],
+                        },
+                    )
+                    self.assertEqual(returned.status_code, 200, returned.text)
+
+                    current = self._snapshot(client, number)
+                    segment = current["demand_segments"][0]
+                    requirement_id = segment["requirement_id"]
+                    segment_id = segment["segment_id"]
+                    with factory.begin() as session:
+                        requirement = session.get(ResourceRequirement, requirement_id)
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement_id
+                            )
+                        )
+                        self.assertIsNotNone(requirement)
+                        self.assertIsNotNone(intent)
+                        request = session.get(WorkforceRequest, requirement.workforce_request_id)
+                        self.assertIsNotNone(request)
+                        line_id = intent.source_request_line_id
+                        self.assertTrue(line_id)
+                        root_period = WorkforceRequestPeriod(
+                            id=f"PER-777-ROOT-{requirement.id}",
+                            period_key="ROOT-777",
+                            workforce_request_id=request.id,
+                            request_line_id=line_id,
+                            sequence=10,
+                            kind="CUMULATIVE",
+                            start_date=requirement.start_date,
+                            end_date=requirement.end_date,
+                            hours=Decimal("40"),
+                            inheritance_contract_version=1,
+                            confirmation_mode="EXPLICIT",
+                            confirmation="Confirmée",
+                            proposed_resource_mode="EXPLICIT",
+                            proposed_resource_id="R-778-A",
+                            resource_count=1,
+                            active=True,
+                        )
+                        child_period = WorkforceRequestPeriod(
+                            id=f"PER-777-FOLLOW-{requirement.id}",
+                            period_key="FOLLOW-777",
+                            workforce_request_id=request.id,
+                            request_line_id=line_id,
+                            sequence=11,
+                            kind="CUMULATIVE",
+                            start_date=requirement.start_date,
+                            end_date=requirement.end_date,
+                            hours=Decimal("8"),
+                            inheritance_contract_version=1,
+                            confirmation_mode="EXPLICIT",
+                            confirmation="Confirmée",
+                            proposed_resource_mode="SAME_AS_PERIOD",
+                            same_as_period_key="ROOT-777",
+                            resource_count=1,
+                            active=True,
+                        )
+                        child = ResourceRequirement(
+                            id=f"REQ-777-FOLLOW-{requirement.id}",
+                            legacy_segment_id=f"SEG-777-FOLLOW-{requirement.id}",
+                            project_id=requirement.project_id,
+                            workforce_request_id=request.id,
+                            source_request_line_id=line_id,
+                            assigned_resource_id="R-778-A",
+                            start_date=requirement.start_date,
+                            end_date=requirement.end_date,
+                            planned_hours=Decimal("8"),
+                            status="Planifié",
+                            origin="REQUEST",
+                        )
+                        session.add_all([root_period, child_period, child])
+                        session.flush()
+                        session.add_all(
+                            [
+                                WorkforceRequestPeriodRequirement(
+                                    resource_requirement_id=requirement.id,
+                                    period_id=root_period.id,
+                                ),
+                                WorkforceRequestPeriodRequirement(
+                                    resource_requirement_id=child.id,
+                                    period_id=child_period.id,
+                                ),
+                                RequestRequirementPlanningIntent(
+                                    id=f"INT-777-FOLLOW-{requirement.id}",
+                                    slot_identity_key=f"same-777-follow-{requirement.id}",
+                                    workforce_request_id=request.id,
+                                    source_request_line_id=line_id,
+                                    approval_revision_id=requirement.approval_revision_id,
+                                    approved_entry_key=f"same-777-follow-{requirement.id}",
+                                    source_period_id=child_period.id,
+                                    slot_index=0,
+                                    current_resource_requirement_id=child.id,
+                                    intent_mode="PRESERVE_EXISTING",
+                                    target_mode="EXPLICIT_RESOURCE",
+                                    target_resource_id="R-778-A",
+                                    placement_not_before_date=date.fromisoformat(END),
+                                ),
+                                Shift(
+                                    id=f"SHIFT-777-FOLLOW-{requirement.id}",
+                                    legacy_allocation_id=f"ALLOC-777-FOLLOW-{requirement.id}",
+                                    resource_requirement_id=child.id,
+                                    resource_id="R-778-A",
+                                    work_date=date.fromisoformat(THURSDAY),
+                                    hours=Decimal("8"),
+                                    allocation_type="Flexible",
+                                    source="MANUAL",
+                                    locked=True,
+                                ),
+                            ]
+                        )
+
+                    before_refusal = {}
+                    with factory() as session:
+                        selected_intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement_id
+                            )
+                        )
+                        child_intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == f"REQ-777-FOLLOW-{requirement_id}"
+                            )
+                        )
+                        before_refusal = {
+                            "selected_target": selected_intent.target_resource_id,
+                            "selected_cutoff": selected_intent.placement_not_before_date,
+                            "child_target": child_intent.target_resource_id,
+                            "child_cutoff": child_intent.placement_not_before_date,
+                            "shift_ids": tuple(
+                                session.scalars(
+                                    select(Shift.id)
+                                    .where(
+                                        Shift.resource_requirement_id.in_(
+                                            (requirement_id, f"REQ-777-FOLLOW-{requirement_id}")
+                                        )
+                                    )
+                                    .order_by(Shift.id)
+                                ).all()
+                            ),
+                            "active_release_count": session.scalar(
+                                select(func.count(PlanningWorkQueueRelease.id)).where(
+                                    PlanningWorkQueueRelease.planning_intent_id
+                                    == selected_intent.id,
+                                    PlanningWorkQueueRelease.active == True,
+                                )
+                            ),
+                        }
+
+                    preview = client.post(
+                        f"/api/v1/segments/{segment_id}/place-from-drop/preview",
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": THURSDAY,
+                        },
+                    )
+                    self.assertEqual(preview.status_code, 200, preview.text)
+                    preview_payload = preview.json()
+                    self.assertFalse(preview_payload["allowed"])
+                    self.assertEqual(
+                        preview_payload["refusal_code"],
+                        "same_as_period_resource_conflict",
+                    )
+                    self.assertEqual(
+                        set(preview_payload["affected_requirement_ids"]),
+                        {requirement_id, f"REQ-777-FOLLOW-{requirement_id}"},
+                    )
+                    self.assertEqual(
+                        len(preview_payload["affected_planning_intent_ids"]),
+                        2,
+                    )
+
+                    refused = client.post(
+                        f"/api/v1/segments/{segment_id}/place-from-drop",
+                        headers={"Idempotency-Key": "777-same-conflict"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": THURSDAY,
+                            "expected_planning_version": preview_payload["planning_version"],
+                            "expected_approval_revision_id": preview_payload["approval_revision_id"],
+                            "expected_operational_version": preview_payload["operational_version"],
+                        },
+                    )
+                    self.assertEqual(refused.status_code, 409, refused.text)
+                    self.assertEqual(
+                        refused.json()["error"]["code"],
+                        "same_as_period_resource_conflict",
+                    )
+
+                    with factory() as session:
+                        selected_intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement_id
+                            )
+                        )
+                        child_intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == f"REQ-777-FOLLOW-{requirement_id}"
+                            )
+                        )
+                        self.assertEqual(
+                            selected_intent.target_resource_id,
+                            before_refusal["selected_target"],
+                        )
+                        self.assertEqual(
+                            selected_intent.placement_not_before_date,
+                            before_refusal["selected_cutoff"],
+                        )
+                        self.assertEqual(
+                            child_intent.target_resource_id,
+                            before_refusal["child_target"],
+                        )
+                        self.assertEqual(
+                            child_intent.placement_not_before_date,
+                            before_refusal["child_cutoff"],
+                        )
+                        after_shift_ids = tuple(
+                            session.scalars(
+                                select(Shift.id)
+                                .where(
+                                    Shift.resource_requirement_id.in_(
+                                        (requirement_id, f"REQ-777-FOLLOW-{requirement_id}")
+                                    )
+                                )
+                                .order_by(Shift.id)
+                            ).all()
+                        )
+                        self.assertEqual(after_shift_ids, before_refusal["shift_ids"])
+                        self.assertEqual(
+                            session.scalar(
+                                select(func.count(PlanningWorkQueueRelease.id)).where(
+                                    PlanningWorkQueueRelease.planning_intent_id
+                                    == selected_intent.id,
+                                    PlanningWorkQueueRelease.active == True,
+                                )
+                            ),
+                            before_refusal["active_release_count"],
+                        )
+            finally:
+                engine.dispose()
 
     def test_cutoff_rejects_new_same_day_manual_placement_but_allows_survivor_metadata(self) -> None:
         with TemporaryDirectory() as directory:
