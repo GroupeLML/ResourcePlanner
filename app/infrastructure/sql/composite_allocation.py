@@ -537,6 +537,8 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
         target_day,
         *,
         existing_day=None,
+        existing_resource_id: str | None = None,
+        target_resource_id: str | None = None,
     ) -> None:
         intent = self._session.scalar(
             select(RequestRequirementPlanningIntent).where(
@@ -545,20 +547,31 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
             )
         )
         cutoff = intent.placement_not_before_date if intent is not None else None
-        if (
-            cutoff is not None
-            and target_day < cutoff
-            and (existing_day is None or target_day != existing_day)
-        ):
-            raise ApplicationConflictError(
-                "La nouvelle mise en place précède le cutoff opérationnel du segment.",
-                code="segment_placement_before_cutoff",
-                context={
-                    "segment_id": self._segment_reference(requirement),
-                    "placement_not_before_date": cutoff.isoformat(),
-                    "target_day": target_day.isoformat(),
-                },
-            )
+        if cutoff is None or target_day >= cutoff:
+            return
+        preserves_existing_placement = (
+            existing_day is not None
+            and target_day == existing_day
+            and existing_resource_id is not None
+            and target_resource_id is not None
+            and _text(existing_resource_id) == _text(target_resource_id)
+        )
+        if preserves_existing_placement:
+            return
+        raise ApplicationConflictError(
+            "La nouvelle mise en place précède le cutoff opérationnel du segment.",
+            code="segment_placement_before_cutoff",
+            context={
+                "segment_id": self._segment_reference(requirement),
+                "placement_not_before_date": cutoff.isoformat(),
+                "target_day": target_day.isoformat(),
+                "existing_day": (
+                    existing_day.isoformat() if existing_day is not None else None
+                ),
+                "existing_resource_id": existing_resource_id,
+                "target_resource_id": target_resource_id,
+            },
+        )
 
     def _drop_request_context(
         self,
@@ -844,6 +857,8 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
             requirement,
             target_day,
             existing_day=source.work_date,
+            existing_resource_id=source.resource_id,
+            target_resource_id=target_resource.id,
         )
         auto_extend_window = requirement.origin in _AUTO_EXTEND_REQUIREMENT_ORIGINS
         if requirement.origin == ORIGIN_REQUEST:
