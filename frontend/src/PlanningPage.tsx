@@ -1059,7 +1059,17 @@ export default function PlanningPage({
   }, [collapsedClasses, loadedPreferenceOwnerId, preferenceOwnerId]);
 
   useEffect(() => {
-    if (!detached) return;
+    if (
+      !detached
+      || scopeLoading
+      || scopeError
+      || planningPolicyOwnerKey !== planningIdentityKey
+      || !planningPolicy
+      || !scope
+      || !planningPolicy.available_scopes.includes(scope)
+    ) {
+      return;
+    }
     const next = new URL(buildDetachedPlanningUrl({
       weekStart,
       scope,
@@ -1086,7 +1096,12 @@ export default function PlanningPage({
     project,
     resourceFilter,
     resourceSortMode,
+    planningIdentityKey,
+    planningPolicy,
+    planningPolicyOwnerKey,
     scope,
+    scopeError,
+    scopeLoading,
     search,
     weekStart,
   ]);
