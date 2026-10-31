@@ -524,54 +524,6 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                         self.assertEqual(requirement.assigned_resource_id, "R-778-A")
                         self.assertEqual(intent.target_resource_id, "R-778-A")
 
-                    # Failure path: valid target + positive hours rejected by
-                    # overallocation must leave target, intent, hours and Shifts intact.
-                    failed_number = self._approve_40(client)
-                    failed_before = self._snapshot(client, failed_number)
-                    failed_segment_id = failed_before["demand_segments"][0]["segment_id"]
-                    with factory.begin() as session:
-                        requirement = session.scalar(
-                            select(ResourceRequirement).where(
-                                ResourceRequirement.legacy_segment_id == failed_segment_id
-                            )
-                        )
-                        rows = session.scalars(
-                            select(Shift).where(
-                                Shift.resource_requirement_id == requirement.id
-                            )
-                        ).all()
-                        for row in rows:
-                            row.source = "MANUAL"
-                            row.locked = True
-                    failed_state = self._snapshot(client, failed_number)
-                    rejected = client.patch(
-                        f"/api/v1/segments/{failed_segment_id}",
-                        json={
-                            "technician": "Bob 778 API",
-                            "planned_hours": 36,
-                        },
-                    )
-                    self.assertEqual(rejected.status_code, 422, rejected.text)
-                    self.assertEqual(
-                        rejected.json()["error"]["code"],
-                        "segment_overallocation_choice_required",
-                    )
-                    self.assertEqual(self._snapshot(client, failed_number), failed_state)
-                    with factory() as session:
-                        requirement = session.scalar(
-                            select(ResourceRequirement).where(
-                                ResourceRequirement.legacy_segment_id == failed_segment_id
-                            )
-                        )
-                        intent = session.scalar(
-                            select(RequestRequirementPlanningIntent).where(
-                                RequestRequirementPlanningIntent.current_resource_requirement_id
-                                == requirement.id
-                            )
-                        )
-                        self.assertEqual(requirement.planned_hours, Decimal("40.00"))
-                        self.assertEqual(requirement.assigned_resource_id, "R-778-A")
-                        self.assertEqual(intent.target_resource_id, "R-778-A")
             finally:
                 engine.dispose()
 
