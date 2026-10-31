@@ -628,6 +628,22 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
         covered = self._covered_hours(requirement.id)
         residual = max(effective_need - covered, Decimal("0.00"))
         planning_version = self._versioning.current_version()
+        same_coordinator = SqlSameResourcePeriodCoordinator(self._session)
+        same_group = same_coordinator.component_for_requirement(requirement.id)
+        affected_requirement_ids = (
+            tuple(same_group.requirement_ids) if same_group is not None else (requirement.id,)
+        )
+        affected_intent_ids = tuple(
+            self._session.scalars(
+                select(RequestRequirementPlanningIntent.id)
+                .where(
+                    RequestRequirementPlanningIntent.current_resource_requirement_id.in_(
+                        affected_requirement_ids
+                    )
+                )
+                .order_by(RequestRequirementPlanningIntent.id)
+            ).all()
+        )
 
         allowed = True
         refusal_code = None
@@ -666,6 +682,20 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
             refusal_message = (
                 "Le besoin courant ne contient plus de reliquat planifiable."
             )
+        else:
+            try:
+                same_coordinator.validate_retarget_component(
+                    requirement.id,
+                    resource.id,
+                )
+            except ApplicationConflictError as exc:
+                if exc.code != "same_as_period_resource_conflict":
+                    raise
+                allowed = False
+                refusal_code = exc.code
+                refusal_message = exc.message
+                generation_start = None
+                generation_end = None
 
         placeable = Decimal("0.00")
         if allowed and generation_start is not None and generation_end is not None:
@@ -750,6 +780,8 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
             "remaining_hours": float(residual),
             "placeable_hours": float(placeable),
             "available_actions": available_actions,
+            "affected_requirement_ids": affected_requirement_ids,
+            "affected_planning_intent_ids": affected_intent_ids,
         }
 
     def _placement_resource(
