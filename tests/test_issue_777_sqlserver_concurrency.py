@@ -593,9 +593,27 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
                     RequestRequirementPlanningIntent,
                     fixture["intent_id"],
                 )
-                self.assertIn(
-                    intent.placement_not_before_date,
-                    (DAY + timedelta(days=2), DAY + timedelta(days=3)),
+                self.assertIsNotNone(intent)
+                expected = (
+                    (fixture["resources"]["A"], DAY + timedelta(days=2))
+                    if outcomes[0][0] == "success"
+                    else (fixture["resources"]["B"], DAY + timedelta(days=3))
+                )
+                self.assertEqual(
+                    (intent.target_resource_id, intent.placement_not_before_date),
+                    expected,
+                )
+                shifts = list(
+                    session.scalars(
+                        select(Shift).where(
+                            Shift.resource_requirement_id == fixture["requirement_id"]
+                        )
+                    ).all()
+                )
+                self.assertTrue(set(fixture["shift_ids"]).issubset({row.id for row in shifts}))
+                self.assertLessEqual(
+                    sum((Decimal(str(row.hours)) for row in shifts), Decimal("0")),
+                    Decimal("40.00"),
                 )
         finally:
             self._cleanup(fixture)
@@ -640,6 +658,27 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
                 next(row[1] for row in outcomes if row[0] == "conflict"),
                 "planning_version_conflict",
             )
+            with fixture["factory"]() as session:
+                intent = session.get(RequestRequirementPlanningIntent, fixture["intent_id"])
+                original_shift = session.scalar(
+                    select(Shift).where(
+                        Shift.legacy_allocation_id == fixture["allocation_ids"][0]
+                    )
+                )
+                if outcomes[0][0] == "success":
+                    self.assertEqual(intent.target_resource_id, fixture["resources"]["B"])
+                    self.assertEqual(
+                        intent.placement_not_before_date,
+                        DAY + timedelta(days=3),
+                    )
+                    self.assertIsNotNone(original_shift)
+                else:
+                    release_id = outcomes[1][1]
+                    release = session.get(PlanningWorkQueueRelease, release_id)
+                    self.assertIsNotNone(release)
+                    self.assertTrue(release.active)
+                    self.assertIsNone(original_shift)
+                    self.assertIsNone(intent.placement_not_before_date)
         finally:
             self._cleanup(fixture)
 
@@ -684,6 +723,23 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
                 next(row[1] for row in outcomes if row[0] == "conflict"),
                 "planning_version_conflict",
             )
+            with fixture["factory"]() as session:
+                reference = session.get(RequestApprovalReference, fixture["request_id"])
+                intent = session.get(RequestRequirementPlanningIntent, fixture["intent_id"])
+                self.assertIsNotNone(reference)
+                self.assertIsNotNone(intent)
+                if outcomes[0][0] == "success":
+                    self.assertEqual(reference.active_revision_id, fixture["revision_id"])
+                    self.assertEqual(intent.approval_revision_id, fixture["revision_id"])
+                    self.assertEqual(intent.target_resource_id, fixture["resources"]["B"])
+                    self.assertEqual(
+                        intent.placement_not_before_date,
+                        DAY + timedelta(days=3),
+                    )
+                else:
+                    self.assertNotEqual(reference.active_revision_id, fixture["revision_id"])
+                    self.assertEqual(intent.approval_revision_id, reference.active_revision_id)
+                    self.assertIsNone(intent.placement_not_before_date)
         finally:
             self._cleanup(fixture)
 
@@ -728,6 +784,41 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
                 next(row[1] for row in outcomes if row[0] == "conflict"),
                 "planning_version_conflict",
             )
+            with fixture["factory"]() as session:
+                intent = session.get(RequestRequirementPlanningIntent, fixture["intent_id"])
+                shifts = list(
+                    session.scalars(
+                        select(Shift).where(
+                            Shift.resource_requirement_id == fixture["requirement_id"]
+                        )
+                    ).all()
+                )
+                covered = sum((Decimal(str(row.hours)) for row in shifts), Decimal("0"))
+                if outcomes[0][0] == "success":
+                    self.assertEqual(intent.target_resource_id, fixture["resources"]["B"])
+                    self.assertEqual(
+                        intent.placement_not_before_date,
+                        DAY + timedelta(days=3),
+                    )
+                    self.assertIsNone(
+                        session.scalar(
+                            select(RequestCompletionReduction).where(
+                                RequestCompletionReduction.command_id
+                                == f"reduce-race-{fixture['marker']}"
+                            )
+                        )
+                    )
+                    self.assertLessEqual(covered, Decimal("40.00"))
+                else:
+                    reduction_id = outcomes[1][1]
+                    reduction = session.get(RequestCompletionReduction, reduction_id)
+                    self.assertIsNotNone(reduction)
+                    self.assertEqual(reduction.reconciliation_state, "ACTIVE")
+                    self.assertIsNone(intent.placement_not_before_date)
+                    self.assertLessEqual(
+                        covered,
+                        Decimal(str(reduction.effective_need_after)),
+                    )
         finally:
             self._cleanup(fixture)
 
