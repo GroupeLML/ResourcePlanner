@@ -163,6 +163,25 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
             json={"comment": "Approbation API #778"},
         )
         assert approved.status_code == 200, approved.text
+
+        # ADR-004/#781: approval no longer promotes the proposed resource.
+        # #778 scenarios need a planned baseline, so establish it through the
+        # explicit Planning command that now owns durable targeting authority.
+        actions = client.get(
+            "/api/v1/planning/actions",
+            params={"start": START, "end": END},
+        )
+        assert actions.status_code == 200, actions.text
+        assignment = next(
+            row
+            for row in actions.json()
+            if row.get("demand_number") == number and row.get("kind") == "ASSIGNMENT"
+        )
+        assigned = client.post(
+            f"/api/v1/segments/{assignment['segment_id']}/assign",
+            json={"resource_id": "R-778-A"},
+        )
+        assert assigned.status_code == 200, assigned.text
         return number
 
     @staticmethod
