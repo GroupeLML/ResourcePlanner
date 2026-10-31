@@ -717,6 +717,91 @@ class RequestLineMaterializationHttpTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_proposal_null_transitions_do_not_change_explicit_operational_target(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="coord-781",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._create(
+                    client,
+                    lines=[
+                        {
+                            "desired_start": D1.isoformat(),
+                            "desired_end": D1.isoformat(),
+                            "estimated_hours": 8,
+                            "proposed_resource_id": "R1",
+                            "task_code": "210",
+                        }
+                    ],
+                )
+                approved = client.post(
+                    f"/api/v1/demands/{number}/approve",
+                    json={"comment": "Base #781"},
+                )
+                self.assertEqual(approved.status_code, 200, approved.text)
+                segment_id = self._assign(client, number, "R1")
+
+                for proposed in (None, "R2"):
+                    current = self._demand(client, number)
+                    line = current["lines"][0]
+                    changed = client.patch(
+                        f"/api/v1/demands/{number}",
+                        json={
+                            "expected_version": current["version"],
+                            "lines": [
+                                {
+                                    "id": line["line_id"],
+                                    "desired_start": D1.isoformat(),
+                                    "desired_end": D1.isoformat(),
+                                    "estimated_hours": 8,
+                                    "proposed_resource_id": proposed,
+                                    "task_code": "210",
+                                }
+                            ],
+                        },
+                    )
+                    self.assertEqual(changed.status_code, 200, changed.text)
+
+                    segment = client.get(
+                        f"/api/v1/segments/{segment_id}",
+                        params={"scope": "global"},
+                    )
+                    self.assertEqual(segment.status_code, 200, segment.text)
+                    self.assertEqual(
+                        segment.json()["automatic_target_resource_id"],
+                        "R1",
+                    )
+
+                    engine = create_sql_engine(database_url)
+                    factory = create_session_factory(engine)
+                    try:
+                        with factory() as session:
+                            requirement = session.scalar(
+                                select(ResourceRequirement).where(
+                                    ResourceRequirement.legacy_segment_id == segment_id
+                                )
+                            )
+                            assert requirement is not None
+                            self.assertEqual(requirement.assigned_resource_id, "R1")
+                            intent = session.scalar(
+                                select(RequestRequirementPlanningIntent).where(
+                                    RequestRequirementPlanningIntent.current_resource_requirement_id
+                                    == requirement.id
+                                )
+                            )
+                            assert intent is not None
+                            self.assertEqual(
+                                intent.target_mode,
+                                PLANNING_TARGET_EXPLICIT_RESOURCE,
+                            )
+                            self.assertEqual(intent.target_resource_id, "R1")
+                    finally:
+                        engine.dispose()
+
     def test_materialized_work_requires_cancellation_request_without_destructive_cleanup(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
