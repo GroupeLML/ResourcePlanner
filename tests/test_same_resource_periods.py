@@ -8,6 +8,7 @@ import unittest
 
 from sqlalchemy import delete, select
 
+from app.application.errors import ApplicationConflictError
 from app.infrastructure.sql import (
     Base,
     Project,
@@ -392,8 +393,9 @@ class SameResourcePeriodPlanningTests(unittest.TestCase):
             )
             session.flush()
 
-            with self.assertRaisesRegex(ValueError, "fixe déjà la ressource"):
+            with self.assertRaises(ApplicationConflictError) as raised:
                 SqlAllocationCommandAdapter(session).assign_segment(child.id, "R2")
+            self.assertEqual(raised.exception.code, "same_as_period_resource_conflict")
 
             self.assertEqual(root.assigned_resource_id, "R1")
             self.assertIsNone(child.assigned_resource_id)
