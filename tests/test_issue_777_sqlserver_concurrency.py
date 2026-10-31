@@ -820,6 +820,65 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
                 delete(Project).where(Project.id == str(fixture["project_id"]))
             )
 
+        with factory() as session:
+            self.assertIsNone(session.get(WorkforceRequest, request_id))
+            self.assertIsNone(session.get(Project, str(fixture["project_id"])))
+            self.assertIsNone(session.get(AppUser, str(fixture["actor_id"])))
+            self.assertIsNone(session.get(ApprovalScope, str(fixture["scope_id"])))
+            self.assertIsNone(
+                session.get(ResourceClassConfig, str(fixture["class_code"]))
+            )
+            for resource_id in fixture["resources"].values():
+                self.assertIsNone(session.get(Resource, resource_id))
+            self.assertEqual(
+                int(
+                    session.scalar(
+                        select(func.count(RequestApprovalRevision.id)).where(
+                            RequestApprovalRevision.workforce_request_id == request_id
+                        )
+                    )
+                    or 0
+                ),
+                0,
+            )
+            self.assertEqual(
+                int(
+                    session.scalar(
+                        select(func.count(RequestRequirementPlanningIntent.id)).where(
+                            RequestRequirementPlanningIntent.workforce_request_id
+                            == request_id
+                        )
+                    )
+                    or 0
+                ),
+                0,
+            )
+            self.assertEqual(
+                int(
+                    session.scalar(
+                        select(func.count(PlanningWorkQueueRelease.id)).where(
+                            PlanningWorkQueueRelease.workforce_request_id == request_id
+                        )
+                    )
+                    or 0
+                ),
+                0,
+            )
+            self.assertEqual(
+                int(
+                    session.scalar(
+                        select(func.count(RequestCompletionReduction.id)).where(
+                            RequestCompletionReduction.workforce_request_id == request_id
+                        )
+                    )
+                    or 0
+                ),
+                0,
+            )
+            global_state = session.get(PlanningMutationState, PLANNING_STATE_ID)
+            if fixture.get("planning_version") is not None:
+                self.assertIsNotNone(global_state)
+
     @staticmethod
     def _counted_coverage(session, requirement_id: str) -> Decimal:
         value = session.scalar(
