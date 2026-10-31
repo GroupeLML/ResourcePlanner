@@ -79,6 +79,7 @@ test("781 garde la ressource proposée advisory jusqu'au placement Planning expl
             estimated_hours: 4,
             proposed_resource_id: resourceIds[0],
             required_resource_class: "PROGRAMMEUR",
+            task_code: "210",
             description: "Validation advisory #781",
           },
         ],
