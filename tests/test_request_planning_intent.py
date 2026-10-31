@@ -201,7 +201,7 @@ class RequestPlanningIntentRepositoryTests(unittest.TestCase):
     def test_ambiguous_legacy_binding_fails_closed(self) -> None:
         with transactional_session(self.factory) as session:
             repo = SqlRequestRequirementPlanningIntentRepository(session)
-            repo.ensure(
+            intent_a = repo.ensure(
                 workforce_request_id="D1",
                 approved_entry_key='["LINE","L1","LEGACY-A"]',
                 slot_index=0,
@@ -210,16 +210,35 @@ class RequestPlanningIntentRepositoryTests(unittest.TestCase):
                 approval_revision_id="REV1",
                 current_resource_requirement_id="REQ1",
             )
+            intent_b = repo.ensure(
+                workforce_request_id="D1",
+                approved_entry_key='["LINE","L1","LEGACY-B"]',
+                slot_index=0,
+                source_request_line_id="L1",
+                source_period_id=None,
+                approval_revision_id="REV1",
+                current_resource_requirement_id="REQ2",
+            )
+            intent_a_id = intent_a.id
+            intent_b_id = intent_b.id
+
             with self.assertRaisesRegex(ValueError, "planning_slot_binding_ambiguous"):
                 repo.ensure(
                     workforce_request_id="D1",
-                    approved_entry_key='["LINE","L1","LEGACY-B"]',
+                    approved_entry_key='["LINE","L1","LEGACY-A"]',
                     slot_index=0,
                     source_request_line_id="L1",
                     source_period_id=None,
                     approval_revision_id="REV1",
-                    current_resource_requirement_id="REQ1",
+                    current_resource_requirement_id="REQ2",
                 )
+
+            session.expire_all()
+            persisted_a = session.get(RequestRequirementPlanningIntent, intent_a_id)
+            persisted_b = session.get(RequestRequirementPlanningIntent, intent_b_id)
+            assert persisted_a is not None and persisted_b is not None
+            self.assertEqual(persisted_a.current_resource_requirement_id, "REQ1")
+            self.assertEqual(persisted_b.current_resource_requirement_id, "REQ2")
 
     def test_physical_period_version_change_reuses_same_logical_slot_intent(self) -> None:
         with transactional_session(self.factory) as session:
