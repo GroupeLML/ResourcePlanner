@@ -185,6 +185,35 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
         return number
 
     @staticmethod
+    def _approve_unselected(client: TestClient, *, hours: int = 4) -> str:
+        created = client.post(
+            "/api/v1/demands",
+            json=routed_demand_payload(
+                {
+                    "project_number": "P-778-API",
+                    "submit": True,
+                    "lines": [
+                        {
+                            "desired_start": START,
+                            "desired_end": START,
+                            "estimated_hours": hours,
+                            "confirmation": "Confirmée",
+                            "description": "PATCH durable #781",
+                        }
+                    ],
+                }
+            ),
+        )
+        assert created.status_code == 201, created.text
+        number = created.json()["demand_number"]
+        approved = client.post(
+            f"/api/v1/demands/{number}/approve",
+            json={"comment": "Approbation PATCH #781"},
+        )
+        assert approved.status_code == 200, approved.text
+        return number
+
+    @staticmethod
     def _snapshot(client: TestClient, number: str) -> dict:
         response = client.get(
             "/api/v1/planning/snapshot",
@@ -208,6 +237,225 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
             for row in response.json()
             if row.get("demand_number") == number and row.get("kind") == "ASSIGNMENT"
         ]
+
+    def test_patch_target_is_durable_clear_is_rejected_and_mixed_hours_are_atomic(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    # A. Unselected EXPLICIT_NONE -> Bob via public PATCH.
+                    number = self._approve_unselected(client, hours=4)
+                    action = self._actions(client, number)[0]
+                    segment_id = action["segment_id"]
+                    with factory() as session:
+                        requirement = session.scalar(
+                            select(ResourceRequirement).where(
+                                ResourceRequirement.legacy_segment_id == segment_id
+                            )
+                        )
+                        assert requirement is not None
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement.id
+                            )
+                        )
+                        assert intent is not None
+                        self.assertIsNone(requirement.assigned_resource_id)
+                        self.assertEqual(intent.target_mode, "EXPLICIT_NONE")
+                        self.assertIsNone(intent.target_resource_id)
+
+                    patched = client.patch(
+                        f"/api/v1/segments/{segment_id}",
+                        json={"technician": "Bob 778 API"},
+                    )
+                    self.assertEqual(patched.status_code, 200, patched.text)
+                    with factory() as session:
+                        requirement = session.scalar(
+                            select(ResourceRequirement).where(
+                                ResourceRequirement.legacy_segment_id == segment_id
+                            )
+                        )
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement.id
+                            )
+                        )
+                        self.assertEqual(requirement.assigned_resource_id, "R-778-B")
+                        self.assertEqual(intent.target_mode, "EXPLICIT_RESOURCE")
+                        self.assertEqual(intent.target_resource_id, "R-778-B")
+                        self.assertEqual(
+                            Decimal(
+                                str(
+                                    session.scalar(
+                                        select(func.coalesce(func.sum(Shift.hours), 0)).where(
+                                            Shift.resource_requirement_id == requirement.id
+                                        )
+                                    )
+                                    or 0
+                                )
+                            ),
+                            Decimal("4.00"),
+                        )
+
+                    rebuilt = client.post("/api/v1/planning/rebuild")
+                    self.assertEqual(rebuilt.status_code, 200, rebuilt.text)
+                    with factory.begin() as session:
+                        SqlPeriodAwareApprovedDemandSyncAdapter(
+                            session
+                        ).sync_operational_choices(number)
+                    with factory() as session:
+                        requirement = session.scalar(
+                            select(ResourceRequirement).where(
+                                ResourceRequirement.legacy_segment_id == segment_id
+                            )
+                        )
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement.id
+                            )
+                        )
+                        self.assertEqual(requirement.assigned_resource_id, "R-778-B")
+                        self.assertEqual(intent.target_resource_id, "R-778-B")
+
+                    demand = client.get(f"/api/v1/demands/{number}").json()
+                    line = demand["lines"][0]
+                    changed = client.patch(
+                        f"/api/v1/demands/{number}",
+                        json=routed_demand_payload(
+                            {
+                                "expected_version": demand["version"],
+                                "lines": [
+                                    {
+                                        "id": line["line_id"],
+                                        "desired_start": START,
+                                        "desired_end": START,
+                                        "estimated_hours": 4,
+                                        "confirmation": "Confirmée",
+                                        "description": "Réapprobation PATCH #781",
+                                    }
+                                ],
+                            }
+                        ),
+                    )
+                    self.assertEqual(changed.status_code, 200, changed.text)
+                    reapproved = client.post(
+                        f"/api/v1/demands/{number}/approve",
+                        json={"comment": "Réapprobation compatible PATCH #781"},
+                    )
+                    self.assertEqual(reapproved.status_code, 200, reapproved.text)
+                    with factory() as session:
+                        requirement = session.scalar(
+                            select(ResourceRequirement).where(
+                                ResourceRequirement.legacy_segment_id == segment_id
+                            )
+                        )
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement.id
+                            )
+                        )
+                        self.assertEqual(requirement.assigned_resource_id, "R-778-B")
+                        self.assertEqual(intent.target_resource_id, "R-778-B")
+
+                    # D. Clear target is unsupported on PATCH and must be atomic.
+                    before_clear = self._snapshot(client, number)
+                    cleared = client.patch(
+                        f"/api/v1/segments/{segment_id}",
+                        json={"technician": None},
+                    )
+                    self.assertEqual(cleared.status_code, 422, cleared.text)
+                    self.assertEqual(
+                        cleared.json()["error"]["code"],
+                        "segment_target_clear_unsupported",
+                    )
+                    self.assertEqual(self._snapshot(client, number), before_clear)
+
+                    # B/C. Existing Alice -> Bob plus hours succeeds as one request.
+                    mixed_number = self._approve_40(client)
+                    mixed_before = self._snapshot(client, mixed_number)
+                    mixed_segment_id = mixed_before["demand_segments"][0]["segment_id"]
+                    mixed = client.patch(
+                        f"/api/v1/segments/{mixed_segment_id}",
+                        json={
+                            "technician": "Bob 778 API",
+                            "planned_hours": 44,
+                        },
+                    )
+                    self.assertEqual(mixed.status_code, 200, mixed.text)
+                    with factory() as session:
+                        requirement = session.scalar(
+                            select(ResourceRequirement).where(
+                                ResourceRequirement.legacy_segment_id == mixed_segment_id
+                            )
+                        )
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement.id
+                            )
+                        )
+                        self.assertEqual(requirement.assigned_resource_id, "R-778-B")
+                        self.assertEqual(intent.target_mode, "EXPLICIT_RESOURCE")
+                        self.assertEqual(intent.target_resource_id, "R-778-B")
+                        self.assertEqual(requirement.planned_hours, Decimal("44.00"))
+
+                    # Failure path: valid target + positive hours rejected by
+                    # overallocation must leave target, intent, hours and Shifts intact.
+                    failed_number = self._approve_40(client)
+                    failed_before = self._snapshot(client, failed_number)
+                    failed_segment_id = failed_before["demand_segments"][0]["segment_id"]
+                    with factory.begin() as session:
+                        requirement = session.scalar(
+                            select(ResourceRequirement).where(
+                                ResourceRequirement.legacy_segment_id == failed_segment_id
+                            )
+                        )
+                        rows = session.scalars(
+                            select(Shift).where(
+                                Shift.resource_requirement_id == requirement.id
+                            )
+                        ).all()
+                        for row in rows:
+                            row.source = "MANUAL"
+                            row.locked = True
+                    failed_state = self._snapshot(client, failed_number)
+                    rejected = client.patch(
+                        f"/api/v1/segments/{failed_segment_id}",
+                        json={
+                            "technician": "Bob 778 API",
+                            "planned_hours": 36,
+                        },
+                    )
+                    self.assertEqual(rejected.status_code, 422, rejected.text)
+                    self.assertEqual(
+                        rejected.json()["error"]["code"],
+                        "segment_overallocation_choice_required",
+                    )
+                    self.assertEqual(self._snapshot(client, failed_number), failed_state)
+                    with factory() as session:
+                        requirement = session.scalar(
+                            select(ResourceRequirement).where(
+                                ResourceRequirement.legacy_segment_id == failed_segment_id
+                            )
+                        )
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement.id
+                            )
+                        )
+                        self.assertEqual(requirement.planned_hours, Decimal("40.00"))
+                        self.assertEqual(requirement.assigned_resource_id, "R-778-A")
+                        self.assertEqual(intent.target_resource_id, "R-778-A")
+            finally:
+                engine.dispose()
 
     def test_same_as_period_preview_refuses_selected_auto_survivor_conflict(self) -> None:
         with TemporaryDirectory() as directory:
