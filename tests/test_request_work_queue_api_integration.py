@@ -190,6 +190,338 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
             if row.get("demand_number") == number and row.get("kind") == "ASSIGNMENT"
         ]
 
+    def test_same_as_period_preview_refuses_selected_auto_survivor_conflict(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(database_url, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_40(client)
+                    approved = self._snapshot(client, number)
+                    segment = approved["demand_segments"][0]
+                    requirement_id = segment["requirement_id"]
+                    segment_id = segment["segment_id"]
+
+                    with factory.begin() as session:
+                        requirement = session.get(ResourceRequirement, requirement_id)
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement_id
+                            )
+                        )
+                        self.assertIsNotNone(requirement)
+                        self.assertIsNotNone(intent)
+                        request = session.get(WorkforceRequest, requirement.workforce_request_id)
+                        revision = session.get(
+                            RequestApprovalRevision,
+                            requirement.approval_revision_id,
+                        )
+                        self.assertIsNotNone(request)
+                        self.assertIsNotNone(revision)
+                        payload = json.loads(revision.payload_text)
+                        entries = payload["authorization"]["entries"]
+                        self.assertEqual(len(entries), 1)
+                        entries[0]["hours"] = "16.00"
+                        revision.payload_text = json.dumps(
+                            payload,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                        requirement.planned_hours = Decimal("16.00")
+                        requirement.assigned_resource_id = "R-778-A"
+                        requirement.status = "Planifié"
+                        intent.intent_mode = "AUTO"
+                        intent.target_mode = "EXPLICIT_RESOURCE"
+                        intent.target_resource_id = "R-778-A"
+                        intent.placement_not_before_date = None
+
+                        session.query(Shift).filter_by(
+                            resource_requirement_id=requirement_id
+                        ).delete(synchronize_session=False)
+                        session.add(
+                            Shift(
+                                id=f"SHIFT-777-AUTO-{requirement.id}",
+                                legacy_allocation_id=f"ALLOC-777-AUTO-{requirement.id}",
+                                resource_requirement_id=requirement.id,
+                                resource_id="R-778-A",
+                                work_date=date.fromisoformat(START),
+                                hours=Decimal("8.00"),
+                                allocation_type="Flexible",
+                                source="AUTO",
+                                locked=False,
+                            )
+                        )
+
+                        line_id = intent.source_request_line_id
+                        self.assertTrue(line_id)
+                        root_period = WorkforceRequestPeriod(
+                            id=f"PER-777-AUTO-ROOT-{requirement.id}",
+                            period_key="AUTO-ROOT-777",
+                            workforce_request_id=request.id,
+                            request_line_id=line_id,
+                            sequence=20,
+                            kind="CUMULATIVE",
+                            start_date=requirement.start_date,
+                            end_date=requirement.end_date,
+                            hours=Decimal("16.00"),
+                            inheritance_contract_version=1,
+                            confirmation_mode="EXPLICIT",
+                            confirmation="Confirmée",
+                            proposed_resource_mode="EXPLICIT",
+                            proposed_resource_id="R-778-A",
+                            resource_count=1,
+                            active=True,
+                        )
+                        child_period = WorkforceRequestPeriod(
+                            id=f"PER-777-AUTO-FOLLOW-{requirement.id}",
+                            period_key="AUTO-FOLLOW-777",
+                            workforce_request_id=request.id,
+                            request_line_id=line_id,
+                            sequence=21,
+                            kind="CUMULATIVE",
+                            start_date=requirement.start_date,
+                            end_date=requirement.end_date,
+                            hours=Decimal("8.00"),
+                            inheritance_contract_version=1,
+                            confirmation_mode="EXPLICIT",
+                            confirmation="Confirmée",
+                            proposed_resource_mode="SAME_AS_PERIOD",
+                            same_as_period_key="AUTO-ROOT-777",
+                            resource_count=1,
+                            active=True,
+                        )
+                        child_id = f"REQ-777-AUTO-FOLLOW-{requirement.id}"
+                        child = ResourceRequirement(
+                            id=child_id,
+                            legacy_segment_id=f"SEG-777-AUTO-FOLLOW-{requirement.id}",
+                            project_id=requirement.project_id,
+                            workforce_request_id=request.id,
+                            source_request_line_id=line_id,
+                            assigned_resource_id="R-778-A",
+                            start_date=requirement.start_date,
+                            end_date=requirement.end_date,
+                            planned_hours=Decimal("8.00"),
+                            status="Planifié",
+                            origin="REQUEST",
+                        )
+                        child_intent_id = f"INT-777-AUTO-FOLLOW-{requirement.id}"
+                        child_cutoff = date.fromisoformat(END)
+                        session.add_all([root_period, child_period, child])
+                        session.flush()
+                        session.add_all(
+                            [
+                                WorkforceRequestPeriodRequirement(
+                                    resource_requirement_id=requirement.id,
+                                    period_id=root_period.id,
+                                ),
+                                WorkforceRequestPeriodRequirement(
+                                    resource_requirement_id=child.id,
+                                    period_id=child_period.id,
+                                ),
+                                RequestRequirementPlanningIntent(
+                                    id=child_intent_id,
+                                    slot_identity_key=f"same-777-auto-follow-{requirement.id}",
+                                    workforce_request_id=request.id,
+                                    source_request_line_id=line_id,
+                                    approval_revision_id=requirement.approval_revision_id,
+                                    approved_entry_key=f"same-777-auto-follow-{requirement.id}",
+                                    source_period_id=child_period.id,
+                                    slot_index=0,
+                                    current_resource_requirement_id=child.id,
+                                    intent_mode="AUTO",
+                                    target_mode="EXPLICIT_RESOURCE",
+                                    target_resource_id="R-778-A",
+                                    placement_not_before_date=child_cutoff,
+                                ),
+                            ]
+                        )
+
+                    before_snapshot = self._snapshot(client, number)
+                    before_action = self._actions(client, number)[0]
+                    with factory() as session:
+                        selected_intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement_id
+                            )
+                        )
+                        child_intent = session.get(
+                            RequestRequirementPlanningIntent,
+                            child_intent_id,
+                        )
+                        before_state = {
+                            "planning_version": before_snapshot["planning_version"],
+                            "operational_version": before_action["operational_version"],
+                            "approval_revision_id": before_action["approval_revision_id"],
+                            "selected_target": selected_intent.target_resource_id,
+                            "selected_cutoff": selected_intent.placement_not_before_date,
+                            "child_target": child_intent.target_resource_id,
+                            "child_cutoff": child_intent.placement_not_before_date,
+                            "shifts": tuple(
+                                session.execute(
+                                    select(
+                                        Shift.id,
+                                        Shift.resource_id,
+                                        Shift.hours,
+                                    )
+                                    .where(
+                                        Shift.resource_requirement_id.in_(
+                                            (requirement_id, child_id)
+                                        )
+                                    )
+                                    .order_by(Shift.id)
+                                ).all()
+                            ),
+                            "release_count": int(
+                                session.scalar(
+                                    select(func.count(PlanningWorkQueueRelease.id)).where(
+                                        PlanningWorkQueueRelease.planning_intent_id
+                                        == selected_intent.id
+                                    )
+                                )
+                                or 0
+                            ),
+                            "reduction_count": int(
+                                session.scalar(
+                                    select(func.count(RequestCompletionReduction.id)).where(
+                                        RequestCompletionReduction.planning_intent_id
+                                        == selected_intent.id
+                                    )
+                                )
+                                or 0
+                            ),
+                        }
+
+                    preview = client.post(
+                        f"/api/v1/segments/{segment_id}/place-from-drop/preview",
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": START,
+                        },
+                    )
+                    self.assertEqual(preview.status_code, 200, preview.text)
+                    preview_payload = preview.json()
+                    self.assertFalse(preview_payload["allowed"])
+                    self.assertEqual(
+                        preview_payload["refusal_code"],
+                        "same_as_period_resource_conflict",
+                    )
+                    self.assertEqual(preview_payload["effective_need"], 16.0)
+                    self.assertEqual(preview_payload["covered_hours"], 8.0)
+                    self.assertEqual(preview_payload["remaining_hours"], 8.0)
+                    self.assertEqual(preview_payload["placeable_hours"], 0.0)
+                    self.assertEqual(
+                        set(preview_payload["affected_requirement_ids"]),
+                        {requirement_id, child_id},
+                    )
+
+                    refused = client.post(
+                        f"/api/v1/segments/{segment_id}/place-from-drop",
+                        headers={"Idempotency-Key": "777-auto-survivor-same-conflict"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "dropped_date": START,
+                            "expected_planning_version": preview_payload["planning_version"],
+                            "expected_approval_revision_id": preview_payload["approval_revision_id"],
+                            "expected_operational_version": preview_payload["operational_version"],
+                        },
+                    )
+                    self.assertEqual(refused.status_code, 409, refused.text)
+                    self.assertEqual(
+                        refused.json()["error"]["code"],
+                        "same_as_period_resource_conflict",
+                    )
+
+                    after_snapshot = self._snapshot(client, number)
+                    after_action = self._actions(client, number)[0]
+                    with factory() as session:
+                        selected_intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement_id
+                            )
+                        )
+                        child_intent = session.get(
+                            RequestRequirementPlanningIntent,
+                            child_intent_id,
+                        )
+                        self.assertEqual(
+                            after_snapshot["planning_version"],
+                            before_state["planning_version"],
+                        )
+                        self.assertEqual(
+                            after_action["operational_version"],
+                            before_state["operational_version"],
+                        )
+                        self.assertEqual(
+                            after_action["approval_revision_id"],
+                            before_state["approval_revision_id"],
+                        )
+                        self.assertEqual(
+                            selected_intent.target_resource_id,
+                            before_state["selected_target"],
+                        )
+                        self.assertEqual(
+                            selected_intent.placement_not_before_date,
+                            before_state["selected_cutoff"],
+                        )
+                        self.assertEqual(
+                            child_intent.target_resource_id,
+                            before_state["child_target"],
+                        )
+                        self.assertEqual(
+                            child_intent.placement_not_before_date,
+                            before_state["child_cutoff"],
+                        )
+                        self.assertEqual(
+                            tuple(
+                                session.execute(
+                                    select(
+                                        Shift.id,
+                                        Shift.resource_id,
+                                        Shift.hours,
+                                    )
+                                    .where(
+                                        Shift.resource_requirement_id.in_(
+                                            (requirement_id, child_id)
+                                        )
+                                    )
+                                    .order_by(Shift.id)
+                                ).all()
+                            ),
+                            before_state["shifts"],
+                        )
+                        self.assertEqual(
+                            int(
+                                session.scalar(
+                                    select(func.count(PlanningWorkQueueRelease.id)).where(
+                                        PlanningWorkQueueRelease.planning_intent_id
+                                        == selected_intent.id
+                                    )
+                                )
+                                or 0
+                            ),
+                            before_state["release_count"],
+                        )
+                        self.assertEqual(
+                            int(
+                                session.scalar(
+                                    select(func.count(RequestCompletionReduction.id)).where(
+                                        RequestCompletionReduction.planning_intent_id
+                                        == selected_intent.id
+                                    )
+                                )
+                                or 0
+                            ),
+                            before_state["reduction_count"],
+                        )
+            finally:
+                engine.dispose()
+
     def test_same_as_period_preview_refuses_preserved_resource_conflict_and_commit_is_structured(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
