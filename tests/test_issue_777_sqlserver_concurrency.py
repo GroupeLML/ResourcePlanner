@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, time, timedelta
+from threading import Barrier
 from decimal import Decimal
 import json
 import os
@@ -312,6 +313,7 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
                     target_resource_id=resources["A"],
                 )
             )
+            session.flush()
             for index, (shift_id, allocation_id) in enumerate(
                 zip(shift_ids, allocation_ids, strict=True),
                 start=1,
@@ -349,6 +351,23 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
             )
 
         with factory() as session:
+            persisted_intent = session.get(RequestRequirementPlanningIntent, intent_id)
+            persisted_release = session.get(PlanningWorkQueueRelease, release_id)
+            persisted_requirement = session.get(ResourceRequirement, requirement_id)
+            persisted_revision = session.get(RequestApprovalRevision, revision_id)
+            persisted_resource = session.get(Resource, resources["A"])
+            self.assertIsNotNone(persisted_intent)
+            self.assertIsNotNone(persisted_release)
+            self.assertEqual(persisted_release.planning_intent_id, persisted_intent.id)
+            self.assertIsNotNone(persisted_requirement)
+            self.assertEqual(
+                persisted_intent.current_resource_requirement_id,
+                persisted_requirement.id,
+            )
+            self.assertIsNotNone(persisted_revision)
+            self.assertEqual(persisted_intent.approval_revision_id, persisted_revision.id)
+            self.assertIsNotNone(persisted_resource)
+            self.assertEqual(persisted_release.resource_id, persisted_resource.id)
             planning_version = SqlPlanningMutationVersionRepository(
                 session
             ).current_version()
@@ -399,9 +418,12 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
         resource_id: str,
         dropped_date: date,
         command_id: str,
+        barrier: Barrier | None = None,
     ) -> tuple[str, str | None]:
         factory = fixture["factory"]
         with factory.begin() as session:
+            if barrier is not None:
+                barrier.wait(timeout=10)
             try:
                 result = self._adapter(session, fixture).place_segment_from_drop(
                     PlaceSegmentFromDropCommand(
