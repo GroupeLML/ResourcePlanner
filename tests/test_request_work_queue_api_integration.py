@@ -2745,10 +2745,9 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                                 WorkforceRequest.legacy_demand_number == number
                             )
                         )
-                        requirement = session.scalar(
-                            select(ResourceRequirement).where(
-                                ResourceRequirement.legacy_segment_id == segment_id
-                            )
+                        requirement = session.get(
+                            ResourceRequirement,
+                            segment_id,
                         )
                         self.assertIsNotNone(request)
                         self.assertIsNotNone(requirement)
@@ -2881,10 +2880,9 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                                     WorkforceRequest.legacy_demand_number == number
                                 )
                             )
-                            requirement = session.scalar(
-                                select(ResourceRequirement).where(
-                                    ResourceRequirement.legacy_segment_id == segment_id
-                                )
+                            requirement = session.get(
+                                ResourceRequirement,
+                                segment_id,
                             )
                             intent = session.scalar(
                                 select(RequestRequirementPlanningIntent).where(
