@@ -713,6 +713,49 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await expect(alternativeCard).toContainText("8 h");
     await expect(alternativeCard).toContainText("Confirmée");
 
+    const beforePlacementShifts = await page.request.get(
+      `/api/v1/shifts?start=${d1}&end=${d5}`,
+    );
+    expect(beforePlacementShifts.ok(), await beforePlacementShifts.text()).toBeTruthy();
+    expect(
+      (await beforePlacementShifts.json() as Array<{ demand_number: string | null }>)
+        .filter((row) => row.demand_number === demandNumber),
+    ).toHaveLength(0);
+
+    const planningActions = await page.request.get(
+      `/api/v1/planning/actions?start=${d1}&end=${d5}&scope=global`,
+    );
+    expect(planningActions.ok(), await planningActions.text()).toBeTruthy();
+    const assignments = (await planningActions.json() as Array<{
+      kind: string;
+      demand_number: string | null;
+      segment_id: string | null;
+      start_date: string;
+      end_date: string;
+      planned_hours: number;
+    }>).filter((row) => row.kind === "ASSIGNMENT" && row.demand_number === demandNumber);
+    expect(assignments).toHaveLength(2);
+
+    const cumulativeAssignment = assignments.find(
+      (row) => row.start_date === d1 && row.end_date === d3 && row.planned_hours === 12,
+    );
+    const alternativeAssignment = assignments.find(
+      (row) => row.start_date === d4 && row.end_date === d4 && row.planned_hours === 8,
+    );
+    expect(cumulativeAssignment?.segment_id).toBeTruthy();
+    expect(alternativeAssignment?.segment_id).toBeTruthy();
+
+    for (const [assignment, resourceId] of [
+      [cumulativeAssignment!, "R-ALICE"],
+      [alternativeAssignment!, "R-BOB"],
+    ] as const) {
+      const assigned = await page.request.post(
+        `/api/v1/segments/${encodeURIComponent(String(assignment.segment_id))}/assign`,
+        { data: { resource_id: resourceId } },
+      );
+      expect(assigned.status(), await assigned.text()).toBe(200);
+    }
+
     await navigateMain(page, "Planning opérationnel");
     await page.getByRole("button", { name: /Suivante/ }).click();
     await page.getByRole("button", { name: /^Filtres/ }).click();
@@ -2008,20 +2051,62 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
     "Demande approuvée",
   );
 
-  const humanSegmentsResponse = await coordinator.page.request.get("/api/v1/segments?include_cancelled=false");
-  expect(humanSegmentsResponse.ok(), await humanSegmentsResponse.text()).toBeTruthy();
-  const humanSegments = (await humanSegmentsResponse.json() as Array<{
+  const approvedDemandResponse = await coordinator.page.request.get(
+    `/api/v1/demands/${encodeURIComponent(demandNumber)}`,
+  );
+  expect(approvedDemandResponse.ok(), await approvedDemandResponse.text()).toBeTruthy();
+  const approvedDemand = await approvedDemandResponse.json() as {
+    lines: Array<{
+      line_id: string;
+      position: number;
+      kind: "WORKFORCE" | "ASSET";
+      proposed_resource_id: string | null;
+    }>;
+  };
+  const approvedWorkforce = approvedDemand.lines.filter((line) => line.kind === "WORKFORCE");
+  expect(approvedWorkforce).toHaveLength(2);
+  expect(new Set(approvedWorkforce.map((line) => line.proposed_resource_id))).toEqual(
+    new Set(["R-ALICE", "R-BOB"]),
+  );
+
+  const assetPlanningActions = await coordinator.page.request.get(
+    `/api/v1/planning/actions?start=${d1}&end=${d2}&scope=global`,
+  );
+  expect(assetPlanningActions.ok(), await assetPlanningActions.text()).toBeTruthy();
+  const assetAssignments = (await assetPlanningActions.json() as Array<{
+    kind: string;
     demand_number: string | null;
-    segment_id: string;
-    source_request_line_id: string | null;
-  }>).filter((row) => row.demand_number === demandNumber);
-  expect(humanSegments).toHaveLength(2);
-  for (const workforceLine of activeWorkforce) {
-    const segment = humanSegments.find((row) => row.source_request_line_id === workforceLine.line_id);
-    expect(segment).toBeTruthy();
+    segment_id: string | null;
+  }>).filter((row) => row.kind === "ASSIGNMENT" && row.demand_number === demandNumber);
+  expect(assetAssignments).toHaveLength(2);
+  expect(assetAssignments.every((row) => Boolean(row.segment_id))).toBeTruthy();
+
+  const demandDetailResponse = await coordinator.page.request.get(
+    `/api/v1/demands/${encodeURIComponent(demandNumber)}/detail`,
+  );
+  expect(demandDetailResponse.ok(), await demandDetailResponse.text()).toBeTruthy();
+  const demandDetail = await demandDetailResponse.json() as {
+    materialized_plan: {
+      requirements: Array<{
+        segment_id: string;
+        source_request_line_id: string | null;
+      }>;
+    };
+  };
+  const requirementBySegment = new Map(
+    demandDetail.materialized_plan.requirements.map((row) => [row.segment_id, row]),
+  );
+
+  for (const action of assetAssignments) {
+    const requirement = requirementBySegment.get(String(action.segment_id));
+    expect(requirement?.source_request_line_id).toBeTruthy();
+    const approvedLine = approvedWorkforce.find(
+      (line) => line.line_id === requirement!.source_request_line_id,
+    );
+    expect(approvedLine?.proposed_resource_id).toBeTruthy();
     const assigned = await coordinator.page.request.post(
-      `/api/v1/segments/${encodeURIComponent(segment!.segment_id)}/assign`,
-      { data: { resource_id: workforceLine.proposed_resource_id } },
+      `/api/v1/segments/${encodeURIComponent(String(action.segment_id))}/assign`,
+      { data: { resource_id: approvedLine!.proposed_resource_id } },
     );
     expect(assigned.status(), await assigned.text()).toBe(200);
   }
