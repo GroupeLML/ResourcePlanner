@@ -41,7 +41,10 @@ from tests.approval_test_support import (
     routed_demand_payload,
     seed_test_approval_routing,
 )
-from tests.http_test_auth import TEST_ADMIN_AUTH_RESOLVER
+from tests.http_test_auth import (
+    TEST_ADMIN_AUTH_RESOLVER,
+    TEST_PROJECT_MANAGER_AUTH_RESOLVER,
+)
 from tests.sqlite_test_template import SqliteDatabaseTemplate
 
 
@@ -325,25 +328,31 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
 
                     demand = client.get(f"/api/v1/demands/{number}").json()
                     line = demand["lines"][0]
-                    changed = client.patch(
-                        f"/api/v1/demands/{number}",
-                        json=routed_demand_payload(
-                            {
+                    pm_app = create_api_app(
+                        database_url,
+                        auth_resolver=TEST_PROJECT_MANAGER_AUTH_RESOLVER,
+                    )
+                    with TestClient(pm_app, raise_server_exceptions=False) as pm_client:
+                        changed = pm_client.patch(
+                            f"/api/v1/demands/{number}",
+                            json={
                                 "expected_version": demand["version"],
+                                "comment": "Déplacer le besoin approuvé au mardi",
                                 "lines": [
                                     {
                                         "id": line["line_id"],
-                                        "desired_start": START,
-                                        "desired_end": START,
+                                        "desired_start": "2026-11-03",
+                                        "desired_end": "2026-11-03",
                                         "estimated_hours": 4,
                                         "confirmation": "Confirmée",
                                         "description": "Réapprobation PATCH #781",
                                     }
                                 ],
-                            }
-                        ),
-                    )
+                            },
+                        )
                     self.assertEqual(changed.status_code, 200, changed.text)
+                    self.assertTrue(changed.json()["reapproval_required"])
+                    self.assertEqual(changed.json()["status"], "Soumise")
                     reapproved = client.post(
                         f"/api/v1/demands/{number}/approve",
                         json={"comment": "Réapprobation compatible PATCH #781"},
