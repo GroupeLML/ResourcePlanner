@@ -1298,6 +1298,8 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
             requirement,
             target_day,
             existing_day=source.work_date,
+            existing_resource_id=source.resource_id,
+            target_resource_id=target_resource.id,
         )
         (
             approval_revision_id,
