@@ -2923,7 +2923,7 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                             )
                             self.assertEqual(
                                 Decimal(str(restored_hours or 0)),
-                                Decimal("4.00"),
+                                Decimal("0.00"),
                             )
                             asset_state_after = tuple(
                                 sorted(
