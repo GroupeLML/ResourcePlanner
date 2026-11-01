@@ -690,7 +690,28 @@ function ResourceRow({
         }}
       >
         <strong>{resourceDisplayName(resource.name)}</strong>
-        <span>{resource.competencies || resource.resource_class || "Ressource"}</span>
+        {(resource.planning_card_competencies?.length ?? 0) > 0 && (
+          <div className="resource-card-competencies" aria-label="Compétences">
+            {resource.planning_card_competencies!.map((competency) => (
+              <span className="resource-card-competency" key={competency}>{competency}</span>
+            ))}
+          </div>
+        )}
+        {(resource.continuous_vehicles?.length ?? 0) > 0 && (
+          <div className="resource-card-vehicles" aria-label="Véhicules">
+            {resource.continuous_vehicles!.map((vehicle) => (
+              <span className="resource-card-meta resource-card-vehicle" key={vehicle.asset_id}>
+                <b>Véhicule</b> {vehicle.label}
+                {vehicle.code !== vehicle.label && <> ({vehicle.code})</>}
+              </span>
+            ))}
+          </div>
+        )}
+        {resource.residence_city && (
+          <span className="resource-card-meta resource-card-city">
+            <b>Ville</b> {resource.residence_city}
+          </span>
+        )}
         {capacity ? (
           <>
             <small className={capacity.overloaded ? "capacity-danger" : "capacity-good"}>

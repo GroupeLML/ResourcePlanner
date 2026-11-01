@@ -563,6 +563,12 @@ export type WorkPackageWeeklyLoadWrite = {
 };
 
 
+export type PlanningContinuousVehicleReadModel = {
+  asset_id: string;
+  code: string;
+  label: string;
+};
+
 export type ResourceReadModel = {
   id: string;
   name: string;
@@ -586,6 +592,8 @@ export type ResourceReadModel = {
   erp_contact_id: number | null;
   planning_subgroup_code?: string | null;
   planning_subgroup_label?: string | null;
+  planning_card_competencies?: string[];
+  continuous_vehicles?: PlanningContinuousVehicleReadModel[];
 };
 
 export type ResourceWrite = {

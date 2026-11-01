@@ -6,12 +6,18 @@ import unittest
 
 from app.infrastructure.sql import (
     AppUser,
+    Asset,
+    AssetAllocation,
+    AssetRequirement,
+    AssetType,
     Base,
     BusinessContact,
+    Competency,
     Project,
     ProjectCoManager,
     Resource,
     ResourceAvailabilityRule,
+    ResourceCompetency,
     ResourceRequirement,
     Shift,
     SqlDemandRepository,
@@ -135,6 +141,204 @@ class SqlPlannerQueryRepositoryTests(unittest.TestCase):
             self.assertEqual(alice.resource_class, "Programmation")
             self.assertEqual(alice.competencies, "PLC; SCADA")
             self.assertEqual(alice.note, "Lead")
+
+    def test_745_planning_card_projects_ordered_competencies_current_vehicle_and_city(self) -> None:
+        today = date.today()
+        with transactional_session(self.factory) as session:
+            alice = session.get(Resource, "R1")
+            assert alice is not None
+            alice.residence_city = "Saint-Jean-sur-Richelieu"
+            session.add_all(
+                [
+                    Competency(id="C745-A", name="Alpha", sort_order=5),
+                    Competency(id="C745-E", name="Zulu", sort_order=5),
+                    Competency(id="C745-B", name="Beta", sort_order=19),
+                    Competency(id="C745-C", name="Gamma", sort_order=20),
+                    Competency(id="C745-D", name="Delta", sort_order=30),
+                ]
+            )
+            session.add(
+                AssetType(
+                    id="AT745",
+                    code="VEH-745",
+                    label="Véhicule 745",
+                    category="VEHICLE",
+                )
+            )
+            session.flush()
+            session.add_all(
+                [
+                    Asset(
+                        id="A745-CONT-A",
+                        code="CAM-745-A",
+                        label="Camion continu A 745",
+                        asset_type_id="AT745",
+                    ),
+                    Asset(
+                        id="A745-CONT-B",
+                        code="CAM-745-B",
+                        label="Camion continu B 745",
+                        asset_type_id="AT745",
+                    ),
+                    Asset(
+                        id="A745-BOUND",
+                        code="TEMP-745",
+                        label="Camion temporaire 745",
+                        asset_type_id="AT745",
+                    ),
+                ]
+            )
+            session.flush()
+            session.add_all(
+                [
+                    ResourceCompetency(resource_id="R1", competency_id="C745-C"),
+                    ResourceCompetency(resource_id="R1", competency_id="C745-E"),
+                    ResourceCompetency(resource_id="R1", competency_id="C745-B"),
+                    ResourceCompetency(resource_id="R1", competency_id="C745-D"),
+                    ResourceCompetency(resource_id="R1", competency_id="C745-A"),
+                    AssetRequirement(
+                        id="AR745-CONT-A",
+                        origin="RESOURCE_PERIOD",
+                        context_resource_id="R1",
+                        asset_type_id="AT745",
+                        start_date=today - timedelta(days=10),
+                        end_date=None,
+                        resource_period_mode="CONTINUOUS",
+                        status="Planifié",
+                    ),
+                    AssetRequirement(
+                        id="AR745-CONT-B",
+                        origin="RESOURCE_PERIOD",
+                        context_resource_id="R1",
+                        asset_type_id="AT745",
+                        start_date=today - timedelta(days=5),
+                        end_date=None,
+                        resource_period_mode="CONTINUOUS",
+                        status="Planifié",
+                    ),
+                    AssetRequirement(
+                        id="AR745-BOUND",
+                        origin="RESOURCE_PERIOD",
+                        context_resource_id="R1",
+                        asset_type_id="AT745",
+                        start_date=today - timedelta(days=1),
+                        end_date=today + timedelta(days=1),
+                        resource_period_mode="BOUNDED",
+                        status="Planifié",
+                    ),
+                ]
+            )
+            session.flush()
+            session.add_all(
+                [
+                    AssetAllocation(
+                        id="AA745-CONT-A",
+                        asset_requirement_id="AR745-CONT-A",
+                        asset_id="A745-CONT-A",
+                        operator_resource_id="R1",
+                        start_date=today - timedelta(days=10),
+                        end_date=None,
+                        locked=True,
+                    ),
+                    AssetAllocation(
+                        id="AA745-CONT-B",
+                        asset_requirement_id="AR745-CONT-B",
+                        asset_id="A745-CONT-B",
+                        operator_resource_id="R1",
+                        start_date=today - timedelta(days=5),
+                        end_date=None,
+                        locked=True,
+                    ),
+                    AssetAllocation(
+                        id="AA745-BOUND",
+                        asset_requirement_id="AR745-BOUND",
+                        asset_id="A745-BOUND",
+                        operator_resource_id="R1",
+                        start_date=today - timedelta(days=1),
+                        end_date=today + timedelta(days=1),
+                        locked=True,
+                    ),
+                ]
+            )
+
+        with self.factory() as session:
+            snapshot = SqlPlannerQueryRepository(session).planning_snapshot(
+                start=D1,
+                end=D2,
+            )
+            alice = next(row for row in snapshot.resources if row.id == "R1")
+            self.assertEqual(
+                alice.planning_card_competencies,
+                ("Alpha", "Zulu", "Beta"),
+            )
+            self.assertNotIn("Gamma", alice.planning_card_competencies)
+            self.assertNotIn("Delta", alice.planning_card_competencies)
+            self.assertEqual(
+                tuple(
+                    (vehicle.asset_id, vehicle.code, vehicle.label)
+                    for vehicle in alice.continuous_vehicles
+                ),
+                (
+                    ("A745-CONT-A", "CAM-745-A", "Camion continu A 745"),
+                    ("A745-CONT-B", "CAM-745-B", "Camion continu B 745"),
+                ),
+            )
+            self.assertEqual(alice.residence_city, "Saint-Jean-sur-Richelieu")
+
+        with transactional_session(self.factory) as session:
+            session.add(
+                Resource(
+                    id="R745-EMPTY",
+                    name="Sans métadonnées 745",
+                    active=True,
+                    erp_active=True,
+                )
+            )
+            session.flush()
+            session.add_all(
+                [
+                    ResourceCompetency(
+                        resource_id="R745-EMPTY",
+                        competency_id="C745-C",
+                    ),
+                    ResourceAvailabilityRule(
+                        id="SCH-R745-EMPTY",
+                        resource_id="R745-EMPTY",
+                        availability_type="Horaire standard",
+                        start_date=D1,
+                        end_date=D2,
+                        active=True,
+                    ),
+                ]
+            )
+
+        with self.factory() as session:
+            snapshot = SqlPlannerQueryRepository(session).planning_snapshot(
+                start=D1,
+                end=D2,
+            )
+            empty = next(row for row in snapshot.resources if row.id == "R745-EMPTY")
+            self.assertEqual(empty.planning_card_competencies, ())
+            self.assertEqual(empty.continuous_vehicles, ())
+            self.assertIsNone(empty.residence_city)
+
+        with transactional_session(self.factory) as session:
+            requirement = session.get(AssetRequirement, "AR745-CONT-A")
+            allocation = session.get(AssetAllocation, "AA745-CONT-A")
+            assert requirement is not None and allocation is not None
+            requirement.end_date = today - timedelta(days=1)
+            allocation.end_date = today - timedelta(days=1)
+
+        with self.factory() as session:
+            snapshot = SqlPlannerQueryRepository(session).planning_snapshot(
+                start=D1,
+                end=D2,
+            )
+            alice = next(row for row in snapshot.resources if row.id == "R1")
+            self.assertEqual(
+                tuple(vehicle.asset_id for vehicle in alice.continuous_vehicles),
+                ("A745-CONT-B",),
+            )
 
     def test_schedulable_resources_follow_standard_schedule_window(self) -> None:
         with transactional_session(self.factory) as session:

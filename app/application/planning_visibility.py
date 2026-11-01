@@ -295,6 +295,8 @@ class PlanningVisibilityService:
             residence_city=None,
             competencies=None,
             competency_ids=(),
+            planning_card_competencies=(),
+            continuous_vehicles=(),
             note=None,
             external_id=None,
             erp_status=None,
