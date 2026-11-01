@@ -10,7 +10,12 @@ from sqlalchemy.orm import Session
 from ...application.errors import ApplicationConflictError
 from ...application.read_models import DemandOperationalChoiceReadModel
 from ...application.repository_ports import DemandOperationalChoiceRepositoryPort
-from ...domain.approval_envelope import EnvelopeEntryIdentity, EnvelopeGroupIdentity
+from ...domain.approval_envelope import (
+    EnvelopeEntryIdentity,
+    EnvelopeGroupIdentity,
+    approval_envelope_from_snapshot_payload,
+    delegated_effort_authorization_subject_compatible,
+)
 from ...domain.confirmation import normalize_confirmation
 from .approval_revision_models import (
     APPROVAL_REFERENCE_CAPTURED,
@@ -103,6 +108,61 @@ class SqlRequestOperationalChoiceRepository(DemandOperationalChoiceRepositoryPor
             if _text(key) and _text(item)
         }
 
+
+    @staticmethod
+    def _revision_entries_by_identity(
+        revision: RequestApprovalRevision,
+    ) -> dict[str, object]:
+        payload = json.loads(revision.payload_text)
+        authorization = payload.get("authorization")
+        if not isinstance(authorization, Mapping):
+            raise ValueError("Le snapshot approuvé ne contient pas d'autorisation valide.")
+        envelope = approval_envelope_from_snapshot_payload(authorization)
+        return {
+            entry.identity.stable_key: entry
+            for entry in envelope.entries
+        }
+
+    def _has_budget_override_provenance(
+        self,
+        *,
+        request_id: str,
+        approval_revision_id: str,
+        entry_key: str,
+        approved_hours: Decimal,
+        operational_hours: Decimal,
+    ) -> bool:
+        rows = self._session.scalars(
+            select(WorkforceRequestHistory).where(
+                WorkforceRequestHistory.workforce_request_id == request_id,
+                WorkforceRequestHistory.action == "Budget opérationnel",
+            )
+        ).all()
+        for row in rows:
+            try:
+                details = json.loads(row.details or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(details, Mapping):
+                continue
+            try:
+                recorded_approved = Decimal(
+                    _text(details.get("approved_hours"))
+                ).quantize(Decimal("0.01"))
+                recorded_operational = Decimal(
+                    _text(details.get("operational_hours"))
+                ).quantize(Decimal("0.01"))
+            except Exception:
+                continue
+            if (
+                _text(details.get("approval_revision_id")) == approval_revision_id
+                and _text(details.get("approved_entry_key")) == entry_key
+                and recorded_approved == approved_hours
+                and recorded_operational == operational_hours
+            ):
+                return True
+        return False
+
     @staticmethod
     def _read_model(
         row: RequestOperationalState,
@@ -176,6 +236,12 @@ class SqlRequestOperationalChoiceRepository(DemandOperationalChoiceRepositoryPor
                 if previous_revision is not None
                 else {}
             )
+            previous_entries_by_identity = (
+                self._revision_entries_by_identity(previous_revision)
+                if previous_revision is not None
+                else {}
+            )
+            approved_entries_by_identity = self._revision_entries_by_identity(revision)
             preserved_budget_overrides: dict[str, str] = {}
             for entry_key, value in previous_budget_overrides.items():
                 approved_hours = approved_hours_by_entry.get(entry_key)
@@ -189,11 +255,34 @@ class SqlRequestOperationalChoiceRepository(DemandOperationalChoiceRepositoryPor
                     if previous_approved_hours is not None
                     else None
                 )
+                previous_entry = previous_entries_by_identity.get(entry_key)
+                approved_entry = approved_entries_by_identity.get(entry_key)
+                authorized_exception_provenance = bool(
+                    previous_revision is not None
+                    and previous_approved_hours is not None
+                    and operational_hours > previous_approved_hours
+                    and self._has_budget_override_provenance(
+                        request_id=request_id,
+                        approval_revision_id=previous_revision.id,
+                        entry_key=entry_key,
+                        approved_hours=previous_approved_hours,
+                        operational_hours=operational_hours,
+                    )
+                )
+                compatible_authorization_subject = bool(
+                    previous_entry is not None
+                    and approved_entry is not None
+                    and delegated_effort_authorization_subject_compatible(
+                        previous_entry,
+                        approved_entry,
+                    )
+                )
                 existing_exception_remains_valid = bool(
                     operational_hours > approved_hours
                     and previous_approved_hours is not None
-                    and operational_hours > previous_approved_hours
                     and approved_hours >= previous_approved_hours
+                    and authorized_exception_provenance
+                    and compatible_authorization_subject
                 )
                 if (
                     operational_hours > approved_hours
