@@ -21,6 +21,7 @@ from ...application.query_models import (
     PendingDemandLoadReadModel,
     PlanningActionReadModel,
     PlanningCapacityGridReadModel,
+    PlanningContinuousVehicleReadModel,
     PlanningDayCapacityReadModel,
     PlanningResourceCapacityReadModel,
     PlanningSegmentCapacityDiagnosticReadModel,
@@ -285,22 +286,24 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             if names
         }
 
-    def _current_continuous_vehicle_by_resource(
+    def _current_continuous_vehicles_by_resource(
         self,
         resource_ids: Sequence[str],
         *,
         as_of: date,
-    ) -> dict[str, tuple[str, str]]:
+    ) -> dict[str, tuple[PlanningContinuousVehicleReadModel, ...]]:
         identifiers = tuple(str(value) for value in resource_ids if str(value))
         if not identifiers:
             return {}
+        grouped: dict[str, list[PlanningContinuousVehicleReadModel]] = {
+            identifier: [] for identifier in identifiers
+        }
         rows = self._session.execute(
             select(
                 AssetRequirement.context_resource_id,
+                Asset.id,
                 Asset.code,
                 Asset.label,
-                AssetRequirement.start_date,
-                AssetRequirement.id,
             )
             .join(
                 AssetAllocation,
@@ -326,16 +329,24 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             )
             .order_by(
                 AssetRequirement.context_resource_id,
-                AssetRequirement.start_date.desc(),
                 Asset.code,
-                AssetRequirement.id,
+                Asset.id,
             )
         ).all()
-        result: dict[str, tuple[str, str]] = {}
-        for resource_id, asset_code, asset_label, _start_date, _requirement_id in rows:
-            if resource_id and resource_id not in result:
-                result[resource_id] = (asset_code, asset_label)
-        return result
+        for resource_id, asset_id, asset_code, asset_label in rows:
+            if resource_id:
+                grouped.setdefault(resource_id, []).append(
+                    PlanningContinuousVehicleReadModel(
+                        asset_id=asset_id,
+                        code=asset_code,
+                        label=asset_label,
+                    )
+                )
+        return {
+            resource_id: tuple(vehicles)
+            for resource_id, vehicles in grouped.items()
+            if vehicles
+        }
 
     def _with_planning_card_metadata(
         self,
@@ -344,7 +355,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         rows = tuple(resources)
         identifiers = tuple(row.id for row in rows)
         competencies = self._planning_card_competencies_by_resource(identifiers)
-        vehicles = self._current_continuous_vehicle_by_resource(
+        vehicles = self._current_continuous_vehicles_by_resource(
             identifiers,
             as_of=date.today(),
         )
@@ -352,12 +363,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             replace(
                 row,
                 planning_card_competencies=competencies.get(row.id, ()),
-                continuous_vehicle_code=(
-                    vehicles[row.id][0] if row.id in vehicles else None
-                ),
-                continuous_vehicle_label=(
-                    vehicles[row.id][1] if row.id in vehicles else None
-                ),
+                continuous_vehicles=vehicles.get(row.id, ()),
             )
             for row in rows
         )
