@@ -112,15 +112,25 @@ test("745 affiche uniquement les métadonnées compactes autorisées et retire l
     expect(schedule.status(), await schedule.text()).toBe(201);
 
     const typeId = await vehicleType(page);
-    const continuousAsset = await page.request.post("/api/v1/assets", {
+    const continuousAssetA = await page.request.post("/api/v1/assets", {
       data: {
-        code: `VEH-745-C-${stamp}`,
-        label: `Camion continu 745 ${stamp}`,
+        code: `VEH-745-A-${stamp}`,
+        label: `Camion continu A 745 ${stamp}`,
         asset_type_id: typeId,
       },
     });
-    expect(continuousAsset.status(), await continuousAsset.text()).toBe(201);
-    const continuousAssetId = String((await continuousAsset.json() as { id: string }).id);
+    expect(continuousAssetA.status(), await continuousAssetA.text()).toBe(201);
+    const continuousAssetAId = String((await continuousAssetA.json() as { id: string }).id);
+
+    const continuousAssetB = await page.request.post("/api/v1/assets", {
+      data: {
+        code: `VEH-745-B-${stamp}`,
+        label: `Camion continu B 745 ${stamp}`,
+        asset_type_id: typeId,
+      },
+    });
+    expect(continuousAssetB.status(), await continuousAssetB.text()).toBe(201);
+    const continuousAssetBId = String((await continuousAssetB.json() as { id: string }).id);
 
     const boundedAsset = await page.request.post("/api/v1/assets", {
       data: {
@@ -132,17 +142,32 @@ test("745 affiche uniquement les métadonnées compactes autorisées et retire l
     expect(boundedAsset.status(), await boundedAsset.text()).toBe(201);
     const boundedAssetId = String((await boundedAsset.json() as { id: string }).id);
 
-    const continuous = await page.request.post("/api/v1/assets/continuous-resource-assignments", {
-      headers: { "Idempotency-Key": `745-continuous-${stamp}` },
+    const continuousA = await page.request.post("/api/v1/assets/continuous-resource-assignments", {
+      headers: { "Idempotency-Key": `745-continuous-a-${stamp}` },
       data: {
         resource_id: resourceId,
-        asset_id: continuousAssetId,
+        asset_id: continuousAssetAId,
         start_date: todayIso,
         expected_planning_version: await planningVersion(page),
       },
     });
-    expect(continuous.status(), await continuous.text()).toBe(201);
-    const continuousPayload = await continuous.json() as {
+    expect(continuousA.status(), await continuousA.text()).toBe(201);
+    const continuousAPayload = await continuousA.json() as {
+      requirement_id: string;
+      planning_version: number;
+    };
+
+    const continuousB = await page.request.post("/api/v1/assets/continuous-resource-assignments", {
+      headers: { "Idempotency-Key": `745-continuous-b-${stamp}` },
+      data: {
+        resource_id: resourceId,
+        asset_id: continuousAssetBId,
+        start_date: todayIso,
+        expected_planning_version: continuousAPayload.planning_version,
+      },
+    });
+    expect(continuousB.status(), await continuousB.text()).toBe(201);
+    const continuousBPayload = await continuousB.json() as {
       requirement_id: string;
       planning_version: number;
     };
@@ -155,7 +180,7 @@ test("745 affiche uniquement les métadonnées compactes autorisées et retire l
         asset_id: boundedAssetId,
         start_date: yesterday,
         end_date: future,
-        expected_planning_version: continuousPayload.planning_version,
+        expected_planning_version: continuousBPayload.planning_version,
       },
     });
     expect(bounded.status(), await bounded.text()).toBe(201);
@@ -165,9 +190,17 @@ test("745 affiche uniquement les métadonnées compactes autorisées et retire l
     );
     expect(snapshotResponse.ok(), await snapshotResponse.text()).toBeTruthy();
     const snapshotPayload = await snapshotResponse.json() as {
-      resources: Array<{ id: string }>;
+      resources: Array<{
+        id: string;
+        continuous_vehicles: Array<{ asset_id: string; code: string; label: string }>;
+      }>;
     };
-    expect(snapshotPayload.resources.some((resource) => resource.id === resourceId)).toBeTruthy();
+    const snapshotResource = snapshotPayload.resources.find((resource) => resource.id === resourceId);
+    expect(snapshotResource).toBeTruthy();
+    expect(snapshotResource!.continuous_vehicles.map((vehicle) => vehicle.asset_id)).toEqual([
+      continuousAssetAId,
+      continuousAssetBId,
+    ]);
 
     // Fixture setup uses page.request, outside React's mutation lifecycle.
     // Reload so Planning initializes from authoritative state after the fixture exists.
@@ -183,11 +216,14 @@ test("745 affiche uniquement les métadonnées compactes autorisées et retire l
     await expect(row).not.toContainText(`Gamma 745 ${stamp}`);
     await expect(row).not.toContainText(`Delta 745 ${stamp}`);
     await expect(row.locator(".resource-card-city")).toContainText(city);
-    await expect(row.locator(".resource-card-vehicle")).toContainText(`Camion continu 745 ${stamp}`);
+    await expect(row.locator(".resource-card-vehicle")).toHaveText([
+      `Véhicule Camion continu A 745 ${stamp} (VEH-745-A-${stamp})`,
+      `Véhicule Camion continu B 745 ${stamp} (VEH-745-B-${stamp})`,
+    ]);
     await expect(row).not.toContainText(`Camion temporaire 745 ${stamp}`);
 
     const revoked = await page.request.post(
-      `/api/v1/assets/continuous-resource-assignments/${encodeURIComponent(continuousPayload.requirement_id)}/revoke`,
+      `/api/v1/assets/continuous-resource-assignments/${encodeURIComponent(continuousAPayload.requirement_id)}/revoke`,
       {
         headers: { "Idempotency-Key": `745-revoke-${stamp}` },
         data: {
@@ -207,9 +243,10 @@ test("745 affiche uniquement les métadonnées compactes autorisées et retire l
     // #744 revocation is effective from the requested business date. A current-day
     // assignment closed at today remains current through today and must not vanish
     // early from the compact card.
-    await expect(refreshed.locator(".resource-card-vehicle")).toContainText(
-      `Camion continu 745 ${stamp}`,
-    );
+    await expect(refreshed.locator(".resource-card-vehicle")).toHaveText([
+      `Véhicule Camion continu A 745 ${stamp} (VEH-745-A-${stamp})`,
+      `Véhicule Camion continu B 745 ${stamp} (VEH-745-B-${stamp})`,
+    ]);
     await expect(refreshed).not.toContainText(`Camion temporaire 745 ${stamp}`);
     await expect(refreshed.locator(".resource-card-city")).toContainText(city);
 
@@ -224,8 +261,11 @@ test("745 affiche uniquement les métadonnées compactes autorisées et retire l
       assignments: Array<{ asset_id: string; effective_state: string }>;
     };
     expect(
-      afterRevocationPayload.assignments.find((row) => row.asset_id === continuousAssetId)?.effective_state,
+      afterRevocationPayload.assignments.find((row) => row.asset_id === continuousAssetAId)?.effective_state,
     ).toBe("ENDED");
+    expect(
+      afterRevocationPayload.assignments.find((row) => row.asset_id === continuousAssetBId)?.effective_state,
+    ).toBe("ACTIVE");
   } finally {
     if (resourceId) {
       await page.request.post(`/api/v1/resources/${encodeURIComponent(resourceId)}/deactivate`);
