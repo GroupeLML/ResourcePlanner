@@ -45,39 +45,65 @@ def _migration_database_scope(database_url: str):
 class ResourceResidenceCityMigrationConfigurationTests(unittest.TestCase):
     def test_conflicting_ambient_database_url_is_overridden_through_cleanup(self) -> None:
         test_url = (
-            "mssql+pyodbc://test-user:test-password@test-host/TestDatabase"
+            "mssql+pyodbc://test-host/TestDatabase"
             "?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
         )
         ambient_url = (
-            "mssql+pyodbc://runtime-user:runtime-password@runtime-host/RuntimeDatabase"
+            "mssql+pyodbc://runtime-host/RuntimeDatabase"
             "?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
         )
-        observed_cleanup_urls: list[str | None] = []
+        observed_migration_urls: list[tuple[str, str | None]] = []
+
+        def fail_downgrade(*_args, **_kwargs) -> None:
+            observed_migration_urls.append(
+                (
+                    "downgrade",
+                    os.environ.get("RESOURCEPLANNER_DATABASE_URL"),
+                )
+            )
+            raise RuntimeError("injected failure")
+
+        def observe_cleanup(*_args, **_kwargs) -> None:
+            observed_migration_urls.append(
+                (
+                    "cleanup",
+                    os.environ.get("RESOURCEPLANNER_DATABASE_URL"),
+                )
+            )
 
         with patch.dict(
             os.environ,
             {"RESOURCEPLANNER_DATABASE_URL": ambient_url},
             clear=False,
         ):
-            with self.assertRaisesRegex(RuntimeError, "injected failure"):
-                with _migration_database_scope(test_url):
-                    self.assertEqual(
-                        os.environ.get("RESOURCEPLANNER_DATABASE_URL"),
-                        test_url,
-                    )
-                    config = _alembic_config(test_url)
-                    self.assertEqual(
-                        config.get_main_option("sqlalchemy.url"),
-                        test_url.replace("%", "%%"),
-                    )
-                    try:
-                        raise RuntimeError("injected failure")
-                    finally:
-                        observed_cleanup_urls.append(
-                            os.environ.get("RESOURCEPLANNER_DATABASE_URL")
+            with patch.object(
+                command,
+                "downgrade",
+                side_effect=fail_downgrade,
+            ), patch.object(
+                command,
+                "upgrade",
+                side_effect=observe_cleanup,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "injected failure"):
+                    with _migration_database_scope(test_url):
+                        config = _alembic_config(test_url)
+                        self.assertEqual(
+                            config.get_main_option("sqlalchemy.url"),
+                            test_url.replace("%", "%%"),
                         )
+                        try:
+                            command.downgrade(config, PREVIOUS_REVISION)
+                        finally:
+                            command.upgrade(config, "head")
 
-            self.assertEqual(observed_cleanup_urls, [test_url])
+            self.assertEqual(
+                observed_migration_urls,
+                [
+                    ("downgrade", test_url),
+                    ("cleanup", test_url),
+                ],
+            )
             self.assertEqual(
                 os.environ.get("RESOURCEPLANNER_DATABASE_URL"),
                 ambient_url,
