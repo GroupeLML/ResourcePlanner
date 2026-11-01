@@ -8,6 +8,8 @@ import unittest
 
 from fastapi.testclient import TestClient
 
+from app.application.planning_visibility import PlanningVisibilityService
+from app.application.query_models import ResourceReadModel
 from app.application.security import (
     ROLE_COORDINATOR,
     ROLE_PROJECT_MANAGER,
@@ -541,6 +543,23 @@ class PlanningVisibilitySecurityAcceptanceTests(unittest.TestCase):
                 )
         finally:
             engine.dispose()
+
+    def test_745_technician_neighbor_projection_redacts_compact_card_metadata(self) -> None:
+        projected = PlanningVisibilityService._minimal_neighbor_resource(
+            ResourceReadModel(
+                id="R-745-PRIVATE",
+                name="Ressource privée 745",
+                residence_city="Ville privée 745",
+                planning_card_competencies=("Compétence privée 745",),
+                continuous_vehicle_code="VEH-PRIVATE-745",
+                continuous_vehicle_label="Véhicule privé 745",
+            )
+        )
+
+        self.assertIsNone(projected.residence_city)
+        self.assertEqual(projected.planning_card_competencies, ())
+        self.assertIsNone(projected.continuous_vehicle_code)
+        self.assertIsNone(projected.continuous_vehicle_label)
 
     def test_project_manager_omitted_scope_is_fail_closed_and_global_is_rejected(
         self,
