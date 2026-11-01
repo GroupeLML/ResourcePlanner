@@ -21,7 +21,7 @@ MIGRATIONS = ROOT / "migrations"
 VERSIONS = MIGRATIONS / "versions"
 BASELINE_FILE = VERSIONS / "0001_v2_production_baseline.py"
 BASELINE_REVISION = "v2_production_baseline"
-HEAD_REVISION = "0027_placement_not_before_date"
+HEAD_REVISION = "0028_resource_residence_city"
 
 
 def alembic_config(database_path: Path) -> Config:
@@ -114,6 +114,7 @@ class SqlMigrationTests(unittest.TestCase):
             [revision.revision for revision in script.walk_revisions()],
             [
                 HEAD_REVISION,
+                "0027_placement_not_before_date",
                 "0026_request_work_queue_restorations",
                 "0025_request_work_queue_architect_corrections",
                 "0024_request_work_queue_command_identity",
@@ -1008,6 +1009,61 @@ class SqlMigrationTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_0028_residence_city_is_additive_and_preserves_existing_resources(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_path = Path(directory) / "resource-residence-city.db"
+            config = alembic_config(database_path)
+            command.upgrade(config, "0027_placement_not_before_date")
+
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "INSERT INTO resources "
+                        "(id, name, active, erp_active, sort_order) "
+                        "VALUES ('R-742-LEGACY', 'Ressource sans ville', 1, 1, 0)"
+                    )
+                )
+            engine.dispose()
+
+            command.upgrade(config, "head")
+
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            try:
+                inspector = inspect(engine)
+                columns = {
+                    column["name"]
+                    for column in inspector.get_columns("resources")
+                }
+                self.assertIn("residence_city", columns)
+                with engine.begin() as connection:
+                    self.assertIsNone(
+                        connection.execute(
+                            text(
+                                "SELECT residence_city FROM resources "
+                                "WHERE id = 'R-742-LEGACY'"
+                            )
+                        ).scalar_one()
+                    )
+                    connection.execute(
+                        text(
+                            "UPDATE resources SET residence_city = :city "
+                            "WHERE id = 'R-742-LEGACY'"
+                        ),
+                        {"city": "Chambly"},
+                    )
+                    self.assertEqual(
+                        connection.execute(
+                            text(
+                                "SELECT residence_city FROM resources "
+                                "WHERE id = 'R-742-LEGACY'"
+                            )
+                        ).scalar_one(),
+                        "Chambly",
+                    )
+            finally:
+                engine.dispose()
+
     def test_fresh_sqlite_upgrade_reaches_baseline_with_only_technical_seed(self) -> None:
         with TemporaryDirectory() as directory:
             database_path = Path(directory) / "fresh-baseline.db"
@@ -1285,6 +1341,7 @@ class SqlMigrationTests(unittest.TestCase):
             "CREATE TABLE PLANNING_WORK_QUEUE_RESTORATIONS",
             "RESOURCE_CLASS_VERSION",
             "FK_COMPETENCIES_RESOURCE_CLASS_CODE_RESOURCE_CLASS_CONFIGS",
+            "RESIDENCE_CITY",
         ):
             self.assertIn(token, ddl)
         self.assertIn(BASELINE_REVISION.upper(), ddl)
