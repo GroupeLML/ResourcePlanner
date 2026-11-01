@@ -68,6 +68,9 @@ SOURCE_MISSING_COLUMNS = {
         "operational_responsible_override_contact_id",
         "operational_responsible_override_version",
     },
+    "resources": {
+        "residence_city",
+    },
     "resource_requirements": {
         "operational_responsible_override_contact_id",
         "captured_operational_responsible_contact_id",

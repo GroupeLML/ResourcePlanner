@@ -87,6 +87,9 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
                 "operational_responsible_override_contact_id": None,
                 "operational_responsible_override_version": 1,
             },
+            "resources": {
+                "residence_city": None,
+            },
             "resource_requirements": {
                 "operational_responsible_override_contact_id": None,
                 "captured_operational_responsible_contact_id": None,

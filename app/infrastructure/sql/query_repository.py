@@ -194,6 +194,7 @@ def _resource_read_model(resource: Resource, competency_ids: tuple[str, ...] = (
         id=resource.id,
         name=resource.name,
         email=_optional_text(resource.email),
+        residence_city=_optional_text(resource.residence_city),
         resource_class=_optional_text(resource.resource_class),
         competencies=_optional_text(resource.competencies),
         competency_ids=competency_ids,

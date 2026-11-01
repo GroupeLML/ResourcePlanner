@@ -567,6 +567,7 @@ export type ResourceReadModel = {
   id: string;
   name: string;
   email: string | null;
+  residence_city: string | null;
   resource_class: string | null;
   competencies: string | null;
   competency_ids: string[];
@@ -590,6 +591,7 @@ export type ResourceReadModel = {
 export type ResourceWrite = {
   name: string;
   email: string | null;
+  residence_city: string | null;
   resource_class: string | null;
   competencies: string | null;
   competency_ids: string[];

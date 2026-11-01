@@ -269,6 +269,7 @@ class Resource(TimestampMixin, Base):
     external_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    residence_city: Mapped[str | None] = mapped_column(String(255), nullable=True)
     coordinator_contact_id: Mapped[str | None] = mapped_column(
         String(ID_LENGTH), ForeignKey("business_contacts.id"), nullable=True, index=True
     )

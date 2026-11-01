@@ -292,6 +292,7 @@ class PlanningVisibilityService:
         return replace(
             row,
             email=None,
+            residence_city=None,
             competencies=None,
             competency_ids=(),
             note=None,

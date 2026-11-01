@@ -21,6 +21,7 @@ class ReactResourceAdminContractTests(unittest.TestCase):
         api = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
 
         self.assertIn("email: string | null", api)
+        self.assertIn("residence_city: string | null", api)
         self.assertIn("ResourceAvailabilityRuleReadModel", api)
         self.assertIn("resource_class_codes: string[]", api)
         self.assertIn("resource_class_codes?: string[]", api)
@@ -63,6 +64,8 @@ class ReactResourceAdminContractTests(unittest.TestCase):
         self.assertIn("Statut ERP", page)
         self.assertIn("Département", page)
         self.assertIn("Division / succursale", page)
+        self.assertIn("Ville de résidence", page)
+        self.assertIn('residence_city: nullable(profile.residence_city ?? "")', page)
 
         integration_api = (ROOT / "frontend" / "src" / "acumaticaIntegrationApi.ts").read_text(
             encoding="utf-8"

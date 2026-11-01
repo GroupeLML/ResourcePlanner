@@ -56,6 +56,7 @@ def _resource_manual_order_key(
 class ResourceCreateCommand:
     name: str
     email: str | None = None
+    residence_city: str | None = None
     resource_class: str | None = None
     competencies: str | None = None
     note: str | None = None
@@ -78,6 +79,7 @@ class ResourceUpdateCommand:
     resource_id: str
     name: str | UnsetType = UNSET
     email: str | None | UnsetType = UNSET
+    residence_city: str | None | UnsetType = UNSET
     resource_class: str | None | UnsetType = UNSET
     competencies: str | None | UnsetType = UNSET
     note: str | None | UnsetType = UNSET
@@ -105,6 +107,7 @@ class ResourceUpdateCommand:
         for field in (
             "name",
             "email",
+            "residence_city",
             "resource_class",
             "competencies",
             "note",
@@ -426,6 +429,7 @@ class ResourceAdminService:
                 {
                     "name": command.name,
                     "email": command.email,
+                    "residence_city": command.residence_city,
                     "resource_class": command.resource_class,
                     "competencies": command.competencies,
                     "note": command.note,
