@@ -56,6 +56,7 @@ test("745 affiche uniquement les métadonnées compactes autorisées et retire l
   const { context, page } = await openAdmin(browser);
   const stamp = Date.now();
   const today = new Date();
+  const scheduleStart = localIso(addDays(today, -7));
   const yesterday = localIso(addDays(today, -1));
   const todayIso = localIso(today);
   const tomorrowIso = localIso(addDays(today, 1));
@@ -89,7 +90,7 @@ test("745 affiche uniquement les métadonnées compactes autorisées et retire l
       data: {
         availability_type: "Horaire standard",
         resource_id: resourceId,
-        start_date: yesterday,
+        start_date: scheduleStart,
         end_date: future,
         weekdays: "Lun,Mar,Mer,Jeu,Ven",
         start_time: "08:00:00",
