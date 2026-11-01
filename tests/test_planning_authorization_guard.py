@@ -487,8 +487,39 @@ class PlanningAuthorizationGuardTests(unittest.TestCase):
                 demand = client.get(f"/api/v1/demands/{number}").json()
                 active_lines = [row for row in demand["lines"] if row["active"]]
                 self.assertEqual(len(active_lines), 2)
-                line_a = next(row for row in active_lines if row["description"] == "Line A delegated")
-                line_b = next(row for row in active_lines if row["description"] == "Line B revision driver")
+                line_a_id = next(
+                    row["line_id"]
+                    for row in active_lines
+                    if row["description"] == "Line A delegated"
+                )
+                line_b_id = next(
+                    row["line_id"]
+                    for row in active_lines
+                    if row["description"] == "Line B revision driver"
+                )
+
+            def line_payload(row: dict[str, object]) -> dict[str, object]:
+                keys = (
+                    "line_id",
+                    "position",
+                    "kind",
+                    "required_resource_class",
+                    "required_competency_ids",
+                    "desired_start",
+                    "desired_end",
+                    "desired_active_days",
+                    "estimated_hours",
+                    "work_package_ref",
+                    "task_code",
+                    "proposed_resource_id",
+                    "confirmation",
+                    "description",
+                )
+                return {
+                    ("id" if key == "line_id" else key): row.get(key)
+                    for key in keys
+                    if row.get(key) is not None
+                }
 
             engine = create_sql_engine(database_url)
             factory = create_session_factory(engine)
@@ -504,22 +535,6 @@ class PlanningAuthorizationGuardTests(unittest.TestCase):
                     reference = session.get(RequestApprovalReference, request_id)
                     self.assertIsNotNone(reference)
                     r1 = reference.active_revision_id
-                    requirement_a = session.scalar(
-                        select(ResourceRequirement).where(
-                            ResourceRequirement.workforce_request_id == request_id,
-                            ResourceRequirement.source_request_line_id == line_a["line_id"],
-                            ResourceRequirement.status != "Annulé",
-                        )
-                    )
-                    self.assertIsNotNone(requirement_a)
-                    segment_a = requirement_a.legacy_segment_id or requirement_a.id
-
-                with TestClient(admin_app, raise_server_exceptions=False) as client:
-                    assigned = client.post(
-                        f"/api/v1/segments/{segment_a}/assign",
-                        json={"resource_id": "R1"},
-                    )
-                    self.assertEqual(assigned.status_code, 200, assigned.text)
 
                 pm_app = create_api_app(
                     database_url,
@@ -527,43 +542,22 @@ class PlanningAuthorizationGuardTests(unittest.TestCase):
                     auth_resolver=TEST_PROJECT_MANAGER_AUTH_RESOLVER,
                 )
                 with TestClient(pm_app, raise_server_exceptions=False) as client:
-                    increased = client.post(
-                        f"/api/v1/segments/{segment_a}/allocations",
+                    current = client.get(f"/api/v1/demands/{number}").json()
+                    lines = [row for row in current["lines"] if row["active"]]
+                    line_a = next(row for row in lines if row["line_id"] == line_a_id)
+                    line_b = next(row for row in lines if row["line_id"] == line_b_id)
+                    delegated_a = line_payload(line_a)
+                    delegated_a["estimated_hours"] = 12
+                    delegated = client.patch(
+                        f"/api/v1/demands/{number}",
                         json={
-                            "technician": "Alice",
-                            "day": DAY.isoformat(),
-                            "hours": 2,
-                            "outside_standard_hours": False,
-                            "confirmation": None,
-                            "overallocation_policy": "INCREASE_PLANNED",
+                            "expected_version": current["version"],
+                            "lines": [delegated_a, line_payload(line_b)],
+                            "comment": "Tolérance déléguée A 10 -> 12",
                         },
-                        headers={"Idempotency-Key": "13f-lineage-increase"},
                     )
-                    self.assertEqual(increased.status_code, 201, increased.text)
-
-                def line_payload(row: dict[str, object]) -> dict[str, object]:
-                    keys = (
-                        "line_id",
-                        "position",
-                        "kind",
-                        "required_resource_class",
-                        "required_competency_ids",
-                        "desired_start",
-                        "desired_end",
-                        "desired_active_days",
-                        "estimated_hours",
-                        "work_package_ref",
-                        "task_code",
-                        "proposed_resource_id",
-                        "confirmation",
-                        "description",
-                    )
-                    payload = {
-                        ("id" if key == "line_id" else key): row.get(key)
-                        for key in keys
-                        if row.get(key) is not None
-                    }
-                    return payload
+                    self.assertEqual(delegated.status_code, 200, delegated.text)
+                    self.assertFalse(delegated.json()["reapproval_required"])
 
                 active_revisions = [r1]
                 for offset in (1, 2, 3):
@@ -572,18 +566,23 @@ class PlanningAuthorizationGuardTests(unittest.TestCase):
                         self.assertEqual(current.status_code, 200, current.text)
                         current_body = current.json()
                         lines = [row for row in current_body["lines"] if row["active"]]
-                        current_a = next(row for row in lines if row["line_id"] == line_a["line_id"])
-                        current_b = next(row for row in lines if row["line_id"] == line_b["line_id"])
+                        current_a = next(row for row in lines if row["line_id"] == line_a_id)
+                        current_b = next(row for row in lines if row["line_id"] == line_b_id)
+                        successor_a = line_payload(current_a)
+                        # The canonical PM tolerance API also writes the candidate.
+                        # Successor approvals deliberately restore A's approved
+                        # authority to 10 h; only B advances its authorization window.
+                        successor_a["estimated_hours"] = 10
                         next_day = DAY + timedelta(days=offset)
-                        changed_b = line_payload(current_b)
-                        changed_b["desired_start"] = next_day.isoformat()
-                        changed_b["desired_end"] = next_day.isoformat()
+                        successor_b = line_payload(current_b)
+                        successor_b["desired_start"] = next_day.isoformat()
+                        successor_b["desired_end"] = next_day.isoformat()
                         patched = client.patch(
                             f"/api/v1/demands/{number}",
                             json={
                                 "expected_version": current_body["version"],
-                                "lines": [line_payload(current_a), changed_b],
-                                "comment": f"Line B compatible successor {offset}",
+                                "lines": [successor_a, successor_b],
+                                "comment": f"Line B successor {offset}",
                             },
                         )
                         self.assertEqual(patched.status_code, 200, patched.text)
@@ -614,9 +613,6 @@ class PlanningAuthorizationGuardTests(unittest.TestCase):
                             ),
                             [12.0],
                         )
-                        segment = client.get(f"/api/v1/segments/{segment_a}")
-                        self.assertEqual(segment.status_code, 200, segment.text)
-                        self.assertEqual(segment.json()["planned_hours"], 12.0)
 
                 with factory() as session:
                     revisions = session.scalars(
@@ -632,7 +628,7 @@ class PlanningAuthorizationGuardTests(unittest.TestCase):
                         entry_a = next(
                             row
                             for row in payload["authorization"]["entries"]
-                            if row["identity"].find(line_a["line_id"]) >= 0
+                            if line_a_id in str(row["identity"])
                         )
                         self.assertEqual(float(entry_a["hours"]), 10.0)
 
@@ -659,6 +655,15 @@ class PlanningAuthorizationGuardTests(unittest.TestCase):
                         list(json.loads(state.budget_overrides_text).values()),
                         ["12.00"],
                     )
+                    requirement_a = session.scalar(
+                        select(ResourceRequirement).where(
+                            ResourceRequirement.workforce_request_id == request_id,
+                            ResourceRequirement.source_request_line_id == line_a_id,
+                            ResourceRequirement.status != "Annulé",
+                        )
+                    )
+                    self.assertIsNotNone(requirement_a)
+                    self.assertEqual(float(requirement_a.planned_hours), 12.0)
             finally:
                 engine.dispose()
 
