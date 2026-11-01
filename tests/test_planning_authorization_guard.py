@@ -17,7 +17,7 @@ from app.infrastructure.sql import (
     Resource,
     ResourceAvailabilityRule,
     ResourceRequirement,
-    SqlPeriodAwareApprovedDemandSyncAdapter,
+    SqlRequestApprovalRevisionRepository,
     WorkforceRequest,
     create_session_factory,
     create_sql_engine,
@@ -380,34 +380,64 @@ class PlanningAuthorizationGuardTests(unittest.TestCase):
                     self.assertIsNotNone(request)
                     reference = session.get(RequestApprovalReference, request.id)
                     self.assertIsNotNone(reference)
-                    previous_revision_id = reference.active_revision_id
-
-                    SqlPeriodAwareApprovedDemandSyncAdapter(session).sync_approved(
-                        number,
-                        approved_request_version=int(request.aggregate_version or 1),
+                    previous_revision = session.get(
+                        RequestApprovalRevision,
+                        reference.active_revision_id,
                     )
+                    self.assertIsNotNone(previous_revision)
+                    state = session.get(RequestOperationalState, request.id)
+                    self.assertIsNotNone(state)
 
-                    refreshed_reference = session.get(RequestApprovalReference, request.id)
+                    previous_payload = json.loads(previous_revision.payload_text)
+                    previous_entry = previous_payload["authorization"]["entries"][0]
+                    entry_key = str(previous_entry["identity"])
+                    self.assertEqual(float(previous_entry["hours"]), 10.0)
+                    overrides_before = json.loads(state.budget_overrides_text)
+                    self.assertEqual(overrides_before, {entry_key: "12.00"})
+
+                    # Build a genuine successor approval with the same immutable
+                    # 10 h local authority. Calling sync_approved() here would
+                    # approve the current 12 h candidate and would therefore
+                    # test 12-approved/12-operational redundancy instead of
+                    # same-authority delegated-exception carry-forward.
+                    successor = RequestApprovalRevision(
+                        workforce_request_id=request.id,
+                        previous_revision_id=previous_revision.id,
+                        request_version=previous_revision.request_version + 1,
+                        approved_by_external_id=previous_revision.approved_by_external_id,
+                        approved_by_name=previous_revision.approved_by_name,
+                        approved_at=previous_revision.approved_at,
+                        provenance=previous_revision.provenance,
+                        payload_format_version=previous_revision.payload_format_version,
+                        payload_text=previous_revision.payload_text,
+                        authorization_fingerprint=previous_revision.authorization_fingerprint,
+                    )
+                    session.add(successor)
+                    session.flush()
+
+                    successor_payload = json.loads(successor.payload_text)
+                    successor_entry = successor_payload["authorization"]["entries"][0]
+                    self.assertEqual(str(successor_entry["identity"]), entry_key)
+                    self.assertEqual(float(successor_entry["hours"]), 10.0)
+
+                    revisions = SqlRequestApprovalRevisionRepository(session)
+                    revisions.bind_materialized_requirements(request, successor)
+                    revisions.activate_revision(request, successor)
+
+                    refreshed_reference = session.get(
+                        RequestApprovalReference,
+                        request.id,
+                    )
                     self.assertIsNotNone(refreshed_reference)
-                    self.assertNotEqual(
+                    self.assertEqual(
                         refreshed_reference.active_revision_id,
-                        previous_revision_id,
+                        successor.id,
                     )
                     state = session.get(RequestOperationalState, request.id)
                     self.assertIsNotNone(state)
-                    overrides = json.loads(state.budget_overrides_text)
-                    self.assertEqual(len(overrides), 1)
-                    self.assertEqual(float(next(iter(overrides.values()))), 12.0)
-                    active_revision = session.get(
-                        RequestApprovalRevision,
-                        refreshed_reference.active_revision_id,
-                    )
-                    self.assertIsNotNone(active_revision)
-                    payload = json.loads(active_revision.payload_text)
-                    self.assertEqual(
-                        float(payload["authorization"]["entries"][0]["hours"]),
-                        10.0,
-                    )
+                    self.assertEqual(state.approval_revision_id, successor.id)
+                    overrides_after = json.loads(state.budget_overrides_text)
+                    self.assertEqual(overrides_after, {entry_key: "12.00"})
             finally:
                 engine.dispose()
 
