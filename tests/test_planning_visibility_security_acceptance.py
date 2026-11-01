@@ -131,6 +131,7 @@ class PlanningVisibilitySecurityAcceptanceTests(unittest.TestCase):
                     id="R-PM-HIDDEN",
                     name="Ressource cachée PM",
                     email="PM-HIDDEN-CONTACT",
+                    residence_city="PM-HIDDEN-CITY",
                     note="PM-HIDDEN-RESOURCE-SECRET",
                     active=True,
                     erp_active=True,
@@ -147,6 +148,7 @@ class PlanningVisibilitySecurityAcceptanceTests(unittest.TestCase):
                     external_id="EMP-COLLEAGUE",
                     name="Collègue",
                     email="COLLEAGUE-PRIVATE-CONTACT",
+                    residence_city="COLLEAGUE-PRIVATE-CITY",
                     note="COLLEAGUE-PRIVATE-RESOURCE-NOTE",
                     active=True,
                     erp_active=True,
@@ -154,6 +156,7 @@ class PlanningVisibilitySecurityAcceptanceTests(unittest.TestCase):
                 Resource(
                     id="R-COORD-A",
                     name="Ressource coordonnée Alpha sans quart",
+                    residence_city="Saint-Jean-sur-Richelieu",
                     resource_class="INSTALL_ELEC",
                     erp_employee_class="ELCOMP",
                     coordinator_contact_id="C-COORD-A",
@@ -163,6 +166,7 @@ class PlanningVisibilitySecurityAcceptanceTests(unittest.TestCase):
                 Resource(
                     id="R-COORD-B",
                     name="Ressource coordonnée Beta sans quart",
+                    residence_city="Chambly",
                     resource_class="INSTALL_ELEC",
                     erp_employee_class="ELAPP1",
                     coordinator_contact_id="C-COORD-B",
@@ -565,6 +569,7 @@ class PlanningVisibilitySecurityAcceptanceTests(unittest.TestCase):
             "PM-HIDDEN-SHIFT-SECRET",
             "PM-HIDDEN-RESOURCE-SECRET",
             "PM-HIDDEN-CONTACT",
+            "PM-HIDDEN-CITY",
         ):
             self.assertNotIn(forbidden_value, default_scope.text)
 
@@ -635,6 +640,7 @@ class PlanningVisibilitySecurityAcceptanceTests(unittest.TestCase):
             "TRANSITIVE-P3-D1-SECRET",
             "COLLEAGUE-PRIVATE-CONTACT",
             "COLLEAGUE-PRIVATE-RESOURCE-NOTE",
+            "COLLEAGUE-PRIVATE-CITY",
         ):
             self.assertNotIn(forbidden_value, response.text)
 
@@ -674,6 +680,8 @@ class PlanningVisibilitySecurityAcceptanceTests(unittest.TestCase):
             beta.json()["resources"][0]["planning_subgroup_code"],
             "APPRENTICE",
         )
+        self.assertEqual(alpha.json()["resources"][0]["residence_city"], "Saint-Jean-sur-Richelieu")
+        self.assertEqual(beta.json()["resources"][0]["residence_city"], "Chambly")
         self.assertEqual(alpha.json()["shifts"], [])
         self.assertEqual(beta.json()["shifts"], [])
         self.assertNotIn("Ressource coordonnée Beta sans quart", alpha.text)
