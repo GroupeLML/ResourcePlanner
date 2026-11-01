@@ -151,6 +151,7 @@ class SqlPlannerQueryRepositoryTests(unittest.TestCase):
             session.add_all(
                 [
                     Competency(id="C745-A", name="Alpha", sort_order=5),
+                    Competency(id="C745-E", name="Zulu", sort_order=5),
                     Competency(id="C745-B", name="Beta", sort_order=19),
                     Competency(id="C745-C", name="Gamma", sort_order=20),
                     Competency(id="C745-D", name="Delta", sort_order=30),
@@ -178,6 +179,7 @@ class SqlPlannerQueryRepositoryTests(unittest.TestCase):
             session.add_all(
                 [
                     ResourceCompetency(resource_id="R1", competency_id="C745-C"),
+                    ResourceCompetency(resource_id="R1", competency_id="C745-E"),
                     ResourceCompetency(resource_id="R1", competency_id="C745-B"),
                     ResourceCompetency(resource_id="R1", competency_id="C745-D"),
                     ResourceCompetency(resource_id="R1", competency_id="C745-A"),
@@ -235,13 +237,50 @@ class SqlPlannerQueryRepositoryTests(unittest.TestCase):
             alice = next(row for row in snapshot.resources if row.id == "R1")
             self.assertEqual(
                 alice.planning_card_competencies,
-                ("Alpha", "Beta"),
+                ("Alpha", "Zulu", "Beta"),
             )
             self.assertNotIn("Gamma", alice.planning_card_competencies)
             self.assertNotIn("Delta", alice.planning_card_competencies)
             self.assertEqual(alice.continuous_vehicle_code, "CAM-745")
             self.assertEqual(alice.continuous_vehicle_label, "Camion continu 745")
             self.assertEqual(alice.residence_city, "Saint-Jean-sur-Richelieu")
+
+        with transactional_session(self.factory) as session:
+            session.add(
+                Resource(
+                    id="R745-EMPTY",
+                    name="Sans métadonnées 745",
+                    active=True,
+                    erp_active=True,
+                )
+            )
+            session.flush()
+            session.add_all(
+                [
+                    ResourceCompetency(
+                        resource_id="R745-EMPTY",
+                        competency_id="C745-C",
+                    ),
+                    ResourceAvailabilityRule(
+                        id="SCH-R745-EMPTY",
+                        resource_id="R745-EMPTY",
+                        availability_type="Horaire standard",
+                        start_date=D1,
+                        end_date=D2,
+                        active=True,
+                    ),
+                ]
+            )
+
+        with self.factory() as session:
+            snapshot = SqlPlannerQueryRepository(session).planning_snapshot(
+                start=D1,
+                end=D2,
+            )
+            empty = next(row for row in snapshot.resources if row.id == "R745-EMPTY")
+            self.assertEqual(empty.planning_card_competencies, ())
+            self.assertIsNone(empty.continuous_vehicle_label)
+            self.assertIsNone(empty.residence_city)
 
         with transactional_session(self.factory) as session:
             requirement = session.get(AssetRequirement, "AR745-CONT")
