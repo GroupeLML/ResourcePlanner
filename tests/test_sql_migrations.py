@@ -96,6 +96,7 @@ class SqlMigrationTests(unittest.TestCase):
                 "0025_request_work_queue_architect_corrections.py",
                 "0026_request_work_queue_restorations.py",
                 "0027_placement_not_before_date.py",
+                "0028_resource_residence_city.py",
             ],
         )
 
