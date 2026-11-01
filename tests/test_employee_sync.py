@@ -91,6 +91,7 @@ class EmployeeSyncTests(unittest.TestCase):
             self.assertTrue(row.erp_active)
             row.active = True
             row.resource_class = "Programmation"
+            row.residence_city = "Chambly"
             row.competencies = "PLC;SCADA"
             row.note = "Attribut local"
             row.sort_order = 7
@@ -118,6 +119,7 @@ class EmployeeSyncTests(unittest.TestCase):
             self.assertEqual(row.erp_status, "Inactif")
             self.assertEqual(row.erp_branch_code, "110")
             self.assertEqual(row.resource_class, "Programmation")
+            self.assertEqual(row.residence_city, "Chambly")
             self.assertEqual(row.competencies, "PLC;SCADA")
             self.assertEqual(row.note, "Attribut local")
             self.assertEqual(row.sort_order, 7)
