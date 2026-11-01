@@ -125,7 +125,7 @@ test("745 affiche uniquement les métadonnées compactes autorisées et retire l
       data: {
         resource_id: resourceId,
         asset_id: continuousAssetId,
-        start_date: yesterday,
+        start_date: todayIso,
         expected_planning_version: await planningVersion(page),
       },
     });
