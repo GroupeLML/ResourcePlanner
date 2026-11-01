@@ -59,6 +59,13 @@ class WorkPackageReadModel:
 
 
 @dataclass(frozen=True, slots=True)
+class PlanningContinuousVehicleReadModel:
+    asset_id: str
+    code: str
+    label: str
+
+
+@dataclass(frozen=True, slots=True)
 class ResourceReadModel:
     id: str
     name: str
@@ -83,8 +90,7 @@ class ResourceReadModel:
     planning_subgroup_code: str | None = None
     planning_subgroup_label: str | None = None
     planning_card_competencies: tuple[str, ...] = ()
-    continuous_vehicle_code: str | None = None
-    continuous_vehicle_label: str | None = None
+    continuous_vehicles: tuple[PlanningContinuousVehicleReadModel, ...] = ()
 
     @property
     def effective_active(self) -> bool:
