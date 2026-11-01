@@ -30,6 +30,7 @@ from app.infrastructure.sql import (
     Resource,
     ResourceRequirement,
     Shift,
+    SqlResourceAdminRepository,
     SmtpConfigurationRow,
     TaskCatalogProjectSyncState,
     WorkforceRequest,
@@ -56,6 +57,17 @@ def _hash(path: Path) -> str:
 
 def _url(path: Path) -> str:
     return f"sqlite:///{path.as_posix()}"
+
+
+def _resource_columns(path: Path) -> set[str]:
+    raw = sqlite3.connect(path)
+    try:
+        return {
+            str(row[1])
+            for row in raw.execute("PRAGMA table_info(resources)").fetchall()
+        }
+    finally:
+        raw.close()
 
 
 def _create_schema(path: Path, *, baseline_state: bool) -> None:
@@ -350,6 +362,89 @@ def _reshape_source_as_0048(path: Path) -> None:
             DROP TABLE IF EXISTS verification_scopes;
 
             DROP TABLE IF EXISTS competency_resource_class_audit;
+
+            DROP TABLE IF EXISTS resources_0048;
+            CREATE TABLE resources_0048 (
+                id VARCHAR(36) NOT NULL PRIMARY KEY,
+                external_id VARCHAR(128),
+                name VARCHAR(255) NOT NULL,
+                email VARCHAR(320),
+                coordinator_contact_id VARCHAR(36),
+                resource_class VARCHAR(64),
+                competencies TEXT,
+                note TEXT,
+                active BOOLEAN DEFAULT 1 NOT NULL,
+                erp_status VARCHAR(32),
+                erp_active BOOLEAN DEFAULT 1 NOT NULL,
+                erp_department_description VARCHAR(255),
+                erp_department_code VARCHAR(64),
+                erp_employee_class VARCHAR(64),
+                erp_supervisor_external_id VARCHAR(128),
+                erp_phone VARCHAR(64),
+                erp_branch_code VARCHAR(64),
+                erp_contact_id INTEGER,
+                sort_order INTEGER DEFAULT 0 NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                FOREIGN KEY(coordinator_contact_id) REFERENCES business_contacts (id)
+            );
+            INSERT INTO resources_0048 (
+                id,
+                external_id,
+                name,
+                email,
+                coordinator_contact_id,
+                resource_class,
+                competencies,
+                note,
+                active,
+                erp_status,
+                erp_active,
+                erp_department_description,
+                erp_department_code,
+                erp_employee_class,
+                erp_supervisor_external_id,
+                erp_phone,
+                erp_branch_code,
+                erp_contact_id,
+                sort_order,
+                created_at,
+                updated_at
+            )
+            SELECT
+                id,
+                external_id,
+                name,
+                email,
+                coordinator_contact_id,
+                resource_class,
+                competencies,
+                note,
+                active,
+                erp_status,
+                erp_active,
+                erp_department_description,
+                erp_department_code,
+                erp_employee_class,
+                erp_supervisor_external_id,
+                erp_phone,
+                erp_branch_code,
+                erp_contact_id,
+                sort_order,
+                created_at,
+                updated_at
+            FROM resources;
+            DROP TABLE resources;
+            ALTER TABLE resources_0048 RENAME TO resources;
+            CREATE INDEX ix_resources_active ON resources (active);
+            CREATE INDEX ix_resources_coordinator_contact_id ON resources (coordinator_contact_id);
+            CREATE INDEX ix_resources_erp_active ON resources (erp_active);
+            CREATE INDEX ix_resources_external_id ON resources (external_id);
+            CREATE INDEX ix_resources_name ON resources (name);
+            CREATE INDEX ix_resources_resource_class ON resources (resource_class);
+            CREATE UNIQUE INDEX ux_resources_external_id_not_null
+                ON resources (external_id)
+                WHERE external_id IS NOT NULL;
 
             CREATE TABLE competencies_0048 (
                 id VARCHAR(36) NOT NULL PRIMARY KEY,
@@ -659,6 +754,7 @@ class SqliteV2CutoverTests(unittest.TestCase):
             target = root / "target.db"
             _seed_source(source)
             _reshape_source_as_0048(source)
+            self.assertNotIn("residence_city", _resource_columns(source))
             _seed_target(target)
             source_before = _hash(source)
 
@@ -708,6 +804,10 @@ class SqliteV2CutoverTests(unittest.TestCase):
                 ("missing_columns_with_defaults", "competencies"),
                 adaptations,
             )
+            self.assertIn(
+                ("missing_columns_with_defaults", "resources"),
+                adaptations,
+            )
 
             by_table = {row["table"]: row for row in report["tables"]}
             self.assertEqual(by_table["work_packages"]["source_rows"], 1)
@@ -725,6 +825,7 @@ class SqliteV2CutoverTests(unittest.TestCase):
             backup = root / "source.backup.db"
             _seed_source(source)
             _reshape_source_as_0048(source)
+            self.assertNotIn("residence_city", _resource_columns(source))
             _seed_target(target)
             shutil.copy2(source, backup)
             source_before = _hash(source)
@@ -773,6 +874,39 @@ class SqliteV2CutoverTests(unittest.TestCase):
                         ),
                         0,
                     )
+                    migrated_resource = connection.execute(
+                        select(Resource.id, Resource.residence_city).where(
+                            Resource.id == "RESOURCE-REAL"
+                        )
+                    ).one()
+                    self.assertEqual(migrated_resource.id, "RESOURCE-REAL")
+                    self.assertIsNone(migrated_resource.residence_city)
+
+                from app.infrastructure.sql import create_session_factory
+                factory = create_session_factory(engine)
+                with factory.begin() as session:
+                    repository = SqlResourceAdminRepository(session)
+                    repository.update_resource(
+                        "RESOURCE-REAL",
+                        {"residence_city": "Chambly"},
+                    )
+                with factory() as session:
+                    configured = SqlResourceAdminRepository(session).get_resource(
+                        "RESOURCE-REAL"
+                    )
+                    self.assertIsNotNone(configured)
+                    self.assertEqual(configured.residence_city, "Chambly")
+                with factory.begin() as session:
+                    SqlResourceAdminRepository(session).update_resource(
+                        "RESOURCE-REAL",
+                        {"residence_city": "   "},
+                    )
+                with factory() as session:
+                    cleared = SqlResourceAdminRepository(session).get_resource(
+                        "RESOURCE-REAL"
+                    )
+                    self.assertIsNotNone(cleared)
+                    self.assertIsNone(cleared.residence_city)
             finally:
                 engine.dispose()
 
@@ -803,6 +937,62 @@ class SqliteV2CutoverTests(unittest.TestCase):
             self.assertTrue(
                 any(
                     item.get("code") in {"source_missing_table", "source_missing_columns"}
+                    for item in report["anomalies"]
+                )
+            )
+
+    def test_0048_unapproved_missing_resource_column_remains_blocked(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.db"
+            target = root / "target.db"
+            _seed_source(source)
+            _reshape_source_as_0048(source)
+            _seed_target(target)
+
+            raw = sqlite3.connect(source)
+            try:
+                raw.execute("ALTER TABLE resources DROP COLUMN note")
+                raw.commit()
+            finally:
+                raw.close()
+
+            code, report = _run(root)
+
+            self.assertEqual(code, 2)
+            self.assertTrue(
+                any(
+                    item.get("code") == "source_missing_columns"
+                    and item.get("table") == "resources"
+                    and "note" in item.get("columns", [])
+                    for item in report["anomalies"]
+                )
+            )
+
+    def test_0048_unapproved_extra_resource_column_remains_blocked(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.db"
+            target = root / "target.db"
+            _seed_source(source)
+            _reshape_source_as_0048(source)
+            _seed_target(target)
+
+            raw = sqlite3.connect(source)
+            try:
+                raw.execute("ALTER TABLE resources ADD COLUMN unexpected_742 TEXT")
+                raw.commit()
+            finally:
+                raw.close()
+
+            code, report = _run(root)
+
+            self.assertEqual(code, 2)
+            self.assertTrue(
+                any(
+                    item.get("code") == "source_extra_columns"
+                    and item.get("table") == "resources"
+                    and "unexpected_742" in item.get("columns", [])
                     for item in report["anomalies"]
                 )
             )
