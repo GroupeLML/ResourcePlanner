@@ -327,6 +327,7 @@ class SqlSchemaTests(unittest.TestCase):
         self.assertTrue(requirements.required_resource_class.nullable)
         self.assertTrue(projects.project_manager_contact_id.nullable)
         self.assertTrue(resources.coordinator_contact_id.nullable)
+        self.assertTrue(resources.residence_city.nullable)
         self.assertFalse(business_contacts.display_name.nullable)
         self.assertTrue(business_contacts.email.nullable)
         self.assertTrue(business_contacts.phone.nullable)
