@@ -62,6 +62,7 @@ class ResourceCreateRequest(StrictRequest):
 class ResourceUpdateRequest(StrictRequest):
     name: str | None = None
     email: str | None = None
+    residence_city: str | None = None
     resource_class: str | None = None
     competencies: str | None = None
     competency_ids: list[str] | None = None
