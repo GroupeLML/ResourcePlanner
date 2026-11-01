@@ -12,7 +12,11 @@ from .errors import (
     ApplicationValidationError,
     call_application_port,
 )
-from .repository_ports import PlanningAuthorizationPort, SegmentRepositoryPort
+from .repository_ports import (
+    DemandOperationalChoiceRepositoryPort,
+    PlanningAuthorizationPort,
+    SegmentRepositoryPort,
+)
 
 
 class SegmentService:
@@ -25,12 +29,14 @@ class SegmentService:
         authorization: PlanningAuthorizationPort | None = None,
         approved_sync: ApprovedDemandSyncPort | None = None,
         targeting: AllocationCommandPort | None = None,
+        operational_choices: DemandOperationalChoiceRepositoryPort | None = None,
     ) -> None:
         self._segments = segments
         self._planning = planning
         self._authorization = authorization
         self._approved_sync = approved_sync
         self._targeting = targeting
+        self._operational_choices = operational_choices
 
     @staticmethod
     def _identifier(value: object) -> str:
@@ -237,6 +243,34 @@ class SegmentService:
             code_prefix="segment_update",
             context={"segment_id": identifier},
         )
+
+        if (
+            "HeuresPrevues" in values
+            and existing.origin == "REQUEST"
+            and str(existing.demand_number or "").strip()
+        ):
+            if self._operational_choices is None:
+                raise ApplicationOperationError(
+                    "La persistance du budget opérationnel n'est pas disponible.",
+                    code="segment_operational_budget_unavailable",
+                    context={"segment_id": identifier},
+                )
+            entry_key = str(existing.approved_entry_key or "").strip()
+            if not entry_key:
+                raise ApplicationOperationError(
+                    "L'identité approuvée du segment est absente.",
+                    code="segment_approved_entry_unknown",
+                    context={"segment_id": identifier},
+                )
+            call_application_port(
+                lambda: self._operational_choices.set_budget_override(
+                    str(existing.demand_number).strip(),
+                    entry_key,
+                    float(values["HeuresPrevues"]),
+                ),
+                code_prefix="segment_operational_budget",
+                context={"segment_id": identifier, "approved_entry_key": entry_key},
+            )
 
         # For a mixed REQUEST PATCH, effective quantity must be authoritative
         # before canonical targeting rebuilds/materializes work. Otherwise the
