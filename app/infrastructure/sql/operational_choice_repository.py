@@ -163,6 +163,19 @@ class SqlRequestOperationalChoiceRepository(DemandOperationalChoiceRepositoryPor
                 for entry in self._snapshot_entries(revision)
                 if _text(entry.get("identity")) and _text(entry.get("hours"))
             }
+            previous_revision = self._session.get(
+                RequestApprovalRevision,
+                current.approval_revision_id,
+            )
+            previous_approved_hours_by_entry = (
+                {
+                    _text(entry.get("identity")): Decimal(_text(entry.get("hours")))
+                    for entry in self._snapshot_entries(previous_revision)
+                    if _text(entry.get("identity")) and _text(entry.get("hours"))
+                }
+                if previous_revision is not None
+                else {}
+            )
             preserved_budget_overrides: dict[str, str] = {}
             for entry_key, value in previous_budget_overrides.items():
                 approved_hours = approved_hours_by_entry.get(entry_key)
@@ -170,7 +183,22 @@ class SqlRequestOperationalChoiceRepository(DemandOperationalChoiceRepositoryPor
                     continue
                 approved_hours = approved_hours.quantize(Decimal("0.01"))
                 operational_hours = Decimal(value).quantize(Decimal("0.01"))
-                if operational_hours > approved_hours:
+                previous_approved_hours = previous_approved_hours_by_entry.get(entry_key)
+                previous_approved_hours = (
+                    previous_approved_hours.quantize(Decimal("0.01"))
+                    if previous_approved_hours is not None
+                    else None
+                )
+                existing_exception_remains_valid = bool(
+                    operational_hours > approved_hours
+                    and previous_approved_hours is not None
+                    and operational_hours > previous_approved_hours
+                    and approved_hours >= previous_approved_hours
+                )
+                if (
+                    operational_hours > approved_hours
+                    and not existing_exception_remains_valid
+                ):
                     raise ApplicationConflictError(
                         "Le budget opérationnel conservé dépasse l'autorisation "
                         "de la nouvelle révision approuvée.",
@@ -180,6 +208,11 @@ class SqlRequestOperationalChoiceRepository(DemandOperationalChoiceRepositoryPor
                             "previous_approval_revision_id": current.approval_revision_id,
                             "new_approval_revision_id": revision.id,
                             "approved_entry_key": entry_key,
+                            "previous_approved_hours": (
+                                float(previous_approved_hours)
+                                if previous_approved_hours is not None
+                                else None
+                            ),
                             "approved_hours": float(approved_hours),
                             "operational_hours": float(operational_hours),
                         },
