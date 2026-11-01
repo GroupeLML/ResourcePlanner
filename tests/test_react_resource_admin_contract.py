@@ -63,6 +63,9 @@ class ReactResourceAdminContractTests(unittest.TestCase):
         self.assertIn("Statut ERP", page)
         self.assertIn("Département", page)
         self.assertIn("Division / succursale", page)
+        self.assertIn("Ville de résidence", page)
+        self.assertIn('residence_city: nullable(profile.residence_city ?? "")', page)
+        self.assertIn("residence_city: string | null", api)
 
         integration_api = (ROOT / "frontend" / "src" / "acumaticaIntegrationApi.ts").read_text(
             encoding="utf-8"
