@@ -13,6 +13,14 @@ function addDays(value: Date, days: number) {
   return next;
 }
 
+function startOfWeek(value: Date) {
+  const result = new Date(value.getFullYear(), value.getMonth(), value.getDate(), 12);
+  const day = result.getDay();
+  const offset = day === 0 ? -6 : 1 - day;
+  result.setDate(result.getDate() + offset);
+  return result;
+}
+
 async function openAdmin(browser: Browser) {
   const context = await browser.newContext({
     baseURL: BASE_URL,
@@ -56,6 +64,8 @@ test("745 affiche uniquement les métadonnées compactes autorisées et retire l
   const { context, page } = await openAdmin(browser);
   const stamp = Date.now();
   const today = new Date();
+  const planningWeekStart = startOfWeek(today);
+  const planningWeekEnd = addDays(planningWeekStart, 6);
   const scheduleStart = localIso(addDays(today, -7));
   const yesterday = localIso(addDays(today, -1));
   const todayIso = localIso(today);
@@ -150,6 +160,19 @@ test("745 affiche uniquement les métadonnées compactes autorisées et retire l
     });
     expect(bounded.status(), await bounded.text()).toBe(201);
 
+    const snapshotResponse = await page.request.get(
+      `/api/v1/planning/snapshot?start=${localIso(planningWeekStart)}&end=${localIso(planningWeekEnd)}&scope=global`,
+    );
+    expect(snapshotResponse.ok(), await snapshotResponse.text()).toBeTruthy();
+    const snapshotPayload = await snapshotResponse.json() as {
+      resources: Array<{ id: string }>;
+    };
+    expect(snapshotPayload.resources.some((resource) => resource.id === resourceId)).toBeTruthy();
+
+    // Fixture setup uses page.request, outside React's mutation lifecycle.
+    // Reload so Planning initializes from authoritative state after the fixture exists.
+    await page.reload();
+    await expect(page.locator(".sidebar-footer")).toContainText("Administrateur");
     await page.locator(".main-nav").getByRole("button", { name: /Planning opérationnel/i }).click();
     const row = page.locator(".resource-identity").filter({ hasText: resourceName }).first();
     await expect(row).toBeVisible();
