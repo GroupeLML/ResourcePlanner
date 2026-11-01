@@ -227,38 +227,48 @@ class SqlRequestOperationalChoiceRepository(DemandOperationalChoiceRepositoryPor
             cursor = parent
 
         lineage.reverse()
-        source_index = next(
-            (
-                index
-                for index, candidate in enumerate(lineage)
-                if candidate.id in authorization_revision_ids
-            ),
-            None,
-        )
-        if source_index is None:
-            return False
-
-        relevant = [*lineage[source_index:], new_revision]
-        for reference_revision, proposed_revision in zip(
-            relevant,
-            relevant[1:],
-        ):
-            reference_entry = self._revision_entries_by_identity(
-                reference_revision
-            ).get(entry_key)
-            proposed_entry = self._revision_entries_by_identity(
-                proposed_revision
-            ).get(entry_key)
-            if (
-                reference_entry is None
-                or proposed_entry is None
-                or not delegated_effort_authorization_subject_compatible(
-                    reference_entry,
-                    proposed_entry,
+        source_indexes = [
+            index
+            for index, candidate in enumerate(lineage)
+            if candidate.id in authorization_revision_ids
+        ]
+        for source_index in reversed(source_indexes):
+            relevant = [*lineage[source_index:], new_revision]
+            if all(
+                self._revision_pair_preserves_delegated_subject(
+                    reference_revision,
+                    proposed_revision,
+                    entry_key=entry_key,
+                )
+                for reference_revision, proposed_revision in zip(
+                    relevant,
+                    relevant[1:],
                 )
             ):
-                return False
-        return True
+                return True
+        return False
+
+    def _revision_pair_preserves_delegated_subject(
+        self,
+        reference_revision: RequestApprovalRevision,
+        proposed_revision: RequestApprovalRevision,
+        *,
+        entry_key: str,
+    ) -> bool:
+        reference_entry = self._revision_entries_by_identity(
+            reference_revision
+        ).get(entry_key)
+        proposed_entry = self._revision_entries_by_identity(
+            proposed_revision
+        ).get(entry_key)
+        return bool(
+            reference_entry is not None
+            and proposed_entry is not None
+            and delegated_effort_authorization_subject_compatible(
+                reference_entry,
+                proposed_entry,
+            )
+        )
 
     @staticmethod
     def _read_model(
