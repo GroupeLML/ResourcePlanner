@@ -168,8 +168,23 @@ class SqlRequestOperationalChoiceRepository(DemandOperationalChoiceRepositoryPor
                 approved_hours = approved_hours_by_entry.get(entry_key)
                 if approved_hours is None:
                     continue
+                approved_hours = approved_hours.quantize(Decimal("0.01"))
                 operational_hours = Decimal(value).quantize(Decimal("0.01"))
-                if operational_hours != approved_hours.quantize(Decimal("0.01")):
+                if operational_hours > approved_hours:
+                    raise ApplicationConflictError(
+                        "Le budget opérationnel conservé dépasse l'autorisation "
+                        "de la nouvelle révision approuvée.",
+                        code="operational_budget_reconciliation_required",
+                        context={
+                            "request_id": request_id,
+                            "previous_approval_revision_id": current.approval_revision_id,
+                            "new_approval_revision_id": revision.id,
+                            "approved_entry_key": entry_key,
+                            "approved_hours": float(approved_hours),
+                            "operational_hours": float(operational_hours),
+                        },
+                    )
+                if operational_hours != approved_hours:
                     preserved_budget_overrides[entry_key] = format(
                         operational_hours,
                         "f",
