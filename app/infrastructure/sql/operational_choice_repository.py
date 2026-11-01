@@ -123,15 +123,14 @@ class SqlRequestOperationalChoiceRepository(DemandOperationalChoiceRepositoryPor
             for entry in envelope.entries
         }
 
-    def _has_budget_override_provenance(
+    def _budget_override_authorization_revision_ids(
         self,
         *,
         request_id: str,
-        approval_revision_id: str,
         entry_key: str,
-        approved_hours: Decimal,
         operational_hours: Decimal,
-    ) -> bool:
+    ) -> tuple[str, ...]:
+        revision_ids: list[str] = []
         rows = self._session.scalars(
             select(WorkforceRequestHistory).where(
                 WorkforceRequestHistory.workforce_request_id == request_id,
@@ -145,6 +144,12 @@ class SqlRequestOperationalChoiceRepository(DemandOperationalChoiceRepositoryPor
                 continue
             if not isinstance(details, Mapping):
                 continue
+            revision_id = _text(details.get("approval_revision_id"))
+            if (
+                not revision_id
+                or _text(details.get("approved_entry_key")) != entry_key
+            ):
+                continue
             try:
                 recorded_approved = Decimal(
                     _text(details.get("approved_hours"))
@@ -154,14 +159,106 @@ class SqlRequestOperationalChoiceRepository(DemandOperationalChoiceRepositoryPor
                 ).quantize(Decimal("0.01"))
             except (InvalidOperation, ValueError):
                 continue
+            if recorded_operational != operational_hours:
+                continue
+            source_revision = self._session.get(
+                RequestApprovalRevision,
+                revision_id,
+            )
             if (
-                _text(details.get("approval_revision_id")) == approval_revision_id
-                and _text(details.get("approved_entry_key")) == entry_key
-                and recorded_approved == approved_hours
-                and recorded_operational == operational_hours
+                source_revision is None
+                or source_revision.workforce_request_id != request_id
             ):
-                return True
-        return False
+                continue
+            source_entry = self._revision_entries_by_identity(
+                source_revision
+            ).get(entry_key)
+            source_hours = (
+                Decimal(str(source_entry.hours)).quantize(Decimal("0.01"))
+                if source_entry is not None and source_entry.hours is not None
+                else None
+            )
+            if (
+                source_hours is not None
+                and recorded_approved == source_hours
+                and operational_hours > source_hours
+            ):
+                revision_ids.append(revision_id)
+        return tuple(revision_ids)
+
+    def _delegated_budget_lineage_is_valid(
+        self,
+        *,
+        request_id: str,
+        previous_revision: RequestApprovalRevision,
+        new_revision: RequestApprovalRevision,
+        entry_key: str,
+        operational_hours: Decimal,
+    ) -> bool:
+        if new_revision.previous_revision_id != previous_revision.id:
+            return False
+
+        authorization_revision_ids = set(
+            self._budget_override_authorization_revision_ids(
+                request_id=request_id,
+                entry_key=entry_key,
+                operational_hours=operational_hours,
+            )
+        )
+        if not authorization_revision_ids:
+            return False
+
+        lineage: list[RequestApprovalRevision] = [previous_revision]
+        seen = {previous_revision.id}
+        cursor = previous_revision
+        while cursor.previous_revision_id:
+            parent = self._session.get(
+                RequestApprovalRevision,
+                cursor.previous_revision_id,
+            )
+            if (
+                parent is None
+                or parent.workforce_request_id != request_id
+                or parent.id in seen
+            ):
+                return False
+            lineage.append(parent)
+            seen.add(parent.id)
+            cursor = parent
+
+        lineage.reverse()
+        source_index = next(
+            (
+                index
+                for index, candidate in enumerate(lineage)
+                if candidate.id in authorization_revision_ids
+            ),
+            None,
+        )
+        if source_index is None:
+            return False
+
+        relevant = [*lineage[source_index:], new_revision]
+        for reference_revision, proposed_revision in zip(
+            relevant,
+            relevant[1:],
+        ):
+            reference_entry = self._revision_entries_by_identity(
+                reference_revision
+            ).get(entry_key)
+            proposed_entry = self._revision_entries_by_identity(
+                proposed_revision
+            ).get(entry_key)
+            if (
+                reference_entry is None
+                or proposed_entry is None
+                or not delegated_effort_authorization_subject_compatible(
+                    reference_entry,
+                    proposed_entry,
+                )
+            ):
+                return False
+        return True
 
     @staticmethod
     def _read_model(
@@ -257,18 +354,6 @@ class SqlRequestOperationalChoiceRepository(DemandOperationalChoiceRepositoryPor
                 )
                 previous_entry = previous_entries_by_identity.get(entry_key)
                 approved_entry = approved_entries_by_identity.get(entry_key)
-                authorized_exception_provenance = bool(
-                    previous_revision is not None
-                    and previous_approved_hours is not None
-                    and operational_hours > previous_approved_hours
-                    and self._has_budget_override_provenance(
-                        request_id=request_id,
-                        approval_revision_id=previous_revision.id,
-                        entry_key=entry_key,
-                        approved_hours=previous_approved_hours,
-                        operational_hours=operational_hours,
-                    )
-                )
                 compatible_authorization_subject = bool(
                     previous_entry is not None
                     and approved_entry is not None
@@ -277,11 +362,23 @@ class SqlRequestOperationalChoiceRepository(DemandOperationalChoiceRepositoryPor
                         approved_entry,
                     )
                 )
+                authorized_exception_lineage = bool(
+                    previous_revision is not None
+                    and previous_approved_hours is not None
+                    and operational_hours > previous_approved_hours
+                    and self._delegated_budget_lineage_is_valid(
+                        request_id=request_id,
+                        previous_revision=previous_revision,
+                        new_revision=revision,
+                        entry_key=entry_key,
+                        operational_hours=operational_hours,
+                    )
+                )
                 existing_exception_remains_valid = bool(
                     operational_hours > approved_hours
                     and previous_approved_hours is not None
                     and approved_hours >= previous_approved_hours
-                    and authorized_exception_provenance
+                    and authorized_exception_lineage
                     and compatible_authorization_subject
                 )
                 if (
