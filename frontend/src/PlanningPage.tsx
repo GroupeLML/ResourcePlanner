@@ -697,13 +697,15 @@ function ResourceRow({
             ))}
           </div>
         )}
-        {resource.continuous_vehicle_label && (
-          <span className="resource-card-meta resource-card-vehicle">
-            <b>Véhicule</b> {resource.continuous_vehicle_label}
-            {resource.continuous_vehicle_code && resource.continuous_vehicle_code !== resource.continuous_vehicle_label && (
-              <> ({resource.continuous_vehicle_code})</>
-            )}
-          </span>
+        {(resource.continuous_vehicles?.length ?? 0) > 0 && (
+          <div className="resource-card-vehicles" aria-label="Véhicules">
+            {resource.continuous_vehicles!.map((vehicle) => (
+              <span className="resource-card-meta resource-card-vehicle" key={vehicle.asset_id}>
+                <b>Véhicule</b> {vehicle.label}
+                {vehicle.code !== vehicle.label && <> ({vehicle.code})</>}
+              </span>
+            ))}
+          </div>
         )}
         {resource.residence_city && (
           <span className="resource-card-meta resource-card-city">
