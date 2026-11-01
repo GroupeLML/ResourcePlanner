@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
@@ -152,7 +152,7 @@ class SqlRequestOperationalChoiceRepository(DemandOperationalChoiceRepositoryPor
                 recorded_operational = Decimal(
                     _text(details.get("operational_hours"))
                 ).quantize(Decimal("0.01"))
-            except Exception:
+            except (InvalidOperation, ValueError):
                 continue
             if (
                 _text(details.get("approval_revision_id")) == approval_revision_id
