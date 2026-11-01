@@ -241,6 +241,7 @@ class SqlSegmentRepository(SegmentRepositoryPort):
             desired_active_days=requirement.desired_active_days,
             load_profile=normalize_load_profile(requirement.load_profile),
             approval_revision_id=_optional_text(requirement.approval_revision_id),
+            approved_entry_key=_optional_text(requirement.approved_entry_key),
             operational_version=(
                 int(operational_version) if operational_version is not None else None
             ),
