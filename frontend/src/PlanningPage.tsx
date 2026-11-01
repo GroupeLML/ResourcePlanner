@@ -690,9 +690,6 @@ function ResourceRow({
         }}
       >
         <strong>{resourceDisplayName(resource.name)}</strong>
-        {resource.resource_class && (
-          <span className="resource-card-class">{resource.resource_class}</span>
-        )}
         {(resource.planning_card_competencies?.length ?? 0) > 0 && (
           <div className="resource-card-competencies" aria-label="Compétences">
             {resource.planning_card_competencies!.map((competency) => (
