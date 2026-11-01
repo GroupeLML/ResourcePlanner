@@ -155,6 +155,26 @@ class SqlRequestOperationalChoiceRepository(DemandOperationalChoiceRepositoryPor
             )
             self._session.add(current)
         else:
+            previous_budget_overrides = self._decode_mapping(
+                current.budget_overrides_text
+            )
+            approved_hours_by_entry = {
+                _text(entry.get("identity")): Decimal(_text(entry.get("hours")))
+                for entry in self._snapshot_entries(revision)
+                if _text(entry.get("identity")) and _text(entry.get("hours"))
+            }
+            preserved_budget_overrides: dict[str, str] = {}
+            for entry_key, value in previous_budget_overrides.items():
+                approved_hours = approved_hours_by_entry.get(entry_key)
+                if approved_hours is None:
+                    continue
+                operational_hours = Decimal(value).quantize(Decimal("0.01"))
+                if operational_hours != approved_hours.quantize(Decimal("0.01")):
+                    preserved_budget_overrides[entry_key] = format(
+                        operational_hours,
+                        "f",
+                    )
+
             current.approval_revision_id = revision.id
             current.version = max(int(current.version or 1), 1) + 1
             current.selections_text = json.dumps(
@@ -169,7 +189,12 @@ class SqlRequestOperationalChoiceRepository(DemandOperationalChoiceRepositoryPor
                 sort_keys=True,
                 separators=(",", ":"),
             )
-            current.budget_overrides_text = "{}"
+            current.budget_overrides_text = json.dumps(
+                preserved_budget_overrides,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
             current.updated_by_name = _text(actor_name) or self._actor_name or None
         self._session.flush()
         return self._read_model(current)
