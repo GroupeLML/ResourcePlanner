@@ -36,6 +36,7 @@ class ServerResourceAdminRouteTests(unittest.TestCase):
                     json={
                         "name": "Automatisation 1",
                         "email": test_email,
+                        "residence_city": "Saint-Jean-sur-Richelieu",
                         "resource_class": "Programmation",
                         "competencies": "PLC; SCADA",
                         "note": "Ressource de test",
@@ -51,6 +52,7 @@ class ServerResourceAdminRouteTests(unittest.TestCase):
                 row = resources.json()[0]
                 self.assertEqual(row["id"], resource_id)
                 self.assertEqual(row["email"], test_email)
+                self.assertEqual(row["residence_city"], "Saint-Jean-sur-Richelieu")
                 self.assertEqual(row["resource_class"], "Programmation")
                 self.assertEqual(row["competencies"], "PLC; SCADA")
                 self.assertEqual(row["sort_order"], 20)
@@ -69,10 +71,21 @@ class ServerResourceAdminRouteTests(unittest.TestCase):
                     f"/api/v1/resources/{resource_id}",
                     json={
                         "competencies": "PLC; SCADA; MES",
+                        "residence_city": "Chambly",
                         "sort_order": 10,
                     },
                 )
                 self.assertEqual(updated.status_code, 200, updated.text)
+                after_update = client.get("/api/v1/resources?active_only=false").json()[0]
+                self.assertEqual(after_update["residence_city"], "Chambly")
+
+                cleared_city = client.patch(
+                    f"/api/v1/resources/{resource_id}",
+                    json={"residence_city": "   "},
+                )
+                self.assertEqual(cleared_city.status_code, 200, cleared_city.text)
+                after_clear = client.get("/api/v1/resources?active_only=false").json()[0]
+                self.assertIsNone(after_clear["residence_city"])
 
                 null_active = client.patch(
                     f"/api/v1/resources/{resource_id}",
