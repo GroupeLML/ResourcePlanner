@@ -3067,6 +3067,9 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                     28.0,
                 )
 
+                rebuilt = client.post("/api/v1/planning/rebuild")
+                self.assertEqual(rebuilt.status_code, 200, rebuilt.text)
+
             engine = create_sql_engine(database_url)
             factory = create_session_factory(engine)
             try:
@@ -3110,6 +3113,46 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                     self.assertEqual(
                         float(overrides[reductions[0].approved_entry_key]),
                         36.0,
+                    )
+
+                with factory.begin() as session:
+                    SqlPeriodAwareApprovedDemandSyncAdapter(
+                        session
+                    ).sync_operational_choices(number)
+                with factory.begin() as session:
+                    request = session.scalar(
+                        select(WorkforceRequest).where(
+                            WorkforceRequest.legacy_demand_number == number
+                        )
+                    )
+                    self.assertIsNotNone(request)
+                    SqlPeriodAwareApprovedDemandSyncAdapter(session).sync_approved(
+                        number,
+                        approved_request_version=int(request.aggregate_version or 1),
+                    )
+
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    rebuilt_after_reapproval = client.post("/api/v1/planning/rebuild")
+                    self.assertEqual(
+                        rebuilt_after_reapproval.status_code,
+                        200,
+                        rebuilt_after_reapproval.text,
+                    )
+                    current_after_reapproval = client.get(
+                        f"/api/v1/segments/{segment_id}"
+                    )
+                    self.assertEqual(
+                        current_after_reapproval.status_code,
+                        200,
+                        current_after_reapproval.text,
+                    )
+                    self.assertEqual(
+                        current_after_reapproval.json()["operational_base_hours"],
+                        36.0,
+                    )
+                    self.assertEqual(
+                        current_after_reapproval.json()["planned_hours"],
+                        28.0,
                     )
             finally:
                 engine.dispose()
