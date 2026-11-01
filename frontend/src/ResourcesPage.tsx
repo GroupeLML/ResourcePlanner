@@ -61,6 +61,7 @@ function resourceDraft(resource?: ResourceReadModel | null): ResourceWrite {
   return {
     name: resource?.name ?? "",
     email: resource?.email ?? null,
+    residence_city: resource?.residence_city ?? null,
     resource_class: resource?.resource_class ?? null,
     competencies: resource?.competencies ?? null,
     competency_ids: resource?.competency_ids ?? [],
@@ -370,7 +371,7 @@ export default function ResourcesPage() {
       if (statusFilter === "active" && !resource.active) return false;
       if (statusFilter === "inactive" && resource.active) return false;
       if (!query) return true;
-      return [resource.name, resource.email, resource.resource_class, resource.competencies]
+      return [resource.name, resource.email, resource.residence_city, resource.resource_class, resource.competencies]
         .filter(Boolean)
         .join(" ")
         .toLocaleLowerCase("fr-CA")
@@ -427,6 +428,7 @@ export default function ResourcesPage() {
         ...profile,
         name: profile.name.trim(),
         email: nullable(profile.email ?? ""),
+        residence_city: nullable(profile.residence_city ?? ""),
         resource_class: nullable(profile.resource_class ?? ""),
         competencies: profile.competencies,
         competency_ids: profile.competency_ids,
@@ -611,6 +613,7 @@ export default function ResourcesPage() {
                 <div className="form-grid two-columns">
                   <label>Nom<input value={resourceDisplayName(profile.name)} onChange={(event) => profileField("name", event.target.value)} required /></label>
                   <label>Courriel<input type="email" value={profile.email ?? ""} onChange={(event) => profileField("email", event.target.value)} /></label>
+                  <label>Ville de résidence<input value={profile.residence_city ?? ""} onChange={(event) => profileField("residence_city", event.target.value)} placeholder="Optionnel" /></label>
                   <label>
                     Classe
                     <select
