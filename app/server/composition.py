@@ -216,6 +216,10 @@ def build_sql_facade(
             planning_authorization,
             approved_sync,
             allocation_commands,
+            SqlRequestOperationalChoiceRepository(
+                session,
+                actor_name=actor,
+            ),
         ),
         allocations=AllocationService(allocation_commands),
         quick_shifts=QuickShiftService(segments, allocation_commands),
