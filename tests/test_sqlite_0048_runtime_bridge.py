@@ -127,6 +127,95 @@ def _reshape_as_0048(path: Path) -> None:
 
             DROP TABLE IF EXISTS competency_resource_class_audit;
 
+            DROP TABLE IF EXISTS resources_0048;
+            CREATE TABLE resources_0048 (
+                id VARCHAR(36) NOT NULL PRIMARY KEY,
+                external_id VARCHAR(128),
+                name VARCHAR(255) NOT NULL,
+                email VARCHAR(320),
+                coordinator_contact_id VARCHAR(36),
+                resource_class VARCHAR(64),
+                competencies TEXT,
+                note TEXT,
+                active BOOLEAN DEFAULT 1 NOT NULL,
+                erp_status VARCHAR(32),
+                erp_active BOOLEAN DEFAULT 1 NOT NULL,
+                erp_department_description VARCHAR(255),
+                erp_department_code VARCHAR(64),
+                erp_employee_class VARCHAR(64),
+                erp_supervisor_external_id VARCHAR(128),
+                erp_phone VARCHAR(64),
+                erp_branch_code VARCHAR(64),
+                erp_contact_id INTEGER,
+                sort_order INTEGER DEFAULT 0 NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                FOREIGN KEY(coordinator_contact_id) REFERENCES business_contacts (id)
+            );
+            INSERT INTO resources_0048 (
+                id,
+                external_id,
+                name,
+                email,
+                coordinator_contact_id,
+                resource_class,
+                competencies,
+                note,
+                active,
+                erp_status,
+                erp_active,
+                erp_department_description,
+                erp_department_code,
+                erp_employee_class,
+                erp_supervisor_external_id,
+                erp_phone,
+                erp_branch_code,
+                erp_contact_id,
+                sort_order,
+                created_at,
+                updated_at
+            )
+            SELECT
+                id,
+                external_id,
+                name,
+                email,
+                coordinator_contact_id,
+                resource_class,
+                competencies,
+                note,
+                active,
+                erp_status,
+                erp_active,
+                erp_department_description,
+                erp_department_code,
+                erp_employee_class,
+                erp_supervisor_external_id,
+                erp_phone,
+                erp_branch_code,
+                erp_contact_id,
+                sort_order,
+                created_at,
+                updated_at
+            FROM resources;
+            DROP TABLE resources;
+            ALTER TABLE resources_0048 RENAME TO resources;
+            CREATE INDEX ix_resources_active
+                ON resources (active);
+            CREATE INDEX ix_resources_coordinator_contact_id
+                ON resources (coordinator_contact_id);
+            CREATE INDEX ix_resources_erp_active
+                ON resources (erp_active);
+            CREATE INDEX ix_resources_external_id
+                ON resources (external_id);
+            CREATE INDEX ix_resources_name
+                ON resources (name);
+            CREATE INDEX ix_resources_resource_class
+                ON resources (resource_class);
+            CREATE UNIQUE INDEX ux_resources_external_id_not_null
+                ON resources (external_id)
+                WHERE external_id IS NOT NULL;
+
             DROP TABLE IF EXISTS workforce_request_periods_0048;
             CREATE TABLE workforce_request_periods_0048 (
                 id VARCHAR(36) NOT NULL PRIMARY KEY,
@@ -696,6 +785,17 @@ def _revision(path: Path) -> str:
         raw.close()
 
 
+def _resource_columns(path: Path) -> set[str]:
+    raw = sqlite3.connect(path)
+    try:
+        return {
+            str(row[1])
+            for row in raw.execute("PRAGMA table_info(resources)").fetchall()
+        }
+    finally:
+        raw.close()
+
+
 class Sqlite0048RuntimeBridgeTests(unittest.TestCase):
     def test_tool_is_directly_executable_from_repository_root(self) -> None:
         result = subprocess.run(
@@ -732,6 +832,7 @@ class Sqlite0048RuntimeBridgeTests(unittest.TestCase):
             backup = root / "resourceplanner-before-bridge.db"
             _create_current_database(source)
             _reshape_as_0048(source)
+            self.assertNotIn("residence_city", _resource_columns(source))
             before = _hash(source)
 
             report = bridge_sqlite_0048(
@@ -746,6 +847,8 @@ class Sqlite0048RuntimeBridgeTests(unittest.TestCase):
             self.assertEqual(_hash(backup), before)
             self.assertEqual(_revision(backup), SOURCE_REVISION)
             self.assertEqual(_revision(source), _code_head())
+            self.assertNotIn("residence_city", _resource_columns(backup))
+            self.assertIn("residence_city", _resource_columns(source))
 
             engine = create_sql_engine(_url(source))
             try:
@@ -816,6 +919,7 @@ class Sqlite0048RuntimeBridgeTests(unittest.TestCase):
             backup = root / "resourceplanner-before-bridge.db"
             _create_current_database(source)
             _reshape_as_0048(source)
+            self.assertNotIn("residence_city", _resource_columns(source))
             before = _hash(source)
 
             with self.assertRaises(RuntimeError):
@@ -829,7 +933,9 @@ class Sqlite0048RuntimeBridgeTests(unittest.TestCase):
 
             self.assertEqual(_hash(source), before)
             self.assertEqual(_revision(source), SOURCE_REVISION)
+            self.assertNotIn("residence_city", _resource_columns(source))
             self.assertEqual(_hash(backup), before)
+            self.assertNotIn("residence_city", _resource_columns(backup))
 
     def test_apply_requires_explicit_live_runtime_confirmation(self) -> None:
         with TemporaryDirectory() as directory:
