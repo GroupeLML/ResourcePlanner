@@ -74,6 +74,7 @@ class PlanningAuthorizationGuardTests(unittest.TestCase):
         client: TestClient,
         *,
         hours: float = 8,
+        site_client: str | None = None,
     ) -> str:
         created = client.post(
             "/api/v1/demands",
@@ -83,6 +84,7 @@ class PlanningAuthorizationGuardTests(unittest.TestCase):
                 "desired_end": DAY.isoformat(),
                 "estimated_hours": hours,
                 "proposed_technician": "Alice",
+                **({"site_client": site_client} if site_client is not None else {}),
                 "submit": True,
             }),
         )
@@ -438,6 +440,117 @@ class PlanningAuthorizationGuardTests(unittest.TestCase):
                     self.assertEqual(state.approval_revision_id, successor.id)
                     overrides_after = json.loads(state.budget_overrides_text)
                     self.assertEqual(overrides_after, {entry_key: "12.00"})
+            finally:
+                engine.dispose()
+
+
+
+    def test_delegated_budget_exception_cannot_cross_changed_site_revision(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            admin_app = create_api_app(
+                database_url,
+                actor_name="admin-13f-scope",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(admin_app, raise_server_exceptions=False) as client:
+                number = self._create_and_approve(
+                    client,
+                    hours=10,
+                    site_client="Site A",
+                )
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                request_id, _requirement_id, segment_id = self._request_and_requirement(
+                    factory,
+                    number,
+                )
+                with factory() as session:
+                    reference = session.get(RequestApprovalReference, request_id)
+                    self.assertIsNotNone(reference)
+                    previous_revision_id = reference.active_revision_id
+                    previous_revision_count = session.scalar(
+                        select(func.count(RequestApprovalRevision.id)).where(
+                            RequestApprovalRevision.workforce_request_id == request_id
+                        )
+                    )
+                    self.assertEqual(previous_revision_count, 1)
+
+                pm_app = create_api_app(
+                    database_url,
+                    actor_name="pm-13f-scope",
+                    auth_resolver=TEST_PROJECT_MANAGER_AUTH_RESOLVER,
+                )
+                with TestClient(pm_app, raise_server_exceptions=False) as client:
+                    delegated = client.patch(
+                        f"/api/v1/demands/{number}",
+                        json={
+                            "estimated_hours": 12,
+                            "comment": "Tolérance déléguée Site A",
+                        },
+                    )
+                    self.assertEqual(delegated.status_code, 200, delegated.text)
+                    self.assertFalse(delegated.json()["reapproval_required"])
+
+                    changed_scope = client.patch(
+                        f"/api/v1/demands/{number}",
+                        json={
+                            "estimated_hours": 10,
+                            "site_client": "Site B",
+                            "comment": "Déplacement vers Site B",
+                        },
+                    )
+                    self.assertEqual(changed_scope.status_code, 200, changed_scope.text)
+                    self.assertTrue(changed_scope.json()["reapproval_required"])
+
+                with factory() as session:
+                    state = session.get(RequestOperationalState, request_id)
+                    self.assertIsNotNone(state)
+                    self.assertEqual(state.approval_revision_id, previous_revision_id)
+                    overrides_before = json.loads(state.budget_overrides_text)
+                    self.assertEqual(len(overrides_before), 1)
+                    self.assertEqual(float(next(iter(overrides_before.values()))), 12.0)
+
+                with TestClient(admin_app, raise_server_exceptions=False) as client:
+                    reapproved = client.post(
+                        f"/api/v1/demands/{number}/approve",
+                        json={"comment": "Tentative autorisation Site B"},
+                    )
+                    self.assertEqual(reapproved.status_code, 409, reapproved.text)
+                    self.assertEqual(
+                        reapproved.json()["error"]["code"],
+                        "operational_budget_reconciliation_required",
+                    )
+
+                with factory() as session:
+                    request = session.get(WorkforceRequest, request_id)
+                    self.assertIsNotNone(request)
+                    self.assertEqual(request.site_client, "Site B")
+                    reference = session.get(RequestApprovalReference, request_id)
+                    self.assertIsNotNone(reference)
+                    self.assertEqual(reference.active_revision_id, previous_revision_id)
+                    state = session.get(RequestOperationalState, request_id)
+                    self.assertIsNotNone(state)
+                    self.assertEqual(state.approval_revision_id, previous_revision_id)
+                    overrides_after = json.loads(state.budget_overrides_text)
+                    self.assertEqual(overrides_after, overrides_before)
+                    revision_count = session.scalar(
+                        select(func.count(RequestApprovalRevision.id)).where(
+                            RequestApprovalRevision.workforce_request_id == request_id
+                        )
+                    )
+                    self.assertEqual(revision_count, 1)
+                    requirement = session.get(ResourceRequirement, _requirement_id)
+                    self.assertIsNotNone(requirement)
+                    self.assertEqual(requirement.approval_revision_id, previous_revision_id)
+                    self.assertEqual(float(requirement.planned_hours), 12.0)
+
+                with TestClient(admin_app, raise_server_exceptions=False) as client:
+                    segment = client.get(f"/api/v1/segments/{segment_id}")
+                    self.assertEqual(segment.status_code, 200, segment.text)
+                    self.assertEqual(segment.json()["planned_hours"], 12.0)
             finally:
                 engine.dispose()
 
