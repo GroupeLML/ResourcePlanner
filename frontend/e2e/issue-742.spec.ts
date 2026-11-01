@@ -47,7 +47,12 @@ test("742 conserve et permet de vider la ville de résidence canonique", async (
     const city = page.getByLabel("Ville de résidence");
     await expect(city).toHaveValue("Saint-Jean-sur-Richelieu");
     await city.fill("Chambly");
+    const updated = page.waitForResponse(
+      (response) => response.request().method() === "PATCH"
+        && response.url().includes("/api/v1/resources/"),
+    );
     await page.getByRole("button", { name: "Enregistrer le profil" }).click();
+    expect((await updated).ok()).toBeTruthy();
 
     await page.reload();
     await expect(page.locator(".sidebar-footer")).toContainText("Administrateur");
@@ -56,7 +61,12 @@ test("742 conserve et permet de vider la ville de résidence canonique", async (
     await expect(page.getByLabel("Ville de résidence")).toHaveValue("Chambly");
 
     await page.getByLabel("Ville de résidence").fill("");
+    const cleared = page.waitForResponse(
+      (response) => response.request().method() === "PATCH"
+        && response.url().includes("/api/v1/resources/"),
+    );
     await page.getByRole("button", { name: "Enregistrer le profil" }).click();
+    expect((await cleared).ok()).toBeTruthy();
 
     await page.reload();
     await expect(page.locator(".sidebar-footer")).toContainText("Administrateur");
