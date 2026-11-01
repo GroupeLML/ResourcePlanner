@@ -134,7 +134,7 @@ test("745 affiche uniquement les métadonnées compactes autorisées et retire l
 
     const boundedAsset = await page.request.post("/api/v1/assets", {
       data: {
-        code: `VEH-745-B-${stamp}`,
+        code: `VEH-745-BOUND-${stamp}`,
         label: `Camion temporaire 745 ${stamp}`,
         asset_type_id: typeId,
       },
