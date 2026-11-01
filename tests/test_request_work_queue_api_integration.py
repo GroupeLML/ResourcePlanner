@@ -3157,6 +3157,222 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_reapproval_rejects_retained_operational_budget_above_new_authority_atomically(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-781-budget-reconcile",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_unselected(client, hours=40)
+                    action = self._actions(client, number)[0]
+                    segment_id = action["segment_id"]
+
+                    overridden = client.patch(
+                        f"/api/v1/segments/{segment_id}",
+                        json={"planned_hours": 36},
+                    )
+                    self.assertEqual(overridden.status_code, 200, overridden.text)
+
+                    with factory() as session:
+                        request = session.scalar(
+                            select(WorkforceRequest).where(
+                                WorkforceRequest.legacy_demand_number == number
+                            )
+                        )
+                        self.assertIsNotNone(request)
+                        requirement = session.scalar(
+                            select(ResourceRequirement).where(
+                                ResourceRequirement.legacy_segment_id == segment_id
+                            )
+                        )
+                        self.assertIsNotNone(requirement)
+                        state = session.get(RequestOperationalState, request.id)
+                        self.assertIsNotNone(state)
+                        previous_revision_id = requirement.approval_revision_id
+                        previous_state_revision_id = state.approval_revision_id
+                        previous_state_version = state.version
+                        previous_overrides = state.budget_overrides_text
+                        previous_requirement = (
+                            requirement.start_date,
+                            requirement.end_date,
+                            requirement.planned_hours,
+                            requirement.approval_revision_id,
+                            requirement.approved_entry_key,
+                            requirement.assigned_resource_id,
+                        )
+                        previous_revision_count = session.scalar(
+                            select(func.count(RequestApprovalRevision.id)).where(
+                                RequestApprovalRevision.workforce_request_id == request.id
+                            )
+                        )
+                        previous_shift_state = tuple(
+                            sorted(
+                                (
+                                    row.id,
+                                    row.resource_id,
+                                    row.work_date,
+                                    row.hours,
+                                    row.locked,
+                                    row.source,
+                                )
+                                for row in session.scalars(
+                                    select(Shift).where(
+                                        Shift.resource_requirement_id == requirement.id
+                                    )
+                                ).all()
+                            )
+                        )
+                        overrides = json.loads(previous_overrides)
+                        self.assertEqual(
+                            float(next(iter(overrides.values()))),
+                            36.0,
+                        )
+
+                    demand = client.get(f"/api/v1/demands/{number}").json()
+                    line = demand["lines"][0]
+                    pm_app = create_api_app(
+                        database_url,
+                        actor_name="pm-781-budget-reconcile",
+                        auth_resolver=TEST_PROJECT_MANAGER_AUTH_RESOLVER,
+                    )
+                    with TestClient(pm_app, raise_server_exceptions=False) as pm_client:
+                        changed = pm_client.patch(
+                            f"/api/v1/demands/{number}",
+                            json=routed_demand_payload(
+                                {
+                                    "expected_version": demand["version"],
+                                    "comment": "Réduire l'autorité approuvée #781",
+                                    "lines": [
+                                        {
+                                            "id": line["line_id"],
+                                            "desired_start": "2026-11-03",
+                                            "desired_end": "2026-11-03",
+                                            "estimated_hours": 8,
+                                            "confirmation": "Confirmée",
+                                            "description": "Nouvelle autorité 8 h #781",
+                                        }
+                                    ],
+                                }
+                            ),
+                        )
+                    self.assertEqual(changed.status_code, 200, changed.text)
+                    self.assertTrue(changed.json()["reapproval_required"])
+                    self.assertEqual(changed.json()["status"], "Soumise")
+
+                    rejected = client.post(
+                        f"/api/v1/demands/{number}/approve",
+                        json={"comment": "Réapprobation 8 h incompatible #781"},
+                    )
+                    self.assertEqual(rejected.status_code, 409, rejected.text)
+                    self.assertEqual(
+                        rejected.json()["error"]["code"],
+                        "operational_budget_reconciliation_required",
+                    )
+                    self.assertEqual(
+                        rejected.json()["error"]["context"]["approved_hours"],
+                        8.0,
+                    )
+                    self.assertEqual(
+                        rejected.json()["error"]["context"]["operational_hours"],
+                        36.0,
+                    )
+
+                    with factory() as session:
+                        request = session.scalar(
+                            select(WorkforceRequest).where(
+                                WorkforceRequest.legacy_demand_number == number
+                            )
+                        )
+                        requirement = session.scalar(
+                            select(ResourceRequirement).where(
+                                ResourceRequirement.legacy_segment_id == segment_id
+                            )
+                        )
+                        state = session.get(RequestOperationalState, request.id)
+                        self.assertEqual(requirement.approval_revision_id, previous_revision_id)
+                        self.assertEqual(state.approval_revision_id, previous_state_revision_id)
+                        self.assertEqual(state.version, previous_state_version)
+                        self.assertEqual(state.budget_overrides_text, previous_overrides)
+                        self.assertEqual(
+                            (
+                                requirement.start_date,
+                                requirement.end_date,
+                                requirement.planned_hours,
+                                requirement.approval_revision_id,
+                                requirement.approved_entry_key,
+                                requirement.assigned_resource_id,
+                            ),
+                            previous_requirement,
+                        )
+                        self.assertEqual(
+                            session.scalar(
+                                select(func.count(RequestApprovalRevision.id)).where(
+                                    RequestApprovalRevision.workforce_request_id == request.id
+                                )
+                            ),
+                            previous_revision_count,
+                        )
+                        current_shift_state = tuple(
+                            sorted(
+                                (
+                                    row.id,
+                                    row.resource_id,
+                                    row.work_date,
+                                    row.hours,
+                                    row.locked,
+                                    row.source,
+                                )
+                                for row in session.scalars(
+                                    select(Shift).where(
+                                        Shift.resource_requirement_id == requirement.id
+                                    )
+                                ).all()
+                            )
+                        )
+                        self.assertEqual(current_shift_state, previous_shift_state)
+
+                    # The incompatible 8 h candidate never becomes active authority.
+                    # Separately prove an actually active 8 h revision cannot be
+                    # expanded to 36 h through the ordinary segment mutation and
+                    # assignment path.
+                    eight_number = self._approve_unselected(client, hours=8)
+                    eight_action = self._actions(client, eight_number)[0]
+                    eight_segment_id = eight_action["segment_id"]
+                    oversized = client.patch(
+                        f"/api/v1/segments/{eight_segment_id}",
+                        json={"planned_hours": 36},
+                    )
+                    self.assertEqual(oversized.status_code, 409, oversized.text)
+                    self.assertEqual(
+                        oversized.json()["error"]["code"],
+                        "planning_authorization_increase_requires_explicit_policy",
+                    )
+                    assigned = client.post(
+                        f"/api/v1/segments/{eight_segment_id}/assign",
+                        json={"resource_id": "R-778-B"},
+                    )
+                    self.assertEqual(assigned.status_code, 200, assigned.text)
+                    eight_snapshot = self._snapshot(client, eight_number)
+                    self.assertEqual(
+                        sum(
+                            Decimal(str(row["hours"]))
+                            for row in eight_snapshot["demand_shifts"]
+                        ),
+                        Decimal("8.00"),
+                    )
+                    self.assertLessEqual(
+                        Decimal(str(eight_snapshot["demand_segments"][0]["covered_hours"])),
+                        Decimal("8.00"),
+                    )
+            finally:
+                engine.dispose()
+
     def test_public_patch_respects_post_reduction_preserved_survivor_boundary(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
