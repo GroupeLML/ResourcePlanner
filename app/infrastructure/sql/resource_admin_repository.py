@@ -33,6 +33,7 @@ def _resource_model(row: Resource, competency_ids: tuple[str, ...] = ()) -> Reso
         id=row.id,
         name=row.name,
         email=_optional_text(row.email),
+        residence_city=_optional_text(row.residence_city),
         resource_class=_optional_text(row.resource_class),
         competencies=_optional_text(row.competencies),
         competency_ids=competency_ids,
@@ -189,6 +190,7 @@ class SqlResourceAdminRepository(ResourceAdminRepositoryPort):
             id=new_id(),
             name=_text(values.get("name")),
             email=_optional_text(values.get("email")),
+            residence_city=_optional_text(values.get("residence_city")),
             resource_class=_optional_text(values.get("resource_class")),
             competencies=_optional_text(values.get("competencies")),
             note=_optional_text(values.get("note")),
@@ -207,6 +209,7 @@ class SqlResourceAdminRepository(ResourceAdminRepositoryPort):
         for field in (
             "name",
             "email",
+            "residence_city",
             "resource_class",
             "competencies",
             "note",
@@ -219,7 +222,7 @@ class SqlResourceAdminRepository(ResourceAdminRepositoryPort):
             value = values[field]
             if field == "name":
                 value = _text(value)
-            elif field in {"email", "resource_class", "competencies", "note", "external_id"}:
+            elif field in {"email", "residence_city", "resource_class", "competencies", "note", "external_id"}:
                 value = _optional_text(value)
             elif field == "active":
                 value = bool(value)
