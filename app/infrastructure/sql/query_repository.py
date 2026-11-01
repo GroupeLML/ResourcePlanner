@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import date, timedelta
 import unicodedata
 
@@ -46,7 +47,7 @@ from ...domain.resource_recommendations import (
     RecommendationCandidate,
     rank_recommendation_candidates,
 )
-from ...domain.reservable_assets import AssetRequirementOrigin
+from ...domain.reservable_assets import AssetRequirementOrigin, ResourcePeriodMode
 from ...domain.demand_periods import (
     DemandPeriodDefinition,
     projected_hours_in_window,
@@ -250,6 +251,116 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             resource_id: tuple(competency_ids)
             for resource_id, competency_ids in grouped.items()
         }
+
+    def _planning_card_competencies_by_resource(
+        self,
+        resource_ids: Sequence[str],
+    ) -> dict[str, tuple[str, ...]]:
+        identifiers = tuple(str(value) for value in resource_ids if str(value))
+        if not identifiers:
+            return {}
+        grouped: dict[str, list[str]] = {identifier: [] for identifier in identifiers}
+        rows = self._session.execute(
+            select(
+                ResourceCompetency.resource_id,
+                Competency.name,
+            )
+            .join(Competency, Competency.id == ResourceCompetency.competency_id)
+            .where(
+                ResourceCompetency.resource_id.in_(identifiers),
+                Competency.sort_order < 20,
+            )
+            .order_by(
+                ResourceCompetency.resource_id,
+                Competency.sort_order,
+                Competency.name,
+                Competency.id,
+            )
+        ).all()
+        for resource_id, competency_name in rows:
+            grouped.setdefault(resource_id, []).append(competency_name)
+        return {
+            resource_id: tuple(names)
+            for resource_id, names in grouped.items()
+            if names
+        }
+
+    def _current_continuous_vehicle_by_resource(
+        self,
+        resource_ids: Sequence[str],
+        *,
+        as_of: date,
+    ) -> dict[str, tuple[str, str]]:
+        identifiers = tuple(str(value) for value in resource_ids if str(value))
+        if not identifiers:
+            return {}
+        rows = self._session.execute(
+            select(
+                AssetRequirement.context_resource_id,
+                Asset.code,
+                Asset.label,
+                AssetRequirement.start_date,
+                AssetRequirement.id,
+            )
+            .join(
+                AssetAllocation,
+                AssetAllocation.asset_requirement_id == AssetRequirement.id,
+            )
+            .join(Asset, Asset.id == AssetAllocation.asset_id)
+            .join(AssetType, AssetType.id == Asset.asset_type_id)
+            .where(
+                AssetRequirement.origin == AssetRequirementOrigin.RESOURCE_PERIOD.value,
+                AssetRequirement.resource_period_mode == ResourcePeriodMode.CONTINUOUS.value,
+                AssetRequirement.context_resource_id.in_(identifiers),
+                AssetRequirement.start_date <= as_of,
+                or_(
+                    AssetRequirement.end_date.is_(None),
+                    AssetRequirement.end_date >= as_of,
+                ),
+                AssetAllocation.start_date <= as_of,
+                or_(
+                    AssetAllocation.end_date.is_(None),
+                    AssetAllocation.end_date >= as_of,
+                ),
+                AssetType.category == "VEHICLE",
+            )
+            .order_by(
+                AssetRequirement.context_resource_id,
+                AssetRequirement.start_date.desc(),
+                Asset.code,
+                AssetRequirement.id,
+            )
+        ).all()
+        result: dict[str, tuple[str, str]] = {}
+        for resource_id, asset_code, asset_label, _start_date, _requirement_id in rows:
+            if resource_id and resource_id not in result:
+                result[resource_id] = (asset_code, asset_label)
+        return result
+
+    def _with_planning_card_metadata(
+        self,
+        resources: Sequence[ResourceReadModel],
+    ) -> tuple[ResourceReadModel, ...]:
+        rows = tuple(resources)
+        identifiers = tuple(row.id for row in rows)
+        competencies = self._planning_card_competencies_by_resource(identifiers)
+        vehicles = self._current_continuous_vehicle_by_resource(
+            identifiers,
+            as_of=date.today(),
+        )
+        return tuple(
+            replace(
+                row,
+                planning_card_competencies=competencies.get(row.id, ()),
+                continuous_vehicle_code=(
+                    vehicles[row.id][0] if row.id in vehicles else None
+                ),
+                continuous_vehicle_label=(
+                    vehicles[row.id][1] if row.id in vehicles else None
+                ),
+            )
+            for row in rows
+        )
 
     def list_projects(
         self,
@@ -2587,6 +2698,8 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                 for resource in all_resources
                 if resource.id in visible_ids
             )
+
+        resources = self._with_planning_card_metadata(resources)
 
         totals = WorkloadTotals()
         for shift in shifts:
