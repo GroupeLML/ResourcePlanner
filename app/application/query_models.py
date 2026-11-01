@@ -82,6 +82,9 @@ class ResourceReadModel:
     erp_contact_id: int | None = None
     planning_subgroup_code: str | None = None
     planning_subgroup_label: str | None = None
+    planning_card_competencies: tuple[str, ...] = ()
+    continuous_vehicle_code: str | None = None
+    continuous_vehicle_label: str | None = None
 
     @property
     def effective_active(self) -> bool:
