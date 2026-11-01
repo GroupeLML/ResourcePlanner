@@ -155,12 +155,19 @@ class SqlPlannerQueryRepositoryTests(unittest.TestCase):
                     Competency(id="C745-B", name="Beta", sort_order=19),
                     Competency(id="C745-C", name="Gamma", sort_order=20),
                     Competency(id="C745-D", name="Delta", sort_order=30),
-                    AssetType(
-                        id="AT745",
-                        code="VEH-745",
-                        label="Véhicule 745",
-                        category="VEHICLE",
-                    ),
+                ]
+            )
+            session.add(
+                AssetType(
+                    id="AT745",
+                    code="VEH-745",
+                    label="Véhicule 745",
+                    category="VEHICLE",
+                )
+            )
+            session.flush()
+            session.add_all(
+                [
                     Asset(
                         id="A745-CONT",
                         code="CAM-745",
