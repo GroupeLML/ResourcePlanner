@@ -17,6 +17,7 @@ from app.infrastructure.sql import (
     Resource,
     ResourceAvailabilityRule,
     ResourceRequirement,
+    SqlPeriodAwareApprovedDemandSyncAdapter,
     WorkforceRequest,
     create_session_factory,
     create_sql_engine,
@@ -337,6 +338,76 @@ class PlanningAuthorizationGuardTests(unittest.TestCase):
                     self.assertEqual(len(overrides), 1)
                     self.assertEqual(float(next(iter(overrides.values()))), 12.0)
                     self.assertGreaterEqual(state.version, 2)
+            finally:
+                engine.dispose()
+
+    def test_existing_delegated_budget_exception_survives_same_authority_revision(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            admin_app = create_api_app(
+                database_url,
+                actor_name="admin-13f-revision",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(admin_app, raise_server_exceptions=False) as client:
+                number = self._create_and_approve(client, hours=10)
+
+            pm_app = create_api_app(
+                database_url,
+                actor_name="pm-13f-revision",
+                auth_resolver=TEST_PROJECT_MANAGER_AUTH_RESOLVER,
+            )
+            with TestClient(pm_app, raise_server_exceptions=False) as client:
+                patched = client.patch(
+                    f"/api/v1/demands/{number}",
+                    json={
+                        "estimated_hours": 12,
+                        "comment": "Tolérance déléguée persistante",
+                    },
+                )
+                self.assertEqual(patched.status_code, 200, patched.text)
+                self.assertFalse(patched.json()["reapproval_required"])
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    request = session.scalar(
+                        select(WorkforceRequest).where(
+                            WorkforceRequest.legacy_demand_number == number
+                        )
+                    )
+                    self.assertIsNotNone(request)
+                    reference = session.get(RequestApprovalReference, request.id)
+                    self.assertIsNotNone(reference)
+                    previous_revision_id = reference.active_revision_id
+
+                    SqlPeriodAwareApprovedDemandSyncAdapter(session).sync_approved(
+                        number,
+                        approved_request_version=int(request.aggregate_version or 1),
+                    )
+
+                    refreshed_reference = session.get(RequestApprovalReference, request.id)
+                    self.assertIsNotNone(refreshed_reference)
+                    self.assertNotEqual(
+                        refreshed_reference.active_revision_id,
+                        previous_revision_id,
+                    )
+                    state = session.get(RequestOperationalState, request.id)
+                    self.assertIsNotNone(state)
+                    overrides = json.loads(state.budget_overrides_text)
+                    self.assertEqual(len(overrides), 1)
+                    self.assertEqual(float(next(iter(overrides.values()))), 12.0)
+                    active_revision = session.get(
+                        RequestApprovalRevision,
+                        refreshed_reference.active_revision_id,
+                    )
+                    self.assertIsNotNone(active_revision)
+                    payload = json.loads(active_revision.payload_text)
+                    self.assertEqual(
+                        float(payload["authorization"]["entries"][0]["hours"]),
+                        10.0,
+                    )
             finally:
                 engine.dispose()
 
