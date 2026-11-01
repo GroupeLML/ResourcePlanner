@@ -100,6 +100,28 @@ test("777 glisse un reliquat approuvé sur une ressource/journée via le vrai ba
     );
     expect(approved.status(), await approved.text()).toBe(200);
 
+    const afterApprovalShiftsResponse = await page.request.get(
+      `/api/v1/shifts?start=${d1}&end=${d5}`,
+    );
+    expect(afterApprovalShiftsResponse.ok(), await afterApprovalShiftsResponse.text()).toBeTruthy();
+    const afterApprovalShifts = (await afterApprovalShiftsResponse.json() as Array<any>)
+      .filter((row) => row.demand_number === demandNumber && row.allocation_type !== "Hors horaire requis");
+    expect(afterApprovalShifts).toHaveLength(0);
+
+    const afterApprovalActions = await page.request.get(
+      `/api/v1/planning/actions?start=${d1}&end=${d5}&scope=global`,
+    );
+    expect(afterApprovalActions.ok(), await afterApprovalActions.text()).toBeTruthy();
+    const initialAssignment = (await afterApprovalActions.json() as Array<any>)
+      .find((row) => row.demand_number === demandNumber && row.kind === "ASSIGNMENT");
+    expect(initialAssignment).toBeTruthy();
+
+    const explicitBaseline = await page.request.post(
+      `/api/v1/segments/${encodeURIComponent(String(initialAssignment.segment_id))}/assign`,
+      { data: { resource_id: resourceIds[0] } },
+    );
+    expect(explicitBaseline.status(), await explicitBaseline.text()).toBe(200);
+
     const initialShiftsResponse = await page.request.get(
       `/api/v1/shifts?start=${d1}&end=${d5}`,
     );

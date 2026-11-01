@@ -98,6 +98,20 @@ test("DnD hors horaire conserve le consentement et le transmet au MOVE", async (
   );
   expect(approved.status(), await approved.text()).toBe(200);
 
+  const actions = await page.request.get(
+    `/api/v1/planning/actions?start=${sourceDay}&end=${endDay}&scope=global`,
+  );
+  expect(actions.ok(), await actions.text()).toBeTruthy();
+  const assignment = (await actions.json() as Array<any>).find(
+    (row) => row.kind === "ASSIGNMENT" && row.demand_number === demandNumber,
+  );
+  expect(assignment).toBeTruthy();
+  const explicitlyAssigned = await page.request.post(
+    `/api/v1/segments/${encodeURIComponent(String(assignment.segment_id))}/assign`,
+    { data: { resource_id: "R-ALICE" } },
+  );
+  expect(explicitlyAssigned.status(), await explicitlyAssigned.text()).toBe(200);
+
   const shiftsResponse = await page.request.get(
     `/api/v1/shifts?start=${sourceDay}&end=${endDay}`,
   );

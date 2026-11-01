@@ -713,6 +713,49 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await expect(alternativeCard).toContainText("8 h");
     await expect(alternativeCard).toContainText("Confirmée");
 
+    const beforePlacementShifts = await page.request.get(
+      `/api/v1/shifts?start=${d1}&end=${d5}`,
+    );
+    expect(beforePlacementShifts.ok(), await beforePlacementShifts.text()).toBeTruthy();
+    expect(
+      (await beforePlacementShifts.json() as Array<{ demand_number: string | null }>)
+        .filter((row) => row.demand_number === demandNumber),
+    ).toHaveLength(0);
+
+    const planningActions = await page.request.get(
+      `/api/v1/planning/actions?start=${d1}&end=${d5}&scope=global`,
+    );
+    expect(planningActions.ok(), await planningActions.text()).toBeTruthy();
+    const assignments = (await planningActions.json() as Array<{
+      kind: string;
+      demand_number: string | null;
+      segment_id: string | null;
+      start_date: string;
+      end_date: string;
+      planned_hours: number;
+    }>).filter((row) => row.kind === "ASSIGNMENT" && row.demand_number === demandNumber);
+    expect(assignments).toHaveLength(2);
+
+    const cumulativeAssignment = assignments.find(
+      (row) => row.start_date === d1 && row.end_date === d3 && row.planned_hours === 12,
+    );
+    const alternativeAssignment = assignments.find(
+      (row) => row.start_date === d4 && row.end_date === d4 && row.planned_hours === 8,
+    );
+    expect(cumulativeAssignment?.segment_id).toBeTruthy();
+    expect(alternativeAssignment?.segment_id).toBeTruthy();
+
+    for (const [assignment, resourceId] of [
+      [cumulativeAssignment!, "R-ALICE"],
+      [alternativeAssignment!, "R-BOB"],
+    ] as const) {
+      const assigned = await page.request.post(
+        `/api/v1/segments/${encodeURIComponent(String(assignment.segment_id))}/assign`,
+        { data: { resource_id: resourceId } },
+      );
+      expect(assigned.status(), await assigned.text()).toBe(200);
+    }
+
     await navigateMain(page, "Planning opérationnel");
     await page.getByRole("button", { name: /Suivante/ }).click();
     await page.getByRole("button", { name: /^Filtres/ }).click();
@@ -1044,6 +1087,46 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await coordinator.page.getByLabel(/Commentaire d’approbation/).fill("Régularisation après urgence");
     await coordinator.page.getByRole("button", { name: "Approuver", exact: true }).click();
     await expect(coordinator.page.locator(".demand-notice").filter({ hasText: "Demande approuvée" })).toContainText("Demande approuvée");
+
+    const urgentActions = await coordinator.page.request.get(
+      `/api/v1/planning/actions?start=${today}&end=${today}&scope=global`,
+    );
+    expect(urgentActions.ok(), await urgentActions.text()).toBeTruthy();
+    const urgentAssignment = (await urgentActions.json() as Array<{
+      kind: string;
+      demand_number: string | null;
+      segment_id: string | null;
+      planned_hours: number;
+    }>).find(
+      (row) => row.kind === "ASSIGNMENT" && row.demand_number === urgentNumber,
+    );
+    expect(urgentAssignment?.segment_id).toBeTruthy();
+    expect(urgentAssignment?.planned_hours).toBe(4);
+
+    const explicitlyAssigned = await coordinator.page.request.post(
+      `/api/v1/segments/${encodeURIComponent(String(urgentAssignment!.segment_id))}/assign`,
+      { data: { resource_id: "R-ALICE" } },
+    );
+    expect(explicitlyAssigned.status(), await explicitlyAssigned.text()).toBe(200);
+
+    const urgentShifts = await coordinator.page.request.get(
+      `/api/v1/shifts?start=${today}&end=${today}`,
+    );
+    expect(urgentShifts.ok(), await urgentShifts.text()).toBeTruthy();
+    const aliceUrgentShifts = (await urgentShifts.json() as Array<{
+      demand_number: string | null;
+      resource_id: string | null;
+      hours: number;
+      allocation_type: string | null;
+    }>).filter(
+      (row) =>
+        row.demand_number === urgentNumber
+        && row.resource_id === "R-ALICE"
+        && row.allocation_type !== "Hors horaire requis",
+    );
+    expect(aliceUrgentShifts).toHaveLength(1);
+    expect(Number(aliceUrgentShifts[0].hours)).toBe(4);
+
     await closeContext(coordinator.context);
   });
 
@@ -1305,6 +1388,20 @@ test("COORDINATOR applies a REQUEST window override without contaminating the ca
     },
   );
   expect(approved.status(), await approved.text()).toBe(200);
+
+  const requestActions = await page.request.get(
+    `/api/v1/planning/actions?start=${sourceDay}&end=${weekEnd}&scope=global`,
+  );
+  expect(requestActions.ok(), await requestActions.text()).toBeTruthy();
+  const requestAssignment = (await requestActions.json() as Array<any>).find(
+    (row) => row.kind === "ASSIGNMENT" && row.demand_number === demandNumber,
+  );
+  expect(requestAssignment).toBeTruthy();
+  const requestAssigned = await page.request.post(
+    `/api/v1/segments/${encodeURIComponent(String(requestAssignment.segment_id))}/assign`,
+    { data: { resource_id: "R-ALICE" } },
+  );
+  expect(requestAssigned.status(), await requestAssigned.text()).toBe(200);
 
   const shiftsResponse = await page.request.get(
     `/api/v1/shifts?start=${sourceDay}&end=${weekEnd}`,
@@ -1767,7 +1864,7 @@ test("multi-line demand editor generates independent RequestLines and materializ
   const materialized = segments.filter((row) => row.demand_number === number);
   expect(materialized).toHaveLength(2);
   expect(materialized.map((row) => row.planned_hours).sort((a, b) => a - b)).toEqual([8, 8]);
-  expect(new Set(materialized.map((row) => row.resource_name))).toEqual(new Set(["Alice", "Bob"]));
+  expect(new Set(materialized.map((row) => row.resource_name))).toEqual(new Set([null]));
 
   await closeContext(coordinator.context);
 });
@@ -1993,6 +2090,66 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   await expect(coordinator.page.locator(".demand-notice").filter({ hasText: "Demande approuvée" })).toContainText(
     "Demande approuvée",
   );
+
+  const approvedDemandResponse = await coordinator.page.request.get(
+    `/api/v1/demands/${encodeURIComponent(demandNumber)}`,
+  );
+  expect(approvedDemandResponse.ok(), await approvedDemandResponse.text()).toBeTruthy();
+  const approvedDemand = await approvedDemandResponse.json() as {
+    lines: Array<{
+      line_id: string;
+      position: number;
+      kind: "WORKFORCE" | "ASSET";
+      proposed_resource_id: string | null;
+    }>;
+  };
+  const approvedWorkforce = approvedDemand.lines.filter((line) => line.kind === "WORKFORCE");
+  expect(approvedWorkforce).toHaveLength(2);
+  expect(new Set(approvedWorkforce.map((line) => line.proposed_resource_id))).toEqual(
+    new Set(["R-ALICE", "R-BOB"]),
+  );
+
+  const assetPlanningActions = await coordinator.page.request.get(
+    `/api/v1/planning/actions?start=${d1}&end=${d2}&scope=global`,
+  );
+  expect(assetPlanningActions.ok(), await assetPlanningActions.text()).toBeTruthy();
+  const assetAssignments = (await assetPlanningActions.json() as Array<{
+    kind: string;
+    demand_number: string | null;
+    segment_id: string | null;
+  }>).filter((row) => row.kind === "ASSIGNMENT" && row.demand_number === demandNumber);
+  expect(assetAssignments).toHaveLength(2);
+  expect(assetAssignments.every((row) => Boolean(row.segment_id))).toBeTruthy();
+
+  const demandDetailResponse = await coordinator.page.request.get(
+    `/api/v1/demands/${encodeURIComponent(demandNumber)}/detail`,
+  );
+  expect(demandDetailResponse.ok(), await demandDetailResponse.text()).toBeTruthy();
+  const demandDetail = await demandDetailResponse.json() as {
+    materialized_plan: {
+      requirements: Array<{
+        segment_id: string;
+        source_request_line_id: string | null;
+      }>;
+    };
+  };
+  const requirementBySegment = new Map(
+    demandDetail.materialized_plan.requirements.map((row) => [row.segment_id, row]),
+  );
+
+  for (const action of assetAssignments) {
+    const requirement = requirementBySegment.get(String(action.segment_id));
+    expect(requirement?.source_request_line_id).toBeTruthy();
+    const approvedLine = approvedWorkforce.find(
+      (line) => line.line_id === requirement!.source_request_line_id,
+    );
+    expect(approvedLine?.proposed_resource_id).toBeTruthy();
+    const assigned = await coordinator.page.request.post(
+      `/api/v1/segments/${encodeURIComponent(String(action.segment_id))}/assign`,
+      { data: { resource_id: approvedLine!.proposed_resource_id } },
+    );
+    expect(assigned.status(), await assigned.text()).toBe(200);
+  }
 
   const materializedAssets = coordinator.page.locator(".asset-detail-row").filter({ hasText: "LIFT496 — Nacelle" });
   await expect(materializedAssets).toHaveCount(2);
@@ -2277,6 +2434,19 @@ test("materialized demand cancellation is requested, reviewed, rejected or accep
   await approver.page.getByLabel(/Commentaire d’approbation/).fill("Matérialiser le plan #399D");
   await approver.page.getByRole("button", { name: "Approuver", exact: true }).click();
   await expect(approver.page.locator(".demand-notice").filter({ hasText: "Demande approuvée" }).first()).toContainText("Demande approuvée");
+  const cancellationActions = await approver.page.request.get(
+    `/api/v1/planning/actions?start=${d5}&end=${d5}&scope=global`,
+  );
+  expect(cancellationActions.ok(), await cancellationActions.text()).toBeTruthy();
+  const cancellationAssignment = (await cancellationActions.json() as Array<any>).find(
+    (row) => row.kind === "ASSIGNMENT" && row.demand_number === cancellationDemand,
+  );
+  expect(cancellationAssignment).toBeTruthy();
+  const cancellationAssigned = await approver.page.request.post(
+    `/api/v1/segments/${encodeURIComponent(String(cancellationAssignment.segment_id))}/assign`,
+    { data: { resource_id: "R-ALICE" } },
+  );
+  expect(cancellationAssigned.status(), await cancellationAssigned.text()).toBe(200);
   await navigateMain(approver.page, "Planning opérationnel");
   await approver.page.getByRole("button", { name: /Suivante/ }).click();
   await approver.page.getByRole("button", { name: /^Filtres/ }).click();

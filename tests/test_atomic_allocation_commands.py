@@ -431,6 +431,26 @@ class AtomicAllocationCommandHttpTests(unittest.TestCase):
                     json={"comment": "Autorisation atomique"},
                 )
                 self.assertEqual(approved.status_code, 200, approved.text)
+                actions = client.get(
+                    "/api/v1/planning/actions",
+                    params={
+                        "start": WORK_DAY.isoformat(),
+                        "end": WORK_DAY.isoformat(),
+                        "scope": "global",
+                    },
+                )
+                self.assertEqual(actions.status_code, 200, actions.text)
+                assignment = next(
+                    row
+                    for row in actions.json()
+                    if row["kind"] == "ASSIGNMENT"
+                    and row["demand_number"] == number
+                )
+                assigned = client.post(
+                    f"/api/v1/segments/{assignment['segment_id']}/assign",
+                    json={"resource_id": "R1"},
+                )
+                self.assertEqual(assigned.status_code, 200, assigned.text)
                 approval_state = client.get(
                     f"/api/v1/demands/{number}/approval-state"
                 )

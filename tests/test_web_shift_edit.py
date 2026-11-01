@@ -76,12 +76,21 @@ class WebShiftEditApiTests(unittest.TestCase):
             json={"comment": "ok"},
         )
         assert approved.status_code == 200, approved.text
-        segment = next(
-            row
-            for row in client.get("/api/v1/segments").json()
-            if row["demand_number"] == number
+        actions = client.get(
+            "/api/v1/planning/actions",
+            params={"start": DAY.isoformat(), "end": DAY.isoformat(), "scope": "global"},
         )
-        return segment["segment_id"]
+        assert actions.status_code == 200, actions.text
+        assignment = next(
+            row for row in actions.json()
+            if row["kind"] == "ASSIGNMENT" and row["demand_number"] == number
+        )
+        assigned = client.post(
+            f"/api/v1/segments/{assignment['segment_id']}/assign",
+            json={"resource_id": "R1"},
+        )
+        assert assigned.status_code == 200, assigned.text
+        return str(assignment["segment_id"])
 
     def test_updating_auto_shift_turns_it_into_locked_manual_decision(self) -> None:
         with TemporaryDirectory() as directory:

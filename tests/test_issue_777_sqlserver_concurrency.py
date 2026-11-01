@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 from uuid import uuid4
 import unittest
 
+from fastapi.testclient import TestClient
 from sqlalchemy import delete, event, func, or_, select, text
 
 from app.application.errors import ApplicationConflictError
@@ -67,6 +68,8 @@ from app.infrastructure.sql.request_work_queue_commands import (
     SqlRequestWorkQueueCommandAdapter,
 )
 from app.infrastructure.sql.resource_class_models import ResourceClassConfig
+from app.server import create_api_app
+from tests.http_test_auth import TEST_ADMIN_AUTH_RESOLVER
 
 
 DATABASE_URL = str(os.getenv("RESOURCEPLANNER_SQLSERVER_TEST_URL") or "").strip()
@@ -1033,6 +1036,104 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
         )
         self.assertEqual(restorations, ())
         return request, operational, requirement, intent
+
+    def test_issue_781_public_patch_from_unselected_persists_durable_target_on_sqlserver(self) -> None:
+        fixture = self._fixture()
+        factory = fixture["factory"]
+        with factory.begin() as session:
+            requirement = session.get(ResourceRequirement, fixture["requirement_id"])
+            intent = session.get(
+                RequestRequirementPlanningIntent,
+                fixture["intent_id"],
+            )
+            self.assertIsNotNone(requirement)
+            self.assertIsNotNone(intent)
+            session.execute(
+                delete(Shift).where(
+                    Shift.resource_requirement_id == fixture["requirement_id"]
+                )
+            )
+            requirement.assigned_resource_id = None
+            requirement.status = "À assigner"
+            requirement.planned_hours = Decimal("4.00")
+            request = session.get(WorkforceRequest, fixture["request_id"])
+            line = session.get(RequestLine, fixture["line_id"])
+            revision = session.get(RequestApprovalRevision, fixture["revision_id"])
+            self.assertIsNotNone(request)
+            self.assertIsNotNone(line)
+            self.assertIsNotNone(revision)
+            request.estimated_hours = Decimal("4.00")
+            line.estimated_hours = Decimal("4.00")
+            payload = json.loads(revision.payload_text)
+            payload["authorization"]["entries"][0]["hours"] = "4.00"
+            revision.payload_text = json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            intent.intent_mode = "AUTO"
+            intent.target_mode = "EXPLICIT_NONE"
+            intent.target_resource_id = None
+            intent.placement_not_before_date = None
+            state = session.get(PlanningMutationState, PLANNING_STATE_ID)
+            self.assertIsNotNone(state)
+            before_version = int(state.version)
+
+        app = create_api_app(
+            DATABASE_URL,
+            auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+        )
+        with TestClient(app, raise_server_exceptions=False) as client:
+            patched = client.patch(
+                f"/api/v1/segments/{fixture['segment_id']}",
+                json={"technician": fixture["resources"]["B"]},
+            )
+            self.assertEqual(patched.status_code, 200, patched.text)
+
+            rebuilt = client.post("/api/v1/planning/rebuild")
+            self.assertEqual(rebuilt.status_code, 200, rebuilt.text)
+
+        with factory.begin() as session:
+            SqlPeriodAwareApprovedDemandSyncAdapter(
+                session
+            ).sync_operational_choices(str(fixture["request_number"]))
+
+        with factory() as session:
+            requirement = session.get(ResourceRequirement, fixture["requirement_id"])
+            intent = session.get(
+                RequestRequirementPlanningIntent,
+                fixture["intent_id"],
+            )
+            state = session.get(PlanningMutationState, PLANNING_STATE_ID)
+            self.assertIsNotNone(requirement)
+            self.assertIsNotNone(intent)
+            self.assertIsNotNone(state)
+            self.assertEqual(
+                requirement.assigned_resource_id,
+                fixture["resources"]["B"],
+            )
+            self.assertEqual(intent.target_mode, "EXPLICIT_RESOURCE")
+            self.assertEqual(
+                intent.target_resource_id,
+                fixture["resources"]["B"],
+            )
+            self.assertGreater(int(state.version), before_version)
+            coverage = Decimal(
+                str(
+                    session.scalar(
+                        select(func.coalesce(func.sum(Shift.hours), 0)).where(
+                            Shift.resource_requirement_id == fixture["requirement_id"],
+                            or_(
+                                Shift.allocation_type.is_(None),
+                                Shift.allocation_type != MISSING_ALLOCATION_TYPE,
+                            ),
+                        )
+                    )
+                    or 0
+                )
+            )
+            self.assertEqual(coverage, Decimal("4.00"))
 
     def test_drop_vs_drop_has_one_authoritative_winner(self) -> None:
         fixture = self._fixture()

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
@@ -10,7 +10,12 @@ from sqlalchemy.orm import Session
 from ...application.errors import ApplicationConflictError
 from ...application.read_models import DemandOperationalChoiceReadModel
 from ...application.repository_ports import DemandOperationalChoiceRepositoryPort
-from ...domain.approval_envelope import EnvelopeEntryIdentity, EnvelopeGroupIdentity
+from ...domain.approval_envelope import (
+    EnvelopeEntryIdentity,
+    EnvelopeGroupIdentity,
+    approval_envelope_from_snapshot_payload,
+    delegated_effort_authorization_subject_compatible,
+)
 from ...domain.confirmation import normalize_confirmation
 from .approval_revision_models import (
     APPROVAL_REFERENCE_CAPTURED,
@@ -103,6 +108,168 @@ class SqlRequestOperationalChoiceRepository(DemandOperationalChoiceRepositoryPor
             if _text(key) and _text(item)
         }
 
+
+    @staticmethod
+    def _revision_entries_by_identity(
+        revision: RequestApprovalRevision,
+    ) -> dict[str, object]:
+        payload = json.loads(revision.payload_text)
+        authorization = payload.get("authorization")
+        if not isinstance(authorization, Mapping):
+            raise ValueError("Le snapshot approuvé ne contient pas d'autorisation valide.")
+        envelope = approval_envelope_from_snapshot_payload(authorization)
+        return {
+            entry.identity.stable_key: entry
+            for entry in envelope.entries
+        }
+
+    def _budget_override_authorization_revision_ids(
+        self,
+        *,
+        request_id: str,
+        entry_key: str,
+        operational_hours: Decimal,
+    ) -> tuple[str, ...]:
+        revision_ids: list[str] = []
+        rows = self._session.scalars(
+            select(WorkforceRequestHistory).where(
+                WorkforceRequestHistory.workforce_request_id == request_id,
+                WorkforceRequestHistory.action == "Budget opérationnel",
+            )
+        ).all()
+        for row in rows:
+            try:
+                details = json.loads(row.details or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(details, Mapping):
+                continue
+            revision_id = _text(details.get("approval_revision_id"))
+            if (
+                not revision_id
+                or _text(details.get("approved_entry_key")) != entry_key
+            ):
+                continue
+            try:
+                recorded_approved = Decimal(
+                    _text(details.get("approved_hours"))
+                ).quantize(Decimal("0.01"))
+                recorded_operational = Decimal(
+                    _text(details.get("operational_hours"))
+                ).quantize(Decimal("0.01"))
+            except (InvalidOperation, ValueError):
+                continue
+            if recorded_operational != operational_hours:
+                continue
+            source_revision = self._session.get(
+                RequestApprovalRevision,
+                revision_id,
+            )
+            if (
+                source_revision is None
+                or source_revision.workforce_request_id != request_id
+            ):
+                continue
+            source_entry = self._revision_entries_by_identity(
+                source_revision
+            ).get(entry_key)
+            source_hours = (
+                Decimal(str(source_entry.hours)).quantize(Decimal("0.01"))
+                if source_entry is not None and source_entry.hours is not None
+                else None
+            )
+            if (
+                source_hours is not None
+                and recorded_approved == source_hours
+                and operational_hours > source_hours
+            ):
+                revision_ids.append(revision_id)
+        return tuple(revision_ids)
+
+    def _delegated_budget_lineage_is_valid(
+        self,
+        *,
+        request_id: str,
+        previous_revision: RequestApprovalRevision,
+        new_revision: RequestApprovalRevision,
+        entry_key: str,
+        operational_hours: Decimal,
+    ) -> bool:
+        if new_revision.previous_revision_id != previous_revision.id:
+            return False
+
+        authorization_revision_ids = set(
+            self._budget_override_authorization_revision_ids(
+                request_id=request_id,
+                entry_key=entry_key,
+                operational_hours=operational_hours,
+            )
+        )
+        if not authorization_revision_ids:
+            return False
+
+        lineage: list[RequestApprovalRevision] = [previous_revision]
+        seen = {previous_revision.id}
+        cursor = previous_revision
+        while cursor.previous_revision_id:
+            parent = self._session.get(
+                RequestApprovalRevision,
+                cursor.previous_revision_id,
+            )
+            if (
+                parent is None
+                or parent.workforce_request_id != request_id
+                or parent.id in seen
+            ):
+                return False
+            lineage.append(parent)
+            seen.add(parent.id)
+            cursor = parent
+
+        lineage.reverse()
+        source_indexes = [
+            index
+            for index, candidate in enumerate(lineage)
+            if candidate.id in authorization_revision_ids
+        ]
+        for source_index in reversed(source_indexes):
+            relevant = [*lineage[source_index:], new_revision]
+            if all(
+                self._revision_pair_preserves_delegated_subject(
+                    reference_revision,
+                    proposed_revision,
+                    entry_key=entry_key,
+                )
+                for reference_revision, proposed_revision in zip(
+                    relevant,
+                    relevant[1:],
+                )
+            ):
+                return True
+        return False
+
+    def _revision_pair_preserves_delegated_subject(
+        self,
+        reference_revision: RequestApprovalRevision,
+        proposed_revision: RequestApprovalRevision,
+        *,
+        entry_key: str,
+    ) -> bool:
+        reference_entry = self._revision_entries_by_identity(
+            reference_revision
+        ).get(entry_key)
+        proposed_entry = self._revision_entries_by_identity(
+            proposed_revision
+        ).get(entry_key)
+        return bool(
+            reference_entry is not None
+            and proposed_entry is not None
+            and delegated_effort_authorization_subject_compatible(
+                reference_entry,
+                proposed_entry,
+            )
+        )
+
     @staticmethod
     def _read_model(
         row: RequestOperationalState,
@@ -155,6 +322,103 @@ class SqlRequestOperationalChoiceRepository(DemandOperationalChoiceRepositoryPor
             )
             self._session.add(current)
         else:
+            previous_budget_overrides = self._decode_mapping(
+                current.budget_overrides_text
+            )
+            approved_hours_by_entry = {
+                _text(entry.get("identity")): Decimal(_text(entry.get("hours")))
+                for entry in self._snapshot_entries(revision)
+                if _text(entry.get("identity")) and _text(entry.get("hours"))
+            }
+            previous_revision = self._session.get(
+                RequestApprovalRevision,
+                current.approval_revision_id,
+            )
+            previous_approved_hours_by_entry = (
+                {
+                    _text(entry.get("identity")): Decimal(_text(entry.get("hours")))
+                    for entry in self._snapshot_entries(previous_revision)
+                    if _text(entry.get("identity")) and _text(entry.get("hours"))
+                }
+                if previous_revision is not None
+                else {}
+            )
+            previous_entries_by_identity = (
+                self._revision_entries_by_identity(previous_revision)
+                if previous_revision is not None
+                else {}
+            )
+            approved_entries_by_identity = self._revision_entries_by_identity(revision)
+            preserved_budget_overrides: dict[str, str] = {}
+            for entry_key, value in previous_budget_overrides.items():
+                approved_hours = approved_hours_by_entry.get(entry_key)
+                if approved_hours is None:
+                    continue
+                approved_hours = approved_hours.quantize(Decimal("0.01"))
+                operational_hours = Decimal(value).quantize(Decimal("0.01"))
+                previous_approved_hours = previous_approved_hours_by_entry.get(entry_key)
+                previous_approved_hours = (
+                    previous_approved_hours.quantize(Decimal("0.01"))
+                    if previous_approved_hours is not None
+                    else None
+                )
+                previous_entry = previous_entries_by_identity.get(entry_key)
+                approved_entry = approved_entries_by_identity.get(entry_key)
+                compatible_authorization_subject = bool(
+                    previous_entry is not None
+                    and approved_entry is not None
+                    and delegated_effort_authorization_subject_compatible(
+                        previous_entry,
+                        approved_entry,
+                    )
+                )
+                authorized_exception_lineage = bool(
+                    previous_revision is not None
+                    and previous_approved_hours is not None
+                    and operational_hours > previous_approved_hours
+                    and self._delegated_budget_lineage_is_valid(
+                        request_id=request_id,
+                        previous_revision=previous_revision,
+                        new_revision=revision,
+                        entry_key=entry_key,
+                        operational_hours=operational_hours,
+                    )
+                )
+                existing_exception_remains_valid = bool(
+                    operational_hours > approved_hours
+                    and previous_approved_hours is not None
+                    and approved_hours >= previous_approved_hours
+                    and authorized_exception_lineage
+                    and compatible_authorization_subject
+                )
+                if (
+                    operational_hours > approved_hours
+                    and not existing_exception_remains_valid
+                ):
+                    raise ApplicationConflictError(
+                        "Le budget opérationnel conservé dépasse l'autorisation "
+                        "de la nouvelle révision approuvée.",
+                        code="operational_budget_reconciliation_required",
+                        context={
+                            "request_id": request_id,
+                            "previous_approval_revision_id": current.approval_revision_id,
+                            "new_approval_revision_id": revision.id,
+                            "approved_entry_key": entry_key,
+                            "previous_approved_hours": (
+                                float(previous_approved_hours)
+                                if previous_approved_hours is not None
+                                else None
+                            ),
+                            "approved_hours": float(approved_hours),
+                            "operational_hours": float(operational_hours),
+                        },
+                    )
+                if operational_hours != approved_hours:
+                    preserved_budget_overrides[entry_key] = format(
+                        operational_hours,
+                        "f",
+                    )
+
             current.approval_revision_id = revision.id
             current.version = max(int(current.version or 1), 1) + 1
             current.selections_text = json.dumps(
@@ -169,7 +433,12 @@ class SqlRequestOperationalChoiceRepository(DemandOperationalChoiceRepositoryPor
                 sort_keys=True,
                 separators=(",", ":"),
             )
-            current.budget_overrides_text = "{}"
+            current.budget_overrides_text = json.dumps(
+                preserved_budget_overrides,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
             current.updated_by_name = _text(actor_name) or self._actor_name or None
         self._session.flush()
         return self._read_model(current)

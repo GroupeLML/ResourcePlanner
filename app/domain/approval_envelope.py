@@ -770,6 +770,55 @@ def _scope_tuple(entry: ApprovalEnvelopeEntry) -> tuple[object, ...]:
     )
 
 
+def _same_authorization_scope(
+    reference: ApprovalEnvelopeEntry,
+    proposed: ApprovalEnvelopeEntry,
+) -> bool:
+    return _scope_tuple(reference) == _scope_tuple(proposed)
+
+
+def _same_authorization_window(
+    reference: ApprovalEnvelopeEntry,
+    proposed: ApprovalEnvelopeEntry,
+) -> bool:
+    return (
+        reference.start_date == proposed.start_date
+        and reference.end_date == proposed.end_date
+    )
+
+
+def _same_authorization_topology(
+    reference: ApprovalEnvelopeEntry,
+    proposed: ApprovalEnvelopeEntry,
+) -> bool:
+    return (
+        reference.kind == proposed.kind
+        and reference.group == proposed.group
+        and reference.confirmation_mode == proposed.confirmation_mode
+        and reference.proposed_resource_mode == proposed.proposed_resource_mode
+        and reference.same_as_period_key == proposed.same_as_period_key
+    )
+
+
+def delegated_effort_authorization_subject_compatible(
+    reference: ApprovalEnvelopeEntry,
+    proposed: ApprovalEnvelopeEntry,
+) -> bool:
+    """Return whether a delegated effort exception remains on the same subject.
+
+    ADR-003 permits delegated effort only inside the same approved business scope.
+    Reuse the exact structural dimensions enforced by the envelope comparator rather
+    than defining a second, site-only carry-forward policy.
+    """
+
+    return (
+        reference.identity == proposed.identity
+        and _same_authorization_scope(reference, proposed)
+        and _same_authorization_window(reference, proposed)
+        and _same_authorization_topology(reference, proposed)
+    )
+
+
 def _budget_change(
     approved: ApprovalEnvelopeEntry,
     candidate: ApprovalEnvelopeEntry,
@@ -896,7 +945,7 @@ def compare_approval_envelopes(
         reference = approved_by_id[identity]
         proposed = candidate_by_id[identity]
 
-        if _scope_tuple(reference) != _scope_tuple(proposed):
+        if not _same_authorization_scope(reference, proposed):
             requires_reapproval = True
             changes.append(
                 EnvelopeChange(
@@ -904,10 +953,7 @@ def compare_approval_envelopes(
                     entry_key=identity.stable_key,
                 )
             )
-        if (
-            reference.start_date != proposed.start_date
-            or reference.end_date != proposed.end_date
-        ):
+        if not _same_authorization_window(reference, proposed):
             requires_reapproval = True
             changes.append(
                 EnvelopeChange(
@@ -921,7 +967,10 @@ def compare_approval_envelopes(
                     ),
                 )
             )
-        if reference.kind != proposed.kind or reference.group != proposed.group:
+        if (
+            reference.kind != proposed.kind
+            or reference.group != proposed.group
+        ):
             requires_reapproval = True
             changes.append(
                 EnvelopeChange(

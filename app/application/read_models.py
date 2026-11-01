@@ -312,6 +312,7 @@ class SegmentReadModel:
     load_profile: str = "UNIFORM"
     operational_base_hours: float | None = None
     approval_revision_id: str | None = None
+    approved_entry_key: str | None = None
     operational_version: int | None = None
     placement_not_before_date: date | None = None
 

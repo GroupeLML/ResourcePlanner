@@ -111,6 +111,20 @@ class ConfirmationInheritanceApiTests(unittest.TestCase):
             json={"comment": "ok"},
         )
         assert approved.status_code == 200, approved.text
+        actions = client.get(
+            "/api/v1/planning/actions",
+            params={"start": DAY.isoformat(), "end": DAY.isoformat(), "scope": "global"},
+        )
+        assert actions.status_code == 200, actions.text
+        assignment = next(
+            row for row in actions.json()
+            if row["kind"] == "ASSIGNMENT" and row["demand_number"] == number
+        )
+        assigned = client.post(
+            f"/api/v1/segments/{assignment['segment_id']}/assign",
+            json={"resource_id": "R1"},
+        )
+        assert assigned.status_code == 200, assigned.text
         return number
 
     def test_request_confirmation_flows_to_requirement_and_auto_shift(self) -> None:

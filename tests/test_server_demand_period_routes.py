@@ -197,7 +197,7 @@ class ServerDemandPeriodRouteTests(unittest.TestCase):
                     ).all()
                     self.assertEqual(len(active), 1)
                     self.assertEqual(active[0].start_date, D2)
-                    self.assertEqual(active[0].assigned_resource_id, "R2")
+                    self.assertIsNone(active[0].assigned_resource_id)
             finally:
                 engine.dispose()
 

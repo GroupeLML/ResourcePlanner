@@ -51,6 +51,24 @@ class _Planning:
         return {"allocated_hours": 8.0, "unallocated_hours": 0.0}
 
 
+class _OperationalChoices:
+    def __init__(self, events: list[object]) -> None:
+        self.events = events
+
+    def set_budget_override(self, demand_number, entry_key, hours, *, expected_version=None):
+        self.events.append(("budget", demand_number, entry_key, hours))
+        return object()
+
+
+class _Targeting:
+    def __init__(self, events: list[object]) -> None:
+        self.events = events
+
+    def assign_segment(self, segment_id: str, technician: str):
+        self.events.append(("assign", segment_id, technician))
+        return {"allocated_hours": 8.0, "unallocated_hours": 0.0}
+
+
 class SegmentServiceTests(unittest.TestCase):
     def test_create_persists_typed_payload_then_rebuilds_once(self) -> None:
         segments = _Segments()
@@ -97,6 +115,85 @@ class SegmentServiceTests(unittest.TestCase):
             ],
         )
 
+    def test_request_target_patch_uses_canonical_targeting_port(self) -> None:
+        segments = _Segments()
+        segments.record = replace(segments.record, origin="REQUEST")
+        planning = _Planning(segments.events)
+        targeting = _Targeting(segments.events)
+        service = SegmentService(segments, planning, targeting=targeting)
+
+        summary = service.update_command(
+            SegmentUpdateCommand(segment_id="SEG-1", technician="Bob")
+        )
+
+        self.assertEqual(
+            segments.events,
+            [
+                ("update", "SEG-1", {}),
+                ("assign", "SEG-1", "Bob"),
+            ],
+        )
+        self.assertEqual(summary["allocated_hours"], 8.0)
+
+    def test_mixed_request_patch_syncs_effective_need_before_target_rebuild(self) -> None:
+        segments = _Segments()
+        segments.record = replace(
+            segments.record,
+            origin="REQUEST",
+            planned_hours=40,
+            approved_entry_key="ENTRY-1",
+        )
+        planning = _Planning(segments.events)
+        targeting = _Targeting(segments.events)
+
+        class Sync:
+            def sync_operational_choices(self, number, **kwargs):
+                segments.events.append(("sync", number, dict(kwargs)))
+
+        service = SegmentService(
+            segments,
+            planning,
+            approved_sync=Sync(),
+            targeting=targeting,
+            operational_choices=_OperationalChoices(segments.events),
+        )
+
+        summary = service.update_command(
+            SegmentUpdateCommand(
+                segment_id="SEG-1",
+                technician="Bob",
+                planned_hours=36,
+            )
+        )
+
+        self.assertEqual(
+            segments.events,
+            [
+                ("update", "SEG-1", {"HeuresPrevues": 36}),
+                ("budget", "DMO-1", "ENTRY-1", 36.0),
+                ("sync", "DMO-1", {}),
+                ("assign", "SEG-1", "Bob"),
+            ],
+        )
+        self.assertEqual(summary["allocated_hours"], 8.0)
+
+    def test_request_target_clear_patch_is_rejected_before_mutation(self) -> None:
+        segments = _Segments()
+        segments.record = replace(segments.record, origin="REQUEST", resource_name="Alice")
+        service = SegmentService(
+            segments,
+            _Planning(segments.events),
+            targeting=_Targeting(segments.events),
+        )
+
+        with self.assertRaises(ApplicationValidationError) as raised:
+            service.update_command(
+                SegmentUpdateCommand(segment_id="SEG-1", technician=None)
+            )
+
+        self.assertEqual(raised.exception.code, "segment_target_clear_unsupported")
+        self.assertEqual(segments.events, [])
+
     def test_update_validates_window_against_existing_read_model(self) -> None:
         segments = _Segments()
         service = SegmentService(segments, _Planning(segments.events))
@@ -114,7 +211,12 @@ class SegmentServiceTests(unittest.TestCase):
 
     def test_update_passes_before_state_without_reusing_acknowledgment(self) -> None:
         segments = _Segments()
-        segments.record = replace(segments.record, origin="REQUEST", planned_hours=20)
+        segments.record = replace(
+            segments.record,
+            origin="REQUEST",
+            planned_hours=20,
+            approved_entry_key="ENTRY-1",
+        )
         projection = {
             "current_planned_hours": 20,
             "current_excess_hours": 4,
@@ -130,7 +232,12 @@ class SegmentServiceTests(unittest.TestCase):
                 self.calls.append((number, kwargs))
 
         sync = Sync()
-        service = SegmentService(segments, _Planning(segments.events), approved_sync=sync)
+        service = SegmentService(
+            segments,
+            _Planning(segments.events),
+            approved_sync=sync,
+            operational_choices=_OperationalChoices(segments.events),
+        )
         service.update_command(SegmentUpdateCommand(
             segment_id="SEG-1", planned_hours=28, allow_locked_overallocation=True,
         ))

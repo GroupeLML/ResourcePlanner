@@ -514,12 +514,14 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             {
                 "NoDemande": _text(request.legacy_demand_number) or request.id,
                 "NumeroProjet": project.number,
-                "Technicien": proposed.name if proposed is not None else None,
+                # ADR-004/#781: the approved proposal remains advisory. Approval
+                # never selects an operational Planning target.
+                "Technicien": None,
                 "DateDebut": period.start_date,
                 "DateFin": period.end_date,
                 "HeuresPrevues": planned_hours,
                 "JoursActifsCibles": period.desired_active_days,
-                "Statut": "Planifié" if proposed is not None else "À assigner",
+                "Statut": "À assigner",
                 "Description": (
                     period.note
                     or request.erp_task_label
@@ -654,8 +656,8 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                 default=CONFIRMATION_CONFIRMED,
             )
             for index, requirement in enumerate(rows):
-                if index == 0 and proposed is not None and not requirement.assigned_resource_id:
-                    requirement.assigned_resource_id = proposed.id
+                # Preserve an existing operational target, but never promote the
+                # advisory approved proposal into one.
                 if requirement.assigned_resource_id:
                     requirement.status = "Planifié"
                 elif requirement.status not in {"Terminé", "Annulé"}:
@@ -1057,12 +1059,13 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                 {
                     "NoDemande": _text(request.legacy_demand_number) or request.id,
                     "NumeroProjet": project.number,
-                    "Technicien": proposed.name if proposed is not None else None,
+                    # ADR-004/#781: proposal is advisory after approval.
+                    "Technicien": None,
                     "DateDebut": spec.start_date,
                     "DateFin": spec.end_date,
                     "HeuresPrevues": spec.planned_hours,
                     "JoursActifsCibles": spec.desired_active_days,
-                    "Statut": "Planifié" if proposed is not None else "À assigner",
+                    "Statut": "À assigner",
                     "Description": spec.description,
                     "SourceEffortID": spec.source_effort_id,
                     "ClasseRessourceRequise": spec.required_resource_class,
@@ -1090,11 +1093,8 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                 raise RuntimeError(
                     f"Le besoin créé pour la ligne {spec.source_request_line_id} est introuvable."
                 )
-        elif (
-            proposed is not None
-            and requirement.assigned_resource_id is None
-        ):
-            requirement.assigned_resource_id = proposed.id
+        # Existing operational targets are intentionally preserved. The approved
+        # proposal is advisory and must not populate assigned_resource_id.
 
         if requirement.assigned_resource_id:
             if requirement.status != "Terminé":

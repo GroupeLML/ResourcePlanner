@@ -8,8 +8,10 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ...domain.effective_need import resolve_effective_slot_need
+from .models import ResourceRequirement
 from .operational_choice_models import (
     PLANNING_INTENT_AUTO,
+    PLANNING_TARGET_EXPLICIT_NONE,
     PLANNING_TARGET_INHERIT,
     RequestCompletionReduction,
     RequestRequirementPlanningIntent,
@@ -89,6 +91,21 @@ class SqlRequestRequirementPlanningIntentRepository:
             row = logical_rows[0]
             row.slot_identity_key = key
         if row is None:
+            current_requirement = (
+                self.session.get(ResourceRequirement, current_resource_requirement_id)
+                if current_resource_requirement_id
+                else None
+            )
+            # ADR-004/#781: a newly approved, operationally unselected slot is
+            # explicitly targetless. INHERIT is reserved for legacy operational
+            # state that already carries a target and must survive transition
+            # without fabricating human-selection provenance.
+            initial_target_mode = (
+                PLANNING_TARGET_INHERIT
+                if current_requirement is not None
+                and current_requirement.assigned_resource_id
+                else PLANNING_TARGET_EXPLICIT_NONE
+            )
             row = RequestRequirementPlanningIntent(
                 slot_identity_key=key,
                 workforce_request_id=workforce_request_id,
@@ -99,7 +116,7 @@ class SqlRequestRequirementPlanningIntentRepository:
                 slot_index=slot_index,
                 current_resource_requirement_id=current_resource_requirement_id,
                 intent_mode=PLANNING_INTENT_AUTO,
-                target_mode=PLANNING_TARGET_INHERIT,
+                target_mode=initial_target_mode,
                 target_resource_id=None,
             )
             self.session.add(row)

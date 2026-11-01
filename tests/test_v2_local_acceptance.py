@@ -181,7 +181,7 @@ class V2LocalAcceptanceTests(unittest.TestCase):
             communication_transport=self.transport,
         )
 
-    def _seed_resources_through_api(self) -> None:
+    def _seed_resources_through_api(self) -> dict[str, str]:
         with TestClient(
             self._app(ROLE_ADMIN, display_name="Administrateur E2E"),
             raise_server_exceptions=False,
@@ -237,6 +237,7 @@ class V2LocalAcceptanceTests(unittest.TestCase):
                     },
                 )
                 self.assertEqual(response.status_code, 201, response.text)
+            return resource_ids
 
     @staticmethod
     def _segments_for(client: TestClient, demand_number: str) -> list[dict]:
@@ -288,7 +289,7 @@ class V2LocalAcceptanceTests(unittest.TestCase):
         }
 
     def test_complete_v2_local_api_acceptance_path(self) -> None:
-        self._seed_resources_through_api()
+        resource_ids = self._seed_resources_through_api()
         d1, d2, d3, d4, d5 = self.days
 
         # PROJECT_MANAGER: work package -> demand -> periods/alternatives -> submit.
@@ -390,6 +391,41 @@ class V2LocalAcceptanceTests(unittest.TestCase):
             )
             self.assertEqual(approved.status_code, 200, approved.text)
             self.assertEqual(approved.json()["status"], "En planification")
+
+            pre_assignment_shifts = coordinator.get(
+                "/api/v1/shifts",
+                params={"start": d1.isoformat(), "end": d5.isoformat()},
+            )
+            self.assertEqual(
+                [
+                    row
+                    for row in pre_assignment_shifts.json()
+                    if row["demand_number"] == demand_number
+                ],
+                [],
+            )
+            actions = coordinator.get(
+                "/api/v1/planning/actions",
+                params={"start": d1.isoformat(), "end": d5.isoformat(), "scope": "global"},
+            )
+            self.assertEqual(actions.status_code, 200, actions.text)
+            assignments = [
+                row
+                for row in actions.json()
+                if row["kind"] == "ASSIGNMENT" and row["demand_number"] == demand_number
+            ]
+            self.assertEqual(len(assignments), 2)
+            for action in assignments:
+                target = (
+                    resource_ids["Alice"]
+                    if action["start_date"] == d1.isoformat()
+                    else resource_ids["Bob"]
+                )
+                assigned = coordinator.post(
+                    f"/api/v1/segments/{action['segment_id']}/assign",
+                    json={"resource_id": target},
+                )
+                self.assertEqual(assigned.status_code, 200, assigned.text)
 
             segments = self._segments_for(coordinator, demand_number)
             self.assertEqual(len(segments), 2)
