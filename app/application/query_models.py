@@ -63,6 +63,7 @@ class ResourceReadModel:
     id: str
     name: str
     email: str | None = None
+    residence_city: str | None = None
     resource_class: str | None = None
     competencies: str | None = None
     competency_ids: tuple[str, ...] = ()
