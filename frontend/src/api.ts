@@ -586,6 +586,9 @@ export type ResourceReadModel = {
   erp_contact_id: number | null;
   planning_subgroup_code?: string | null;
   planning_subgroup_label?: string | null;
+  planning_card_competencies?: string[];
+  continuous_vehicle_code?: string | null;
+  continuous_vehicle_label?: string | null;
 };
 
 export type ResourceWrite = {
