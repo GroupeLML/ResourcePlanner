@@ -855,7 +855,6 @@ h1 { font-size: 1.6rem; }
 .resource-identity strong, .resource-identity span, .resource-identity small { display: block; }
 .resource-identity strong { font-size: .76rem; }
 .resource-identity span { margin-top: .12rem; color: var(--muted); font-size: .62rem; line-height: 1.25; }
-.resource-card-class { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .resource-card-competencies { display: flex; flex-wrap: wrap; gap: .16rem; margin-top: .24rem; min-width: 0; }
 .resource-identity .resource-card-competency { display: inline-block; max-width: 100%; margin-top: 0; padding: .08rem .22rem; border-radius: 999px; background: #eef3fb; color: #44536b; font-size: .56rem; line-height: 1.2; overflow-wrap: anywhere; }
 .resource-identity .resource-card-meta { margin-top: .2rem; overflow-wrap: anywhere; }
