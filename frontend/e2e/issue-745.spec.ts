@@ -58,6 +58,7 @@ test("745 affiche uniquement les métadonnées compactes autorisées et retire l
   const today = new Date();
   const yesterday = localIso(addDays(today, -1));
   const todayIso = localIso(today);
+  const tomorrowIso = localIso(addDays(today, 1));
   const future = localIso(addDays(today, 30));
   const resourceName = `Ressource E2E 745 ${stamp}`;
   const city = `Ville E2E 745 ${stamp}`;
@@ -166,7 +167,7 @@ test("745 affiche uniquement les métadonnées compactes autorisées et retire l
       {
         headers: { "Idempotency-Key": `745-revoke-${stamp}` },
         data: {
-          effective_from: todayIso,
+          effective_from: tomorrowIso,
           expected_planning_version: await planningVersion(page),
         },
       },
@@ -178,9 +179,29 @@ test("745 affiche uniquement les métadonnées compactes autorisées et retire l
     await page.locator(".main-nav").getByRole("button", { name: /Planning opérationnel/i }).click();
     const refreshed = page.locator(".resource-identity").filter({ hasText: resourceName }).first();
     await expect(refreshed).toBeVisible();
-    await expect(refreshed.locator(".resource-card-vehicle")).toHaveCount(0);
+
+    // #744 revocation is effective from the requested business date. A current-day
+    // assignment closed at today remains current through today and must not vanish
+    // early from the compact card.
+    await expect(refreshed.locator(".resource-card-vehicle")).toContainText(
+      `Camion continu 745 ${stamp}`,
+    );
     await expect(refreshed).not.toContainText(`Camion temporaire 745 ${stamp}`);
     await expect(refreshed.locator(".resource-card-city")).toContainText(city);
+
+    // Verify the canonical #744 state is ENDED on the effective revocation date.
+    // The repository projection test covers that an ended assignment is absent
+    // from the #745 card projection.
+    const afterRevocation = await page.request.get(
+      `/api/v1/assets/continuous-resource-assignments?resource_id=${encodeURIComponent(resourceId)}&as_of=${tomorrowIso}`,
+    );
+    expect(afterRevocation.ok(), await afterRevocation.text()).toBeTruthy();
+    const afterRevocationPayload = await afterRevocation.json() as {
+      assignments: Array<{ asset_id: string; effective_state: string }>;
+    };
+    expect(
+      afterRevocationPayload.assignments.find((row) => row.asset_id === continuousAssetId)?.effective_state,
+    ).toBe("ENDED");
   } finally {
     if (resourceId) {
       await page.request.post(`/api/v1/resources/${encodeURIComponent(resourceId)}/deactivate`);
