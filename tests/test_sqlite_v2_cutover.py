@@ -36,6 +36,7 @@ from app.infrastructure.sql import (
     WorkforceRequest,
     WorkPackage,
     WorkPackageWeeklyLoad,
+    create_session_factory,
     create_sql_engine,
 )
 from app.server.runtime import ServerSettings, create_configured_app
@@ -882,7 +883,6 @@ class SqliteV2CutoverTests(unittest.TestCase):
                     self.assertEqual(migrated_resource.id, "RESOURCE-REAL")
                     self.assertIsNone(migrated_resource.residence_city)
 
-                from app.infrastructure.sql import create_session_factory
                 factory = create_session_factory(engine)
                 with factory.begin() as session:
                     repository = SqlResourceAdminRepository(session)
