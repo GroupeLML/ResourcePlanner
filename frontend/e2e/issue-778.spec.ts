@@ -311,6 +311,7 @@ test("778 expose les trois actions ADR-034 et confirme leurs mutations", async (
       expected_request_version: 14,
     });
   } finally {
+    await page.unrouteAll({ behavior: "ignoreErrors" });
     await context.close();
   }
 });
