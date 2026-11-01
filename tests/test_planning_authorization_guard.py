@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, time
+from datetime import date, time, timedelta
 from tempfile import TemporaryDirectory
 import json
 import unittest
@@ -19,6 +19,7 @@ from app.infrastructure.sql import (
     ResourceRequirement,
     SqlRequestApprovalRevisionRepository,
     WorkforceRequest,
+    WorkforceRequestHistory,
     create_session_factory,
     create_sql_engine,
 )
@@ -443,6 +444,223 @@ class PlanningAuthorizationGuardTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+
+
+    def test_delegated_budget_exception_survives_multiple_compatible_reapprovals(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            admin_app = create_api_app(
+                database_url,
+                actor_name="admin-13f-lineage",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(admin_app, raise_server_exceptions=False) as client:
+                created = client.post(
+                    "/api/v1/demands",
+                    json=routed_demand_payload({
+                        "project_number": "P-1",
+                        "submit": True,
+                        "lines": [
+                            {
+                                "desired_start": DAY.isoformat(),
+                                "desired_end": DAY.isoformat(),
+                                "estimated_hours": 10,
+                                "proposed_resource_id": "R1",
+                                "description": "Line A delegated",
+                            },
+                            {
+                                "desired_start": DAY.isoformat(),
+                                "desired_end": DAY.isoformat(),
+                                "estimated_hours": 8,
+                                "description": "Line B revision driver",
+                            },
+                        ],
+                    }),
+                )
+                self.assertEqual(created.status_code, 201, created.text)
+                number = created.json()["demand_number"]
+                approved = client.post(
+                    f"/api/v1/demands/{number}/approve",
+                    json={"comment": "R1"},
+                )
+                self.assertEqual(approved.status_code, 200, approved.text)
+                demand = client.get(f"/api/v1/demands/{number}").json()
+                active_lines = [row for row in demand["lines"] if row["active"]]
+                self.assertEqual(len(active_lines), 2)
+                line_a = next(row for row in active_lines if row["description"] == "Line A delegated")
+                line_b = next(row for row in active_lines if row["description"] == "Line B revision driver")
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory() as session:
+                    request = session.scalar(
+                        select(WorkforceRequest).where(
+                            WorkforceRequest.legacy_demand_number == number
+                        )
+                    )
+                    self.assertIsNotNone(request)
+                    request_id = request.id
+                    reference = session.get(RequestApprovalReference, request_id)
+                    self.assertIsNotNone(reference)
+                    r1 = reference.active_revision_id
+                    requirement_a = session.scalar(
+                        select(ResourceRequirement).where(
+                            ResourceRequirement.workforce_request_id == request_id,
+                            ResourceRequirement.source_request_line_id == line_a["line_id"],
+                            ResourceRequirement.status != "Annulé",
+                        )
+                    )
+                    self.assertIsNotNone(requirement_a)
+                    segment_a = requirement_a.legacy_segment_id or requirement_a.id
+
+                with TestClient(admin_app, raise_server_exceptions=False) as client:
+                    assigned = client.post(
+                        f"/api/v1/segments/{segment_a}/assign",
+                        json={"resource_id": "R1"},
+                    )
+                    self.assertEqual(assigned.status_code, 200, assigned.text)
+
+                pm_app = create_api_app(
+                    database_url,
+                    actor_name="pm-13f-lineage",
+                    auth_resolver=TEST_PROJECT_MANAGER_AUTH_RESOLVER,
+                )
+                with TestClient(pm_app, raise_server_exceptions=False) as client:
+                    increased = client.post(
+                        f"/api/v1/segments/{segment_a}/allocations",
+                        json={
+                            "technician": "Alice",
+                            "day": DAY.isoformat(),
+                            "hours": 2,
+                            "outside_standard_hours": False,
+                            "confirmation": None,
+                            "overallocation_policy": "INCREASE_PLANNED",
+                        },
+                        headers={"Idempotency-Key": "13f-lineage-increase"},
+                    )
+                    self.assertEqual(increased.status_code, 201, increased.text)
+
+                def line_payload(row: dict[str, object]) -> dict[str, object]:
+                    keys = (
+                        "line_id",
+                        "position",
+                        "kind",
+                        "required_resource_class",
+                        "required_competency_ids",
+                        "desired_start",
+                        "desired_end",
+                        "desired_active_days",
+                        "estimated_hours",
+                        "work_package_ref",
+                        "task_code",
+                        "proposed_resource_id",
+                        "confirmation",
+                        "description",
+                    )
+                    payload = {
+                        ("id" if key == "line_id" else key): row.get(key)
+                        for key in keys
+                        if row.get(key) is not None
+                    }
+                    return payload
+
+                active_revisions = [r1]
+                for offset in (1, 2, 3):
+                    with TestClient(pm_app, raise_server_exceptions=False) as client:
+                        current = client.get(f"/api/v1/demands/{number}")
+                        self.assertEqual(current.status_code, 200, current.text)
+                        current_body = current.json()
+                        lines = [row for row in current_body["lines"] if row["active"]]
+                        current_a = next(row for row in lines if row["line_id"] == line_a["line_id"])
+                        current_b = next(row for row in lines if row["line_id"] == line_b["line_id"])
+                        next_day = DAY + timedelta(days=offset)
+                        changed_b = line_payload(current_b)
+                        changed_b["desired_start"] = next_day.isoformat()
+                        changed_b["desired_end"] = next_day.isoformat()
+                        patched = client.patch(
+                            f"/api/v1/demands/{number}",
+                            json={
+                                "expected_version": current_body["version"],
+                                "lines": [line_payload(current_a), changed_b],
+                                "comment": f"Line B compatible successor {offset}",
+                            },
+                        )
+                        self.assertEqual(patched.status_code, 200, patched.text)
+                        self.assertTrue(patched.json()["reapproval_required"])
+
+                    with TestClient(admin_app, raise_server_exceptions=False) as client:
+                        reapproved = client.post(
+                            f"/api/v1/demands/{number}/approve",
+                            json={"comment": f"R{offset + 1}"},
+                        )
+                        self.assertEqual(reapproved.status_code, 200, reapproved.text)
+                        approval_state = client.get(
+                            f"/api/v1/demands/{number}/approval-state"
+                        )
+                        self.assertEqual(
+                            approval_state.status_code,
+                            200,
+                            approval_state.text,
+                        )
+                        active_revisions.append(
+                            approval_state.json()["active_revision_id"]
+                        )
+                        self.assertEqual(
+                            list(
+                                approval_state.json()[
+                                    "active_budget_overrides"
+                                ].values()
+                            ),
+                            [12.0],
+                        )
+                        segment = client.get(f"/api/v1/segments/{segment_a}")
+                        self.assertEqual(segment.status_code, 200, segment.text)
+                        self.assertEqual(segment.json()["planned_hours"], 12.0)
+
+                with factory() as session:
+                    revisions = session.scalars(
+                        select(RequestApprovalRevision).where(
+                            RequestApprovalRevision.workforce_request_id == request_id
+                        )
+                    ).all()
+                    self.assertEqual(len(revisions), 4)
+                    self.assertEqual(len(set(active_revisions)), 4)
+                    by_id = {row.id: row for row in revisions}
+                    for revision_id in active_revisions:
+                        payload = json.loads(by_id[revision_id].payload_text)
+                        entry_a = next(
+                            row
+                            for row in payload["authorization"]["entries"]
+                            if row["identity"].find(line_a["line_id"]) >= 0
+                        )
+                        self.assertEqual(float(entry_a["hours"]), 10.0)
+
+                    budget_history = session.scalars(
+                        select(WorkforceRequestHistory).where(
+                            WorkforceRequestHistory.workforce_request_id == request_id,
+                            WorkforceRequestHistory.action == "Budget opérationnel",
+                        )
+                    ).all()
+                    delegated_events = []
+                    for row in budget_history:
+                        details = json.loads(row.details or "{}")
+                        if float(details.get("operational_hours") or 0) == 12.0:
+                            delegated_events.append(details)
+                    self.assertEqual(len(delegated_events), 1)
+                    self.assertEqual(
+                        delegated_events[0]["approval_revision_id"],
+                        r1,
+                    )
+                    state = session.get(RequestOperationalState, request_id)
+                    self.assertIsNotNone(state)
+                    self.assertEqual(state.approval_revision_id, active_revisions[-1])
+                    self.assertEqual(
+                        list(json.loads(state.budget_overrides_text).values()),
+                        ["12.00"],
+                    )
+            finally:
+                engine.dispose()
 
 
     def test_delegated_budget_exception_cannot_cross_changed_site_revision(self) -> None:
