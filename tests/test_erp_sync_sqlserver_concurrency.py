@@ -218,6 +218,13 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
         )
         self.assertIsNotNone(second)
         self.assertGreater(second.generation, first.generation)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=second.id,
+                generation=second.generation,
+                settings=self.settings,
+            )
+        )
 
         with self.factory() as session:
             stale_child = session.get(
