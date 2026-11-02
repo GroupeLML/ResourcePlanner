@@ -575,7 +575,11 @@ def create_configured_app(settings: ServerSettings | None = None) -> FastAPI:
         communication_transport=communication_transport,
         smtp_cipher=smtp_cipher,
         smtp_client=smtp_client,
-        erp_sync_settings=resolved.erp_sync,
+        erp_sync_settings=(
+            resolved.erp_sync
+            if project_source is not None or project_task_source is not None
+            else None
+        ),
         runtime_dependencies={
             "oidc": {
                 "required": resolved.auth_mode == "oidc",
