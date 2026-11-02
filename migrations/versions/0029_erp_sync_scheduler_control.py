@@ -68,12 +68,20 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("occurrence_key", name="uq_erp_sync_occurrence_key"),
-        sa.UniqueConstraint("command_identity", name="uq_erp_sync_command_identity"),
     )
     op.create_index(
         "ix_erp_sync_occurrence_business_date",
         "erp_sync_occurrences",
         ["business_date"],
+    )
+
+    op.create_index(
+        "ux_erp_sync_command_identity_not_null",
+        "erp_sync_occurrences",
+        ["command_identity"],
+        unique=True,
+        sqlite_where=sa.text("command_identity IS NOT NULL"),
+        mssql_where=sa.text("command_identity IS NOT NULL"),
     )
 
     op.create_table(
@@ -155,6 +163,10 @@ def downgrade() -> None:
     op.drop_index("ix_erp_sync_attempt_status", table_name="erp_sync_attempts")
     op.drop_index("ix_erp_sync_attempt_occurrence", table_name="erp_sync_attempts")
     op.drop_table("erp_sync_attempts")
+    op.drop_index(
+        "ux_erp_sync_command_identity_not_null",
+        table_name="erp_sync_occurrences",
+    )
     op.drop_index(
         "ix_erp_sync_occurrence_business_date",
         table_name="erp_sync_occurrences",
