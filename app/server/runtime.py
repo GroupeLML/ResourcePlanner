@@ -416,7 +416,15 @@ class ServerSettings:
                     values.get(ERP_SYNC_CATCHUP_HOURS_ENV),
                     default=4,
                     label=ERP_SYNC_CATCHUP_HOURS_ENV,
-                    maximum=24,
+                    maximum=12,
+                ),
+                source_identity=(
+                    "acumatica:"
+                    + (
+                        _text(values.get(ACUMATICA_BASE_URL_ENV)).rstrip("/")
+                        or "unconfigured"
+                    )
+                    + "|RP_Projects|RP_ProjectTasks|DEPMO"
                 ),
             )
         except ErpSyncScheduleConfigurationError as exc:
