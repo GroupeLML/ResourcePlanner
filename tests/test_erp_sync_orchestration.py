@@ -206,8 +206,8 @@ class ErpSyncOrchestrationTests(unittest.TestCase):
             result["diagnostic"],
             "erp_sync_configuration_incompatible",
         )
-        self.assertNotIn("authority", str(result))
-        self.assertNotIn("incompatible", str(result))
+        self.assertNotIn("acumatica:authority", str(result))
+        self.assertNotIn("acumatica:incompatible", str(result))
         orchestrator.shutdown()
 
     def test_automatic_capability_is_rechecked_before_business_execution(self) -> None:
