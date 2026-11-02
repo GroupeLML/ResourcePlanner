@@ -514,17 +514,112 @@ class ErpSyncControlTests(unittest.TestCase):
             idempotency_key="protocol",
             settings=self.settings,
         )
+        owner = self.repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="operator",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(owner)
         with transactional_session(self.factory) as session:
             control = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
             control.protocol_version = 999
+        with self.assertRaises(ErpSyncFenceLost) as guarded:
+            with self.factory.begin() as session:
+                SqlErpSyncControlRepository.guard_session(
+                    session,
+                    attempt_id=owner.id,
+                    generation=owner.generation,
+                )
+        self.assertEqual(guarded.exception.code, "erp_sync_protocol_incompatible")
+
+        with transactional_session(self.factory) as session:
+            control = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+            control.owner_attempt_id = None
+            control.lease_expires_at = None
+            control.owner_deadline_at = None
+            control.heartbeat_at = None
+        another = self.repository.accept_manual(
+            intent="PROJECTS_ONLY",
+            actor_name="operator",
+            idempotency_key="protocol-claim",
+            settings=self.settings,
+        )
         with self.assertRaises(ApplicationConflictError) as caught:
             self.repository.claim(
-                occurrence_id=occurrence.id,
+                occurrence_id=another.id,
                 trigger="MANUAL",
                 actor_name="operator",
                 settings=self.settings,
             )
         self.assertEqual(caught.exception.code, "erp_sync_protocol_incompatible")
+
+    def test_only_complete_global_success_advances_global_success_pointer(self) -> None:
+        global_occurrence = self.repository.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="operator",
+            idempotency_key="global-success",
+            settings=self.settings,
+        )
+        global_attempt = self.repository.claim(
+            occurrence_id=global_occurrence.id,
+            trigger="MANUAL",
+            actor_name="operator",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(global_attempt)
+        self.repository.start_attempt(
+            attempt_id=global_attempt.id,
+            generation=global_attempt.generation,
+        )
+        self.repository.finish(
+            attempt_id=global_attempt.id,
+            generation=global_attempt.generation,
+            status=ERP_ATTEMPT_SUCCEEDED,
+            phase="PUBLICATION_COMMITTED",
+        )
+
+        with self.factory() as session:
+            control = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+            self.assertEqual(control.last_success_attempt_id, global_attempt.id)
+
+        for index, intent in enumerate(
+            ("PROJECTS_ONLY", "TARGETED_PROJECT_TASKS:PROJECT-1"),
+            start=1,
+        ):
+            occurrence = self.repository.accept_manual(
+                intent=intent,
+                actor_name="operator",
+                idempotency_key=f"scope-success-{index}",
+                settings=self.settings,
+            )
+            attempt = self.repository.claim(
+                occurrence_id=occurrence.id,
+                trigger="MANUAL",
+                actor_name="operator",
+                settings=self.settings,
+            )
+            self.assertIsNotNone(attempt)
+            self.repository.start_attempt(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+            )
+            self.repository.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status=ERP_ATTEMPT_SUCCEEDED,
+                phase="PUBLICATION_COMMITTED",
+            )
+            self.assertEqual(
+                self.repository.get_occurrence(occurrence.id).success_attempt_id,
+                attempt.id,
+            )
+            with self.factory() as session:
+                control = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+                self.assertEqual(
+                    control.last_success_attempt_id,
+                    global_attempt.id,
+                )
 
     def test_retry_claim_is_idempotent(self) -> None:
         occurrence = self.repository.accept_manual(
