@@ -205,7 +205,7 @@ def build_integration_router(
 
     @router.get("/projects/tasks/sync/{run_id}")
     def project_task_sync_status(run_id: str) -> dict[str, Any]:
-        if project_task_sync_runner is None:
+        if erp_sync_orchestrator is None:
             raise ApplicationUnavailableError(
                 "Le suivi de synchronisation des tâches projet n'est pas configuré sur ce serveur.",
                 code="acumatica_project_task_sync_not_configured",
@@ -225,6 +225,22 @@ def build_integration_router(
         return erp_sync_orchestrator.run_targeted_project_tasks_compat(
             project_id=project_id,
             actor_name=_actor_name(request),
+        )
+
+    @router.post("/erp-sync/projects/run-now", status_code=202)
+    def run_projects_now(
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> dict[str, Any]:
+        if erp_sync_orchestrator is None:
+            raise ApplicationUnavailableError(
+                "L'orchestration ERP n'est pas configurée sur ce serveur.",
+                code="erp_sync_orchestrator_not_configured",
+            )
+        return erp_sync_orchestrator.run_now(
+            intent="PROJECTS_ONLY",
+            actor_name=_actor_name(request),
+            idempotency_key=idempotency_key,
         )
 
     @router.post("/erp-sync/run-now", status_code=202)
@@ -247,6 +263,7 @@ def build_integration_router(
     def retry_erp_sync(
         occurrence_id: str,
         request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
     ) -> dict[str, Any]:
         if erp_sync_orchestrator is None:
             raise ApplicationUnavailableError(
@@ -256,6 +273,7 @@ def build_integration_router(
         return erp_sync_orchestrator.retry(
             occurrence_id=occurrence_id,
             actor_name=_actor_name(request),
+            idempotency_key=idempotency_key,
         )
 
     @router.get("/erp-sync/runs/current")
