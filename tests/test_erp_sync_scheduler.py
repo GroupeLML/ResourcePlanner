@@ -377,16 +377,15 @@ class ErpSyncControlTests(unittest.TestCase):
             "app.infrastructure.sql.erp_sync_control_repository._sql_now",
             return_value=late,
         ):
-            with self.assertRaises(ApplicationConflictError) as caught:
-                self.repository.claim(
-                    occurrence_id=occurrence.id,
-                    trigger="CATCHUP",
-                    actor_name="scheduler",
-                    settings=self.settings,
-                    automatic=True,
-                    automatic_safety=capability,
-                )
-        self.assertEqual(caught.exception.code, "erp_sync_automatic_window_closed")
+            rejected = self.repository.claim(
+                occurrence_id=occurrence.id,
+                trigger="CATCHUP",
+                actor_name="scheduler",
+                settings=self.settings,
+                automatic=True,
+                automatic_safety=capability,
+            )
+        self.assertIsNone(rejected)
         self.assertEqual(
             self.repository.get_occurrence(occurrence.id).status,
             "MISSED",
@@ -427,16 +426,19 @@ class ErpSyncControlTests(unittest.TestCase):
             "app.infrastructure.sql.erp_sync_control_repository._sql_now",
             return_value=datetime(2026, 1, 15, 10, 0, tzinfo=timezone.utc),
         ):
-            with self.assertRaises(ApplicationConflictError) as caught:
-                self.repository.claim(
-                    occurrence_id=occurrence.id,
-                    trigger="RETRY",
-                    actor_name="scheduler",
-                    settings=self.settings,
-                    automatic=True,
-                    automatic_safety=capability,
-                )
-        self.assertEqual(caught.exception.code, "erp_sync_automatic_window_closed")
+            rejected = self.repository.claim(
+                occurrence_id=occurrence.id,
+                trigger="RETRY",
+                actor_name="scheduler",
+                settings=self.settings,
+                automatic=True,
+                automatic_safety=capability,
+            )
+        self.assertIsNone(rejected)
+        self.assertEqual(
+            self.repository.get_occurrence(occurrence.id).status,
+            "MISSED",
+        )
 
     def test_business_date_watermark_never_moves_backward(self) -> None:
         capability = TestErpSyncAutomaticSafetyCapability()
@@ -506,6 +508,37 @@ class ErpSyncControlTests(unittest.TestCase):
         with self.factory() as session:
             control = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
             self.assertEqual(control.config_fingerprint, self.settings.config_fingerprint)
+
+    def test_incompatible_local_settings_are_rejected_before_guarded_write(self) -> None:
+        occurrence = self.repository.accept_manual(
+            intent="PROJECTS_ONLY",
+            actor_name="operator",
+            idempotency_key="local-config-owner",
+            settings=self.settings,
+        )
+        owner = self.repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="operator",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(owner)
+        incompatible = ErpSyncSchedulerSettings(
+            enabled=True,
+            source_identity="acumatica:other-site",
+        )
+        with self.factory.begin() as session:
+            with self.assertRaises(ErpSyncFenceLost) as caught:
+                SqlErpSyncControlRepository.guard_session(
+                    session,
+                    attempt_id=owner.id,
+                    generation=owner.generation,
+                    settings=incompatible,
+                )
+        self.assertEqual(
+            caught.exception.code,
+            "erp_sync_configuration_incompatible",
+        )
 
     def test_unsupported_protocol_blocks_claim_and_guarded_write(self) -> None:
         occurrence = self.repository.accept_manual(
