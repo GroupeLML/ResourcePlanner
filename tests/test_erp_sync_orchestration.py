@@ -13,7 +13,10 @@ from app.application import (
     TaskCatalogPortfolioSnapshot,
     TaskCatalogProjectSnapshot,
 )
-from app.application.erp_sync_scheduler import ErpSyncSchedulerSettings
+from app.application.erp_sync_scheduler import (
+    ErpSyncSchedulerSettings,
+    TestErpSyncAutomaticSafetyCapability,
+)
 from app.infrastructure.sql import (
     Base,
     ERP_ATTEMPT_FAILED,
@@ -44,6 +47,17 @@ class ProjectSource:
 class FailingProjectSource:
     def list_projects(self):
         raise RuntimeError("controlled project source failure")
+
+
+class MutableAutomaticSafety(TestErpSyncAutomaticSafetyCapability):
+    def __init__(self) -> None:
+        self.available = True
+
+    def automatic_execution_available(self) -> bool:
+        return self.available
+
+    def diagnostic(self) -> str:
+        return "test_automatic_safety_unavailable"
 
 
 class OrderedProjectSource(ProjectSource):
@@ -153,6 +167,58 @@ class ErpSyncOrchestrationTests(unittest.TestCase):
         )
         self.assertIsNotNone(attempt)
         return control, attempt
+
+    def test_automatic_capability_is_rechecked_before_business_execution(self) -> None:
+        settings = ErpSyncSchedulerSettings(enabled=True)
+        capability = MutableAutomaticSafety()
+        source = ProjectSource((project("A"),))
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=source,
+            project_task_source=PortfolioTaskSource(
+                {"A": snapshot("A", (task("A", "1"),))}
+            ),
+            settings=settings,
+            automatic_safety=capability,
+        )
+        control = SqlErpSyncControlRepository(self.factory)
+        fixed_now = __import__("datetime").datetime(
+            2026, 1, 15, 5, 37,
+            tzinfo=__import__("datetime").timezone.utc,
+        )
+        with patch(
+            "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+            return_value=fixed_now,
+        ):
+            occurrence = control.record_daily_decision(settings, capability)
+            self.assertIsNotNone(occurrence)
+            attempt = control.claim(
+                occurrence_id=occurrence.id,
+                trigger="CATCHUP",
+                actor_name="erp-scheduler",
+                settings=settings,
+                automatic=True,
+                automatic_safety=capability,
+            )
+        self.assertIsNotNone(attempt)
+
+        capability.available = False
+        orchestrator._execute_attempt(
+            attempt.id,
+            attempt.generation,
+            automatic=True,
+        )
+
+        self.assertEqual(source.calls, 0)
+        self.assertEqual(
+            control.get_attempt(attempt.id).status,
+            ERP_ATTEMPT_FAILED,
+        )
+        self.assertEqual(
+            control.get_attempt(attempt.id).error_code,
+            "erp_sync_automatic_safety_unavailable",
+        )
+        orchestrator.shutdown()
 
     def test_global_workflow_executes_projects_before_tasks(self) -> None:
         order: list[str] = []
