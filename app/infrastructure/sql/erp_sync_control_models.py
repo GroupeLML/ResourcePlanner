@@ -115,7 +115,7 @@ class ErpSyncAttempt(TimestampMixin, Base):
     __tablename__ = "erp_sync_attempts"
     __table_args__ = (
         CheckConstraint(
-            "trigger IN ('SCHEDULED','CATCHUP','MANUAL','RETRY')",
+            "trigger_kind IN ('SCHEDULED','CATCHUP','MANUAL','RETRY')",
             name="attempt_trigger_values",
         ),
         CheckConstraint(
@@ -145,7 +145,7 @@ class ErpSyncAttempt(TimestampMixin, Base):
         nullable=False,
     )
     attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
-    trigger: Mapped[str] = mapped_column(String(16), nullable=False)
+    trigger_kind: Mapped[str] = mapped_column(String(16), nullable=False)
     actor_name: Mapped[str] = mapped_column(String(255), nullable=False)
     intent: Mapped[str] = mapped_column(String(64), nullable=False)
     command_identity: Mapped[str | None] = mapped_column(String(160), nullable=True)
