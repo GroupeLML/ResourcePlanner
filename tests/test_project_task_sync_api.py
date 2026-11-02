@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.application import (
+    ExternalProjectRecord,
     TaskCatalogItem,
     TaskCatalogPortfolioSnapshot,
     TaskCatalogProjectSnapshot,
@@ -32,6 +33,16 @@ from tests.http_test_auth import (
     TEST_ADMIN_AUTH_RESOLVER,
     TEST_PROJECT_MANAGER_AUTH_RESOLVER,
 )
+
+
+class StaticProjectSource:
+    def __init__(self, rows: tuple[ExternalProjectRecord, ...]) -> None:
+        self.rows = rows
+        self.calls = 0
+
+    def list_projects(self):
+        self.calls += 1
+        return self.rows
 
 
 class StubProjectTaskSource:
@@ -398,6 +409,69 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
         self.assertEqual(body["projects_rejected"], 1)
         self.assertEqual(body["tasks_created"], 2)
         self.assertEqual(body["tasks_rejected"], 1)
+
+    def test_643a_run_now_is_durable_and_same_idempotency_key_reuses_attempt(self) -> None:
+        source = BlockingBatchProjectTaskSource(self._global_snapshots())
+        projects = StaticProjectSource(
+            (
+                ExternalProjectRecord(
+                    external_id="5469",
+                    number="5118",
+                    name="Projet ERP",
+                    status="Actif",
+                ),
+                ExternalProjectRecord(
+                    external_id="5470",
+                    number="5119",
+                    name="Projet ERP 2",
+                    status="Actif",
+                ),
+            )
+        )
+        app = create_api_app(
+            self.database_url,
+            auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            project_source=projects,
+            project_task_source=source,
+        )
+        path = "/api/v1/integrations/acumatica/erp-sync/run-now"
+        headers = {"Idempotency-Key": "643a-same-run-now"}
+
+        with TestClient(app) as client:
+            first = client.post(path, headers=headers)
+            self.assertEqual(first.status_code, 202, first.text)
+            self.assertTrue(source.started.wait(timeout=2))
+
+            second = client.post(path, headers=headers)
+            self.assertEqual(second.status_code, 202, second.text)
+            self.assertEqual(first.json()["run_id"], second.json()["run_id"])
+            self.assertEqual(
+                first.json()["occurrence_id"],
+                second.json()["occurrence_id"],
+            )
+
+            source.release.set()
+            final = self._wait_for_run(client, first.json()["run_id"])
+
+        self.assertIn(final["status"], {"COMPLETED", "COMPLETED_WITH_ERRORS"})
+        self.assertEqual(len(source.batch_calls), 1)
+
+    def test_643a_scheduler_routes_require_sync_projects_permission(self) -> None:
+        paths = (
+            "/api/v1/integrations/acumatica/erp-sync/run-now",
+            "/api/v1/integrations/acumatica/erp-sync/projects/run-now",
+            "/api/v1/integrations/acumatica/erp-sync/occurrences/OCC/retry",
+            "/api/v1/integrations/acumatica/erp-sync/runs/current",
+            "/api/v1/integrations/acumatica/erp-sync/runs/RUN",
+        )
+        for path in paths:
+            self.assertEqual(
+                required_permission(
+                    "GET" if "/runs/" in path else "POST",
+                    path,
+                ),
+                PERMISSION_SYNC_PROJECTS,
+            )
 
     def test_global_sync_rejects_a_concurrent_second_launch(self) -> None:
         source = BlockingBatchProjectTaskSource(self._global_snapshots())
