@@ -90,6 +90,15 @@ class ServerRuntimeTests(unittest.TestCase):
             )
         self.assertIn("Fuseau IANA", str(caught.exception))
 
+    def test_erp_scheduler_catchup_above_twelve_hours_fails_closed(self) -> None:
+        with self.assertRaises(ServerConfigurationError):
+            ServerSettings.from_environment(
+                {
+                    DATABASE_URL_ENV: "sqlite+pysqlite:///:memory:",
+                    ERP_SYNC_CATCHUP_HOURS_ENV: "13",
+                }
+            )
+
     def test_erp_scheduler_invalid_time_fails_closed(self) -> None:
         with self.assertRaises(ServerConfigurationError):
             ServerSettings.from_environment(
