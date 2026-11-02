@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -82,7 +83,13 @@ class ErpSyncOccurrence(TimestampMixin, Base):
             name="occurrence_status_values",
         ),
         UniqueConstraint("occurrence_key", name="uq_erp_sync_occurrence_key"),
-        UniqueConstraint("command_identity", name="uq_erp_sync_command_identity"),
+        Index(
+            "ux_erp_sync_command_identity_not_null",
+            "command_identity",
+            unique=True,
+            sqlite_where=text("command_identity IS NOT NULL"),
+            mssql_where=text("command_identity IS NOT NULL"),
+        ),
         Index("ix_erp_sync_occurrence_business_date", "business_date"),
     )
 
@@ -120,9 +127,12 @@ class ErpSyncAttempt(TimestampMixin, Base):
             "attempt_number",
             name="uq_erp_sync_attempt_number",
         ),
-        UniqueConstraint(
+        Index(
+            "ux_erp_sync_attempt_command_identity_not_null",
             "command_identity",
-            name="uq_erp_sync_attempt_command_identity",
+            unique=True,
+            sqlite_where=text("command_identity IS NOT NULL"),
+            mssql_where=text("command_identity IS NOT NULL"),
         ),
         Index("ix_erp_sync_attempt_occurrence", "occurrence_id"),
         Index("ix_erp_sync_attempt_status", "status"),
