@@ -14,27 +14,16 @@ from ..application import (
     ErpUserSyncResult,
     ErpUserSyncService,
     ProjectSourcePort,
-    ProjectSyncResult,
-    ProjectSyncService,
     ProjectTaskCatalogSourcePort,
     TaskCatalogProjectSyncMetadata,
-    TaskCatalogProjectSyncResult,
-    TaskCatalogSyncService,
 )
-from ..application.errors import (
-    ApplicationNotFoundError,
-    ApplicationUnavailableError,
-    ApplicationValidationError,
-)
+from ..application.errors import ApplicationUnavailableError
 from ..infrastructure.sql.base import new_id
 from ..infrastructure.sql import (
-    Project,
     SqlEmployeeSyncRepository,
     SqlErpUserDirectoryRepository,
-    SqlProjectSyncRepository,
     SqlSessionFactory,
     SqlTaskCatalogRepository,
-    SqlTaskCatalogWorkforcePolicy,
 )
 from .erp_sync_orchestration import ErpSyncOrchestrator
 from .performance import performance_phase, record_external_call, record_external_items
@@ -48,6 +37,8 @@ def _actor_name(request: Request) -> str:
     if principal is None:
         return "api"
     return str(getattr(principal, "display_name", None) or "api").strip() or "api"
+
+
 class _InstrumentedEmployeeSource:
     def __init__(self, source: EmployeeSourcePort) -> None:
         self._source = source
@@ -70,49 +61,6 @@ class _InstrumentedErpUserSource:
             rows = tuple(self._source.list_users())
         record_external_items(len(rows))
         return rows
-
-
-class _InstrumentedProjectSource:
-    def __init__(self, source: ProjectSourcePort) -> None:
-        self._source = source
-
-    def list_projects(self):
-        record_external_call()
-        with performance_phase("external"):
-            rows = tuple(self._source.list_projects())
-        record_external_items(len(rows))
-        return rows
-
-
-class _InstrumentedProjectTaskSource:
-    def __init__(self, source: ProjectTaskCatalogSourcePort) -> None:
-        self._source = source
-
-    def fetch_project_snapshot(
-        self,
-        *,
-        project_external_id: str,
-        project_number: str,
-    ):
-        record_external_call()
-        with performance_phase("external"):
-            snapshot = self._source.fetch_project_snapshot(
-                project_external_id=project_external_id,
-                project_number=project_number,
-            )
-        record_external_items(snapshot.source_rows)
-        return snapshot
-
-
-def _get_project(session: Session, project_id: str) -> Project:
-    project = session.get(Project, project_id)
-    if project is None:
-        raise ApplicationNotFoundError(
-            "Le projet demandé n'existe pas.",
-            code="project_not_found",
-            context={"project_id": project_id},
-        )
-    return project
 
 
 def build_integration_router(
