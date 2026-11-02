@@ -32,25 +32,12 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.PrimaryKeyConstraint("id"),
     )
-    control = sa.table(
-        "erp_sync_control",
-        sa.column("id", sa.String(length=64)),
-        sa.column("generation", sa.BigInteger()),
-        sa.column("protocol_version", sa.Integer()),
-        sa.column("created_at", sa.DateTime(timezone=True)),
-        sa.column("updated_at", sa.DateTime(timezone=True)),
-    )
-    op.bulk_insert(
-        control,
-        [
-            {
-                "id": "ERP_PROJECTS_TASKS",
-                "generation": 0,
-                "protocol_version": 1,
-                "created_at": sa.func.now(),
-                "updated_at": sa.func.now(),
-            }
-        ],
+    op.execute(
+        sa.text(
+            "INSERT INTO erp_sync_control "
+            "(id, generation, protocol_version, created_at, updated_at) "
+            "VALUES ('ERP_PROJECTS_TASKS', 0, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        )
     )
 
     op.create_table(
