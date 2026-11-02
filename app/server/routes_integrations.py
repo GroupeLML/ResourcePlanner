@@ -15,11 +15,9 @@ from ..application import (
     ErpUserSyncService,
     ProjectSourcePort,
     ProjectSyncResult,
-    ProjectSyncService,
     ProjectTaskCatalogSourcePort,
     TaskCatalogProjectSyncMetadata,
     TaskCatalogProjectSyncResult,
-    TaskCatalogSyncService,
 )
 from ..application.errors import (
     ApplicationNotFoundError,
@@ -30,10 +28,8 @@ from ..infrastructure.sql import (
     Project,
     SqlEmployeeSyncRepository,
     SqlErpUserDirectoryRepository,
-    SqlProjectSyncRepository,
     SqlSessionFactory,
     SqlTaskCatalogRepository,
-    SqlTaskCatalogWorkforcePolicy,
 )
 from .erp_sync_orchestration import ErpSyncOrchestrator
 from .performance import performance_phase, record_external_call, record_external_items
