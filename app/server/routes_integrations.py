@@ -174,14 +174,14 @@ def build_integration_router(
                 SqlErpUserDirectoryRepository(session),
             ).synchronize()
 
-    @router.post("/projects/sync")
-    def sync_projects(request: Request) -> dict[str, int]:
+    @router.post("/projects/sync", status_code=202)
+    def sync_projects(request: Request) -> dict[str, Any]:
         if erp_sync_orchestrator is None:
             raise ApplicationUnavailableError(
                 "L'orchestration ERP n'est pas configurée sur ce serveur.",
                 code="erp_sync_orchestrator_not_configured",
             )
-        return erp_sync_orchestrator.run_projects_only_compat(
+        return erp_sync_orchestrator.launch_projects(
             actor_name=_actor_name(request),
         )
 
