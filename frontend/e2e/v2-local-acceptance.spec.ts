@@ -389,6 +389,13 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await expect(page.locator(".projects-sync-message").first()).toContainText("1 créées");
     await expect(page.locator(".projects-sync-message").first()).toContainText("1 requête(s) ERP");
     await expect(page.locator(".projects-sync-message").first()).toContainText("lignes ERP parcourues");
+
+    const ordering = await context.request.get("/__e2e__/erp-sync/events");
+    expect(ordering.ok()).toBeTruthy();
+    expect((await ordering.json() as { events: string[] }).events).toEqual([
+      "projects",
+      "tasks",
+    ]);
     await closeContext(context);
   });
 
