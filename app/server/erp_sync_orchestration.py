@@ -581,7 +581,12 @@ class ErpSyncOrchestrator:
 
         current = self.current()
         if current is not None and current.get("status") in {"PENDING", "RUNNING"}:
-            if current.get("intent") == "PROJECTS_AND_ACTIVE_TASKS":
+            intent = current.get("intent")
+            compatible_legacy_global = (
+                current.get("attempt_id") is None
+                and intent == "ACTIVE_PROJECT_TASKS_ONLY"
+            )
+            if intent == "PROJECTS_AND_ACTIVE_TASKS" or compatible_legacy_global:
                 return current
             raise ApplicationConflictError(
                 "Une synchronisation ERP incompatible est déjà active.",
