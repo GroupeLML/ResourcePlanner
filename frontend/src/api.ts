@@ -1846,8 +1846,23 @@ export function getAcumaticaIntegrationStatus(signal?: AbortSignal) {
   return getJson<AcumaticaIntegrationStatus>("/api/v1/integrations/acumatica", signal);
 }
 
-export function syncAcumaticaProjects() {
-  return postJson<ProjectSyncResult>("/api/v1/integrations/acumatica/projects/sync");
+export function syncAcumaticaProjects(idempotencyKey: string) {
+  return sendJson<GlobalProjectTaskSyncResult>(
+    "/api/v1/integrations/acumatica/erp-sync/projects/run-now",
+    "POST",
+    {},
+    { "Idempotency-Key": idempotencyKey },
+  );
+}
+
+export function getAcumaticaErpSyncRun(
+  runId: string,
+  signal?: AbortSignal,
+) {
+  return getJson<GlobalProjectTaskSyncResult>(
+    `/api/v1/integrations/acumatica/erp-sync/runs/${encodeURIComponent(runId)}`,
+    signal,
+  );
 }
 
 export function syncAcumaticaProjectTasks(projectId: string) {
