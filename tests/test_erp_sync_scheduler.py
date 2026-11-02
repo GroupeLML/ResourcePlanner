@@ -6,6 +6,9 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
+from sqlalchemy import select
+
+from app.application.errors import ApplicationConflictError
 from app.application.erp_sync_scheduler import (
     ErpSyncSchedulerSettings,
     TestErpSyncAutomaticSafetyCapability,
@@ -18,8 +21,12 @@ from app.infrastructure.sql import (
     Base,
     ERP_ATTEMPT_INTERRUPTED,
     ERP_ATTEMPT_PENDING,
+    ERP_ATTEMPT_FAILED,
+    ERP_ATTEMPT_SUCCEEDED,
     ERP_OCCURRENCE_DISABLED,
+    ErpSyncAttempt,
     ErpSyncControl,
+    ErpSyncOccurrence,
     create_session_factory,
     create_sql_engine,
     transactional_session,
@@ -86,6 +93,10 @@ class ErpSyncCalendarTests(unittest.TestCase):
     def test_invalid_timezone_fails_closed(self) -> None:
         with self.assertRaises(ValueError):
             validate_timezone("Not/A-Timezone")
+
+    def test_catchup_above_twelve_hours_is_rejected_even_when_injected(self) -> None:
+        with self.assertRaises(ValueError):
+            ErpSyncSchedulerSettings(enabled=True, catchup_hours=13)
 
 
 class ErpSyncControlTests(unittest.TestCase):
@@ -252,41 +263,268 @@ class ErpSyncControlTests(unittest.TestCase):
                 )
 
     def test_automatic_retries_are_bounded(self) -> None:
-        occurrence = self.repository.accept_manual(
-            intent="PROJECTS_ONLY",
-            actor_name="scheduler",
-            idempotency_key="auto-bounded",
-            settings=self.settings,
-        )
-        attempts = []
-        for index in range(self.settings.max_automatic_attempts):
-            attempt = self.repository.claim(
+        capability = TestErpSyncAutomaticSafetyCapability()
+        with patch(
+            "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+            return_value=self.fixed_now(),
+        ):
+            occurrence = self.repository.record_daily_decision(
+                self.settings,
+                capability,
+            )
+            self.assertIsNotNone(occurrence)
+            attempts = []
+            for index in range(self.settings.max_automatic_attempts):
+                attempt = self.repository.claim(
+                    occurrence_id=occurrence.id,
+                    trigger="CATCHUP" if index == 0 else "RETRY",
+                    actor_name="scheduler",
+                    settings=self.settings,
+                    automatic=True,
+                    command_identity=f"auto:{index}",
+                    automatic_safety=capability,
+                )
+                self.assertIsNotNone(attempt)
+                attempts.append(attempt)
+                with transactional_session(self.factory) as session:
+                    control = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+                    self.assertIsNotNone(control)
+                    control.lease_expires_at = datetime(
+                        2000, 1, 1, tzinfo=timezone.utc
+                    )
+
+            blocked = self.repository.claim(
                 occurrence_id=occurrence.id,
-                trigger="CATCHUP" if index == 0 else "RETRY",
+                trigger="RETRY",
                 actor_name="scheduler",
                 settings=self.settings,
                 automatic=True,
-                command_identity=f"auto:{index}",
+                command_identity="auto:blocked",
+                automatic_safety=capability,
             )
-            self.assertIsNotNone(attempt)
-            attempts.append(attempt)
-            with transactional_session(self.factory) as session:
-                control = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
-                self.assertIsNotNone(control)
-                control.lease_expires_at = datetime(
-                    2000, 1, 1, tzinfo=timezone.utc
-                )
-
-        blocked = self.repository.claim(
-            occurrence_id=occurrence.id,
-            trigger="RETRY",
-            actor_name="scheduler",
-            settings=self.settings,
-            automatic=True,
-            command_identity="auto:blocked",
-        )
         self.assertIsNone(blocked)
         self.assertEqual(len(attempts), self.settings.max_automatic_attempts)
+
+    def test_disabled_occurrence_manual_failure_cannot_bypass_automatic_safety(self) -> None:
+        unavailable = UnavailableErpSyncAutomaticSafetyCapability()
+        with patch(
+            "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+            return_value=self.fixed_now(),
+        ):
+            occurrence = self.repository.record_daily_decision(
+                self.settings,
+                unavailable,
+            )
+            self.assertIsNotNone(occurrence)
+            manual = self.repository.claim(
+                occurrence_id=occurrence.id,
+                trigger="RETRY",
+                actor_name="operator",
+                settings=self.settings,
+            )
+            self.assertIsNotNone(manual)
+            self.repository.start_attempt(
+                attempt_id=manual.id,
+                generation=manual.generation,
+            )
+            self.repository.finish(
+                attempt_id=manual.id,
+                generation=manual.generation,
+                status=ERP_ATTEMPT_FAILED,
+                phase="FAILED",
+                error_code="acumatica_project_read_failed",
+            )
+
+        later = datetime(2026, 1, 15, 5, 53, tzinfo=timezone.utc)
+        with patch(
+            "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+            return_value=later,
+        ):
+            with self.assertRaises(ApplicationConflictError) as caught:
+                self.repository.claim(
+                    occurrence_id=occurrence.id,
+                    trigger="RETRY",
+                    actor_name="scheduler",
+                    settings=self.settings,
+                    automatic=True,
+                    automatic_safety=unavailable,
+                )
+        self.assertEqual(caught.exception.code, "erp_sync_automatic_safety_unavailable")
+        with self.factory() as session:
+            attempts = tuple(
+                session.scalars(
+                    select(ErpSyncAttempt).where(
+                        ErpSyncAttempt.occurrence_id == occurrence.id
+                    )
+                )
+            )
+        self.assertEqual(len(attempts), 1)
+
+    def test_delayed_automatic_claim_after_frozen_deadline_is_rejected(self) -> None:
+        capability = TestErpSyncAutomaticSafetyCapability()
+        with patch(
+            "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+            return_value=self.fixed_now(),
+        ):
+            occurrence = self.repository.record_daily_decision(
+                self.settings,
+                capability,
+            )
+        self.assertIsNotNone(occurrence)
+
+        late = datetime(2026, 1, 15, 10, 0, tzinfo=timezone.utc)
+        with patch(
+            "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+            return_value=late,
+        ):
+            with self.assertRaises(ApplicationConflictError) as caught:
+                self.repository.claim(
+                    occurrence_id=occurrence.id,
+                    trigger="CATCHUP",
+                    actor_name="scheduler",
+                    settings=self.settings,
+                    automatic=True,
+                    automatic_safety=capability,
+                )
+        self.assertEqual(caught.exception.code, "erp_sync_automatic_window_closed")
+        self.assertEqual(
+            self.repository.get_occurrence(occurrence.id).status,
+            "MISSED",
+        )
+
+    def test_automatic_retry_after_deadline_is_rejected(self) -> None:
+        capability = TestErpSyncAutomaticSafetyCapability()
+        with patch(
+            "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+            return_value=self.fixed_now(),
+        ):
+            occurrence = self.repository.record_daily_decision(
+                self.settings,
+                capability,
+            )
+            first = self.repository.claim(
+                occurrence_id=occurrence.id,
+                trigger="CATCHUP",
+                actor_name="scheduler",
+                settings=self.settings,
+                automatic=True,
+                automatic_safety=capability,
+            )
+            self.assertIsNotNone(first)
+            self.repository.start_attempt(
+                attempt_id=first.id,
+                generation=first.generation,
+            )
+            self.repository.finish(
+                attempt_id=first.id,
+                generation=first.generation,
+                status=ERP_ATTEMPT_FAILED,
+                phase="FAILED",
+                error_code="acumatica_project_read_failed",
+            )
+
+        with patch(
+            "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+            return_value=datetime(2026, 1, 15, 10, 0, tzinfo=timezone.utc),
+        ):
+            with self.assertRaises(ApplicationConflictError) as caught:
+                self.repository.claim(
+                    occurrence_id=occurrence.id,
+                    trigger="RETRY",
+                    actor_name="scheduler",
+                    settings=self.settings,
+                    automatic=True,
+                    automatic_safety=capability,
+                )
+        self.assertEqual(caught.exception.code, "erp_sync_automatic_window_closed")
+
+    def test_business_date_watermark_never_moves_backward(self) -> None:
+        capability = TestErpSyncAutomaticSafetyCapability()
+        nov3 = datetime(2026, 11, 3, 5, 37, tzinfo=timezone.utc)
+        nov2 = datetime(2026, 11, 2, 5, 37, tzinfo=timezone.utc)
+        with patch(
+            "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+            return_value=nov3,
+        ):
+            newer = self.repository.record_daily_decision(
+                self.settings,
+                capability,
+            )
+        self.assertIsNotNone(newer)
+        with patch(
+            "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+            return_value=nov2,
+        ):
+            older = self.repository.record_daily_decision(
+                self.settings,
+                capability,
+            )
+        self.assertIsNone(older)
+        with self.factory() as session:
+            control = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+            self.assertEqual(
+                control.last_evaluated_business_date,
+                date(2026, 11, 3),
+            )
+            dates = tuple(
+                session.scalars(
+                    select(ErpSyncOccurrence.business_date).order_by(
+                        ErpSyncOccurrence.business_date
+                    )
+                )
+            )
+        self.assertEqual(dates, (date(2026, 11, 3),))
+
+    def test_incompatible_peer_cannot_overwrite_active_fingerprint(self) -> None:
+        occurrence = self.repository.accept_manual(
+            intent="PROJECTS_ONLY",
+            actor_name="operator",
+            idempotency_key="config-owner",
+            settings=self.settings,
+        )
+        owner = self.repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="operator",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(owner)
+        incompatible = ErpSyncSchedulerSettings(
+            enabled=True,
+            source_identity="acumatica:other-site",
+        )
+        with patch(
+            "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+            return_value=self.fixed_now(),
+        ):
+            with self.assertRaises(ApplicationConflictError) as caught:
+                self.repository.record_daily_decision(
+                    incompatible,
+                    TestErpSyncAutomaticSafetyCapability(),
+                )
+        self.assertEqual(caught.exception.code, "erp_sync_configuration_incompatible")
+        with self.factory() as session:
+            control = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+            self.assertEqual(control.config_fingerprint, self.settings.config_fingerprint)
+
+    def test_unsupported_protocol_blocks_claim_and_guarded_write(self) -> None:
+        occurrence = self.repository.accept_manual(
+            intent="PROJECTS_ONLY",
+            actor_name="operator",
+            idempotency_key="protocol",
+            settings=self.settings,
+        )
+        with transactional_session(self.factory) as session:
+            control = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+            control.protocol_version = 999
+        with self.assertRaises(ApplicationConflictError) as caught:
+            self.repository.claim(
+                occurrence_id=occurrence.id,
+                trigger="MANUAL",
+                actor_name="operator",
+                settings=self.settings,
+            )
+        self.assertEqual(caught.exception.code, "erp_sync_protocol_incompatible")
 
     def test_retry_claim_is_idempotent(self) -> None:
         occurrence = self.repository.accept_manual(
