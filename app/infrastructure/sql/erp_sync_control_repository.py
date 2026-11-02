@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from ...application.erp_sync_scheduler import (
     ERP_SYNC_DAILY_POLICY,
+    ERP_SYNC_PROTOCOL_VERSION,
     ErpSyncAutomaticSafetyCapability,
     ErpSyncSchedulerSettings,
     scheduler_decision,
@@ -17,6 +18,11 @@ from ...application.erp_sync_scheduler import (
 from ...application.errors import (
     ApplicationConflictError,
     ApplicationNotFoundError,
+)
+from .acumatica_project_task_sync_models import (
+    SYNC_RUN_ACTIVE_STATUSES,
+    SYNC_RUN_INTERRUPTED,
+    AcumaticaProjectTaskSyncRun,
 )
 from .base import new_id, utc_now
 from .erp_sync_control_models import (
@@ -111,6 +117,74 @@ def retry_command_identity(
     )
 
 
+def _assert_control_protocol(
+    control: ErpSyncControl,
+) -> None:
+    if int(control.protocol_version) != ERP_SYNC_PROTOCOL_VERSION:
+        raise ApplicationConflictError(
+            "Le protocole du contrôle ERP est incompatible avec ce processus.",
+            code="erp_sync_protocol_incompatible",
+            context={
+                "expected_protocol_version": ERP_SYNC_PROTOCOL_VERSION,
+                "stored_protocol_version": int(control.protocol_version),
+            },
+        )
+
+
+def _ensure_config_compatible_locked(
+    control: ErpSyncControl,
+    settings: ErpSyncSchedulerSettings,
+    *,
+    allow_boundary_adoption: bool = False,
+    business_date=None,
+) -> None:
+    _assert_control_protocol(control)
+    expected = settings.config_fingerprint
+    stored = str(control.config_fingerprint or "").strip()
+    if not stored:
+        control.config_fingerprint = expected
+        return
+    if stored == expected:
+        return
+
+    watermark = control.last_evaluated_business_date
+    if (
+        allow_boundary_adoption
+        and not control.owner_attempt_id
+        and business_date is not None
+        and (watermark is None or business_date > watermark)
+    ):
+        control.config_fingerprint = expected
+        return
+
+    raise ApplicationConflictError(
+        "La configuration ERP de ce processus est incompatible avec l'autorité SQL.",
+        code="erp_sync_configuration_incompatible",
+    )
+
+
+def _automatic_deadline(
+    occurrence: ErpSyncOccurrence,
+    settings: ErpSyncSchedulerSettings,
+) -> datetime:
+    if occurrence.scheduled_at is None:
+        raise ApplicationConflictError(
+            "L'occurrence automatique ne possède pas d'échéance figée.",
+            code="erp_sync_automatic_schedule_missing",
+        )
+    scheduled = _utc_aware(occurrence.scheduled_at)
+    zone = settings.timezone()
+    next_midnight = datetime.combine(
+        occurrence.business_date + timedelta(days=1),
+        datetime.min.time(),
+        tzinfo=zone,
+    ).astimezone(timezone.utc)
+    return min(
+        scheduled + timedelta(hours=settings.catchup_hours),
+        next_midnight,
+    )
+
+
 class SqlErpSyncControlRepository:
     """ADR-033 durable occurrence/claim/lease/generation authority."""
 
@@ -155,6 +229,23 @@ class SqlErpSyncControlRepository:
     ) -> tuple[ErpSyncControl, datetime]:
         control = _lock_control(session)
         now = _sql_now(session)
+        _assert_control_protocol(control)
+        attempt = session.get(ErpSyncAttempt, attempt_id)
+        occurrence = (
+            session.get(ErpSyncOccurrence, attempt.occurrence_id)
+            if attempt is not None
+            else None
+        )
+        if (
+            occurrence is None
+            or str(control.config_fingerprint or "").strip()
+            != str(occurrence.config_fingerprint or "").strip()
+        ):
+            raise ErpSyncFenceLost(
+                "La configuration ERP de la tentative ne correspond plus à l'autorité SQL.",
+                code="erp_sync_configuration_incompatible",
+                context={"attempt_id": attempt_id, "generation": int(generation)},
+            )
         lease = (
             _utc_aware(control.lease_expires_at)
             if control.lease_expires_at is not None
@@ -221,6 +312,19 @@ class SqlErpSyncControlRepository:
             if occurrence is not None and occurrence.success_attempt_id is None:
                 occurrence.status = ERP_OCCURRENCE_INTERRUPTED
                 occurrence.diagnostic = attempt.diagnostic
+            if attempt.task_sync_run_id:
+                child = session.get(
+                    AcumaticaProjectTaskSyncRun,
+                    attempt.task_sync_run_id,
+                )
+                if child is not None and child.status in SYNC_RUN_ACTIVE_STATUSES:
+                    child.status = SYNC_RUN_INTERRUPTED
+                    child.active_key = None
+                    child.finished_at = now
+                    child.error_code = "lease_expired"
+                    child.diagnostic = (
+                        "Le propriétaire ERP parent a perdu sa lease ou sa durée maximale."
+                    )
 
         control.owner_attempt_id = None
         control.lease_expires_at = None
@@ -250,8 +354,18 @@ class SqlErpSyncControlRepository:
             control = _lock_control(session)
             now = _sql_now(session)
             decision = scheduler_decision(now, settings)
-            control.last_evaluated_business_date = decision.business_date
-            control.config_fingerprint = settings.config_fingerprint
+            watermark = control.last_evaluated_business_date
+            if watermark is not None and decision.business_date < watermark:
+                return None
+
+            _ensure_config_compatible_locked(
+                control,
+                settings,
+                allow_boundary_adoption=True,
+                business_date=decision.business_date,
+            )
+            if watermark is None or decision.business_date > watermark:
+                control.last_evaluated_business_date = decision.business_date
 
             if decision.state == "NOT_DUE":
                 return None
@@ -307,7 +421,8 @@ class SqlErpSyncControlRepository:
             idempotency_key=idempotency_key,
         )
         with transactional_session(self._session_factory) as session:
-            _lock_control(session)
+            control = _lock_control(session)
+            _ensure_config_compatible_locked(control, settings)
             existing = session.scalar(
                 select(ErpSyncOccurrence).where(
                     ErpSyncOccurrence.command_identity == identity
@@ -379,6 +494,7 @@ class SqlErpSyncControlRepository:
         settings: ErpSyncSchedulerSettings,
         automatic: bool = False,
         command_identity: str | None = None,
+        automatic_safety: ErpSyncAutomaticSafetyCapability | None = None,
     ) -> ErpSyncAttempt | None:
         with transactional_session(self._session_factory) as session:
             control = _lock_control(session)
@@ -401,6 +517,46 @@ class SqlErpSyncControlRepository:
                     code="erp_sync_occurrence_not_found",
                     context={"occurrence_id": occurrence_id},
                 )
+
+            _ensure_config_compatible_locked(control, settings)
+            if occurrence.config_fingerprint != settings.config_fingerprint:
+                raise ApplicationConflictError(
+                    "La configuration figée de l'occurrence ERP est incompatible.",
+                    code="erp_sync_occurrence_configuration_incompatible",
+                    context={"occurrence_id": occurrence.id},
+                )
+
+            if automatic:
+                if (
+                    automatic_safety is None
+                    or not automatic_safety.automatic_execution_available()
+                ):
+                    raise ApplicationConflictError(
+                        "La capacité de sécurité automatique ERP n'est pas disponible.",
+                        code="erp_sync_automatic_safety_unavailable",
+                    )
+                if occurrence.occurrence_type != ERP_OCCURRENCE_DAILY:
+                    raise ApplicationConflictError(
+                        "Seules les occurrences DAILY peuvent démarrer automatiquement.",
+                        code="erp_sync_automatic_occurrence_invalid",
+                    )
+                current_business_date = now.astimezone(settings.timezone()).date()
+                watermark = control.last_evaluated_business_date
+                if (
+                    current_business_date != occurrence.business_date
+                    or (
+                        watermark is not None
+                        and occurrence.business_date < watermark
+                    )
+                    or now < _utc_aware(occurrence.scheduled_at)
+                    or now >= _automatic_deadline(occurrence, settings)
+                ):
+                    raise ApplicationConflictError(
+                        "La fenêtre automatique figée de cette occurrence est fermée.",
+                        code="erp_sync_automatic_window_closed",
+                        context={"occurrence_id": occurrence.id},
+                    )
+
             if occurrence.success_attempt_id:
                 return None
             if control.owner_attempt_id:
@@ -564,12 +720,12 @@ class SqlErpSyncControlRepository:
                     occurrence.status = ERP_OCCURRENCE_SUCCEEDED
                     occurrence.success_attempt_id = attempt.id
                     occurrence.diagnostic = None
-                    control.last_success_attempt_id = attempt.id
+                    if attempt.intent == "PROJECTS_AND_ACTIVE_TASKS":
+                        control.last_success_attempt_id = attempt.id
                 elif status == ERP_ATTEMPT_SUCCEEDED_WITH_ERRORS:
                     occurrence.status = ERP_OCCURRENCE_SUCCEEDED_WITH_ERRORS
-                    occurrence.success_attempt_id = attempt.id
+                    occurrence.success_attempt_id = None
                     occurrence.diagnostic = diagnostic
-                    control.last_success_attempt_id = attempt.id
                 elif status == ERP_ATTEMPT_INTERRUPTED:
                     occurrence.status = ERP_OCCURRENCE_INTERRUPTED
                     occurrence.diagnostic = diagnostic
