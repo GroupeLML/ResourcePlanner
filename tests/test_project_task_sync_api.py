@@ -16,6 +16,7 @@ from app.application import (
     TaskCatalogPortfolioSnapshot,
     TaskCatalogProjectSnapshot,
 )
+from app.application.erp_sync_scheduler import ErpSyncSchedulerSettings
 from app.application.security import PERMISSION_SYNC_PROJECTS
 from app.infrastructure.sql import (
     AcumaticaProjectTaskSyncRun,
@@ -27,6 +28,7 @@ from app.infrastructure.sql import (
     create_session_factory,
     create_sql_engine,
 )
+from app.infrastructure.sql.erp_sync_control_repository import SqlErpSyncControlRepository
 from app.server import create_api_app
 from app.server.security import required_permission
 from tests.http_test_auth import (
@@ -306,11 +308,31 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
             ),
         }
 
+    @staticmethod
+    def _global_project_source() -> StaticProjectSource:
+        return StaticProjectSource(
+            (
+                ExternalProjectRecord(
+                    external_id="5469",
+                    number="5118",
+                    name="Projet ERP",
+                    status="Actif",
+                ),
+                ExternalProjectRecord(
+                    external_id="5470",
+                    number="5119",
+                    name="Projet ERP 2",
+                    status="Actif",
+                ),
+            )
+        )
+
     def test_global_sync_orchestrates_active_erp_projects_and_replays_idempotently(self) -> None:
         source = BatchProjectTaskSource(self._global_snapshots())
         app = create_api_app(
             self.database_url,
             auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            project_source=self._global_project_source(),
             project_task_source=source,
         )
         path = "/api/v1/integrations/acumatica/projects/tasks/sync"
@@ -328,12 +350,12 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
             )
             second_body = self._wait_for_run(client, second_launch.json()["run_id"])
 
-        self.assertEqual(first_body["status"], "COMPLETED_WITH_ERRORS")
+        self.assertEqual(first_body["status"], "COMPLETED")
         self.assertEqual(first_body["projects_inspected"], 4)
         self.assertEqual(first_body["projects_processed"], 4)
         self.assertEqual(first_body["projects_synchronized"], 2)
-        self.assertEqual(first_body["projects_ignored"], 1)
-        self.assertEqual(first_body["projects_rejected"], 1)
+        self.assertEqual(first_body["projects_ignored"], 2)
+        self.assertEqual(first_body["projects_rejected"], 0)
         self.assertEqual(first_body["source_rows_received"], 3)
         self.assertEqual(first_body["source_rows_rejected"], 0)
         self.assertEqual(first_body["tasks_received"], 3)
@@ -355,11 +377,12 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
         }
         self.assertEqual(outcomes["OLD-1"]["status"], "ignored")
         self.assertEqual(outcomes["OLD-1"]["reason_code"], "project_inactive")
-        self.assertEqual(outcomes["LOCAL-1"]["status"], "rejected")
+        self.assertEqual(outcomes["LOCAL-1"]["status"], "ignored")
         self.assertEqual(
-            outcomes["LOCAL-1"]["error_code"],
-            "task_catalog_project_external_id_required",
+            outcomes["LOCAL-1"]["reason_code"],
+            "project_erp_identity_missing",
         )
+        self.assertIsNone(outcomes["LOCAL-1"]["error_code"])
 
         engine = create_sql_engine(self.database_url)
         factory = create_session_factory(engine)
@@ -383,6 +406,7 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
         app = create_api_app(
             self.database_url,
             auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            project_source=self._global_project_source(),
             project_task_source=source,
         )
 
@@ -405,29 +429,14 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
         self.assertEqual(body["projects_inspected"], 4)
         self.assertEqual(body["projects_processed"], 4)
         self.assertEqual(body["projects_synchronized"], 2)
-        self.assertEqual(body["projects_ignored"], 1)
-        self.assertEqual(body["projects_rejected"], 1)
+        self.assertEqual(body["projects_ignored"], 2)
+        self.assertEqual(body["projects_rejected"], 0)
         self.assertEqual(body["tasks_created"], 2)
         self.assertEqual(body["tasks_rejected"], 1)
 
     def test_643a_run_now_is_durable_and_same_idempotency_key_reuses_attempt(self) -> None:
         source = BlockingBatchProjectTaskSource(self._global_snapshots())
-        projects = StaticProjectSource(
-            (
-                ExternalProjectRecord(
-                    external_id="5469",
-                    number="5118",
-                    name="Projet ERP",
-                    status="Actif",
-                ),
-                ExternalProjectRecord(
-                    external_id="5470",
-                    number="5119",
-                    name="Projet ERP 2",
-                    status="Actif",
-                ),
-            )
-        )
+        projects = self._global_project_source()
         app = create_api_app(
             self.database_url,
             auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
@@ -478,6 +487,7 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
         app = create_api_app(
             self.database_url,
             auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            project_source=self._global_project_source(),
             project_task_source=source,
         )
         path = "/api/v1/integrations/acumatica/projects/tasks/sync"
@@ -543,6 +553,7 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
         app = create_api_app(
             self.database_url,
             auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            project_source=self._global_project_source(),
             project_task_source=source,
         )
 
@@ -555,7 +566,7 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
 
         self.assertEqual(body["status"], "COMPLETED_WITH_ERRORS")
         self.assertEqual(body["projects_synchronized"], 1)
-        self.assertEqual(body["projects_rejected"], 2)
+        self.assertEqual(body["projects_rejected"], 1)
         outcomes = {
             row["project_number"]: row
             for row in body["project_results"]
@@ -590,6 +601,7 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
         app = create_api_app(
             self.database_url,
             auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            project_source=self._global_project_source(),
             project_task_source=source,
         )
 
@@ -625,6 +637,7 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
         app = create_api_app(
             self.database_url,
             auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            project_source=self._global_project_source(),
             project_task_source=source,
         )
         path = "/api/v1/integrations/acumatica/projects/tasks/sync"
@@ -659,6 +672,7 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
         app = create_api_app(
             self.database_url,
             auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            project_source=self._global_project_source(),
             project_task_source=source,
         )
         path = "/api/v1/integrations/acumatica/projects/tasks/sync"
@@ -690,6 +704,7 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
         app = create_api_app(
             self.database_url,
             auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            project_source=self._global_project_source(),
             project_task_source=source,
         )
 
@@ -702,6 +717,63 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
         self.assertEqual(body["status"], "COMPLETED")
         self.assertEqual(body["projects_rejected"], 0)
         self.assertEqual(body["projects_processed"], body["projects_total"])
+
+    def _claim_healthy_owner(self, *, key: str):
+        repository = SqlErpSyncControlRepository(
+            create_session_factory(create_sql_engine(self.database_url))
+        )
+        repository.ensure_control_row()
+        settings = ErpSyncSchedulerSettings(enabled=False)
+        occurrence = repository.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="other-worker",
+            idempotency_key=key,
+            settings=settings,
+        )
+        attempt = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="other-worker",
+            settings=settings,
+        )
+        self.assertIsNotNone(attempt)
+        return repository, attempt
+
+    def test_legacy_project_sync_writer_is_blocked_by_healthy_owner(self) -> None:
+        projects = self._global_project_source()
+        repository, _owner = self._claim_healthy_owner(
+            key="legacy-project-owner",
+        )
+        app = create_api_app(
+            self.database_url,
+            auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            project_source=projects,
+        )
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/integrations/acumatica/projects/sync"
+            )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["error"]["code"], "erp_sync_run_active")
+        self.assertEqual(projects.calls, 0)
+
+    def test_legacy_targeted_task_writer_is_blocked_by_healthy_owner(self) -> None:
+        source = StubProjectTaskSource(self._snapshot())
+        repository, _owner = self._claim_healthy_owner(
+            key="legacy-targeted-owner",
+        )
+        app = create_api_app(
+            self.database_url,
+            auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            project_task_source=source,
+        )
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/integrations/acumatica/projects/PROJECT-ERP/tasks/sync"
+            )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["error"]["code"], "erp_sync_run_active")
+        self.assertEqual(source.calls, [])
 
     def test_dynamic_sync_path_requires_sync_projects_permission(self) -> None:
         path = "/api/v1/integrations/acumatica/projects/PROJECT-ERP/tasks/sync"
