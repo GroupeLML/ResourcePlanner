@@ -21,6 +21,7 @@ from app.infrastructure.sql import (
     ERP_OCCURRENCE_PENDING,
     ERP_SYNC_CONTROL_ROW_ID,
     GLOBAL_SYNC_RUN_KEY,
+    SYNC_RUN_COMPLETED,
     SYNC_RUN_INTERRUPTED,
     SYNC_RUN_RUNNING,
     ErpSyncAttempt,
@@ -252,6 +253,7 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
                     stale_session,
                     attempt_id=first.id,
                     generation=first.generation,
+                    settings=self.settings,
                 )
         with self.factory.begin() as stale_progress:
             with self.assertRaises(ErpSyncFenceLost):
@@ -260,6 +262,7 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
                     attempt_id=first.id,
                     generation=first.generation,
                     phase="STALE_PROGRESS",
+                    settings=self.settings,
                 )
         self.assertFalse(
             repository.finish(
@@ -267,6 +270,39 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
                 generation=first.generation,
                 status="SUCCEEDED",
                 phase="PUBLICATION_COMMITTED",
+                settings=self.settings,
+            )
+        )
+
+        with transactional_session(self.factory) as session:
+            SqlErpSyncControlRepository.guard_session(
+                session,
+                attempt_id=second.id,
+                generation=second.generation,
+                settings=self.settings,
+            )
+            replacement = session.get(
+                AcumaticaProjectTaskSyncRun,
+                replacement_child_id,
+            )
+            self.assertIsNotNone(replacement)
+            replacement.status = SYNC_RUN_COMPLETED
+            replacement.active_key = None
+            replacement.finished_at = datetime.now(timezone.utc)
+            SqlErpSyncControlRepository.update_phase_in_session(
+                session,
+                attempt_id=second.id,
+                generation=second.generation,
+                phase="TASKS_FINISHED",
+                settings=self.settings,
+            )
+        self.assertTrue(
+            repository.finish(
+                attempt_id=second.id,
+                generation=second.generation,
+                status="SUCCEEDED",
+                phase="PUBLICATION_COMMITTED",
+                settings=self.settings,
             )
         )
         orchestrator.shutdown()
