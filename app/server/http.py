@@ -526,6 +526,7 @@ def create_api_app(
     resolved_erp_sync_settings = erp_sync_settings or ErpSyncSchedulerSettings()
     install_erp_sync_orchestrator = (
         erp_sync_settings is not None
+        or project_source is not None
         or project_task_source is not None
         or erp_sync_automatic_safety is not None
     )
