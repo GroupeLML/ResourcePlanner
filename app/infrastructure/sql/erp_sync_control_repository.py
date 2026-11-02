@@ -514,15 +514,6 @@ class SqlErpSyncControlRepository:
             control = _lock_control(session)
             now = _sql_now(session)
 
-            if command_identity:
-                existing_command = session.scalar(
-                    select(ErpSyncAttempt).where(
-                        ErpSyncAttempt.command_identity == command_identity
-                    )
-                )
-                if existing_command is not None:
-                    return existing_command
-
             occurrence = session.get(ErpSyncOccurrence, occurrence_id)
             if occurrence is None:
                 raise ApplicationNotFoundError(
@@ -538,6 +529,15 @@ class SqlErpSyncControlRepository:
                     code="erp_sync_occurrence_configuration_incompatible",
                     context={"occurrence_id": occurrence.id},
                 )
+
+            if command_identity:
+                existing_command = session.scalar(
+                    select(ErpSyncAttempt).where(
+                        ErpSyncAttempt.command_identity == command_identity
+                    )
+                )
+                if existing_command is not None:
+                    return existing_command
 
             self._interrupt_expired_locked(session, control, now=now)
 
