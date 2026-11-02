@@ -109,6 +109,19 @@ class ServerAcumaticaRouteTests(unittest.TestCase):
     def _database(self, directory: str) -> str:
         return self._database_template.copy_to(directory)
 
+    def _wait_erp_run(self, client: TestClient, run_id: str) -> dict:
+        for _attempt in range(100):
+            response = client.get(
+                f"/api/v1/integrations/acumatica/erp-sync/runs/{run_id}"
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            payload = response.json()
+            if payload["status"] not in {"PENDING", "RUNNING"}:
+                return payload
+            import time
+            time.sleep(0.02)
+        self.fail(f"ERP run {run_id} did not reach a terminal state")
+
     def test_unconfigured_integration_reports_status_and_returns_503_for_sync(self) -> None:
         with TemporaryDirectory() as directory:
             app = create_api_app(self._database(directory))
@@ -149,7 +162,11 @@ class ServerAcumaticaRouteTests(unittest.TestCase):
             with TestClient(app) as client:
                 status = client.get("/api/v1/integrations/acumatica")
                 first = client.post("/api/v1/integrations/acumatica/projects/sync")
+                self.assertEqual(first.status_code, 202, first.text)
+                first_run = self._wait_erp_run(client, first.json()["run_id"])
                 second = client.post("/api/v1/integrations/acumatica/projects/sync")
+                self.assertEqual(second.status_code, 202, second.text)
+                second_run = self._wait_erp_run(client, second.json()["run_id"])
                 projects = client.get("/api/v1/projects")
 
             self.assertEqual(status.status_code, 200)
@@ -162,15 +179,16 @@ class ServerAcumaticaRouteTests(unittest.TestCase):
                     "feed_path": "/oDATA/RP_Projects",
                 },
             )
-            self.assertEqual(first.status_code, 200)
-            self.assertEqual(
-                first.json(),
-                {"received": 1, "created": 1, "updated": 0, "unchanged": 0},
-            )
-            self.assertEqual(
-                second.json(),
-                {"received": 1, "created": 0, "updated": 0, "unchanged": 1},
-            )
+            self.assertEqual(first_run["status"], "COMPLETED")
+            self.assertEqual(first_run["project_received"], 1)
+            self.assertEqual(first_run["projects_created"], 1)
+            self.assertEqual(first_run["projects_updated"], 0)
+            self.assertEqual(first_run["projects_unchanged"], 0)
+            self.assertEqual(second_run["status"], "COMPLETED")
+            self.assertEqual(second_run["project_received"], 1)
+            self.assertEqual(second_run["projects_created"], 0)
+            self.assertEqual(second_run["projects_updated"], 0)
+            self.assertEqual(second_run["projects_unchanged"], 1)
             self.assertEqual(projects.status_code, 200)
             self.assertEqual(projects.json()[0]["number"], "P-100")
             self.assertEqual(projects.json()[0]["erp_external_id"], "ERP-1")
@@ -185,11 +203,10 @@ class ServerAcumaticaRouteTests(unittest.TestCase):
             ]
             self.assertEqual(len(sync_samples), 2)
             for sample in sync_samples:
-                self.assertEqual(sample["external_call_count"], 1)
-                self.assertEqual(sample["external_item_count"], 1)
+                # ERP work is no longer performed inside the HTTP request.
+                self.assertEqual(sample["external_call_count"], 0)
+                self.assertEqual(sample["external_item_count"], 0)
                 self.assertGreater(sample["db_query_count"], 0)
-                self.assertGreaterEqual(sample["external_seconds"], 0.0)
-                self.assertGreaterEqual(sample["compute_seconds"], 0.0)
 
     def test_project_task_source_sets_project_tasks_configured_status(self) -> None:
         with TemporaryDirectory() as directory:
@@ -296,13 +313,12 @@ class ServerAcumaticaRouteTests(unittest.TestCase):
             )
             with TestClient(app) as client:
                 response = client.post("/api/v1/integrations/acumatica/projects/sync")
+                self.assertEqual(response.status_code, 202, response.text)
+                run = self._wait_erp_run(client, response.json()["run_id"])
 
-            self.assertEqual(response.status_code, 500)
-            self.assertEqual(response.json()["error"]["code"], "acumatica_project_read_failed")
-            self.assertEqual(
-                response.json()["error"]["context"]["failure_kind"],
-                "timeout",
-            )
+            self.assertEqual(run["status"], "FAILED")
+            self.assertEqual(run["error_code"], "acumatica_project_read_failed")
+            self.assertNotIn("failure_kind", run)
 
             samples = read_performance_samples(path=performance_log, limit=10)
             sample = next(
@@ -311,10 +327,9 @@ class ServerAcumaticaRouteTests(unittest.TestCase):
                 if item.get("operation")
                 == "http POST /api/v1/integrations/acumatica/projects/sync"
             )
-            self.assertEqual(sample["status"], "500")
-            self.assertEqual(sample["external_call_count"], 1)
+            self.assertEqual(sample["status"], "202")
+            self.assertEqual(sample["external_call_count"], 0)
             self.assertEqual(sample["external_item_count"], 0)
-            self.assertGreaterEqual(sample["external_seconds"], 0.0)
 
     def test_invalid_late_feed_entry_does_not_apply_partial_acumatica_snapshot(self) -> None:
         with TemporaryDirectory() as directory:
