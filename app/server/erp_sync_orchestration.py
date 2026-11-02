@@ -807,21 +807,29 @@ class ErpSyncOrchestrator:
             )
 
         with self._session_factory() as discovery:
-            project = discovery.get(Project, project_id)
-            if project is None:
-                raise ApplicationNotFoundError(
-                    "Le projet demandé n'existe pas.",
-                    code="project_not_found",
-                    context={"project_id": project_id},
-                )
-            if not project.active:
-                raise ApplicationValidationError(
-                    "Le projet demandé est inactif.",
-                    code="project_inactive",
-                    context={"project_id": project_id},
-                )
-            project_external_id = str(project.erp_external_id or "").strip()
-            project_number = str(project.number)
+            projects = tuple(
+                SqlPlannerQueryRepositoryWithLoadProfiles(
+                    discovery
+                ).list_projects(active_only=False)
+            )
+        project = next(
+            (row for row in projects if row.id == project_id),
+            None,
+        )
+        if project is None:
+            raise ApplicationNotFoundError(
+                "Le projet demandé n'existe pas.",
+                code="project_not_found",
+                context={"project_id": project_id},
+            )
+        if not project.active:
+            raise ApplicationValidationError(
+                "Le projet demandé est inactif.",
+                code="project_inactive",
+                context={"project_id": project_id},
+            )
+        project_external_id = str(project.erp_external_id or "").strip()
+        project_number = str(project.number)
         if not project_external_id:
             raise ApplicationValidationError(
                 "Ce projet local ne possède pas d'identifiant ERP.",
@@ -859,16 +867,6 @@ class ErpSyncOrchestrator:
             run.projects_total = 1
             run.source_requests = 1
             run.source_rows_scanned = int(snapshot.source_rows)
-
-        with self._session_factory() as discovery:
-            project = discovery.get(Project, project_id)
-            if project is None:
-                raise ApplicationNotFoundError(
-                    "Le projet demandé n'existe plus.",
-                    code="project_not_found",
-                    context={"project_id": project_id},
-                )
-            discovery.expunge(project)
 
         self._process_task_project(
             run_id,
