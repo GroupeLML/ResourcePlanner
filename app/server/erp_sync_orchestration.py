@@ -75,6 +75,19 @@ class _PreloadedProjectSource:
         return self._projects
 
 
+class _PreloadedProjectTaskSource:
+    def __init__(self, snapshot: Any) -> None:
+        self._snapshot = snapshot
+
+    def fetch_project_snapshot(
+        self,
+        *,
+        project_external_id: str,
+        project_number: str,
+    ):
+        return self._snapshot
+
+
 def _utc(value: datetime | None) -> datetime | None:
     if value is None:
         return None
