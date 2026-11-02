@@ -358,6 +358,7 @@ class ErpSyncOrchestrator:
             if not self._control.start_attempt(
                 attempt_id=attempt.id,
                 generation=int(attempt.generation),
+                settings=self._settings,
             ):
                 raise ApplicationConflictError(
                     "La tentative projets n'a pas pu démarrer.",
@@ -372,6 +373,7 @@ class ErpSyncOrchestrator:
                 generation=int(attempt.generation),
                 status=ERP_ATTEMPT_SUCCEEDED,
                 phase="PUBLICATION_COMMITTED",
+                settings=self._settings,
             )
             return result
         except Exception:
@@ -382,6 +384,7 @@ class ErpSyncOrchestrator:
                 phase="FAILED",
                 error_code="acumatica_project_sync_failed",
                 diagnostic="La synchronisation projets Acumatica a échoué.",
+                settings=self._settings,
             )
             raise
 
@@ -439,6 +442,7 @@ class ErpSyncOrchestrator:
             if not self._control.start_attempt(
                 attempt_id=attempt.id,
                 generation=int(attempt.generation),
+                settings=self._settings,
             ):
                 raise ApplicationConflictError(
                     "La tentative ciblée n'a pas pu démarrer.",
@@ -453,6 +457,7 @@ class ErpSyncOrchestrator:
                     session,
                     attempt_id=attempt.id,
                     generation=int(attempt.generation),
+                    settings=self._settings,
                 )
                 repository = SqlTaskCatalogRepository(session)
                 result = TaskCatalogSyncService(
@@ -469,12 +474,14 @@ class ErpSyncOrchestrator:
                     attempt_id=attempt.id,
                     generation=int(attempt.generation),
                     phase="TASKS_FINISHED",
+                    settings=self._settings,
                 )
             self._control.finish(
                 attempt_id=attempt.id,
                 generation=int(attempt.generation),
                 status=ERP_ATTEMPT_SUCCEEDED,
                 phase="PUBLICATION_COMMITTED",
+                settings=self._settings,
             )
             return result
         except Exception:
@@ -485,6 +492,7 @@ class ErpSyncOrchestrator:
                 phase="FAILED",
                 error_code="targeted_project_task_sync_failed",
                 diagnostic="La synchronisation ciblée des tâches a échoué.",
+                settings=self._settings,
             )
             raise
 
@@ -683,6 +691,7 @@ class ErpSyncOrchestrator:
             if not self._control.start_attempt(
                 attempt_id=attempt_id,
                 generation=generation,
+                settings=self._settings,
             ):
                 return
             heartbeat = Thread(
@@ -705,6 +714,7 @@ class ErpSyncOrchestrator:
                     phase="FAILED",
                     error_code="erp_sync_automatic_safety_unavailable",
                     diagnostic=self._automatic_safety.diagnostic(),
+                    settings=self._settings,
                 )
                 return
             if attempt.intent.startswith("TARGETED_PROJECT_TASKS:"):
@@ -728,6 +738,7 @@ class ErpSyncOrchestrator:
                         if task_status == SYNC_RUN_COMPLETED_WITH_ERRORS
                         else None
                     ),
+                    settings=self._settings,
                 )
                 return
 
@@ -739,6 +750,7 @@ class ErpSyncOrchestrator:
                         generation=generation,
                         status=ERP_ATTEMPT_SUCCEEDED,
                         phase="PUBLICATION_COMMITTED",
+                        settings=self._settings,
                     )
                     return
 
@@ -758,6 +770,7 @@ class ErpSyncOrchestrator:
                     if parent_status == ERP_ATTEMPT_SUCCEEDED_WITH_ERRORS
                     else None
                 ),
+                settings=self._settings,
             )
         except ErpSyncFenceLost:
             # A newer generation owns the control row. The stale worker is not
@@ -775,6 +788,7 @@ class ErpSyncOrchestrator:
                 phase="FAILED",
                 error_code=exc.code or "erp_sync_failed",
                 diagnostic="La synchronisation ERP n'a pas pu être exécutée.",
+                settings=self._settings,
             )
         except Exception as exc:
             logger.error(
@@ -790,6 +804,7 @@ class ErpSyncOrchestrator:
                 phase="FAILED",
                 error_code="erp_sync_failed",
                 diagnostic="La synchronisation ERP n'a pas pu être exécutée.",
+                settings=self._settings,
             )
         finally:
             stop.set()
@@ -817,6 +832,7 @@ class ErpSyncOrchestrator:
                 session,
                 attempt_id=attempt_id,
                 generation=generation,
+                settings=self._settings,
             )
             result = ProjectSyncService(
                 _PreloadedProjectSource(projects),
@@ -828,6 +844,7 @@ class ErpSyncOrchestrator:
                 generation=generation,
                 phase="PROJECTS_VALIDATED",
                 project_result=result,
+                settings=self._settings,
             )
             return result
 
@@ -844,6 +861,7 @@ class ErpSyncOrchestrator:
                 session,
                 attempt_id=attempt_id,
                 generation=generation,
+                settings=self._settings,
             )
             run = AcumaticaProjectTaskSyncRun(
                 id=run_id,
@@ -860,6 +878,7 @@ class ErpSyncOrchestrator:
                 generation=generation,
                 phase="TASKS_RUNNING",
                 task_sync_run_id=run_id,
+                settings=self._settings,
             )
         return run_id
 
@@ -929,6 +948,7 @@ class ErpSyncOrchestrator:
                 session,
                 attempt_id=attempt_id,
                 generation=generation,
+                settings=self._settings,
             )
             run = session.get(AcumaticaProjectTaskSyncRun, run_id)
             if run is None:
@@ -950,6 +970,7 @@ class ErpSyncOrchestrator:
                 session,
                 attempt_id=attempt_id,
                 generation=generation,
+                settings=self._settings,
             )
             run = session.get(AcumaticaProjectTaskSyncRun, run_id)
             if run is None:
@@ -975,6 +996,7 @@ class ErpSyncOrchestrator:
                 attempt_id=attempt_id,
                 generation=generation,
                 phase="TASKS_FINISHED",
+                settings=self._settings,
             )
             return run.status
 
@@ -998,6 +1020,7 @@ class ErpSyncOrchestrator:
                 session,
                 attempt_id=attempt_id,
                 generation=generation,
+                settings=self._settings,
             )
             run = session.get(AcumaticaProjectTaskSyncRun, run_id)
             if run is None:
@@ -1055,6 +1078,7 @@ class ErpSyncOrchestrator:
                     session,
                     attempt_id=attempt_id,
                     generation=generation,
+                    settings=self._settings,
                 )
                 run = session.get(AcumaticaProjectTaskSyncRun, run_id)
                 if run is None:
@@ -1077,6 +1101,7 @@ class ErpSyncOrchestrator:
                     session,
                     attempt_id=attempt_id,
                     generation=generation,
+                    settings=self._settings,
                 )
                 run = session.get(AcumaticaProjectTaskSyncRun, run_id)
                 if run is None:
@@ -1103,6 +1128,7 @@ class ErpSyncOrchestrator:
                     attempt_id=attempt_id,
                     generation=generation,
                     phase="TASKS_FINISHED",
+                    settings=self._settings,
                 )
                 return run.status
         except Exception:
@@ -1126,6 +1152,7 @@ class ErpSyncOrchestrator:
                     session,
                     attempt_id=attempt_id,
                     generation=generation,
+                    settings=self._settings,
                 )
                 run = session.get(AcumaticaProjectTaskSyncRun, run_id)
                 if run is None or run.status not in {
@@ -1212,6 +1239,7 @@ class ErpSyncOrchestrator:
                     session,
                     attempt_id=attempt_id,
                     generation=generation,
+                    settings=self._settings,
                 )
                 repository = SqlTaskCatalogRepository(session)
                 result = TaskCatalogSyncService(
@@ -1285,6 +1313,7 @@ class ErpSyncOrchestrator:
                 session,
                 attempt_id=attempt_id,
                 generation=generation,
+                settings=self._settings,
             )
             self._record_task_outcome_in_session(session, run_id, outcome)
 
