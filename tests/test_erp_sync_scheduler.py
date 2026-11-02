@@ -535,6 +535,7 @@ class ErpSyncControlTests(unittest.TestCase):
 
         with transactional_session(self.factory) as session:
             control = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+            control.protocol_version = 1
             control.owner_attempt_id = None
             control.lease_expires_at = None
             control.owner_deadline_at = None
@@ -545,6 +546,9 @@ class ErpSyncControlTests(unittest.TestCase):
             idempotency_key="protocol-claim",
             settings=self.settings,
         )
+        with transactional_session(self.factory) as session:
+            control = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+            control.protocol_version = 999
         with self.assertRaises(ApplicationConflictError) as caught:
             self.repository.claim(
                 occurrence_id=another.id,
