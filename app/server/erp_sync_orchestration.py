@@ -150,7 +150,39 @@ class ErpSyncOrchestrator:
 
     def reconcile_startup(self) -> int:
         self._control.ensure_control_row()
-        return self._control.reconcile_expired_owner()
+        reconciled = self._control.reconcile_expired_owner()
+        reconciled += self._reconcile_expired_legacy_task_runs()
+        return reconciled
+
+    def _reconcile_expired_legacy_task_runs(self) -> int:
+        now = self._control.current_sql_time()
+        cutoff = now - timedelta(seconds=self._settings.max_attempt_seconds)
+        with transactional_session(self._session_factory) as session:
+            rows = tuple(
+                session.scalars(
+                    select(AcumaticaProjectTaskSyncRun).where(
+                        AcumaticaProjectTaskSyncRun.parent_attempt_id.is_(None),
+                        AcumaticaProjectTaskSyncRun.active_key == GLOBAL_SYNC_RUN_KEY,
+                        AcumaticaProjectTaskSyncRun.status.in_(
+                            {SYNC_RUN_PENDING, SYNC_RUN_RUNNING}
+                        ),
+                    )
+                )
+            )
+            reconciled = 0
+            for row in rows:
+                reference = _utc(row.started_at) or _utc(row.created_at)
+                if reference is None or reference > cutoff:
+                    continue
+                row.status = "INTERRUPTED"
+                row.active_key = None
+                row.finished_at = now
+                row.error_code = "legacy_owner_deadline_expired"
+                row.diagnostic = (
+                    "Le run antérieur à 643A a dépassé la durée maximale sans lease durable."
+                )
+                reconciled += 1
+            return reconciled
 
     def scheduler_tick(self) -> dict[str, Any] | None:
         if self._closed or not self._control.schema_available():
@@ -309,13 +341,35 @@ class ErpSyncOrchestrator:
         )
 
     def get(self, run_id: str) -> dict[str, Any]:
-        return self._compat_payload(run_id)
+        try:
+            return self._compat_payload(run_id)
+        except ApplicationNotFoundError:
+            with self._session_factory() as session:
+                legacy = session.get(AcumaticaProjectTaskSyncRun, run_id)
+                if legacy is None or legacy.parent_attempt_id is not None:
+                    raise
+                return self._legacy_task_payload(session, legacy)
 
     def current(self) -> dict[str, Any] | None:
         attempt = self._control.current_attempt()
-        if attempt is None:
-            return None
-        return self._compat_payload(attempt.id)
+        if attempt is not None:
+            return self._compat_payload(attempt.id)
+        with self._session_factory() as session:
+            legacy = session.scalar(
+                select(AcumaticaProjectTaskSyncRun)
+                .where(
+                    AcumaticaProjectTaskSyncRun.parent_attempt_id.is_(None),
+                    AcumaticaProjectTaskSyncRun.active_key == GLOBAL_SYNC_RUN_KEY,
+                    AcumaticaProjectTaskSyncRun.status.in_(
+                        {SYNC_RUN_PENDING, SYNC_RUN_RUNNING}
+                    ),
+                )
+                .order_by(AcumaticaProjectTaskSyncRun.created_at.desc())
+                .limit(1)
+            )
+            if legacy is None:
+                return None
+            return self._legacy_task_payload(session, legacy)
 
     def run_projects_only_compat(self, *, actor_name: str) -> dict[str, int]:
         """Compatibility adapter for legacy POST /projects/sync.
@@ -902,6 +956,73 @@ class ErpSyncOrchestrator:
             run.projects_ignored += 1
         else:
             run.projects_rejected += 1
+
+    def _legacy_task_payload(
+        self,
+        session,
+        run: AcumaticaProjectTaskSyncRun,
+    ) -> dict[str, Any]:
+        results = tuple(
+            session.scalars(
+                select(AcumaticaProjectTaskSyncProjectResult)
+                .where(AcumaticaProjectTaskSyncProjectResult.run_id == run.id)
+                .order_by(
+                    AcumaticaProjectTaskSyncProjectResult.created_at,
+                    AcumaticaProjectTaskSyncProjectResult.project_number,
+                )
+            )
+        )
+        return {
+            "run_id": run.id,
+            "attempt_id": None,
+            "occurrence_id": None,
+            "intent": "ACTIVE_PROJECT_TASKS_ONLY",
+            "generation": None,
+            "status": run.status,
+            "phase": "LEGACY_TASKS",
+            "created_at": run.created_at,
+            "started_at": run.started_at,
+            "finished_at": run.finished_at,
+            "projects_total": run.projects_total,
+            "projects_inspected": run.projects_total,
+            "projects_processed": run.projects_processed,
+            "projects_synchronized": run.projects_synchronized,
+            "projects_ignored": run.projects_ignored,
+            "projects_rejected": run.projects_rejected,
+            "source_requests": run.source_requests,
+            "source_rows_scanned": run.source_rows_scanned,
+            "source_read_duration_ms": run.source_read_duration_ms,
+            "source_rows_received": run.source_rows_received,
+            "source_rows_rejected": run.source_rows_rejected,
+            "tasks_received": run.tasks_received,
+            "tasks_created": run.tasks_created,
+            "tasks_updated": run.tasks_updated,
+            "tasks_unchanged": run.tasks_unchanged,
+            "tasks_deactivated": run.tasks_deactivated,
+            "tasks_rejected": run.tasks_rejected,
+            "duration_ms": run.duration_ms,
+            "error_code": run.error_code,
+            "diagnostic": run.diagnostic,
+            "project_results": [
+                {
+                    "project_id": row.project_id,
+                    "project_number": row.project_number,
+                    "status": row.status,
+                    "error_code": row.error_code,
+                    "reason_code": row.reason_code,
+                    "source_rows": row.source_rows,
+                    "source_rows_rejected": row.source_rows_rejected,
+                    "tasks_received": row.tasks_received,
+                    "created": row.created,
+                    "updated": row.updated,
+                    "unchanged": row.unchanged,
+                    "deactivated": row.deactivated,
+                    "rejected": row.rejected,
+                    "duration_ms": row.duration_ms,
+                }
+                for row in results
+            ],
+        }
 
     def _compat_payload(self, attempt_id: str) -> dict[str, Any]:
         payload = self._control.serialize_attempt(attempt_id)
