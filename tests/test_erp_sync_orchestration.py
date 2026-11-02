@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -49,7 +50,7 @@ class FailingProjectSource:
         raise RuntimeError("controlled project source failure")
 
 
-class MutableAutomaticSafety(TestErpSyncAutomaticSafetyCapability):
+class MutableAutomaticSafety:
     def __init__(self) -> None:
         self.available = True
 
@@ -182,9 +183,9 @@ class ErpSyncOrchestrationTests(unittest.TestCase):
             automatic_safety=capability,
         )
         control = SqlErpSyncControlRepository(self.factory)
-        fixed_now = __import__("datetime").datetime(
+        fixed_now = datetime(
             2026, 1, 15, 5, 37,
-            tzinfo=__import__("datetime").timezone.utc,
+            tzinfo=timezone.utc,
         )
         with patch(
             "app.infrastructure.sql.erp_sync_control_repository._sql_now",
