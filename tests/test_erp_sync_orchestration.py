@@ -17,6 +17,7 @@ from app.application.erp_sync_scheduler import ErpSyncSchedulerSettings
 from app.infrastructure.sql import (
     Base,
     ERP_ATTEMPT_FAILED,
+    ERP_ATTEMPT_SUCCEEDED,
     ERP_ATTEMPT_SUCCEEDED_WITH_ERRORS,
     ErpSyncControl,
     TaskCatalogEntry,
@@ -45,10 +46,26 @@ class FailingProjectSource:
         raise RuntimeError("controlled project source failure")
 
 
+class OrderedProjectSource(ProjectSource):
+    def __init__(self, rows, order: list[str]) -> None:
+        super().__init__(rows)
+        self.order = order
+
+    def list_projects(self):
+        self.order.append("projects")
+        return super().list_projects()
+
+
 class PortfolioTaskSource:
-    def __init__(self, snapshots: dict[str, TaskCatalogProjectSnapshot]) -> None:
+    def __init__(
+        self,
+        snapshots: dict[str, TaskCatalogProjectSnapshot],
+        *,
+        order: list[str] | None = None,
+    ) -> None:
         self.snapshots = snapshots
         self.batch_calls = 0
+        self.order = order
 
     def fetch_project_snapshots(
         self,
@@ -56,6 +73,8 @@ class PortfolioTaskSource:
         project_targets: tuple[tuple[str, str], ...],
     ) -> TaskCatalogPortfolioSnapshot:
         self.batch_calls += 1
+        if self.order is not None:
+            self.order.append("tasks")
         return TaskCatalogPortfolioSnapshot(
             source_rows=sum(
                 self.snapshots[number].source_rows
@@ -134,6 +153,30 @@ class ErpSyncOrchestrationTests(unittest.TestCase):
         )
         self.assertIsNotNone(attempt)
         return control, attempt
+
+    def test_global_workflow_executes_projects_before_tasks(self) -> None:
+        order: list[str] = []
+        source = OrderedProjectSource((project("A"),), order)
+        tasks = PortfolioTaskSource(
+            {"A": snapshot("A", (task("A", "1"),))},
+            order=order,
+        )
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=source,
+            project_task_source=tasks,
+            settings=self.settings,
+        )
+        control, attempt = self._attempt(key="projects-before-tasks")
+
+        orchestrator._execute_attempt(attempt.id, attempt.generation)
+
+        self.assertEqual(order, ["projects", "tasks"])
+        self.assertEqual(
+            control.get_attempt(attempt.id).status,
+            ERP_ATTEMPT_SUCCEEDED,
+        )
+        orchestrator.shutdown()
 
     def test_project_phase_failure_prevents_task_phase(self) -> None:
         tasks = PortfolioTaskSource({})
@@ -219,6 +262,42 @@ class ErpSyncOrchestrationTests(unittest.TestCase):
             [(row.project_number, row.task_code) for row in rows],
             [("A", "1"), ("C", "1")],
         )
+        occurrence = control.get_occurrence(attempt.occurrence_id)
+        self.assertIsNone(occurrence.success_attempt_id)
+        with self.factory() as session:
+            control_row = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+            self.assertIsNone(control_row.last_success_attempt_id)
+
+        tasks.snapshots["B"] = snapshot("B", (task("B", "1"),))
+        with patch.object(orchestrator, "_submit") as submit:
+            retry_payload = orchestrator.retry(
+                occurrence_id=attempt.occurrence_id,
+                actor_name="test-operator",
+                idempotency_key="abc-retry",
+            )
+        retry_attempt = control.get_attempt(str(retry_payload["run_id"]))
+        self.assertNotEqual(retry_attempt.id, attempt.id)
+        submit.assert_called_once_with(
+            retry_attempt.id,
+            retry_attempt.generation,
+        )
+
+        orchestrator._execute_attempt(
+            retry_attempt.id,
+            retry_attempt.generation,
+        )
+        retried = control.get_attempt(retry_attempt.id)
+        self.assertEqual(retried.status, ERP_ATTEMPT_SUCCEEDED)
+        self.assertEqual(
+            control.get_occurrence(attempt.occurrence_id).success_attempt_id,
+            retry_attempt.id,
+        )
+        with self.factory() as session:
+            control_row = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+            self.assertEqual(
+                control_row.last_success_attempt_id,
+                retry_attempt.id,
+            )
         orchestrator.shutdown()
 
     def test_task_business_mutation_and_project_result_are_atomic(self) -> None:
