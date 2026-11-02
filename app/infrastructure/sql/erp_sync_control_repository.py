@@ -229,7 +229,15 @@ class SqlErpSyncControlRepository:
     ) -> tuple[ErpSyncControl, datetime]:
         control = _lock_control(session)
         now = _sql_now(session)
-        _assert_control_protocol(control)
+        if int(control.protocol_version) != ERP_SYNC_PROTOCOL_VERSION:
+            raise ErpSyncFenceLost(
+                "Le protocole ERP du propriétaire n'est plus compatible.",
+                code="erp_sync_protocol_incompatible",
+                context={
+                    "attempt_id": attempt_id,
+                    "generation": int(generation),
+                },
+            )
         attempt = session.get(ErpSyncAttempt, attempt_id)
         occurrence = (
             session.get(ErpSyncOccurrence, attempt.occurrence_id)
@@ -551,6 +559,10 @@ class SqlErpSyncControlRepository:
                     or now < _utc_aware(occurrence.scheduled_at)
                     or now >= _automatic_deadline(occurrence, settings)
                 ):
+                    occurrence.status = ERP_OCCURRENCE_MISSED
+                    occurrence.diagnostic = (
+                        "Fenêtre de départ automatique figée dépassée."
+                    )
                     raise ApplicationConflictError(
                         "La fenêtre automatique figée de cette occurrence est fermée.",
                         code="erp_sync_automatic_window_closed",
