@@ -195,6 +195,8 @@ class SqlMigrationTests(unittest.TestCase):
                 for row in inspector.get_columns("erp_sync_attempts")
             }
             self.assertIn("command_identity", attempt_columns)
+            self.assertIn("trigger_kind", attempt_columns)
+            self.assertNotIn("trigger", attempt_columns)
             engine.dispose()
 
             command.downgrade(config, "0028_resource_residence_city")
