@@ -497,20 +497,48 @@ class ErpSyncOrchestrator:
             )
             raise
 
+    def _active_legacy_task_run(self) -> AcumaticaProjectTaskSyncRun | None:
+        with self._session_factory() as session:
+            row = session.scalar(
+                select(AcumaticaProjectTaskSyncRun)
+                .where(
+                    AcumaticaProjectTaskSyncRun.parent_attempt_id.is_(None),
+                    AcumaticaProjectTaskSyncRun.active_key == GLOBAL_SYNC_RUN_KEY,
+                    AcumaticaProjectTaskSyncRun.status.in_(
+                        {SYNC_RUN_PENDING, SYNC_RUN_RUNNING}
+                    ),
+                )
+                .order_by(AcumaticaProjectTaskSyncRun.created_at.desc())
+                .limit(1)
+            )
+            if row is not None:
+                session.expunge(row)
+            return row
+
     def _assert_sources(self, intent: str) -> None:
         if self._project_source is None and intent in {"PROJECTS_ONLY", "PROJECTS_AND_ACTIVE_TASKS"}:
             raise ApplicationUnavailableError(
                 "La synchronisation projets Acumatica n'est pas configurée.",
                 code="acumatica_not_configured",
             )
-        if (
+        task_intent = (
             intent in {"PROJECTS_AND_ACTIVE_TASKS", "ACTIVE_PROJECT_TASKS_ONLY"}
             or intent.startswith("TARGETED_PROJECT_TASKS")
-        ) and self._project_task_source is None:
+        )
+        if task_intent and self._project_task_source is None:
             raise ApplicationUnavailableError(
                 "La synchronisation des tâches projet Acumatica n'est pas configurée.",
                 code="acumatica_project_task_not_configured",
             )
+        if task_intent:
+            legacy = self._active_legacy_task_run()
+            if legacy is not None:
+                raise ApplicationConflictError(
+                    "Un run de tâches antérieur à 643A est encore actif; "
+                    "la nouvelle orchestration attend sa fin ou son échéance maximale.",
+                    code="erp_sync_legacy_task_run_active",
+                    context={"run_id": legacy.id},
+                )
 
     def _submit(self, attempt_id: str, generation: int) -> None:
         with self._launch_lock:
