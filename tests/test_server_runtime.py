@@ -15,6 +15,10 @@ from app.server.runtime import (
     CONFIG_ENCRYPTION_KEY_ENV,
     DATABASE_URL_ENV,
     DEV_USER_SWITCHER_ENV,
+    ERP_SYNC_CATCHUP_HOURS_ENV,
+    ERP_SYNC_ENABLED_ENV,
+    ERP_SYNC_TIME_ENV,
+    ERP_SYNC_TIMEZONE_ENV,
     HOST_ENV,
     LOCAL_AUTH_NAME_ENV,
     LOCAL_AUTH_ROLES_ENV,
@@ -53,6 +57,47 @@ class ServerRuntimeTests(unittest.TestCase):
         assert settings.auth_principal is not None
         self.assertEqual(settings.auth_principal.auth_mode, "local")
         self.assertEqual(settings.auth_principal.roles, (ROLE_ADMIN,))
+
+    def test_erp_scheduler_defaults_are_disabled_and_toronto_midnight(self) -> None:
+        settings = ServerSettings.from_environment(
+            {DATABASE_URL_ENV: "sqlite+pysqlite:///:memory:"}
+        )
+        self.assertFalse(settings.erp_sync.enabled)
+        self.assertEqual(settings.erp_sync.local_time.strftime("%H:%M"), "00:00")
+        self.assertEqual(settings.erp_sync.timezone_name, "America/Toronto")
+        self.assertEqual(settings.erp_sync.catchup_hours, 4)
+
+    def test_erp_scheduler_environment_is_parsed_and_invalid_timezone_fails_closed(self) -> None:
+        settings = ServerSettings.from_environment(
+            {
+                DATABASE_URL_ENV: "sqlite+pysqlite:///:memory:",
+                ERP_SYNC_ENABLED_ENV: "true",
+                ERP_SYNC_TIME_ENV: "01:30",
+                ERP_SYNC_TIMEZONE_ENV: "America/Toronto",
+                ERP_SYNC_CATCHUP_HOURS_ENV: "3",
+            }
+        )
+        self.assertTrue(settings.erp_sync.enabled)
+        self.assertEqual(settings.erp_sync.local_time.strftime("%H:%M"), "01:30")
+        self.assertEqual(settings.erp_sync.catchup_hours, 3)
+
+        with self.assertRaises(ServerConfigurationError) as caught:
+            ServerSettings.from_environment(
+                {
+                    DATABASE_URL_ENV: "sqlite+pysqlite:///:memory:",
+                    ERP_SYNC_TIMEZONE_ENV: "Invalid/Zone",
+                }
+            )
+        self.assertIn("Fuseau IANA", str(caught.exception))
+
+    def test_erp_scheduler_invalid_time_fails_closed(self) -> None:
+        with self.assertRaises(ServerConfigurationError):
+            ServerSettings.from_environment(
+                {
+                    DATABASE_URL_ENV: "sqlite+pysqlite:///:memory:",
+                    ERP_SYNC_TIME_ENV: "25:90",
+                }
+            )
 
     def test_environment_overrides_server_values_and_local_roles(self) -> None:
         settings = ServerSettings.from_environment(
