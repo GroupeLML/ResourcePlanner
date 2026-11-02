@@ -245,11 +245,15 @@ class ErpSyncOrchestrationTests(unittest.TestCase):
         self.assertIsNotNone(attempt)
 
         capability.available = False
-        orchestrator._execute_attempt(
-            attempt.id,
-            attempt.generation,
-            automatic=True,
-        )
+        with patch(
+            "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+            return_value=fixed_now,
+        ):
+            orchestrator._execute_attempt(
+                attempt.id,
+                attempt.generation,
+                automatic=True,
+            )
 
         self.assertEqual(source.calls, 0)
         self.assertEqual(
