@@ -202,7 +202,11 @@ class ErpSyncOrchestrator:
         }
         if not automatic_retry and occurrence.scheduled_at is not None:
             scheduled = _utc(occurrence.scheduled_at)
-            trigger = "SCHEDULED" if scheduled == now else "CATCHUP"
+            trigger = (
+                "SCHEDULED"
+                if now <= scheduled + timedelta(seconds=self._settings.poll_seconds)
+                else "CATCHUP"
+            )
         if automatic_retry:
             last_attempt = (
                 self._control.get_attempt(occurrence.last_attempt_id)
