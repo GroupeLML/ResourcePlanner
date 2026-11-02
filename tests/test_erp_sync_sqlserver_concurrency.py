@@ -8,13 +8,21 @@ import unittest
 
 from sqlalchemy import func, select, text
 
-from app.application.erp_sync_scheduler import ErpSyncSchedulerSettings
+from app.application.erp_sync_scheduler import (
+    ErpSyncSchedulerSettings,
+    TestErpSyncAutomaticSafetyCapability,
+    resolve_scheduled_instant,
+)
 from app.infrastructure.sql import (
+    AcumaticaProjectTaskSyncRun,
     ERP_ATTEMPT_INTERRUPTED,
     ERP_ATTEMPT_PENDING,
     ERP_OCCURRENCE_DAILY,
     ERP_OCCURRENCE_PENDING,
     ERP_SYNC_CONTROL_ROW_ID,
+    GLOBAL_SYNC_RUN_KEY,
+    SYNC_RUN_INTERRUPTED,
+    SYNC_RUN_RUNNING,
     ErpSyncAttempt,
     ErpSyncControl,
     ErpSyncOccurrence,
@@ -22,6 +30,7 @@ from app.infrastructure.sql import (
     create_sql_engine,
     transactional_session,
 )
+from app.server.erp_sync_orchestration import ErpSyncOrchestrator
 from app.infrastructure.sql.erp_sync_control_repository import (
     ErpSyncFenceLost,
     SqlErpSyncControlRepository,
@@ -38,7 +47,6 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.engine = create_sql_engine(DATABASE_URL)
         cls.factory = create_session_factory(cls.engine)
-        cls.settings = ErpSyncSchedulerSettings(enabled=False)
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -65,17 +73,34 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             control.last_success_attempt_id = None
             control.config_fingerprint = None
 
+        sql_now = SqlErpSyncControlRepository(self.factory).current_sql_time()
+        zone_settings = ErpSyncSchedulerSettings(enabled=True)
+        local_now = sql_now.astimezone(zone_settings.timezone())
+        self.settings = ErpSyncSchedulerSettings(
+            enabled=True,
+            local_time=local_now.time().replace(second=0, microsecond=0),
+            timezone_name=zone_settings.timezone_name,
+        )
+        self.automatic_safety = TestErpSyncAutomaticSafetyCapability()
+
     def _daily_occurrence(self) -> ErpSyncOccurrence:
+        now = SqlErpSyncControlRepository(self.factory).current_sql_time()
+        business_date = now.astimezone(self.settings.timezone()).date()
         with transactional_session(self.factory) as session:
             row = ErpSyncOccurrence(
-                occurrence_key="ERP_PROJECTS_TASKS_DAILY:2026-11-02",
+                occurrence_key=(
+                    "ERP_PROJECTS_TASKS_DAILY:" + business_date.isoformat()
+                ),
                 occurrence_type=ERP_OCCURRENCE_DAILY,
                 intent="PROJECTS_AND_ACTIVE_TASKS",
-                business_date=date(2026, 11, 2),
-                scheduled_at=datetime(2026, 11, 2, 5, 0, tzinfo=timezone.utc),
-                timezone_name="America/Toronto",
-                scheduled_local_time="00:00",
-                config_fingerprint="sqlserver-concurrency",
+                business_date=business_date,
+                scheduled_at=resolve_scheduled_instant(
+                    business_date,
+                    self.settings,
+                ),
+                timezone_name=self.settings.timezone_name,
+                scheduled_local_time=self.settings.local_time.strftime("%H:%M"),
+                config_fingerprint=self.settings.config_fingerprint,
                 status=ERP_OCCURRENCE_PENDING,
             )
             session.add(row)
@@ -95,6 +120,7 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
                 actor_name=actor,
                 settings=self.settings,
                 automatic=True,
+                automatic_safety=self.automatic_safety,
             )
 
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -145,18 +171,30 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
         self.assertEqual(occurrence_count, 1)
         self.assertEqual(attempt_count, 1)
 
-    def test_generation_takeover_fences_stale_worker(self) -> None:
+    def test_generation_takeover_releases_child_and_fences_all_stale_writes(self) -> None:
         occurrence = self._daily_occurrence()
         repository = SqlErpSyncControlRepository(self.factory)
         first = repository.claim(
             occurrence_id=occurrence.id,
-            trigger="SCHEDULED",
+            trigger="MANUAL",
             actor_name="backend-A",
             settings=self.settings,
         )
         self.assertIsNotNone(first)
 
         with transactional_session(self.factory) as session:
+            child = AcumaticaProjectTaskSyncRun(
+                id="SQL-CHILD-GEN-N",
+                active_key=GLOBAL_SYNC_RUN_KEY,
+                status=SYNC_RUN_RUNNING,
+                parent_attempt_id=first.id,
+                erp_generation=first.generation,
+                started_at=repository.current_sql_time(),
+            )
+            session.add(child)
+            stored_attempt = session.get(ErpSyncAttempt, first.id)
+            self.assertIsNotNone(stored_attempt)
+            stored_attempt.task_sync_run_id = child.id
             session.execute(
                 text(
                     "UPDATE erp_sync_control "
@@ -171,10 +209,38 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             trigger="RETRY",
             actor_name="backend-B",
             settings=self.settings,
-            command_identity="retry:sqlserver-takeover",
+            command_identity="retry:sqlserver-child-takeover",
         )
         self.assertIsNotNone(second)
         self.assertGreater(second.generation, first.generation)
+
+        with self.factory() as session:
+            stale_child = session.get(
+                AcumaticaProjectTaskSyncRun,
+                "SQL-CHILD-GEN-N",
+            )
+            self.assertIsNotNone(stale_child)
+            self.assertEqual(stale_child.status, SYNC_RUN_INTERRUPTED)
+            self.assertIsNone(stale_child.active_key)
+
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=None,
+            project_task_source=None,
+            settings=self.settings,
+        )
+        replacement_child_id = orchestrator._create_task_run(
+            second.id,
+            second.generation,
+        )
+        with self.factory() as session:
+            replacement = session.get(
+                AcumaticaProjectTaskSyncRun,
+                replacement_child_id,
+            )
+            self.assertIsNotNone(replacement)
+            self.assertEqual(replacement.active_key, GLOBAL_SYNC_RUN_KEY)
+            self.assertEqual(replacement.erp_generation, second.generation)
 
         with self.factory.begin() as stale_session:
             with self.assertRaises(ErpSyncFenceLost):
@@ -183,6 +249,24 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
                     attempt_id=first.id,
                     generation=first.generation,
                 )
+        with self.factory.begin() as stale_progress:
+            with self.assertRaises(ErpSyncFenceLost):
+                SqlErpSyncControlRepository.update_phase_in_session(
+                    stale_progress,
+                    attempt_id=first.id,
+                    generation=first.generation,
+                    phase="STALE_PROGRESS",
+                )
+        self.assertFalse(
+            repository.finish(
+                attempt_id=first.id,
+                generation=first.generation,
+                status="SUCCEEDED",
+                phase="PUBLICATION_COMMITTED",
+            )
+        )
+        orchestrator.shutdown()
+
 
     def test_healthy_peer_startup_does_not_interrupt_live_owner(self) -> None:
         occurrence = self._daily_occurrence()
