@@ -509,6 +509,25 @@ class ErpSyncControlTests(unittest.TestCase):
             control = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
             self.assertEqual(control.config_fingerprint, self.settings.config_fingerprint)
 
+        with self.assertRaises(ApplicationConflictError) as claim_error:
+            self.repository.claim(
+                occurrence_id=occurrence.id,
+                trigger="RETRY",
+                actor_name="incompatible-peer",
+                settings=incompatible,
+            )
+        self.assertEqual(
+            claim_error.exception.code,
+            "erp_sync_configuration_incompatible",
+        )
+        with self.factory() as session:
+            control = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+            self.assertEqual(control.owner_attempt_id, owner.id)
+            self.assertEqual(
+                control.config_fingerprint,
+                self.settings.config_fingerprint,
+            )
+
     def test_incompatible_local_settings_are_rejected_before_guarded_write(self) -> None:
         occurrence = self.repository.accept_manual(
             intent="PROJECTS_ONLY",
