@@ -295,6 +295,15 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
     "acumatica_project_task_sync_project_results": _rebuild(
         "Résultats techniques rattachés aux runs globaux; reconstruits par les prochains runs."
     ),
+    "erp_sync_control": _rebuild(
+        "Singleton technique de propriété/lease; recréé sur la cible avant redémarrage."
+    ),
+    "erp_sync_occurrences": _rebuild(
+        "État technique scheduler pré-cutover; aucun run ne doit traverser le cutover."
+    ),
+    "erp_sync_attempts": _rebuild(
+        "Tentatives techniques pré-cutover; aucun worker ne doit traverser le cutover."
+    ),
     "task_class_standards": _keep("Configuration locale des standards tâche → classe."),
 }
 
