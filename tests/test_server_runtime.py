@@ -5,7 +5,9 @@ import unittest
 from cryptography.fernet import Fernet
 from unittest.mock import patch
 
+from app.application.erp_sync_scheduler import ErpSyncSchedulerSettings
 from app.application.security import ROLE_ADMIN, ROLE_COORDINATOR
+from app.server import create_api_app
 from app.server.runtime import (
     ACTOR_NAME_ENV,
     ALLOW_LOCAL_AUTH_NETWORK_ENV,
@@ -98,6 +100,16 @@ class ServerRuntimeTests(unittest.TestCase):
                     ERP_SYNC_TIME_ENV: "25:90",
                 }
             )
+
+    def test_643a_enabled_scheduler_reports_missing_643b_capability(self) -> None:
+        app = create_api_app(
+            "sqlite+pysqlite:///:memory:",
+            erp_sync_settings=ErpSyncSchedulerSettings(enabled=True),
+        )
+        self.assertEqual(
+            app.state.erp_sync_activation_diagnostic,
+            "erp_sync_643b_safety_capability_unavailable",
+        )
 
     def test_environment_overrides_server_values_and_local_roles(self) -> None:
         settings = ServerSettings.from_environment(
