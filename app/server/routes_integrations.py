@@ -246,6 +246,9 @@ def build_integration_router(
                 "L'orchestration ERP n'est pas configurée sur ce serveur.",
                 code="erp_sync_orchestrator_not_configured",
             )
+        # The lookup/validation contract above is read-only. End that transaction
+        # before the orchestrator acquires the durable control row and writes.
+        session.rollback()
         with performance_phase("compute"):
             return erp_sync_orchestrator.run_targeted_project_tasks_compat(
                 project_id=project_id,
