@@ -120,6 +120,10 @@ class ErpSyncAttempt(TimestampMixin, Base):
             "attempt_number",
             name="uq_erp_sync_attempt_number",
         ),
+        UniqueConstraint(
+            "command_identity",
+            name="uq_erp_sync_attempt_command_identity",
+        ),
         Index("ix_erp_sync_attempt_occurrence", "occurrence_id"),
         Index("ix_erp_sync_attempt_status", "status"),
     )
@@ -134,6 +138,7 @@ class ErpSyncAttempt(TimestampMixin, Base):
     trigger: Mapped[str] = mapped_column(String(16), nullable=False)
     actor_name: Mapped[str] = mapped_column(String(255), nullable=False)
     intent: Mapped[str] = mapped_column(String(64), nullable=False)
+    command_identity: Mapped[str | None] = mapped_column(String(160), nullable=True)
     generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default=ERP_ATTEMPT_PENDING)
     phase: Mapped[str] = mapped_column(String(64), nullable=False, default="PREFLIGHT")
