@@ -44,7 +44,6 @@ from ..infrastructure.sql import (
     ERP_OCCURRENCE_SUCCEEDED,
     ERP_OCCURRENCE_SUCCEEDED_WITH_ERRORS,
     GLOBAL_SYNC_RUN_KEY,
-    Project,
     SqlPlannerQueryRepositoryWithLoadProfiles,
     SqlProjectSyncRepository,
     SqlSessionFactory,
@@ -74,19 +73,6 @@ class _PreloadedProjectSource:
 
     def list_projects(self):
         return self._projects
-
-
-class _PreloadedProjectTaskSource:
-    def __init__(self, snapshot: Any) -> None:
-        self._snapshot = snapshot
-
-    def fetch_project_snapshot(
-        self,
-        *,
-        project_external_id: str,
-        project_number: str,
-    ):
-        return self._snapshot
 
 
 def _utc(value: datetime | None) -> datetime | None:
@@ -418,132 +404,6 @@ class ErpSyncOrchestrator:
             if legacy is None:
                 return None
             return self._legacy_task_payload(session, legacy)
-
-    def run_projects_only_compat(self, *, actor_name: str) -> dict[str, int]:
-        """Compatibility adapter for legacy POST /projects/sync.
-
-        The mutation is still executed under the shared SQL control/fence. The
-        new asynchronous RUN_NOW endpoint is the preferred UI path.
-        """
-
-        self._assert_sources("PROJECTS_ONLY")
-        occurrence = self._control.accept_manual(
-            intent="PROJECTS_ONLY",
-            actor_name=actor_name,
-            idempotency_key=new_id(),
-            settings=self._settings,
-        )
-        attempt = self._control.claim(
-            occurrence_id=occurrence.id,
-            trigger="MANUAL",
-            actor_name=actor_name,
-            settings=self._settings,
-        )
-        if attempt is None:
-            raise ApplicationConflictError(
-                "La synchronisation projets n'a pas pu acquérir le contrôle ERP.",
-                code="erp_sync_command_not_claimed",
-            )
-        result = self._execute_projects(
-            attempt.id,
-            int(attempt.generation),
-        )
-        self._control.finish(
-            attempt_id=attempt.id,
-            generation=int(attempt.generation),
-            status=ERP_ATTEMPT_SUCCEEDED,
-            phase="PUBLICATION_COMMITTED",
-        )
-        return {
-            "received": int(result.received),
-            "created": int(result.created),
-            "updated": int(result.updated),
-            "unchanged": int(result.unchanged),
-        }
-
-    def run_targeted_project_tasks_compat(
-        self,
-        *,
-        project_id: str,
-        actor_name: str,
-    ):
-        self._assert_sources("TARGETED_PROJECT_TASKS")
-        occurrence = self._control.accept_manual(
-            intent=f"TARGETED_PROJECT_TASKS:{project_id}",
-            actor_name=actor_name,
-            idempotency_key=new_id(),
-            settings=self._settings,
-        )
-        attempt = self._control.claim(
-            occurrence_id=occurrence.id,
-            trigger="MANUAL",
-            actor_name=actor_name,
-            settings=self._settings,
-        )
-        if attempt is None:
-            raise ApplicationConflictError(
-                "La synchronisation ciblée n'a pas pu acquérir le contrôle ERP.",
-                code="erp_sync_command_not_claimed",
-            )
-        try:
-            with self._session_factory() as discovery:
-                project = discovery.get(Project, project_id)
-                if project is None:
-                    raise ApplicationNotFoundError(
-                        "Le projet demandé n'existe pas.",
-                        code="project_not_found",
-                        context={"project_id": project_id},
-                    )
-                project_external_id = str(project.erp_external_id or "").strip()
-                project_number = project.number
-            if not project_external_id:
-                raise ApplicationValidationError(
-                    "Ce projet local ne possède pas d'identifiant ERP.",
-                    code="task_catalog_project_external_id_required",
-                )
-            snapshot = self._project_task_source.fetch_project_snapshot(
-                project_external_id=project_external_id,
-                project_number=project_number,
-            )
-            with transactional_session(self._session_factory) as session:
-                SqlErpSyncControlRepository.guard_session(
-                    session,
-                    attempt_id=attempt.id,
-                    generation=int(attempt.generation),
-                )
-                repository = SqlTaskCatalogRepository(session)
-                result = TaskCatalogSyncService(
-                    _PreloadedProjectTaskSource(snapshot),
-                    repository,
-                    sync_metadata_repository=repository,
-                    workforce_policy=SqlTaskCatalogWorkforcePolicy(session),
-                ).synchronize_project(
-                    project_external_id=project_external_id,
-                    project_number=project_number,
-                )
-                SqlErpSyncControlRepository.update_phase_in_session(
-                    session,
-                    attempt_id=attempt.id,
-                    generation=int(attempt.generation),
-                    phase="TASKS_FINISHED",
-                )
-            self._control.finish(
-                attempt_id=attempt.id,
-                generation=int(attempt.generation),
-                status=ERP_ATTEMPT_SUCCEEDED,
-                phase="PUBLICATION_COMMITTED",
-            )
-            return result
-        except Exception:
-            self._control.finish(
-                attempt_id=attempt.id,
-                generation=int(attempt.generation),
-                status=ERP_ATTEMPT_FAILED,
-                phase="FAILED",
-                error_code="targeted_project_task_sync_failed",
-                diagnostic="La synchronisation ciblée des tâches a échoué.",
-            )
-            raise
 
     def _active_legacy_task_run(self) -> AcumaticaProjectTaskSyncRun | None:
         with self._session_factory() as session:
