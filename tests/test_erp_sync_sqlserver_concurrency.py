@@ -54,6 +54,10 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
 
     def setUp(self) -> None:
         with transactional_session(self.factory) as session:
+            session.execute(
+                text("DELETE FROM acumatica_project_task_sync_project_results")
+            )
+            session.execute(text("DELETE FROM acumatica_project_task_sync_runs"))
             session.execute(text("DELETE FROM erp_sync_attempts"))
             session.execute(text("DELETE FROM erp_sync_occurrences"))
             control = session.get(ErpSyncControl, ERP_SYNC_CONTROL_ROW_ID)
@@ -189,7 +193,7 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
                 status=SYNC_RUN_RUNNING,
                 parent_attempt_id=first.id,
                 erp_generation=first.generation,
-                started_at=repository.current_sql_time(),
+                started_at=datetime.now(timezone.utc),
             )
             session.add(child)
             stored_attempt = session.get(ErpSyncAttempt, first.id)
