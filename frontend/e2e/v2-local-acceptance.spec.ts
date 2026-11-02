@@ -2251,9 +2251,23 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   const shiftAssetPopup = coordinator.page.getByRole("dialog", { name: "Modifier le quart" });
   const shiftAssetRegion = shiftAssetPopup.getByRole("region", { name: "Actif" });
   await expect(shiftAssetRegion).toContainText("Aucun actif associé");
-  await expect(shiftAssetRegion).toContainText("Réservations liées à la demande");
-  await expect(shiftAssetRegion).toContainText("Nacelle #63");
-  await expect(shiftAssetRegion).toContainText("Nacelle #64");
+  const relatedAssets = shiftAssetRegion.locator(".shift-related-assets");
+  const relatedHeading = relatedAssets.locator("strong").first();
+  const nacelle63Reservation = relatedAssets.locator("div").filter({ hasText: "Nacelle #63" }).first();
+  const nacelle64Reservation = relatedAssets.locator("div").filter({ hasText: "Nacelle #64" }).first();
+  await expect(nacelle63Reservation).toContainText("Réservation de la demande");
+  await expect(nacelle64Reservation).toContainText("Réservation de la demande");
+
+  const inheritedVehicleReservations = relatedAssets.locator("div").filter({ hasText: /VEH-775-/ });
+  if (await inheritedVehicleReservations.count()) {
+    await expect(relatedHeading).toHaveText("Réservations liées ou héritées");
+    for (let index = 0; index < await inheritedVehicleReservations.count(); index += 1) {
+      await expect(inheritedVehicleReservations.nth(index)).toContainText("Héritée de la période ressource");
+    }
+  } else {
+    await expect(relatedHeading).toHaveText("Réservations liées à la demande");
+  }
+
   await expect(shiftAssetRegion.getByRole("button", { name: "Assigner un actif" })).toBeVisible();
   await shiftAssetPopup.getByRole("button", { name: "Fermer" }).click();
 
