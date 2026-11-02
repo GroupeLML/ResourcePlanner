@@ -475,7 +475,7 @@ class SqlErpSyncControlRepository:
                 attempt.heartbeat_at = now
             return True
 
-    def start_attempt(self, *, attempt_id: str, generation: int) -> None:
+    def start_attempt(self, *, attempt_id: str, generation: int) -> bool:
         with transactional_session(self._session_factory) as session:
             _control, now = self.guard_session(
                 session,
@@ -488,10 +488,12 @@ class SqlErpSyncControlRepository:
                     "Tentative de synchronisation ERP introuvable.",
                     code="erp_sync_attempt_not_found",
                 )
-            if attempt.status == ERP_ATTEMPT_PENDING:
-                attempt.status = ERP_ATTEMPT_RUNNING
-                attempt.started_at = now
-                attempt.heartbeat_at = now
+            if attempt.status != ERP_ATTEMPT_PENDING:
+                return False
+            attempt.status = ERP_ATTEMPT_RUNNING
+            attempt.started_at = now
+            attempt.heartbeat_at = now
+            return True
 
     @classmethod
     def update_phase_in_session(
