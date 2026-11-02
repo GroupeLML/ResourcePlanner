@@ -81,6 +81,10 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
             "auth_sessions": {
                 "auth_mode": None,
             },
+            "acumatica_project_task_sync_runs": {
+                "parent_attempt_id": None,
+                "erp_generation": None,
+            },
             "competencies": {
                 "resource_class_code": None,
                 "resource_class_version": 1,
