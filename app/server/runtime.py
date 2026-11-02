@@ -425,6 +425,10 @@ class ServerSettings:
                         or "unconfigured"
                     )
                     + "|RP_Projects|RP_ProjectTasks|DEPMO"
+                    + "|page_size="
+                    + (_text(values.get(ACUMATICA_PAGE_SIZE_ENV)) or "100")
+                    + "|timeout_seconds="
+                    + (_text(values.get(ACUMATICA_TIMEOUT_SECONDS_ENV)) or "30")
                 ),
             )
         except ErpSyncScheduleConfigurationError as exc:
