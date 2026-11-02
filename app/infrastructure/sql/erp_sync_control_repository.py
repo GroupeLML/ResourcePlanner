@@ -5,6 +5,7 @@ from hashlib import sha256
 import json
 
 from sqlalchemy import func, inspect, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ...application.erp_sync_scheduler import (
@@ -123,6 +124,27 @@ class SqlErpSyncControlRepository:
     def current_sql_time(self) -> datetime:
         with self._session_factory() as session:
             return _sql_now(session)
+
+    def ensure_control_row(self) -> None:
+        if not self.schema_available():
+            return
+        try:
+            with transactional_session(self._session_factory) as session:
+                if session.get(ErpSyncControl, ERP_SYNC_CONTROL_ROW_ID) is None:
+                    session.add(
+                        ErpSyncControl(
+                            id=ERP_SYNC_CONTROL_ROW_ID,
+                            generation=0,
+                            protocol_version=1,
+                        )
+                    )
+                    session.flush()
+        except IntegrityError:
+            # Concurrent backend startup may race on the singleton primary key.
+            # The migration/runtime invariant is satisfied once either insert wins.
+            with self._session_factory() as session:
+                if session.get(ErpSyncControl, ERP_SYNC_CONTROL_ROW_ID) is None:
+                    raise
 
     @staticmethod
     def guard_session(
