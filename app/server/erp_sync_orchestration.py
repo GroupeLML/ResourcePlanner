@@ -149,6 +149,7 @@ class ErpSyncOrchestrator:
         self._executor.shutdown(wait=False, cancel_futures=True)
 
     def reconcile_startup(self) -> int:
+        self._control.ensure_control_row()
         return self._control.reconcile_expired_owner()
 
     def scheduler_tick(self) -> dict[str, Any] | None:
@@ -294,7 +295,7 @@ class ErpSyncOrchestrator:
 
         current = self.current()
         if current is not None and current.get("status") in {"PENDING", "RUNNING"}:
-            if current.get("intent") == "PROJECTS_AND_ACTIVE_TASKS":
+            if current.get("intent") == "ACTIVE_PROJECT_TASKS_ONLY":
                 return current
             raise ApplicationConflictError(
                 "Une synchronisation ERP incompatible est déjà active.",
@@ -302,7 +303,7 @@ class ErpSyncOrchestrator:
                 context={"attempt_id": current.get("attempt_id")},
             )
         return self.run_now(
-            intent="PROJECTS_AND_ACTIVE_TASKS",
+            intent="ACTIVE_PROJECT_TASKS_ONLY",
             actor_name=actor_name,
             idempotency_key=new_id(),
         )
@@ -443,13 +444,13 @@ class ErpSyncOrchestrator:
             raise
 
     def _assert_sources(self, intent: str) -> None:
-        if self._project_source is None and not intent.startswith("TARGETED_PROJECT_TASKS"):
+        if self._project_source is None and intent in {"PROJECTS_ONLY", "PROJECTS_AND_ACTIVE_TASKS"}:
             raise ApplicationUnavailableError(
                 "La synchronisation projets Acumatica n'est pas configurée.",
                 code="acumatica_not_configured",
             )
         if (
-            intent == "PROJECTS_AND_ACTIVE_TASKS"
+            intent in {"PROJECTS_AND_ACTIVE_TASKS", "ACTIVE_PROJECT_TASKS_ONLY"}
             or intent.startswith("TARGETED_PROJECT_TASKS")
         ) and self._project_task_source is None:
             raise ApplicationUnavailableError(
@@ -506,15 +507,16 @@ class ErpSyncOrchestrator:
                 generation=generation,
             )
             attempt = self._control.get_attempt(attempt_id)
-            project_result = self._execute_projects(attempt_id, generation)
-            if attempt.intent == "PROJECTS_ONLY":
-                self._control.finish(
-                    attempt_id=attempt_id,
-                    generation=generation,
-                    status=ERP_ATTEMPT_SUCCEEDED,
-                    phase="PUBLICATION_COMMITTED",
-                )
-                return
+            if attempt.intent != "ACTIVE_PROJECT_TASKS_ONLY":
+                self._execute_projects(attempt_id, generation)
+                if attempt.intent == "PROJECTS_ONLY":
+                    self._control.finish(
+                        attempt_id=attempt_id,
+                        generation=generation,
+                        status=ERP_ATTEMPT_SUCCEEDED,
+                        phase="PUBLICATION_COMMITTED",
+                    )
+                    return
 
             task_status = self._execute_tasks(attempt_id, generation)
             parent_status = (
