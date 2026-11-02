@@ -524,12 +524,22 @@ def create_api_app(
     install_sql_performance_instrumentation(engine)
     factory = create_session_factory(engine)
     resolved_erp_sync_settings = erp_sync_settings or ErpSyncSchedulerSettings()
-    erp_sync_orchestrator = ErpSyncOrchestrator(
-        factory,
-        project_source=project_source,
-        project_task_source=project_task_source,
-        settings=resolved_erp_sync_settings,
-        automatic_safety=erp_sync_automatic_safety,
+    install_erp_sync_orchestrator = (
+        erp_sync_settings is not None
+        or project_source is not None
+        or project_task_source is not None
+        or erp_sync_automatic_safety is not None
+    )
+    erp_sync_orchestrator = (
+        ErpSyncOrchestrator(
+            factory,
+            project_source=project_source,
+            project_task_source=project_task_source,
+            settings=resolved_erp_sync_settings,
+            automatic_safety=erp_sync_automatic_safety,
+        )
+        if install_erp_sync_orchestrator
+        else None
     )
     session_dependency = make_session_dependency(factory)
     facade_dependency = make_facade_dependency(
@@ -609,10 +619,10 @@ def create_api_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        erp_sync_orchestrator.reconcile_startup()
         scheduler_task: asyncio.Task[None] | None = None
 
         async def scheduler_loop() -> None:
+            assert erp_sync_orchestrator is not None
             while True:
                 try:
                     await asyncio.to_thread(erp_sync_orchestrator.scheduler_tick)
@@ -622,11 +632,13 @@ def create_api_app(
                     pass
                 await asyncio.sleep(resolved_erp_sync_settings.poll_seconds)
 
-        if resolved_erp_sync_settings.enabled:
-            scheduler_task = asyncio.create_task(
-                scheduler_loop(),
-                name="erp-sync-scheduler",
-            )
+        if erp_sync_orchestrator is not None:
+            erp_sync_orchestrator.reconcile_startup()
+            if resolved_erp_sync_settings.enabled:
+                scheduler_task = asyncio.create_task(
+                    scheduler_loop(),
+                    name="erp-sync-scheduler",
+                )
         try:
             yield
         finally:
@@ -634,7 +646,8 @@ def create_api_app(
                 scheduler_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await scheduler_task
-            erp_sync_orchestrator.shutdown()
+            if erp_sync_orchestrator is not None:
+                erp_sync_orchestrator.shutdown()
             engine.dispose()
 
     app = FastAPI(
@@ -668,6 +681,8 @@ def create_api_app(
     app.state.erp_sync_orchestrator = erp_sync_orchestrator
     app.state.erp_sync_activation_diagnostic = (
         erp_sync_orchestrator.automatic_activation_diagnostic
+        if erp_sync_orchestrator is not None
+        else None
     )
     app.state.dev_user_switcher_enabled = dev_user_switcher_runtime is not None
 
