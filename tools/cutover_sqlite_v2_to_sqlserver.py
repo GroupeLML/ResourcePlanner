@@ -300,13 +300,13 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
         "Résultats techniques rattachés aux runs globaux; reconstruits par les prochains runs."
     ),
     "erp_sync_control": _rebuild(
-        "Singleton technique de propriété/lease; recréé sur la cible avant redémarrage."
+        "Singleton de contrôle recréé seulement si aucun watermark/owner/historique durable n'existe; sinon le cutover bloque."
     ),
     "erp_sync_occurrences": _rebuild(
-        "État technique scheduler pré-cutover; aucun run ne doit traverser le cutover."
+        "Table recréée seulement si vide; toute occurrence durable bloque le cutover jusqu'à un transfert supporté."
     ),
     "erp_sync_attempts": _rebuild(
-        "Tentatives techniques pré-cutover; aucun worker ne doit traverser le cutover."
+        "Table recréée seulement si vide; toute tentative durable bloque le cutover jusqu'à un transfert supporté."
     ),
     "task_class_standards": _keep("Configuration locale des standards tâche → classe."),
 }
@@ -1201,6 +1201,75 @@ def _validate_transferred_data(
     }
 
 
+def _scheduler_state_anomalies(source_engine: Engine) -> list[dict[str, Any]]:
+    inspector = inspect(source_engine)
+    detected = set(inspector.get_table_names())
+    relevant = {
+        "erp_sync_control",
+        "erp_sync_occurrences",
+        "erp_sync_attempts",
+    }
+    if not (detected & relevant):
+        return []
+
+    anomalies: list[dict[str, Any]] = []
+    with source_engine.connect() as connection:
+        if "erp_sync_occurrences" in detected:
+            count = int(
+                connection.exec_driver_sql(
+                    'SELECT COUNT(*) FROM "erp_sync_occurrences"'
+                ).scalar_one()
+            )
+            if count:
+                anomalies.append(
+                    {
+                        "code": "erp_sync_occurrences_populated",
+                        "severity": "BLOCKING",
+                        "table": "erp_sync_occurrences",
+                        "row_count": count,
+                    }
+                )
+        if "erp_sync_attempts" in detected:
+            count = int(
+                connection.exec_driver_sql(
+                    'SELECT COUNT(*) FROM "erp_sync_attempts"'
+                ).scalar_one()
+            )
+            if count:
+                anomalies.append(
+                    {
+                        "code": "erp_sync_attempts_populated",
+                        "severity": "BLOCKING",
+                        "table": "erp_sync_attempts",
+                        "row_count": count,
+                    }
+                )
+        if "erp_sync_control" in detected:
+            rows = list(
+                connection.exec_driver_sql(
+                    'SELECT generation, owner_attempt_id, '
+                    'last_evaluated_business_date, last_success_attempt_id '
+                    'FROM "erp_sync_control"'
+                ).mappings()
+            )
+            for row in rows:
+                if (
+                    int(row.get("generation") or 0) > 0
+                    or row.get("owner_attempt_id")
+                    or row.get("last_evaluated_business_date")
+                    or row.get("last_success_attempt_id")
+                ):
+                    anomalies.append(
+                        {
+                            "code": "erp_sync_control_durable_state_populated",
+                            "severity": "BLOCKING",
+                            "table": "erp_sync_control",
+                        }
+                    )
+                    break
+    return anomalies
+
+
 def _copy_source_inventory(
     source_engine: Engine,
     *,
@@ -1343,6 +1412,14 @@ def run_cutover(
         payload["source"]["compatibility_adaptations"] = compatibility_adaptations
         if _blocking(payload["anomalies"]):
             raise CutoverBlocked("Le schéma/source SQLite n'est pas compatible avec le mapping #492.")
+
+        payload["anomalies"].extend(
+            _scheduler_state_anomalies(source_engine)
+        )
+        if _blocking(payload["anomalies"]):
+            raise CutoverBlocked(
+                "Un état scheduler ERP durable est présent; le transfert doit être pris en charge explicitement avant cutover."
+            )
 
         source_rows, source_counts = _copy_source_inventory(
             source_engine,
