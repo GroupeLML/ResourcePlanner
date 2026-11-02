@@ -225,6 +225,16 @@ jobs:
           print("pyodbc:", pyodbc.version)
           print("ODBC drivers:", drivers)
           PY
+      - name: Validate packaged Toronto IANA timezone data
+        run: |
+          docker compose exec -T backend python - <<'PY'
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+
+          zone = ZoneInfo("America/Toronto")
+          assert datetime(2026, 1, 15, 0, 0, tzinfo=zone).utcoffset() is not None
+          print("timezone:", zone.key)
+          PY
       - name: Assert opt-in services stay out of normal startup
         run: |
           ! docker compose ps --all --services | grep -qx 'dev-cockpit'
