@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from decimal import Decimal
 from tempfile import TemporaryDirectory
 from threading import Event
@@ -532,15 +533,16 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
         )
         self.assertEqual(body["projects_processed"], 0)
 
-    def test_startup_reconciles_interrupted_run_and_allows_new_launch(self) -> None:
+    def test_startup_preserves_healthy_legacy_run_and_reuses_current_launch(self) -> None:
         engine = create_sql_engine(self.database_url)
         factory = create_session_factory(engine)
         with factory.begin() as session:
             session.add(
                 AcumaticaProjectTaskSyncRun(
-                    id="INTERRUPTED-RUN",
+                    id="LEGACY-HEALTHY-RUN",
                     active_key="GLOBAL",
                     status="RUNNING",
+                    started_at=datetime.now(timezone.utc),
                 )
             )
         engine.dispose()
@@ -554,14 +556,51 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
         path = "/api/v1/integrations/acumatica/projects/tasks/sync"
 
         with TestClient(app) as client:
-            interrupted = client.get(f"{path}/INTERRUPTED-RUN")
-            self.assertEqual(interrupted.status_code, 200)
-            self.assertEqual(interrupted.json()["status"], "INTERRUPTED")
-            self.assertEqual(interrupted.json()["error_code"], "backend_restarted")
+            healthy = client.get(f"{path}/LEGACY-HEALTHY-RUN")
+            self.assertEqual(healthy.status_code, 200)
+            self.assertEqual(healthy.json()["status"], "RUNNING")
 
             launch = client.post(path)
             self.assertEqual(launch.status_code, 202)
-            self.assertNotEqual(launch.json()["run_id"], "INTERRUPTED-RUN")
+            self.assertEqual(launch.json()["run_id"], "LEGACY-HEALTHY-RUN")
+            self.assertEqual(launch.json()["status"], "RUNNING")
+
+        self.assertEqual(source.batch_calls, [])
+
+    def test_startup_reconciles_only_expired_legacy_run_and_allows_new_launch(self) -> None:
+        engine = create_sql_engine(self.database_url)
+        factory = create_session_factory(engine)
+        with factory.begin() as session:
+            session.add(
+                AcumaticaProjectTaskSyncRun(
+                    id="LEGACY-EXPIRED-RUN",
+                    active_key="GLOBAL",
+                    status="RUNNING",
+                    started_at=datetime(2000, 1, 1, tzinfo=timezone.utc),
+                )
+            )
+        engine.dispose()
+
+        source = BatchProjectTaskSource(self._global_snapshots())
+        app = create_api_app(
+            self.database_url,
+            auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            project_task_source=source,
+        )
+        path = "/api/v1/integrations/acumatica/projects/tasks/sync"
+
+        with TestClient(app) as client:
+            interrupted = client.get(f"{path}/LEGACY-EXPIRED-RUN")
+            self.assertEqual(interrupted.status_code, 200)
+            self.assertEqual(interrupted.json()["status"], "INTERRUPTED")
+            self.assertEqual(
+                interrupted.json()["error_code"],
+                "legacy_owner_deadline_expired",
+            )
+
+            launch = client.post(path)
+            self.assertEqual(launch.status_code, 202)
+            self.assertNotEqual(launch.json()["run_id"], "LEGACY-EXPIRED-RUN")
             self._wait_for_run(client, launch.json()["run_id"])
 
     def test_global_sync_can_complete_without_project_errors(self) -> None:
