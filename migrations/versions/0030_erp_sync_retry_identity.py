@@ -20,17 +20,19 @@ def upgrade() -> None:
         "erp_sync_attempts",
         sa.Column("command_identity", sa.String(length=160), nullable=True),
     )
-    op.create_unique_constraint(
-        "uq_erp_sync_attempt_command_identity",
+    op.create_index(
+        "ux_erp_sync_attempt_command_identity_not_null",
         "erp_sync_attempts",
         ["command_identity"],
+        unique=True,
+        sqlite_where=sa.text("command_identity IS NOT NULL"),
+        mssql_where=sa.text("command_identity IS NOT NULL"),
     )
 
 
 def downgrade() -> None:
-    op.drop_constraint(
-        "uq_erp_sync_attempt_command_identity",
-        "erp_sync_attempts",
-        type_="unique",
+    op.drop_index(
+        "ux_erp_sync_attempt_command_identity_not_null",
+        table_name="erp_sync_attempts",
     )
     op.drop_column("erp_sync_attempts", "command_identity")
