@@ -89,7 +89,7 @@ def upgrade() -> None:
         sa.Column("id", sa.String(length=36), nullable=False),
         sa.Column("occurrence_id", sa.String(length=36), nullable=False),
         sa.Column("attempt_number", sa.Integer(), nullable=False),
-        sa.Column("trigger", sa.String(length=16), nullable=False),
+        sa.Column("trigger_kind", sa.String(length=16), nullable=False),
         sa.Column("actor_name", sa.String(length=255), nullable=False),
         sa.Column("intent", sa.String(length=64), nullable=False),
         sa.Column("generation", sa.BigInteger(), nullable=False),
@@ -108,7 +108,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.CheckConstraint(
-            "trigger IN ('SCHEDULED','CATCHUP','MANUAL','RETRY')",
+            "trigger_kind IN ('SCHEDULED','CATCHUP','MANUAL','RETRY')",
             name="ck_erp_sync_attempt_trigger_values",
         ),
         sa.CheckConstraint(
