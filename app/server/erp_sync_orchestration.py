@@ -700,36 +700,6 @@ class ErpSyncOrchestrator:
                 ).list_projects(active_only=False)
             )
 
-        project_targets = tuple(
-            (str(project.erp_external_id).strip(), project.number)
-            for project in projects
-            if project.active and str(project.erp_external_id or "").strip()
-        )
-        snapshots: dict[str, Any] = {}
-        source_requests = 0
-        source_rows = 0
-        source_duration = 0
-        if project_targets:
-            fetch_many = getattr(self._project_task_source, "fetch_project_snapshots", None)
-            if not callable(fetch_many):
-                raise ApplicationUnavailableError(
-                    "La lecture globale batch RP_ProjectTasks n'est pas disponible.",
-                    code="acumatica_project_task_batch_required",
-                )
-            started = perf_counter()
-            portfolio = fetch_many(project_targets=project_targets)
-            source_duration = max(0, int((perf_counter() - started) * 1000))
-            source_requests = int(portfolio.source_pages)
-            source_rows = int(portfolio.source_rows)
-            for snapshot in portfolio.snapshots:
-                number = str(snapshot.project_number or "").strip()
-                if number in snapshots:
-                    raise ApplicationValidationError(
-                        "La lecture globale contient plusieurs snapshots pour le même projet.",
-                        code="task_catalog_batch_duplicate_project",
-                    )
-                snapshots[number] = snapshot
-
         run_id = self._create_task_run(attempt_id, generation)
         with transactional_session(self._session_factory) as session:
             SqlErpSyncControlRepository.guard_session(
@@ -741,42 +711,127 @@ class ErpSyncOrchestrator:
             if run is None:
                 raise RuntimeError("Run tâches enfant introuvable.")
             run.projects_total = len(projects)
-            run.source_requests = source_requests
-            run.source_rows_scanned = source_rows
-            run.source_read_duration_ms = source_duration
 
-        for project in projects:
-            self._process_task_project(
+        try:
+            project_targets = tuple(
+                (str(project.erp_external_id).strip(), project.number)
+                for project in projects
+                if project.active and str(project.erp_external_id or "").strip()
+            )
+            snapshots: dict[str, Any] = {}
+            source_requests = 0
+            source_rows = 0
+            source_duration = 0
+            if project_targets:
+                fetch_many = getattr(
+                    self._project_task_source,
+                    "fetch_project_snapshots",
+                    None,
+                )
+                if not callable(fetch_many):
+                    raise ApplicationUnavailableError(
+                        "La lecture globale batch RP_ProjectTasks n'est pas disponible.",
+                        code="acumatica_project_task_batch_required",
+                    )
+                started = perf_counter()
+                portfolio = fetch_many(project_targets=project_targets)
+                source_duration = max(
+                    0,
+                    int((perf_counter() - started) * 1000),
+                )
+                source_requests = int(portfolio.source_pages)
+                source_rows = int(portfolio.source_rows)
+                for snapshot in portfolio.snapshots:
+                    number = str(snapshot.project_number or "").strip()
+                    if number in snapshots:
+                        raise ApplicationValidationError(
+                            "La lecture globale contient plusieurs snapshots pour le même projet.",
+                            code="task_catalog_batch_duplicate_project",
+                        )
+                    snapshots[number] = snapshot
+
+            with transactional_session(self._session_factory) as session:
+                SqlErpSyncControlRepository.guard_session(
+                    session,
+                    attempt_id=attempt_id,
+                    generation=generation,
+                )
+                run = session.get(AcumaticaProjectTaskSyncRun, run_id)
+                if run is None:
+                    raise RuntimeError("Run tâches enfant introuvable.")
+                run.source_requests = source_requests
+                run.source_rows_scanned = source_rows
+                run.source_read_duration_ms = source_duration
+
+            for project in projects:
+                self._process_task_project(
+                    run_id,
+                    attempt_id,
+                    generation,
+                    project,
+                    snapshots,
+                )
+
+            with transactional_session(self._session_factory) as session:
+                SqlErpSyncControlRepository.guard_session(
+                    session,
+                    attempt_id=attempt_id,
+                    generation=generation,
+                )
+                run = session.get(AcumaticaProjectTaskSyncRun, run_id)
+                if run is None:
+                    raise RuntimeError("Run tâches enfant introuvable.")
+                run.status = (
+                    SYNC_RUN_COMPLETED_WITH_ERRORS
+                    if run.projects_rejected
+                    else SYNC_RUN_COMPLETED
+                )
+                run.active_key = None
+                run.finished_at = utc_now()
+                SqlErpSyncControlRepository.update_phase_in_session(
+                    session,
+                    attempt_id=attempt_id,
+                    generation=generation,
+                    phase="TASKS_FINISHED",
+                )
+                return run.status
+        except Exception:
+            self._fail_task_run(
                 run_id,
-                attempt_id,
-                generation,
-                project,
-                snapshots,
+                attempt_id=attempt_id,
+                generation=generation,
             )
+            raise
 
-        with transactional_session(self._session_factory) as session:
-            SqlErpSyncControlRepository.guard_session(
-                session,
-                attempt_id=attempt_id,
-                generation=generation,
-            )
-            run = session.get(AcumaticaProjectTaskSyncRun, run_id)
-            if run is None:
-                raise RuntimeError("Run tâches enfant introuvable.")
-            run.status = (
-                SYNC_RUN_COMPLETED_WITH_ERRORS
-                if run.projects_rejected
-                else SYNC_RUN_COMPLETED
-            )
-            run.active_key = None
-            run.finished_at = utc_now()
-            SqlErpSyncControlRepository.update_phase_in_session(
-                session,
-                attempt_id=attempt_id,
-                generation=generation,
-                phase="TASKS_FINISHED",
-            )
-            return run.status
+    def _fail_task_run(
+        self,
+        run_id: str,
+        *,
+        attempt_id: str,
+        generation: int,
+    ) -> None:
+        try:
+            with transactional_session(self._session_factory) as session:
+                SqlErpSyncControlRepository.guard_session(
+                    session,
+                    attempt_id=attempt_id,
+                    generation=generation,
+                )
+                run = session.get(AcumaticaProjectTaskSyncRun, run_id)
+                if run is None or run.status not in {
+                    SYNC_RUN_PENDING,
+                    SYNC_RUN_RUNNING,
+                }:
+                    return
+                run.status = SYNC_RUN_FAILED
+                run.active_key = None
+                run.finished_at = utc_now()
+                run.error_code = "acumatica_project_task_read_failed"
+                run.diagnostic = (
+                    "La synchronisation globale des tâches n'a pas pu être exécutée."
+                )
+        except ErpSyncFenceLost:
+            return
 
     def _process_task_project(
         self,
