@@ -522,9 +522,10 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
 
     def test_global_sync_blocks_distinct_incompatible_healthy_owner(self) -> None:
         settings = ErpSyncSchedulerSettings()
-        control = SqlErpSyncControlRepository(
-            create_session_factory(create_sql_engine(self.database_url))
-        )
+        engine = create_sql_engine(self.database_url)
+        factory = create_session_factory(engine)
+        control = SqlErpSyncControlRepository(factory)
+        control.ensure_control_row()
         occurrence = control.accept_manual(
             intent="PROJECTS_ONLY",
             actor_name="independent-owner",
@@ -538,6 +539,7 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
             settings=settings,
         )
         self.assertIsNotNone(owner)
+        engine.dispose()
 
         source = BatchProjectTaskSource(self._global_snapshots())
         app = create_api_app(
