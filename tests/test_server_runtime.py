@@ -8,6 +8,9 @@ from unittest.mock import patch
 from app.application.security import ROLE_ADMIN, ROLE_COORDINATOR
 from app.server.runtime import (
     ACTOR_NAME_ENV,
+    ACUMATICA_BASE_URL_ENV,
+    ACUMATICA_PASSWORD_ENV,
+    ACUMATICA_USERNAME_ENV,
     ALLOW_LOCAL_AUTH_NETWORK_ENV,
     API_DOCS_ENABLED_ENV,
     AUTH_MODE_ENV,
@@ -98,6 +101,26 @@ class ServerRuntimeTests(unittest.TestCase):
                     ERP_SYNC_CATCHUP_HOURS_ENV: "13",
                 }
             )
+
+    def test_erp_scheduler_source_identity_excludes_credentials_and_query_secrets(self) -> None:
+        settings = ServerSettings.from_environment(
+            {
+                DATABASE_URL_ENV: "sqlite+pysqlite:///:memory:",
+                ACUMATICA_BASE_URL_ENV: (
+                    "https://embedded-user:embedded-secret@ERP.EXAMPLE.test/"
+                    "Instance?token=hidden"
+                ),
+                ACUMATICA_USERNAME_ENV: "configured-user",
+                ACUMATICA_PASSWORD_ENV: "configured-secret",
+            }
+        )
+        identity = settings.erp_sync.source_identity
+        self.assertIn("https://erp.example.test/Instance", identity)
+        self.assertNotIn("embedded-user", identity)
+        self.assertNotIn("embedded-secret", identity)
+        self.assertNotIn("token", identity)
+        self.assertNotIn("configured-user", identity)
+        self.assertNotIn("configured-secret", identity)
 
     def test_erp_scheduler_invalid_time_fails_closed(self) -> None:
         with self.assertRaises(ServerConfigurationError):
