@@ -190,10 +190,25 @@ class ErpSyncOrchestrator:
         if self._closed or not self._control.schema_available():
             return None
 
-        occurrence = self._control.record_daily_decision(
-            self._settings,
-            self._automatic_safety,
-        )
+        try:
+            occurrence = self._control.record_daily_decision(
+                self._settings,
+                self._automatic_safety,
+            )
+        except ApplicationConflictError as exc:
+            if exc.code in {
+                "erp_sync_configuration_incompatible",
+                "erp_sync_protocol_incompatible",
+            }:
+                logger.warning(
+                    "ERP scheduler compatibility block code=%s",
+                    exc.code,
+                )
+                return {
+                    "status": "BLOCKED",
+                    "diagnostic": exc.code,
+                }
+            raise
         if occurrence is None:
             return None
         if occurrence.status in {
@@ -255,7 +270,17 @@ class ErpSyncOrchestrator:
                 automatic=True,
                 automatic_safety=self._automatic_safety,
             )
-        except ApplicationConflictError:
+        except ApplicationConflictError as exc:
+            if exc.code in {
+                "erp_sync_configuration_incompatible",
+                "erp_sync_occurrence_configuration_incompatible",
+                "erp_sync_protocol_incompatible",
+                "erp_sync_automatic_safety_unavailable",
+            }:
+                return {
+                    "status": "BLOCKED",
+                    "diagnostic": exc.code,
+                }
             return None
         if attempt is None:
             return None
