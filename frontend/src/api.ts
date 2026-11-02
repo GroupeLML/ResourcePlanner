@@ -76,6 +76,10 @@ export type GlobalProjectTaskSyncResult = {
   duration_ms: number | null;
   error_code: string | null;
   diagnostic: string | null;
+  project_received?: number;
+  projects_created?: number;
+  projects_updated?: number;
+  projects_unchanged?: number;
   project_results: Array<{
     project_id: string;
     project_number: string;
