@@ -146,7 +146,9 @@ class ErpSyncOrchestrator:
 
     def shutdown(self) -> None:
         self._closed = True
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        # Drain local work before FastAPI disposes the engine. This does not
+        # revoke or shorten the durable SQL lease and never touches a peer's owner.
+        self._executor.shutdown(wait=True, cancel_futures=True)
 
     def reconcile_startup(self) -> int:
         self._control.ensure_control_row()
@@ -317,6 +319,22 @@ class ErpSyncOrchestrator:
             )
         self._submit(attempt.id, int(attempt.generation))
         return self._compat_payload(attempt.id)
+
+    def launch_projects(self, *, actor_name: str = "api") -> dict[str, Any]:
+        current = self.current()
+        if current is not None and current.get("status") in {"PENDING", "RUNNING"}:
+            if current.get("intent") == "PROJECTS_ONLY":
+                return current
+            raise ApplicationConflictError(
+                "Une synchronisation ERP incompatible est déjà active.",
+                code="erp_sync_run_active",
+                context={"attempt_id": current.get("attempt_id")},
+            )
+        return self.run_now(
+            intent="PROJECTS_ONLY",
+            actor_name=actor_name,
+            idempotency_key=new_id(),
+        )
 
     def launch(self, *, actor_name: str = "api") -> dict[str, Any]:
         """Compatibility for the existing global tasks button.
@@ -571,23 +589,24 @@ class ErpSyncOrchestrator:
 
     def _execute_attempt(self, attempt_id: str, generation: int) -> None:
         stop = Event()
-        heartbeat = Thread(
-            target=self._heartbeat,
-            kwargs={
-                "stop": stop,
-                "attempt_id": attempt_id,
-                "generation": generation,
-            },
-            name=f"erp-sync-heartbeat-{attempt_id[:8]}",
-            daemon=True,
-        )
-        heartbeat.start()
+        heartbeat: Thread | None = None
         try:
             if not self._control.start_attempt(
                 attempt_id=attempt_id,
                 generation=generation,
             ):
                 return
+            heartbeat = Thread(
+                target=self._heartbeat,
+                kwargs={
+                    "stop": stop,
+                    "attempt_id": attempt_id,
+                    "generation": generation,
+                },
+                name=f"erp-sync-heartbeat-{attempt_id[:8]}",
+                daemon=True,
+            )
+            heartbeat.start()
             attempt = self._control.get_attempt(attempt_id)
             if attempt.intent != "ACTIVE_PROJECT_TASKS_ONLY":
                 self._execute_projects(attempt_id, generation)
@@ -651,7 +670,8 @@ class ErpSyncOrchestrator:
             )
         finally:
             stop.set()
-            heartbeat.join(timeout=1.0)
+            if heartbeat is not None:
+                heartbeat.join(timeout=1.0)
 
     def _execute_projects(self, attempt_id: str, generation: int):
         if self._project_source is None:
@@ -824,6 +844,16 @@ class ErpSyncOrchestrator:
                 )
                 run.active_key = None
                 run.finished_at = utc_now()
+                if run.started_at is not None:
+                    run.duration_ms = max(
+                        0,
+                        int(
+                            (
+                                _utc(run.finished_at) - _utc(run.started_at)
+                            ).total_seconds()
+                            * 1000
+                        ),
+                    )
                 SqlErpSyncControlRepository.update_phase_in_session(
                     session,
                     attempt_id=attempt_id,
@@ -862,6 +892,16 @@ class ErpSyncOrchestrator:
                 run.status = SYNC_RUN_FAILED
                 run.active_key = None
                 run.finished_at = utc_now()
+                if run.started_at is not None:
+                    run.duration_ms = max(
+                        0,
+                        int(
+                            (
+                                _utc(run.finished_at) - _utc(run.started_at)
+                            ).total_seconds()
+                            * 1000
+                        ),
+                    )
                 run.error_code = "acumatica_project_task_read_failed"
                 run.diagnostic = (
                     "La synchronisation globale des tâches n'a pas pu être exécutée."
