@@ -584,10 +584,11 @@ class ErpSyncOrchestrator:
         )
         heartbeat.start()
         try:
-            self._control.start_attempt(
+            if not self._control.start_attempt(
                 attempt_id=attempt_id,
                 generation=generation,
-            )
+            ):
+                return
             attempt = self._control.get_attempt(attempt_id)
             if attempt.intent != "ACTIVE_PROJECT_TASKS_ONLY":
                 self._execute_projects(attempt_id, generation)
