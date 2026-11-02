@@ -21,7 +21,7 @@ MIGRATIONS = ROOT / "migrations"
 VERSIONS = MIGRATIONS / "versions"
 BASELINE_FILE = VERSIONS / "0001_v2_production_baseline.py"
 BASELINE_REVISION = "v2_production_baseline"
-HEAD_REVISION = "0028_resource_residence_city"
+HEAD_REVISION = "0030_erp_sync_retry_identity"
 
 
 def alembic_config(database_path: Path) -> Config:
@@ -97,6 +97,8 @@ class SqlMigrationTests(unittest.TestCase):
                 "0026_request_work_queue_restorations.py",
                 "0027_placement_not_before_date.py",
                 "0028_resource_residence_city.py",
+                "0029_erp_sync_scheduler_control.py",
+                "0030_erp_sync_retry_identity.py",
             ],
         )
 
@@ -115,6 +117,8 @@ class SqlMigrationTests(unittest.TestCase):
             [revision.revision for revision in script.walk_revisions()],
             [
                 HEAD_REVISION,
+                "0029_erp_sync_scheduler_control",
+                "0028_resource_residence_city",
                 "0027_placement_not_before_date",
                 "0026_request_work_queue_restorations",
                 "0025_request_work_queue_architect_corrections",
