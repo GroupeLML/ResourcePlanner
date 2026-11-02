@@ -170,13 +170,23 @@ def _erp_sync_source_identity(values: Mapping[str, str]) -> str:
         )
     else:
         safe_base = "unconfigured"
+    page_size = _positive_int(
+        values.get(ACUMATICA_PAGE_SIZE_ENV),
+        default=100,
+        label=ACUMATICA_PAGE_SIZE_ENV,
+        maximum=10000,
+    )
+    timeout_seconds = _positive_float(
+        values.get(ACUMATICA_TIMEOUT_SECONDS_ENV),
+        default=30.0,
+        label=ACUMATICA_TIMEOUT_SECONDS_ENV,
+        maximum=120.0,
+    )
     return (
         f"acumatica:{safe_base}"
         "|RP_Projects|RP_ProjectTasks|DEPMO"
-        "|page_size="
-        + (_text(values.get(ACUMATICA_PAGE_SIZE_ENV)) or "100")
-        + "|timeout_seconds="
-        + (_text(values.get(ACUMATICA_TIMEOUT_SECONDS_ENV)) or "30")
+        f"|page_size={page_size}"
+        f"|timeout_seconds={timeout_seconds:g}"
     )
 
 
