@@ -61,6 +61,7 @@ from ..infrastructure.sql.base import new_id, utc_now
 from ..infrastructure.sql.erp_sync_control_repository import (
     ErpSyncFenceLost,
     SqlErpSyncControlRepository,
+    retry_command_identity,
 )
 
 
@@ -172,7 +173,7 @@ class ErpSyncOrchestrator:
                 "diagnostic": occurrence.diagnostic,
             }
 
-        now = datetime.now(timezone.utc)
+        now = self._control.current_sql_time()
         trigger = "CATCHUP"
         automatic_retry = occurrence.status in {
             ERP_OCCURRENCE_FAILED,
@@ -259,6 +260,7 @@ class ErpSyncOrchestrator:
         *,
         occurrence_id: str,
         actor_name: str,
+        idempotency_key: str,
     ) -> dict[str, Any]:
         occurrence = self._control.get_occurrence(occurrence_id)
         self._assert_sources(occurrence.intent)
@@ -269,6 +271,11 @@ class ErpSyncOrchestrator:
             trigger="RETRY",
             actor_name=actor_name,
             settings=self._settings,
+            command_identity=retry_command_identity(
+                actor_name=actor_name,
+                occurrence_id=occurrence.id,
+                idempotency_key=idempotency_key,
+            ),
         )
         if attempt is None:
             raise ApplicationConflictError(
