@@ -336,6 +336,36 @@ class ErpSyncOrchestrator:
             idempotency_key=new_id(),
         )
 
+    def launch_targeted_project_tasks(
+        self,
+        *,
+        project_id: str,
+        actor_name: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        self._assert_sources(f"TARGETED_PROJECT_TASKS:{project_id}")
+        occurrence = self._control.accept_manual(
+            intent=f"TARGETED_PROJECT_TASKS:{project_id}",
+            actor_name=actor_name,
+            idempotency_key=idempotency_key,
+            settings=self._settings,
+        )
+        if occurrence.last_attempt_id:
+            return self._compat_payload(occurrence.last_attempt_id)
+        attempt = self._control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name=actor_name,
+            settings=self._settings,
+        )
+        if attempt is None:
+            raise ApplicationConflictError(
+                "La synchronisation ciblée n'a pas pu créer de tentative.",
+                code="erp_sync_command_not_claimed",
+            )
+        self._submit(attempt.id, int(attempt.generation))
+        return self._compat_payload(attempt.id)
+
     def launch(self, *, actor_name: str = "api") -> dict[str, Any]:
         """Compatibility for the existing global tasks button.
 
@@ -608,6 +638,30 @@ class ErpSyncOrchestrator:
             )
             heartbeat.start()
             attempt = self._control.get_attempt(attempt_id)
+            if attempt.intent.startswith("TARGETED_PROJECT_TASKS:"):
+                project_id = attempt.intent.split(":", 1)[1]
+                task_status = self._execute_targeted_task_project(
+                    attempt_id,
+                    generation,
+                    project_id,
+                )
+                self._control.finish(
+                    attempt_id=attempt_id,
+                    generation=generation,
+                    status=(
+                        ERP_ATTEMPT_SUCCEEDED_WITH_ERRORS
+                        if task_status == SYNC_RUN_COMPLETED_WITH_ERRORS
+                        else ERP_ATTEMPT_SUCCEEDED
+                    ),
+                    phase="PUBLICATION_COMMITTED",
+                    diagnostic=(
+                        "La synchronisation ciblée des tâches projet a échoué."
+                        if task_status == SYNC_RUN_COMPLETED_WITH_ERRORS
+                        else None
+                    ),
+                )
+                return
+
             if attempt.intent != "ACTIVE_PROJECT_TASKS_ONLY":
                 self._execute_projects(attempt_id, generation)
                 if attempt.intent == "PROJECTS_ONLY":
@@ -708,7 +762,13 @@ class ErpSyncOrchestrator:
             )
             return result
 
-    def _create_task_run(self, attempt_id: str, generation: int) -> str:
+    def _create_task_run(
+        self,
+        attempt_id: str,
+        generation: int,
+        *,
+        active_key: str | None = GLOBAL_SYNC_RUN_KEY,
+    ) -> str:
         run_id = new_id()
         with transactional_session(self._session_factory) as session:
             SqlErpSyncControlRepository.guard_session(
@@ -718,7 +778,7 @@ class ErpSyncOrchestrator:
             )
             run = AcumaticaProjectTaskSyncRun(
                 id=run_id,
-                active_key=GLOBAL_SYNC_RUN_KEY,
+                active_key=active_key,
                 status=SYNC_RUN_RUNNING,
                 parent_attempt_id=attempt_id,
                 erp_generation=generation,
@@ -733,6 +793,123 @@ class ErpSyncOrchestrator:
                 task_sync_run_id=run_id,
             )
         return run_id
+
+    def _execute_targeted_task_project(
+        self,
+        attempt_id: str,
+        generation: int,
+        project_id: str,
+    ) -> str:
+        if self._project_task_source is None:
+            raise ApplicationUnavailableError(
+                "La synchronisation des tâches projet Acumatica n'est pas configurée.",
+                code="acumatica_project_task_not_configured",
+            )
+
+        with self._session_factory() as discovery:
+            project = discovery.get(Project, project_id)
+            if project is None:
+                raise ApplicationNotFoundError(
+                    "Le projet demandé n'existe pas.",
+                    code="project_not_found",
+                    context={"project_id": project_id},
+                )
+            if not project.active:
+                raise ApplicationValidationError(
+                    "Le projet demandé est inactif.",
+                    code="project_inactive",
+                    context={"project_id": project_id},
+                )
+            project_external_id = str(project.erp_external_id or "").strip()
+            project_number = str(project.number)
+        if not project_external_id:
+            raise ApplicationValidationError(
+                "Ce projet local ne possède pas d'identifiant ERP.",
+                code="task_catalog_project_external_id_required",
+                context={"project_id": project_id},
+            )
+
+        try:
+            snapshot = self._project_task_source.fetch_project_snapshot(
+                project_external_id=project_external_id,
+                project_number=project_number,
+            )
+        except Exception as exc:
+            if isinstance(exc, ApplicationError):
+                raise
+            raise ApplicationUnavailableError(
+                "La lecture des tâches projet Acumatica a échoué.",
+                code="acumatica_project_task_read_failed",
+            ) from exc
+
+        run_id = self._create_task_run(
+            attempt_id,
+            generation,
+            active_key=None,
+        )
+        with transactional_session(self._session_factory) as session:
+            SqlErpSyncControlRepository.guard_session(
+                session,
+                attempt_id=attempt_id,
+                generation=generation,
+            )
+            run = session.get(AcumaticaProjectTaskSyncRun, run_id)
+            if run is None:
+                raise RuntimeError("Run tâches enfant introuvable.")
+            run.projects_total = 1
+            run.source_requests = 1
+            run.source_rows_scanned = int(snapshot.source_rows)
+
+        with self._session_factory() as discovery:
+            project = discovery.get(Project, project_id)
+            if project is None:
+                raise ApplicationNotFoundError(
+                    "Le projet demandé n'existe plus.",
+                    code="project_not_found",
+                    context={"project_id": project_id},
+                )
+            discovery.expunge(project)
+
+        self._process_task_project(
+            run_id,
+            attempt_id,
+            generation,
+            project,
+            {project_number: snapshot},
+        )
+
+        with transactional_session(self._session_factory) as session:
+            SqlErpSyncControlRepository.guard_session(
+                session,
+                attempt_id=attempt_id,
+                generation=generation,
+            )
+            run = session.get(AcumaticaProjectTaskSyncRun, run_id)
+            if run is None:
+                raise RuntimeError("Run tâches enfant introuvable.")
+            run.status = (
+                SYNC_RUN_COMPLETED_WITH_ERRORS
+                if run.projects_rejected
+                else SYNC_RUN_COMPLETED
+            )
+            run.finished_at = utc_now()
+            if run.started_at is not None:
+                run.duration_ms = max(
+                    0,
+                    int(
+                        (
+                            _utc(run.finished_at) - _utc(run.started_at)
+                        ).total_seconds()
+                        * 1000
+                    ),
+                )
+            SqlErpSyncControlRepository.update_phase_in_session(
+                session,
+                attempt_id=attempt_id,
+                generation=generation,
+                phase="TASKS_FINISHED",
+            )
+            return run.status
 
     def _execute_tasks(self, attempt_id: str, generation: int) -> str:
         if self._project_task_source is None:
