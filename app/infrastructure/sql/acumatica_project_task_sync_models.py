@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, TimestampMixin, new_id
@@ -43,6 +43,10 @@ class AcumaticaProjectTaskSyncRun(TimestampMixin, Base):
             "ix_acumatica_project_task_sync_runs_created",
             "created_at",
         ),
+        Index(
+            "ix_acumatica_project_task_sync_runs_parent_attempt",
+            "parent_attempt_id",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True, default=new_id)
@@ -57,6 +61,8 @@ class AcumaticaProjectTaskSyncRun(TimestampMixin, Base):
         default=SYNC_RUN_PENDING,
         index=True,
     )
+    parent_attempt_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), nullable=True)
+    erp_generation: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
