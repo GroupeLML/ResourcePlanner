@@ -60,11 +60,11 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.CheckConstraint(
             "occurrence_type IN ('DAILY','MANUAL')",
-            name="ck_erp_sync_occurrence_type_values",
+            name="occurrence_type_values",
         ),
         sa.CheckConstraint(
             "status IN ('PENDING','MISSED','DISABLED','SUCCEEDED','SUCCEEDED_WITH_ERRORS','FAILED','INTERRUPTED')",
-            name="ck_erp_sync_occurrence_status_values",
+            name="occurrence_status_values",
         ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("occurrence_key", name="uq_erp_sync_occurrence_key"),
@@ -109,11 +109,11 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.CheckConstraint(
             "trigger_kind IN ('SCHEDULED','CATCHUP','MANUAL','RETRY')",
-            name="ck_erp_sync_attempt_trigger_values",
+            name="attempt_trigger_values",
         ),
         sa.CheckConstraint(
             "status IN ('PENDING','RUNNING','SUCCEEDED','SUCCEEDED_WITH_ERRORS','FAILED','INTERRUPTED')",
-            name="ck_erp_sync_attempt_status_values",
+            name="attempt_status_values",
         ),
         sa.ForeignKeyConstraint(
             ["occurrence_id"],
