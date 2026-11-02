@@ -26,6 +26,7 @@ from ..application.errors import (
     ApplicationUnavailableError,
     ApplicationValidationError,
 )
+from ..infrastructure.sql.base import new_id
 from ..infrastructure.sql import (
     Project,
     SqlEmployeeSyncRepository,
@@ -212,19 +213,24 @@ def build_integration_router(
             )
         return erp_sync_orchestrator.get(run_id)
 
-    @router.post("/projects/{project_id}/tasks/sync")
+    @router.post("/projects/{project_id}/tasks/sync", status_code=202)
     def sync_project_tasks(
         project_id: str,
         request: Request,
-    ) -> TaskCatalogProjectSyncResult:
+        idempotency_key: str | None = Header(
+            default=None,
+            alias="Idempotency-Key",
+        ),
+    ) -> dict[str, Any]:
         if erp_sync_orchestrator is None:
             raise ApplicationUnavailableError(
                 "L'orchestration ERP n'est pas configurée sur ce serveur.",
                 code="erp_sync_orchestrator_not_configured",
             )
-        return erp_sync_orchestrator.run_targeted_project_tasks_compat(
+        return erp_sync_orchestrator.launch_targeted_project_tasks(
             project_id=project_id,
             actor_name=_actor_name(request),
+            idempotency_key=idempotency_key or f"legacy-targeted-{project_id}-{new_id()}",
         )
 
     @router.post("/erp-sync/projects/run-now", status_code=202)
