@@ -366,6 +366,7 @@ class SqlErpSyncControlRepository:
         with transactional_session(self._session_factory) as session:
             control = _lock_control(session)
             now = _sql_now(session)
+            self._interrupt_expired_locked(session, control, now=now)
             decision = scheduler_decision(now, settings)
             watermark = control.last_evaluated_business_date
             if watermark is not None and decision.business_date < watermark:
@@ -512,7 +513,6 @@ class SqlErpSyncControlRepository:
         with transactional_session(self._session_factory) as session:
             control = _lock_control(session)
             now = _sql_now(session)
-            self._interrupt_expired_locked(session, control, now=now)
 
             if command_identity:
                 existing_command = session.scalar(
@@ -538,6 +538,8 @@ class SqlErpSyncControlRepository:
                     code="erp_sync_occurrence_configuration_incompatible",
                     context={"occurrence_id": occurrence.id},
                 )
+
+            self._interrupt_expired_locked(session, control, now=now)
 
             if automatic:
                 if (
