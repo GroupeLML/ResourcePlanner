@@ -1,3 +1,4 @@
+import { createClientId } from "./clientId";
 import { csrfHeaders } from "./csrf";
 
 export type ViewScope = "mine" | "global";
@@ -1869,10 +1870,36 @@ export function getAcumaticaErpSyncRun(
   );
 }
 
-export function syncAcumaticaProjectTasks(projectId: string) {
-  return postJson<ProjectTaskSyncResult>(
+export async function syncAcumaticaProjectTasks(projectId: string) {
+  let run = await sendJson<GlobalProjectTaskSyncResult>(
     `/api/v1/integrations/acumatica/projects/${encodeURIComponent(projectId)}/tasks/sync`,
+    "POST",
+    {},
+    { "Idempotency-Key": createClientId() },
   );
+  while (run.status === "PENDING" || run.status === "RUNNING") {
+    await new Promise((resolve) => window.setTimeout(resolve, 250));
+    run = await getAcumaticaErpSyncRun(run.run_id);
+  }
+  if (run.status !== "COMPLETED") {
+    throw new ApiError(
+      run.diagnostic || "La synchronisation des tâches ERP a échoué.",
+      409,
+      run.error_code,
+    );
+  }
+  return {
+    project_number: "",
+    source_rows: run.source_rows_received,
+    task_count: run.tasks_received,
+    rejected_rows: run.source_rows_rejected,
+    created: run.tasks_created,
+    updated: run.tasks_updated,
+    unchanged: run.tasks_unchanged,
+    deactivated: run.tasks_deactivated,
+    ignored: run.tasks_rejected,
+    duration_ms: run.duration_ms,
+  } satisfies ProjectTaskSyncResult;
 }
 
 export function syncAcumaticaActiveProjectTasks() {
