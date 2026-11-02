@@ -61,6 +61,9 @@ SOURCE_MISSING_TABLES = {
     "planning_work_queue_releases",
     "planning_work_queue_restorations",
     "request_completion_reductions",
+    "erp_sync_control",
+    "erp_sync_occurrences",
+    "erp_sync_attempts",
 }
 SOURCE_MISSING_COLUMNS = {
     "projects": {
