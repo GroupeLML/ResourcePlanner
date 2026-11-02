@@ -213,6 +213,30 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
             sleep(0.01)
         self.fail(f"sync run {run_id} did not reach a terminal state")
 
+    def _wait_for_erp_run(
+        self,
+        client: TestClient,
+        run_id: str,
+        *,
+        timeout_seconds: float = 5.0,
+    ) -> dict[str, object]:
+        deadline = perf_counter() + timeout_seconds
+        while perf_counter() < deadline:
+            response = client.get(
+                f"/api/v1/integrations/acumatica/erp-sync/runs/{run_id}"
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            body = response.json()
+            if body["status"] in {
+                "COMPLETED",
+                "COMPLETED_WITH_ERRORS",
+                "FAILED",
+                "INTERRUPTED",
+            }:
+                return body
+            sleep(0.01)
+        self.fail(f"ERP run {run_id} did not reach a terminal state")
+
     @staticmethod
     def _snapshot() -> TaskCatalogProjectSnapshot:
         return TaskCatalogProjectSnapshot(
@@ -729,17 +753,29 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
         )
         with TestClient(app) as client:
             missing = client.post(
-                "/api/v1/integrations/acumatica/projects/MISSING/tasks/sync"
+                "/api/v1/integrations/acumatica/projects/MISSING/tasks/sync",
+                headers={"Idempotency-Key": "targeted-missing"},
+            )
+            self.assertEqual(missing.status_code, 202, missing.text)
+            missing_run = self._wait_for_erp_run(
+                client,
+                missing.json()["run_id"],
             )
             local = client.post(
-                "/api/v1/integrations/acumatica/projects/PROJECT-LOCAL/tasks/sync"
+                "/api/v1/integrations/acumatica/projects/PROJECT-LOCAL/tasks/sync",
+                headers={"Idempotency-Key": "targeted-local"},
+            )
+            self.assertEqual(local.status_code, 202, local.text)
+            local_run = self._wait_for_erp_run(
+                client,
+                local.json()["run_id"],
             )
 
-        self.assertEqual(missing.status_code, 404)
-        self.assertEqual(missing.json()["error"]["code"], "project_not_found")
-        self.assertEqual(local.status_code, 422)
+        self.assertEqual(missing_run["status"], "FAILED")
+        self.assertEqual(missing_run["error_code"], "project_not_found")
+        self.assertEqual(local_run["status"], "FAILED")
         self.assertEqual(
-            local.json()["error"]["code"],
+            local_run["error_code"],
             "task_catalog_project_external_id_required",
         )
         self.assertEqual(source.calls, [])
@@ -770,23 +806,37 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
         path = "/api/v1/integrations/acumatica/projects/PROJECT-ERP/tasks/sync"
 
         with TestClient(app) as client:
-            first = client.post(path)
-            second = client.post(path)
+            first = client.post(
+                path,
+                headers={"Idempotency-Key": "targeted-first"},
+            )
+            self.assertEqual(first.status_code, 202, first.text)
+            first_body = self._wait_for_erp_run(client, first.json()["run_id"])
+            second = client.post(
+                path,
+                headers={"Idempotency-Key": "targeted-second"},
+            )
+            self.assertEqual(second.status_code, 202, second.text)
+            second_body = self._wait_for_erp_run(client, second.json()["run_id"])
             metadata = client.get(
                 "/api/v1/integrations/acumatica/projects/PROJECT-ERP/tasks/sync-metadata"
             )
 
-        self.assertEqual(first.status_code, 200)
-        self.assertEqual(second.status_code, 200)
-        first_body = first.json()
-        second_body = second.json()
-        self.assertEqual(first_body["project_number"], "5118")
-        self.assertEqual(first_body["source_rows"], 1)
-        self.assertEqual(first_body["task_count"], 1)
-        self.assertEqual(first_body["rejected_rows"], 0)
-        self.assertEqual((first_body["created"], first_body["updated"]), (1, 0))
+        self.assertEqual(first_body["status"], "COMPLETED")
+        self.assertEqual(first_body["source_rows_received"], 1)
+        self.assertEqual(first_body["tasks_received"], 1)
+        self.assertEqual(first_body["source_rows_rejected"], 0)
         self.assertEqual(
-            (second_body["created"], second_body["updated"], second_body["unchanged"]),
+            (first_body["tasks_created"], first_body["tasks_updated"]),
+            (1, 0),
+        )
+        self.assertEqual(second_body["status"], "COMPLETED")
+        self.assertEqual(
+            (
+                second_body["tasks_created"],
+                second_body["tasks_updated"],
+                second_body["tasks_unchanged"],
+            ),
             (0, 0, 1),
         )
         self.assertEqual(source.calls, [("5469", "5118"), ("5469", "5118")])
