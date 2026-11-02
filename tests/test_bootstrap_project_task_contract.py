@@ -22,9 +22,9 @@ class BootstrapProjectTaskContractTests(unittest.TestCase):
         self.assertNotIn("AcumaticaProjectSyncPanel", configuration)
         self.assertNotIn("Synchroniser les projets", configuration)
         self.assertIn("Synchroniser les projets", projects)
-        self.assertIn("await syncAcumaticaProjects()", projects)
+        self.assertIn("await syncAcumaticaProjects(createClientId())", projects)
         self.assertIn(
-            "/api/v1/integrations/acumatica/projects/sync",
+            "/api/v1/integrations/acumatica/erp-sync/projects/run-now",
             api,
         )
         self.assertNotIn("import-projects", projects)
