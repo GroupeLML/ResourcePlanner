@@ -226,6 +226,7 @@ class SqlErpSyncControlRepository:
         *,
         attempt_id: str,
         generation: int,
+        settings: ErpSyncSchedulerSettings | None = None,
     ) -> tuple[ErpSyncControl, datetime]:
         control = _lock_control(session)
         now = _sql_now(session)
@@ -248,6 +249,10 @@ class SqlErpSyncControlRepository:
             occurrence is None
             or str(control.config_fingerprint or "").strip()
             != str(occurrence.config_fingerprint or "").strip()
+            or (
+                settings is not None
+                and occurrence.config_fingerprint != settings.config_fingerprint
+            )
         ):
             raise ErpSyncFenceLost(
                 "La configuration ERP de la tentative ne correspond plus à l'autorité SQL.",
@@ -563,11 +568,7 @@ class SqlErpSyncControlRepository:
                     occurrence.diagnostic = (
                         "Fenêtre de départ automatique figée dépassée."
                     )
-                    raise ApplicationConflictError(
-                        "La fenêtre automatique figée de cette occurrence est fermée.",
-                        code="erp_sync_automatic_window_closed",
-                        context={"occurrence_id": occurrence.id},
-                    )
+                    return None
 
             if occurrence.success_attempt_id:
                 return None
@@ -629,6 +630,7 @@ class SqlErpSyncControlRepository:
                     session,
                     attempt_id=attempt_id,
                     generation=generation,
+                    settings=settings,
                 )
             except ErpSyncFenceLost:
                 return False
@@ -643,12 +645,19 @@ class SqlErpSyncControlRepository:
                 attempt.heartbeat_at = now
             return True
 
-    def start_attempt(self, *, attempt_id: str, generation: int) -> bool:
+    def start_attempt(
+        self,
+        *,
+        attempt_id: str,
+        generation: int,
+        settings: ErpSyncSchedulerSettings | None = None,
+    ) -> bool:
         with transactional_session(self._session_factory) as session:
             _control, now = self.guard_session(
                 session,
                 attempt_id=attempt_id,
                 generation=generation,
+                settings=settings,
             )
             attempt = session.get(ErpSyncAttempt, attempt_id)
             if attempt is None:
@@ -673,11 +682,13 @@ class SqlErpSyncControlRepository:
         phase: str,
         project_result: object | None = None,
         task_sync_run_id: str | None = None,
+        settings: ErpSyncSchedulerSettings | None = None,
     ) -> None:
         _control, now = cls.guard_session(
             session,
             attempt_id=attempt_id,
             generation=generation,
+            settings=settings,
         )
         attempt = session.get(ErpSyncAttempt, attempt_id)
         if attempt is None or attempt.status not in {
@@ -707,6 +718,7 @@ class SqlErpSyncControlRepository:
         phase: str,
         error_code: str | None = None,
         diagnostic: str | None = None,
+        settings: ErpSyncSchedulerSettings | None = None,
     ) -> bool:
         with transactional_session(self._session_factory) as session:
             try:
@@ -714,6 +726,7 @@ class SqlErpSyncControlRepository:
                     session,
                     attempt_id=attempt_id,
                     generation=generation,
+                    settings=settings,
                 )
             except ErpSyncFenceLost:
                 return False
