@@ -109,9 +109,10 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
                 )
             )
             control = session.get(ErpSyncControl, ERP_SYNC_CONTROL_ROW_ID)
+            self.assertIsNotNone(control)
+            owner_attempt_id = control.owner_attempt_id
         self.assertEqual(count, 1)
-        self.assertIsNotNone(control)
-        self.assertEqual(control.owner_attempt_id, attempts[0].id)
+        self.assertEqual(owner_attempt_id, attempts[0].id)
 
     def test_concurrent_identical_manual_command_has_one_occurrence_and_attempt(self) -> None:
         barrier = Barrier(2)
