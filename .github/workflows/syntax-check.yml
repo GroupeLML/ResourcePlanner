@@ -289,6 +289,62 @@ jobs:
           ):
               assert load(path) == [], (path, load(path))
           PY
+      - name: Verify durable ERP occurrence survives backend restart without duplication
+        run: |
+          occurrence_before="$(docker compose exec -T backend python - <<'PY'
+          import os
+          from app.application.erp_sync_scheduler import (
+              ErpSyncSchedulerSettings,
+              UnavailableErpSyncAutomaticSafetyCapability,
+          )
+          from app.infrastructure.sql import create_session_factory, create_sql_engine
+          from app.infrastructure.sql.erp_sync_control_repository import SqlErpSyncControlRepository
+
+          engine = create_sql_engine(os.environ["RESOURCEPLANNER_DATABASE_URL"])
+          repository = SqlErpSyncControlRepository(create_session_factory(engine))
+          repository.ensure_control_row()
+          occurrence = repository.record_daily_decision(
+              ErpSyncSchedulerSettings(enabled=True, catchup_hours=24),
+              UnavailableErpSyncAutomaticSafetyCapability(),
+          )
+          assert occurrence is not None
+          print(occurrence.id)
+          engine.dispose()
+          PY
+          )"
+          docker compose restart backend >/dev/null
+
+          ready=0
+          for attempt in $(seq 1 45); do
+            if curl -fsS http://127.0.0.1:18080/ready | grep -q '"status":"ready"'; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          test "$ready" = "1"
+
+          occurrence_after="$(docker compose exec -T backend python - <<'PY'
+          import os
+          from app.application.erp_sync_scheduler import (
+              ErpSyncSchedulerSettings,
+              UnavailableErpSyncAutomaticSafetyCapability,
+          )
+          from app.infrastructure.sql import create_session_factory, create_sql_engine
+          from app.infrastructure.sql.erp_sync_control_repository import SqlErpSyncControlRepository
+
+          engine = create_sql_engine(os.environ["RESOURCEPLANNER_DATABASE_URL"])
+          repository = SqlErpSyncControlRepository(create_session_factory(engine))
+          occurrence = repository.record_daily_decision(
+              ErpSyncSchedulerSettings(enabled=True, catchup_hours=24),
+              UnavailableErpSyncAutomaticSafetyCapability(),
+          )
+          assert occurrence is not None
+          print(occurrence.id)
+          engine.dispose()
+          PY
+          )"
+          test "$occurrence_before" = "$occurrence_after"
       - name: Show Docker diagnostics on failure
         if: failure()
         run: |
