@@ -14,16 +14,26 @@ from ..application import (
     ErpUserSyncResult,
     ErpUserSyncService,
     ProjectSourcePort,
+    ProjectSyncResult,
+    ProjectSyncService,
     ProjectTaskCatalogSourcePort,
     TaskCatalogProjectSyncMetadata,
+    TaskCatalogProjectSyncResult,
+    TaskCatalogSyncService,
 )
-from ..application.errors import ApplicationUnavailableError
-from ..infrastructure.sql.base import new_id
+from ..application.errors import (
+    ApplicationNotFoundError,
+    ApplicationUnavailableError,
+    ApplicationValidationError,
+)
 from ..infrastructure.sql import (
+    Project,
     SqlEmployeeSyncRepository,
     SqlErpUserDirectoryRepository,
+    SqlProjectSyncRepository,
     SqlSessionFactory,
     SqlTaskCatalogRepository,
+    SqlTaskCatalogWorkforcePolicy,
 )
 from .erp_sync_orchestration import ErpSyncOrchestrator
 from .performance import performance_phase, record_external_call, record_external_items
@@ -61,6 +71,49 @@ class _InstrumentedErpUserSource:
             rows = tuple(self._source.list_users())
         record_external_items(len(rows))
         return rows
+
+
+class _InstrumentedProjectSource:
+    def __init__(self, source: ProjectSourcePort) -> None:
+        self._source = source
+
+    def list_projects(self):
+        record_external_call()
+        with performance_phase("external"):
+            rows = tuple(self._source.list_projects())
+        record_external_items(len(rows))
+        return rows
+
+
+class _InstrumentedProjectTaskSource:
+    def __init__(self, source: ProjectTaskCatalogSourcePort) -> None:
+        self._source = source
+
+    def fetch_project_snapshot(
+        self,
+        *,
+        project_external_id: str,
+        project_number: str,
+    ):
+        record_external_call()
+        with performance_phase("external"):
+            snapshot = self._source.fetch_project_snapshot(
+                project_external_id=project_external_id,
+                project_number=project_number,
+            )
+        record_external_items(snapshot.source_rows)
+        return snapshot
+
+
+def _get_project(session: Session, project_id: str) -> Project:
+    project = session.get(Project, project_id)
+    if project is None:
+        raise ApplicationNotFoundError(
+            "Le projet demandé n'existe pas.",
+            code="project_not_found",
+            context={"project_id": project_id},
+        )
+    return project
 
 
 def build_integration_router(
@@ -123,16 +176,20 @@ def build_integration_router(
                 SqlErpUserDirectoryRepository(session),
             ).synchronize()
 
-    @router.post("/projects/sync", status_code=202)
-    def sync_projects(request: Request) -> dict[str, Any]:
-        if erp_sync_orchestrator is None:
+    @router.post("/projects/sync")
+    def sync_projects(
+        session: Session = Depends(session_dependency),
+    ) -> ProjectSyncResult:
+        if project_source is None:
             raise ApplicationUnavailableError(
-                "L'orchestration ERP n'est pas configurée sur ce serveur.",
-                code="erp_sync_orchestrator_not_configured",
+                "L'intégration Acumatica n'est pas configurée sur ce serveur.",
+                code="acumatica_not_configured",
             )
-        return erp_sync_orchestrator.launch_projects(
-            actor_name=_actor_name(request),
-        )
+        with performance_phase("compute"):
+            return ProjectSyncService(
+                _InstrumentedProjectSource(project_source),
+                SqlProjectSyncRepository(session),
+            ).synchronize()
 
     @router.post("/projects/tasks/sync", status_code=202)
     def sync_active_project_tasks(request: Request) -> dict[str, Any]:
@@ -161,25 +218,36 @@ def build_integration_router(
             )
         return erp_sync_orchestrator.get(run_id)
 
-    @router.post("/projects/{project_id}/tasks/sync", status_code=202)
+    @router.post("/projects/{project_id}/tasks/sync")
     def sync_project_tasks(
         project_id: str,
-        request: Request,
-        idempotency_key: str | None = Header(
-            default=None,
-            alias="Idempotency-Key",
-        ),
-    ) -> dict[str, Any]:
-        if erp_sync_orchestrator is None:
-            raise ApplicationUnavailableError(
-                "L'orchestration ERP n'est pas configurée sur ce serveur.",
-                code="erp_sync_orchestrator_not_configured",
+        session: Session = Depends(session_dependency),
+    ) -> TaskCatalogProjectSyncResult:
+        project = _get_project(session, project_id)
+        project_external_id = str(project.erp_external_id or "").strip()
+        if not project_external_id:
+            raise ApplicationValidationError(
+                "Ce projet local ne possède pas d'identifiant ERP pour synchroniser ses tâches.",
+                code="task_catalog_project_external_id_required",
+                context={"project_id": project.id, "project_number": project.number},
             )
-        return erp_sync_orchestrator.launch_targeted_project_tasks(
-            project_id=project_id,
-            actor_name=_actor_name(request),
-            idempotency_key=idempotency_key or f"legacy-targeted-{project_id}-{new_id()}",
-        )
+        if project_task_source is None:
+            raise ApplicationUnavailableError(
+                "La synchronisation des tâches projet Acumatica n'est pas configurée sur ce serveur.",
+                code="acumatica_project_task_not_configured",
+            )
+
+        repository = SqlTaskCatalogRepository(session)
+        with performance_phase("compute"):
+            return TaskCatalogSyncService(
+                _InstrumentedProjectTaskSource(project_task_source),
+                repository,
+                sync_metadata_repository=repository,
+                workforce_policy=SqlTaskCatalogWorkforcePolicy(session),
+            ).synchronize_project(
+                project_external_id=project_external_id,
+                project_number=project.number,
+            )
 
     @router.post("/erp-sync/projects/run-now", status_code=202)
     def run_projects_now(
