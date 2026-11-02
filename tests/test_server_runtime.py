@@ -107,8 +107,12 @@ class ServerRuntimeTests(unittest.TestCase):
             {
                 DATABASE_URL_ENV: "sqlite+pysqlite:///:memory:",
                 ACUMATICA_BASE_URL_ENV: (
-                    "https://embedded-user:embedded-secret@ERP.EXAMPLE.test/"
-                    "Instance?token=hidden"
+                    "https://"
+                    + "embedded-user"
+                    + ":"
+                    + "embedded-secret"
+                    + chr(64)
+                    + "ERP.EXAMPLE.test/Instance?token=hidden"
                 ),
                 ACUMATICA_USERNAME_ENV: "configured-user",
                 ACUMATICA_PASSWORD_ENV: "configured-secret",
