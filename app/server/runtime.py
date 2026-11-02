@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 import os
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI
 import uvicorn
@@ -153,6 +154,30 @@ def _positive_float(
             f"{label} doit être supérieur à 0 et inférieur ou égal à {maximum:g}."
         )
     return parsed
+
+
+def _erp_sync_source_identity(values: Mapping[str, str]) -> str:
+    raw_base = _text(values.get(ACUMATICA_BASE_URL_ENV))
+    if raw_base:
+        parsed = urlsplit(raw_base)
+        hostname = parsed.hostname or ""
+        if ":" in hostname and not hostname.startswith("["):
+            hostname = f"[{hostname}]"
+        port = f":{parsed.port}" if parsed.port is not None else ""
+        safe_base = (
+            f"{parsed.scheme.casefold()}://{hostname.casefold()}{port}"
+            f"{parsed.path.rstrip('/')}"
+        )
+    else:
+        safe_base = "unconfigured"
+    return (
+        f"acumatica:{safe_base}"
+        "|RP_Projects|RP_ProjectTasks|DEPMO"
+        "|page_size="
+        + (_text(values.get(ACUMATICA_PAGE_SIZE_ENV)) or "100")
+        + "|timeout_seconds="
+        + (_text(values.get(ACUMATICA_TIMEOUT_SECONDS_ENV)) or "30")
+    )
 
 
 def _acumatica_settings(values: Mapping[str, str]) -> ODataProjectSourceSettings | None:
@@ -418,18 +443,7 @@ class ServerSettings:
                     label=ERP_SYNC_CATCHUP_HOURS_ENV,
                     maximum=12,
                 ),
-                source_identity=(
-                    "acumatica:"
-                    + (
-                        _text(values.get(ACUMATICA_BASE_URL_ENV)).rstrip("/")
-                        or "unconfigured"
-                    )
-                    + "|RP_Projects|RP_ProjectTasks|DEPMO"
-                    + "|page_size="
-                    + (_text(values.get(ACUMATICA_PAGE_SIZE_ENV)) or "100")
-                    + "|timeout_seconds="
-                    + (_text(values.get(ACUMATICA_TIMEOUT_SECONDS_ENV)) or "30")
-                ),
+                source_identity=_erp_sync_source_identity(values),
             )
         except ErpSyncScheduleConfigurationError as exc:
             raise ServerConfigurationError(str(exc)) from exc
