@@ -290,8 +290,9 @@ class ErpSyncOrchestrator:
                 "La commande ERP n'a pas pu créer de tentative.",
                 code="erp_sync_command_not_claimed",
             )
+        accepted = self._compat_payload(attempt.id)
         self._submit(attempt.id, int(attempt.generation))
-        return self._compat_payload(attempt.id)
+        return accepted
 
     def retry(
         self,
@@ -320,8 +321,9 @@ class ErpSyncOrchestrator:
                 "La reprise ERP n'a pas pu créer de tentative.",
                 code="erp_sync_retry_not_claimed",
             )
+        accepted = self._compat_payload(attempt.id)
         self._submit(attempt.id, int(attempt.generation))
-        return self._compat_payload(attempt.id)
+        return accepted
 
     def launch_projects(self, *, actor_name: str = "api") -> dict[str, Any]:
         current = self.current()
@@ -366,8 +368,9 @@ class ErpSyncOrchestrator:
                 "La synchronisation ciblée n'a pas pu créer de tentative.",
                 code="erp_sync_command_not_claimed",
             )
+        accepted = self._compat_payload(attempt.id)
         self._submit(attempt.id, int(attempt.generation))
-        return self._compat_payload(attempt.id)
+        return accepted
 
     def launch(self, *, actor_name: str = "api") -> dict[str, Any]:
         """Compatibility for the existing global tasks button.
