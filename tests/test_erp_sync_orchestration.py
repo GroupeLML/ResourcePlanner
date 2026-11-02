@@ -169,6 +169,47 @@ class ErpSyncOrchestrationTests(unittest.TestCase):
         self.assertIsNotNone(attempt)
         return control, attempt
 
+    def test_scheduler_exposes_safe_configuration_incompatibility_diagnostic(self) -> None:
+        authority_settings = ErpSyncSchedulerSettings(
+            enabled=False,
+            source_identity="acumatica:authority",
+        )
+        control = SqlErpSyncControlRepository(self.factory)
+        occurrence = control.accept_manual(
+            intent="PROJECTS_ONLY",
+            actor_name="owner",
+            idempotency_key="compat-owner",
+            settings=authority_settings,
+        )
+        owner = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="owner",
+            settings=authority_settings,
+        )
+        self.assertIsNotNone(owner)
+
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=None,
+            project_task_source=None,
+            settings=ErpSyncSchedulerSettings(
+                enabled=True,
+                source_identity="acumatica:incompatible",
+            ),
+            automatic_safety=MutableAutomaticSafety(),
+        )
+        result = orchestrator.scheduler_tick()
+
+        self.assertEqual(result["status"], "BLOCKED")
+        self.assertEqual(
+            result["diagnostic"],
+            "erp_sync_configuration_incompatible",
+        )
+        self.assertNotIn("authority", str(result))
+        self.assertNotIn("incompatible", str(result))
+        orchestrator.shutdown()
+
     def test_automatic_capability_is_rechecked_before_business_execution(self) -> None:
         settings = ErpSyncSchedulerSettings(enabled=True)
         capability = MutableAutomaticSafety()
