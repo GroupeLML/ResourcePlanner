@@ -6,7 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HOME=/home/resourceplanner
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates curl tzdata \
     && debian_major="$(. /etc/os-release && echo "${VERSION_ID%%.*}")" \
     && curl -fsSLo /tmp/packages-microsoft-prod.deb \
         "https://packages.microsoft.com/config/debian/${debian_major}/packages-microsoft-prod.deb" \
