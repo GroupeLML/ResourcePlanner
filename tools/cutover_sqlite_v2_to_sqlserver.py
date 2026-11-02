@@ -73,6 +73,9 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
             "planning_work_queue_releases",
             "planning_work_queue_restorations",
             "request_completion_reductions",
+            "erp_sync_control",
+            "erp_sync_occurrences",
+            "erp_sync_attempts",
         },
         "missing_columns": {
             "auth_sessions": {
