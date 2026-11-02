@@ -1,3 +1,4 @@
+import { createClientId } from "./clientId";
 import { csrfHeaders } from "./csrf";
 
 export type AcumaticaIntegrationStatus = {
@@ -55,10 +56,47 @@ export function getAcumaticaIntegrationStatus(signal?: AbortSignal) {
   return request<AcumaticaIntegrationStatus>("/api/v1/integrations/acumatica", { signal });
 }
 
-export function syncAcumaticaProjects() {
-  return request<ProjectSyncResult>("/api/v1/integrations/acumatica/projects/sync", {
-    method: "POST",
-  });
+type ErpProjectSyncRun = {
+  run_id: string;
+  status: "PENDING" | "RUNNING" | "COMPLETED" | "COMPLETED_WITH_ERRORS" | "FAILED" | "INTERRUPTED";
+  project_received?: number;
+  projects_created?: number;
+  projects_updated?: number;
+  projects_unchanged?: number;
+  error_code?: string | null;
+  diagnostic?: string | null;
+};
+
+const ERP_RUN_ACTIVE = new Set<ErpProjectSyncRun["status"]>(["PENDING", "RUNNING"]);
+
+export async function syncAcumaticaProjects() {
+  const accepted = await request<ErpProjectSyncRun>(
+    "/api/v1/integrations/acumatica/erp-sync/projects/run-now",
+    {
+      method: "POST",
+      headers: { "Idempotency-Key": createClientId() },
+    },
+  );
+  let run = accepted;
+  while (ERP_RUN_ACTIVE.has(run.status)) {
+    await new Promise((resolve) => window.setTimeout(resolve, 250));
+    run = await request<ErpProjectSyncRun>(
+      `/api/v1/integrations/acumatica/erp-sync/runs/${encodeURIComponent(run.run_id)}`,
+    );
+  }
+  if (run.status !== "COMPLETED" && run.status !== "COMPLETED_WITH_ERRORS") {
+    throw new Error(
+      run.diagnostic
+        ? `${run.diagnostic}${run.error_code ? ` (${run.error_code})` : ""}`
+        : `La synchronisation des projets a échoué${run.error_code ? ` (${run.error_code})` : ""}.`,
+    );
+  }
+  return {
+    received: run.project_received ?? 0,
+    created: run.projects_created ?? 0,
+    updated: run.projects_updated ?? 0,
+    unchanged: run.projects_unchanged ?? 0,
+  } satisfies ProjectSyncResult;
 }
 
 export function syncAcumaticaEmployees() {
