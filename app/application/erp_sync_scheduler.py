@@ -10,6 +10,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 ERP_SYNC_DAILY_POLICY = "ERP_PROJECTS_TASKS_DAILY"
 ERP_SYNC_CONTROL_KEY = "ERP_PROJECTS_TASKS"
+ERP_SYNC_PROTOCOL_VERSION = 1
+ERP_SYNC_DEFAULT_SOURCE_IDENTITY = "acumatica:default"
 
 
 class ErpSyncScheduleConfigurationError(ValueError):
@@ -28,6 +30,17 @@ class ErpSyncSchedulerSettings:
     lease_seconds: int = 300
     heartbeat_seconds: int = 60
     max_attempt_seconds: int = 7200
+    source_identity: str = ERP_SYNC_DEFAULT_SOURCE_IDENTITY
+
+    def __post_init__(self) -> None:
+        if not 1 <= int(self.catchup_hours) <= 12:
+            raise ErpSyncScheduleConfigurationError(
+                "RESOURCEPLANNER_ERP_SYNC_CATCHUP_HOURS doit être compris entre 1 et 12."
+            )
+        if not str(self.source_identity or "").strip():
+            raise ErpSyncScheduleConfigurationError(
+                "L'identité de source ERP non secrète est requise."
+            )
 
     def timezone(self) -> ZoneInfo:
         try:
@@ -40,7 +53,9 @@ class ErpSyncSchedulerSettings:
     @property
     def config_fingerprint(self) -> str:
         payload = {
+            "protocol_version": ERP_SYNC_PROTOCOL_VERSION,
             "policy": ERP_SYNC_DAILY_POLICY,
+            "source_identity": self.source_identity,
             "time": self.local_time.strftime("%H:%M"),
             "timezone": self.timezone_name,
             "catchup_hours": self.catchup_hours,
