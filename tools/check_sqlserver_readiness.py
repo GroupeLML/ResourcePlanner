@@ -26,6 +26,7 @@ if str(ROOT) not in sys.path:
 
 from app.infrastructure.sql import Base  # noqa: E402
 from app.infrastructure.sql.delivery_models import DeliveryPlanRow  # noqa: E402
+from app.infrastructure.sql.erp_sync_control_models import ErpSyncControl  # noqa: E402
 from app.infrastructure.sql.verification_models import VerificationScopeRow  # noqa: E402
 from app.infrastructure.sql.asset_models import (  # noqa: E402
     Asset,
@@ -376,6 +377,18 @@ def _critical_statements():
     # Date parameters use an explicit Date-bearing mapped column in the actual
     # representative statements below; the first bind only exercises timestamp binds.
     yield "projects", select(Project).where(Project.status == "Actif").order_by(Project.number)
+    yield "erp_sync_control_claim", (
+        select(ErpSyncControl)
+        .where(
+            ErpSyncControl.id
+            == bindparam("erp_sync_control_id", type_=ErpSyncControl.__table__.c.id.type)
+        )
+        .with_hint(
+            ErpSyncControl,
+            "WITH (UPDLOCK, HOLDLOCK)",
+            dialect_name="mssql",
+        )
+    )
     yield "resources", (
         select(Resource)
         .where(Resource.active == true())
