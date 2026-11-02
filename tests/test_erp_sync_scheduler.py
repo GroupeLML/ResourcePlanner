@@ -122,6 +122,42 @@ class ErpSyncControlTests(unittest.TestCase):
         self.assertEqual(first.id, second.id)
         self.assertEqual(first.business_date, date(2026, 1, 15))
 
+    def test_disabled_scheduler_creates_no_automatic_occurrence(self) -> None:
+        disabled = ErpSyncSchedulerSettings(enabled=False)
+        with patch(
+            "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+            return_value=self.fixed_now(),
+        ):
+            occurrence = self.repository.record_daily_decision(
+                disabled,
+                TestErpSyncAutomaticSafetyCapability(),
+            )
+        self.assertIsNone(occurrence)
+        with self.factory() as session:
+            from app.infrastructure.sql import ErpSyncOccurrence
+            self.assertEqual(
+                session.query(ErpSyncOccurrence).count(),
+                0,
+            )
+
+    def test_late_restart_marks_only_current_business_date_missed(self) -> None:
+        late = datetime(2026, 1, 15, 10, 0, tzinfo=timezone.utc)
+        with patch(
+            "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+            return_value=late,
+        ):
+            occurrence = self.repository.record_daily_decision(
+                self.settings,
+                TestErpSyncAutomaticSafetyCapability(),
+            )
+        self.assertIsNotNone(occurrence)
+        self.assertEqual(occurrence.business_date, date(2026, 1, 15))
+        self.assertEqual(occurrence.status, "MISSED")
+        with self.factory() as session:
+            from app.infrastructure.sql import ErpSyncOccurrence
+            rows = tuple(session.query(ErpSyncOccurrence).all())
+        self.assertEqual(len(rows), 1)
+
     def test_enabled_scheduler_is_blocked_without_643b_capability(self) -> None:
         with patch(
             "app.infrastructure.sql.erp_sync_control_repository._sql_now",
@@ -214,6 +250,43 @@ class ErpSyncControlTests(unittest.TestCase):
                     attempt_id=first.id,
                     generation=first.generation,
                 )
+
+    def test_automatic_retries_are_bounded(self) -> None:
+        occurrence = self.repository.accept_manual(
+            intent="PROJECTS_ONLY",
+            actor_name="scheduler",
+            idempotency_key="auto-bounded",
+            settings=self.settings,
+        )
+        attempts = []
+        for index in range(self.settings.max_automatic_attempts):
+            attempt = self.repository.claim(
+                occurrence_id=occurrence.id,
+                trigger="CATCHUP" if index == 0 else "RETRY",
+                actor_name="scheduler",
+                settings=self.settings,
+                automatic=True,
+                command_identity=f"auto:{index}",
+            )
+            self.assertIsNotNone(attempt)
+            attempts.append(attempt)
+            with transactional_session(self.factory) as session:
+                control = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+                self.assertIsNotNone(control)
+                control.lease_expires_at = datetime(
+                    2000, 1, 1, tzinfo=timezone.utc
+                )
+
+        blocked = self.repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="scheduler",
+            settings=self.settings,
+            automatic=True,
+            command_identity="auto:blocked",
+        )
+        self.assertIsNone(blocked)
+        self.assertEqual(len(attempts), self.settings.max_automatic_attempts)
 
     def test_retry_claim_is_idempotent(self) -> None:
         occurrence = self.repository.accept_manual(
