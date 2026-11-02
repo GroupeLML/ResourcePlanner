@@ -335,6 +335,7 @@ class ErpSyncOrchestrator:
         self,
         *,
         actor_name: str,
+        project_source: ProjectSourcePort | None = None,
     ):
         self._assert_sources("PROJECTS_ONLY")
         occurrence = self._control.accept_manual(
@@ -367,6 +368,7 @@ class ErpSyncOrchestrator:
             result = self._execute_projects(
                 attempt.id,
                 int(attempt.generation),
+                project_source=project_source,
             )
             self._control.finish(
                 attempt_id=attempt.id,
@@ -393,8 +395,10 @@ class ErpSyncOrchestrator:
         *,
         project_id: str,
         actor_name: str,
+        project_task_source: ProjectTaskCatalogSourcePort | None = None,
     ):
-        if self._project_task_source is None:
+        source = project_task_source or self._project_task_source
+        if source is None:
             raise ApplicationUnavailableError(
                 "La synchronisation des tâches projet Acumatica n'est pas configurée.",
                 code="acumatica_project_task_not_configured",
@@ -448,7 +452,7 @@ class ErpSyncOrchestrator:
                     "La tentative ciblée n'a pas pu démarrer.",
                     code="erp_sync_command_not_started",
                 )
-            snapshot = self._project_task_source.fetch_project_snapshot(
+            snapshot = source.fetch_project_snapshot(
                 project_external_id=project_external_id,
                 project_number=project_number,
             )
@@ -811,14 +815,21 @@ class ErpSyncOrchestrator:
             if heartbeat is not None:
                 heartbeat.join(timeout=1.0)
 
-    def _execute_projects(self, attempt_id: str, generation: int):
-        if self._project_source is None:
+    def _execute_projects(
+        self,
+        attempt_id: str,
+        generation: int,
+        *,
+        project_source: ProjectSourcePort | None = None,
+    ):
+        source = project_source or self._project_source
+        if source is None:
             raise ApplicationUnavailableError(
                 "La synchronisation projets Acumatica n'est pas configurée.",
                 code="acumatica_not_configured",
             )
         try:
-            projects = tuple(self._project_source.list_projects())
+            projects = tuple(source.list_projects())
         except Exception as exc:
             if isinstance(exc, ApplicationError):
                 raise
