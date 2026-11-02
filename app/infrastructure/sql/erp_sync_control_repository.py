@@ -307,6 +307,7 @@ class SqlErpSyncControlRepository:
             idempotency_key=idempotency_key,
         )
         with transactional_session(self._session_factory) as session:
+            _lock_control(session)
             existing = session.scalar(
                 select(ErpSyncOccurrence).where(
                     ErpSyncOccurrence.command_identity == identity
@@ -380,6 +381,10 @@ class SqlErpSyncControlRepository:
         command_identity: str | None = None,
     ) -> ErpSyncAttempt | None:
         with transactional_session(self._session_factory) as session:
+            control = _lock_control(session)
+            now = _sql_now(session)
+            self._interrupt_expired_locked(session, control, now=now)
+
             if command_identity:
                 existing_command = session.scalar(
                     select(ErpSyncAttempt).where(
@@ -388,9 +393,6 @@ class SqlErpSyncControlRepository:
                 )
                 if existing_command is not None:
                     return existing_command
-            control = _lock_control(session)
-            now = _sql_now(session)
-            self._interrupt_expired_locked(session, control, now=now)
 
             occurrence = session.get(ErpSyncOccurrence, occurrence_id)
             if occurrence is None:
@@ -402,6 +404,9 @@ class SqlErpSyncControlRepository:
             if occurrence.success_attempt_id:
                 return None
             if control.owner_attempt_id:
+                owner = session.get(ErpSyncAttempt, control.owner_attempt_id)
+                if owner is not None and owner.occurrence_id == occurrence.id:
+                    return owner
                 raise ApplicationConflictError(
                     "Une synchronisation ERP incompatible est déjà active.",
                     code="erp_sync_run_active",
