@@ -308,10 +308,13 @@ jobs:
               UnavailableErpSyncAutomaticSafetyCapability(),
           )
           assert occurrence is not None
-          print(occurrence.id)
+          print(f"{occurrence.id}|{occurrence.occurrence_key}")
           engine.dispose()
           PY
           )"
+          occurrence_id="$(printf '%s' "$occurrence_before" | cut -d'|' -f1)"
+          occurrence_key="$(printf '%s' "$occurrence_before" | cut -d'|' -f2-)"
+
           docker compose restart backend >/dev/null
 
           ready=0
@@ -324,27 +327,33 @@ jobs:
           done
           test "$ready" = "1"
 
-          occurrence_after="$(docker compose exec -T backend python - <<'PY'
+          docker compose exec -T \
+            -e EXPECTED_OCCURRENCE_ID="$occurrence_id" \
+            -e EXPECTED_OCCURRENCE_KEY="$occurrence_key" \
+            backend python - <<'PY'
           import os
-          from app.application.erp_sync_scheduler import (
-              ErpSyncSchedulerSettings,
-              UnavailableErpSyncAutomaticSafetyCapability,
+          from sqlalchemy import select
+          from app.infrastructure.sql import (
+              ErpSyncOccurrence,
+              create_session_factory,
+              create_sql_engine,
           )
-          from app.infrastructure.sql import create_session_factory, create_sql_engine
-          from app.infrastructure.sql.erp_sync_control_repository import SqlErpSyncControlRepository
 
           engine = create_sql_engine(os.environ["RESOURCEPLANNER_DATABASE_URL"])
-          repository = SqlErpSyncControlRepository(create_session_factory(engine))
-          occurrence = repository.record_daily_decision(
-              ErpSyncSchedulerSettings(enabled=True, catchup_hours=24),
-              UnavailableErpSyncAutomaticSafetyCapability(),
-          )
-          assert occurrence is not None
-          print(occurrence.id)
+          factory = create_session_factory(engine)
+          with factory() as session:
+              rows = tuple(
+                  session.scalars(
+                      select(ErpSyncOccurrence).where(
+                          ErpSyncOccurrence.occurrence_key
+                          == os.environ["EXPECTED_OCCURRENCE_KEY"]
+                      )
+                  )
+              )
+              assert len(rows) == 1, rows
+              assert rows[0].id == os.environ["EXPECTED_OCCURRENCE_ID"], rows[0].id
           engine.dispose()
           PY
-          )"
-          test "$occurrence_before" = "$occurrence_after"
       - name: Show Docker diagnostics on failure
         if: failure()
         run: |
