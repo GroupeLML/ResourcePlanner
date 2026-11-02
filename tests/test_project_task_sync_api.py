@@ -520,6 +520,42 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
         self.assertEqual(final["projects_processed"], final["projects_total"])
         self.assertEqual(len(source.batch_calls), 1)
 
+    def test_global_sync_blocks_distinct_incompatible_healthy_owner(self) -> None:
+        settings = ErpSyncSchedulerSettings()
+        control = SqlErpSyncControlRepository(
+            create_session_factory(create_sql_engine(self.database_url))
+        )
+        occurrence = control.accept_manual(
+            intent="PROJECTS_ONLY",
+            actor_name="independent-owner",
+            idempotency_key="independent-owner",
+            settings=settings,
+        )
+        owner = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="independent-owner",
+            settings=settings,
+        )
+        self.assertIsNotNone(owner)
+
+        source = BatchProjectTaskSource(self._global_snapshots())
+        app = create_api_app(
+            self.database_url,
+            auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            project_source=self._global_project_source(),
+            project_task_source=source,
+        )
+
+        with TestClient(app) as client:
+            launch = client.post(
+                "/api/v1/integrations/acumatica/projects/tasks/sync"
+            )
+
+        self.assertEqual(launch.status_code, 409)
+        self.assertEqual(launch.json()["error"]["code"], "erp_sync_run_active")
+        self.assertEqual(source.batch_calls, [])
+
     def test_global_sync_rolls_back_only_the_failed_project_transaction(self) -> None:
         snapshots = self._global_snapshots()
         snapshots["5118"] = TaskCatalogProjectSnapshot(
