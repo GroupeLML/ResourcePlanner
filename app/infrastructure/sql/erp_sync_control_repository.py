@@ -78,7 +78,13 @@ def _lock_control(session: Session) -> ErpSyncControl:
     return row
 
 
-def _command_identity(*, actor_name: str, intent: str, idempotency_key: str) -> str:
+def _command_identity(
+    *,
+    actor_name: str,
+    intent: str,
+    idempotency_key: str,
+    prefix: str = "MANUAL",
+) -> str:
     payload = {
         "actor": str(actor_name or "").strip(),
         "intent": str(intent or "").strip(),
@@ -87,7 +93,21 @@ def _command_identity(*, actor_name: str, intent: str, idempotency_key: str) -> 
     digest = sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
-    return f"MANUAL:{digest}"
+    return f"{prefix}:{digest}"
+
+
+def retry_command_identity(
+    *,
+    actor_name: str,
+    occurrence_id: str,
+    idempotency_key: str,
+) -> str:
+    return _command_identity(
+        actor_name=actor_name,
+        intent=f"RETRY:{occurrence_id}",
+        idempotency_key=idempotency_key,
+        prefix="RETRY",
+    )
 
 
 class SqlErpSyncControlRepository:
@@ -99,6 +119,10 @@ class SqlErpSyncControlRepository:
     def schema_available(self) -> bool:
         with self._session_factory() as session:
             return inspect(session.get_bind()).has_table("erp_sync_control")
+
+    def current_sql_time(self) -> datetime:
+        with self._session_factory() as session:
+            return _sql_now(session)
 
     @staticmethod
     def guard_session(
@@ -331,8 +355,17 @@ class SqlErpSyncControlRepository:
         actor_name: str,
         settings: ErpSyncSchedulerSettings,
         automatic: bool = False,
+        command_identity: str | None = None,
     ) -> ErpSyncAttempt | None:
         with transactional_session(self._session_factory) as session:
+            if command_identity:
+                existing_command = session.scalar(
+                    select(ErpSyncAttempt).where(
+                        ErpSyncAttempt.command_identity == command_identity
+                    )
+                )
+                if existing_command is not None:
+                    return existing_command
             control = _lock_control(session)
             now = _sql_now(session)
             self._interrupt_expired_locked(session, control, now=now)
@@ -371,6 +404,7 @@ class SqlErpSyncControlRepository:
                 trigger=trigger,
                 actor_name=actor_name,
                 intent=occurrence.intent,
+                command_identity=command_identity,
                 generation=generation,
                 status=ERP_ATTEMPT_PENDING,
                 phase="PREFLIGHT",
