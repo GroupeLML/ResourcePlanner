@@ -149,6 +149,72 @@ class SqlMigrationTests(unittest.TestCase):
             ],
         )
 
+    def test_erp_scheduler_control_migrations_are_additive_and_seed_singleton(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_path = Path(directory) / "erp-scheduler-control.db"
+            config = alembic_config(database_path)
+            command.upgrade(config, "0028_resource_residence_city")
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            inspector = inspect(engine)
+            self.assertNotIn("erp_sync_control", inspector.get_table_names())
+            before_run_columns = {
+                row["name"]
+                for row in inspector.get_columns("acumatica_project_task_sync_runs")
+            }
+            self.assertNotIn("parent_attempt_id", before_run_columns)
+            engine.dispose()
+
+            command.upgrade(config, "head")
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            inspector = inspect(engine)
+            self.assertTrue(
+                {
+                    "erp_sync_control",
+                    "erp_sync_occurrences",
+                    "erp_sync_attempts",
+                }.issubset(set(inspector.get_table_names()))
+            )
+            with engine.connect() as connection:
+                self.assertEqual(
+                    connection.execute(
+                        text(
+                            "SELECT id FROM erp_sync_control "
+                            "WHERE id='ERP_PROJECTS_TASKS'"
+                        )
+                    ).scalar_one(),
+                    "ERP_PROJECTS_TASKS",
+                )
+            run_columns = {
+                row["name"]
+                for row in inspector.get_columns("acumatica_project_task_sync_runs")
+            }
+            self.assertIn("parent_attempt_id", run_columns)
+            self.assertIn("erp_generation", run_columns)
+            attempt_columns = {
+                row["name"]
+                for row in inspector.get_columns("erp_sync_attempts")
+            }
+            self.assertIn("command_identity", attempt_columns)
+            engine.dispose()
+
+            command.downgrade(config, "0028_resource_residence_city")
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            inspector = inspect(engine)
+            self.assertFalse(
+                {
+                    "erp_sync_control",
+                    "erp_sync_occurrences",
+                    "erp_sync_attempts",
+                } & set(inspector.get_table_names())
+            )
+            run_columns = {
+                row["name"]
+                for row in inspector.get_columns("acumatica_project_task_sync_runs")
+            }
+            self.assertNotIn("parent_attempt_id", run_columns)
+            self.assertNotIn("erp_generation", run_columns)
+            engine.dispose()
+
     def test_placement_cutoff_migration_is_nullable_and_guards_populated_downgrade(self) -> None:
         with TemporaryDirectory() as directory:
             database_path = Path(directory) / "placement-cutoff.db"
