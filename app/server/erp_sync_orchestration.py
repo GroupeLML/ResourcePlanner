@@ -530,15 +530,14 @@ class ErpSyncOrchestrator:
                 "La synchronisation des tâches projet Acumatica n'est pas configurée.",
                 code="acumatica_project_task_not_configured",
             )
-        if task_intent:
-            legacy = self._active_legacy_task_run()
-            if legacy is not None:
-                raise ApplicationConflictError(
-                    "Un run de tâches antérieur à 643A est encore actif; "
-                    "la nouvelle orchestration attend sa fin ou son échéance maximale.",
-                    code="erp_sync_legacy_task_run_active",
-                    context={"run_id": legacy.id},
-                )
+        legacy = self._active_legacy_task_run()
+        if legacy is not None:
+            raise ApplicationConflictError(
+                "Un run ERP antérieur à 643A est encore actif; "
+                "la nouvelle orchestration attend sa fin ou son échéance maximale.",
+                code="erp_sync_legacy_task_run_active",
+                context={"run_id": legacy.id},
+            )
 
     def _submit(self, attempt_id: str, generation: int) -> None:
         with self._launch_lock:
@@ -763,7 +762,15 @@ class ErpSyncOrchestrator:
                         code="acumatica_project_task_batch_required",
                     )
                 started = perf_counter()
-                portfolio = fetch_many(project_targets=project_targets)
+                try:
+                    portfolio = fetch_many(project_targets=project_targets)
+                except Exception as exc:
+                    if isinstance(exc, ApplicationError):
+                        raise
+                    raise ApplicationUnavailableError(
+                        "La lecture globale des tâches projet Acumatica a échoué.",
+                        code="acumatica_project_task_read_failed",
+                    ) from exc
                 source_duration = max(
                     0,
                     int((perf_counter() - started) * 1000),
@@ -1160,6 +1167,7 @@ class ErpSyncOrchestrator:
                             "tasks_unchanged": run.tasks_unchanged,
                             "tasks_deactivated": run.tasks_deactivated,
                             "tasks_rejected": run.tasks_rejected,
+                            "duration_ms": run.duration_ms,
                         }
                     )
                     results = tuple(
