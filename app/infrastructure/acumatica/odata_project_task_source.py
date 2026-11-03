@@ -690,6 +690,7 @@ class ODataProjectTaskSource:
         )
         raw_rows: list[ODataProjectTaskRecord] = []
         seen_page_signatures: set[tuple[ODataProjectTaskRecord, ...]] = set()
+        seen_transport_rows: set[ODataProjectTaskRecord] = set()
         skip = 0
         page_count = 0
         started_at = perf_counter()
