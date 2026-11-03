@@ -17,7 +17,7 @@ from app.application import (
     TaskCatalogPortfolioSnapshot,
     TaskCatalogProjectSnapshot,
 )
-from app.application.erp_sync_evidence import (
+from app.server.erp_sync_evidence import (
     ErpSyncEvidenceService,
     ErpSyncEvidenceSettings,
 )
