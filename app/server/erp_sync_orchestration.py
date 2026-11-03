@@ -9,7 +9,7 @@ from threading import Event, Lock, Thread
 from time import perf_counter
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import null, select
 
 from ..application import (
     ExternalProjectRecord,
@@ -2082,7 +2082,10 @@ class ErpSyncOrchestrator:
             )
             run = AcumaticaProjectTaskSyncRun(
                 id=run_id,
-                active_key=active_key,
+                # SQLAlchemy omits Python None for a column with a scalar
+                # default; use an explicit SQL NULL for targeted child runs so
+                # they never contend for the singleton GLOBAL active key.
+                active_key=null() if active_key is None else active_key,
                 status=SYNC_RUN_RUNNING,
                 parent_attempt_id=attempt_id,
                 erp_generation=generation,
