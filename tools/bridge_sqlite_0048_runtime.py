@@ -68,6 +68,7 @@ SOURCE_MISSING_TABLES = {
     "erp_sync_evidence_chunks",
     "erp_sync_evidence_reservations",
     "erp_sync_baselines",
+    "erp_sync_baseline_approval_audit",
     "erp_sync_plausibility_exceptions",
     "erp_sync_mutation_evidence",
     "erp_sync_project_quality",
