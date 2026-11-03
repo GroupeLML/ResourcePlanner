@@ -398,6 +398,176 @@ class ErpSyncEvidenceService:
                 code="erp_sync_evidence_payload_invalid",
             ) from exc
 
+    def record_before_in_session(
+        self,
+        session: Session,
+        *,
+        attempt_id: str,
+        generation: int,
+        unit_type: str,
+        entity_type: str,
+        entity_key: str,
+        before: Mapping[str, Any] | None,
+    ) -> str:
+        from ..infrastructure.sql import ErpSyncMutationEvidence
+        from ..infrastructure.sql.base import new_id
+
+        existing = session.scalar(
+            select(ErpSyncMutationEvidence).where(
+                ErpSyncMutationEvidence.attempt_id == attempt_id,
+                ErpSyncMutationEvidence.unit_type == unit_type,
+                ErpSyncMutationEvidence.entity_type == entity_type,
+                ErpSyncMutationEvidence.entity_key == entity_key,
+            )
+        )
+        before_present = before is not None
+        plain = canonical_json_bytes(before if before is not None else {"present": False})
+        digest = hashlib.sha256(plain).hexdigest()
+        if existing is not None:
+            if (
+                bool(existing.before_present) != before_present
+                or existing.before_sha256 != digest
+                or int(existing.generation) != int(generation)
+            ):
+                raise ApplicationConflictError(
+                    "La preuve before-image ERP existante est incompatible.",
+                    code="erp_sync_checkpoint_before_conflict",
+                )
+            return existing.id
+        encrypted = self._encrypt_bytes(plain) if before_present else None
+        if encrypted is not None:
+            self._consume_bytes(
+                session,
+                attempt_id=attempt_id,
+                amount=len(encrypted.encode("utf-8")),
+            )
+        row = ErpSyncMutationEvidence(
+            id=new_id(),
+            attempt_id=attempt_id,
+            generation=int(generation),
+            unit_type=unit_type,
+            entity_type=entity_type,
+            entity_key=entity_key,
+            before_present=before_present,
+            encrypted_before=encrypted,
+            before_sha256=digest,
+        )
+        session.add(row)
+        session.flush()
+        return row.id
+
+    def record_after_in_session(
+        self,
+        session: Session,
+        *,
+        evidence_id: str,
+        attempt_id: str,
+        generation: int,
+        after: Mapping[str, Any],
+    ) -> None:
+        from ..infrastructure.sql import ErpSyncMutationEvidence
+
+        row = session.get(ErpSyncMutationEvidence, evidence_id)
+        if (
+            row is None
+            or row.attempt_id != attempt_id
+            or int(row.generation) != int(generation)
+        ):
+            raise ApplicationConflictError(
+                "La preuve de mutation ERP ne correspond plus à la tentative.",
+                code="erp_sync_checkpoint_fence_mismatch",
+            )
+        plain = canonical_json_bytes(after)
+        digest = hashlib.sha256(plain).hexdigest()
+        encrypted = self._encrypt_bytes(plain)
+        if row.after_sha256 is not None:
+            if row.after_sha256 != digest:
+                raise ApplicationConflictError(
+                    "La preuve after-image ERP est déjà scellée avec un autre état.",
+                    code="erp_sync_checkpoint_after_conflict",
+                )
+            return
+        self._consume_bytes(
+            session,
+            attempt_id=attempt_id,
+            amount=len(encrypted.encode("utf-8")),
+        )
+        row.encrypted_after = encrypted
+        row.after_sha256 = digest
+        row.committed_at = _utc_now()
+
+    def mutation_payloads(
+        self,
+        *,
+        attempt_id: str,
+    ) -> tuple[tuple[Any, Mapping[str, Any] | None, Mapping[str, Any] | None], ...]:
+        from ..infrastructure.sql import ErpSyncMutationEvidence
+
+        with self._session_factory() as session:
+            rows = tuple(
+                session.scalars(
+                    select(ErpSyncMutationEvidence)
+                    .where(ErpSyncMutationEvidence.attempt_id == attempt_id)
+                    .order_by(
+                        ErpSyncMutationEvidence.unit_type,
+                        ErpSyncMutationEvidence.entity_type,
+                        ErpSyncMutationEvidence.entity_key,
+                    )
+                )
+            )
+            result = []
+            for row in rows:
+                before = None
+                after = None
+                if row.encrypted_before:
+                    before = json.loads(
+                        self._decrypt_bytes(row.encrypted_before).decode("utf-8")
+                    )
+                if row.encrypted_after:
+                    after = json.loads(
+                        self._decrypt_bytes(row.encrypted_after).decode("utf-8")
+                    )
+                result.append((row, before, after))
+            return tuple(result)
+
+    def mark_recovery_required(
+        self,
+        *,
+        attempt_id: str,
+        reason_code: str,
+    ) -> None:
+        from ..infrastructure.sql import (
+            RECOVERY_REQUIRED,
+            ErpSyncEvidenceManifest,
+            ErpSyncRecoveryState,
+        )
+        from ..infrastructure.sql.session import transactional_session
+
+        with transactional_session(self._session_factory) as session:
+            row = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == attempt_id
+                )
+            )
+            if row is None:
+                row = ErpSyncRecoveryState(
+                    attempt_id=attempt_id,
+                    state=RECOVERY_REQUIRED,
+                    reason_code=str(reason_code or "erp_sync_recovery_required"),
+                    pinned=True,
+                )
+                session.add(row)
+            else:
+                row.state = RECOVERY_REQUIRED
+                row.reason_code = str(reason_code or "erp_sync_recovery_required")
+                row.pinned = True
+            for manifest in session.scalars(
+                select(ErpSyncEvidenceManifest).where(
+                    ErpSyncEvidenceManifest.attempt_id == attempt_id
+                )
+            ):
+                manifest.pinned = True
+
     def approve_baseline(
         self,
         *,
