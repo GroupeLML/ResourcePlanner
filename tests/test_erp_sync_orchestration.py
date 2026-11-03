@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event, Thread
+from time import sleep
 import unittest
 from unittest.mock import patch
 
@@ -49,6 +51,19 @@ class ProjectSource:
     def list_projects(self):
         self.calls += 1
         return self.rows
+
+
+class BlockingProjectSource(ProjectSource):
+    def __init__(self, rows) -> None:
+        super().__init__(rows)
+        self.started = Event()
+        self.release = Event()
+
+    def list_projects(self):
+        self.started.set()
+        if not self.release.wait(timeout=5):
+            raise RuntimeError("test release timeout")
+        return super().list_projects()
 
 
 class FailingProjectSource:
@@ -405,6 +420,51 @@ class ErpSyncOrchestrationTests(unittest.TestCase):
             "erp_sync_automatic_safety_unavailable",
         )
         orchestrator.shutdown()
+
+    def test_shutdown_drains_accepted_legacy_compatibility_work(self) -> None:
+        source = BlockingProjectSource((project("A"),))
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=source,
+            project_task_source=None,
+            settings=ErpSyncSchedulerSettings(
+                enabled=False,
+                lease_seconds=2,
+                heartbeat_seconds=0.2,
+                max_attempt_seconds=10,
+            ),
+        )
+        results: list[object] = []
+        errors: list[BaseException] = []
+
+        def invoke_compatibility() -> None:
+            try:
+                results.append(
+                    orchestrator.run_projects_only_compat(
+                        actor_name="legacy-http",
+                    )
+                )
+            except BaseException as exc:
+                errors.append(exc)
+
+        caller = Thread(target=invoke_compatibility, name="compatibility-http-test")
+        caller.start()
+        self.assertTrue(source.started.wait(timeout=2))
+
+        shutdown = Thread(target=orchestrator.shutdown, name="compatibility-shutdown-test")
+        shutdown.start()
+        sleep(0.05)
+        self.assertTrue(shutdown.is_alive())
+
+        source.release.set()
+        caller.join(timeout=5)
+        shutdown.join(timeout=5)
+
+        self.assertFalse(caller.is_alive())
+        self.assertFalse(shutdown.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].received, 1)
 
     def test_global_workflow_executes_projects_before_tasks(self) -> None:
         order: list[str] = []
