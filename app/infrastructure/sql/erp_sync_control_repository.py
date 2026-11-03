@@ -383,6 +383,20 @@ class SqlErpSyncControlRepository:
                 manifest.pinned = True
 
     @staticmethod
+    def _pending_plausibility_review_locked(
+        session: Session,
+    ) -> ErpSyncAttempt | None:
+        return session.scalar(
+            select(ErpSyncAttempt)
+            .where(
+                ErpSyncAttempt.status == ERP_ATTEMPT_PENDING,
+                ErpSyncAttempt.phase == "PLAUSIBILITY_REVIEW_REQUIRED",
+            )
+            .order_by(ErpSyncAttempt.created_at)
+            .limit(1)
+        )
+
+    @staticmethod
     def _recovery_required_locked(session: Session) -> bool:
         inspector = inspect(session.get_bind())
         if not inspector.has_table("erp_sync_recovery_state"):
@@ -610,6 +624,13 @@ class SqlErpSyncControlRepository:
             )
             if existing is not None:
                 return existing
+            pending_review = self._pending_plausibility_review_locked(session)
+            if pending_review is not None:
+                raise ApplicationConflictError(
+                    "Une synchronisation ERP attend une revue de plausibilité.",
+                    code="erp_sync_plausibility_review_pending",
+                    context={"attempt_id": pending_review.id},
+                )
 
             occurrence = ErpSyncOccurrence(
                 id=new_id(),
@@ -749,6 +770,13 @@ class SqlErpSyncControlRepository:
                 # admit replacement ERP work until compensation/recovery clears
                 # the durable REQUIRED state.
                 return ErpSyncClaimOutcome(None, admitted=False)
+            pending_review = self._pending_plausibility_review_locked(session)
+            if pending_review is not None:
+                raise ApplicationConflictError(
+                    "Une synchronisation ERP attend une revue de plausibilité.",
+                    code="erp_sync_plausibility_review_pending",
+                    context={"attempt_id": pending_review.id},
+                )
 
             # Existing authoritative work wins before evaluating admission for a
             # genuinely new automatic start/retry. A delayed observer must not
