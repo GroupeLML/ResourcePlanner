@@ -733,7 +733,11 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
                     )
                 )
             )
+            project_row = session.scalar(
+                select(Project).where(Project.number == project_number)
+            )
         self.assertIsNotNone(task_row)
+        self.assertIsNotNone(project_row)
         self.assertIsNotNone(project_result)
         self.assertEqual(project_result.status, "synchronized")
         self.assertTrue(
@@ -743,6 +747,16 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
                 and row.committed_at is not None
                 for row in evidence_rows
             )
+        )
+        task_unit = f"TASK_PROJECT:{project_row.id}"
+        self.assertLessEqual(len(task_unit), 64)
+        self.assertTrue(
+            any(
+                row.unit_type == task_unit
+                and row.entity_type == "TASK"
+                for row in evidence_rows
+            ),
+            [(row.unit_type, row.entity_type, row.entity_key) for row in evidence_rows],
         )
         self.assertTrue(
             any(
