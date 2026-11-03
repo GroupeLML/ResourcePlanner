@@ -16,6 +16,10 @@ depends_on: str | None = None
 
 
 def upgrade() -> None:
+    op.add_column(
+        "erp_sync_attempts",
+        sa.Column("policy_fingerprint", sa.String(length=64), nullable=True),
+    )
     op.create_table(
         "erp_sync_evidence_manifests",
         sa.Column("id", sa.String(length=36), nullable=False),
@@ -406,3 +410,4 @@ def downgrade() -> None:
         table_name="erp_sync_evidence_manifests",
     )
     op.drop_table("erp_sync_evidence_manifests")
+    op.drop_column("erp_sync_attempts", "policy_fingerprint")
