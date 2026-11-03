@@ -2072,9 +2072,12 @@ class ErpSyncEvidenceService:
         reason: str,
     ) -> dict[str, Any]:
         from ..infrastructure.sql import (
+            ERP_OCCURRENCE_FAILED,
             RECOVERY_RESOLVED,
+            ErpSyncAttempt,
             ErpSyncCompensationReceipt,
             ErpSyncMutationEvidence,
+            ErpSyncOccurrence,
             ErpSyncRecoveryState,
             Project,
             TaskCatalogEntry,
@@ -2394,6 +2397,21 @@ class ErpSyncEvidenceService:
                     quality.validated_at = _utc_now()
             if str(control.last_success_attempt_id or "") == attempt_id:
                 control.last_success_attempt_id = None
+            compensated_attempt = session.get(ErpSyncAttempt, attempt_id)
+            if compensated_attempt is not None:
+                occurrence = session.get(
+                    ErpSyncOccurrence,
+                    compensated_attempt.occurrence_id,
+                )
+                if (
+                    occurrence is not None
+                    and str(occurrence.success_attempt_id or "") == attempt_id
+                ):
+                    occurrence.success_attempt_id = None
+                    occurrence.status = ERP_OCCURRENCE_FAILED
+                    occurrence.diagnostic = (
+                        "Le succès ERP précédent a été compensé et requiert une nouvelle synchronisation."
+                    )
 
             receipt = ErpSyncCompensationReceipt(
                 id=new_id(),
