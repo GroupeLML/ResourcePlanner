@@ -1474,7 +1474,7 @@ class ErpSyncOrchestrator:
                     )
         except ErpSyncFenceLost:
             raise
-        except ApplicationConflictError:
+        except Exception:
             self._mark_global_validation_failure(
                 attempt_id=attempt_id,
                 generation=generation,
