@@ -1152,7 +1152,10 @@ class ErpSyncOrchestrator:
 
             captured_projects: tuple[Any, ...] | None = None
             captured_portfolio: Any | None = None
-            if attempt.intent == "PROJECTS_AND_ACTIVE_TASKS":
+            if (
+                attempt.intent == "PROJECTS_AND_ACTIVE_TASKS"
+                and self._evidence is not None
+            ):
                 captured_projects, captured_portfolio = self._capture_full_sources(
                     attempt_id=attempt_id,
                     project_source=project_source,
