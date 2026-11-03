@@ -1613,17 +1613,24 @@ class ErpSyncOrchestrator:
                 portfolio_snapshot=captured_portfolio,
                 plausibility_rejected_projects=plausibility_rejected_projects,
             )
-            if attempt.intent == "PROJECTS_AND_ACTIVE_TASKS":
-                self._validate_full_publication(
-                    attempt_id=attempt_id,
-                    generation=generation,
-                )
             parent_status = (
                 ERP_ATTEMPT_SUCCEEDED_WITH_ERRORS
                 if task_status == SYNC_RUN_COMPLETED_WITH_ERRORS
                 else ERP_ATTEMPT_SUCCEEDED
             )
-            published = self._control.finish(
+            if attempt.intent == "PROJECTS_AND_ACTIVE_TASKS":
+                if parent_status == ERP_ATTEMPT_SUCCEEDED:
+                    self._publish_full_success(
+                        attempt_id=attempt_id,
+                        generation=generation,
+                    )
+                    return None
+                self._validate_full_publication(
+                    attempt_id=attempt_id,
+                    generation=generation,
+                    require_complete_success=False,
+                )
+            self._control.finish(
                 attempt_id=attempt_id,
                 generation=generation,
                 status=parent_status,
@@ -1635,15 +1642,6 @@ class ErpSyncOrchestrator:
                 ),
                 settings=self._settings,
             )
-            if (
-                published
-                and parent_status == ERP_ATTEMPT_SUCCEEDED
-                and attempt.intent == "PROJECTS_AND_ACTIVE_TASKS"
-                and self._evidence is not None
-            ):
-                # Baseline advancement is derived from a fully published success.
-                # A fenced/failed terminal write can never advance authority.
-                self._evidence.advance_approved_baselines(attempt_id=attempt_id)
         except ErpSyncFenceLost:
             # A newer generation owns the control row. The stale worker is not
             # permitted to publish a late failure or terminal status.
