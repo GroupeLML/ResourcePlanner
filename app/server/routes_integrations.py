@@ -424,6 +424,22 @@ def build_integration_router(
         )
         return {"exception_id": exception_id, "attempt_id": attempt_id}
 
+    @router.post("/erp-sync/runs/{attempt_id}/plausibility-continue", status_code=202)
+    def continue_erp_plausibility_review(
+        attempt_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_sensitive_erp_authority(request)
+        if erp_sync_orchestrator is None:
+            raise ApplicationUnavailableError(
+                "L'orchestration ERP n'est pas configurée sur ce serveur.",
+                code="erp_sync_orchestrator_not_configured",
+            )
+        return erp_sync_orchestrator.continue_plausibility_review(
+            attempt_id=attempt_id,
+            actor_name=_actor_name(request),
+        )
+
     @router.post("/erp-sync/runs/{attempt_id}/compensation/preview")
     def preview_erp_compensation(
         attempt_id: str,
