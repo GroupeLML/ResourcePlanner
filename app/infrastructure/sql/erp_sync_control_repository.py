@@ -317,6 +317,71 @@ class SqlErpSyncControlRepository:
             )
         return control, now
 
+    @staticmethod
+    def _finalize_interrupted_evidence_locked(
+        session: Session,
+        *,
+        attempt_id: str,
+        now: datetime,
+    ) -> None:
+        inspector = inspect(session.get_bind())
+        if not inspector.has_table("erp_sync_evidence_reservations"):
+            return
+        from .erp_sync_evidence_models import (
+            RECOVERY_REQUIRED,
+            ErpSyncEvidenceManifest,
+            ErpSyncEvidenceReservation,
+            ErpSyncMutationEvidence,
+            ErpSyncRecoveryState,
+        )
+
+        reservation = session.scalar(
+            select(ErpSyncEvidenceReservation).where(
+                ErpSyncEvidenceReservation.attempt_id == attempt_id
+            )
+        )
+        if reservation is not None and reservation.released_at is None:
+            reservation.released_at = now
+
+        if not inspector.has_table("erp_sync_mutation_evidence"):
+            return
+        committed = int(
+            session.scalar(
+                select(func.count(ErpSyncMutationEvidence.id)).where(
+                    ErpSyncMutationEvidence.attempt_id == attempt_id,
+                    ErpSyncMutationEvidence.committed_at.is_not(None),
+                    ErpSyncMutationEvidence.after_sha256.is_not(None),
+                )
+            )
+            or 0
+        )
+        if not committed or not inspector.has_table("erp_sync_recovery_state"):
+            return
+        recovery = session.scalar(
+            select(ErpSyncRecoveryState).where(
+                ErpSyncRecoveryState.attempt_id == attempt_id
+            )
+        )
+        if recovery is None:
+            recovery = ErpSyncRecoveryState(
+                attempt_id=attempt_id,
+                state=RECOVERY_REQUIRED,
+                reason_code="erp_sync_interrupted_after_committed_mutation",
+                pinned=True,
+            )
+            session.add(recovery)
+        else:
+            recovery.state = RECOVERY_REQUIRED
+            recovery.reason_code = "erp_sync_interrupted_after_committed_mutation"
+            recovery.pinned = True
+        if inspector.has_table("erp_sync_evidence_manifests"):
+            for manifest in session.scalars(
+                select(ErpSyncEvidenceManifest).where(
+                    ErpSyncEvidenceManifest.attempt_id == attempt_id
+                )
+            ):
+                manifest.pinned = True
+
     def _interrupt_expired_locked(
         self,
         session: Session,
@@ -372,6 +437,11 @@ class SqlErpSyncControlRepository:
                     child.diagnostic = (
                         "Le propriétaire ERP parent a perdu sa lease ou sa durée maximale."
                     )
+            self._finalize_interrupted_evidence_locked(
+                session,
+                attempt_id=str(attempt.id),
+                now=now,
+            )
 
         control.owner_attempt_id = None
         control.lease_expires_at = None
