@@ -50,6 +50,7 @@ from ..infrastructure.sql import (
     ERP_OCCURRENCE_SUCCEEDED_WITH_ERRORS,
     GLOBAL_SYNC_RUN_KEY,
     Project,
+    ErpSyncProjectQuality,
     TaskCatalogEntry,
     TaskCatalogProjectSyncState,
     SqlPlannerQueryRepositoryWithLoadProfiles,
@@ -1094,6 +1095,10 @@ class ErpSyncOrchestrator:
                     attempt_id=attempt_id,
                     reason_code="erp_sync_global_validation_failed",
                 )
+                self._evidence.quarantine_attempt_provenance(
+                    attempt_id=attempt_id,
+                    reason_code="erp_sync_global_validation_failed",
+                )
             raise
 
     def _execute_attempt(
@@ -1918,6 +1923,25 @@ class ErpSyncOrchestrator:
                     project_number=project.number,
                 )
                 if self._evidence is not None:
+                    quality = session.get(ErpSyncProjectQuality, project.number)
+                    if quality is None:
+                        quality = ErpSyncProjectQuality(
+                            project_number=project.number,
+                            producer_attempt_id=attempt_id,
+                            quality_state="VALID",
+                        )
+                        session.add(quality)
+                    quality.producer_attempt_id = attempt_id
+                    quality.quality_state = "VALID"
+                    quality.source_observed_at = (
+                        self._evidence.source_observed_at_in_session(
+                            session,
+                            attempt_id=attempt_id,
+                            source_type="TASKS",
+                        )
+                    )
+                    quality.validated_at = utc_now()
+                    quality.reason_code = None
                     for item in tuple(snapshot.items):
                         task_id = str(item.erp_task_id or "").strip()
                         row = (
@@ -2027,6 +2051,20 @@ class ErpSyncOrchestrator:
                 settings=self._settings,
             )
             self._record_task_outcome_in_session(session, run_id, outcome)
+            if (
+                self._evidence is not None
+                and str(outcome.get("status")) == "rejected"
+            ):
+                quality = session.get(
+                    ErpSyncProjectQuality,
+                    str(outcome["project_number"]),
+                )
+                if quality is not None:
+                    quality.quality_state = "STALE"
+                    quality.reason_code = str(
+                        outcome.get("error_code") or "erp_sync_project_failed"
+                    )
+                    quality.validated_at = utc_now()
 
     @staticmethod
     def _record_task_outcome_in_session(
