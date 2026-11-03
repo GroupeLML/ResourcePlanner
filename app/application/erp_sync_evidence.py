@@ -665,6 +665,25 @@ class ErpSyncEvidenceService:
                 "approved_at": row.approved_at,
             }
 
+    @staticmethod
+    def _project_counts_from_payload(payload: Any) -> dict[str, int]:
+        if not isinstance(payload, dict):
+            return {}
+        portfolio = payload.get("portfolio", payload)
+        if not isinstance(portfolio, dict):
+            return {}
+        snapshots = portfolio.get("snapshots")
+        if not isinstance(snapshots, list):
+            return {}
+        counts: dict[str, int] = {}
+        for snapshot in snapshots:
+            if not isinstance(snapshot, dict):
+                continue
+            number = str(snapshot.get("project_number") or "").strip()
+            if number:
+                counts[number] = int(snapshot.get("source_rows") or 0)
+        return counts
+
     def approve_baseline(
         self,
         *,
@@ -692,17 +711,7 @@ class ErpSyncEvidenceService:
         reason_value = _safe_reason(reason)
         if project_counts is None:
             payload = self.load_source(manifest_id=manifest_id)
-            derived_counts: dict[str, int] = {}
-            if isinstance(payload, dict):
-                snapshots = payload.get("snapshots")
-                if isinstance(snapshots, list):
-                    for snapshot in snapshots:
-                        if not isinstance(snapshot, dict):
-                            continue
-                        number = str(snapshot.get("project_number") or "").strip()
-                        if number:
-                            derived_counts[number] = int(snapshot.get("source_rows") or 0)
-            project_counts = derived_counts or None
+            project_counts = self._project_counts_from_payload(payload) or None
         with transactional_session(self._session_factory) as session:
             manifest = session.get(ErpSyncEvidenceManifest, manifest_id)
             if manifest is None or manifest.state != EVIDENCE_STATE_SEALED:
@@ -809,7 +818,7 @@ class ErpSyncEvidenceService:
         )
         from ..infrastructure.sql.session import transactional_session
 
-        with transactional_session(self._session_factory) as session:
+        with self._session_factory() as session:
             manifests = tuple(
                 session.scalars(
                     select(ErpSyncEvidenceManifest).where(
@@ -822,17 +831,40 @@ class ErpSyncEvidenceService:
                     )
                 )
             )
-            if len(manifests) != 2:
-                raise ApplicationConflictError(
-                    "Les deux preuves source scellées sont requises pour publier le baseline.",
-                    code="erp_sync_baseline_publication_incomplete",
+            manifest_meta = tuple(
+                (
+                    row.id,
+                    row.source_type,
+                    row.profile_fingerprint,
+                    row.source_fingerprint,
+                    int(row.row_count),
                 )
-            for manifest in manifests:
+                for row in manifests
+            )
+        if len(manifest_meta) != 2:
+            raise ApplicationConflictError(
+                "Les deux preuves source scellées sont requises pour publier le baseline.",
+                code="erp_sync_baseline_publication_incomplete",
+            )
+        task_counts_by_manifest = {
+            manifest_id: self._project_counts_from_payload(
+                self.load_source(manifest_id=manifest_id)
+            )
+            for manifest_id, source_type, *_rest in manifest_meta
+            if source_type == EVIDENCE_SOURCE_TASKS
+        }
+        with transactional_session(self._session_factory) as session:
+            for (
+                manifest_id,
+                source_type,
+                profile_fingerprint,
+                source_fingerprint,
+                row_count,
+            ) in manifest_meta:
                 baseline = session.scalar(
                     select(ErpSyncBaseline).where(
-                        ErpSyncBaseline.source_type == manifest.source_type,
-                        ErpSyncBaseline.profile_fingerprint
-                        == manifest.profile_fingerprint,
+                        ErpSyncBaseline.source_type == source_type,
+                        ErpSyncBaseline.profile_fingerprint == profile_fingerprint,
                     )
                 )
                 if baseline is None:
@@ -840,9 +872,15 @@ class ErpSyncEvidenceService:
                         "Un baseline humain approuvé est requis avant publication automatique.",
                         code="erp_sync_baseline_required",
                     )
-                baseline.source_fingerprint = str(manifest.source_fingerprint)
-                baseline.row_count = int(manifest.row_count)
-                baseline.approved_at = _utc_now()
+                baseline.source_fingerprint = str(source_fingerprint)
+                baseline.row_count = row_count
+                if source_type == EVIDENCE_SOURCE_TASKS:
+                    counts = task_counts_by_manifest.get(manifest_id, {})
+                    baseline.encrypted_project_counts = (
+                        self._encrypt_bytes(canonical_json_bytes(counts))
+                        if counts
+                        else None
+                    )
 
     def _baseline_project_counts(self, baseline) -> dict[str, int]:
         if not baseline.encrypted_project_counts:
