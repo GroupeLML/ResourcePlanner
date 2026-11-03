@@ -200,6 +200,70 @@ class ErpSyncControlTests(unittest.TestCase):
         )
         self.assertEqual(first.id, second.id)
 
+    def test_terminal_manual_claim_replay_observes_original_attempt(self) -> None:
+        for index, terminal_status in enumerate(
+            (ERP_ATTEMPT_SUCCEEDED, ERP_ATTEMPT_FAILED),
+            start=1,
+        ):
+            with self.subTest(status=terminal_status):
+                occurrence = self.repository.accept_manual(
+                    intent="PROJECTS_ONLY",
+                    actor_name="operator",
+                    idempotency_key=f"terminal-manual-{index}",
+                    settings=self.settings,
+                )
+                first = self.repository.claim_outcome(
+                    occurrence_id=occurrence.id,
+                    trigger="MANUAL",
+                    actor_name="operator",
+                    settings=self.settings,
+                )
+                self.assertTrue(first.admitted)
+                self.assertIsNotNone(first.attempt)
+                self.assertTrue(
+                    self.repository.start_attempt(
+                        attempt_id=first.attempt.id,
+                        generation=first.attempt.generation,
+                        settings=self.settings,
+                    )
+                )
+                self.assertTrue(
+                    self.repository.finish(
+                        attempt_id=first.attempt.id,
+                        generation=first.attempt.generation,
+                        status=terminal_status,
+                        phase="PUBLICATION_COMMITTED"
+                        if terminal_status == ERP_ATTEMPT_SUCCEEDED
+                        else "FAILED",
+                        error_code=(
+                            None
+                            if terminal_status == ERP_ATTEMPT_SUCCEEDED
+                            else "controlled_failure"
+                        ),
+                        settings=self.settings,
+                    )
+                )
+
+                replay = self.repository.claim_outcome(
+                    occurrence_id=occurrence.id,
+                    trigger="MANUAL",
+                    actor_name="operator",
+                    settings=self.settings,
+                )
+
+                self.assertFalse(replay.admitted)
+                self.assertIsNotNone(replay.attempt)
+                self.assertEqual(replay.attempt.id, first.attempt.id)
+                with self.factory() as session:
+                    attempts = tuple(
+                        session.scalars(
+                            select(ErpSyncAttempt).where(
+                                ErpSyncAttempt.occurrence_id == occurrence.id
+                            )
+                        )
+                    )
+                self.assertEqual(len(attempts), 1)
+
     def test_healthy_peer_restart_does_not_interrupt_owner(self) -> None:
         occurrence = self.repository.accept_manual(
             intent="PROJECTS_ONLY",
