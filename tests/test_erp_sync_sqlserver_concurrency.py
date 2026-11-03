@@ -539,6 +539,203 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
         )
         orchestrator.shutdown()
 
+    def test_sqlserver_stale_generation_cannot_write_mutation_evidence(self) -> None:
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = repository.accept_manual(
+            intent="PROJECTS_ONLY",
+            actor_name="sql-evidence",
+            idempotency_key="sql-evidence-stale-generation",
+            settings=self.settings,
+        )
+        first = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="sql-evidence",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(first)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=first.id,
+                generation=first.generation,
+                settings=self.settings,
+            )
+        )
+        self.evidence.reserve_attempt(attempt_id=first.id)
+
+        with transactional_session(self.factory) as session:
+            session.execute(
+                text(
+                    "UPDATE erp_sync_control "
+                    "SET lease_expires_at = DATEADD(second, -10, SYSUTCDATETIME()) "
+                    "WHERE id = :id"
+                ),
+                {"id": ERP_SYNC_CONTROL_ROW_ID},
+            )
+
+        second = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="sql-evidence-replacement",
+            settings=self.settings,
+            command_identity="retry:sql-evidence-stale-generation",
+        )
+        self.assertIsNotNone(second)
+        self.assertGreater(second.generation, first.generation)
+
+        with self.assertRaises(ErpSyncFenceLost):
+            with transactional_session(self.factory) as session:
+                SqlErpSyncControlRepository.guard_session(
+                    session,
+                    attempt_id=first.id,
+                    generation=first.generation,
+                    settings=self.settings,
+                )
+                self.evidence.record_before_in_session(
+                    session,
+                    attempt_id=first.id,
+                    generation=first.generation,
+                    unit_type="PROJECT_SNAPSHOT",
+                    entity_type="PROJECT",
+                    entity_key="STALE-SQL-EVIDENCE",
+                    before=None,
+                )
+
+        with self.factory() as session:
+            stale_rows = int(
+                session.scalar(
+                    select(func.count(ErpSyncMutationEvidence.id)).where(
+                        ErpSyncMutationEvidence.attempt_id == first.id
+                    )
+                )
+                or 0
+            )
+        self.assertEqual(stale_rows, 0)
+
+    def test_sqlserver_compensation_preview_is_invalidated_by_new_generation(self) -> None:
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = repository.accept_manual(
+            intent="PROJECTS_ONLY",
+            actor_name="sql-evidence",
+            idempotency_key="sql-compensation-generation",
+            settings=self.settings,
+        )
+        attempt = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="sql-evidence",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(attempt)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                settings=self.settings,
+            )
+        )
+        self.evidence.reserve_attempt(attempt_id=attempt.id)
+
+        project_id = "SQL643B-COMP-GEN"
+        with transactional_session(self.factory) as session:
+            session.execute(delete(Project).where(Project.id == project_id))
+            row = Project(
+                id=project_id,
+                erp_external_id="ERP-SQL643B-COMP-GEN",
+                number="SQL643B-COMP-GEN",
+                name="Before",
+                status="Actif",
+            )
+            session.add(row)
+            session.flush()
+            before = {
+                "erp_external_id": row.erp_external_id,
+                "number": row.number,
+                "name": row.name,
+                "client": row.client,
+                "project_manager_external_id": row.project_manager_external_id,
+                "project_manager_name": row.project_manager_name,
+                "status": row.status,
+            }
+            evidence_id = self.evidence.record_before_in_session(
+                session,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                unit_type="PROJECT_SNAPSHOT",
+                entity_type="PROJECT",
+                entity_key=row.erp_external_id,
+                before=before,
+            )
+            row.name = "After"
+            self.evidence.record_after_in_session(
+                session,
+                evidence_id=evidence_id,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                after={**before, "name": "After"},
+            )
+        self.assertTrue(
+            repository.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.settings,
+            )
+        )
+        self.evidence.mark_recovery_required(
+            attempt_id=attempt.id,
+            reason_code="global_validation_failed",
+        )
+        preview = self.evidence.compensation_preview(attempt_id=attempt.id)
+        self.assertTrue(preview["can_confirm"])
+
+        # A separately authorized control-plane command changes generation after
+        # preview. Even if the ERP-owned row itself is unchanged, confirmation
+        # must refuse the stale preview.
+        other_occurrence = repository.accept_manual(
+            intent="PROJECTS_ONLY",
+            actor_name="sql-other",
+            idempotency_key="sql-compensation-generation-other",
+            settings=self.settings,
+        )
+        other = repository.claim(
+            occurrence_id=other_occurrence.id,
+            trigger="MANUAL",
+            actor_name="sql-other",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(other)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=other.id,
+                generation=other.generation,
+                settings=self.settings,
+            )
+        )
+        self.assertTrue(
+            repository.finish(
+                attempt_id=other.id,
+                generation=other.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.settings,
+            )
+        )
+
+        with self.assertRaises(Exception) as raised:
+            self.evidence.confirm_compensation(
+                attempt_id=attempt.id,
+                preview_hash=preview["preview_hash"],
+                command_identity="sql-compensation-generation-confirm",
+                actor_name="sql-admin",
+                reason="Must reject stale generation",
+            )
+        self.assertEqual(
+            getattr(raised.exception, "code", None),
+            "erp_sync_compensation_preview_stale",
+        )
+
     def test_terminal_run_now_replay_uses_one_sqlserver_attempt_and_execution(self) -> None:
         project_number = "SQL643A-R"
         with transactional_session(self.factory) as session:
