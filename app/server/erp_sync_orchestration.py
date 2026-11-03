@@ -269,7 +269,7 @@ class ErpSyncOrchestrator:
             trigger = "RETRY"
 
         try:
-            attempt = self._control.claim(
+            claim = self._control.claim_outcome(
                 occurrence_id=occurrence.id,
                 trigger=trigger,
                 actor_name=self._system_actor,
@@ -289,14 +289,20 @@ class ErpSyncOrchestrator:
                     "diagnostic": exc.code,
                 }
             return None
+        attempt = claim.attempt
         if attempt is None:
             return None
+        payload = self._control.serialize_attempt(attempt.id)
+        if not claim.admitted:
+            payload["claim_outcome"] = "OBSERVED"
+            return payload
         self._submit(
             attempt.id,
             int(attempt.generation),
             automatic=True,
         )
-        return self._control.serialize_attempt(attempt.id)
+        payload["claim_outcome"] = "ADMITTED"
+        return payload
 
     def run_now(
         self,
