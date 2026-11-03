@@ -215,6 +215,10 @@ class ErpSyncEvidenceService:
             )
             if existing is not None:
                 return
+            from ..infrastructure.sql import (
+                EVIDENCE_STATE_PURGED,
+                ErpSyncEvidenceManifest,
+            )
             active_reserved = int(
                 session.scalar(
                     select(func.coalesce(func.sum(ErpSyncEvidenceReservation.reserved_bytes), 0))
@@ -222,7 +226,17 @@ class ErpSyncEvidenceService:
                 )
                 or 0
             )
-            if active_reserved + requested > self.settings.evidence_budget_bytes:
+            retained_ciphertext = int(
+                session.scalar(
+                    select(func.coalesce(func.sum(ErpSyncEvidenceManifest.ciphertext_bytes), 0))
+                    .where(ErpSyncEvidenceManifest.state != EVIDENCE_STATE_PURGED)
+                )
+                or 0
+            )
+            if (
+                retained_ciphertext + active_reserved + requested
+                > self.settings.evidence_budget_bytes
+            ):
                 raise ApplicationUnavailableError(
                     "Le budget de stockage des preuves ERP est insuffisant.",
                     code="erp_sync_evidence_storage_budget_unavailable",
@@ -329,7 +343,7 @@ class ErpSyncEvidenceService:
             self._consume_bytes(
                 session,
                 attempt_id=attempt_id,
-                amount=ciphertext_total,
+                amount=ciphertext_total + 1024,
             )
             manifest = ErpSyncEvidenceManifest(
                 attempt_id=attempt_id,
@@ -950,6 +964,64 @@ class ErpSyncEvidenceService:
             )
         return str(manifest.profile_fingerprint)
 
+    def assert_no_required_recovery(self) -> None:
+        from ..infrastructure.sql import RECOVERY_REQUIRED, ErpSyncRecoveryState
+
+        with self._session_factory() as session:
+            blocking = session.scalar(
+                select(ErpSyncRecoveryState.id)
+                .where(ErpSyncRecoveryState.state == RECOVERY_REQUIRED)
+                .limit(1)
+            )
+            if blocking is not None:
+                raise ApplicationConflictError(
+                    "Une récupération ERP requise bloque un nouvel import.",
+                    code="erp_sync_recovery_required",
+                )
+
+    def finalize_attempt(
+        self,
+        *,
+        attempt_id: str,
+        successful: bool,
+    ) -> None:
+        from ..infrastructure.sql import (
+            RECOVERY_REQUIRED,
+            ErpSyncEvidenceManifest,
+            ErpSyncEvidenceReservation,
+            ErpSyncRecoveryState,
+        )
+        from ..infrastructure.sql.session import transactional_session
+
+        now = _utc_now()
+        retention_days = (
+            self.settings.history_days
+            if successful
+            else self.settings.failure_retention_days
+        )
+        with transactional_session(self._session_factory) as session:
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == attempt_id
+                )
+            )
+            pin = recovery is not None and recovery.state == RECOVERY_REQUIRED
+            for manifest in session.scalars(
+                select(ErpSyncEvidenceManifest).where(
+                    ErpSyncEvidenceManifest.attempt_id == attempt_id
+                )
+            ):
+                manifest.pinned = bool(manifest.pinned or pin)
+                if not manifest.pinned:
+                    manifest.expires_at = now + timedelta(days=retention_days)
+            reservation = session.scalar(
+                select(ErpSyncEvidenceReservation).where(
+                    ErpSyncEvidenceReservation.attempt_id == attempt_id
+                )
+            )
+            if reservation is not None and reservation.released_at is None:
+                reservation.released_at = now
+
     def automatic_execution_available(self, *, profile_fingerprint: str) -> bool:
         if self._cipher is None or self._control_settings is None:
             return False
@@ -1335,19 +1407,21 @@ class ErpSyncEvidenceService:
         )
         from ..infrastructure.sql.session import transactional_session
 
-        cutoff = _utc_now() - timedelta(days=self.settings.history_days)
+        now = _utc_now()
         purged = 0
         with transactional_session(self._session_factory) as session:
             rows = tuple(
                 session.scalars(
                     select(ErpSyncEvidenceManifest).where(
                         ErpSyncEvidenceManifest.pinned.is_(False),
-                        ErpSyncEvidenceManifest.created_at < cutoff,
+                        ErpSyncEvidenceManifest.expires_at.is_not(None),
+                        ErpSyncEvidenceManifest.expires_at <= now,
                         ErpSyncEvidenceManifest.state.not_in((EVIDENCE_STATE_PURGED,)),
                     )
                 )
             )
             for row in rows:
+                row.state = EVIDENCE_STATE_EXPIRED
                 session.query(ErpSyncEvidenceChunk).filter(
                     ErpSyncEvidenceChunk.manifest_id == row.id
                 ).delete(synchronize_session=False)
