@@ -886,15 +886,18 @@ class ErpSyncOrchestrator:
                 "Les sources ERP requises ne sont pas configurées.",
                 code="erp_sync_source_not_configured",
             )
-        try:
-            projects = tuple(source.list_projects())
-        except Exception as exc:
-            if isinstance(exc, ApplicationError):
-                raise
-            raise ApplicationUnavailableError(
-                "La lecture des projets Acumatica a échoué.",
-                code="acumatica_project_read_failed",
-            ) from exc
+        if projects_snapshot is not None:
+            projects = tuple(projects_snapshot)
+        else:
+            try:
+                projects = tuple(source.list_projects())
+            except Exception as exc:
+                if isinstance(exc, ApplicationError):
+                    raise
+                raise ApplicationUnavailableError(
+                    "La lecture des projets Acumatica a échoué.",
+                    code="acumatica_project_read_failed",
+                ) from exc
         self._validate_project_capture(projects)
 
         # Freeze the post-project active target set before mutation. Absence from
