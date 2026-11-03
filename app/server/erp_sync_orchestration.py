@@ -1110,16 +1110,29 @@ class ErpSyncOrchestrator:
                             code="erp_sync_global_validation_failed",
                             context={"counter": run_field},
                         )
-        except (ApplicationConflictError, ErpSyncFenceLost):
+        except ErpSyncFenceLost:
+            # Fence loss is pure loss of authority. A stale generation must not
+            # publish recovery/quarantine state or otherwise poison its replacement.
+            raise
+        except ApplicationConflictError:
             if self._evidence is not None:
-                self._evidence.mark_recovery_required(
-                    attempt_id=attempt_id,
-                    reason_code="erp_sync_global_validation_failed",
-                )
-                self._evidence.quarantine_attempt_provenance(
-                    attempt_id=attempt_id,
-                    reason_code="erp_sync_global_validation_failed",
-                )
+                with transactional_session(self._session_factory) as session:
+                    SqlErpSyncControlRepository.guard_session(
+                        session,
+                        attempt_id=attempt_id,
+                        generation=generation,
+                        settings=self._settings,
+                    )
+                    self._evidence.mark_recovery_required_in_session(
+                        session,
+                        attempt_id=attempt_id,
+                        reason_code="erp_sync_global_validation_failed",
+                    )
+                    self._evidence.quarantine_attempt_provenance_in_session(
+                        session,
+                        attempt_id=attempt_id,
+                        reason_code="erp_sync_global_validation_failed",
+                    )
             raise
 
     def _execute_attempt(
