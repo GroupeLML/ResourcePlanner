@@ -18,8 +18,11 @@ from app.application import (
     TaskCatalogProjectSnapshot,
 )
 from app.server.erp_sync_evidence import (
+    ERP_EVIDENCE_CODEC_VERSION,
     ErpSyncEvidenceService,
     ErpSyncEvidenceSettings,
+    canonical_json_bytes,
+    decode_canonical_json_bytes,
 )
 from app.application.erp_sync_scheduler import ErpSyncSchedulerSettings
 from app.infrastructure.smtp import FernetSecretCipher
@@ -194,6 +197,48 @@ class ErpSyncEvidenceTests(unittest.TestCase):
         self.assertEqual(len(chunks), 1)
         self.assertNotIn("SENSITIVE-EVIDENCE-MARKER", chunks[0].encrypted_payload)
         self.assertEqual(self.service.load_source(manifest_id=captured.manifest_id), payload)
+
+    def test_typed_codec_round_trips_datetime_decimal_and_multibyte_payload(self) -> None:
+        observed = datetime(2026, 11, 3, 4, 59, 59, tzinfo=timezone.utc)
+        payload = {
+            "observed_at": observed,
+            "amount": Decimal("125.0000"),
+            "accented": "é" * (530 * 1024),
+            "flags": [True, False, None, 7, "texte"],
+        }
+        decoded = decode_canonical_json_bytes(canonical_json_bytes(payload))
+        self.assertEqual(decoded["observed_at"], observed)
+        self.assertEqual(decoded["amount"], Decimal("125.0000"))
+        self.assertEqual(decoded["accented"], payload["accented"])
+
+        _control, _occurrence, attempt = self._attempt("multibyte-codec")
+        captured = self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload=payload,
+            row_count=1,
+        )
+        loaded = self.service.load_source(manifest_id=captured.manifest_id)
+        self.assertEqual(loaded["observed_at"], observed)
+        self.assertEqual(loaded["amount"], Decimal("125.0000"))
+        self.assertEqual(loaded["accented"], payload["accented"])
+        with self.factory() as session:
+            manifest = session.get(ErpSyncEvidenceManifest, captured.manifest_id)
+            self.assertGreater(int(manifest.chunk_count), 1)
+
+    def test_unknown_typed_codec_version_fails_closed(self) -> None:
+        payload = (
+            '{"codec_version":'
+            + str(ERP_EVIDENCE_CODEC_VERSION + 1)
+            + ',"payload":{"value":"future"}}'
+        ).encode("utf-8")
+        with self.assertRaises(Exception) as raised:
+            decode_canonical_json_bytes(payload)
+        self.assertEqual(
+            getattr(raised.exception, "code", None),
+            "erp_sync_evidence_codec_incompatible",
+        )
 
     def test_future_evidence_protocol_is_persistable_but_current_reader_fails_closed(self) -> None:
         _control, _occurrence, attempt = self._attempt("future-evidence-protocol")
@@ -793,6 +838,135 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             self.assertEqual(restored.client, "Client A")
             self.assertEqual(restored.status, "Actif")
             self.assertEqual(restored.co_managers_version, 7)
+
+    def test_compensation_rejects_elapsed_expiration_before_purge(self) -> None:
+        control, _occurrence, attempt = self._attempt("compensation-expired")
+        captured = self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"records": [{"number": "EXP"}]},
+            row_count=1,
+        )
+        with transactional_session(self.factory) as session:
+            row = Project(
+                id="COMP-EXPIRED",
+                erp_external_id="EXP-1",
+                number="COMP-EXP",
+                name="Expired",
+                status="Actif",
+            )
+            session.add(row)
+            session.flush()
+            evidence_id = self.service.record_before_in_session(
+                session,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                unit_type="PROJECT_SNAPSHOT",
+                entity_type="PROJECT",
+                entity_key="EXP-1",
+                before=None,
+            )
+            self.service.record_after_in_session(
+                session,
+                evidence_id=evidence_id,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                after={
+                    "erp_external_id": row.erp_external_id,
+                    "number": row.number,
+                    "name": row.name,
+                    "client": row.client,
+                    "project_manager_external_id": row.project_manager_external_id,
+                    "project_manager_name": row.project_manager_name,
+                    "status": row.status,
+                },
+            )
+            session.get(
+                ErpSyncEvidenceManifest,
+                captured.manifest_id,
+            ).expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        with self.assertRaises(Exception) as raised:
+            self.service.compensation_preview(attempt_id=attempt.id)
+        self.assertEqual(
+            getattr(raised.exception, "code", None),
+            "erp_sync_compensation_evidence_expired",
+        )
+
+    def test_compensation_rejects_tampered_before_ciphertext(self) -> None:
+        control, _occurrence, attempt = self._attempt("compensation-before-tamper")
+        self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"records": [{"number": "TAMPER"}]},
+            row_count=1,
+        )
+        with transactional_session(self.factory) as session:
+            row = Project(
+                id="COMP-TAMPER",
+                erp_external_id="TAMPER-1",
+                number="COMP-TAMPER",
+                name="Before",
+                status="Actif",
+            )
+            session.add(row)
+            session.flush()
+            before = {
+                "erp_external_id": row.erp_external_id,
+                "number": row.number,
+                "name": row.name,
+                "client": row.client,
+                "project_manager_external_id": row.project_manager_external_id,
+                "project_manager_name": row.project_manager_name,
+                "status": row.status,
+            }
+            evidence_id = self.service.record_before_in_session(
+                session,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                unit_type="PROJECT_SNAPSHOT",
+                entity_type="PROJECT",
+                entity_key=row.erp_external_id,
+                before=before,
+            )
+            row.name = "After"
+            self.service.record_after_in_session(
+                session,
+                evidence_id=evidence_id,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                after={**before, "name": "After"},
+            )
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        with transactional_session(self.factory) as session:
+            evidence = session.get(ErpSyncMutationEvidence, evidence_id)
+            evidence.encrypted_before = self.service._encrypt_bytes(
+                canonical_json_bytes({**before, "name": "Forged"})
+            )
+        with self.assertRaises(Exception) as raised:
+            self.service.compensation_preview(attempt_id=attempt.id)
+        self.assertEqual(
+            getattr(raised.exception, "code", None),
+            "erp_sync_checkpoint_before_integrity_invalid",
+        )
 
     def test_compensation_preview_refuses_changed_current_erp_state(self) -> None:
         control, _occurrence, attempt = self._attempt("compensation-conflict")
