@@ -219,6 +219,38 @@ def upgrade() -> None:
     )
 
     op.create_table(
+        "erp_sync_project_quality",
+        sa.Column("project_number", sa.String(length=64), nullable=False),
+        sa.Column("producer_attempt_id", sa.String(length=36), nullable=True),
+        sa.Column("quality_state", sa.String(length=16), nullable=False),
+        sa.Column("source_observed_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("validated_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("reason_code", sa.String(length=128), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.CheckConstraint(
+            "quality_state IN ('VALID','STALE','UNKNOWN','QUARANTINED')",
+            name="erp_sync_project_quality_values",
+        ),
+        sa.ForeignKeyConstraint(
+            ["producer_attempt_id"],
+            ["erp_sync_attempts.id"],
+            ondelete="SET NULL",
+        ),
+        sa.PrimaryKeyConstraint("project_number"),
+    )
+    op.create_index(
+        "ix_erp_sync_project_quality_attempt",
+        "erp_sync_project_quality",
+        ["producer_attempt_id"],
+    )
+    op.create_index(
+        "ix_erp_sync_project_quality_state",
+        "erp_sync_project_quality",
+        ["quality_state"],
+    )
+
+    op.create_table(
         "erp_sync_recovery_state",
         sa.Column("id", sa.String(length=36), nullable=False),
         sa.Column("attempt_id", sa.String(length=36), nullable=False),
@@ -280,6 +312,15 @@ def downgrade() -> None:
     op.drop_table("erp_sync_compensation_receipts")
     op.drop_index("ix_erp_sync_recovery_state", table_name="erp_sync_recovery_state")
     op.drop_table("erp_sync_recovery_state")
+    op.drop_index(
+        "ix_erp_sync_project_quality_state",
+        table_name="erp_sync_project_quality",
+    )
+    op.drop_index(
+        "ix_erp_sync_project_quality_attempt",
+        table_name="erp_sync_project_quality",
+    )
+    op.drop_table("erp_sync_project_quality")
     op.drop_index(
         "ix_erp_sync_mutation_evidence_attempt",
         table_name="erp_sync_mutation_evidence",
