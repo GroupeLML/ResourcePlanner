@@ -94,6 +94,8 @@ class TaskCatalogProjectSnapshot:
     source_rows: int
     rejected_rows: int
     items: tuple[TaskCatalogItem, ...]
+    hard_error_code: str | None = None
+    hard_error_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
