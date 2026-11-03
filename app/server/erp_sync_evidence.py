@@ -1225,6 +1225,8 @@ class ErpSyncEvidenceService:
         successful: bool,
     ) -> None:
         from ..infrastructure.sql import (
+            RECOVERY_AVAILABLE,
+            RECOVERY_NONE,
             RECOVERY_REQUIRED,
             ErpSyncEvidenceManifest,
             ErpSyncEvidenceReservation,
@@ -1244,7 +1246,6 @@ class ErpSyncEvidenceService:
                     ErpSyncRecoveryState.attempt_id == attempt_id
                 )
             )
-            pin = recovery is not None and recovery.state == RECOVERY_REQUIRED
             from ..infrastructure.sql import (
                 EVIDENCE_PROOF_CHECKPOINT,
                 EVIDENCE_SOURCE_CHECKPOINT,
@@ -1300,6 +1301,21 @@ class ErpSyncEvidenceService:
                         for row in mutation_rows
                     ]
                 )
+
+            if recovery is None:
+                recovery = ErpSyncRecoveryState(
+                    attempt_id=attempt_id,
+                    state=RECOVERY_AVAILABLE if mutation_rows else RECOVERY_NONE,
+                    pinned=False,
+                )
+                session.add(recovery)
+            elif (
+                recovery.state == RECOVERY_NONE
+                and mutation_rows
+            ):
+                recovery.state = RECOVERY_AVAILABLE
+            pin = recovery.state == RECOVERY_REQUIRED
+
             for manifest in session.scalars(
                 select(ErpSyncEvidenceManifest).where(
                     ErpSyncEvidenceManifest.attempt_id == attempt_id
@@ -1927,7 +1943,9 @@ class ErpSyncEvidenceService:
 
             if affected_attempts:
                 from ..infrastructure.sql import (
+                    RECOVERY_EXPIRED,
                     RECOVERY_REQUIRED,
+                    RECOVERY_RESOLVED,
                     ErpSyncEvidenceReservation,
                     ErpSyncMutationEvidence,
                     ErpSyncRecoveryState,
@@ -1965,4 +1983,13 @@ class ErpSyncEvidenceService:
                         if reservation is not None:
                             reservation.used_bytes = 0
                             reservation.used_plaintext_bytes = 0
+                        if (
+                            recovery is not None
+                            and recovery.state not in {
+                                RECOVERY_REQUIRED,
+                                RECOVERY_RESOLVED,
+                            }
+                        ):
+                            recovery.state = RECOVERY_EXPIRED
+                            recovery.pinned = False
         return purged
