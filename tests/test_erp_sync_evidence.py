@@ -1859,6 +1859,12 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             attempt_id=attempt.id,
             reason_code="multi_record_compensation",
         )
+        with transactional_session(self.factory) as session:
+            session.get(
+                ErpSyncControl,
+                "ERP_PROJECTS_TASKS",
+            ).last_success_attempt_id = attempt.id
+        original_status = control.get_attempt(attempt.id).status
         preview = self.service.compensation_preview(attempt_id=attempt.id)
         self.assertTrue(preview["can_confirm"])
         self.assertEqual(preview["eligible_records"], 2)
@@ -1873,6 +1879,10 @@ class ErpSyncEvidenceTests(unittest.TestCase):
         with self.factory() as session:
             self.assertEqual(session.get(Project, "COMP-MULTI-A").name, "Before A")
             self.assertEqual(session.get(Project, "COMP-MULTI-B").name, "Before B")
+            control_row = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+            persisted_attempt = session.get(ErpSyncAttempt, attempt.id)
+        self.assertIsNone(control_row.last_success_attempt_id)
+        self.assertEqual(persisted_attempt.status, original_status)
 
     def test_compensation_refuses_changed_local_principal_and_recomputes_derived_cost(self) -> None:
         control, _occurrence, attempt = self._attempt("compensation-task-principal")
