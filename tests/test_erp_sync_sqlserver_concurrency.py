@@ -469,7 +469,11 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
         orchestrator._execute_attempt(first.id, first.generation)
         self.assertEqual(repository.get_attempt(first.id).status, "FAILED")
 
-        manifests = self.evidence.list_attempt_sources(attempt_id=first.id)
+        manifests = tuple(
+            row
+            for row in self.evidence.list_attempt_sources(attempt_id=first.id)
+            if row["proof_type"] == "SOURCE"
+        )
         self.assertEqual({row["source_type"] for row in manifests}, {"PROJECTS", "TASKS"})
         for manifest in manifests:
             self.evidence.approve_baseline(
