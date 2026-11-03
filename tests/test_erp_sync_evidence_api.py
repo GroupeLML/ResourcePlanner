@@ -7,7 +7,7 @@ import unittest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from app.application.erp_sync_evidence import ErpSyncEvidenceSettings
+from app.server.erp_sync_evidence import ErpSyncEvidenceSettings
 from app.application.erp_sync_scheduler import ErpSyncSchedulerSettings
 from app.application.security import AuthPrincipal, PERMISSION_SYNC_PROJECTS
 from app.infrastructure.smtp import FernetSecretCipher
