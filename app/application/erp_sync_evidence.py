@@ -1561,7 +1561,7 @@ class ErpSyncEvidenceService:
                         restored_manager_name = before.get("project_manager_name")
                         if previous_manager_id != restored_manager_id:
                             import json as _json
-                            from ..application.project_managers import (
+                            from .project_managers import (
                                 PROJECT_MANAGER_SOURCE_ERP,
                             )
                             from ..infrastructure.sql.project_manager_models import (
