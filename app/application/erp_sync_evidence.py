@@ -15,6 +15,7 @@ from .errors import (
     ApplicationUnavailableError,
     ApplicationValidationError,
 )
+from .erp_sync_scheduler import ErpSyncSchedulerSettings
 from .smtp_settings import SecretCipherPort
 
 
@@ -148,10 +149,12 @@ class ErpSyncEvidenceService:
         *,
         cipher: SecretCipherPort | None,
         settings: ErpSyncEvidenceSettings,
+        control_settings: ErpSyncSchedulerSettings | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._cipher = cipher
         self.settings = settings
+        self._control_settings = control_settings
 
     @property
     def crypto_available(self) -> bool:
@@ -982,15 +985,20 @@ class ErpSyncEvidenceService:
                 "status": project.status,
             }
         if row.entity_type == "TASK":
-            task = session.scalar(
-                select(TaskCatalogEntry).where(
-                    (TaskCatalogEntry.erp_task_id == row.entity_key)
-                    | (
-                        (TaskCatalogEntry.project_number + ":" + TaskCatalogEntry.task_code)
-                        == row.entity_key
+            if ":" in row.entity_key:
+                project_number, task_code = row.entity_key.split(":", 1)
+                task = session.scalar(
+                    select(TaskCatalogEntry).where(
+                        TaskCatalogEntry.project_number == project_number,
+                        TaskCatalogEntry.task_code == task_code,
                     )
                 )
-            )
+            else:
+                task = session.scalar(
+                    select(TaskCatalogEntry).where(
+                        TaskCatalogEntry.erp_task_id == row.entity_key
+                    )
+                )
             if task is None:
                 return None
             return {
@@ -1094,6 +1102,18 @@ class ErpSyncEvidenceService:
                 code="erp_sync_compensation_identity_required",
             )
         with transactional_session(self._session_factory) as session:
+            if self._control_settings is None:
+                raise ApplicationUnavailableError(
+                    "Le profil de contrôle ERP requis pour la compensation est absent.",
+                    code="erp_sync_recovery_control_unavailable",
+                )
+            from ..infrastructure.sql.erp_sync_control_repository import (
+                SqlErpSyncControlRepository,
+            )
+            SqlErpSyncControlRepository.guard_recovery_session(
+                session,
+                settings=self._control_settings,
+            )
             existing = session.scalar(
                 select(ErpSyncCompensationReceipt).where(
                     ErpSyncCompensationReceipt.command_identity == identity
@@ -1177,15 +1197,20 @@ class ErpSyncEvidenceService:
                             setattr(project, field, before.get(field))
                     affected += 1
                 elif row.entity_type == "TASK":
-                    task = session.scalar(
-                        select(TaskCatalogEntry).where(
-                            (TaskCatalogEntry.erp_task_id == row.entity_key)
-                            | (
-                                (TaskCatalogEntry.project_number + ":" + TaskCatalogEntry.task_code)
-                                == row.entity_key
+                    if ":" in row.entity_key:
+                        project_number, task_code = row.entity_key.split(":", 1)
+                        task = session.scalar(
+                            select(TaskCatalogEntry).where(
+                                TaskCatalogEntry.project_number == project_number,
+                                TaskCatalogEntry.task_code == task_code,
                             )
                         )
-                    )
+                    else:
+                        task = session.scalar(
+                            select(TaskCatalogEntry).where(
+                                TaskCatalogEntry.erp_task_id == row.entity_key
+                            )
+                        )
                     if task is None:
                         raise ApplicationConflictError(
                             "La tâche checkpointée n'existe plus.",
