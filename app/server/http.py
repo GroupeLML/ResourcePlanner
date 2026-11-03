@@ -535,6 +535,7 @@ def create_api_app(
             factory,
             cipher=smtp_cipher,
             settings=erp_sync_evidence_settings,
+            control_settings=resolved_erp_sync_settings,
         )
         if erp_sync_evidence_settings is not None
         else None
