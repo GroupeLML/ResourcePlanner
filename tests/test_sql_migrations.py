@@ -21,7 +21,7 @@ MIGRATIONS = ROOT / "migrations"
 VERSIONS = MIGRATIONS / "versions"
 BASELINE_FILE = VERSIONS / "0001_v2_production_baseline.py"
 BASELINE_REVISION = "v2_production_baseline"
-HEAD_REVISION = "0030_erp_sync_retry_identity"
+HEAD_REVISION = "0031_erp_sync_evidence_checkpoint"
 
 
 def alembic_config(database_path: Path) -> Config:
@@ -99,6 +99,7 @@ class SqlMigrationTests(unittest.TestCase):
                 "0028_resource_residence_city.py",
                 "0029_erp_sync_scheduler_control.py",
                 "0030_erp_sync_retry_identity.py",
+                "0031_erp_sync_evidence_checkpoint.py",
             ],
         )
 
@@ -117,6 +118,7 @@ class SqlMigrationTests(unittest.TestCase):
             [revision.revision for revision in script.walk_revisions()],
             [
                 HEAD_REVISION,
+                "0030_erp_sync_retry_identity",
                 "0029_erp_sync_scheduler_control",
                 "0028_resource_residence_city",
                 "0027_placement_not_before_date",
@@ -197,6 +199,18 @@ class SqlMigrationTests(unittest.TestCase):
             self.assertIn("command_identity", attempt_columns)
             self.assertIn("trigger_kind", attempt_columns)
             self.assertNotIn("trigger", attempt_columns)
+            self.assertTrue(
+                {
+                    "erp_sync_evidence_manifests",
+                    "erp_sync_evidence_chunks",
+                    "erp_sync_evidence_reservations",
+                    "erp_sync_baselines",
+                    "erp_sync_plausibility_exceptions",
+                    "erp_sync_mutation_evidence",
+                    "erp_sync_recovery_state",
+                    "erp_sync_compensation_receipts",
+                }.issubset(set(inspector.get_table_names()))
+            )
             engine.dispose()
 
             command.downgrade(config, "0028_resource_residence_city")
