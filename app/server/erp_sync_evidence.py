@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime, timedelta, timezone
+import base64
 from decimal import Decimal
 import hashlib
 import json
@@ -20,6 +21,84 @@ from ..application.smtp_settings import SecretCipherPort
 
 
 ERP_EVIDENCE_CHUNK_BYTES = 512 * 1024
+ERP_EVIDENCE_CODEC_VERSION = 1
+
+
+def _typed_value(value: Any) -> Any:
+    if is_dataclass(value):
+        value = asdict(value)
+    if isinstance(value, Mapping):
+        return {
+            str(key): _typed_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, (tuple, list)):
+        return [_typed_value(item) for item in value]
+    if isinstance(value, Decimal):
+        return {"$erp_type": "decimal", "value": format(value, "f")}
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return {
+            "$erp_type": "datetime",
+            "value": value.astimezone(timezone.utc).isoformat(),
+        }
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return {"$erp_type": "string", "value": str(value)}
+
+
+def _from_typed_value(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_from_typed_value(item) for item in value]
+    if isinstance(value, dict):
+        if set(value) == {"$erp_type", "value"}:
+            kind = value.get("$erp_type")
+            raw = value.get("value")
+            if kind == "decimal":
+                return Decimal(str(raw))
+            if kind == "datetime":
+                parsed = datetime.fromisoformat(str(raw))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return parsed
+            if kind == "string":
+                return str(raw)
+            raise ApplicationConflictError(
+                "La version typée de la preuve ERP est incompatible.",
+                code="erp_sync_evidence_codec_incompatible",
+            )
+        return {str(key): _from_typed_value(item) for key, item in value.items()}
+    return value
+
+
+def canonical_json_bytes(value: Any) -> bytes:
+    envelope = {
+        "codec_version": ERP_EVIDENCE_CODEC_VERSION,
+        "payload": _typed_value(value),
+    }
+    return json.dumps(
+        envelope,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def decode_canonical_json_bytes(payload: bytes) -> Any:
+    try:
+        envelope = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ApplicationConflictError(
+            "Le contenu normalisé de la preuve ERP est invalide.",
+            code="erp_sync_evidence_payload_invalid",
+        ) from exc
+    if not isinstance(envelope, dict) or int(envelope.get("codec_version") or 0) != ERP_EVIDENCE_CODEC_VERSION:
+        raise ApplicationConflictError(
+            "La version du codec de preuve ERP est incompatible.",
+            code="erp_sync_evidence_codec_incompatible",
+        )
+    return _from_typed_value(envelope.get("payload"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,36 +152,6 @@ class ErpSyncPlausibilityResult:
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _json_value(value: Any) -> Any:
-    if is_dataclass(value):
-        return {key: _json_value(item) for key, item in asdict(value).items()}
-    if isinstance(value, Mapping):
-        return {
-            str(key): _json_value(item)
-            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
-        }
-    if isinstance(value, (tuple, list)):
-        return [_json_value(item) for item in value]
-    if isinstance(value, Decimal):
-        return format(value, "f")
-    if isinstance(value, datetime):
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc).isoformat()
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    return str(value)
-
-
-def canonical_json_bytes(value: Any) -> bytes:
-    return json.dumps(
-        _json_value(value),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
 
 
 def content_sha256(value: Any) -> str:
@@ -170,12 +219,14 @@ class ErpSyncEvidenceService:
 
     def _encrypt_bytes(self, payload: bytes) -> str:
         cipher = self._require_cipher()
-        return cipher.encrypt(payload.decode("utf-8"))
+        encoded = base64.b64encode(payload).decode("ascii")
+        return cipher.encrypt(encoded)
 
     def _decrypt_bytes(self, encrypted: str) -> bytes:
         cipher = self._require_cipher()
         try:
-            return cipher.decrypt(encrypted).encode("utf-8")
+            encoded = cipher.decrypt(encrypted)
+            return base64.b64decode(encoded.encode("ascii"), validate=True)
         except Exception as exc:
             raise ApplicationConflictError(
                 "Une preuve ERP ne peut pas être déchiffrée.",
@@ -477,13 +528,7 @@ class ErpSyncEvidenceService:
                     "L'intégrité de la preuve ERP est invalide.",
                     code="erp_sync_evidence_integrity_invalid",
                 )
-        try:
-            return json.loads(payload.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ApplicationConflictError(
-                "Le contenu normalisé de la preuve ERP est invalide.",
-                code="erp_sync_evidence_payload_invalid",
-            ) from exc
+        return decode_canonical_json_bytes(payload)
 
     def mark_sources_ready(self, *, attempt_id: str) -> None:
         from ..infrastructure.sql import (
@@ -672,13 +717,24 @@ class ErpSyncEvidenceService:
                 before = None
                 after = None
                 if row.encrypted_before:
-                    before = json.loads(
-                        self._decrypt_bytes(row.encrypted_before).decode("utf-8")
-                    )
+                    before_bytes = self._decrypt_bytes(row.encrypted_before)
+                    if hashlib.sha256(before_bytes).hexdigest() != row.before_sha256:
+                        raise ApplicationConflictError(
+                            "L'intégrité de la before-image ERP est invalide.",
+                            code="erp_sync_checkpoint_before_integrity_invalid",
+                        )
+                    before = decode_canonical_json_bytes(before_bytes)
                 if row.encrypted_after:
-                    after = json.loads(
-                        self._decrypt_bytes(row.encrypted_after).decode("utf-8")
-                    )
+                    after_bytes = self._decrypt_bytes(row.encrypted_after)
+                    if (
+                        row.after_sha256 is None
+                        or hashlib.sha256(after_bytes).hexdigest() != row.after_sha256
+                    ):
+                        raise ApplicationConflictError(
+                            "L'intégrité de la after-image ERP est invalide.",
+                            code="erp_sync_checkpoint_after_integrity_invalid",
+                        )
+                    after = decode_canonical_json_bytes(after_bytes)
                 result.append((row, before, after))
             return tuple(result)
 
@@ -1419,7 +1475,15 @@ class ErpSyncEvidenceService:
                     "before_sha256": row.before_sha256,
                     "after_sha256": row.after_sha256,
                 }
-                for row, _before, _after in rows
+                for row, _before, _after in sorted(
+                    rows,
+                    key=lambda item: (
+                        str(item[0].unit_type),
+                        str(item[0].entity_type),
+                        str(item[0].entity_key),
+                        str(item[0].id),
+                    ),
+                )
                 if row.committed_at is not None and row.after_sha256 is not None
             ],
         }
@@ -1550,8 +1614,10 @@ class ErpSyncEvidenceService:
                 "Le profil de preuve ERP n'est plus compatible avec le contrôle courant.",
                 code="erp_sync_evidence_configuration_incompatible",
             )
+        now = _utc_now()
         if any(
             row.state in {EVIDENCE_STATE_EXPIRED, EVIDENCE_STATE_PURGED}
+            or (row.expires_at is not None and row.expires_at <= now)
             for row in manifests
         ):
             raise ApplicationConflictError(
@@ -1748,16 +1814,27 @@ class ErpSyncEvidenceService:
             )
             payload_rows = []
             for row in rows:
-                before = (
-                    json.loads(self._decrypt_bytes(row.encrypted_before).decode("utf-8"))
-                    if row.encrypted_before
-                    else None
-                )
-                after = (
-                    json.loads(self._decrypt_bytes(row.encrypted_after).decode("utf-8"))
-                    if row.encrypted_after
-                    else None
-                )
+                before = None
+                after = None
+                if row.encrypted_before:
+                    before_bytes = self._decrypt_bytes(row.encrypted_before)
+                    if hashlib.sha256(before_bytes).hexdigest() != row.before_sha256:
+                        raise ApplicationConflictError(
+                            "L'intégrité de la before-image ERP est invalide.",
+                            code="erp_sync_checkpoint_before_integrity_invalid",
+                        )
+                    before = decode_canonical_json_bytes(before_bytes)
+                if row.encrypted_after:
+                    after_bytes = self._decrypt_bytes(row.encrypted_after)
+                    if (
+                        row.after_sha256 is None
+                        or hashlib.sha256(after_bytes).hexdigest() != row.after_sha256
+                    ):
+                        raise ApplicationConflictError(
+                            "L'intégrité de la after-image ERP est invalide.",
+                            code="erp_sync_checkpoint_after_integrity_invalid",
+                        )
+                    after = decode_canonical_json_bytes(after_bytes)
                 payload_rows.append((row, before, after))
             if self._preview_hash(
                 attempt_id,
