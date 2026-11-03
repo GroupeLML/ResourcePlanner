@@ -682,6 +682,36 @@ class ErpSyncEvidenceTests(unittest.TestCase):
         self.assertIsNotNone(evidence.committed_at)
         orchestrator.shutdown()
 
+    def test_incompatible_peer_evidence_policy_is_rejected_for_same_attempt(self) -> None:
+        _control, _occurrence, attempt = self._attempt("policy-peer")
+        self.service.reserve_attempt(attempt_id=attempt.id)
+        frozen = self.service.bind_attempt_policy(
+            attempt_id=attempt.id,
+            generation=attempt.generation,
+        )
+        peer = ErpSyncEvidenceService(
+            self.factory,
+            cipher=self.service._cipher,
+            settings=ErpSyncEvidenceSettings(
+                min_source_ratio=0.75,
+                max_evidence_mib=16,
+                evidence_budget_mib=32,
+            ),
+            control_settings=self.control_settings,
+        )
+        with self.assertRaises(Exception) as raised:
+            peer.bind_attempt_policy(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+            )
+        self.assertEqual(
+            getattr(raised.exception, "code", None),
+            "erp_sync_policy_fingerprint_changed",
+        )
+        with self.factory() as session:
+            persisted = session.get(ErpSyncAttempt, attempt.id)
+        self.assertEqual(persisted.policy_fingerprint, frozen)
+
     def test_policy_change_between_project_units_preserves_first_and_blocks_second(self) -> None:
         control, _occurrence, attempt = self._attempt("policy-change-between-projects")
         self.service.reserve_attempt(attempt_id=attempt.id)
