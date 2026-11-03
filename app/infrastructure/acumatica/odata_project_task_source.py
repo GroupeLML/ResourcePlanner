@@ -334,6 +334,7 @@ class ODataProjectTaskSource:
         self._settings = settings
         self._transport = transport
         self._request_headers = dict(request_headers or {})
+        self._last_read_evidence: dict[str, object] | None = None
 
     def _url(self) -> str:
         base = self._settings.base_url.rstrip("/") + "/"
@@ -777,9 +778,28 @@ class ODataProjectTaskSource:
             len(raw_rows),
             duration_ms,
         )
+        self._last_read_evidence = {
+            "protocol": "odata",
+            "feed_path": self._settings.feed_path,
+            "filter": "AccountGroup eq 'DEPMO'",
+            "pagination_mode": "top_skip",
+            "orderby": "TaskID asc",
+            "page_size": int(self._settings.page_size),
+            "pages": page_count,
+            "rows": len(raw_rows),
+            "targets": len(targets),
+            "complete": True,
+        }
         return TaskCatalogPortfolioSnapshot(
             source_rows=len(raw_rows),
             source_pages=page_count,
             snapshots=snapshots,
+        )
+
+    def last_read_evidence(self) -> dict[str, object] | None:
+        return (
+            dict(self._last_read_evidence)
+            if self._last_read_evidence is not None
+            else None
         )
 
