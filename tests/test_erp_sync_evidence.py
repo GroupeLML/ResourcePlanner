@@ -385,6 +385,116 @@ class ErpSyncEvidenceTests(unittest.TestCase):
                 )
             )
 
+    def test_global_hard_validation_failure_quarantines_provenance_without_rollback(self) -> None:
+        projects = ProjectSource((project("P-GLOBAL", external_id="6001"),))
+        tasks = PortfolioTaskSource({"P-GLOBAL": snapshot("P-GLOBAL", task_id="96001")})
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        control = SqlErpSyncControlRepository(self.factory)
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="operator",
+            idempotency_key="global-hard-validation",
+            settings=self.control_settings,
+        )
+        first = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="operator",
+            settings=self.control_settings,
+        )
+        self.assertIsNotNone(first)
+        orchestrator._execute_attempt(first.id, first.generation)
+        self.assertEqual(control.get_attempt(first.id).status, "FAILED")
+        with self.factory() as session:
+            source_manifests = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceManifest).where(
+                        ErpSyncEvidenceManifest.attempt_id == first.id,
+                        ErpSyncEvidenceManifest.proof_type == "SOURCE",
+                    )
+                )
+            )
+        for manifest in source_manifests:
+            self.service.approve_baseline(
+                manifest_id=manifest.id,
+                actor_name="admin",
+                reason="Reviewed bootstrap for global hard validation",
+            )
+
+        retry = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="operator",
+            settings=self.control_settings,
+            command_identity="retry:global-hard-validation",
+        )
+        self.assertIsNotNone(retry)
+        original_validate = orchestrator._validate_full_publication
+
+        def corrupt_then_validate(*, attempt_id: str, generation: int) -> None:
+            attempt = control.get_attempt(attempt_id)
+            self.assertIsNotNone(attempt.task_sync_run_id)
+            with transactional_session(self.factory) as session:
+                run = session.get(
+                    AcumaticaProjectTaskSyncRun,
+                    attempt.task_sync_run_id,
+                )
+                self.assertIsNotNone(run)
+                run.projects_processed += 1
+            original_validate(
+                attempt_id=attempt_id,
+                generation=generation,
+            )
+
+        with patch.object(
+            orchestrator,
+            "_validate_full_publication",
+            side_effect=corrupt_then_validate,
+        ):
+            orchestrator._execute_attempt(retry.id, retry.generation)
+
+        failed = control.get_attempt(retry.id)
+        self.assertEqual(failed.status, "FAILED")
+        self.assertEqual(failed.error_code, "erp_sync_global_validation_failed")
+        self.assertIsNone(control.get_occurrence(occurrence.id).success_attempt_id)
+        with self.factory() as session:
+            self.assertIsNotNone(
+                session.scalar(select(Project).where(Project.number == "P-GLOBAL"))
+            )
+            self.assertIsNotNone(
+                session.scalar(
+                    select(TaskCatalogEntry).where(
+                        TaskCatalogEntry.project_number == "P-GLOBAL",
+                        TaskCatalogEntry.erp_task_id == "96001",
+                    )
+                )
+            )
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == retry.id
+                )
+            )
+            quality = session.get(ErpSyncProjectQuality, "P-GLOBAL")
+            self.assertIsNotNone(recovery)
+            self.assertEqual(recovery.state, "REQUIRED")
+            self.assertTrue(recovery.pinned)
+            self.assertIsNotNone(quality)
+            self.assertEqual(quality.quality_state, "QUARANTINED")
+            self.assertEqual(quality.producer_attempt_id, retry.id)
+        with self.assertRaisesRegex(Exception, "récupération ERP requise"):
+            orchestrator.run_now(
+                intent="PROJECTS_AND_ACTIVE_TASKS",
+                actor_name="operator",
+                idempotency_key="blocked-after-recovery",
+            )
+        orchestrator.shutdown()
+
     def test_compensation_restores_only_erp_owned_fields_and_is_idempotent(self) -> None:
         control, _occurrence, attempt = self._attempt("compensation")
         self.service.reserve_attempt(attempt_id=attempt.id)
