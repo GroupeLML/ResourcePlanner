@@ -1281,19 +1281,29 @@ class ErpSyncEvidenceService:
             return False
 
     @staticmethod
-    def _preview_hash(attempt_id: str, rows: Sequence[tuple[Any, Mapping[str, Any] | None, Mapping[str, Any] | None]]) -> str:
-        material = [
-            {
-                "attempt_id": attempt_id,
-                "evidence_id": row.id,
-                "entity_type": row.entity_type,
-                "entity_key": row.entity_key,
-                "before_sha256": row.before_sha256,
-                "after_sha256": row.after_sha256,
-            }
-            for row, _before, _after in rows
-            if row.committed_at is not None and row.after_sha256 is not None
-        ]
+    def _preview_hash(
+        attempt_id: str,
+        rows: Sequence[
+            tuple[Any, Mapping[str, Any] | None, Mapping[str, Any] | None]
+        ],
+        *,
+        control_generation: int,
+    ) -> str:
+        material = {
+            "attempt_id": attempt_id,
+            "control_generation": int(control_generation),
+            "evidence": [
+                {
+                    "evidence_id": row.id,
+                    "entity_type": row.entity_type,
+                    "entity_key": row.entity_key,
+                    "before_sha256": row.before_sha256,
+                    "after_sha256": row.after_sha256,
+                }
+                for row, _before, _after in rows
+                if row.committed_at is not None and row.after_sha256 is not None
+            ],
+        }
         return content_sha256(material)
 
     def _current_owned_state(self, session: Session, row: Any) -> Mapping[str, Any] | None:
@@ -1379,6 +1389,65 @@ class ErpSyncEvidenceService:
             }
         return None
 
+    @staticmethod
+    def _new_row_has_dependencies(
+        session: Session,
+        row: Any,
+    ) -> bool:
+        from ..infrastructure.sql import (
+            Project,
+            TaskCatalogEntry,
+            WorkforceRequest,
+            WorkPackage,
+        )
+
+        if row.entity_type == "PROJECT":
+            project = session.scalar(
+                select(Project).where(
+                    (Project.erp_external_id == row.entity_key)
+                    | (Project.number == row.entity_key)
+                )
+            )
+            if project is None:
+                return True
+            has_package = session.scalar(
+                select(WorkPackage.id)
+                .where(WorkPackage.project_id == project.id)
+                .limit(1)
+            )
+            has_request = session.scalar(
+                select(WorkforceRequest.id)
+                .where(WorkforceRequest.project_id == project.id)
+                .limit(1)
+            )
+            return has_package is not None or has_request is not None
+        if row.entity_type == "TASK":
+            if ":" in row.entity_key:
+                project_number, task_code = row.entity_key.split(":", 1)
+                task = session.scalar(
+                    select(TaskCatalogEntry).where(
+                        TaskCatalogEntry.project_number == project_number,
+                        TaskCatalogEntry.task_code == task_code,
+                    )
+                )
+            else:
+                task = session.scalar(
+                    select(TaskCatalogEntry).where(
+                        TaskCatalogEntry.erp_task_id == row.entity_key
+                    )
+                )
+            if task is None:
+                return True
+            return (
+                session.scalar(
+                    select(WorkPackage.id)
+                    .where(WorkPackage.task_catalog_item_id == task.id)
+                    .limit(1)
+                )
+                is not None
+            )
+        return False
+
     def compensation_preview(self, *, attempt_id: str) -> dict[str, Any]:
         from ..infrastructure.sql import (
             EVIDENCE_STATE_EXPIRED,
@@ -1396,10 +1465,11 @@ class ErpSyncEvidenceService:
                 code="erp_sync_recovery_control_unavailable",
             )
         with transactional_session(self._session_factory) as session:
-            SqlErpSyncControlRepository.guard_recovery_session(
+            control = SqlErpSyncControlRepository.guard_recovery_session(
                 session,
                 settings=self._control_settings,
             )
+            control_generation = int(control.generation)
             invalid_manifest = session.scalar(
                 select(ErpSyncEvidenceManifest.id)
                 .where(
@@ -1424,16 +1494,26 @@ class ErpSyncEvidenceService:
         conflicts: list[str] = []
         eligible = 0
         with self._session_factory() as session:
-            for row, _before, after in rows:
+            for row, before, after in rows:
                 if row.committed_at is None or row.after_sha256 is None or after is None:
                     continue
                 eligible += 1
                 current = self._current_owned_state(session, row)
                 if current is None or content_sha256(current) != row.after_sha256:
                     conflicts.append(f"{row.entity_type}:{row.entity_key}")
-        preview_hash = self._preview_hash(attempt_id, rows)
+                    continue
+                if before is None and self._new_row_has_dependencies(session, row):
+                    conflicts.append(
+                        f"dependency:{row.entity_type}:{row.entity_key}"
+                    )
+        preview_hash = self._preview_hash(
+            attempt_id,
+            rows,
+            control_generation=control_generation,
+        )
         return {
             "attempt_id": attempt_id,
+            "control_generation": control_generation,
             "preview_hash": preview_hash,
             "eligible_records": eligible,
             "conflict_count": len(conflicts),
@@ -1478,10 +1558,11 @@ class ErpSyncEvidenceService:
             from ..infrastructure.sql.erp_sync_control_repository import (
                 SqlErpSyncControlRepository,
             )
-            SqlErpSyncControlRepository.guard_recovery_session(
+            control = SqlErpSyncControlRepository.guard_recovery_session(
                 session,
                 settings=self._control_settings,
             )
+            control_generation = int(control.generation)
             existing = session.scalar(
                 select(ErpSyncCompensationReceipt).where(
                     ErpSyncCompensationReceipt.command_identity == identity
@@ -1520,7 +1601,11 @@ class ErpSyncEvidenceService:
                     else None
                 )
                 payload_rows.append((row, before, after))
-            if self._preview_hash(attempt_id, payload_rows) != str(preview_hash):
+            if self._preview_hash(
+                attempt_id,
+                payload_rows,
+                control_generation=control_generation,
+            ) != str(preview_hash):
                 raise ApplicationConflictError(
                     "La prévisualisation de compensation est périmée.",
                     code="erp_sync_compensation_preview_stale",
@@ -1532,6 +1617,12 @@ class ErpSyncEvidenceService:
                     raise ApplicationConflictError(
                         "L'état courant ne correspond plus au checkpoint.",
                         code="erp_sync_compensation_current_state_changed",
+                        context={"entity_type": row.entity_type},
+                    )
+                if before is None and self._new_row_has_dependencies(session, row):
+                    raise ApplicationConflictError(
+                        "Une nouvelle dépendance locale interdit la compensation.",
+                        code="erp_sync_compensation_dependency_changed",
                         context={"entity_type": row.entity_type},
                     )
                 if row.entity_type == "PROJECT":
