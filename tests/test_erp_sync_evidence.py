@@ -289,6 +289,80 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             )
         )
 
+    def test_expired_owner_with_committed_mutation_blocks_replacement_until_recovery(self) -> None:
+        control, occurrence, first = self._attempt("expired-owner-committed")
+        self.service.reserve_attempt(attempt_id=first.id)
+        self.service.bind_attempt_policy(
+            attempt_id=first.id,
+            generation=first.generation,
+        )
+        with transactional_session(self.factory) as session:
+            row = Project(
+                id="EXPIRED-COMMITTED",
+                erp_external_id="EXPIRED-COMMITTED-ERP",
+                number="EXPIRED-COMMITTED",
+                name="Committed before expiry",
+                status="Actif",
+            )
+            session.add(row)
+            session.flush()
+            evidence_id = self.service.record_before_in_session(
+                session,
+                attempt_id=first.id,
+                generation=first.generation,
+                unit_type="PROJECT_SNAPSHOT",
+                entity_type="PROJECT",
+                entity_key=row.erp_external_id,
+                before=None,
+            )
+            self.service.record_after_in_session(
+                session,
+                evidence_id=evidence_id,
+                attempt_id=first.id,
+                generation=first.generation,
+                after={
+                    "erp_external_id": row.erp_external_id,
+                    "number": row.number,
+                    "name": row.name,
+                    "client": row.client,
+                    "project_manager_external_id": row.project_manager_external_id,
+                    "project_manager_name": row.project_manager_name,
+                    "status": row.status,
+                },
+            )
+            control_row = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+            control_row.lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=10)
+
+        claim = control.claim_outcome(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="peer",
+            settings=self.control_settings,
+            command_identity="retry:expired-owner-committed",
+        )
+        self.assertIsNone(claim.attempt)
+        self.assertFalse(claim.admitted)
+        self.assertEqual(control.get_attempt(first.id).status, "INTERRUPTED")
+        with self.factory() as session:
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == first.id
+                )
+            )
+            control_row = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+            attempts = tuple(
+                session.scalars(
+                    select(ErpSyncAttempt).where(
+                        ErpSyncAttempt.occurrence_id == occurrence.id
+                    )
+                )
+            )
+        self.assertIsNotNone(recovery)
+        self.assertEqual(recovery.state, "REQUIRED")
+        self.assertTrue(recovery.pinned)
+        self.assertIsNone(control_row.owner_attempt_id)
+        self.assertEqual(len(attempts), 1)
+
     def test_stale_generation_cannot_publish_recovery_after_takeover(self) -> None:
         control, occurrence, first = self._attempt("stale-validation-recovery")
         self.service.reserve_attempt(attempt_id=first.id)
