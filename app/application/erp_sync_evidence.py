@@ -183,11 +183,31 @@ class ErpSyncEvidenceService:
             ) from exc
 
     def reserve_attempt(self, *, attempt_id: str) -> None:
-        from ..infrastructure.sql import ErpSyncEvidenceReservation
+        from ..infrastructure.sql import ErpSyncAttempt, ErpSyncEvidenceReservation
+        from ..infrastructure.sql.erp_sync_control_repository import (
+            SqlErpSyncControlRepository,
+        )
         from ..infrastructure.sql.session import transactional_session
 
         requested = self.settings.max_evidence_bytes
         with transactional_session(self._session_factory) as session:
+            if self._control_settings is None:
+                raise ApplicationUnavailableError(
+                    "Le profil de contrôle ERP requis pour la réservation de preuve est absent.",
+                    code="erp_sync_evidence_control_unavailable",
+                )
+            attempt = session.get(ErpSyncAttempt, attempt_id)
+            if attempt is None:
+                raise ApplicationValidationError(
+                    "La tentative ERP est introuvable.",
+                    code="erp_sync_attempt_not_found",
+                )
+            SqlErpSyncControlRepository.guard_session(
+                session,
+                attempt_id=attempt_id,
+                generation=int(attempt.generation),
+                settings=self._control_settings,
+            )
             existing = session.scalar(
                 select(ErpSyncEvidenceReservation).where(
                     ErpSyncEvidenceReservation.attempt_id == attempt_id
