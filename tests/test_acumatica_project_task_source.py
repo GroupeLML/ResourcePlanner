@@ -241,6 +241,54 @@ class ODataProjectTaskSourceTests(unittest.TestCase):
         self.assertEqual(first["$skip"], "0")
         self.assertEqual(second["$skip"], "2")
 
+    def test_portfolio_attributes_project_code_corruption_to_only_that_project(self) -> None:
+        payload = _feed(
+            _entry(
+                project_erp_id=5469,
+                project_number="WRONG-5118",
+                task_id=101,
+                task_code="216",
+                label="Corrupt A",
+            ),
+            _entry(
+                project_erp_id=5470,
+                project_number="5119",
+                task_id=201,
+                task_code="216",
+                label="Valid B",
+            ),
+        )
+        source = ODataProjectTaskSource(
+            ODataProjectTaskSourceSettings(
+                base_url="https://example.invalid",
+                page_size=10,
+            ),
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, content=payload, request=request)
+            ),
+        )
+        portfolio = source.fetch_project_snapshots(
+            project_targets=(("5469", "5118"), ("5470", "5119")),
+        )
+        by_project = {
+            snapshot.project_number: snapshot
+            for snapshot in portfolio.snapshots
+        }
+        self.assertEqual(
+            by_project["5118"].hard_error_code,
+            "acumatica_project_task_response_invalid",
+        )
+        self.assertEqual(
+            by_project["5118"].hard_error_reason,
+            "project_code_conflict",
+        )
+        self.assertEqual(by_project["5118"].items, ())
+        self.assertIsNone(by_project["5119"].hard_error_code)
+        self.assertEqual(
+            [item.erp_task_id for item in by_project["5119"].items],
+            ["201"],
+        )
+
     def test_targeted_source_rejects_repeated_non_progressive_page(self) -> None:
         page = _feed(
             _entry(
