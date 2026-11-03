@@ -382,6 +382,25 @@ class SqlErpSyncControlRepository:
             ):
                 manifest.pinned = True
 
+    @staticmethod
+    def _recovery_required_locked(session: Session) -> bool:
+        inspector = inspect(session.get_bind())
+        if not inspector.has_table("erp_sync_recovery_state"):
+            return False
+        from .erp_sync_evidence_models import (
+            RECOVERY_REQUIRED,
+            ErpSyncRecoveryState,
+        )
+
+        return (
+            session.scalar(
+                select(ErpSyncRecoveryState.id)
+                .where(ErpSyncRecoveryState.state == RECOVERY_REQUIRED)
+                .limit(1)
+            )
+            is not None
+        )
+
     def _interrupt_expired_locked(
         self,
         session: Session,
@@ -725,6 +744,11 @@ class SqlErpSyncControlRepository:
                     return ErpSyncClaimOutcome(existing_manual, admitted=False)
 
             self._interrupt_expired_locked(session, control, now=now)
+            if self._recovery_required_locked(session):
+                # Persist the interruption/recovery classification but do not
+                # admit replacement ERP work until compensation/recovery clears
+                # the durable REQUIRED state.
+                return ErpSyncClaimOutcome(None, admitted=False)
 
             # Existing authoritative work wins before evaluating admission for a
             # genuinely new automatic start/retry. A delayed observer must not
