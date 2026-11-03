@@ -1142,10 +1142,11 @@ class ErpSyncEvidenceService:
             ):
                 diagnostics.append("erp_sync_source_ratio_too_low")
             baseline_projects = self._baseline_project_counts(baseline)
-            for project, previous in baseline_projects.items():
+            for project, current_value in captured.project_counts.items():
+                previous = int(baseline_projects.get(project, 0))
                 if previous <= 0:
                     continue
-                current = int(captured.project_counts.get(project, 0))
+                current = int(current_value)
                 if current / previous < self.settings.min_source_ratio:
                     diagnostics.append(
                         f"erp_sync_project_ratio_too_low:{project}"
