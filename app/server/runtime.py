@@ -8,11 +8,7 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI
 import uvicorn
 
-from ..application.erp_sync_evidence import (
-    ErpSyncEvidenceService,
-    ErpSyncEvidenceSettings,
-    EvidenceBackedErpSyncAutomaticSafetyCapability,
-)
+from ..application.erp_sync_evidence import ErpSyncEvidenceSettings
 from ..application.erp_sync_scheduler import (
     ErpSyncScheduleConfigurationError,
     ErpSyncSchedulerSettings,
@@ -645,15 +641,6 @@ def create_configured_app(settings: ServerSettings | None = None) -> FastAPI:
                 f"{CONFIG_ENCRYPTION_KEY_ENV} n'est pas une clé Fernet valide."
             ) from exc
     smtp_client = SmtpClient()
-    erp_sync_evidence_service = ErpSyncEvidenceService(
-        create_session_factory(create_sql_engine(resolved.database_url)),
-        cipher=smtp_cipher,
-        settings=resolved.erp_sync_evidence,
-    )
-    erp_sync_automatic_safety = EvidenceBackedErpSyncAutomaticSafetyCapability(
-        erp_sync_evidence_service,
-        profile_fingerprint=resolved.erp_sync.config_fingerprint,
-    )
     oidc_runtime = None
     break_glass_runtime = None
     dev_user_switcher_runtime = None
@@ -722,8 +709,7 @@ def create_configured_app(settings: ServerSettings | None = None) -> FastAPI:
             if project_source is not None or project_task_source is not None
             else None
         ),
-        erp_sync_evidence_service=erp_sync_evidence_service,
-        erp_sync_automatic_safety=erp_sync_automatic_safety,
+        erp_sync_evidence_settings=resolved.erp_sync_evidence,
         runtime_dependencies={
             "oidc": {
                 "required": resolved.auth_mode == "oidc",
