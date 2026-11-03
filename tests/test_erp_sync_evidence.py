@@ -721,6 +721,170 @@ class ErpSyncEvidenceTests(unittest.TestCase):
         self.assertNotEqual(changed.source_fingerprint, reviewed.source_fingerprint)
         self.assertFalse(self.service.validate_plausibility(changed).accepted)
 
+    def test_plausibility_review_continues_same_attempt_after_restart_without_reread(self) -> None:
+        control, _baseline_occurrence, baseline_attempt = self._attempt(
+            "review-baseline"
+        )
+        project_baseline = self.service.capture_source(
+            attempt_id=baseline_attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "records": [
+                    {
+                        "external_id": str(7000 + index),
+                        "number": f"B-{index}",
+                        "name": f"Baseline {index}",
+                        "status": "Actif",
+                    }
+                    for index in range(20)
+                ]
+            },
+            row_count=20,
+        )
+        baseline_portfolio = TaskCatalogPortfolioSnapshot(
+            source_rows=20,
+            source_pages=1,
+            snapshots=(
+                TaskCatalogProjectSnapshot(
+                    project_number="P-REVIEW",
+                    source_rows=20,
+                    rejected_rows=0,
+                    items=(snapshot("P-REVIEW").items[0],),
+                ),
+            ),
+        )
+        task_baseline = self.service.capture_source(
+            attempt_id=baseline_attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"portfolio": baseline_portfolio},
+            row_count=20,
+            project_counts={"P-REVIEW": 20},
+        )
+        for captured in (project_baseline, task_baseline):
+            self.service.approve_baseline(
+                manifest_id=captured.manifest_id,
+                actor_name="admin",
+                reason="Reviewed complete reference population",
+            )
+        self.assertTrue(
+            control.finish(
+                attempt_id=baseline_attempt.id,
+                generation=baseline_attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.finalize_attempt(
+            attempt_id=baseline_attempt.id,
+            successful=False,
+        )
+
+        projects = ProjectSource((project("P-REVIEW", external_id="7101"),))
+        tasks = PortfolioTaskSource({"P-REVIEW": snapshot("P-REVIEW", task_id="97101")})
+        first_process = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="operator",
+            idempotency_key="review-continuation",
+            settings=self.control_settings,
+        )
+        attempt = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="operator",
+            settings=self.control_settings,
+        )
+        self.assertIsNotNone(attempt)
+        first_process._execute_attempt(attempt.id, attempt.generation)
+        paused = control.get_attempt(attempt.id)
+        self.assertEqual(paused.status, "PENDING")
+        self.assertEqual(paused.phase, "PLAUSIBILITY_REVIEW_REQUIRED")
+        self.assertEqual(projects.calls, 1)
+        self.assertEqual(tasks.calls, 1)
+        with self.factory() as session:
+            self.assertIsNone(
+                session.scalar(select(Project).where(Project.number == "P-REVIEW"))
+            )
+        first_process.shutdown()
+
+        manifests = {
+            row["source_type"]: row
+            for row in self.service.list_attempt_sources(attempt_id=attempt.id)
+            if row["proof_type"] == "SOURCE"
+        }
+        self.service.approve_plausibility_exception(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            source_fingerprint=str(manifests["PROJECTS"]["source_fingerprint"]),
+            threshold_scope="GLOBAL",
+            actor_name="admin",
+            reason="Reviewed planned project population reduction",
+        )
+        self.service.approve_plausibility_exception(
+            attempt_id=attempt.id,
+            source_type="TASKS",
+            source_fingerprint=str(manifests["TASKS"]["source_fingerprint"]),
+            threshold_scope="GLOBAL",
+            actor_name="admin",
+            reason="Reviewed planned task population reduction",
+        )
+        self.service.approve_plausibility_exception(
+            attempt_id=attempt.id,
+            source_type="TASKS",
+            source_fingerprint=str(manifests["TASKS"]["source_fingerprint"]),
+            threshold_scope="P-REVIEW",
+            actor_name="admin",
+            reason="Reviewed project-local task reduction",
+        )
+
+        second_process = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        resumed = second_process.continue_plausibility_review(
+            attempt_id=attempt.id,
+            actor_name="admin",
+        )
+        self.assertEqual(resumed["attempt_id"], attempt.id)
+        second_process.shutdown()
+
+        completed = control.get_attempt(attempt.id)
+        self.assertEqual(completed.status, "SUCCEEDED")
+        self.assertEqual(projects.calls, 1)
+        self.assertEqual(tasks.calls, 1)
+        with self.factory() as session:
+            self.assertIsNotNone(
+                session.scalar(select(Project).where(Project.number == "P-REVIEW"))
+            )
+            self.assertIsNotNone(
+                session.scalar(
+                    select(TaskCatalogEntry).where(
+                        TaskCatalogEntry.project_number == "P-REVIEW",
+                        TaskCatalogEntry.erp_task_id == "97101",
+                    )
+                )
+            )
+            attempts = tuple(
+                session.scalars(
+                    select(ErpSyncAttempt).where(
+                        ErpSyncAttempt.occurrence_id == occurrence.id
+                    )
+                )
+            )
+        self.assertEqual(len(attempts), 1)
+
     def test_task_project_mutation_unit_identity_accepts_uuid_scope_and_remains_unique(self) -> None:
         control, _occurrence, attempt = self._attempt("task-project-unit-identity")
         self.service.reserve_attempt(attempt_id=attempt.id)
