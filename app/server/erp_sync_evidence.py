@@ -621,7 +621,12 @@ class ErpSyncEvidenceService:
             payload=payload,
         )
 
-    def load_source(self, *, manifest_id: str) -> Any:
+    def load_source_in_session(
+        self,
+        session: Session,
+        *,
+        manifest_id: str,
+    ) -> Any:
         from ..infrastructure.sql import (
             EVIDENCE_STATE_PURGED,
             ERP_EVIDENCE_PROTOCOL_VERSION,
@@ -629,37 +634,46 @@ class ErpSyncEvidenceService:
             ErpSyncEvidenceManifest,
         )
 
-        with self._session_factory() as session:
-            manifest = session.get(ErpSyncEvidenceManifest, manifest_id)
-            if manifest is None:
-                raise ApplicationValidationError(
-                    "La preuve ERP est introuvable.",
-                    code="erp_sync_evidence_not_found",
-                )
-            if int(manifest.protocol_version) != ERP_EVIDENCE_PROTOCOL_VERSION:
-                raise ApplicationConflictError(
-                    "La version de protocole de preuve ERP est incompatible.",
-                    code="erp_sync_evidence_protocol_incompatible",
-                )
-            if manifest.state == EVIDENCE_STATE_PURGED:
-                raise ApplicationConflictError(
-                    "La preuve ERP a été purgée.",
-                    code="erp_sync_evidence_purged",
-                )
-            chunks = tuple(
-                session.scalars(
-                    select(ErpSyncEvidenceChunk)
-                    .where(ErpSyncEvidenceChunk.manifest_id == manifest_id)
-                    .order_by(ErpSyncEvidenceChunk.ordinal)
-                )
+        manifest = session.get(ErpSyncEvidenceManifest, manifest_id)
+        if manifest is None:
+            raise ApplicationValidationError(
+                "La preuve ERP est introuvable.",
+                code="erp_sync_evidence_not_found",
             )
-            payload = b"".join(self._decrypt_bytes(row.encrypted_payload) for row in chunks)
-            if hashlib.sha256(payload).hexdigest() != manifest.content_sha256:
-                raise ApplicationConflictError(
-                    "L'intégrité de la preuve ERP est invalide.",
-                    code="erp_sync_evidence_integrity_invalid",
-                )
+        if int(manifest.protocol_version) != ERP_EVIDENCE_PROTOCOL_VERSION:
+            raise ApplicationConflictError(
+                "La version de protocole de preuve ERP est incompatible.",
+                code="erp_sync_evidence_protocol_incompatible",
+            )
+        if manifest.state == EVIDENCE_STATE_PURGED:
+            raise ApplicationConflictError(
+                "La preuve ERP a été purgée.",
+                code="erp_sync_evidence_purged",
+            )
+        chunks = tuple(
+            session.scalars(
+                select(ErpSyncEvidenceChunk)
+                .where(ErpSyncEvidenceChunk.manifest_id == manifest_id)
+                .order_by(ErpSyncEvidenceChunk.ordinal)
+            )
+        )
+        payload = b"".join(
+            self._decrypt_bytes(row.encrypted_payload)
+            for row in chunks
+        )
+        if hashlib.sha256(payload).hexdigest() != manifest.content_sha256:
+            raise ApplicationConflictError(
+                "L'intégrité de la preuve ERP est invalide.",
+                code="erp_sync_evidence_integrity_invalid",
+            )
         return decode_canonical_json_bytes(payload)
+
+    def load_source(self, *, manifest_id: str) -> Any:
+        with self._session_factory() as session:
+            return self.load_source_in_session(
+                session,
+                manifest_id=manifest_id,
+            )
 
     def load_captured_source(
         self,
@@ -748,29 +762,44 @@ class ErpSyncEvidenceService:
             for row in rows:
                 row.state = EVIDENCE_STATE_READY
 
-    def assert_full_sources_ready(self, *, attempt_id: str) -> None:
+    def assert_full_sources_ready_in_session(
+        self,
+        session: Session,
+        *,
+        attempt_id: str,
+    ) -> None:
         from ..infrastructure.sql import (
             EVIDENCE_PROOF_SOURCE,
+            EVIDENCE_SOURCE_PROJECTS,
+            EVIDENCE_SOURCE_TASKS,
             EVIDENCE_STATE_READY,
             ErpSyncEvidenceManifest,
         )
 
-        with self._session_factory() as session:
-            count = int(
-                session.scalar(
-                    select(func.count(ErpSyncEvidenceManifest.id)).where(
-                        ErpSyncEvidenceManifest.attempt_id == attempt_id,
-                        ErpSyncEvidenceManifest.proof_type == EVIDENCE_PROOF_SOURCE,
-                        ErpSyncEvidenceManifest.state == EVIDENCE_STATE_READY,
-                    )
+        rows = tuple(
+            session.scalars(
+                select(ErpSyncEvidenceManifest).where(
+                    ErpSyncEvidenceManifest.attempt_id == attempt_id,
+                    ErpSyncEvidenceManifest.proof_type == EVIDENCE_PROOF_SOURCE,
+                    ErpSyncEvidenceManifest.state == EVIDENCE_STATE_READY,
                 )
-                or 0
             )
-            if count != 2:
-                raise ApplicationConflictError(
-                    "Le manifeste READY des deux sources ERP est requis avant mutation.",
-                    code="erp_sync_evidence_sources_not_ready",
-                )
+        )
+        if {row.source_type for row in rows} != {
+            EVIDENCE_SOURCE_PROJECTS,
+            EVIDENCE_SOURCE_TASKS,
+        }:
+            raise ApplicationConflictError(
+                "Le manifeste READY des deux sources ERP est requis avant mutation.",
+                code="erp_sync_evidence_sources_not_ready",
+            )
+
+    def assert_full_sources_ready(self, *, attempt_id: str) -> None:
+        with self._session_factory() as session:
+            self.assert_full_sources_ready_in_session(
+                session,
+                attempt_id=attempt_id,
+            )
 
     def record_before_in_session(
         self,
@@ -1270,7 +1299,12 @@ class ErpSyncEvidenceService:
             session.flush()
             return row.id
 
-    def advance_approved_baselines(self, *, attempt_id: str) -> None:
+    def advance_approved_baselines_in_session(
+        self,
+        session: Session,
+        *,
+        attempt_id: str,
+    ) -> None:
         """Advance only already-human-approved comparable baselines after full success."""
         from ..infrastructure.sql import (
             EVIDENCE_PROOF_SOURCE,
@@ -1280,80 +1314,68 @@ class ErpSyncEvidenceService:
             ErpSyncBaseline,
             ErpSyncEvidenceManifest,
         )
-        from ..infrastructure.sql.session import transactional_session
 
-        with self._session_factory() as session:
-            manifests = tuple(
-                session.scalars(
-                    select(ErpSyncEvidenceManifest).where(
-                        ErpSyncEvidenceManifest.attempt_id == attempt_id,
-                        ErpSyncEvidenceManifest.proof_type == EVIDENCE_PROOF_SOURCE,
-                        ErpSyncEvidenceManifest.state == EVIDENCE_STATE_READY,
-                        ErpSyncEvidenceManifest.source_type.in_(
-                            (EVIDENCE_SOURCE_PROJECTS, EVIDENCE_SOURCE_TASKS)
-                        ),
-                    )
+        manifests = tuple(
+            session.scalars(
+                select(ErpSyncEvidenceManifest).where(
+                    ErpSyncEvidenceManifest.attempt_id == attempt_id,
+                    ErpSyncEvidenceManifest.proof_type == EVIDENCE_PROOF_SOURCE,
+                    ErpSyncEvidenceManifest.state == EVIDENCE_STATE_READY,
+                    ErpSyncEvidenceManifest.source_type.in_(
+                        (EVIDENCE_SOURCE_PROJECTS, EVIDENCE_SOURCE_TASKS)
+                    ),
                 )
             )
-            manifest_meta = tuple(
-                (
-                    row.id,
-                    row.source_type,
-                    row.profile_fingerprint,
-                    row.source_fingerprint,
-                    int(row.row_count),
-                )
-                for row in manifests
-            )
-        if len(manifest_meta) != 2:
+        )
+        if len(manifests) != 2:
             raise ApplicationConflictError(
                 "Les deux preuves source scellées sont requises pour publier le baseline.",
                 code="erp_sync_baseline_publication_incomplete",
             )
-        task_counts_by_manifest = {
-            manifest_id: self._project_counts_from_payload(
-                self.load_source(manifest_id=manifest_id)
+        for manifest in manifests:
+            baseline = session.scalar(
+                select(ErpSyncBaseline).where(
+                    ErpSyncBaseline.source_type == manifest.source_type,
+                    ErpSyncBaseline.profile_fingerprint == manifest.profile_fingerprint,
+                )
             )
-            for manifest_id, source_type, *_rest in manifest_meta
-            if source_type == EVIDENCE_SOURCE_TASKS
-        }
-        with transactional_session(self._session_factory) as session:
-            for (
-                manifest_id,
-                source_type,
-                profile_fingerprint,
-                source_fingerprint,
-                row_count,
-            ) in manifest_meta:
-                baseline = session.scalar(
-                    select(ErpSyncBaseline).where(
-                        ErpSyncBaseline.source_type == source_type,
-                        ErpSyncBaseline.profile_fingerprint == profile_fingerprint,
+            if baseline is None:
+                raise ApplicationConflictError(
+                    "Un baseline humain approuvé est requis avant publication automatique.",
+                    code="erp_sync_baseline_required",
+                )
+            baseline.source_fingerprint = str(manifest.source_fingerprint)
+            baseline.row_count = int(manifest.row_count)
+            if manifest.source_type == EVIDENCE_SOURCE_TASKS:
+                counts = self._project_counts_from_payload(
+                    self.load_source_in_session(
+                        session,
+                        manifest_id=str(manifest.id),
                     )
                 )
-                if baseline is None:
-                    raise ApplicationConflictError(
-                        "Un baseline humain approuvé est requis avant publication automatique.",
-                        code="erp_sync_baseline_required",
-                    )
-                baseline.source_fingerprint = str(source_fingerprint)
-                baseline.row_count = row_count
-                if source_type == EVIDENCE_SOURCE_TASKS:
-                    counts = task_counts_by_manifest.get(manifest_id, {})
-                    baseline.encrypted_project_counts = (
-                        self._encrypt_bytes(canonical_json_bytes(counts))
-                        if counts
-                        else None
-                    )
+                baseline.encrypted_project_counts = (
+                    self._encrypt_bytes(canonical_json_bytes(counts))
+                    if counts
+                    else None
+                )
+
+    def advance_approved_baselines(self, *, attempt_id: str) -> None:
+        from ..infrastructure.sql.session import transactional_session
+
+        with transactional_session(self._session_factory) as session:
+            self.advance_approved_baselines_in_session(
+                session,
+                attempt_id=attempt_id,
+            )
 
     def _baseline_project_counts(self, baseline) -> dict[str, int]:
         if not baseline.encrypted_project_counts:
             return {}
         try:
-            value = json.loads(
-                self._decrypt_bytes(baseline.encrypted_project_counts).decode("utf-8")
+            value = decode_canonical_json_bytes(
+                self._decrypt_bytes(baseline.encrypted_project_counts)
             )
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        except ApplicationConflictError as exc:
             raise ApplicationConflictError(
                 "Le baseline ERP ne peut pas être vérifié.",
                 code="erp_sync_baseline_integrity_invalid",
