@@ -825,7 +825,6 @@ class ErpSyncEvidenceService:
             ErpSyncBaseline,
             ErpSyncEvidenceManifest,
         )
-        from ..infrastructure.sql.base import new_id
         from ..infrastructure.sql.session import transactional_session
 
         actor = " ".join(str(actor_name or "").split())
@@ -1130,54 +1129,9 @@ class ErpSyncEvidenceService:
             )
             approved = {str(row.threshold_scope) for row in current}
 
-            # A normal RETRY performs a fresh source read. If that normalized
-            # source is byte-for-byte identical to a previously reviewed source,
-            # carry the approval forward by creating new exception rows bound to
-            # this new attempt. Any changed fingerprint is a new source and cannot
-            # inherit the approval.
-            missing_scopes = scopes.difference(approved)
-            if missing_scopes:
-                prior = tuple(
-                    session.scalars(
-                        select(ErpSyncPlausibilityException)
-                        .where(
-                            ErpSyncPlausibilityException.attempt_id != attempt_id,
-                            ErpSyncPlausibilityException.source_type
-                            == captured.source_type,
-                            ErpSyncPlausibilityException.source_fingerprint
-                            == captured.source_fingerprint,
-                            ErpSyncPlausibilityException.threshold_scope.in_(
-                                tuple(missing_scopes)
-                            ),
-                            ErpSyncPlausibilityException.expires_at > now,
-                        )
-                        .order_by(ErpSyncPlausibilityException.created_at.desc())
-                    )
-                )
-                prior_by_scope: dict[str, Any] = {}
-                for row in prior:
-                    prior_by_scope.setdefault(str(row.threshold_scope), row)
-                for scope in missing_scopes:
-                    source_approval = prior_by_scope.get(scope)
-                    if source_approval is None:
-                        continue
-                    copied = ErpSyncPlausibilityException(
-                        id=new_id(),
-                        attempt_id=attempt_id,
-                        source_type=captured.source_type,
-                        source_fingerprint=captured.source_fingerprint,
-                        threshold_scope=scope,
-                        actor_name=source_approval.actor_name,
-                        reason=(
-                            "Exact-source approval inherited from "
-                            f"{source_approval.attempt_id}: "
-                            f"{source_approval.reason}"
-                        )[:1000],
-                        expires_at=source_approval.expires_at,
-                    )
-                    session.add(copied)
-                    approved.add(scope)
-
+            # Exceptions are attempt-scoped by ADR-033. A RETRY always creates
+            # a new attempt and therefore requires a new explicit approval even
+            # when its normalized source fingerprint is byte-for-byte identical.
             remaining = [
                 diagnostic
                 for diagnostic in diagnostics
