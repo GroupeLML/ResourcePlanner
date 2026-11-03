@@ -26,7 +26,7 @@ from ..application.errors import (
     ApplicationUnavailableError,
     ApplicationValidationError,
 )
-from ..application.erp_sync_evidence import ErpSyncEvidenceService
+from .erp_sync_evidence import ErpSyncEvidenceService
 from ..application.security import PERMISSION_ADMIN_SETTINGS, PERMISSION_SYNC_PROJECTS
 from ..infrastructure.sql import (
     Project,
