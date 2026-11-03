@@ -614,7 +614,18 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             payload={"records": [{"number": "1"}]},
             row_count=1,
         )
+        self.service.bind_attempt_policy(
+            attempt_id=retry_one.id,
+            generation=retry_one.generation,
+        )
         self.assertFalse(self.service.validate_plausibility(reviewed).accepted)
+        self.assertTrue(
+            control.pause_for_review(
+                attempt_id=retry_one.id,
+                generation=retry_one.generation,
+                settings=self.control_settings,
+            )
+        )
         self.service.approve_plausibility_exception(
             attempt_id=retry_one.id,
             source_type="PROJECTS",
@@ -624,10 +635,15 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             reason="Reviewed planned reduction",
         )
         self.assertTrue(self.service.validate_plausibility(reviewed).accepted)
+        resumed_one = control.resume_review_attempt(
+            attempt_id=retry_one.id,
+            settings=self.control_settings,
+        )
+        self.assertEqual(resumed_one.id, retry_one.id)
         self.assertTrue(
             control.finish(
                 attempt_id=retry_one.id,
-                generation=retry_one.generation,
+                generation=resumed_one.generation,
                 status="FAILED",
                 phase="FAILED",
                 settings=self.control_settings,
@@ -651,7 +667,18 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             row_count=1,
         )
         self.assertEqual(identical.source_fingerprint, reviewed.source_fingerprint)
+        self.service.bind_attempt_policy(
+            attempt_id=retry_two.id,
+            generation=retry_two.generation,
+        )
         self.assertFalse(self.service.validate_plausibility(identical).accepted)
+        self.assertTrue(
+            control.pause_for_review(
+                attempt_id=retry_two.id,
+                generation=retry_two.generation,
+                settings=self.control_settings,
+            )
+        )
         self.service.approve_plausibility_exception(
             attempt_id=retry_two.id,
             source_type="PROJECTS",
@@ -661,10 +688,14 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             reason="Fresh retry requires its own explicit approval",
         )
         self.assertTrue(self.service.validate_plausibility(identical).accepted)
+        resumed_two = control.resume_review_attempt(
+            attempt_id=retry_two.id,
+            settings=self.control_settings,
+        )
         self.assertTrue(
             control.finish(
                 attempt_id=retry_two.id,
-                generation=retry_two.generation,
+                generation=resumed_two.generation,
                 status="FAILED",
                 phase="FAILED",
                 settings=self.control_settings,
