@@ -2067,11 +2067,15 @@ class ErpSyncOrchestrator:
                 },
             )
         except Exception as exc:
+            dbapi_error = getattr(exc, "orig", None)
             logger.error(
-                "ERP task project failed attempt_id=%s project_id=%s error_type=%s",
+                "ERP task project failed attempt_id=%s project_id=%s "
+                "error_type=%s error_code=%s dbapi_type=%s",
                 attempt_id,
                 project.id,
                 type(exc).__name__,
+                getattr(exc, "code", None),
+                type(dbapi_error).__name__ if dbapi_error is not None else None,
             )
             self._record_task_outcome(
                 run_id,
