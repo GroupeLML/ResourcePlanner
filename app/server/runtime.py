@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI
 import uvicorn
 
-from ..application.erp_sync_evidence import ErpSyncEvidenceSettings
+from .erp_sync_evidence import ErpSyncEvidenceSettings
 from ..application.erp_sync_scheduler import (
     ErpSyncScheduleConfigurationError,
     ErpSyncSchedulerSettings,
