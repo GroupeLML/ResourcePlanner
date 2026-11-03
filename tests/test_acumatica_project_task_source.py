@@ -241,6 +241,89 @@ class ODataProjectTaskSourceTests(unittest.TestCase):
         self.assertEqual(first["$skip"], "0")
         self.assertEqual(second["$skip"], "2")
 
+    def test_targeted_source_rejects_repeated_non_progressive_page(self) -> None:
+        page = _feed(
+            _entry(
+                project_erp_id=5469,
+                project_number="5118",
+                task_id=101,
+                task_code="216",
+                label="Repeated",
+            ),
+            _entry(
+                project_erp_id=5469,
+                project_number="5118",
+                task_id=102,
+                task_code="217",
+                label="Repeated 2",
+            ),
+        )
+        source = ODataProjectTaskSource(
+            ODataProjectTaskSourceSettings(
+                base_url="https://example.invalid",
+                page_size=2,
+            ),
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, content=page, request=request)
+            ),
+        )
+
+        with self.assertRaises(ApplicationOperationError) as raised:
+            source.fetch_project_snapshot(
+                project_external_id="5469",
+                project_number="5118",
+            )
+
+        self.assertEqual(
+            raised.exception.code,
+            "acumatica_project_task_response_invalid",
+        )
+        self.assertEqual(
+            raised.exception.context["reason"],
+            "pagination_non_progressive",
+        )
+
+    def test_portfolio_source_rejects_repeated_non_progressive_page(self) -> None:
+        page = _feed(
+            _entry(
+                project_erp_id=5469,
+                project_number="5118",
+                task_id=101,
+                task_code="216",
+                label="Repeated",
+            ),
+            _entry(
+                project_erp_id=5470,
+                project_number="5119",
+                task_id=201,
+                task_code="216",
+                label="Repeated 2",
+            ),
+        )
+        source = ODataProjectTaskSource(
+            ODataProjectTaskSourceSettings(
+                base_url="https://example.invalid",
+                page_size=2,
+            ),
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, content=page, request=request)
+            ),
+        )
+
+        with self.assertRaises(ApplicationOperationError) as raised:
+            source.fetch_project_snapshots(
+                project_targets=(("5469", "5118"), ("5470", "5119")),
+            )
+
+        self.assertEqual(
+            raised.exception.code,
+            "acumatica_project_task_response_invalid",
+        )
+        self.assertEqual(
+            raised.exception.context["reason"],
+            "pagination_non_progressive",
+        )
+
     def test_adapter_rejects_other_projetid_non_depmo_and_code_mismatch(self) -> None:
         payload = _feed(
             _entry(
