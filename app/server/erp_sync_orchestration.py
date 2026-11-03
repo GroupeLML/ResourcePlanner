@@ -393,6 +393,28 @@ class ErpSyncOrchestrator:
             self._submit(attempt.id, int(attempt.generation))
         return accepted
 
+    def continue_plausibility_review(
+        self,
+        *,
+        attempt_id: str,
+        actor_name: str,
+    ) -> dict[str, Any]:
+        self._assert_recovery_clear()
+        if self._evidence is None:
+            raise ApplicationUnavailableError(
+                "Le stockage de preuve ERP n'est pas configuré.",
+                code="erp_sync_evidence_capability_unavailable",
+            )
+        self._reload_reviewed_full_sources(attempt_id=attempt_id)
+        attempt = self._control.resume_review_attempt(
+            attempt_id=attempt_id,
+            settings=self._settings,
+        )
+        self._submit(attempt.id, int(attempt.generation))
+        payload = self._compat_payload(attempt.id)
+        payload["review_continued_by"] = actor_name
+        return payload
+
     def run_projects_only_compat(
         self,
         *,
@@ -1334,15 +1356,29 @@ class ErpSyncOrchestrator:
 
             captured_projects: tuple[Any, ...] | None = None
             captured_portfolio: Any | None = None
+            plausibility_rejected_projects: tuple[str, ...] = ()
             if (
                 attempt.intent == "PROJECTS_AND_ACTIVE_TASKS"
                 and self._evidence is not None
             ):
-                captured_projects, captured_portfolio = self._capture_full_sources(
-                    attempt_id=attempt_id,
-                    project_source=project_source,
-                    project_task_source=project_task_source,
-                )
+                if attempt.phase == "PLAUSIBILITY_REVIEW_APPROVED":
+                    (
+                        captured_projects,
+                        captured_portfolio,
+                        plausibility_rejected_projects,
+                    ) = self._reload_reviewed_full_sources(
+                        attempt_id=attempt_id,
+                    )
+                else:
+                    (
+                        captured_projects,
+                        captured_portfolio,
+                        plausibility_rejected_projects,
+                    ) = self._capture_full_sources(
+                        attempt_id=attempt_id,
+                        project_source=project_source,
+                        project_task_source=project_task_source,
+                    )
 
             if (
                 attempt.intent == "PROJECTS_AND_ACTIVE_TASKS"
@@ -1371,6 +1407,7 @@ class ErpSyncOrchestrator:
                 attempt_id,
                 generation,
                 portfolio_snapshot=captured_portfolio,
+                plausibility_rejected_projects=plausibility_rejected_projects,
             )
             if attempt.intent == "PROJECTS_AND_ACTIVE_TASKS":
                 self._validate_full_publication(
@@ -1414,6 +1451,18 @@ class ErpSyncOrchestrator:
             if propagate_errors:
                 raise
         except ApplicationError as exc:
+            if (
+                started
+                and exc.code == "erp_sync_plausibility_review_required"
+            ):
+                self._control.pause_for_review(
+                    attempt_id=attempt_id,
+                    generation=generation,
+                    settings=self._settings,
+                )
+                if propagate_errors:
+                    raise
+                return None
             if started:
                 self._control.finish(
                     attempt_id=attempt_id,
@@ -1769,6 +1818,7 @@ class ErpSyncOrchestrator:
         generation: int,
         *,
         portfolio_snapshot: Any | None = None,
+        plausibility_rejected_projects: tuple[str, ...] = (),
     ) -> str:
         if self._project_task_source is None:
             raise ApplicationUnavailableError(
@@ -1858,7 +1908,22 @@ class ErpSyncOrchestrator:
                 run.source_rows_scanned = source_rows
                 run.source_read_duration_ms = source_duration
 
+            rejected_by_plausibility = set(plausibility_rejected_projects)
             for project in projects:
+                if project.number in rejected_by_plausibility:
+                    self._record_task_outcome(
+                        run_id,
+                        attempt_id,
+                        generation,
+                        {
+                            "project_id": project.id,
+                            "project_number": project.number,
+                            "status": "rejected",
+                            "error_code": "erp_sync_project_plausibility_rejected",
+                            "reason_code": "project_plausibility_failed",
+                        },
+                    )
+                    continue
                 self._process_task_project(
                     run_id,
                     attempt_id,
