@@ -48,8 +48,8 @@ class ErpSyncEvidenceManifest(TimestampMixin, Base):
     __tablename__ = "erp_sync_evidence_manifests"
     __table_args__ = (
         CheckConstraint(
-            "protocol_version = 1",
-            name="erp_sync_evidence_protocol_supported",
+            "protocol_version >= 1",
+            name="erp_sync_evidence_protocol_positive",
         ),
         CheckConstraint(
             "source_type IN ('PROJECTS','TASKS','CHECKPOINT')",
