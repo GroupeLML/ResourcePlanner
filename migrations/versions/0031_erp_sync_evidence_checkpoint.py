@@ -37,7 +37,7 @@ def upgrade() -> None:
         sa.Column("diagnostic", sa.Text(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
-        sa.CheckConstraint("protocol_version = 1", name="erp_sync_evidence_protocol_supported"),
+        sa.CheckConstraint("protocol_version >= 1", name="erp_sync_evidence_protocol_positive"),
         sa.CheckConstraint(
             "source_type IN ('PROJECTS','TASKS','CHECKPOINT')",
             name="erp_sync_evidence_source_type_values",
