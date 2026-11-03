@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
@@ -52,6 +53,12 @@ from .session import SqlSessionFactory, transactional_session
 
 class ErpSyncFenceLost(ApplicationConflictError):
     default_code = "erp_sync_fence_lost"
+
+
+@dataclass(frozen=True, slots=True)
+class ErpSyncClaimOutcome:
+    attempt: ErpSyncAttempt | None
+    admitted: bool
 
 
 def _utc_aware(value: datetime) -> datetime:
@@ -552,6 +559,27 @@ class SqlErpSyncControlRepository:
         command_identity: str | None = None,
         automatic_safety: ErpSyncAutomaticSafetyCapability | None = None,
     ) -> ErpSyncAttempt | None:
+        return self.claim_outcome(
+            occurrence_id=occurrence_id,
+            trigger=trigger,
+            actor_name=actor_name,
+            settings=settings,
+            automatic=automatic,
+            command_identity=command_identity,
+            automatic_safety=automatic_safety,
+        ).attempt
+
+    def claim_outcome(
+        self,
+        *,
+        occurrence_id: str,
+        trigger: str,
+        actor_name: str,
+        settings: ErpSyncSchedulerSettings,
+        automatic: bool = False,
+        command_identity: str | None = None,
+        automatic_safety: ErpSyncAutomaticSafetyCapability | None = None,
+    ) -> ErpSyncClaimOutcome:
         with transactional_session(self._session_factory) as session:
             control = _lock_control(session)
             now = _sql_now(session)
@@ -579,7 +607,7 @@ class SqlErpSyncControlRepository:
                     )
                 )
                 if existing_command is not None:
-                    return existing_command
+                    return ErpSyncClaimOutcome(existing_command, admitted=False)
 
             self._interrupt_expired_locked(session, control, now=now)
 
@@ -587,11 +615,11 @@ class SqlErpSyncControlRepository:
             # genuinely new automatic start/retry. A delayed observer must not
             # rewrite RUNNING or already-successful state to MISSED.
             if occurrence.success_attempt_id:
-                return None
+                return ErpSyncClaimOutcome(None, admitted=False)
             if control.owner_attempt_id:
                 owner = session.get(ErpSyncAttempt, control.owner_attempt_id)
                 if owner is not None and owner.occurrence_id == occurrence.id:
-                    return owner
+                    return ErpSyncClaimOutcome(owner, admitted=False)
                 raise ApplicationConflictError(
                     "Une synchronisation ERP incompatible est déjà active.",
                     code="erp_sync_run_active",
@@ -627,7 +655,7 @@ class SqlErpSyncControlRepository:
                     occurrence.diagnostic = (
                         "Fenêtre de départ automatique figée dépassée."
                     )
-                    return None
+                    return ErpSyncClaimOutcome(None, admitted=False)
 
             attempts = tuple(
                 session.scalars(
@@ -637,7 +665,7 @@ class SqlErpSyncControlRepository:
                 )
             )
             if automatic and len(attempts) >= settings.max_automatic_attempts:
-                return None
+                return ErpSyncClaimOutcome(None, admitted=False)
 
             generation = int(control.generation) + 1
             attempt = ErpSyncAttempt(
@@ -662,7 +690,7 @@ class SqlErpSyncControlRepository:
             control.heartbeat_at = now
             occurrence.last_attempt_id = attempt.id
             occurrence.status = ERP_OCCURRENCE_PENDING
-            return attempt
+            return ErpSyncClaimOutcome(attempt, admitted=True)
 
     def renew(
         self,
