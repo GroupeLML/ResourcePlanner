@@ -852,6 +852,7 @@ class ErpSyncEvidenceService:
             EVIDENCE_STATE_READY,
             EVIDENCE_STATE_SEALED,
             ErpSyncBaseline,
+            ErpSyncBaselineApprovalAudit,
             ErpSyncEvidenceManifest,
         )
         from ..infrastructure.sql.base import new_id
@@ -914,6 +915,21 @@ class ErpSyncEvidenceService:
                 baseline.approved_by = actor
                 baseline.approval_reason = reason_value
                 baseline.approved_at = _utc_now()
+            session.flush()
+            session.add(
+                ErpSyncBaselineApprovalAudit(
+                    id=new_id(),
+                    baseline_id=baseline.id,
+                    manifest_id=manifest.id,
+                    source_type=manifest.source_type,
+                    profile_fingerprint=manifest.profile_fingerprint,
+                    source_fingerprint=str(manifest.source_fingerprint),
+                    row_count=int(manifest.row_count),
+                    actor_name=actor,
+                    reason=reason_value,
+                    approved_at=_utc_now(),
+                )
+            )
             session.flush()
             return baseline.id
 
