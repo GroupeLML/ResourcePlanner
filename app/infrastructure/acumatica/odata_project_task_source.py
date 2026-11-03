@@ -393,15 +393,39 @@ class ODataProjectTaskSource:
         aggregated: dict[int, _AggregatedTask] = {}
         rejected_rows = 0
         for entry_index, row in enumerate(raw_rows):
-            if (
-                row.project_erp_id != project_erp_id
-                or row.account_group.strip() != _WORKFORCE_ACCOUNT_GROUP
-            ):
-                rejected_rows += 1
-                continue
+            if row.project_erp_id != project_erp_id:
+                raise ApplicationOperationError(
+                    "La source tâches ERP contient une identité projet contradictoire.",
+                    code="acumatica_project_task_response_invalid",
+                    context=self._safe_context(
+                        failure_kind="invalid_payload",
+                        retryable=False,
+                        reason="project_identity_conflict",
+                        entry_index=entry_index,
+                    ),
+                )
             if row.project_code != project_number:
-                rejected_rows += 1
-                continue
+                raise ApplicationOperationError(
+                    "La source tâches ERP contient un code projet contradictoire.",
+                    code="acumatica_project_task_response_invalid",
+                    context=self._safe_context(
+                        failure_kind="invalid_payload",
+                        retryable=False,
+                        reason="project_code_conflict",
+                        entry_index=entry_index,
+                    ),
+                )
+            if row.account_group.strip() != _WORKFORCE_ACCOUNT_GROUP:
+                raise ApplicationOperationError(
+                    "La source tâches ERP sort du périmètre financier attendu.",
+                    code="acumatica_project_task_response_invalid",
+                    context=self._safe_context(
+                        failure_kind="invalid_payload",
+                        retryable=False,
+                        reason="financial_scope_conflict",
+                        entry_index=entry_index,
+                    ),
+                )
 
             existing = aggregated.get(row.task_id)
             if existing is None:
@@ -479,6 +503,7 @@ class ODataProjectTaskSource:
         )
         raw_rows: list[ODataProjectTaskRecord] = []
         seen_page_signatures: set[tuple[ODataProjectTaskRecord, ...]] = set()
+        seen_transport_rows: set[ODataProjectTaskRecord] = set()
         skip = 0
         try:
             with httpx.Client(
@@ -543,6 +568,25 @@ class ODataProjectTaskSource:
                             ),
                         )
                     seen_page_signatures.add(signature)
+                    overlap = tuple(row for row in page if row in seen_transport_rows)
+                    if overlap:
+                        self._log_failure(
+                            failure_kind="invalid_payload",
+                            retryable=False,
+                            http_status=response.status_code,
+                            reason="pagination_overlap",
+                        )
+                        raise ApplicationOperationError(
+                            "La pagination OData Acumatica des tâches projet se chevauche.",
+                            code="acumatica_project_task_response_invalid",
+                            context=self._safe_context(
+                                failure_kind="invalid_payload",
+                                retryable=False,
+                                http_status=response.status_code,
+                                reason="pagination_overlap",
+                            ),
+                        )
+                    seen_transport_rows.update(page)
                     raw_rows.extend(page)
                     if len(page) < self._settings.page_size:
                         break
@@ -709,6 +753,25 @@ class ODataProjectTaskSource:
                             ),
                         )
                     seen_page_signatures.add(signature)
+                    overlap = tuple(row for row in page if row in seen_transport_rows)
+                    if overlap:
+                        self._log_failure(
+                            failure_kind="invalid_payload",
+                            retryable=False,
+                            http_status=response.status_code,
+                            reason="pagination_overlap",
+                        )
+                        raise ApplicationOperationError(
+                            "La pagination OData Acumatica globale des tâches projet se chevauche.",
+                            code="acumatica_project_task_response_invalid",
+                            context=self._safe_context(
+                                failure_kind="invalid_payload",
+                                retryable=False,
+                                http_status=response.status_code,
+                                reason="pagination_overlap",
+                            ),
+                        )
+                    seen_transport_rows.update(page)
                     page_count += 1
                     raw_rows.extend(page)
                     if len(page) < self._settings.page_size:
