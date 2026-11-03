@@ -854,6 +854,7 @@ class ErpSyncEvidenceService:
             ErpSyncBaseline,
             ErpSyncEvidenceManifest,
         )
+        from ..infrastructure.sql.base import new_id
         from ..infrastructure.sql.session import transactional_session
 
         actor = " ".join(str(actor_name or "").split())
