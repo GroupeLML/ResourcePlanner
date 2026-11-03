@@ -1907,7 +1907,7 @@ class ErpSyncEvidenceTests(unittest.TestCase):
         )
 
     def test_multi_record_compensation_preview_and_confirmation_are_order_independent(self) -> None:
-        control, _occurrence, attempt = self._attempt("compensation-multi-record")
+        control, occurrence, attempt = self._attempt("compensation-multi-record")
         self.service.capture_source(
             attempt_id=attempt.id,
             source_type="PROJECTS",
@@ -1956,8 +1956,8 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             control.finish(
                 attempt_id=attempt.id,
                 generation=attempt.generation,
-                status="FAILED",
-                phase="FAILED",
+                status="SUCCEEDED",
+                phase="PUBLICATION_COMMITTED",
                 settings=self.control_settings,
             )
         )
@@ -1965,12 +1965,12 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             attempt_id=attempt.id,
             reason_code="multi_record_compensation",
         )
-        with transactional_session(self.factory) as session:
-            session.get(
-                ErpSyncControl,
-                "ERP_PROJECTS_TASKS",
-            ).last_success_attempt_id = attempt.id
         original_status = control.get_attempt(attempt.id).status
+        self.assertEqual(original_status, "SUCCEEDED")
+        self.assertEqual(
+            control.get_occurrence(occurrence.id).success_attempt_id,
+            attempt.id,
+        )
         preview = self.service.compensation_preview(attempt_id=attempt.id)
         self.assertTrue(preview["can_confirm"])
         self.assertEqual(preview["eligible_records"], 2)
@@ -1988,6 +1988,9 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             control_row = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
             persisted_attempt = session.get(ErpSyncAttempt, attempt.id)
         self.assertIsNone(control_row.last_success_attempt_id)
+        compensated_occurrence = control.get_occurrence(occurrence.id)
+        self.assertIsNone(compensated_occurrence.success_attempt_id)
+        self.assertEqual(compensated_occurrence.status, "FAILED")
         self.assertEqual(persisted_attempt.status, original_status)
 
     def test_compensation_refuses_changed_local_principal_and_recomputes_derived_cost(self) -> None:
