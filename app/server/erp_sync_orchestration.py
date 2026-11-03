@@ -619,7 +619,6 @@ class ErpSyncOrchestrator:
                     code="erp_sync_runner_unavailable",
                 )
             try:
-                context = copy_context()
                 work = partial(
                     self._execute_attempt,
                     attempt_id,
@@ -629,7 +628,14 @@ class ErpSyncOrchestrator:
                     project_task_source=project_task_source,
                     propagate_errors=propagate_errors,
                 )
-                return self._executor.submit(context.run, work)
+                if propagate_errors:
+                    # The synchronous legacy adapters retain their request
+                    # instrumentation while the actual ERP work runs on the
+                    # managed executor. Canonical async launches deliberately
+                    # remain detached from the completed HTTP request context.
+                    context = copy_context()
+                    return self._executor.submit(context.run, work)
+                return self._executor.submit(work)
             except RuntimeError as exc:
                 raise ApplicationUnavailableError(
                     "Le worker ERP n'est pas disponible.",
@@ -663,6 +669,7 @@ class ErpSyncOrchestrator:
     ) -> Any:
         stop = Event()
         heartbeat: Thread | None = None
+        started = False
         try:
             if not self._control.start_attempt(
                 attempt_id=attempt_id,
@@ -675,6 +682,7 @@ class ErpSyncOrchestrator:
                         code="erp_sync_command_not_started",
                     )
                 return None
+            started = True
             heartbeat = Thread(
                 target=self._heartbeat,
                 kwargs={
@@ -783,15 +791,16 @@ class ErpSyncOrchestrator:
             if propagate_errors:
                 raise
         except ApplicationError as exc:
-            self._control.finish(
-                attempt_id=attempt_id,
-                generation=generation,
-                status=ERP_ATTEMPT_FAILED,
-                phase="FAILED",
-                error_code=exc.code or "erp_sync_failed",
-                diagnostic="La synchronisation ERP n'a pas pu être exécutée.",
-                settings=self._settings,
-            )
+            if started:
+                self._control.finish(
+                    attempt_id=attempt_id,
+                    generation=generation,
+                    status=ERP_ATTEMPT_FAILED,
+                    phase="FAILED",
+                    error_code=exc.code or "erp_sync_failed",
+                    diagnostic="La synchronisation ERP n'a pas pu être exécutée.",
+                    settings=self._settings,
+                )
             if propagate_errors:
                 raise
         except Exception as exc:
@@ -801,15 +810,16 @@ class ErpSyncOrchestrator:
                 generation,
                 type(exc).__name__,
             )
-            self._control.finish(
-                attempt_id=attempt_id,
-                generation=generation,
-                status=ERP_ATTEMPT_FAILED,
-                phase="FAILED",
-                error_code="erp_sync_failed",
-                diagnostic="La synchronisation ERP n'a pas pu être exécutée.",
-                settings=self._settings,
-            )
+            if started:
+                self._control.finish(
+                    attempt_id=attempt_id,
+                    generation=generation,
+                    status=ERP_ATTEMPT_FAILED,
+                    phase="FAILED",
+                    error_code="erp_sync_failed",
+                    diagnostic="La synchronisation ERP n'a pas pu être exécutée.",
+                    settings=self._settings,
+                )
             if propagate_errors:
                 raise
         finally:
