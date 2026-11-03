@@ -24,6 +24,16 @@ EXPECTED_TABLES = {
     "erp_sync_control",
     "erp_sync_occurrences",
     "erp_sync_attempts",
+    "erp_sync_evidence_manifests",
+    "erp_sync_evidence_chunks",
+    "erp_sync_evidence_reservations",
+    "erp_sync_baselines",
+    "erp_sync_baseline_approval_audit",
+    "erp_sync_plausibility_exceptions",
+    "erp_sync_mutation_evidence",
+    "erp_sync_project_quality",
+    "erp_sync_recovery_state",
+    "erp_sync_compensation_receipts",
     "approval_decisions",
     "approval_requirement_approvers",
     "approval_requirements",
@@ -209,6 +219,39 @@ class SqlSchemaTests(unittest.TestCase):
         self.assertFalse(global_task_sync_results["run_id"].nullable)
         self.assertFalse(global_task_sync_results["project_id"].nullable)
         self.assertFalse(global_task_sync_results["status"].nullable)
+
+        evidence_manifests = Base.metadata.tables["erp_sync_evidence_manifests"].c
+        evidence_chunks = Base.metadata.tables["erp_sync_evidence_chunks"].c
+        evidence_reservations = Base.metadata.tables["erp_sync_evidence_reservations"].c
+        baselines = Base.metadata.tables["erp_sync_baselines"].c
+        baseline_audit = Base.metadata.tables["erp_sync_baseline_approval_audit"].c
+        plausibility = Base.metadata.tables["erp_sync_plausibility_exceptions"].c
+        mutation_evidence = Base.metadata.tables["erp_sync_mutation_evidence"].c
+        project_quality = Base.metadata.tables["erp_sync_project_quality"].c
+        recovery = Base.metadata.tables["erp_sync_recovery_state"].c
+        compensation = Base.metadata.tables["erp_sync_compensation_receipts"].c
+        self.assertFalse(evidence_manifests.attempt_id.nullable)
+        self.assertFalse(evidence_manifests.protocol_version.nullable)
+        self.assertFalse(evidence_manifests.source_type.nullable)
+        self.assertFalse(evidence_chunks.manifest_id.nullable)
+        self.assertFalse(evidence_chunks.encrypted_payload.nullable)
+        self.assertFalse(evidence_reservations.attempt_id.nullable)
+        self.assertFalse(evidence_reservations.reserved_bytes.nullable)
+        self.assertFalse(evidence_reservations.reserved_plaintext_bytes.nullable)
+        self.assertTrue(evidence_reservations.released_at.nullable)
+        self.assertFalse(baselines.source_type.nullable)
+        self.assertFalse(baselines.approved_by.nullable)
+        self.assertFalse(baseline_audit.baseline_id.nullable)
+        self.assertFalse(baseline_audit.manifest_id.nullable)
+        self.assertFalse(plausibility.attempt_id.nullable)
+        self.assertFalse(mutation_evidence.attempt_id.nullable)
+        self.assertFalse(mutation_evidence.generation.nullable)
+        self.assertFalse(project_quality.quality_state.nullable)
+        self.assertTrue(project_quality.producer_attempt_id.nullable)
+        self.assertFalse(recovery.attempt_id.nullable)
+        self.assertFalse(recovery.state.nullable)
+        self.assertFalse(compensation.attempt_id.nullable)
+        self.assertFalse(compensation.command_identity.nullable)
 
         competencies = Base.metadata.tables["competencies"].c
         resource_competencies = Base.metadata.tables["resource_competencies"].c
