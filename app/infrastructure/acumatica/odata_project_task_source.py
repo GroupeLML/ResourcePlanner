@@ -825,14 +825,35 @@ class ODataProjectTaskSource:
             if project_rows is not None:
                 project_rows.append(row)
 
-        snapshots = tuple(
-            self._build_snapshot(
-                project_erp_id=project_erp_id,
-                project_number=project,
-                raw_rows=rows_by_erp_id[project_erp_id],
-            )
-            for project_erp_id, project in targets
-        )
+        snapshots_list: list[TaskCatalogProjectSnapshot] = []
+        for project_erp_id, project in targets:
+            project_rows = rows_by_erp_id[project_erp_id]
+            try:
+                snapshots_list.append(
+                    self._build_snapshot(
+                        project_erp_id=project_erp_id,
+                        project_number=project,
+                        raw_rows=project_rows,
+                    )
+                )
+            except ApplicationOperationError as exc:
+                reason = str(exc.context.get("reason") or "")
+                if reason not in {
+                    "project_code_conflict",
+                    "financial_scope_conflict",
+                }:
+                    raise
+                snapshots_list.append(
+                    TaskCatalogProjectSnapshot(
+                        project_number=project,
+                        source_rows=len(project_rows),
+                        rejected_rows=len(project_rows),
+                        items=(),
+                        hard_error_code=exc.code,
+                        hard_error_reason=reason,
+                    )
+                )
+        snapshots = tuple(snapshots_list)
         duration_ms = max(0, int((perf_counter() - started_at) * 1000))
         logger.info(
             "Acumatica OData project-task portfolio read completed targets=%s pages=%s rows=%s duration_ms=%s",
