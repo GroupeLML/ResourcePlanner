@@ -1123,11 +1123,10 @@ class ErpSyncOrchestrator:
             source_pages=int(portfolio_data.get("source_pages") or 0),
             snapshots=tuple(snapshots),
         )
-        active_targets = sum(
-            1
-            for row in projects
-            if self._project_source_active(row.status)
-        )
+        # The frozen TASKS portfolio is the authoritative target set. It
+        # includes pre-existing active ERP-backed local projects that may be
+        # absent from the incoming projects feed.
+        active_targets = len(portfolio.snapshots)
         projects_plausibility = self._evidence.validate_plausibility(
             projects_capture,
         )
@@ -2683,14 +2682,18 @@ class ErpSyncOrchestrator:
                 if quality is None:
                     quality = ErpSyncProjectQuality(
                         project_number=str(outcome["project_number"]),
-                        producer_attempt_id=None,
+                        producer_attempt_id=attempt_id,
                         quality_state="STALE",
                     )
                     session.add(quality)
+                quality.producer_attempt_id = attempt_id
                 quality.quality_state = "STALE"
                 quality.reason_code = str(
                     outcome.get("error_code") or "erp_sync_project_failed"
                 )
+                # A failed/rejected project never advances successful source
+                # freshness. Preserve any prior successful observed_at, or NULL
+                # for a first-ever failed attempt.
                 quality.validated_at = utc_now()
 
     @staticmethod
