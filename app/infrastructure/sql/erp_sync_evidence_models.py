@@ -127,7 +127,8 @@ class ErpSyncEvidenceReservation(TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("attempt_id", name="uq_erp_sync_evidence_reservation_attempt"),
         CheckConstraint(
-            "reserved_bytes >= 0 AND used_bytes >= 0",
+            "reserved_bytes >= 0 AND used_bytes >= 0 "
+            "AND reserved_plaintext_bytes >= 0 AND used_plaintext_bytes >= 0",
             name="erp_sync_evidence_reservation_non_negative",
         ),
         Index("ix_erp_sync_evidence_reservation_released", "released_at"),
@@ -139,8 +140,13 @@ class ErpSyncEvidenceReservation(TimestampMixin, Base):
         ForeignKey("erp_sync_attempts.id", ondelete="CASCADE"),
         nullable=False,
     )
+    # reserved_bytes/used_bytes are persisted-storage accounting (ciphertext +
+    # manifest/checkpoint overhead). Plaintext counters enforce the distinct
+    # decrypted-payload cap from ADR-033.
     reserved_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     used_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    reserved_plaintext_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    used_plaintext_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
