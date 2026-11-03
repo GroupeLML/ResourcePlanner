@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from cryptography.fernet import Fernet
 from sqlalchemy import func, select
@@ -494,6 +495,110 @@ class ErpSyncEvidenceTests(unittest.TestCase):
                 idempotency_key="blocked-after-recovery",
             )
         orchestrator.shutdown()
+
+    def test_exact_source_exception_carries_to_fresh_retry_but_changed_source_does_not(self) -> None:
+        control, occurrence, first = self._attempt("exception-source-first")
+        baseline = self.service.capture_source(
+            attempt_id=first.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"records": [{"number": str(index)} for index in range(20)]},
+            row_count=20,
+        )
+        self.service.approve_baseline(
+            manifest_id=baseline.manifest_id,
+            actor_name="admin",
+            reason="Approved comparable population",
+        )
+        self.assertTrue(
+            control.finish(
+                attempt_id=first.id,
+                generation=first.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+
+        retry_one = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="operator",
+            settings=self.control_settings,
+            command_identity="retry:exception-one",
+        )
+        self.assertIsNotNone(retry_one)
+        reviewed = self.service.capture_source(
+            attempt_id=retry_one.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"records": [{"number": "1"}]},
+            row_count=1,
+        )
+        self.assertFalse(self.service.validate_plausibility(reviewed).accepted)
+        self.service.approve_plausibility_exception(
+            attempt_id=retry_one.id,
+            source_type="PROJECTS",
+            source_fingerprint=reviewed.source_fingerprint,
+            threshold_scope="GLOBAL",
+            actor_name="admin",
+            reason="Reviewed planned reduction",
+        )
+        self.assertTrue(self.service.validate_plausibility(reviewed).accepted)
+        self.assertTrue(
+            control.finish(
+                attempt_id=retry_one.id,
+                generation=retry_one.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+
+        retry_two = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="operator",
+            settings=self.control_settings,
+            command_identity="retry:exception-two",
+        )
+        self.assertIsNotNone(retry_two)
+        identical = self.service.capture_source(
+            attempt_id=retry_two.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"records": [{"number": "1"}]},
+            row_count=1,
+        )
+        self.assertEqual(identical.source_fingerprint, reviewed.source_fingerprint)
+        self.assertTrue(self.service.validate_plausibility(identical).accepted)
+        self.assertTrue(
+            control.finish(
+                attempt_id=retry_two.id,
+                generation=retry_two.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+
+        retry_three = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="operator",
+            settings=self.control_settings,
+            command_identity="retry:exception-three",
+        )
+        self.assertIsNotNone(retry_three)
+        changed = self.service.capture_source(
+            attempt_id=retry_three.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"records": [{"number": "2"}]},
+            row_count=1,
+        )
+        self.assertNotEqual(changed.source_fingerprint, reviewed.source_fingerprint)
+        self.assertFalse(self.service.validate_plausibility(changed).accepted)
 
     def test_compensation_restores_only_erp_owned_fields_and_is_idempotent(self) -> None:
         control, _occurrence, attempt = self._attempt("compensation")
