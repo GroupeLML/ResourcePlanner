@@ -18,7 +18,6 @@ from ..application import (
     TaskCatalogSyncService,
 )
 from ..application.erp_sync_evidence import (
-    ErpSyncCapturedSource,
     ErpSyncEvidenceService,
 )
 from ..application.erp_sync_scheduler import (
@@ -51,6 +50,8 @@ from ..infrastructure.sql import (
     ERP_OCCURRENCE_SUCCEEDED_WITH_ERRORS,
     GLOBAL_SYNC_RUN_KEY,
     Project,
+    TaskCatalogEntry,
+    TaskCatalogProjectSyncState,
     SqlPlannerQueryRepositoryWithLoadProfiles,
     SqlProjectSyncRepository,
     SqlSessionFactory,
@@ -676,6 +677,69 @@ class ErpSyncOrchestrator:
                 return
 
     @staticmethod
+    def _project_owned_state(row: Project | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        return {
+            "erp_external_id": row.erp_external_id,
+            "number": row.number,
+            "name": row.name,
+            "client": row.client,
+            "project_manager_external_id": row.project_manager_external_id,
+            "project_manager_name": row.project_manager_name,
+            "status": row.status,
+        }
+
+    @staticmethod
+    def _task_owned_state(row: TaskCatalogEntry | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        return {
+            "project_number": row.project_number,
+            "task_code": row.task_code,
+            "label": row.label,
+            "status": row.status,
+            "active": bool(row.active),
+            "billing_rule": row.billing_rule,
+            "allocation_rule": row.allocation_rule,
+            "completion_percent": row.completion_percent,
+            "erp_created_at": row.erp_created_at,
+            "branch": row.branch,
+            "approver_name": row.approver_name,
+            "cv_enabled": row.cv_enabled,
+            "time_entry_enabled": row.time_entry_enabled,
+            "expenses_enabled": row.expenses_enabled,
+            "erp_task_id": row.erp_task_id,
+            "account_group": row.account_group,
+            "cost_code": row.cost_code,
+            "inventory_id": row.inventory_id,
+            "budget_amount_cad": row.budget_amount_cad,
+            "budget_actual_cad": row.budget_actual_cad,
+            "budget_diagnostic": row.budget_diagnostic,
+            "workforce_eligible": row.workforce_eligible,
+            "resource_class_code": row.resource_class_code,
+            "average_hourly_cost_cad": row.average_hourly_cost_cad,
+            "budget_hours": row.budget_hours,
+            "workforce_diagnostics": row.workforce_diagnostics,
+            "erp_budget_last_success_at": row.erp_budget_last_success_at,
+        }
+
+    @staticmethod
+    def _task_sync_state(row: TaskCatalogProjectSyncState | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        return {
+            "project_number": row.project_number,
+            "last_attempt_at": row.last_attempt_at,
+            "last_success_at": row.last_success_at,
+            "source_rows": row.source_rows,
+            "task_count": row.task_count,
+            "rejected_rows": row.rejected_rows,
+            "duration_ms": row.duration_ms,
+            "last_error_code": row.last_error_code,
+        }
+
+    @staticmethod
     def _project_source_active(status: object) -> bool:
         return str(status or "active").strip().casefold() not in {
             "annulé",
@@ -820,10 +884,26 @@ class ErpSyncOrchestrator:
             projects = projects_snapshot
         self._validate_project_capture(projects)
 
-        project_targets = tuple(
-            (str(row.external_id).strip(), str(row.number).strip())
-            for row in projects
+        # Freeze the post-project active target set before mutation. Absence from
+        # RP_Projects does not deactivate an existing local project, while an
+        # explicitly received ERP status does override the target status.
+        with self._session_factory() as session:
+            local_projects = tuple(session.scalars(select(Project)))
+        target_by_number: dict[str, tuple[str, str]] = {
+            str(row.number): (str(row.erp_external_id).strip(), str(row.number))
+            for row in local_projects
             if self._project_source_active(row.status)
+            and str(row.erp_external_id or "").strip()
+        }
+        for row in projects:
+            number = str(row.number).strip()
+            external_id = str(row.external_id).strip()
+            if self._project_source_active(row.status):
+                target_by_number[number] = (external_id, number)
+            else:
+                target_by_number.pop(number, None)
+        project_targets = tuple(
+            target_by_number[number] for number in sorted(target_by_number)
         )
         fetch_many = getattr(task_source, "fetch_project_snapshots", None)
         if not callable(fetch_many):
@@ -1159,10 +1239,56 @@ class ErpSyncOrchestrator:
                 generation=generation,
                 settings=self._settings,
             )
+            project_evidence: dict[str, str] = {}
+            if self._evidence is not None:
+                for incoming in projects:
+                    external_id = str(incoming.external_id or "").strip()
+                    number = str(incoming.number or "").strip()
+                    existing = (
+                        session.scalar(
+                            select(Project).where(Project.erp_external_id == external_id)
+                        )
+                        if external_id
+                        else None
+                    ) or session.scalar(select(Project).where(Project.number == number))
+                    key = external_id or number
+                    project_evidence[key] = self._evidence.record_before_in_session(
+                        session,
+                        attempt_id=attempt_id,
+                        generation=generation,
+                        unit_type="PROJECT_SNAPSHOT",
+                        entity_type="PROJECT",
+                        entity_key=key,
+                        before=self._project_owned_state(existing),
+                    )
             result = ProjectSyncService(
                 _PreloadedProjectSource(projects),
                 SqlProjectSyncRepository(session),
             ).synchronize()
+            if self._evidence is not None:
+                for incoming in projects:
+                    external_id = str(incoming.external_id or "").strip()
+                    number = str(incoming.number or "").strip()
+                    row = (
+                        session.scalar(
+                            select(Project).where(Project.erp_external_id == external_id)
+                        )
+                        if external_id
+                        else None
+                    ) or session.scalar(select(Project).where(Project.number == number))
+                    if row is None:
+                        raise ApplicationConflictError(
+                            "Le projet ERP reçu n'existe pas après synchronisation.",
+                            code="erp_sync_project_post_validation_failed",
+                        )
+                    key = external_id or number
+                    self._evidence.record_after_in_session(
+                        session,
+                        evidence_id=project_evidence[key],
+                        attempt_id=attempt_id,
+                        generation=generation,
+                        after=self._project_owned_state(row) or {},
+                    )
             SqlErpSyncControlRepository.update_phase_in_session(
                 session,
                 attempt_id=attempt_id,
@@ -1574,6 +1700,48 @@ class ErpSyncOrchestrator:
                     generation=generation,
                     settings=self._settings,
                 )
+                task_evidence: dict[str, str] = {}
+                sync_state_evidence: str | None = None
+                if self._evidence is not None:
+                    for item in tuple(snapshot.items):
+                        task_id = str(item.erp_task_id or "").strip()
+                        existing = (
+                            session.scalar(
+                                select(TaskCatalogEntry).where(
+                                    TaskCatalogEntry.erp_task_id == task_id
+                                )
+                            )
+                            if task_id
+                            else None
+                        )
+                        if existing is None:
+                            existing = session.scalar(
+                                select(TaskCatalogEntry).where(
+                                    TaskCatalogEntry.project_number == project.number,
+                                    TaskCatalogEntry.task_code == str(item.code).strip(),
+                                )
+                            )
+                        key = task_id or f"{project.number}:{str(item.code).strip()}"
+                        task_evidence[key] = self._evidence.record_before_in_session(
+                            session,
+                            attempt_id=attempt_id,
+                            generation=generation,
+                            unit_type=f"TASK_PROJECT:{project.id}",
+                            entity_type="TASK",
+                            entity_key=key,
+                            before=self._task_owned_state(existing),
+                        )
+                    sync_state_evidence = self._evidence.record_before_in_session(
+                        session,
+                        attempt_id=attempt_id,
+                        generation=generation,
+                        unit_type=f"TASK_PROJECT:{project.id}",
+                        entity_type="TASK_SYNC_STATE",
+                        entity_key=project.number,
+                        before=self._task_sync_state(
+                            session.get(TaskCatalogProjectSyncState, project.number)
+                        ),
+                    )
                 repository = SqlTaskCatalogRepository(session)
                 result = TaskCatalogSyncService(
                     _PreloadedProjectTaskSource(snapshot),
@@ -1584,6 +1752,51 @@ class ErpSyncOrchestrator:
                     project_external_id=project_external_id,
                     project_number=project.number,
                 )
+                if self._evidence is not None:
+                    for item in tuple(snapshot.items):
+                        task_id = str(item.erp_task_id or "").strip()
+                        row = (
+                            session.scalar(
+                                select(TaskCatalogEntry).where(
+                                    TaskCatalogEntry.erp_task_id == task_id
+                                )
+                            )
+                            if task_id
+                            else None
+                        )
+                        if row is None:
+                            row = session.scalar(
+                                select(TaskCatalogEntry).where(
+                                    TaskCatalogEntry.project_number == project.number,
+                                    TaskCatalogEntry.task_code == str(item.code).strip(),
+                                )
+                            )
+                        key = task_id or f"{project.number}:{str(item.code).strip()}"
+                        if key in task_evidence and row is not None:
+                            self._evidence.record_after_in_session(
+                                session,
+                                evidence_id=task_evidence[key],
+                                attempt_id=attempt_id,
+                                generation=generation,
+                                after=self._task_owned_state(row) or {},
+                            )
+                    if sync_state_evidence is not None:
+                        state_row = session.get(
+                            TaskCatalogProjectSyncState,
+                            project.number,
+                        )
+                        if state_row is None:
+                            raise ApplicationConflictError(
+                                "La provenance tâches n'a pas été publiée dans la transaction.",
+                                code="erp_sync_task_provenance_missing",
+                            )
+                        self._evidence.record_after_in_session(
+                            session,
+                            evidence_id=sync_state_evidence,
+                            attempt_id=attempt_id,
+                            generation=generation,
+                            after=self._task_sync_state(state_row) or {},
+                        )
                 self._record_task_outcome_in_session(
                     session,
                     run_id,
