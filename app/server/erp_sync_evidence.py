@@ -207,6 +207,135 @@ class ErpSyncEvidenceService:
         self.settings = settings
         self._control_settings = control_settings
 
+    def policy_fingerprint_in_session(self, session: Session) -> str:
+        from ..infrastructure.sql import (
+            ProjectTaskClassOverride,
+            ResourceClassConfig,
+            TaskClassStandard,
+        )
+
+        resource_classes = tuple(
+            session.scalars(
+                select(ResourceClassConfig).order_by(ResourceClassConfig.code)
+            )
+        )
+        standards = tuple(
+            session.scalars(
+                select(TaskClassStandard).order_by(TaskClassStandard.task_code)
+            )
+        )
+        overrides = tuple(
+            session.scalars(
+                select(ProjectTaskClassOverride).order_by(
+                    ProjectTaskClassOverride.project_id,
+                    ProjectTaskClassOverride.task_code,
+                )
+            )
+        )
+        material = {
+            "contract": "ERP_SYNC_643B_POLICY_V1",
+            "evidence_policy": {
+                "min_source_ratio": self.settings.min_source_ratio,
+                "min_projects": self.settings.min_projects,
+                "min_task_rows": self.settings.min_task_rows,
+                "max_evidence_mib": self.settings.max_evidence_mib,
+                "evidence_budget_mib": self.settings.evidence_budget_mib,
+                "failure_retention_days": self.settings.failure_retention_days,
+                "history_days": self.settings.history_days,
+            },
+            "resource_classes": [
+                {
+                    "code": row.code,
+                    "average_hourly_cost_cad": row.average_hourly_cost_cad,
+                    "active": bool(row.active),
+                    "version": int(row.version),
+                }
+                for row in resource_classes
+            ],
+            "task_standards": [
+                {
+                    "task_code": row.task_code,
+                    "resource_class_code": row.resource_class_code,
+                    "active": bool(row.active),
+                    "version": int(row.version),
+                }
+                for row in standards
+            ],
+            "project_overrides": [
+                {
+                    "project_id": row.project_id,
+                    "task_code": row.task_code,
+                    "resource_class_code": row.resource_class_code,
+                    "excluded": bool(row.excluded),
+                    "version": int(row.version),
+                }
+                for row in overrides
+            ],
+        }
+        return content_sha256(material)
+
+    def bind_attempt_policy(
+        self,
+        *,
+        attempt_id: str,
+        generation: int,
+    ) -> str:
+        from ..infrastructure.sql import ErpSyncAttempt
+        from ..infrastructure.sql.erp_sync_control_repository import (
+            SqlErpSyncControlRepository,
+        )
+        from ..infrastructure.sql.session import transactional_session
+
+        if self._control_settings is None:
+            raise ApplicationUnavailableError(
+                "Le profil de contrôle ERP est absent.",
+                code="erp_sync_evidence_control_unavailable",
+            )
+        with transactional_session(self._session_factory) as session:
+            SqlErpSyncControlRepository.guard_session(
+                session,
+                attempt_id=attempt_id,
+                generation=generation,
+                settings=self._control_settings,
+            )
+            attempt = session.get(ErpSyncAttempt, attempt_id)
+            if attempt is None:
+                raise ApplicationValidationError(
+                    "La tentative ERP est introuvable.",
+                    code="erp_sync_attempt_not_found",
+                )
+            fingerprint = self.policy_fingerprint_in_session(session)
+            if attempt.policy_fingerprint is None:
+                attempt.policy_fingerprint = fingerprint
+            elif attempt.policy_fingerprint != fingerprint:
+                raise ApplicationConflictError(
+                    "La politique de référence ERP a changé pendant la tentative.",
+                    code="erp_sync_policy_fingerprint_changed",
+                )
+            return fingerprint
+
+    def assert_attempt_policy_in_session(
+        self,
+        session: Session,
+        *,
+        attempt_id: str,
+    ) -> str:
+        from ..infrastructure.sql import ErpSyncAttempt
+
+        attempt = session.get(ErpSyncAttempt, attempt_id)
+        if attempt is None or not attempt.policy_fingerprint:
+            raise ApplicationConflictError(
+                "La politique de référence ERP n'est pas figée pour cette tentative.",
+                code="erp_sync_policy_fingerprint_missing",
+            )
+        current = self.policy_fingerprint_in_session(session)
+        if str(attempt.policy_fingerprint) != current:
+            raise ApplicationConflictError(
+                "La politique de référence ERP a changé pendant la tentative.",
+                code="erp_sync_policy_fingerprint_changed",
+            )
+        return current
+
     @property
     def crypto_available(self) -> bool:
         return self._cipher is not None
