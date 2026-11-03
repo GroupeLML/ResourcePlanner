@@ -70,6 +70,7 @@ SOURCE_MISSING_TABLES = {
     "erp_sync_baselines",
     "erp_sync_plausibility_exceptions",
     "erp_sync_mutation_evidence",
+    "erp_sync_project_quality",
     "erp_sync_recovery_state",
     "erp_sync_compensation_receipts",
 }
