@@ -1002,6 +1002,7 @@ class ErpSyncOrchestrator:
                 code="erp_sync_source_plausibility_failed",
                 context={"diagnostics": list(safe_codes)},
             )
+        self._evidence.mark_sources_ready(attempt_id=attempt_id)
         return projects, portfolio
 
     def _validate_full_publication(
@@ -1121,6 +1122,8 @@ class ErpSyncOrchestrator:
                     )
                 return None
             started = True
+            if self._evidence is not None:
+                self._evidence.reserve_attempt(attempt_id=attempt_id)
             heartbeat = Thread(
                 target=self._heartbeat,
                 kwargs={
@@ -1196,6 +1199,12 @@ class ErpSyncOrchestrator:
                     project_source=project_source,
                     project_task_source=project_task_source,
                 )
+
+            if (
+                attempt.intent == "PROJECTS_AND_ACTIVE_TASKS"
+                and self._evidence is not None
+            ):
+                self._evidence.assert_full_sources_ready(attempt_id=attempt_id)
 
             if attempt.intent != "ACTIVE_PROJECT_TASKS_ONLY":
                 project_result = self._execute_projects(
