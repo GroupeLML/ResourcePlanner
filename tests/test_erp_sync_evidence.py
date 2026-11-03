@@ -285,6 +285,200 @@ class ErpSyncEvidenceTests(unittest.TestCase):
                 )
             )
 
+    def test_compensation_restores_only_erp_owned_fields_and_is_idempotent(self) -> None:
+        control, _occurrence, attempt = self._attempt("compensation")
+        self.service.reserve_attempt(attempt_id=attempt.id)
+        with transactional_session(self.factory) as session:
+            row = Project(
+                id="COMP-PROJECT",
+                erp_external_id="7001",
+                number="COMP-1",
+                name="Avant",
+                client="Client A",
+                status="Actif",
+                co_managers_version=7,
+            )
+            session.add(row)
+            session.flush()
+            before = {
+                "erp_external_id": row.erp_external_id,
+                "number": row.number,
+                "name": row.name,
+                "client": row.client,
+                "project_manager_external_id": row.project_manager_external_id,
+                "project_manager_name": row.project_manager_name,
+                "status": row.status,
+            }
+            evidence_id = self.service.record_before_in_session(
+                session,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                unit_type="PROJECT_SNAPSHOT",
+                entity_type="PROJECT",
+                entity_key="7001",
+                before=before,
+            )
+            row.name = "Après"
+            row.client = "Client B"
+            row.status = "Terminé"
+            after = {
+                "erp_external_id": row.erp_external_id,
+                "number": row.number,
+                "name": row.name,
+                "client": row.client,
+                "project_manager_external_id": row.project_manager_external_id,
+                "project_manager_name": row.project_manager_name,
+                "status": row.status,
+            }
+            self.service.record_after_in_session(
+                session,
+                evidence_id=evidence_id,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                after=after,
+            )
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.mark_recovery_required(
+            attempt_id=attempt.id,
+            reason_code="global_validation_failed",
+        )
+
+        preview = self.service.compensation_preview(attempt_id=attempt.id)
+        self.assertTrue(preview["can_confirm"])
+        self.assertEqual(preview["conflict_count"], 0)
+
+        first = self.service.confirm_compensation(
+            attempt_id=attempt.id,
+            preview_hash=preview["preview_hash"],
+            command_identity="compensation:one",
+            actor_name="admin",
+            reason="Restore accepted ERP fields",
+        )
+        second = self.service.confirm_compensation(
+            attempt_id=attempt.id,
+            preview_hash=preview["preview_hash"],
+            command_identity="compensation:one",
+            actor_name="admin",
+            reason="Replay",
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual(first["affected_records"], 1)
+        with self.factory() as session:
+            restored = session.get(Project, "COMP-PROJECT")
+            self.assertIsNotNone(restored)
+            self.assertEqual(restored.name, "Avant")
+            self.assertEqual(restored.client, "Client A")
+            self.assertEqual(restored.status, "Actif")
+            self.assertEqual(restored.co_managers_version, 7)
+
+    def test_compensation_preview_refuses_changed_current_erp_state(self) -> None:
+        control, _occurrence, attempt = self._attempt("compensation-conflict")
+        self.service.reserve_attempt(attempt_id=attempt.id)
+        with transactional_session(self.factory) as session:
+            row = Project(
+                id="COMP-CONFLICT",
+                erp_external_id="7002",
+                number="COMP-2",
+                name="Avant",
+                status="Actif",
+            )
+            session.add(row)
+            session.flush()
+            before = {
+                "erp_external_id": row.erp_external_id,
+                "number": row.number,
+                "name": row.name,
+                "client": row.client,
+                "project_manager_external_id": row.project_manager_external_id,
+                "project_manager_name": row.project_manager_name,
+                "status": row.status,
+            }
+            evidence_id = self.service.record_before_in_session(
+                session,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                unit_type="PROJECT_SNAPSHOT",
+                entity_type="PROJECT",
+                entity_key="7002",
+                before=before,
+            )
+            row.name = "Après"
+            after = {**before, "name": "Après"}
+            self.service.record_after_in_session(
+                session,
+                evidence_id=evidence_id,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                after=after,
+            )
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.mark_recovery_required(
+            attempt_id=attempt.id,
+            reason_code="global_validation_failed",
+        )
+        with transactional_session(self.factory) as session:
+            session.get(Project, "COMP-CONFLICT").name = "Modification locale plus récente"
+
+        preview = self.service.compensation_preview(attempt_id=attempt.id)
+        self.assertFalse(preview["can_confirm"])
+        self.assertEqual(preview["conflict_count"], 1)
+        with self.assertRaisesRegex(Exception, "correspond plus"):
+            self.service.confirm_compensation(
+                attempt_id=attempt.id,
+                preview_hash=preview["preview_hash"],
+                command_identity="compensation:conflict",
+                actor_name="admin",
+                reason="Must refuse stale state",
+            )
+
+    def test_required_recovery_pins_evidence_and_blocks_new_imports(self) -> None:
+        control, _occurrence, attempt = self._attempt("recovery-pin")
+        captured = self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"records": [{"number": "P"}]},
+            row_count=1,
+        )
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.mark_recovery_required(
+            attempt_id=attempt.id,
+            reason_code="global_validation_failed",
+        )
+        self.service.finalize_attempt(attempt_id=attempt.id, successful=False)
+
+        with self.assertRaisesRegex(Exception, "récupération ERP requise"):
+            self.service.assert_no_required_recovery()
+        with self.factory() as session:
+            manifest = session.get(ErpSyncEvidenceManifest, captured.manifest_id)
+            self.assertTrue(manifest.pinned)
+            self.assertIsNone(manifest.expires_at)
+
     def test_exact_source_plausibility_exception_does_not_bypass_other_source(self) -> None:
         _control, _occurrence, baseline_attempt = self._attempt("baseline-large")
         baseline = self.service.capture_source(
