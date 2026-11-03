@@ -29,6 +29,7 @@ from app.infrastructure.sql import (
     ErpSyncEvidenceChunk,
     ErpSyncEvidenceManifest,
     ErpSyncEvidenceReservation,
+    ErpSyncBaselineApprovalAudit,
     ErpSyncProjectQuality,
     ErpSyncRecoveryState,
     ErpSyncControl,
@@ -191,6 +192,28 @@ class ErpSyncEvidenceTests(unittest.TestCase):
         self.assertEqual(len(chunks), 1)
         self.assertNotIn("SENSITIVE-EVIDENCE-MARKER", chunks[0].encrypted_payload)
         self.assertEqual(self.service.load_source(manifest_id=captured.manifest_id), payload)
+
+    def test_future_evidence_protocol_is_persistable_but_current_reader_fails_closed(self) -> None:
+        _control, _occurrence, attempt = self._attempt("future-evidence-protocol")
+        captured = self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"records": [{"number": "P-FUTURE"}]},
+            row_count=1,
+        )
+        with transactional_session(self.factory) as session:
+            session.get(
+                ErpSyncEvidenceManifest,
+                captured.manifest_id,
+            ).protocol_version = 2
+
+        with self.assertRaises(Exception) as raised:
+            self.service.load_source(manifest_id=captured.manifest_id)
+        self.assertEqual(
+            getattr(raised.exception, "code", None),
+            "erp_sync_evidence_protocol_incompatible",
+        )
 
     def test_missing_crypto_fails_closed_before_evidence_write(self) -> None:
         _control, _occurrence, attempt = self._attempt("missing-crypto")
@@ -362,6 +385,10 @@ class ErpSyncEvidenceTests(unittest.TestCase):
                 actor_name="admin",
                 reason="Bootstrap reviewed against complete source",
             )
+        with self.factory() as session:
+            approvals = tuple(session.scalars(select(ErpSyncBaselineApprovalAudit)))
+        self.assertEqual(len(approvals), 2)
+        self.assertTrue(all(row.actor_name == "admin" for row in approvals))
 
         retry = control.claim(
             occurrence_id=occurrence.id,
@@ -910,10 +937,24 @@ class ErpSyncEvidenceTests(unittest.TestCase):
         )
         self.service.finalize_attempt(attempt_id=attempt.id, successful=True)
         with transactional_session(self.factory) as session:
-            manifest = session.get(ErpSyncEvidenceManifest, captured.manifest_id)
-            manifest.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == attempt.id
+                )
+            )
+            self.assertIsNotNone(recovery)
+            self.assertEqual(recovery.state, "NONE")
+            manifests = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceManifest).where(
+                        ErpSyncEvidenceManifest.attempt_id == attempt.id
+                    )
+                )
+            )
+            for manifest in manifests:
+                manifest.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
 
-        self.assertEqual(self.service.purge_expired(), 1)
+        self.assertGreaterEqual(self.service.purge_expired(), 1)
         with self.factory() as session:
             manifest = session.get(ErpSyncEvidenceManifest, captured.manifest_id)
             reservation = session.scalar(
@@ -931,6 +972,14 @@ class ErpSyncEvidenceTests(unittest.TestCase):
         self.assertEqual(manifest.state, "PURGED")
         self.assertEqual(chunks, ())
         self.assertEqual(reservation.used_bytes, 0)
+        self.assertEqual(reservation.used_plaintext_bytes, 0)
+        with self.factory() as session:
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == attempt.id
+                )
+            )
+        self.assertEqual(recovery.state, "EXPIRED")
 
     def test_exact_source_plausibility_exception_does_not_bypass_other_source(self) -> None:
         _control, _occurrence, baseline_attempt = self._attempt("baseline-large")
