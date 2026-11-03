@@ -212,6 +212,103 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             )
         )
 
+    def test_duplicate_project_identity_blocks_before_any_business_mutation(self) -> None:
+        projects = ProjectSource(
+            (
+                project("DUP-1", external_id="5001"),
+                project("DUP-2", external_id="5001"),
+            )
+        )
+        tasks = PortfolioTaskSource({})
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        control = SqlErpSyncControlRepository(self.factory)
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="operator",
+            idempotency_key="duplicate-project-source",
+            settings=self.control_settings,
+        )
+        attempt = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="operator",
+            settings=self.control_settings,
+        )
+        self.assertIsNotNone(attempt)
+
+        orchestrator._execute_attempt(attempt.id, attempt.generation)
+
+        failed = control.get_attempt(attempt.id)
+        self.assertEqual(failed.status, "FAILED")
+        self.assertEqual(failed.error_code, "erp_sync_project_source_duplicate_identity")
+        self.assertEqual(tasks.calls, 0)
+        with self.factory() as session:
+            self.assertEqual(
+                int(session.scalar(select(__import__("sqlalchemy").func.count(Project.id))) or 0),
+                0,
+            )
+        orchestrator.shutdown()
+
+    def test_malformed_task_source_blocks_before_project_mutation(self) -> None:
+        projects = ProjectSource((project("P-MAL", external_id="5002"),))
+        malformed = TaskCatalogProjectSnapshot(
+            project_number="P-MAL",
+            source_rows=1,
+            rejected_rows=0,
+            items=(
+                TaskCatalogItem(
+                    project_number="P-MAL",
+                    code="100",
+                    label="Missing TaskID",
+                    status="Actif",
+                    active=True,
+                    erp_task_id=None,
+                    account_group="DEPMO",
+                ),
+            ),
+        )
+        tasks = PortfolioTaskSource({"P-MAL": malformed})
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        control = SqlErpSyncControlRepository(self.factory)
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="operator",
+            idempotency_key="malformed-task-source",
+            settings=self.control_settings,
+        )
+        attempt = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="operator",
+            settings=self.control_settings,
+        )
+        self.assertIsNotNone(attempt)
+
+        orchestrator._execute_attempt(attempt.id, attempt.generation)
+
+        failed = control.get_attempt(attempt.id)
+        self.assertEqual(failed.status, "FAILED")
+        self.assertEqual(failed.error_code, "erp_sync_task_source_identity_missing")
+        with self.factory() as session:
+            self.assertIsNone(
+                session.scalar(select(Project).where(Project.number == "P-MAL"))
+            )
+        self.assertEqual(projects.calls, 1)
+        self.assertEqual(tasks.calls, 1)
+        orchestrator.shutdown()
+
     def test_full_run_requires_human_baseline_then_retry_reads_sources_again(self) -> None:
         projects = ProjectSource((project("P-643B"),))
         tasks = PortfolioTaskSource({"P-643B": snapshot("P-643B")})
