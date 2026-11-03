@@ -29,6 +29,7 @@ from app.infrastructure.sql import (
     ErpSyncBaseline,
     ErpSyncControl,
     ErpSyncOccurrence,
+    ErpSyncProjectQuality,
     Project,
     RequestLine,
     Resource,
@@ -895,6 +896,38 @@ class SqliteV2CutoverTests(unittest.TestCase):
             self.assertEqual(report["status"], "blocked")
             anomaly_codes = {row["code"] for row in report["anomalies"]}
             self.assertIn("erp_sync_baselines_populated", anomaly_codes)
+            self.assertEqual(_hash(source), source_before)
+
+    def test_populated_643b_project_quality_blocks_cutover(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.db"
+            target = root / "target.db"
+            _seed_source(source)
+            _seed_target(target)
+
+            engine = create_sql_engine(_url(source))
+            try:
+                with engine.begin() as connection:
+                    connection.execute(
+                        ErpSyncProjectQuality.__table__.insert(),
+                        {
+                            "project_number": "P-643B-CUTOVER",
+                            "producer_attempt_id": None,
+                            "quality_state": "QUARANTINED",
+                            "reason_code": "cutover-must-preserve-quality-authority",
+                        },
+                    )
+            finally:
+                engine.dispose()
+
+            source_before = _hash(source)
+            code, report = _run(root)
+
+            self.assertEqual(code, 2, report)
+            self.assertEqual(report["status"], "blocked")
+            anomaly_codes = {row["code"] for row in report["anomalies"]}
+            self.assertIn("erp_sync_project_quality_populated", anomaly_codes)
             self.assertEqual(_hash(source), source_before)
 
     def test_real_0048_shape_is_normalized_read_only_and_ready(self) -> None:
