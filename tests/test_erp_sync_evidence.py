@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -26,7 +27,9 @@ from app.infrastructure.sql import (
     ErpSyncEvidenceManifest,
     ErpSyncControl,
     Project,
+    ResourceClassConfig,
     TaskCatalogEntry,
+    TaskClassStandard,
     create_session_factory,
     create_sql_engine,
     transactional_session,
@@ -98,7 +101,24 @@ class ErpSyncEvidenceTests(unittest.TestCase):
         Base.metadata.create_all(self.engine)
         self.factory = create_session_factory(self.engine)
         with transactional_session(self.factory) as session:
-            session.add(ErpSyncControl(id="ERP_PROJECTS_TASKS", generation=0))
+            session.add_all(
+                [
+                    ErpSyncControl(id="ERP_PROJECTS_TASKS", generation=0),
+                    ResourceClassConfig(
+                        code="PROGRAMMEUR",
+                        label="Programmeur",
+                        average_hourly_cost_cad=Decimal("125.0000"),
+                        active=True,
+                        version=1,
+                    ),
+                    TaskClassStandard(
+                        task_code="100",
+                        resource_class_code="PROGRAMMEUR",
+                        active=True,
+                        version=1,
+                    ),
+                ]
+            )
         self.control_settings = ErpSyncSchedulerSettings(enabled=False)
         self.service = ErpSyncEvidenceService(
             self.factory,
