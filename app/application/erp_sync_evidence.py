@@ -1553,6 +1553,48 @@ class ErpSyncEvidenceService:
                         project.erp_external_id = None
                         project.status = "Annulé"
                     else:
+                        previous_manager_id = project.project_manager_external_id
+                        previous_manager_name = project.project_manager_name
+                        restored_manager_id = before.get(
+                            "project_manager_external_id"
+                        )
+                        restored_manager_name = before.get("project_manager_name")
+                        if previous_manager_id != restored_manager_id:
+                            import json as _json
+                            from ..application.project_managers import (
+                                PROJECT_MANAGER_SOURCE_ERP,
+                            )
+                            from ..infrastructure.sql.project_manager_models import (
+                                ProjectManagerAudit,
+                            )
+
+                            session.add(
+                                ProjectManagerAudit(
+                                    project_id=project.id,
+                                    action="ERP_PRIMARY_COMPENSATED",
+                                    source=PROJECT_MANAGER_SOURCE_ERP,
+                                    actor_user_id=None,
+                                    before_json=_json.dumps(
+                                        {
+                                            "employee_external_id": previous_manager_id,
+                                            "display_name": previous_manager_name,
+                                        },
+                                        ensure_ascii=False,
+                                        sort_keys=True,
+                                        separators=(",", ":"),
+                                    ),
+                                    after_json=_json.dumps(
+                                        {
+                                            "employee_external_id": restored_manager_id,
+                                            "display_name": restored_manager_name,
+                                        },
+                                        ensure_ascii=False,
+                                        sort_keys=True,
+                                        separators=(",", ":"),
+                                    ),
+                                    resulting_version=None,
+                                )
+                            )
                         for field in (
                             "erp_external_id",
                             "number",
