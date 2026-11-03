@@ -129,6 +129,8 @@ def _sql_snapshot(number: str, code: str, label: str) -> TaskCatalogProjectSnaps
                 label=label,
                 status="Actif",
                 active=True,
+                erp_task_id=f"ERP-{number}-{code}",
+                account_group="DEPMO",
             ),
         ),
     )
