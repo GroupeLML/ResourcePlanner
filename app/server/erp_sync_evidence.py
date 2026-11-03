@@ -1506,6 +1506,57 @@ class ErpSyncEvidenceService:
             }
         return None
 
+    def _assert_attempt_evidence_compatible_in_session(
+        self,
+        session: Session,
+        *,
+        attempt_id: str,
+    ) -> None:
+        from ..infrastructure.sql import (
+            EVIDENCE_STATE_EXPIRED,
+            EVIDENCE_STATE_PURGED,
+            ERP_EVIDENCE_PROTOCOL_VERSION,
+            ErpSyncEvidenceManifest,
+        )
+
+        manifests = tuple(
+            session.scalars(
+                select(ErpSyncEvidenceManifest).where(
+                    ErpSyncEvidenceManifest.attempt_id == attempt_id
+                )
+            )
+        )
+        if not manifests:
+            raise ApplicationConflictError(
+                "Aucune preuve ERP durable n'est disponible pour cette tentative.",
+                code="erp_sync_compensation_evidence_missing",
+            )
+        if any(
+            int(row.protocol_version) != ERP_EVIDENCE_PROTOCOL_VERSION
+            for row in manifests
+        ):
+            raise ApplicationConflictError(
+                "La version de protocole de preuve ERP est incompatible.",
+                code="erp_sync_evidence_protocol_incompatible",
+            )
+        if self._control_settings is None or any(
+            str(row.profile_fingerprint)
+            != self._control_settings.config_fingerprint
+            for row in manifests
+        ):
+            raise ApplicationConflictError(
+                "Le profil de preuve ERP n'est plus compatible avec le contrôle courant.",
+                code="erp_sync_evidence_configuration_incompatible",
+            )
+        if any(
+            row.state in {EVIDENCE_STATE_EXPIRED, EVIDENCE_STATE_PURGED}
+            for row in manifests
+        ):
+            raise ApplicationConflictError(
+                "La preuve ERP requise pour la compensation est expirée.",
+                code="erp_sync_compensation_evidence_expired",
+            )
+
     @staticmethod
     def _new_row_has_dependencies(
         session: Session,
@@ -1566,11 +1617,6 @@ class ErpSyncEvidenceService:
         return False
 
     def compensation_preview(self, *, attempt_id: str) -> dict[str, Any]:
-        from ..infrastructure.sql import (
-            EVIDENCE_STATE_EXPIRED,
-            EVIDENCE_STATE_PURGED,
-            ErpSyncEvidenceManifest,
-        )
         from ..infrastructure.sql.erp_sync_control_repository import (
             SqlErpSyncControlRepository,
         )
@@ -1587,21 +1633,10 @@ class ErpSyncEvidenceService:
                 settings=self._control_settings,
             )
             control_generation = int(control.generation)
-            invalid_manifest = session.scalar(
-                select(ErpSyncEvidenceManifest.id)
-                .where(
-                    ErpSyncEvidenceManifest.attempt_id == attempt_id,
-                    ErpSyncEvidenceManifest.state.in_(
-                        (EVIDENCE_STATE_EXPIRED, EVIDENCE_STATE_PURGED)
-                    ),
-                )
-                .limit(1)
+            self._assert_attempt_evidence_compatible_in_session(
+                session,
+                attempt_id=attempt_id,
             )
-            if invalid_manifest is not None:
-                raise ApplicationConflictError(
-                    "La preuve ERP requise pour la compensation est expirée.",
-                    code="erp_sync_compensation_evidence_expired",
-                )
         rows = self.mutation_payloads(attempt_id=attempt_id)
         if not rows:
             raise ApplicationValidationError(
@@ -1680,6 +1715,10 @@ class ErpSyncEvidenceService:
                 settings=self._control_settings,
             )
             control_generation = int(control.generation)
+            self._assert_attempt_evidence_compatible_in_session(
+                session,
+                attempt_id=attempt_id,
+            )
             existing = session.scalar(
                 select(ErpSyncCompensationReceipt).where(
                     ErpSyncCompensationReceipt.command_identity == identity
@@ -1874,6 +1913,17 @@ class ErpSyncEvidenceService:
                 recovery.pinned = False
                 recovery.resolved_by = actor_name
                 recovery.resolved_at = _utc_now()
+            from ..infrastructure.sql import ErpSyncEvidenceManifest
+            resolution_expiry = _utc_now() + timedelta(
+                days=self.settings.failure_retention_days
+            )
+            for manifest in session.scalars(
+                select(ErpSyncEvidenceManifest).where(
+                    ErpSyncEvidenceManifest.attempt_id == attempt_id
+                )
+            ):
+                manifest.pinned = False
+                manifest.expires_at = resolution_expiry
             affected_projects = {
                 str(before.get("number"))
                 for row, before, _after in payload_rows
