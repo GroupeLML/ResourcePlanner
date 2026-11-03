@@ -3,7 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
 import os
-from threading import Barrier, Event
+from threading import Barrier, Event, Thread
 import unittest
 from unittest.mock import patch
 
@@ -256,6 +256,148 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             attempt_count = session.scalar(select(func.count(ErpSyncAttempt.id)))
         self.assertEqual(occurrence_count, 1)
         self.assertEqual(attempt_count, 1)
+
+    def test_terminal_run_now_replay_uses_one_sqlserver_attempt_and_execution(self) -> None:
+        project_number = "SQL643A-R"
+        with transactional_session(self.factory) as session:
+            session.execute(
+                delete(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == project_number
+                )
+            )
+            session.execute(
+                delete(Project).where(Project.number == project_number)
+            )
+
+        projects = SqlServerProjectSource(
+            (_sql_project(project_number, "Terminal replay authority"),)
+        )
+        tasks = SqlServerPortfolioTaskSource(
+            {
+                project_number: _sql_snapshot(
+                    project_number,
+                    "400",
+                    "Terminal replay task",
+                )
+            }
+        )
+        backend_a = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.settings,
+            automatic_safety=self.automatic_safety,
+            system_actor="backend-A",
+        )
+        backend_b = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.settings,
+            automatic_safety=self.automatic_safety,
+            system_actor="backend-B",
+        )
+        repository = SqlErpSyncControlRepository(self.factory)
+
+        accepted_by_b = Event()
+        release_b = Event()
+        completed_a = Event()
+        result_b: list[dict[str, object]] = []
+        errors_b: list[BaseException] = []
+        original_accept_b = backend_b._control.accept_manual
+        original_execute_a = backend_a._execute_attempt
+
+        def delayed_accept_b(*args, **kwargs):
+            occurrence = original_accept_b(*args, **kwargs)
+            accepted_by_b.set()
+            if not release_b.wait(timeout=10):
+                raise RuntimeError("SQL terminal replay release timeout")
+            return occurrence
+
+        def observed_execute_a(*args, **kwargs):
+            try:
+                return original_execute_a(*args, **kwargs)
+            finally:
+                completed_a.set()
+
+        def invoke_b() -> None:
+            try:
+                result_b.append(
+                    backend_b.run_now(
+                        intent="PROJECTS_AND_ACTIVE_TASKS",
+                        actor_name="operator",
+                        idempotency_key="sql-terminal-replay",
+                    )
+                )
+            except BaseException as exc:
+                errors_b.append(exc)
+
+        try:
+            with patch.object(
+                backend_b._control,
+                "accept_manual",
+                side_effect=delayed_accept_b,
+            ), patch.object(
+                backend_a,
+                "_execute_attempt",
+                side_effect=observed_execute_a,
+            ), patch.object(
+                backend_a,
+                "_submit",
+                wraps=backend_a._submit,
+            ) as submit_a, patch.object(
+                backend_b,
+                "_submit",
+                wraps=backend_b._submit,
+            ) as submit_b:
+                delayed = Thread(target=invoke_b, name="sql-stale-run-now")
+                delayed.start()
+                self.assertTrue(accepted_by_b.wait(timeout=5))
+
+                result_a = backend_a.run_now(
+                    intent="PROJECTS_AND_ACTIVE_TASKS",
+                    actor_name="operator",
+                    idempotency_key="sql-terminal-replay",
+                )
+                self.assertTrue(completed_a.wait(timeout=20))
+                completed = repository.get_attempt(str(result_a["run_id"]))
+                self.assertEqual(completed.status, "SUCCEEDED")
+
+                release_b.set()
+                delayed.join(timeout=10)
+                self.assertFalse(delayed.is_alive())
+
+                self.assertEqual(errors_b, [])
+                self.assertEqual(len(result_b), 1)
+                self.assertEqual(result_b[0]["run_id"], result_a["run_id"])
+                self.assertEqual(submit_a.call_count, 1)
+                submit_b.assert_not_called()
+
+            with self.factory() as session:
+                attempts = tuple(
+                    session.scalars(
+                        select(ErpSyncAttempt).where(
+                            ErpSyncAttempt.occurrence_id
+                            == str(result_a["occurrence_id"])
+                        )
+                    )
+                )
+                task_row = session.scalar(
+                    select(TaskCatalogEntry).where(
+                        TaskCatalogEntry.project_number == project_number,
+                        TaskCatalogEntry.task_code == "400",
+                    )
+                )
+            self.assertEqual(len(attempts), 1)
+            self.assertEqual(attempts[0].id, result_a["run_id"])
+            self.assertEqual(attempts[0].trigger_kind, "MANUAL")
+            self.assertEqual(projects.calls, 1)
+            self.assertEqual(tasks.batch_calls, 1)
+            self.assertIsNotNone(task_row)
+        finally:
+            release_b.set()
+            backend_a.shutdown()
+            backend_b.shutdown()
 
     def test_manual_owner_is_only_observed_by_automatic_scheduler(self) -> None:
         unavailable = UnavailableErpSyncAutomaticSafetyCapability()
