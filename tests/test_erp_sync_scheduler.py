@@ -391,6 +391,122 @@ class ErpSyncControlTests(unittest.TestCase):
             "MISSED",
         )
 
+    def test_delayed_automatic_claim_preserves_healthy_running_owner(self) -> None:
+        capability = TestErpSyncAutomaticSafetyCapability()
+        with patch(
+            "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+            return_value=self.fixed_now(),
+        ):
+            occurrence = self.repository.record_daily_decision(
+                self.settings,
+                capability,
+            )
+        self.assertIsNotNone(occurrence)
+
+        before_deadline = datetime(2026, 1, 15, 8, 59, tzinfo=timezone.utc)
+        with patch(
+            "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+            return_value=before_deadline,
+        ):
+            owner = self.repository.claim(
+                occurrence_id=occurrence.id,
+                trigger="CATCHUP",
+                actor_name="scheduler-A",
+                settings=self.settings,
+                automatic=True,
+                automatic_safety=capability,
+            )
+            self.assertIsNotNone(owner)
+            self.assertTrue(
+                self.repository.start_attempt(
+                    attempt_id=owner.id,
+                    generation=owner.generation,
+                    settings=self.settings,
+                )
+            )
+
+        after_deadline = datetime(2026, 1, 15, 9, 1, tzinfo=timezone.utc)
+        with patch(
+            "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+            return_value=after_deadline,
+        ):
+            observed = self.repository.claim(
+                occurrence_id=occurrence.id,
+                trigger="RETRY",
+                actor_name="scheduler-B",
+                settings=self.settings,
+                automatic=True,
+                automatic_safety=capability,
+            )
+
+        self.assertIsNotNone(observed)
+        self.assertEqual(observed.id, owner.id)
+        persisted = self.repository.get_occurrence(occurrence.id)
+        self.assertEqual(persisted.status, "PENDING")
+        self.assertIsNone(persisted.success_attempt_id)
+
+    def test_delayed_automatic_claim_preserves_completed_success(self) -> None:
+        capability = TestErpSyncAutomaticSafetyCapability()
+        with patch(
+            "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+            return_value=self.fixed_now(),
+        ):
+            occurrence = self.repository.record_daily_decision(
+                self.settings,
+                capability,
+            )
+        self.assertIsNotNone(occurrence)
+
+        before_deadline = datetime(2026, 1, 15, 8, 59, tzinfo=timezone.utc)
+        with patch(
+            "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+            return_value=before_deadline,
+        ):
+            owner = self.repository.claim(
+                occurrence_id=occurrence.id,
+                trigger="CATCHUP",
+                actor_name="scheduler-A",
+                settings=self.settings,
+                automatic=True,
+                automatic_safety=capability,
+            )
+            self.assertIsNotNone(owner)
+            self.assertTrue(
+                self.repository.start_attempt(
+                    attempt_id=owner.id,
+                    generation=owner.generation,
+                    settings=self.settings,
+                )
+            )
+            self.assertTrue(
+                self.repository.finish(
+                    attempt_id=owner.id,
+                    generation=owner.generation,
+                    status=ERP_ATTEMPT_SUCCEEDED,
+                    phase="PUBLICATION_COMMITTED",
+                    settings=self.settings,
+                )
+            )
+
+        after_deadline = datetime(2026, 1, 15, 9, 1, tzinfo=timezone.utc)
+        with patch(
+            "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+            return_value=after_deadline,
+        ):
+            observed = self.repository.claim(
+                occurrence_id=occurrence.id,
+                trigger="RETRY",
+                actor_name="scheduler-B",
+                settings=self.settings,
+                automatic=True,
+                automatic_safety=capability,
+            )
+
+        self.assertIsNone(observed)
+        persisted = self.repository.get_occurrence(occurrence.id)
+        self.assertEqual(persisted.status, "SUCCEEDED")
+        self.assertEqual(persisted.success_attempt_id, owner.id)
+
     def test_automatic_retry_after_deadline_is_rejected(self) -> None:
         capability = TestErpSyncAutomaticSafetyCapability()
         with patch(
