@@ -1174,6 +1174,7 @@ class ErpSyncOrchestrator:
             ErpSyncAttempt,
             ErpSyncEvidenceManifest,
             ErpSyncMutationEvidence,
+            ErpSyncProjectQuality,
         )
 
         SqlErpSyncControlRepository.guard_session(
