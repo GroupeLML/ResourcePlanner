@@ -922,6 +922,97 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
         self.assertTrue(all(row.pinned for row in manifests))
         orchestrator.shutdown()
 
+    def test_sqlserver_baseline_publication_failure_rolls_back_complete_success(self) -> None:
+        project_number = "SQL643B-PUBLISH"
+        projects = SqlServerProjectSource(
+            (_sql_project(project_number, "Atomic publication"),)
+        )
+        tasks = SqlServerPortfolioTaskSource(
+            {
+                project_number: _sql_snapshot(
+                    project_number,
+                    "SQL643-643",
+                    "Atomic publication task",
+                )
+            }
+        )
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.settings,
+            evidence_service=self.evidence,
+        )
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = repository.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="sql-publication",
+            idempotency_key="sql-publication-bootstrap",
+            settings=self.settings,
+        )
+        bootstrap = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="sql-publication",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(bootstrap)
+        orchestrator._execute_attempt(bootstrap.id, bootstrap.generation)
+        self.assertEqual(repository.get_attempt(bootstrap.id).status, "FAILED")
+
+        manifests = tuple(
+            row
+            for row in self.evidence.list_attempt_sources(attempt_id=bootstrap.id)
+            if row["proof_type"] == "SOURCE"
+        )
+        for manifest in manifests:
+            self.evidence.approve_baseline(
+                manifest_id=str(manifest["manifest_id"]),
+                actor_name="sql-admin",
+                reason="Approved SQL publication baseline",
+            )
+        with self.factory() as session:
+            baseline_before = {
+                row.source_type: (row.source_fingerprint, int(row.row_count))
+                for row in session.scalars(select(ErpSyncBaseline))
+            }
+
+        retry = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="sql-publication",
+            settings=self.settings,
+            command_identity="retry:sql-publication-failure",
+        )
+        self.assertIsNotNone(retry)
+        with patch.object(
+            self.evidence,
+            "advance_approved_baselines_in_session",
+            side_effect=RuntimeError("injected baseline publication failure"),
+        ):
+            orchestrator._execute_attempt(retry.id, retry.generation)
+
+        failed = repository.get_attempt(retry.id)
+        self.assertEqual(failed.status, "FAILED")
+        occurrence_after = repository.get_occurrence(occurrence.id)
+        self.assertIsNone(occurrence_after.success_attempt_id)
+        with self.factory() as session:
+            control = session.get(ErpSyncControl, ERP_SYNC_CONTROL_ROW_ID)
+            baseline_after = {
+                row.source_type: (row.source_fingerprint, int(row.row_count))
+                for row in session.scalars(select(ErpSyncBaseline))
+            }
+            task_row = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == project_number,
+                    TaskCatalogEntry.task_code == "SQL643-643",
+                )
+            )
+        self.assertIsNone(control.last_success_attempt_id)
+        self.assertEqual(baseline_after, baseline_before)
+        self.assertIsNotNone(task_row)
+        orchestrator.shutdown()
+
     def test_sqlserver_stale_generation_cannot_write_mutation_evidence(self) -> None:
         repository = SqlErpSyncControlRepository(self.factory)
         occurrence = repository.accept_manual(
