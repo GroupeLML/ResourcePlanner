@@ -26,6 +26,7 @@ from app.infrastructure.sql import (
     ErpSyncAttempt,
     ErpSyncEvidenceChunk,
     ErpSyncEvidenceManifest,
+    ErpSyncEvidenceReservation,
     ErpSyncControl,
     Project,
     ResourceClassConfig,
@@ -507,9 +508,8 @@ class ErpSyncEvidenceTests(unittest.TestCase):
         with self.factory() as session:
             manifest = session.get(ErpSyncEvidenceManifest, captured.manifest_id)
             reservation = session.scalar(
-                select(__import__("app.infrastructure.sql", fromlist=["ErpSyncEvidenceReservation"]).ErpSyncEvidenceReservation).where(
-                    __import__("app.infrastructure.sql", fromlist=["ErpSyncEvidenceReservation"]).ErpSyncEvidenceReservation.attempt_id
-                    == attempt.id
+                select(ErpSyncEvidenceReservation).where(
+                    ErpSyncEvidenceReservation.attempt_id == attempt.id
                 )
             )
             chunks = tuple(
