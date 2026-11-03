@@ -82,6 +82,7 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
     "erp_sync_baselines",
     "erp_sync_plausibility_exceptions",
     "erp_sync_mutation_evidence",
+    "erp_sync_project_quality",
     "erp_sync_recovery_state",
     "erp_sync_compensation_receipts",
         },
@@ -333,6 +334,9 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
     ),
     "erp_sync_mutation_evidence": _rebuild(
         "Before/after recovery 643B; toute preuve durable bloque le cutover."
+    ),
+    "erp_sync_project_quality": _rebuild(
+        "Qualité/provenance ERP 643B; toute projection durable bloque le cutover non supporté."
     ),
     "erp_sync_recovery_state": _rebuild(
         "État de recovery 643B; REQUIRED/AVAILABLE ne peut jamais être abandonné au cutover."
