@@ -12,9 +12,13 @@ from typing import Any
 from sqlalchemy import select
 
 from ..application import (
+    ExternalProjectRecord,
     ProjectSourcePort,
     ProjectSyncService,
     ProjectTaskCatalogSourcePort,
+    TaskCatalogItem,
+    TaskCatalogPortfolioSnapshot,
+    TaskCatalogProjectSnapshot,
     TaskCatalogSyncService,
 )
 from .erp_sync_evidence import (
@@ -873,7 +877,7 @@ class ErpSyncOrchestrator:
         attempt_id: str,
         project_source: ProjectSourcePort | None = None,
         project_task_source: ProjectTaskCatalogSourcePort | None = None,
-    ) -> tuple[tuple[Any, ...], Any]:
+    ) -> tuple[tuple[Any, ...], Any, tuple[str, ...]]:
         if self._evidence is None:
             raise ApplicationUnavailableError(
                 "Les garde-fous de preuve ERP 643B ne sont pas configurés.",
@@ -996,13 +1000,114 @@ class ErpSyncOrchestrator:
                     )
                 )
             )
+            if projects_plausibility.reviewable or tasks_plausibility.reviewable:
+                raise ApplicationConflictError(
+                    "La source ERP attend une approbation de plausibilité.",
+                    code="erp_sync_plausibility_review_required",
+                    context={"diagnostics": list(safe_codes)},
+                )
             raise ApplicationValidationError(
-                "La source ERP requiert une approbation de baseline ou dépasse les seuils de plausibilité.",
+                "La source ERP requiert une baseline approuvée.",
                 code="erp_sync_source_plausibility_failed",
                 context={"diagnostics": list(safe_codes)},
             )
+        rejected_projects = tuple(
+            dict.fromkeys(
+                (
+                    *projects_plausibility.rejected_projects,
+                    *tasks_plausibility.rejected_projects,
+                )
+            )
+        )
         self._evidence.mark_sources_ready(attempt_id=attempt_id)
-        return projects, portfolio
+        return projects, portfolio, rejected_projects
+
+    def _reload_reviewed_full_sources(
+        self,
+        *,
+        attempt_id: str,
+    ) -> tuple[tuple[Any, ...], TaskCatalogPortfolioSnapshot, tuple[str, ...]]:
+        if self._evidence is None:
+            raise ApplicationUnavailableError(
+                "Les garde-fous de preuve ERP 643B ne sont pas configurés.",
+                code="erp_sync_evidence_capability_unavailable",
+            )
+        projects_capture = self._evidence.load_captured_source(
+            attempt_id=attempt_id,
+            source_type="PROJECTS",
+        )
+        tasks_capture = self._evidence.load_captured_source(
+            attempt_id=attempt_id,
+            source_type="TASKS",
+        )
+        project_payload = projects_capture.payload
+        task_payload = tasks_capture.payload
+        if not isinstance(project_payload, dict) or not isinstance(task_payload, dict):
+            raise ApplicationConflictError(
+                "La preuve source ERP scellée est invalide.",
+                code="erp_sync_evidence_payload_invalid",
+            )
+        project_records = project_payload.get("records") or ()
+        projects = tuple(
+            ExternalProjectRecord(**dict(row))
+            for row in project_records
+            if isinstance(row, dict)
+        )
+        portfolio_data = task_payload.get("portfolio")
+        if not isinstance(portfolio_data, dict):
+            raise ApplicationConflictError(
+                "La preuve tâches ERP scellée est invalide.",
+                code="erp_sync_evidence_payload_invalid",
+            )
+        snapshots: list[TaskCatalogProjectSnapshot] = []
+        for raw_snapshot in portfolio_data.get("snapshots") or ():
+            if not isinstance(raw_snapshot, dict):
+                continue
+            items = tuple(
+                TaskCatalogItem(**dict(item))
+                for item in raw_snapshot.get("items") or ()
+                if isinstance(item, dict)
+            )
+            snapshots.append(
+                TaskCatalogProjectSnapshot(
+                    project_number=str(raw_snapshot.get("project_number") or ""),
+                    source_rows=int(raw_snapshot.get("source_rows") or 0),
+                    rejected_rows=int(raw_snapshot.get("rejected_rows") or 0),
+                    items=items,
+                )
+            )
+        portfolio = TaskCatalogPortfolioSnapshot(
+            source_rows=int(portfolio_data.get("source_rows") or 0),
+            source_pages=int(portfolio_data.get("source_pages") or 0),
+            snapshots=tuple(snapshots),
+        )
+        active_targets = sum(
+            1
+            for row in projects
+            if self._project_source_active(row.status)
+        )
+        projects_plausibility = self._evidence.validate_plausibility(
+            projects_capture,
+        )
+        tasks_plausibility = self._evidence.validate_plausibility(
+            tasks_capture,
+            active_task_targets=active_targets,
+        )
+        if not projects_plausibility.accepted or not tasks_plausibility.accepted:
+            raise ApplicationConflictError(
+                "L'approbation de plausibilité ne couvre pas la source scellée.",
+                code="erp_sync_plausibility_review_incomplete",
+            )
+        rejected_projects = tuple(
+            dict.fromkeys(
+                (
+                    *projects_plausibility.rejected_projects,
+                    *tasks_plausibility.rejected_projects,
+                )
+            )
+        )
+        self._evidence.mark_sources_ready(attempt_id=attempt_id)
+        return projects, portfolio, rejected_projects
 
     def _validate_full_publication(
         self,
