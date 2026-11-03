@@ -1908,7 +1908,19 @@ class ErpSyncOrchestrator:
                     settings=self._settings,
                 )
                 task_evidence: dict[str, str] = {}
+                excluded_new_keys: set[str] = set()
                 sync_state_evidence: str | None = None
+                source_observed_at = (
+                    self._evidence.source_observed_at_in_session(
+                        session,
+                        attempt_id=attempt_id,
+                        source_type="TASKS",
+                    )
+                    if self._evidence is not None
+                    else None
+                )
+                repository = SqlTaskCatalogRepository(session)
+                workforce_policy = SqlTaskCatalogWorkforcePolicy(session)
                 if self._evidence is not None:
                     existing_rows = tuple(
                         session.scalars(
@@ -1948,6 +1960,15 @@ class ErpSyncOrchestrator:
                             else None
                         ) or existing_by_code.get(task_code)
                         key = task_id or f"{project.number}:{task_code}"
+                        if existing is None:
+                            projection = workforce_policy.project_task_projection(
+                                project_number=project.number,
+                                task_code=task_code,
+                                budget_amount_cad=item.budget_amount_cad,
+                            )
+                            if not projection.eligible:
+                                excluded_new_keys.add(key)
+                                continue
                         if key not in task_evidence:
                             task_evidence[key] = self._evidence.record_before_in_session(
                                 session,
@@ -1969,15 +1990,15 @@ class ErpSyncOrchestrator:
                             session.get(TaskCatalogProjectSyncState, project.number)
                         ),
                     )
-                repository = SqlTaskCatalogRepository(session)
                 result = TaskCatalogSyncService(
                     _PreloadedProjectTaskSource(snapshot),
                     repository,
                     sync_metadata_repository=repository,
-                    workforce_policy=SqlTaskCatalogWorkforcePolicy(session),
+                    workforce_policy=workforce_policy,
                 ).synchronize_project(
                     project_external_id=project_external_id,
                     project_number=project.number,
+                    source_observed_at=source_observed_at,
                 )
                 if self._evidence is not None:
                     # Seal after-images for every row checkpointed above,
@@ -2022,13 +2043,7 @@ class ErpSyncOrchestrator:
                         session.add(quality)
                     quality.producer_attempt_id = attempt_id
                     quality.quality_state = "VALID"
-                    quality.source_observed_at = (
-                        self._evidence.source_observed_at_in_session(
-                            session,
-                            attempt_id=attempt_id,
-                            source_type="TASKS",
-                        )
-                    )
+                    quality.source_observed_at = source_observed_at
                     quality.validated_at = utc_now()
                     quality.reason_code = None
                     if sync_state_evidence is not None:
