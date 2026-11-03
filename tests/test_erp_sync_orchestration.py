@@ -71,6 +71,18 @@ class FailingProjectSource:
         raise RuntimeError("controlled project source failure")
 
 
+class ToggleProjectSource(ProjectSource):
+    def __init__(self, rows, *, fail: bool = False) -> None:
+        super().__init__(rows)
+        self.fail = fail
+
+    def list_projects(self):
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("controlled project source failure")
+        return self.rows
+
+
 class MutableAutomaticSafety:
     def __init__(self) -> None:
         self.available = True
@@ -189,6 +201,372 @@ class ErpSyncOrchestrationTests(unittest.TestCase):
         )
         self.assertIsNotNone(attempt)
         return control, attempt
+
+    def test_terminal_run_now_success_replay_observes_same_attempt(self) -> None:
+        projects = ToggleProjectSource((project("A"),))
+        tasks = PortfolioTaskSource({"A": snapshot("A", (task("A", "1"),))})
+        backend_a = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.settings,
+            system_actor="backend-A",
+        )
+        backend_b = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.settings,
+            system_actor="backend-B",
+        )
+        control = SqlErpSyncControlRepository(self.factory)
+        accepted_by_b = Event()
+        release_b = Event()
+        completed_a = Event()
+        result_b: list[dict[str, object]] = []
+        errors_b: list[BaseException] = []
+        original_accept_b = backend_b._control.accept_manual
+        original_execute_a = backend_a._execute_attempt
+
+        def delayed_accept_b(*args, **kwargs):
+            occurrence = original_accept_b(*args, **kwargs)
+            accepted_by_b.set()
+            if not release_b.wait(timeout=5):
+                raise RuntimeError("stale claimant release timeout")
+            return occurrence
+
+        def observed_execute_a(*args, **kwargs):
+            try:
+                return original_execute_a(*args, **kwargs)
+            finally:
+                completed_a.set()
+
+        def invoke_b() -> None:
+            try:
+                result_b.append(
+                    backend_b.run_now(
+                        intent="PROJECTS_AND_ACTIVE_TASKS",
+                        actor_name="operator",
+                        idempotency_key="terminal-success",
+                    )
+                )
+            except BaseException as exc:
+                errors_b.append(exc)
+
+        try:
+            with patch.object(
+                backend_b._control,
+                "accept_manual",
+                side_effect=delayed_accept_b,
+            ), patch.object(
+                backend_a,
+                "_execute_attempt",
+                side_effect=observed_execute_a,
+            ), patch.object(
+                backend_a,
+                "_submit",
+                wraps=backend_a._submit,
+            ) as submit_a, patch.object(
+                backend_b,
+                "_submit",
+                wraps=backend_b._submit,
+            ) as submit_b:
+                delayed = Thread(target=invoke_b, name="stale-run-now-success")
+                delayed.start()
+                self.assertTrue(accepted_by_b.wait(timeout=2))
+
+                result_a = backend_a.run_now(
+                    intent="PROJECTS_AND_ACTIVE_TASKS",
+                    actor_name="operator",
+                    idempotency_key="terminal-success",
+                )
+                self.assertTrue(completed_a.wait(timeout=5))
+                attempt_a = control.get_attempt(str(result_a["run_id"]))
+                self.assertEqual(attempt_a.status, ERP_ATTEMPT_SUCCEEDED)
+
+                release_b.set()
+                delayed.join(timeout=5)
+                self.assertFalse(delayed.is_alive())
+
+                self.assertEqual(errors_b, [])
+                self.assertEqual(len(result_b), 1)
+                self.assertEqual(result_b[0]["run_id"], result_a["run_id"])
+                self.assertEqual(submit_a.call_count, 1)
+                submit_b.assert_not_called()
+
+            with self.factory() as session:
+                attempts = tuple(session.scalars(select(ErpSyncAttempt)))
+            self.assertEqual(len(attempts), 1)
+            self.assertEqual(projects.calls, 1)
+            self.assertEqual(tasks.batch_calls, 1)
+        finally:
+            release_b.set()
+            backend_a.shutdown()
+            backend_b.shutdown()
+
+    def test_terminal_run_now_failure_replay_does_not_retry_implicitly(self) -> None:
+        projects = ToggleProjectSource((project("A"),), fail=True)
+        tasks = PortfolioTaskSource({"A": snapshot("A", (task("A", "1"),))})
+        backend_a = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.settings,
+            system_actor="backend-A",
+        )
+        backend_b = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.settings,
+            system_actor="backend-B",
+        )
+        control = SqlErpSyncControlRepository(self.factory)
+        accepted_by_b = Event()
+        release_b = Event()
+        completed_a = Event()
+        result_b: list[dict[str, object]] = []
+        errors_b: list[BaseException] = []
+        original_accept_b = backend_b._control.accept_manual
+        original_execute_a = backend_a._execute_attempt
+
+        def delayed_accept_b(*args, **kwargs):
+            occurrence = original_accept_b(*args, **kwargs)
+            accepted_by_b.set()
+            if not release_b.wait(timeout=5):
+                raise RuntimeError("stale claimant release timeout")
+            return occurrence
+
+        def observed_execute_a(*args, **kwargs):
+            try:
+                return original_execute_a(*args, **kwargs)
+            finally:
+                completed_a.set()
+
+        def invoke_b() -> None:
+            try:
+                result_b.append(
+                    backend_b.run_now(
+                        intent="PROJECTS_AND_ACTIVE_TASKS",
+                        actor_name="operator",
+                        idempotency_key="terminal-failure",
+                    )
+                )
+            except BaseException as exc:
+                errors_b.append(exc)
+
+        try:
+            with patch.object(
+                backend_b._control,
+                "accept_manual",
+                side_effect=delayed_accept_b,
+            ), patch.object(
+                backend_a,
+                "_execute_attempt",
+                side_effect=observed_execute_a,
+            ), patch.object(
+                backend_a,
+                "_submit",
+                wraps=backend_a._submit,
+            ) as submit_a, patch.object(
+                backend_b,
+                "_submit",
+                wraps=backend_b._submit,
+            ) as submit_b:
+                delayed = Thread(target=invoke_b, name="stale-run-now-failure")
+                delayed.start()
+                self.assertTrue(accepted_by_b.wait(timeout=2))
+
+                result_a = backend_a.run_now(
+                    intent="PROJECTS_AND_ACTIVE_TASKS",
+                    actor_name="operator",
+                    idempotency_key="terminal-failure",
+                )
+                self.assertTrue(completed_a.wait(timeout=5))
+                failed = control.get_attempt(str(result_a["run_id"]))
+                self.assertEqual(failed.status, ERP_ATTEMPT_FAILED)
+
+                release_b.set()
+                delayed.join(timeout=5)
+                self.assertFalse(delayed.is_alive())
+
+                self.assertEqual(errors_b, [])
+                self.assertEqual(result_b[0]["run_id"], result_a["run_id"])
+                self.assertEqual(submit_a.call_count, 1)
+                submit_b.assert_not_called()
+
+                with self.factory() as session:
+                    attempts_before_retry = tuple(
+                        session.scalars(select(ErpSyncAttempt))
+                    )
+                self.assertEqual(len(attempts_before_retry), 1)
+                self.assertEqual(projects.calls, 1)
+                self.assertEqual(tasks.batch_calls, 0)
+
+                projects.fail = False
+                retry_completed = Event()
+                original_execute_retry = backend_a._execute_attempt
+
+                def observed_retry(*args, **kwargs):
+                    try:
+                        return original_execute_retry(*args, **kwargs)
+                    finally:
+                        retry_completed.set()
+
+                with patch.object(
+                    backend_a,
+                    "_execute_attempt",
+                    side_effect=observed_retry,
+                ):
+                    retry = backend_a.retry(
+                        occurrence_id=str(result_a["occurrence_id"]),
+                        actor_name="operator",
+                        idempotency_key="explicit-retry",
+                    )
+                    self.assertNotEqual(retry["run_id"], result_a["run_id"])
+                    self.assertTrue(retry_completed.wait(timeout=5))
+
+                retried = control.get_attempt(str(retry["run_id"]))
+                self.assertEqual(retried.status, ERP_ATTEMPT_SUCCEEDED)
+                self.assertEqual(retried.trigger_kind, "RETRY")
+
+            with self.factory() as session:
+                attempts = tuple(
+                    session.scalars(
+                        select(ErpSyncAttempt).order_by(ErpSyncAttempt.attempt_number)
+                    )
+                )
+            self.assertEqual(len(attempts), 2)
+            self.assertEqual(projects.calls, 2)
+            self.assertEqual(tasks.batch_calls, 1)
+        finally:
+            release_b.set()
+            backend_a.shutdown()
+            backend_b.shutdown()
+
+    def test_targeted_terminal_replay_observes_same_attempt(self) -> None:
+        source = PortfolioTaskSource({"A": snapshot("A", (task("A", "1"),))})
+        # Targeted async launch uses fetch_project_snapshot, so use a minimal
+        # source object with deterministic counting for that contract.
+        class TargetedSource:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def fetch_project_snapshot(
+                self,
+                *,
+                project_external_id: str,
+                project_number: str,
+            ):
+                self.calls += 1
+                return snapshot(project_number, (task(project_number, "1"),))
+
+        targeted = TargetedSource()
+        with transactional_session(self.factory) as session:
+            from app.infrastructure.sql import Project
+            session.add(
+                Project(
+                    id="TARGETED-A",
+                    erp_external_id="ERP-A",
+                    number="A",
+                    name="Projet A",
+                    status="Actif",
+                )
+            )
+
+        backend_a = ErpSyncOrchestrator(
+            self.factory,
+            project_source=None,
+            project_task_source=targeted,
+            settings=self.settings,
+            system_actor="backend-A",
+        )
+        backend_b = ErpSyncOrchestrator(
+            self.factory,
+            project_source=None,
+            project_task_source=targeted,
+            settings=self.settings,
+            system_actor="backend-B",
+        )
+        control = SqlErpSyncControlRepository(self.factory)
+        accepted_by_b = Event()
+        release_b = Event()
+        completed_a = Event()
+        result_b: list[dict[str, object]] = []
+        original_accept_b = backend_b._control.accept_manual
+        original_execute_a = backend_a._execute_attempt
+
+        def delayed_accept_b(*args, **kwargs):
+            occurrence = original_accept_b(*args, **kwargs)
+            accepted_by_b.set()
+            if not release_b.wait(timeout=5):
+                raise RuntimeError("targeted stale claimant release timeout")
+            return occurrence
+
+        def observed_execute_a(*args, **kwargs):
+            try:
+                return original_execute_a(*args, **kwargs)
+            finally:
+                completed_a.set()
+
+        def invoke_b() -> None:
+            result_b.append(
+                backend_b.launch_targeted_project_tasks(
+                    project_id="TARGETED-A",
+                    actor_name="operator",
+                    idempotency_key="targeted-terminal",
+                )
+            )
+
+        try:
+            with patch.object(
+                backend_b._control,
+                "accept_manual",
+                side_effect=delayed_accept_b,
+            ), patch.object(
+                backend_a,
+                "_execute_attempt",
+                side_effect=observed_execute_a,
+            ), patch.object(
+                backend_a,
+                "_submit",
+                wraps=backend_a._submit,
+            ) as submit_a, patch.object(
+                backend_b,
+                "_submit",
+                wraps=backend_b._submit,
+            ) as submit_b:
+                delayed = Thread(target=invoke_b, name="stale-targeted")
+                delayed.start()
+                self.assertTrue(accepted_by_b.wait(timeout=2))
+
+                result_a = backend_a.launch_targeted_project_tasks(
+                    project_id="TARGETED-A",
+                    actor_name="operator",
+                    idempotency_key="targeted-terminal",
+                )
+                self.assertTrue(completed_a.wait(timeout=5))
+                self.assertEqual(
+                    control.get_attempt(str(result_a["run_id"])).status,
+                    ERP_ATTEMPT_SUCCEEDED,
+                )
+
+                release_b.set()
+                delayed.join(timeout=5)
+                self.assertFalse(delayed.is_alive())
+
+                self.assertEqual(result_b[0]["run_id"], result_a["run_id"])
+                self.assertEqual(submit_a.call_count, 1)
+                submit_b.assert_not_called()
+
+            with self.factory() as session:
+                attempts = tuple(session.scalars(select(ErpSyncAttempt)))
+            self.assertEqual(len(attempts), 1)
+            self.assertEqual(targeted.calls, 1)
+        finally:
+            release_b.set()
+            backend_a.shutdown()
+            backend_b.shutdown()
 
     def test_disabled_scheduler_restart_adopts_later_boundary_for_manual_run(self) -> None:
         control = SqlErpSyncControlRepository(self.factory)
