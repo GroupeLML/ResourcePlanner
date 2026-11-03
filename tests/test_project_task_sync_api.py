@@ -35,6 +35,7 @@ from app.infrastructure.sql import (
 )
 from app.infrastructure.sql.erp_sync_control_repository import SqlErpSyncControlRepository
 from app.server import create_api_app
+from app.server.erp_sync_orchestration import ErpSyncOrchestrator
 from app.server.security import required_permission
 from tests.http_test_auth import (
     TEST_ADMIN_AUTH_RESOLVER,
