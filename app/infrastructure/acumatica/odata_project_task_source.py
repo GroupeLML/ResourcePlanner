@@ -477,6 +477,7 @@ class ODataProjectTaskSource:
             else None
         )
         raw_rows: list[ODataProjectTaskRecord] = []
+        seen_page_signatures: set[tuple[ODataProjectTaskRecord, ...]] = set()
         skip = 0
         try:
             with httpx.Client(
@@ -522,6 +523,25 @@ class ODataProjectTaskSource:
                             ),
                         ) from exc
 
+                    signature = tuple(page)
+                    if signature and signature in seen_page_signatures:
+                        self._log_failure(
+                            failure_kind="invalid_payload",
+                            retryable=False,
+                            http_status=response.status_code,
+                            reason="pagination_non_progressive",
+                        )
+                        raise ApplicationOperationError(
+                            "La pagination OData Acumatica des tâches projet ne progresse pas.",
+                            code="acumatica_project_task_response_invalid",
+                            context=self._safe_context(
+                                failure_kind="invalid_payload",
+                                retryable=False,
+                                http_status=response.status_code,
+                                reason="pagination_non_progressive",
+                            ),
+                        )
+                    seen_page_signatures.add(signature)
                     raw_rows.extend(page)
                     if len(page) < self._settings.page_size:
                         break
@@ -624,6 +644,7 @@ class ODataProjectTaskSource:
             else None
         )
         raw_rows: list[ODataProjectTaskRecord] = []
+        seen_page_signatures: set[tuple[ODataProjectTaskRecord, ...]] = set()
         skip = 0
         page_count = 0
         started_at = perf_counter()
@@ -668,6 +689,25 @@ class ODataProjectTaskSource:
                             ),
                         ) from exc
 
+                    signature = tuple(page)
+                    if signature and signature in seen_page_signatures:
+                        self._log_failure(
+                            failure_kind="invalid_payload",
+                            retryable=False,
+                            http_status=response.status_code,
+                            reason="pagination_non_progressive",
+                        )
+                        raise ApplicationOperationError(
+                            "La pagination OData Acumatica globale des tâches projet ne progresse pas.",
+                            code="acumatica_project_task_response_invalid",
+                            context=self._safe_context(
+                                failure_kind="invalid_payload",
+                                retryable=False,
+                                http_status=response.status_code,
+                                reason="pagination_non_progressive",
+                            ),
+                        )
+                    seen_page_signatures.add(signature)
                     page_count += 1
                     raw_rows.extend(page)
                     if len(page) < self._settings.page_size:
