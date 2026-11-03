@@ -321,12 +321,13 @@ class ErpSyncOrchestrator:
         if occurrence.last_attempt_id:
             return self._compat_payload(occurrence.last_attempt_id)
 
-        attempt = self._control.claim(
+        claim = self._control.claim_outcome(
             occurrence_id=occurrence.id,
             trigger="MANUAL",
             actor_name=actor_name,
             settings=self._settings,
         )
+        attempt = claim.attempt
         if attempt is None:
             if occurrence.success_attempt_id:
                 return self._compat_payload(occurrence.success_attempt_id)
@@ -335,7 +336,8 @@ class ErpSyncOrchestrator:
                 code="erp_sync_command_not_claimed",
             )
         accepted = self._compat_payload(attempt.id)
-        self._submit(attempt.id, int(attempt.generation))
+        if claim.admitted:
+            self._submit(attempt.id, int(attempt.generation))
         return accepted
 
     def retry(
@@ -349,7 +351,7 @@ class ErpSyncOrchestrator:
         self._assert_sources(occurrence.intent)
         if occurrence.success_attempt_id:
             return self._compat_payload(occurrence.success_attempt_id)
-        attempt = self._control.claim(
+        claim = self._control.claim_outcome(
             occurrence_id=occurrence.id,
             trigger="RETRY",
             actor_name=actor_name,
@@ -360,13 +362,15 @@ class ErpSyncOrchestrator:
                 idempotency_key=idempotency_key,
             ),
         )
+        attempt = claim.attempt
         if attempt is None:
             raise ApplicationConflictError(
                 "La reprise ERP n'a pas pu créer de tentative.",
                 code="erp_sync_retry_not_claimed",
             )
         accepted = self._compat_payload(attempt.id)
-        self._submit(attempt.id, int(attempt.generation))
+        if claim.admitted:
+            self._submit(attempt.id, int(attempt.generation))
         return accepted
 
     def run_projects_only_compat(
@@ -493,19 +497,21 @@ class ErpSyncOrchestrator:
         )
         if occurrence.last_attempt_id:
             return self._compat_payload(occurrence.last_attempt_id)
-        attempt = self._control.claim(
+        claim = self._control.claim_outcome(
             occurrence_id=occurrence.id,
             trigger="MANUAL",
             actor_name=actor_name,
             settings=self._settings,
         )
+        attempt = claim.attempt
         if attempt is None:
             raise ApplicationConflictError(
                 "La synchronisation ciblée n'a pas pu créer de tentative.",
                 code="erp_sync_command_not_claimed",
             )
         accepted = self._compat_payload(attempt.id)
-        self._submit(attempt.id, int(attempt.generation))
+        if claim.admitted:
+            self._submit(attempt.id, int(attempt.generation))
         return accepted
 
     def launch(self, *, actor_name: str = "api") -> dict[str, Any]:
