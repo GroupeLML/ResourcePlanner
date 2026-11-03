@@ -1844,7 +1844,12 @@ class ErpSyncEvidenceService:
                 "Le profil de preuve ERP n'est plus compatible avec le contrôle courant.",
                 code="erp_sync_evidence_configuration_incompatible",
             )
-        now = _utc_now()
+        bind = session.get_bind()
+        if bind.dialect.name == "mssql":
+            sql_now = session.scalar(select(func.sysutcdatetime()))
+            now = sql_now.replace(tzinfo=timezone.utc) if sql_now.tzinfo is None else sql_now.astimezone(timezone.utc)
+        else:
+            now = _utc_now()
         if any(
             row.state in {EVIDENCE_STATE_EXPIRED, EVIDENCE_STATE_PURGED}
             or (row.expires_at is not None and row.expires_at <= now)
