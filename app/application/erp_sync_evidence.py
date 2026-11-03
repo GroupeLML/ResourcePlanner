@@ -215,10 +215,6 @@ class ErpSyncEvidenceService:
             )
             if existing is not None:
                 return
-            from ..infrastructure.sql import (
-                EVIDENCE_STATE_PURGED,
-                ErpSyncEvidenceManifest,
-            )
             active_reserved = int(
                 session.scalar(
                     select(func.coalesce(func.sum(ErpSyncEvidenceReservation.reserved_bytes), 0))
@@ -226,17 +222,16 @@ class ErpSyncEvidenceService:
                 )
                 or 0
             )
-            retained_ciphertext = int(
+            # Released reservations retain the actual ciphertext/accounting used
+            # by source chunks and mutation evidence until their retention purge.
+            retained_used = int(
                 session.scalar(
-                    select(func.coalesce(func.sum(ErpSyncEvidenceManifest.ciphertext_bytes), 0))
-                    .where(ErpSyncEvidenceManifest.state != EVIDENCE_STATE_PURGED)
+                    select(func.coalesce(func.sum(ErpSyncEvidenceReservation.used_bytes), 0))
+                    .where(ErpSyncEvidenceReservation.released_at.is_not(None))
                 )
                 or 0
             )
-            if (
-                retained_ciphertext + active_reserved + requested
-                > self.settings.evidence_budget_bytes
-            ):
+            if retained_used + active_reserved + requested > self.settings.evidence_budget_bytes:
                 raise ApplicationUnavailableError(
                     "Le budget de stockage des preuves ERP est insuffisant.",
                     code="erp_sync_evidence_storage_budget_unavailable",
@@ -1458,6 +1453,7 @@ class ErpSyncEvidenceService:
                     )
                 )
             )
+            affected_attempts: set[str] = set()
             for row in rows:
                 row.state = EVIDENCE_STATE_EXPIRED
                 session.query(ErpSyncEvidenceChunk).filter(
@@ -1465,5 +1461,46 @@ class ErpSyncEvidenceService:
                 ).delete(synchronize_session=False)
                 row.state = EVIDENCE_STATE_PURGED
                 row.diagnostic = "erp_sync_evidence_retention_purged"
+                affected_attempts.add(str(row.attempt_id))
                 purged += 1
+
+            if affected_attempts:
+                from ..infrastructure.sql import (
+                    RECOVERY_REQUIRED,
+                    ErpSyncEvidenceReservation,
+                    ErpSyncMutationEvidence,
+                    ErpSyncRecoveryState,
+                )
+                for attempt_id in affected_attempts:
+                    remaining = int(
+                        session.scalar(
+                            select(func.count(ErpSyncEvidenceManifest.id)).where(
+                                ErpSyncEvidenceManifest.attempt_id == attempt_id,
+                                ErpSyncEvidenceManifest.state != EVIDENCE_STATE_PURGED,
+                            )
+                        )
+                        or 0
+                    )
+                    recovery = session.scalar(
+                        select(ErpSyncRecoveryState).where(
+                            ErpSyncRecoveryState.attempt_id == attempt_id
+                        )
+                    )
+                    if (
+                        remaining == 0
+                        and not (
+                            recovery is not None
+                            and recovery.state == RECOVERY_REQUIRED
+                        )
+                    ):
+                        session.query(ErpSyncMutationEvidence).filter(
+                            ErpSyncMutationEvidence.attempt_id == attempt_id
+                        ).delete(synchronize_session=False)
+                        reservation = session.scalar(
+                            select(ErpSyncEvidenceReservation).where(
+                                ErpSyncEvidenceReservation.attempt_id == attempt_id
+                            )
+                        )
+                        if reservation is not None:
+                            reservation.used_bytes = 0
         return purged
