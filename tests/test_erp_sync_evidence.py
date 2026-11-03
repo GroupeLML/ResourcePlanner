@@ -762,12 +762,10 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             attempt = control.get_attempt(attempt_id)
             self.assertIsNotNone(attempt.task_sync_run_id)
             with transactional_session(self.factory) as session:
-                run = session.get(
-                    AcumaticaProjectTaskSyncRun,
-                    attempt.task_sync_run_id,
-                )
-                self.assertIsNotNone(run)
-                run.projects_processed += 1
+                quality = session.get(ErpSyncProjectQuality, "P-GLOBAL")
+                self.assertIsNotNone(quality)
+                quality.quality_state = "QUARANTINED"
+                quality.reason_code = "injected_prepublication_quarantine"
             original_publish(
                 attempt_id=attempt_id,
                 generation=generation,
