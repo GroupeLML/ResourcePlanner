@@ -158,6 +158,44 @@ def upgrade() -> None:
     )
 
     op.create_table(
+        "erp_sync_baseline_approval_audit",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("baseline_id", sa.String(length=36), nullable=False),
+        sa.Column("manifest_id", sa.String(length=36), nullable=False),
+        sa.Column("source_type", sa.String(length=16), nullable=False),
+        sa.Column("profile_fingerprint", sa.String(length=64), nullable=False),
+        sa.Column("source_fingerprint", sa.String(length=64), nullable=False),
+        sa.Column("row_count", sa.BigInteger(), nullable=False),
+        sa.Column("actor_name", sa.String(length=255), nullable=False),
+        sa.Column("reason", sa.Text(), nullable=False),
+        sa.Column("approved_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["baseline_id"], ["erp_sync_baselines.id"], ondelete="CASCADE"
+        ),
+        sa.ForeignKeyConstraint(
+            ["manifest_id"], ["erp_sync_evidence_manifests.id"], ondelete="CASCADE"
+        ),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index(
+        "ix_erp_sync_baseline_approval_baseline",
+        "erp_sync_baseline_approval_audit",
+        ["baseline_id"],
+    )
+    op.create_index(
+        "ix_erp_sync_baseline_approval_manifest",
+        "erp_sync_baseline_approval_audit",
+        ["manifest_id"],
+    )
+    op.create_index(
+        "ix_erp_sync_baseline_approval_actor",
+        "erp_sync_baseline_approval_audit",
+        ["actor_name"],
+    )
+
+    op.create_table(
         "erp_sync_plausibility_exceptions",
         sa.Column("id", sa.String(length=36), nullable=False),
         sa.Column("attempt_id", sa.String(length=36), nullable=False),
@@ -334,6 +372,19 @@ def downgrade() -> None:
         table_name="erp_sync_plausibility_exceptions",
     )
     op.drop_table("erp_sync_plausibility_exceptions")
+    op.drop_index(
+        "ix_erp_sync_baseline_approval_actor",
+        table_name="erp_sync_baseline_approval_audit",
+    )
+    op.drop_index(
+        "ix_erp_sync_baseline_approval_manifest",
+        table_name="erp_sync_baseline_approval_audit",
+    )
+    op.drop_index(
+        "ix_erp_sync_baseline_approval_baseline",
+        table_name="erp_sync_baseline_approval_audit",
+    )
+    op.drop_table("erp_sync_baseline_approval_audit")
     op.drop_index("ix_erp_sync_baseline_approved", table_name="erp_sync_baselines")
     op.drop_table("erp_sync_baselines")
     op.drop_index(
