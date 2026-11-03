@@ -1169,6 +1169,7 @@ class ErpSyncOrchestrator:
     ) -> None:
         from ..infrastructure.sql import (
             EVIDENCE_PROOF_SOURCE,
+            EVIDENCE_SOURCE_PROJECTS,
             EVIDENCE_SOURCE_TASKS,
             EVIDENCE_STATE_READY,
             ErpSyncAttempt,
@@ -1309,6 +1310,71 @@ class ErpSyncOrchestrator:
                 "Les preuves ERP 643B sont requises avant succès complet.",
                 code="erp_sync_global_validation_failed",
             )
+        project_manifest = session.scalar(
+            select(ErpSyncEvidenceManifest).where(
+                ErpSyncEvidenceManifest.attempt_id == attempt_id,
+                ErpSyncEvidenceManifest.source_type == EVIDENCE_SOURCE_PROJECTS,
+                ErpSyncEvidenceManifest.proof_type == EVIDENCE_PROOF_SOURCE,
+                ErpSyncEvidenceManifest.state == EVIDENCE_STATE_READY,
+            )
+        )
+        if project_manifest is None:
+            raise ApplicationConflictError(
+                "La preuve source projets READY est absente.",
+                code="erp_sync_global_validation_failed",
+            )
+        project_payload = self._evidence.load_source_in_session(
+            session,
+            manifest_id=str(project_manifest.id),
+        )
+        project_records = (
+            project_payload.get("records")
+            if isinstance(project_payload, dict)
+            else None
+        )
+        if not isinstance(project_records, list):
+            raise ApplicationConflictError(
+                "La preuve source projets ne contient pas le snapshot figé.",
+                code="erp_sync_global_validation_failed",
+            )
+        if len(project_records) != int(attempt.project_received or 0):
+            raise ApplicationConflictError(
+                "Le nombre de projets figés ne correspond pas au reçu de publication.",
+                code="erp_sync_global_validation_failed",
+            )
+        for project_record in project_records:
+            if not isinstance(project_record, dict):
+                raise ApplicationConflictError(
+                    "Une entrée projet figée est invalide.",
+                    code="erp_sync_global_validation_failed",
+                )
+            project_key = str(
+                project_record.get("external_id")
+                or project_record.get("number")
+                or ""
+            ).strip()
+            if not project_key:
+                raise ApplicationConflictError(
+                    "Une entrée projet figée ne possède pas d'identité.",
+                    code="erp_sync_global_validation_failed",
+                )
+            project_evidence = session.scalar(
+                select(ErpSyncMutationEvidence.id).where(
+                    ErpSyncMutationEvidence.attempt_id == attempt_id,
+                    ErpSyncMutationEvidence.unit_type == "PROJECT_SNAPSHOT",
+                    ErpSyncMutationEvidence.entity_type == "PROJECT",
+                    ErpSyncMutationEvidence.entity_key == project_key,
+                    ErpSyncMutationEvidence.committed_at.is_not(None),
+                    ErpSyncMutationEvidence.after_sha256.is_not(None),
+                )
+            )
+            if project_evidence is None:
+                raise ApplicationConflictError(
+                    "La preuve de mutation projets est incomplète.",
+                    code="erp_sync_global_validation_failed",
+                    context={"project_key": project_key},
+                )
+
         task_manifest = session.scalar(
             select(ErpSyncEvidenceManifest).where(
                 ErpSyncEvidenceManifest.attempt_id == attempt_id,
