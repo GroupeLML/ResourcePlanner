@@ -550,6 +550,7 @@ class ErpSyncEvidenceTests(unittest.TestCase):
                 settings=self.control_settings,
             )
         )
+        self.service.finalize_attempt(attempt_id=first.id, successful=False)
 
         retry_one = control.claim(
             occurrence_id=occurrence.id,
@@ -585,6 +586,7 @@ class ErpSyncEvidenceTests(unittest.TestCase):
                 settings=self.control_settings,
             )
         )
+        self.service.finalize_attempt(attempt_id=retry_one.id, successful=False)
 
         retry_two = control.claim(
             occurrence_id=occurrence.id,
@@ -621,6 +623,7 @@ class ErpSyncEvidenceTests(unittest.TestCase):
                 settings=self.control_settings,
             )
         )
+        self.service.finalize_attempt(attempt_id=retry_two.id, successful=False)
 
         retry_three = control.claim(
             occurrence_id=occurrence.id,
@@ -917,6 +920,62 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             self.assertTrue(manifest.pinned)
             self.assertIsNone(manifest.expires_at)
 
+    def test_terminal_attempts_release_reserved_capacity_but_keep_used_evidence_accounted(self) -> None:
+        terminal_ids: list[str] = []
+        retained_used: list[int] = []
+        for index, status in enumerate(("FAILED", "SUCCEEDED", "FAILED"), start=1):
+            control, _occurrence, attempt = self._attempt(f"reservation-terminal-{index}")
+            self.service.capture_source(
+                attempt_id=attempt.id,
+                source_type="PROJECTS",
+                profile_fingerprint=self.control_settings.config_fingerprint,
+                payload={"records": [{"number": f"P-{index}"}]},
+                row_count=1,
+            )
+            self.assertTrue(
+                control.finish(
+                    attempt_id=attempt.id,
+                    generation=attempt.generation,
+                    status=status,
+                    phase="PUBLICATION_COMMITTED" if status == "SUCCEEDED" else "FAILED",
+                    settings=self.control_settings,
+                )
+            )
+            self.service.finalize_attempt(
+                attempt_id=attempt.id,
+                successful=status == "SUCCEEDED",
+            )
+            terminal_ids.append(attempt.id)
+            with self.factory() as session:
+                reservation = session.scalar(
+                    select(ErpSyncEvidenceReservation).where(
+                        ErpSyncEvidenceReservation.attempt_id == attempt.id
+                    )
+                )
+                self.assertIsNotNone(reservation)
+                self.assertIsNotNone(reservation.released_at)
+                self.assertGreater(reservation.used_bytes, 0)
+                retained_used.append(int(reservation.used_bytes))
+
+        with self.factory() as session:
+            active_reserved = int(
+                session.scalar(
+                    select(func.coalesce(func.sum(ErpSyncEvidenceReservation.reserved_bytes), 0))
+                    .where(ErpSyncEvidenceReservation.released_at.is_(None))
+                )
+                or 0
+            )
+            released_used = int(
+                session.scalar(
+                    select(func.coalesce(func.sum(ErpSyncEvidenceReservation.used_bytes), 0))
+                    .where(ErpSyncEvidenceReservation.released_at.is_not(None))
+                )
+                or 0
+            )
+        self.assertEqual(active_reserved, 0)
+        self.assertEqual(released_used, sum(retained_used))
+        self.assertEqual(len(terminal_ids), 3)
+
     def test_retention_purges_unpinned_payload_and_releases_accounted_bytes(self) -> None:
         control, _occurrence, attempt = self._attempt("retention")
         captured = self.service.capture_source(
@@ -1001,6 +1060,10 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             status="FAILED",
             phase="FAILED",
             settings=self.control_settings,
+        )
+        self.service.finalize_attempt(
+            attempt_id=baseline_attempt.id,
+            successful=False,
         )
 
         _control, _occurrence, attempt = self._attempt("small-source")
