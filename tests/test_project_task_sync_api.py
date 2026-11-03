@@ -1251,7 +1251,18 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
             rows = session.scalars(
                 select(TaskCatalogEntry).where(TaskCatalogEntry.erp_task_id == "9001")
             ).all()
+            targeted_runs = tuple(
+                session.scalars(
+                    select(AcumaticaProjectTaskSyncRun)
+                    .where(
+                        AcumaticaProjectTaskSyncRun.parent_attempt_id.is_not(None)
+                    )
+                    .order_by(AcumaticaProjectTaskSyncRun.created_at)
+                )
+            )
             self.assertEqual(len(rows), 1)
+            self.assertGreaterEqual(len(targeted_runs), 2)
+            self.assertTrue(all(run.active_key is None for run in targeted_runs))
             row = rows[0]
             self.assertEqual(row.project_number, "5118")
             self.assertEqual(row.budget_amount_cad, Decimal("1000.0000000000"))
