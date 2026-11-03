@@ -230,7 +230,7 @@ def upgrade() -> None:
         sa.Column("id", sa.String(length=36), nullable=False),
         sa.Column("attempt_id", sa.String(length=36), nullable=False),
         sa.Column("generation", sa.BigInteger(), nullable=False),
-        sa.Column("unit_type", sa.String(length=32), nullable=False),
+        sa.Column("unit_type", sa.String(length=64), nullable=False),
         sa.Column("entity_type", sa.String(length=32), nullable=False),
         sa.Column("entity_key", sa.String(length=160), nullable=False),
         sa.Column("before_present", sa.Boolean(), nullable=False),
