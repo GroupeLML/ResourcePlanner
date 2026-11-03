@@ -7,7 +7,7 @@ import hashlib
 import json
 from typing import Any, Mapping, Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import func, inspect, select
 from sqlalchemy.orm import Session
 
 from .errors import (
@@ -951,21 +951,40 @@ class ErpSyncEvidenceService:
         return str(manifest.profile_fingerprint)
 
     def automatic_execution_available(self, *, profile_fingerprint: str) -> bool:
-        if self._cipher is None:
+        if self._cipher is None or self._control_settings is None:
             return False
         from ..infrastructure.sql import ErpSyncBaseline
 
-        with self._session_factory() as session:
-            count = int(
-                session.scalar(
-                    select(func.count(ErpSyncBaseline.id)).where(
-                        ErpSyncBaseline.profile_fingerprint == profile_fingerprint,
-                        ErpSyncBaseline.source_type.in_(("PROJECTS", "TASKS")),
+        try:
+            probe = b'{"probe":"erp-sync-643b"}'
+            if self._decrypt_bytes(self._encrypt_bytes(probe)) != probe:
+                return False
+            with self._session_factory() as session:
+                inspector = inspect(session.get_bind())
+                required_tables = {
+                    "erp_sync_control",
+                    "erp_sync_attempts",
+                    "erp_sync_evidence_manifests",
+                    "erp_sync_evidence_chunks",
+                    "erp_sync_evidence_reservations",
+                    "erp_sync_baselines",
+                    "erp_sync_mutation_evidence",
+                    "erp_sync_recovery_state",
+                }
+                if not all(inspector.has_table(name) for name in required_tables):
+                    return False
+                count = int(
+                    session.scalar(
+                        select(func.count(ErpSyncBaseline.id)).where(
+                            ErpSyncBaseline.profile_fingerprint == profile_fingerprint,
+                            ErpSyncBaseline.source_type.in_(("PROJECTS", "TASKS")),
+                        )
                     )
+                    or 0
                 )
-                or 0
-            )
-            return count == 2
+                return count == 2
+        except Exception:
+            return False
 
     @staticmethod
     def _preview_hash(attempt_id: str, rows: Sequence[tuple[Any, Mapping[str, Any] | None, Mapping[str, Any] | None]]) -> str:
