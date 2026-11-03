@@ -71,6 +71,7 @@ from .models import (
     WorkforceRequestHistory,
     TaskCatalogEntry,
     TaskCatalogProjectSyncState,
+    ErpSyncProjectQuality,
     WorkPackage,
     WorkPackageLoadInterval,
     WorkPackageWeeklyLoad,
@@ -637,6 +638,22 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
         budget_sync_by_project_number = {
             row.project_number: row for row in budget_sync_states
         }
+        budget_quality_rows = (
+            tuple(
+                self._web_session.scalars(
+                    select(ErpSyncProjectQuality).where(
+                        ErpSyncProjectQuality.project_number.in_(
+                            selected_project_numbers
+                        )
+                    )
+                ).all()
+            )
+            if selected_project_numbers
+            else ()
+        )
+        budget_quality_by_project_number = {
+            row.project_number: row for row in budget_quality_rows
+        }
 
         configured_classes = tuple(
             self._web_session.scalars(
@@ -954,10 +971,20 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                 else None
             )
 
-            remaining_reference_date = erp_budget_cutoff_date(
+            quality = budget_quality_by_project_number.get(task.project_number)
+            trusted_erp_success_at = (
                 task.erp_budget_last_success_at
+                if quality is None or quality.quality_state == "VALID"
+                else None
+            )
+            remaining_reference_date = erp_budget_cutoff_date(
+                trusted_erp_success_at
             )
             remaining_mode_diagnostics: list[str] = []
+            if quality is not None and quality.quality_state != "VALID":
+                remaining_mode_diagnostics.append(
+                    f"ERP_SYNC_QUALITY_{quality.quality_state}"
+                )
             if financial_diagnostic is not None:
                 remaining_mode_diagnostics.append(financial_diagnostic)
             if actual_projection_diagnostic is not None:
@@ -1068,7 +1095,7 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
                             else ()
                         )
                     ),
-                    erp_budget_last_success_at=task.erp_budget_last_success_at,
+                    erp_budget_last_success_at=trusted_erp_success_at,
                 )
             )
 
@@ -1343,7 +1370,18 @@ class SqlPlannerQueryRepositoryWeb(SqlPlannerQueryRepository):
             reference_basis=REFERENCE_BASIS_ERP_BUDGET_ACTUAL_THROUGH_PREVIOUS_WEEK,
             erp_budget_last_success_at=(
                 budget_sync_state.last_success_at
-                if budget_sync_state is not None
+                if (
+                    budget_sync_state is not None
+                    and (
+                        budget_quality_by_project_number.get(
+                            budget_sync_state.project_number
+                        )
+                        is None
+                        or budget_quality_by_project_number[
+                            budget_sync_state.project_number
+                        ].quality_state == "VALID"
+                    )
+                )
                 else None
             ),
             unclassified_work_packages=tuple(displayed_unclassified),
