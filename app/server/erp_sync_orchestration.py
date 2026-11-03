@@ -1047,6 +1047,29 @@ class ErpSyncOrchestrator:
                         "Le nombre de reçus projet ne correspond pas aux cibles attendues.",
                         code="erp_sync_global_validation_failed",
                     )
+                seen_project_ids: set[str] = set()
+                seen_project_numbers: set[str] = set()
+                for result in results:
+                    project_id = str(result.project_id or "").strip()
+                    project_number = str(result.project_number or "").strip()
+                    if (
+                        not project_id
+                        or not project_number
+                        or project_id in seen_project_ids
+                        or project_number in seen_project_numbers
+                    ):
+                        raise ApplicationConflictError(
+                            "Les reçus projet contiennent une identité manquante ou dupliquée.",
+                            code="erp_sync_global_validation_failed",
+                        )
+                    seen_project_ids.add(project_id)
+                    seen_project_numbers.add(project_number)
+                    project = session.get(Project, project_id)
+                    if project is None or str(project.number) != project_number:
+                        raise ApplicationConflictError(
+                            "Un reçu projet ne correspond pas à son propriétaire durable.",
+                            code="erp_sync_global_validation_failed",
+                        )
                 if int(run.projects_processed) != len(results):
                     raise ApplicationConflictError(
                         "Le compteur de projets traités ne correspond pas aux reçus.",
