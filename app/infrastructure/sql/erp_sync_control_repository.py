@@ -137,6 +137,7 @@ def _ensure_config_compatible_locked(
     *,
     allow_boundary_adoption: bool = False,
     business_date=None,
+    latest_materialized_business_date=None,
 ) -> None:
     _assert_control_protocol(control)
     expected = settings.config_fingerprint
@@ -147,12 +148,17 @@ def _ensure_config_compatible_locked(
     if stored == expected:
         return
 
-    watermark = control.last_evaluated_business_date
+    boundary = control.last_evaluated_business_date
+    if (
+        latest_materialized_business_date is not None
+        and (boundary is None or latest_materialized_business_date > boundary)
+    ):
+        boundary = latest_materialized_business_date
     if (
         allow_boundary_adoption
         and not control.owner_attempt_id
         and business_date is not None
-        and (watermark is None or business_date > watermark)
+        and (boundary is None or business_date > boundary)
     ):
         control.config_fingerprint = expected
         return
@@ -294,6 +300,7 @@ class SqlErpSyncControlRepository:
         *,
         now: datetime,
     ) -> int:
+        _assert_control_protocol(control)
         owner_id = str(control.owner_attempt_id or "").strip()
         if not owner_id:
             return 0
@@ -356,6 +363,28 @@ class SqlErpSyncControlRepository:
                 now=_sql_now(session),
             )
 
+    def reconcile_configuration(
+        self,
+        settings: ErpSyncSchedulerSettings,
+    ) -> None:
+        """Adopt a compatible later-boundary configuration without enabling scheduling."""
+        if not self.schema_available():
+            return
+        with transactional_session(self._session_factory) as session:
+            control = _lock_control(session)
+            now = _sql_now(session)
+            business_date = now.astimezone(settings.timezone()).date()
+            latest_materialized_business_date = session.scalar(
+                select(func.max(ErpSyncOccurrence.business_date))
+            )
+            _ensure_config_compatible_locked(
+                control,
+                settings,
+                allow_boundary_adoption=True,
+                business_date=business_date,
+                latest_materialized_business_date=latest_materialized_business_date,
+            )
+
     def record_daily_decision(
         self,
         settings: ErpSyncSchedulerSettings,
@@ -369,6 +398,9 @@ class SqlErpSyncControlRepository:
             self._interrupt_expired_locked(session, control, now=now)
             decision = scheduler_decision(now, settings)
             watermark = control.last_evaluated_business_date
+            latest_materialized_business_date = session.scalar(
+                select(func.max(ErpSyncOccurrence.business_date))
+            )
             if watermark is not None and decision.business_date < watermark:
                 return None
 
@@ -377,6 +409,7 @@ class SqlErpSyncControlRepository:
                 settings,
                 allow_boundary_adoption=True,
                 business_date=decision.business_date,
+                latest_materialized_business_date=latest_materialized_business_date,
             )
             if watermark is None or decision.business_date > watermark:
                 control.last_evaluated_business_date = decision.business_date
@@ -436,7 +469,18 @@ class SqlErpSyncControlRepository:
         )
         with transactional_session(self._session_factory) as session:
             control = _lock_control(session)
-            _ensure_config_compatible_locked(control, settings)
+            now = _sql_now(session)
+            business_date = now.astimezone(settings.timezone()).date()
+            latest_materialized_business_date = session.scalar(
+                select(func.max(ErpSyncOccurrence.business_date))
+            )
+            _ensure_config_compatible_locked(
+                control,
+                settings,
+                allow_boundary_adoption=True,
+                business_date=business_date,
+                latest_materialized_business_date=latest_materialized_business_date,
+            )
             existing = session.scalar(
                 select(ErpSyncOccurrence).where(
                     ErpSyncOccurrence.command_identity == identity
@@ -445,8 +489,6 @@ class SqlErpSyncControlRepository:
             if existing is not None:
                 return existing
 
-            now = _sql_now(session)
-            business_date = now.astimezone(settings.timezone()).date()
             occurrence = ErpSyncOccurrence(
                 id=new_id(),
                 occurrence_key=f"MANUAL:{new_id()}",
@@ -541,6 +583,21 @@ class SqlErpSyncControlRepository:
 
             self._interrupt_expired_locked(session, control, now=now)
 
+            # Existing authoritative work wins before evaluating admission for a
+            # genuinely new automatic start/retry. A delayed observer must not
+            # rewrite RUNNING or already-successful state to MISSED.
+            if occurrence.success_attempt_id:
+                return None
+            if control.owner_attempt_id:
+                owner = session.get(ErpSyncAttempt, control.owner_attempt_id)
+                if owner is not None and owner.occurrence_id == occurrence.id:
+                    return owner
+                raise ApplicationConflictError(
+                    "Une synchronisation ERP incompatible est déjà active.",
+                    code="erp_sync_run_active",
+                    context={"attempt_id": control.owner_attempt_id},
+                )
+
             if automatic:
                 if (
                     automatic_safety is None
@@ -571,18 +628,6 @@ class SqlErpSyncControlRepository:
                         "Fenêtre de départ automatique figée dépassée."
                     )
                     return None
-
-            if occurrence.success_attempt_id:
-                return None
-            if control.owner_attempt_id:
-                owner = session.get(ErpSyncAttempt, control.owner_attempt_id)
-                if owner is not None and owner.occurrence_id == occurrence.id:
-                    return owner
-                raise ApplicationConflictError(
-                    "Une synchronisation ERP incompatible est déjà active.",
-                    code="erp_sync_run_active",
-                    context={"attempt_id": control.owner_attempt_id},
-                )
 
             attempts = tuple(
                 session.scalars(
