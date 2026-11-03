@@ -157,7 +157,13 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
 
     TEST_PROJECT_PREFIX = "SQL643"
     TEST_RESOURCE_CLASS = "SQL643_TEST"
-    TEST_TASK_CODES = ("100", "200", "300", "400", "643")
+    TEST_TASK_CODES = (
+        "SQL643-100",
+        "SQL643-200",
+        "SQL643-300",
+        "SQL643-400",
+        "SQL643-643",
+    )
 
     def _cleanup_test_business_rows(self) -> None:
         with transactional_session(self.factory) as session:
@@ -212,8 +218,12 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
                         )
                     )
                 else:
-                    standard.resource_class_code = self.TEST_RESOURCE_CLASS
-                    standard.active = True
+                    self.assertEqual(
+                        standard.resource_class_code,
+                        self.TEST_RESOURCE_CLASS,
+                        f"test-owned task standard unexpectedly reused: {task_code}",
+                    )
+                    self.assertTrue(standard.active)
 
     def setUp(self) -> None:
         with transactional_session(self.factory) as session:
@@ -614,7 +624,7 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             {
                 project_number: _sql_snapshot(
                     project_number,
-                    "643",
+                    "SQL643-643",
                     "643B task",
                 )
             }
@@ -678,7 +688,7 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             task_row = session.scalar(
                 select(TaskCatalogEntry).where(
                     TaskCatalogEntry.project_number == project_number,
-                    TaskCatalogEntry.task_code == "643",
+                    TaskCatalogEntry.task_code == "SQL643-643",
                 )
             )
             project_result = session.scalar(
@@ -989,7 +999,7 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             {
                 project_number: _sql_snapshot(
                     project_number,
-                    "400",
+                    "SQL643-400",
                     "Terminal replay task",
                 )
             }
@@ -1098,7 +1108,7 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
                 task_row = session.scalar(
                     select(TaskCatalogEntry).where(
                         TaskCatalogEntry.project_number == project_number,
-                        TaskCatalogEntry.task_code == "400",
+                        TaskCatalogEntry.task_code == "SQL643-400",
                     )
                 )
             self.assertEqual(len(attempts), 1)
@@ -1152,7 +1162,7 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             {
                 project_number: _sql_snapshot(
                     project_number,
-                    "300",
+                    "SQL643-300",
                     "Manual observer task",
                 )
             }
@@ -1235,7 +1245,7 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
                 task_row = session.scalar(
                     select(TaskCatalogEntry).where(
                         TaskCatalogEntry.project_number == project_number,
-                        TaskCatalogEntry.task_code == "300",
+                        TaskCatalogEntry.task_code == "SQL643-300",
                     )
                 )
             self.assertEqual(len(attempts), 1)
@@ -1273,7 +1283,7 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             (_sql_project(project_a, "Generation N committed"),)
         )
         first_tasks = SqlServerPortfolioTaskSource(
-            {project_a: _sql_snapshot(project_a, "100", "Task generation N")}
+            {project_a: _sql_snapshot(project_a, "SQL643-100", "Task generation N")}
         )
         orchestrator = ErpSyncOrchestrator(
             self.factory,
@@ -1327,7 +1337,7 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             committed_a = session.scalar(
                 select(TaskCatalogEntry).where(
                     TaskCatalogEntry.project_number == project_a,
-                    TaskCatalogEntry.task_code == "100",
+                    TaskCatalogEntry.task_code == "SQL643-100",
                 )
             )
             self.assertIsNotNone(
@@ -1407,7 +1417,7 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             unchanged_task = session.scalar(
                 select(TaskCatalogEntry).where(
                     TaskCatalogEntry.project_number == project_a,
-                    TaskCatalogEntry.task_code == "100",
+                    TaskCatalogEntry.task_code == "SQL643-100",
                 )
             )
             self.assertIsNotNone(unchanged_project)
@@ -1432,12 +1442,12 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             {
                 project_a: _sql_snapshot(
                     project_a,
-                    "100",
+                    "SQL643-100",
                     "Task generation N+1",
                 ),
                 project_b: _sql_snapshot(
                     project_b,
-                    "200",
+                    "SQL643-200",
                     "Replacement task",
                 ),
             }
@@ -1474,7 +1484,7 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             )
             self.assertEqual(
                 [(row.project_number, row.task_code) for row in rows],
-                [(project_a, "100"), (project_b, "200")],
+                [(project_a, "SQL643-100"), (project_b, "SQL643-200")],
             )
             surviving_a = next(row for row in rows if row.project_number == project_a)
             self.assertEqual(surviving_a.id, committed_a_id)
