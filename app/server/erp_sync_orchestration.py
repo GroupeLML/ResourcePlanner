@@ -1157,6 +1157,11 @@ class ErpSyncOrchestrator:
                     generation=generation,
                     settings=self._settings,
                 )
+                if self._evidence is not None:
+                    self._evidence.assert_attempt_policy_in_session(
+                        session,
+                        attempt_id=attempt_id,
+                    )
                 run = session.get(AcumaticaProjectTaskSyncRun, run_id)
                 if run is None:
                     raise ApplicationConflictError(
@@ -1290,6 +1295,10 @@ class ErpSyncOrchestrator:
             started = True
             if self._evidence is not None:
                 self._evidence.reserve_attempt(attempt_id=attempt_id)
+                self._evidence.bind_attempt_policy(
+                    attempt_id=attempt_id,
+                    generation=generation,
+                )
             heartbeat = Thread(
                 target=self._heartbeat,
                 kwargs={
@@ -2077,6 +2086,11 @@ class ErpSyncOrchestrator:
                     generation=generation,
                     settings=self._settings,
                 )
+                if self._evidence is not None:
+                    self._evidence.assert_attempt_policy_in_session(
+                        session,
+                        attempt_id=attempt_id,
+                    )
                 task_evidence: dict[str, str] = {}
                 excluded_new_keys: set[str] = set()
                 sync_state_evidence: str | None = None
