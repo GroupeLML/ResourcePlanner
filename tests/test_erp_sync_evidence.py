@@ -756,9 +756,9 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             command_identity="retry:global-hard-validation",
         )
         self.assertIsNotNone(retry)
-        original_validate = orchestrator._validate_full_publication
+        original_publish = orchestrator._publish_full_success
 
-        def corrupt_then_validate(*, attempt_id: str, generation: int) -> None:
+        def corrupt_then_publish(*, attempt_id: str, generation: int) -> None:
             attempt = control.get_attempt(attempt_id)
             self.assertIsNotNone(attempt.task_sync_run_id)
             with transactional_session(self.factory) as session:
@@ -768,15 +768,15 @@ class ErpSyncEvidenceTests(unittest.TestCase):
                 )
                 self.assertIsNotNone(run)
                 run.projects_processed += 1
-            original_validate(
+            original_publish(
                 attempt_id=attempt_id,
                 generation=generation,
             )
 
         with patch.object(
             orchestrator,
-            "_validate_full_publication",
-            side_effect=corrupt_then_validate,
+            "_publish_full_success",
+            side_effect=corrupt_then_publish,
         ):
             orchestrator._execute_attempt(retry.id, retry.generation)
 
