@@ -2059,12 +2059,18 @@ class ErpSyncOrchestrator:
                     ErpSyncProjectQuality,
                     str(outcome["project_number"]),
                 )
-                if quality is not None:
-                    quality.quality_state = "STALE"
-                    quality.reason_code = str(
-                        outcome.get("error_code") or "erp_sync_project_failed"
+                if quality is None:
+                    quality = ErpSyncProjectQuality(
+                        project_number=str(outcome["project_number"]),
+                        producer_attempt_id=None,
+                        quality_state="STALE",
                     )
-                    quality.validated_at = utc_now()
+                    session.add(quality)
+                quality.quality_state = "STALE"
+                quality.reason_code = str(
+                    outcome.get("error_code") or "erp_sync_project_failed"
+                )
+                quality.validated_at = utc_now()
 
     @staticmethod
     def _record_task_outcome_in_session(
