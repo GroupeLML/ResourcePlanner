@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from types import SimpleNamespace
 from uuid import uuid4
 from unittest.mock import patch
 
@@ -463,6 +464,118 @@ class ErpSyncEvidenceTests(unittest.TestCase):
                     )
                 )
             )
+
+    def test_task_unit_commits_eligible_row_skips_new_standard_exclusion_and_uses_source_time(self) -> None:
+        control, _occurrence, attempt = self._attempt("task-exclusion-source-time")
+        self.service.reserve_attempt(attempt_id=attempt.id)
+        self.service.bind_attempt_policy(
+            attempt_id=attempt.id,
+            generation=attempt.generation,
+        )
+        with transactional_session(self.factory) as session:
+            session.add(
+                Project(
+                    id="P-EXCLUSION-ID",
+                    erp_external_id="8101",
+                    number="P-EXCLUSION",
+                    name="Project exclusion",
+                    status="Actif",
+                )
+            )
+
+        eligible = TaskCatalogItem(
+            project_number="P-EXCLUSION",
+            code="100",
+            label="Eligible",
+            status="Actif",
+            active=True,
+            erp_task_id="98100",
+            account_group="DEPMO",
+        )
+        excluded = TaskCatalogItem(
+            project_number="P-EXCLUSION",
+            code="999",
+            label="Outside Standards",
+            status="Actif",
+            active=True,
+            erp_task_id="98999",
+            account_group="DEPMO",
+        )
+        task_snapshot = TaskCatalogProjectSnapshot(
+            project_number="P-EXCLUSION",
+            source_rows=2,
+            rejected_rows=0,
+            items=(eligible, excluded),
+        )
+        captured = self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "portfolio": TaskCatalogPortfolioSnapshot(
+                    source_rows=2,
+                    source_pages=1,
+                    snapshots=(task_snapshot,),
+                )
+            },
+            row_count=2,
+            project_counts={"P-EXCLUSION": 2},
+        )
+        observed = datetime(2026, 11, 3, 4, 59, 59, tzinfo=timezone.utc)
+        with transactional_session(self.factory) as session:
+            session.get(ErpSyncEvidenceManifest, captured.manifest_id).observed_at = observed
+
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=None,
+            project_task_source=PortfolioTaskSource({"P-EXCLUSION": task_snapshot}),
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        run_id = orchestrator._create_task_run(attempt.id, attempt.generation)
+        result = orchestrator._process_task_project(
+            run_id,
+            attempt.id,
+            attempt.generation,
+            SimpleNamespace(
+                id="P-EXCLUSION-ID",
+                number="P-EXCLUSION",
+                active=True,
+                erp_external_id="8101",
+            ),
+            {"P-EXCLUSION": task_snapshot},
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result.created, 1)
+        self.assertEqual(result.ignored, 1)
+
+        with self.factory() as session:
+            eligible_row = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.erp_task_id == "98100"
+                )
+            )
+            excluded_row = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.erp_task_id == "98999"
+                )
+            )
+            evidence_rows = tuple(
+                session.scalars(
+                    select(ErpSyncMutationEvidence).where(
+                        ErpSyncMutationEvidence.attempt_id == attempt.id,
+                        ErpSyncMutationEvidence.entity_type == "TASK",
+                    )
+                )
+            )
+        self.assertIsNotNone(eligible_row)
+        self.assertEqual(eligible_row.erp_budget_last_success_at, observed)
+        self.assertIsNone(excluded_row)
+        self.assertEqual(len(evidence_rows), 1)
+        self.assertEqual(evidence_rows[0].entity_key, "98100")
+        self.assertIsNotNone(evidence_rows[0].after_sha256)
+        self.assertIsNotNone(evidence_rows[0].committed_at)
+        orchestrator.shutdown()
 
     def test_global_hard_validation_failure_quarantines_provenance_without_rollback(self) -> None:
         projects = ProjectSource((project("P-GLOBAL", external_id="6001"),))
