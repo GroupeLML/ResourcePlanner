@@ -1078,6 +1078,17 @@ class ErpSyncEvidenceService:
                 }
                 if not all(inspector.has_table(name) for name in required_tables):
                     return False
+                from ..infrastructure.sql import (
+                    RECOVERY_REQUIRED,
+                    ErpSyncRecoveryState,
+                )
+                recovery_required = session.scalar(
+                    select(ErpSyncRecoveryState.id)
+                    .where(ErpSyncRecoveryState.state == RECOVERY_REQUIRED)
+                    .limit(1)
+                )
+                if recovery_required is not None:
+                    return False
                 count = int(
                     session.scalar(
                         select(func.count(ErpSyncBaseline.id)).where(
@@ -1191,6 +1202,41 @@ class ErpSyncEvidenceService:
         return None
 
     def compensation_preview(self, *, attempt_id: str) -> dict[str, Any]:
+        from ..infrastructure.sql import (
+            EVIDENCE_STATE_EXPIRED,
+            EVIDENCE_STATE_PURGED,
+            ErpSyncEvidenceManifest,
+        )
+        from ..infrastructure.sql.erp_sync_control_repository import (
+            SqlErpSyncControlRepository,
+        )
+        from ..infrastructure.sql.session import transactional_session
+
+        if self._control_settings is None:
+            raise ApplicationUnavailableError(
+                "Le profil de contrôle ERP requis pour la compensation est absent.",
+                code="erp_sync_recovery_control_unavailable",
+            )
+        with transactional_session(self._session_factory) as session:
+            SqlErpSyncControlRepository.guard_recovery_session(
+                session,
+                settings=self._control_settings,
+            )
+            invalid_manifest = session.scalar(
+                select(ErpSyncEvidenceManifest.id)
+                .where(
+                    ErpSyncEvidenceManifest.attempt_id == attempt_id,
+                    ErpSyncEvidenceManifest.state.in_(
+                        (EVIDENCE_STATE_EXPIRED, EVIDENCE_STATE_PURGED)
+                    ),
+                )
+                .limit(1)
+            )
+            if invalid_manifest is not None:
+                raise ApplicationConflictError(
+                    "La preuve ERP requise pour la compensation est expirée.",
+                    code="erp_sync_compensation_evidence_expired",
+                )
         rows = self.mutation_payloads(attempt_id=attempt_id)
         if not rows:
             raise ApplicationValidationError(
