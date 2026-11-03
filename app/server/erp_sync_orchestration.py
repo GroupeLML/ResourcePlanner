@@ -1223,13 +1223,7 @@ class ErpSyncOrchestrator:
                 if task_status == SYNC_RUN_COMPLETED_WITH_ERRORS
                 else ERP_ATTEMPT_SUCCEEDED
             )
-            if (
-                parent_status == ERP_ATTEMPT_SUCCEEDED
-                and attempt.intent == "PROJECTS_AND_ACTIVE_TASKS"
-                and self._evidence is not None
-            ):
-                self._evidence.advance_approved_baselines(attempt_id=attempt_id)
-            self._control.finish(
+            published = self._control.finish(
                 attempt_id=attempt_id,
                 generation=generation,
                 status=parent_status,
@@ -1241,6 +1235,15 @@ class ErpSyncOrchestrator:
                 ),
                 settings=self._settings,
             )
+            if (
+                published
+                and parent_status == ERP_ATTEMPT_SUCCEEDED
+                and attempt.intent == "PROJECTS_AND_ACTIVE_TASKS"
+                and self._evidence is not None
+            ):
+                # Baseline advancement is derived from a fully published success.
+                # A fenced/failed terminal write can never advance authority.
+                self._evidence.advance_approved_baselines(attempt_id=attempt_id)
         except ErpSyncFenceLost:
             # A newer generation owns the control row. The stale worker is not
             # permitted to publish a late failure or terminal status.
