@@ -204,6 +204,23 @@ class SqlErpSyncControlRepository:
     def __init__(self, session_factory: SqlSessionFactory) -> None:
         self._session_factory = session_factory
 
+    @staticmethod
+    def guard_recovery_session(
+        session: Session,
+        *,
+        settings: ErpSyncSchedulerSettings,
+    ) -> ErpSyncControl:
+        """Serialize compensation against all ERP writers without reviving an attempt."""
+        control = _lock_control(session)
+        _ensure_config_compatible_locked(control, settings)
+        if control.owner_attempt_id:
+            raise ApplicationConflictError(
+                "Une synchronisation ERP active interdit la compensation.",
+                code="erp_sync_recovery_owner_active",
+                context={"attempt_id": control.owner_attempt_id},
+            )
+        return control
+
     def schema_available(self) -> bool:
         with self._session_factory() as session:
             return inspect(session.get_bind()).has_table("erp_sync_control")
