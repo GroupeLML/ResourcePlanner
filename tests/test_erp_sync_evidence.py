@@ -23,11 +23,14 @@ from app.server.erp_sync_evidence import (
 from app.application.erp_sync_scheduler import ErpSyncSchedulerSettings
 from app.infrastructure.smtp import FernetSecretCipher
 from app.infrastructure.sql import (
+    AcumaticaProjectTaskSyncRun,
     Base,
     ErpSyncAttempt,
     ErpSyncEvidenceChunk,
     ErpSyncEvidenceManifest,
     ErpSyncEvidenceReservation,
+    ErpSyncProjectQuality,
+    ErpSyncRecoveryState,
     ErpSyncControl,
     Project,
     ResourceClassConfig,
