@@ -758,32 +758,47 @@ class ErpSyncEvidenceService:
             )
         )
 
+    def quarantine_attempt_provenance_in_session(
+        self,
+        session: Session,
+        *,
+        attempt_id: str,
+        reason_code: str,
+    ) -> int:
+        from ..infrastructure.sql import ErpSyncProjectQuality
+
+        changed = 0
+        rows = tuple(
+            session.scalars(
+                select(ErpSyncProjectQuality).where(
+                    ErpSyncProjectQuality.producer_attempt_id == attempt_id
+                )
+            )
+        )
+        for row in rows:
+            row.quality_state = "QUARANTINED"
+            row.reason_code = str(reason_code)
+            changed += 1
+        return changed
+
     def quarantine_attempt_provenance(
         self,
         *,
         attempt_id: str,
         reason_code: str,
     ) -> int:
-        from ..infrastructure.sql import ErpSyncProjectQuality
         from ..infrastructure.sql.session import transactional_session
 
-        changed = 0
         with transactional_session(self._session_factory) as session:
-            rows = tuple(
-                session.scalars(
-                    select(ErpSyncProjectQuality).where(
-                        ErpSyncProjectQuality.producer_attempt_id == attempt_id
-                    )
-                )
+            return self.quarantine_attempt_provenance_in_session(
+                session,
+                attempt_id=attempt_id,
+                reason_code=reason_code,
             )
-            for row in rows:
-                row.quality_state = "QUARANTINED"
-                row.reason_code = str(reason_code)
-                changed += 1
-        return changed
 
-    def mark_recovery_required(
+    def mark_recovery_required_in_session(
         self,
+        session: Session,
         *,
         attempt_id: str,
         reason_code: str,
@@ -793,32 +808,45 @@ class ErpSyncEvidenceService:
             ErpSyncEvidenceManifest,
             ErpSyncRecoveryState,
         )
+
+        row = session.scalar(
+            select(ErpSyncRecoveryState).where(
+                ErpSyncRecoveryState.attempt_id == attempt_id
+            )
+        )
+        if row is None:
+            row = ErpSyncRecoveryState(
+                attempt_id=attempt_id,
+                state=RECOVERY_REQUIRED,
+                reason_code=str(reason_code or "erp_sync_recovery_required"),
+                pinned=True,
+            )
+            session.add(row)
+        else:
+            row.state = RECOVERY_REQUIRED
+            row.reason_code = str(reason_code or "erp_sync_recovery_required")
+            row.pinned = True
+        for manifest in session.scalars(
+            select(ErpSyncEvidenceManifest).where(
+                ErpSyncEvidenceManifest.attempt_id == attempt_id
+            )
+        ):
+            manifest.pinned = True
+
+    def mark_recovery_required(
+        self,
+        *,
+        attempt_id: str,
+        reason_code: str,
+    ) -> None:
         from ..infrastructure.sql.session import transactional_session
 
         with transactional_session(self._session_factory) as session:
-            row = session.scalar(
-                select(ErpSyncRecoveryState).where(
-                    ErpSyncRecoveryState.attempt_id == attempt_id
-                )
+            self.mark_recovery_required_in_session(
+                session,
+                attempt_id=attempt_id,
+                reason_code=reason_code,
             )
-            if row is None:
-                row = ErpSyncRecoveryState(
-                    attempt_id=attempt_id,
-                    state=RECOVERY_REQUIRED,
-                    reason_code=str(reason_code or "erp_sync_recovery_required"),
-                    pinned=True,
-                )
-                session.add(row)
-            else:
-                row.state = RECOVERY_REQUIRED
-                row.reason_code = str(reason_code or "erp_sync_recovery_required")
-                row.pinned = True
-            for manifest in session.scalars(
-                select(ErpSyncEvidenceManifest).where(
-                    ErpSyncEvidenceManifest.attempt_id == attempt_id
-                )
-            ):
-                manifest.pinned = True
 
     def list_attempt_sources(self, *, attempt_id: str) -> tuple[dict[str, Any], ...]:
         from ..infrastructure.sql import ErpSyncEvidenceManifest
