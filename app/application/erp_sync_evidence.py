@@ -430,6 +430,69 @@ class ErpSyncEvidenceService:
                 code="erp_sync_evidence_payload_invalid",
             ) from exc
 
+    def mark_sources_ready(self, *, attempt_id: str) -> None:
+        from ..infrastructure.sql import (
+            EVIDENCE_PROOF_SOURCE,
+            EVIDENCE_SOURCE_PROJECTS,
+            EVIDENCE_SOURCE_TASKS,
+            EVIDENCE_STATE_READY,
+            EVIDENCE_STATE_SEALED,
+            ErpSyncEvidenceManifest,
+        )
+        from ..infrastructure.sql.session import transactional_session
+
+        with transactional_session(self._session_factory) as session:
+            rows = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceManifest).where(
+                        ErpSyncEvidenceManifest.attempt_id == attempt_id,
+                        ErpSyncEvidenceManifest.proof_type == EVIDENCE_PROOF_SOURCE,
+                        ErpSyncEvidenceManifest.source_type.in_(
+                            (EVIDENCE_SOURCE_PROJECTS, EVIDENCE_SOURCE_TASKS)
+                        ),
+                    )
+                )
+            )
+            if {row.source_type for row in rows} != {
+                EVIDENCE_SOURCE_PROJECTS,
+                EVIDENCE_SOURCE_TASKS,
+            }:
+                raise ApplicationConflictError(
+                    "Les deux sources ERP scellées sont requises avant mutation.",
+                    code="erp_sync_evidence_sources_incomplete",
+                )
+            if any(row.state != EVIDENCE_STATE_SEALED for row in rows):
+                raise ApplicationConflictError(
+                    "Une source ERP n'est pas dans l'état SEALED attendu.",
+                    code="erp_sync_evidence_source_not_sealed",
+                )
+            for row in rows:
+                row.state = EVIDENCE_STATE_READY
+
+    def assert_full_sources_ready(self, *, attempt_id: str) -> None:
+        from ..infrastructure.sql import (
+            EVIDENCE_PROOF_SOURCE,
+            EVIDENCE_STATE_READY,
+            ErpSyncEvidenceManifest,
+        )
+
+        with self._session_factory() as session:
+            count = int(
+                session.scalar(
+                    select(func.count(ErpSyncEvidenceManifest.id)).where(
+                        ErpSyncEvidenceManifest.attempt_id == attempt_id,
+                        ErpSyncEvidenceManifest.proof_type == EVIDENCE_PROOF_SOURCE,
+                        ErpSyncEvidenceManifest.state == EVIDENCE_STATE_READY,
+                    )
+                )
+                or 0
+            )
+            if count != 2:
+                raise ApplicationConflictError(
+                    "Le manifeste READY des deux sources ERP est requis avant mutation.",
+                    code="erp_sync_evidence_sources_not_ready",
+                )
+
     def record_before_in_session(
         self,
         session: Session,
@@ -709,7 +772,10 @@ class ErpSyncEvidenceService:
             project_counts = self._project_counts_from_payload(payload) or None
         with transactional_session(self._session_factory) as session:
             manifest = session.get(ErpSyncEvidenceManifest, manifest_id)
-            if manifest is None or manifest.state != EVIDENCE_STATE_SEALED:
+            if manifest is None or manifest.state not in {
+                EVIDENCE_STATE_SEALED,
+                EVIDENCE_STATE_READY,
+            }:
                 raise ApplicationConflictError(
                     "Seule une source ERP scellée peut devenir baseline.",
                     code="erp_sync_baseline_source_not_sealed",
@@ -819,7 +885,7 @@ class ErpSyncEvidenceService:
                     select(ErpSyncEvidenceManifest).where(
                         ErpSyncEvidenceManifest.attempt_id == attempt_id,
                         ErpSyncEvidenceManifest.proof_type == EVIDENCE_PROOF_SOURCE,
-                        ErpSyncEvidenceManifest.state == EVIDENCE_STATE_SEALED,
+                        ErpSyncEvidenceManifest.state == EVIDENCE_STATE_READY,
                         ErpSyncEvidenceManifest.source_type.in_(
                             (EVIDENCE_SOURCE_PROJECTS, EVIDENCE_SOURCE_TASKS)
                         ),
