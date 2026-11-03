@@ -17,6 +17,10 @@ from ..application import (
     ProjectTaskCatalogSourcePort,
     TaskCatalogSyncService,
 )
+from ..application.erp_sync_evidence import (
+    ErpSyncCapturedSource,
+    ErpSyncEvidenceService,
+)
 from ..application.erp_sync_scheduler import (
     ErpSyncAutomaticSafetyCapability,
     ErpSyncSchedulerSettings,
@@ -114,6 +118,7 @@ class ErpSyncOrchestrator:
         project_task_source: ProjectTaskCatalogSourcePort | None,
         settings: ErpSyncSchedulerSettings,
         automatic_safety: ErpSyncAutomaticSafetyCapability | None = None,
+        evidence_service: ErpSyncEvidenceService | None = None,
         system_actor: str = "erp-scheduler",
     ) -> None:
         self._session_factory = session_factory
@@ -126,6 +131,7 @@ class ErpSyncOrchestrator:
             else UnavailableErpSyncAutomaticSafetyCapability()
         )
         self._system_actor = system_actor
+        self._evidence = evidence_service
         self._control = SqlErpSyncControlRepository(session_factory)
         self._executor = ThreadPoolExecutor(
             max_workers=1,
@@ -669,6 +675,221 @@ class ErpSyncOrchestrator:
             ):
                 return
 
+    @staticmethod
+    def _project_source_active(status: object) -> bool:
+        return str(status or "active").strip().casefold() not in {
+            "annulé",
+            "annule",
+            "fermé",
+            "ferme",
+            "terminé",
+            "termine",
+            "closed",
+            "cancelled",
+        }
+
+    def _validate_project_capture(self, projects: tuple[Any, ...]) -> None:
+        external_ids: set[str] = set()
+        numbers: set[str] = set()
+        for row in projects:
+            external_id = str(row.external_id or "").strip()
+            number = str(row.number or "").strip()
+            name = str(row.name or "").strip()
+            status = str(row.status or "").strip()
+            if not external_id or not number or not name or not status:
+                raise ApplicationValidationError(
+                    "La source projets ERP est structurellement incomplète.",
+                    code="erp_sync_project_source_structural_invalid",
+                )
+            if external_id in external_ids or number in numbers:
+                raise ApplicationValidationError(
+                    "La source projets ERP contient une identité dupliquée.",
+                    code="erp_sync_project_source_duplicate_identity",
+                )
+            external_ids.add(external_id)
+            numbers.add(number)
+
+        with self._session_factory() as session:
+            for row in projects:
+                external_id = str(row.external_id).strip()
+                number = str(row.number).strip()
+                by_external = session.scalar(
+                    select(Project).where(Project.erp_external_id == external_id)
+                )
+                by_number = session.scalar(
+                    select(Project).where(Project.number == number)
+                )
+                if (
+                    by_external is not None
+                    and by_number is not None
+                    and by_external.id != by_number.id
+                ):
+                    raise ApplicationValidationError(
+                        "La source projets ERP entre en conflit avec les identités locales.",
+                        code="erp_sync_project_source_identity_conflict",
+                    )
+                if (
+                    by_number is not None
+                    and str(by_number.erp_external_id or "").strip()
+                    and str(by_number.erp_external_id).strip() != external_id
+                ):
+                    raise ApplicationValidationError(
+                        "La source projets ERP tente de relier un numéro à un autre identifiant.",
+                        code="erp_sync_project_source_identity_conflict",
+                    )
+
+    @staticmethod
+    def _validate_task_capture(
+        portfolio: Any,
+        *,
+        expected_projects: tuple[str, ...],
+    ) -> None:
+        snapshots: dict[str, Any] = {}
+        expected = set(expected_projects)
+        seen_task_ids: dict[str, str] = {}
+        for snapshot in tuple(portfolio.snapshots):
+            number = str(snapshot.project_number or "").strip()
+            if not number or number in snapshots or number not in expected:
+                raise ApplicationValidationError(
+                    "La source tâches ERP contient une partition projet invalide.",
+                    code="erp_sync_task_source_structural_invalid",
+                )
+            snapshots[number] = snapshot
+            if int(snapshot.source_rows) < len(tuple(snapshot.items)):
+                raise ApplicationValidationError(
+                    "Les compteurs de la source tâches ERP sont incohérents.",
+                    code="erp_sync_task_source_counter_invalid",
+                )
+            for item in tuple(snapshot.items):
+                if str(item.project_number or "").strip() != number:
+                    raise ApplicationValidationError(
+                        "Une tâche ERP appartient à un projet incohérent.",
+                        code="erp_sync_task_source_project_mismatch",
+                    )
+                task_id = str(item.erp_task_id or "").strip()
+                task_code = str(item.code or "").strip()
+                if not task_id or not task_code:
+                    raise ApplicationValidationError(
+                        "Une tâche ERP ne possède pas son identité obligatoire.",
+                        code="erp_sync_task_source_identity_missing",
+                    )
+                previous_project = seen_task_ids.get(task_id)
+                if previous_project is not None and previous_project != number:
+                    raise ApplicationValidationError(
+                        "Une identité TaskID ERP appartient à plusieurs projets.",
+                        code="erp_sync_task_source_identity_conflict",
+                    )
+                seen_task_ids[task_id] = number
+        missing = expected.difference(snapshots)
+        if missing:
+            raise ApplicationValidationError(
+                "La source tâches ERP ne contient pas toutes les partitions attendues.",
+                code="erp_sync_task_source_partition_missing",
+            )
+
+    def _capture_full_sources(
+        self,
+        *,
+        attempt_id: str,
+        project_source: ProjectSourcePort | None = None,
+        project_task_source: ProjectTaskCatalogSourcePort | None = None,
+    ) -> tuple[tuple[Any, ...], Any]:
+        if self._evidence is None:
+            raise ApplicationUnavailableError(
+                "Les garde-fous de preuve ERP 643B ne sont pas configurés.",
+                code="erp_sync_evidence_capability_unavailable",
+            )
+        source = project_source or self._project_source
+        task_source = project_task_source or self._project_task_source
+        if source is None or task_source is None:
+            raise ApplicationUnavailableError(
+                "Les sources ERP requises ne sont pas configurées.",
+                code="erp_sync_source_not_configured",
+            )
+        if projects_snapshot is None:
+            try:
+                projects = tuple(source.list_projects())
+            except Exception as exc:
+                if isinstance(exc, ApplicationError):
+                    raise
+                raise ApplicationUnavailableError(
+                    "La lecture des projets Acumatica a échoué.",
+                    code="acumatica_project_read_failed",
+                ) from exc
+        else:
+            projects = projects_snapshot
+        self._validate_project_capture(projects)
+
+        project_targets = tuple(
+            (str(row.external_id).strip(), str(row.number).strip())
+            for row in projects
+            if self._project_source_active(row.status)
+        )
+        fetch_many = getattr(task_source, "fetch_project_snapshots", None)
+        if not callable(fetch_many):
+            raise ApplicationUnavailableError(
+                "La lecture globale batch RP_ProjectTasks n'est pas disponible.",
+                code="acumatica_project_task_batch_required",
+            )
+        try:
+            portfolio = fetch_many(project_targets=project_targets)
+        except Exception as exc:
+            if isinstance(exc, ApplicationError):
+                raise
+            raise ApplicationUnavailableError(
+                "La lecture globale des tâches projet Acumatica a échoué.",
+                code="acumatica_project_task_read_failed",
+            ) from exc
+        expected_numbers = tuple(number for _external_id, number in project_targets)
+        self._validate_task_capture(
+            portfolio,
+            expected_projects=expected_numbers,
+        )
+
+        profile = self._settings.config_fingerprint
+        projects_evidence = self._evidence.capture_source(
+            attempt_id=attempt_id,
+            source_type="PROJECTS",
+            profile_fingerprint=profile,
+            payload=projects,
+            row_count=len(projects),
+        )
+        task_counts = {
+            str(snapshot.project_number): int(snapshot.source_rows)
+            for snapshot in portfolio.snapshots
+        }
+        tasks_evidence = self._evidence.capture_source(
+            attempt_id=attempt_id,
+            source_type="TASKS",
+            profile_fingerprint=profile,
+            payload=portfolio,
+            row_count=int(portfolio.source_rows),
+            project_counts=task_counts,
+        )
+        projects_plausibility = self._evidence.validate_plausibility(
+            projects_evidence,
+        )
+        tasks_plausibility = self._evidence.validate_plausibility(
+            tasks_evidence,
+            active_task_targets=len(project_targets),
+        )
+        if not projects_plausibility.accepted or not tasks_plausibility.accepted:
+            safe_codes = tuple(
+                dict.fromkeys(
+                    item.split(":", 1)[0]
+                    for item in (
+                        *projects_plausibility.diagnostics,
+                        *tasks_plausibility.diagnostics,
+                    )
+                )
+            )
+            raise ApplicationValidationError(
+                "La source ERP requiert une approbation de baseline ou dépasse les seuils de plausibilité.",
+                code="erp_sync_source_plausibility_failed",
+                context={"diagnostics": list(safe_codes)},
+            )
+        return projects, portfolio
+
     def _execute_attempt(
         self,
         attempt_id: str,
@@ -758,11 +979,21 @@ class ErpSyncOrchestrator:
                 )
                 return None
 
+            captured_projects: tuple[Any, ...] | None = None
+            captured_portfolio: Any | None = None
+            if attempt.intent == "PROJECTS_AND_ACTIVE_TASKS":
+                captured_projects, captured_portfolio = self._capture_full_sources(
+                    attempt_id=attempt_id,
+                    project_source=project_source,
+                    project_task_source=project_task_source,
+                )
+
             if attempt.intent != "ACTIVE_PROJECT_TASKS_ONLY":
                 project_result = self._execute_projects(
                     attempt_id,
                     generation,
                     project_source=project_source,
+                    projects_snapshot=captured_projects,
                 )
                 if attempt.intent == "PROJECTS_ONLY":
                     self._control.finish(
@@ -774,7 +1005,11 @@ class ErpSyncOrchestrator:
                     )
                     return project_result
 
-            task_status = self._execute_tasks(attempt_id, generation)
+            task_status = self._execute_tasks(
+                attempt_id,
+                generation,
+                portfolio_snapshot=captured_portfolio,
+            )
             parent_status = (
                 ERP_ATTEMPT_SUCCEEDED_WITH_ERRORS
                 if task_status == SYNC_RUN_COMPLETED_WITH_ERRORS
@@ -899,6 +1134,7 @@ class ErpSyncOrchestrator:
         generation: int,
         *,
         project_source: ProjectSourcePort | None = None,
+        projects_snapshot: tuple[Any, ...] | None = None,
     ):
         source = project_source or self._project_source
         if source is None:
@@ -1089,7 +1325,13 @@ class ErpSyncOrchestrator:
             )
             return run.status
 
-    def _execute_tasks(self, attempt_id: str, generation: int) -> str:
+    def _execute_tasks(
+        self,
+        attempt_id: str,
+        generation: int,
+        *,
+        portfolio_snapshot: Any | None = None,
+    ) -> str:
         if self._project_task_source is None:
             raise ApplicationUnavailableError(
                 "La synchronisation des tâches projet Acumatica n'est pas configurée.",
@@ -1127,30 +1369,32 @@ class ErpSyncOrchestrator:
             source_rows = 0
             source_duration = 0
             if project_targets:
-                fetch_many = getattr(
-                    self._project_task_source,
-                    "fetch_project_snapshots",
-                    None,
-                )
-                if not callable(fetch_many):
-                    raise ApplicationUnavailableError(
-                        "La lecture globale batch RP_ProjectTasks n'est pas disponible.",
-                        code="acumatica_project_task_batch_required",
+                portfolio = portfolio_snapshot
+                if portfolio is None:
+                    fetch_many = getattr(
+                        self._project_task_source,
+                        "fetch_project_snapshots",
+                        None,
                     )
-                started = perf_counter()
-                try:
-                    portfolio = fetch_many(project_targets=project_targets)
-                except Exception as exc:
-                    if isinstance(exc, ApplicationError):
-                        raise
-                    raise ApplicationUnavailableError(
-                        "La lecture globale des tâches projet Acumatica a échoué.",
-                        code="acumatica_project_task_read_failed",
-                    ) from exc
-                source_duration = max(
-                    0,
-                    int((perf_counter() - started) * 1000),
-                )
+                    if not callable(fetch_many):
+                        raise ApplicationUnavailableError(
+                            "La lecture globale batch RP_ProjectTasks n'est pas disponible.",
+                            code="acumatica_project_task_batch_required",
+                        )
+                    started = perf_counter()
+                    try:
+                        portfolio = fetch_many(project_targets=project_targets)
+                    except Exception as exc:
+                        if isinstance(exc, ApplicationError):
+                            raise
+                        raise ApplicationUnavailableError(
+                            "La lecture globale des tâches projet Acumatica a échoué.",
+                            code="acumatica_project_task_read_failed",
+                        ) from exc
+                    source_duration = max(
+                        0,
+                        int((perf_counter() - started) * 1000),
+                    )
                 source_requests = int(portfolio.source_pages)
                 source_rows = int(portfolio.source_rows)
                 for snapshot in portfolio.snapshots:
