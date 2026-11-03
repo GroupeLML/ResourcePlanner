@@ -709,7 +709,11 @@ def create_configured_app(settings: ServerSettings | None = None) -> FastAPI:
             if project_source is not None or project_task_source is not None
             else None
         ),
-        erp_sync_evidence_settings=resolved.erp_sync_evidence,
+        erp_sync_evidence_settings=(
+            resolved.erp_sync_evidence
+            if project_source is not None or project_task_source is not None
+            else None
+        ),
         runtime_dependencies={
             "oidc": {
                 "required": resolved.auth_mode == "oidc",
