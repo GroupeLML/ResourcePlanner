@@ -6,14 +6,21 @@ import os
 from threading import Barrier
 import unittest
 
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 
+from app.application import (
+    ExternalProjectRecord,
+    TaskCatalogItem,
+    TaskCatalogPortfolioSnapshot,
+    TaskCatalogProjectSnapshot,
+)
 from app.application.erp_sync_scheduler import (
     ErpSyncSchedulerSettings,
     TestErpSyncAutomaticSafetyCapability,
     resolve_scheduled_instant,
 )
 from app.infrastructure.sql import (
+    AcumaticaProjectTaskSyncProjectResult,
     AcumaticaProjectTaskSyncRun,
     ERP_ATTEMPT_INTERRUPTED,
     ERP_ATTEMPT_PENDING,
@@ -27,6 +34,9 @@ from app.infrastructure.sql import (
     ErpSyncAttempt,
     ErpSyncControl,
     ErpSyncOccurrence,
+    Project,
+    SqlPlannerQueryRepositoryWithLoadProfiles,
+    TaskCatalogEntry,
     create_session_factory,
     create_sql_engine,
     transactional_session,
@@ -36,6 +46,65 @@ from app.infrastructure.sql.erp_sync_control_repository import (
     ErpSyncFenceLost,
     SqlErpSyncControlRepository,
 )
+
+
+class SqlServerProjectSource:
+    def __init__(self, rows: tuple[ExternalProjectRecord, ...]) -> None:
+        self.rows = rows
+
+    def list_projects(self):
+        return self.rows
+
+
+class SqlServerPortfolioTaskSource:
+    def __init__(
+        self,
+        snapshots: dict[str, TaskCatalogProjectSnapshot],
+    ) -> None:
+        self.snapshots = snapshots
+
+    def fetch_project_snapshots(
+        self,
+        *,
+        project_targets: tuple[tuple[str, str], ...],
+    ) -> TaskCatalogPortfolioSnapshot:
+        return TaskCatalogPortfolioSnapshot(
+            source_rows=sum(
+                self.snapshots[number].source_rows
+                for _external_id, number in project_targets
+            ),
+            source_pages=1 if project_targets else 0,
+            snapshots=tuple(
+                self.snapshots[number]
+                for _external_id, number in project_targets
+            ),
+        )
+
+
+def _sql_project(number: str, name: str) -> ExternalProjectRecord:
+    return ExternalProjectRecord(
+        external_id=f"ERP-{number}",
+        number=number,
+        name=name,
+        status="Actif",
+    )
+
+
+def _sql_snapshot(number: str, code: str, label: str) -> TaskCatalogProjectSnapshot:
+    return TaskCatalogProjectSnapshot(
+        project_number=number,
+        source_rows=1,
+        rejected_rows=0,
+        items=(
+            TaskCatalogItem(
+                project_number=number,
+                code=code,
+                label=label,
+                status="Actif",
+                active=True,
+            ),
+        ),
+    )
 
 
 DATABASE_URL = str(os.getenv("RESOURCEPLANNER_SQLSERVER_TEST_URL") or "").strip()
@@ -177,6 +246,30 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
         self.assertEqual(attempt_count, 1)
 
     def test_generation_takeover_releases_child_and_fences_all_stale_writes(self) -> None:
+        project_a = "SQL643A-A"
+        project_b = "SQL643A-B"
+        with transactional_session(self.factory) as session:
+            session.execute(
+                delete(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number.in_((project_a, project_b))
+                )
+            )
+            session.execute(
+                delete(Project).where(Project.number.in_((project_a, project_b)))
+            )
+
+        first_projects = SqlServerProjectSource(
+            (_sql_project(project_a, "Generation N committed"),)
+        )
+        first_tasks = SqlServerPortfolioTaskSource(
+            {project_a: _sql_snapshot(project_a, "100", "Task generation N")}
+        )
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=first_projects,
+            project_task_source=first_tasks,
+            settings=self.settings,
+        )
         occurrence = self._daily_occurrence()
         repository = SqlErpSyncControlRepository(self.factory)
         first = repository.claim(
@@ -186,20 +279,64 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             settings=self.settings,
         )
         self.assertIsNotNone(first)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=first.id,
+                generation=first.generation,
+                settings=self.settings,
+            )
+        )
+
+        # Generation N executes real production project and task mutation logic.
+        orchestrator._execute_projects(first.id, first.generation)
+        with self.factory() as discovery:
+            projected = tuple(
+                SqlPlannerQueryRepositoryWithLoadProfiles(discovery).list_projects(
+                    active_only=False
+                )
+            )
+        projected_a = next(row for row in projected if row.number == project_a)
+        first_child_id = orchestrator._create_task_run(
+            first.id,
+            first.generation,
+        )
+        with transactional_session(self.factory) as session:
+            child = session.get(AcumaticaProjectTaskSyncRun, first_child_id)
+            self.assertIsNotNone(child)
+            child.projects_total = 1
+        orchestrator._process_task_project(
+            first_child_id,
+            first.id,
+            first.generation,
+            projected_a,
+            {project_a: first_tasks.snapshots[project_a]},
+        )
+
+        with self.factory() as session:
+            committed_a = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == project_a,
+                    TaskCatalogEntry.task_code == "100",
+                )
+            )
+            self.assertIsNotNone(committed_a)
+            committed_a_id = committed_a.id
+            first_results = tuple(
+                session.scalars(
+                    select(AcumaticaProjectTaskSyncProjectResult).where(
+                        AcumaticaProjectTaskSyncProjectResult.run_id
+                        == first_child_id
+                    )
+                )
+            )
+            self.assertEqual(len(first_results), 1)
+            self.assertEqual(first_results[0].status, "synchronized")
+            live_child = session.get(AcumaticaProjectTaskSyncRun, first_child_id)
+            self.assertIsNotNone(live_child)
+            self.assertEqual(live_child.status, SYNC_RUN_RUNNING)
+            self.assertEqual(live_child.active_key, GLOBAL_SYNC_RUN_KEY)
 
         with transactional_session(self.factory) as session:
-            child = AcumaticaProjectTaskSyncRun(
-                id="SQL-CHILD-GEN-N",
-                active_key=GLOBAL_SYNC_RUN_KEY,
-                status=SYNC_RUN_RUNNING,
-                parent_attempt_id=first.id,
-                erp_generation=first.generation,
-                started_at=datetime.now(timezone.utc),
-            )
-            session.add(child)
-            stored_attempt = session.get(ErpSyncAttempt, first.id)
-            self.assertIsNotNone(stored_attempt)
-            stored_attempt.task_sync_run_id = child.id
             session.execute(
                 text(
                     "UPDATE erp_sync_control "
@@ -218,59 +355,27 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
         )
         self.assertIsNotNone(second)
         self.assertGreater(second.generation, first.generation)
-        self.assertTrue(
-            repository.start_attempt(
-                attempt_id=second.id,
-                generation=second.generation,
-                settings=self.settings,
-            )
-        )
 
         with self.factory() as session:
             stale_child = session.get(
                 AcumaticaProjectTaskSyncRun,
-                "SQL-CHILD-GEN-N",
+                first_child_id,
             )
             self.assertIsNotNone(stale_child)
             self.assertEqual(stale_child.status, SYNC_RUN_INTERRUPTED)
             self.assertIsNone(stale_child.active_key)
 
-        orchestrator = ErpSyncOrchestrator(
-            self.factory,
-            project_source=None,
-            project_task_source=None,
-            settings=self.settings,
+        # A stale generation invokes the real project business path. The fence
+        # rejects it before any domain/progress mutation can commit.
+        stale_projects = SqlServerProjectSource(
+            (_sql_project(project_a, "STALE GENERATION MUST NOT COMMIT"),)
         )
-        replacement_child_id = orchestrator._create_task_run(
-            second.id,
-            second.generation,
-        )
-        with self.factory() as session:
-            replacement = session.get(
-                AcumaticaProjectTaskSyncRun,
-                replacement_child_id,
+        with self.assertRaises(ErpSyncFenceLost):
+            orchestrator._execute_projects(
+                first.id,
+                first.generation,
+                project_source=stale_projects,
             )
-            self.assertIsNotNone(replacement)
-            self.assertEqual(replacement.active_key, GLOBAL_SYNC_RUN_KEY)
-            self.assertEqual(replacement.erp_generation, second.generation)
-
-        with self.factory.begin() as stale_session:
-            with self.assertRaises(ErpSyncFenceLost):
-                SqlErpSyncControlRepository.guard_session(
-                    stale_session,
-                    attempt_id=first.id,
-                    generation=first.generation,
-                    settings=self.settings,
-                )
-        with self.factory.begin() as stale_progress:
-            with self.assertRaises(ErpSyncFenceLost):
-                SqlErpSyncControlRepository.update_phase_in_session(
-                    stale_progress,
-                    attempt_id=first.id,
-                    generation=first.generation,
-                    phase="STALE_PROGRESS",
-                    settings=self.settings,
-                )
         self.assertFalse(
             repository.finish(
                 attempt_id=first.id,
@@ -281,38 +386,118 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             )
         )
 
-        with transactional_session(self.factory) as session:
-            SqlErpSyncControlRepository.guard_session(
-                session,
-                attempt_id=second.id,
-                generation=second.generation,
-                settings=self.settings,
+        with self.factory() as session:
+            unchanged_project = session.scalar(
+                select(Project).where(Project.number == project_a)
             )
-            replacement = session.get(
-                AcumaticaProjectTaskSyncRun,
-                replacement_child_id,
+            unchanged_task = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == project_a,
+                    TaskCatalogEntry.task_code == "100",
+                )
             )
-            self.assertIsNotNone(replacement)
-            replacement.status = SYNC_RUN_COMPLETED
-            replacement.active_key = None
-            replacement.finished_at = datetime.now(timezone.utc)
-            SqlErpSyncControlRepository.update_phase_in_session(
-                session,
-                attempt_id=second.id,
-                generation=second.generation,
-                phase="TASKS_FINISHED",
-                settings=self.settings,
+            self.assertIsNotNone(unchanged_project)
+            self.assertIsNotNone(unchanged_task)
+            self.assertEqual(unchanged_project.name, "Generation N committed")
+            self.assertEqual(unchanged_task.id, committed_a_id)
+            self.assertEqual(
+                repository.get_attempt(first.id).status,
+                ERP_ATTEMPT_INTERRUPTED,
             )
-        self.assertTrue(
-            repository.finish(
-                attempt_id=second.id,
-                generation=second.generation,
-                status="SUCCEEDED",
-                phase="PUBLICATION_COMMITTED",
-                settings=self.settings,
+
+        # Generation N+1 runs the actual full production orchestration. Its child
+        # lifecycle and terminal state are produced by application code, not test
+        # state manipulation.
+        replacement_projects = SqlServerProjectSource(
+            (
+                _sql_project(project_a, "Generation N+1 committed"),
+                _sql_project(project_b, "Generation N+1 new"),
             )
         )
+        replacement_tasks = SqlServerPortfolioTaskSource(
+            {
+                project_a: _sql_snapshot(
+                    project_a,
+                    "100",
+                    "Task generation N+1",
+                ),
+                project_b: _sql_snapshot(
+                    project_b,
+                    "200",
+                    "Replacement task",
+                ),
+            }
+        )
+        replacement_orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=replacement_projects,
+            project_task_source=replacement_tasks,
+            settings=self.settings,
+        )
+        replacement_orchestrator._execute_attempt(
+            second.id,
+            second.generation,
+        )
+
+        completed = repository.get_attempt(second.id)
+        self.assertEqual(completed.status, "SUCCEEDED")
+        self.assertIsNotNone(completed.task_sync_run_id)
+        with self.factory() as session:
+            replacement_child = session.get(
+                AcumaticaProjectTaskSyncRun,
+                completed.task_sync_run_id,
+            )
+            self.assertIsNotNone(replacement_child)
+            self.assertEqual(replacement_child.status, SYNC_RUN_COMPLETED)
+            self.assertIsNone(replacement_child.active_key)
+
+            rows = tuple(
+                session.scalars(
+                    select(TaskCatalogEntry)
+                    .where(TaskCatalogEntry.project_number.in_((project_a, project_b)))
+                    .order_by(TaskCatalogEntry.project_number)
+                )
+            )
+            self.assertEqual(
+                [(row.project_number, row.task_code) for row in rows],
+                [(project_a, "100"), (project_b, "200")],
+            )
+            surviving_a = next(row for row in rows if row.project_number == project_a)
+            self.assertEqual(surviving_a.id, committed_a_id)
+
+            project_rows = tuple(
+                session.scalars(
+                    select(Project)
+                    .where(Project.number.in_((project_a, project_b)))
+                    .order_by(Project.number)
+                )
+            )
+            self.assertEqual(
+                [(row.number, row.name) for row in project_rows],
+                [
+                    (project_a, "Generation N+1 committed"),
+                    (project_b, "Generation N+1 new"),
+                ],
+            )
+            replacement_results = tuple(
+                session.scalars(
+                    select(AcumaticaProjectTaskSyncProjectResult).where(
+                        AcumaticaProjectTaskSyncProjectResult.run_id
+                        == completed.task_sync_run_id
+                    )
+                )
+            )
+            self.assertEqual(len(replacement_results), 2)
+            self.assertTrue(
+                all(row.status == "synchronized" for row in replacement_results)
+            )
+
+        self.assertEqual(
+            repository.get_occurrence(occurrence.id).success_attempt_id,
+            second.id,
+        )
         orchestrator.shutdown()
+        replacement_orchestrator.shutdown()
 
 
     def test_healthy_peer_startup_does_not_interrupt_live_owner(self) -> None:
