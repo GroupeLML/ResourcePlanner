@@ -1811,6 +1811,10 @@ class ErpSyncEvidenceService:
                 "budget_hours": task.budget_hours,
                 "workforce_diagnostics": task.workforce_diagnostics,
                 "erp_budget_last_success_at": task.erp_budget_last_success_at,
+                "operational_responsible_contact_id": task.operational_responsible_contact_id,
+                "coordinator_contact_id": task.coordinator_contact_id,
+                "preferred_resource_id": task.preferred_resource_id,
+                "preferred_resource_version": int(task.preferred_resource_version or 1),
             }
         if row.entity_type == "TASK_SYNC_STATE":
             state = session.get(TaskCatalogProjectSyncState, row.entity_key)
