@@ -141,6 +141,10 @@ class ErpSyncOrchestrator:
         self._launch_lock = Lock()
         self._closed = False
 
+    def _assert_recovery_clear(self) -> None:
+        if self._evidence is not None:
+            self._evidence.assert_no_required_recovery()
+
     @property
     def settings(self) -> ErpSyncSchedulerSettings:
         return self._settings
@@ -201,6 +205,7 @@ class ErpSyncOrchestrator:
             return reconciled
 
     def scheduler_tick(self) -> dict[str, Any] | None:
+        self._assert_recovery_clear()
         if self._closed or not self._control.schema_available():
             return None
 
@@ -318,6 +323,7 @@ class ErpSyncOrchestrator:
         actor_name: str,
         idempotency_key: str,
     ) -> dict[str, Any]:
+        self._assert_recovery_clear()
         self._assert_sources(intent)
         occurrence = self._control.accept_manual(
             intent=intent,
@@ -354,6 +360,7 @@ class ErpSyncOrchestrator:
         actor_name: str,
         idempotency_key: str,
     ) -> dict[str, Any]:
+        self._assert_recovery_clear()
         occurrence = self._control.get_occurrence(occurrence_id)
         self._assert_sources(occurrence.intent)
         if occurrence.success_attempt_id:
@@ -495,6 +502,7 @@ class ErpSyncOrchestrator:
         actor_name: str,
         idempotency_key: str,
     ) -> dict[str, Any]:
+        self._assert_recovery_clear()
         self._assert_sources(f"TARGETED_PROJECT_TASKS:{project_id}")
         occurrence = self._control.accept_manual(
             intent=f"TARGETED_PROJECT_TASKS:{project_id}",
@@ -1099,6 +1107,7 @@ class ErpSyncOrchestrator:
             )
             heartbeat.start()
             attempt = self._control.get_attempt(attempt_id)
+            self._assert_recovery_clear()
             if automatic and not self._automatic_safety.automatic_execution_available():
                 self._control.finish(
                     attempt_id=attempt_id,
@@ -1258,6 +1267,19 @@ class ErpSyncOrchestrator:
             stop.set()
             if heartbeat is not None:
                 heartbeat.join(timeout=1.0)
+            if self._evidence is not None:
+                try:
+                    terminal = self._control.get_attempt(attempt_id)
+                    if terminal.status in ERP_ATTEMPT_TERMINAL:
+                        self._evidence.finalize_attempt(
+                            attempt_id=attempt_id,
+                            successful=terminal.status == ERP_ATTEMPT_SUCCEEDED,
+                        )
+                except Exception:
+                    logger.exception(
+                        "ERP evidence finalization failed attempt_id=%s",
+                        attempt_id,
+                    )
 
     def _execute_targeted_compat_business(
         self,
