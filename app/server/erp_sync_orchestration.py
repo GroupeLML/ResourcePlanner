@@ -772,6 +772,12 @@ class ErpSyncOrchestrator:
             "budget_hours": row.budget_hours,
             "workforce_diagnostics": row.workforce_diagnostics,
             "erp_budget_last_success_at": row.erp_budget_last_success_at,
+            # Local principal/preference authority participates in compensation
+            # CAS but is never restored from ERP evidence.
+            "operational_responsible_contact_id": row.operational_responsible_contact_id,
+            "coordinator_contact_id": row.coordinator_contact_id,
+            "preferred_resource_id": row.preferred_resource_id,
+            "preferred_resource_version": int(row.preferred_resource_version or 1),
         }
 
     @staticmethod
