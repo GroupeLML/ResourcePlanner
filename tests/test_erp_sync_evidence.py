@@ -288,6 +288,50 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             )
         )
 
+    def test_stale_generation_cannot_publish_recovery_after_takeover(self) -> None:
+        control, occurrence, first = self._attempt("stale-validation-recovery")
+        self.service.reserve_attempt(attempt_id=first.id)
+        self.service.bind_attempt_policy(
+            attempt_id=first.id,
+            generation=first.generation,
+        )
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=ProjectSource(()),
+            project_task_source=PortfolioTaskSource({}),
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        with transactional_session(self.factory) as session:
+            row = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+            row.lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=10)
+        second = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="peer",
+            settings=self.control_settings,
+            command_identity="retry:stale-validation-recovery",
+        )
+        self.assertIsNotNone(second)
+        self.assertGreater(second.generation, first.generation)
+
+        from app.infrastructure.sql.erp_sync_control_repository import ErpSyncFenceLost
+        with self.assertRaises(ErpSyncFenceLost):
+            orchestrator._validate_full_publication(
+                attempt_id=first.id,
+                generation=first.generation,
+            )
+        with self.factory() as session:
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == first.id
+                )
+            )
+            control_row = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+        self.assertIsNone(recovery)
+        self.assertEqual(control_row.owner_attempt_id, second.id)
+        orchestrator.shutdown()
+
     def test_duplicate_project_identity_blocks_before_any_business_mutation(self) -> None:
         projects = ProjectSource(
             (
