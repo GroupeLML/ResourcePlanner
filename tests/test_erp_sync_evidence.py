@@ -1722,6 +1722,184 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             "erp_sync_checkpoint_before_integrity_invalid",
         )
 
+    def test_multi_record_compensation_preview_and_confirmation_are_order_independent(self) -> None:
+        control, _occurrence, attempt = self._attempt("compensation-multi-record")
+        self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"records": [{"number": "CMP-A"}, {"number": "CMP-B"}]},
+            row_count=2,
+        )
+        with transactional_session(self.factory) as session:
+            for suffix in ("A", "B"):
+                row = Project(
+                    id=f"COMP-MULTI-{suffix}",
+                    erp_external_id=f"CMP-{suffix}",
+                    number=f"CMP-{suffix}",
+                    name=f"Before {suffix}",
+                    status="Actif",
+                )
+                session.add(row)
+                session.flush()
+                before = {
+                    "erp_external_id": row.erp_external_id,
+                    "number": row.number,
+                    "name": row.name,
+                    "client": row.client,
+                    "project_manager_external_id": row.project_manager_external_id,
+                    "project_manager_name": row.project_manager_name,
+                    "status": row.status,
+                }
+                evidence_id = self.service.record_before_in_session(
+                    session,
+                    attempt_id=attempt.id,
+                    generation=attempt.generation,
+                    unit_type="PROJECT_SNAPSHOT",
+                    entity_type="PROJECT",
+                    entity_key=row.erp_external_id,
+                    before=before,
+                )
+                row.name = f"After {suffix}"
+                self.service.record_after_in_session(
+                    session,
+                    evidence_id=evidence_id,
+                    attempt_id=attempt.id,
+                    generation=attempt.generation,
+                    after={**before, "name": f"After {suffix}"},
+                )
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.mark_recovery_required(
+            attempt_id=attempt.id,
+            reason_code="multi_record_compensation",
+        )
+        preview = self.service.compensation_preview(attempt_id=attempt.id)
+        self.assertTrue(preview["can_confirm"])
+        self.assertEqual(preview["eligible_records"], 2)
+        result = self.service.confirm_compensation(
+            attempt_id=attempt.id,
+            preview_hash=preview["preview_hash"],
+            command_identity="compensation:multi-record",
+            actor_name="admin",
+            reason="Restore both project records",
+        )
+        self.assertEqual(result["affected_records"], 2)
+        with self.factory() as session:
+            self.assertEqual(session.get(Project, "COMP-MULTI-A").name, "Before A")
+            self.assertEqual(session.get(Project, "COMP-MULTI-B").name, "Before B")
+
+    def test_compensation_refuses_changed_local_principal_and_recomputes_derived_cost(self) -> None:
+        control, _occurrence, attempt = self._attempt("compensation-task-principal")
+        self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"portfolio": {"source_rows": 1, "source_pages": 1, "snapshots": []}},
+            row_count=1,
+        )
+        with transactional_session(self.factory) as session:
+            task = TaskCatalogEntry(
+                project_number="COMP-TASK",
+                task_code="100",
+                label="Before",
+                status="Actif",
+                active=True,
+                erp_task_id="COMP-TASK-ERP",
+                account_group="DEPMO",
+                workforce_eligible=True,
+                resource_class_code="PROGRAMMEUR",
+                average_hourly_cost_cad=Decimal("125.0000"),
+                preferred_resource_version=1,
+            )
+            session.add(task)
+            session.flush()
+            before = ErpSyncOrchestrator._task_owned_state(task)
+            evidence_id = self.service.record_before_in_session(
+                session,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                unit_type=f"TASK_PROJECT:{uuid4()}",
+                entity_type="TASK",
+                entity_key=task.erp_task_id,
+                before=before,
+            )
+            task.label = "After"
+            after = ErpSyncOrchestrator._task_owned_state(task)
+            self.service.record_after_in_session(
+                session,
+                evidence_id=evidence_id,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                after=after,
+            )
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.mark_recovery_required(
+            attempt_id=attempt.id,
+            reason_code="task_compensation",
+        )
+
+        with transactional_session(self.factory) as session:
+            task = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.erp_task_id == "COMP-TASK-ERP"
+                )
+            )
+            task.preferred_resource_version = 2
+        principal_preview = self.service.compensation_preview(
+            attempt_id=attempt.id
+        )
+        self.assertFalse(principal_preview["can_confirm"])
+        self.assertEqual(principal_preview["conflict_count"], 1)
+
+        with transactional_session(self.factory) as session:
+            task = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.erp_task_id == "COMP-TASK-ERP"
+                )
+            )
+            task.preferred_resource_version = 1
+            session.get(
+                ResourceClassConfig,
+                "PROGRAMMEUR",
+            ).average_hourly_cost_cad = Decimal("250.0000")
+        preview = self.service.compensation_preview(attempt_id=attempt.id)
+        self.assertTrue(preview["can_confirm"])
+        self.service.confirm_compensation(
+            attempt_id=attempt.id,
+            preview_hash=preview["preview_hash"],
+            command_identity="compensation:task-derived",
+            actor_name="admin",
+            reason="Restore ERP-owned fields and recalculate derived state",
+        )
+        with self.factory() as session:
+            task = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.erp_task_id == "COMP-TASK-ERP"
+                )
+            )
+        self.assertEqual(task.label, "Before")
+        self.assertEqual(
+            task.average_hourly_cost_cad,
+            Decimal("250.0000"),
+        )
+        self.assertEqual(task.preferred_resource_version, 1)
+
     def test_compensation_preview_refuses_changed_current_erp_state(self) -> None:
         control, _occurrence, attempt = self._attempt("compensation-conflict")
         self.service.reserve_attempt(attempt_id=attempt.id)
