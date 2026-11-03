@@ -854,6 +854,7 @@ def create_api_app(
             user_source=user_source,
             project_task_source=project_task_source,
             erp_sync_orchestrator=erp_sync_orchestrator,
+            erp_sync_evidence_service=erp_sync_evidence_service,
             acumatica_info=acumatica_info,
         )
     )
