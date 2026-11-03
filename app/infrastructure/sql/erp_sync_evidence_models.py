@@ -176,6 +176,34 @@ class ErpSyncBaseline(TimestampMixin, Base):
     approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class ErpSyncBaselineApprovalAudit(TimestampMixin, Base):
+    __tablename__ = "erp_sync_baseline_approval_audit"
+    __table_args__ = (
+        Index("ix_erp_sync_baseline_approval_baseline", "baseline_id"),
+        Index("ix_erp_sync_baseline_approval_manifest", "manifest_id"),
+        Index("ix_erp_sync_baseline_approval_actor", "actor_name"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    baseline_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("erp_sync_baselines.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    manifest_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("erp_sync_evidence_manifests.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    profile_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    row_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    actor_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ErpSyncPlausibilityException(TimestampMixin, Base):
     __tablename__ = "erp_sync_plausibility_exceptions"
     __table_args__ = (
