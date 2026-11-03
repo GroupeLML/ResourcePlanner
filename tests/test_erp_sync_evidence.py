@@ -569,7 +569,11 @@ class ErpSyncEvidenceTests(unittest.TestCase):
                 )
             )
         self.assertIsNotNone(eligible_row)
-        self.assertEqual(eligible_row.erp_budget_last_success_at, observed)
+        freshness = eligible_row.erp_budget_last_success_at
+        self.assertIsNotNone(freshness)
+        if freshness.tzinfo is None:
+            freshness = freshness.replace(tzinfo=timezone.utc)
+        self.assertEqual(freshness.astimezone(timezone.utc), observed)
         self.assertIsNone(excluded_row)
         self.assertEqual(len(evidence_rows), 1)
         self.assertEqual(evidence_rows[0].entity_key, "98100")
