@@ -246,6 +246,8 @@ class SqlSchemaTests(unittest.TestCase):
         self.assertFalse(plausibility.attempt_id.nullable)
         self.assertFalse(mutation_evidence.attempt_id.nullable)
         self.assertFalse(mutation_evidence.generation.nullable)
+        self.assertFalse(mutation_evidence.unit_type.nullable)
+        self.assertEqual(mutation_evidence.unit_type.type.length, 64)
         self.assertFalse(project_quality.quality_state.nullable)
         self.assertTrue(project_quality.producer_attempt_id.nullable)
         self.assertFalse(recovery.attempt_id.nullable)
