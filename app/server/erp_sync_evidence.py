@@ -190,9 +190,14 @@ class ErpSyncEvidenceService:
         from ..infrastructure.sql.session import transactional_session
 
         requested_plaintext = self.settings.max_evidence_bytes
+        # Reserve a bounded encrypted-storage envelope for the active attempt.
+        # Fernet/base64 expansion is below 1.5x for the configured chunk sizes;
+        # reserving the entire site budget would make any retained terminal
+        # evidence prevent the next attempt from starting.
         requested_storage = min(
             self.settings.evidence_budget_bytes,
-            self.settings.max_evidence_bytes * 2,
+            self.settings.max_evidence_bytes
+            + (self.settings.max_evidence_bytes // 2),
         )
         with transactional_session(self._session_factory) as session:
             if self._control_settings is None:
