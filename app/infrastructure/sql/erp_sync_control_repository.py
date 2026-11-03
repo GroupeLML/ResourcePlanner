@@ -323,6 +323,7 @@ class SqlErpSyncControlRepository:
         control: ErpSyncControl,
         *,
         now: datetime,
+        interrupted_attempts: list[str] | None = None,
     ) -> int:
         _assert_control_protocol(control)
         owner_id = str(control.owner_attempt_id or "").strip()
@@ -348,6 +349,8 @@ class SqlErpSyncControlRepository:
 
         attempt = session.get(ErpSyncAttempt, owner_id)
         if attempt is not None and attempt.status not in ERP_ATTEMPT_TERMINAL:
+            if interrupted_attempts is not None:
+                interrupted_attempts.append(str(attempt.id))
             attempt.status = ERP_ATTEMPT_INTERRUPTED
             attempt.finished_at = now
             attempt.error_code = "lease_expired"
@@ -376,16 +379,22 @@ class SqlErpSyncControlRepository:
         control.heartbeat_at = None
         return 1
 
-    def reconcile_expired_owner(self) -> int:
+    def reconcile_expired_owner_attempts(self) -> tuple[str, ...]:
         if not self.schema_available():
-            return 0
+            return ()
+        interrupted: list[str] = []
         with transactional_session(self._session_factory) as session:
             control = _lock_control(session)
-            return self._interrupt_expired_locked(
+            self._interrupt_expired_locked(
                 session,
                 control,
                 now=_sql_now(session),
+                interrupted_attempts=interrupted,
             )
+        return tuple(interrupted)
+
+    def reconcile_expired_owner(self) -> int:
+        return len(self.reconcile_expired_owner_attempts())
 
     def reconcile_configuration(
         self,
