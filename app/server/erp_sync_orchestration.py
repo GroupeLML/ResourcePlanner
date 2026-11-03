@@ -17,7 +17,7 @@ from ..application import (
     ProjectTaskCatalogSourcePort,
     TaskCatalogSyncService,
 )
-from ..application.erp_sync_evidence import (
+from .erp_sync_evidence import (
     ErpSyncEvidenceService,
 )
 from ..application.erp_sync_scheduler import (
