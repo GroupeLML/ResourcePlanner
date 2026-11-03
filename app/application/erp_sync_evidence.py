@@ -118,6 +118,27 @@ def _safe_reason(value: str) -> str:
     return text[:1000]
 
 
+class EvidenceBackedErpSyncAutomaticSafetyCapability:
+    """Advertise automatic safety only when the complete 643B prerequisite set is ready."""
+
+    def __init__(
+        self,
+        service: "ErpSyncEvidenceService",
+        *,
+        profile_fingerprint: str,
+    ) -> None:
+        self._service = service
+        self._profile_fingerprint = profile_fingerprint
+
+    def automatic_execution_available(self) -> bool:
+        return self._service.automatic_execution_available(
+            profile_fingerprint=self._profile_fingerprint
+        )
+
+    def diagnostic(self) -> str:
+        return "erp_sync_643b_safety_not_ready"
+
+
 class ErpSyncEvidenceService:
     """643B durable source/checkpoint evidence around the 643A control plane."""
 
