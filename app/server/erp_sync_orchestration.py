@@ -2600,6 +2600,7 @@ class ErpSyncOrchestrator:
                 in {
                     "erp_sync_evidence_attempt_budget_exceeded",
                     "erp_sync_evidence_storage_budget_unavailable",
+                    "erp_sync_evidence_storage_reservation_exceeded",
                     "erp_sync_evidence_reservation_missing",
                     "erp_sync_checkpoint_before_conflict",
                     "erp_sync_checkpoint_after_conflict",
