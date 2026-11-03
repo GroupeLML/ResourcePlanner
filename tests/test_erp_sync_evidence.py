@@ -923,7 +923,10 @@ class ErpSyncEvidenceTests(unittest.TestCase):
     def test_terminal_attempts_release_reserved_capacity_but_keep_used_evidence_accounted(self) -> None:
         terminal_ids: list[str] = []
         retained_used: list[int] = []
-        for index, status in enumerate(("FAILED", "SUCCEEDED", "FAILED"), start=1):
+        for index, status in enumerate(
+            ("FAILED", "SUCCEEDED", "SUCCEEDED_WITH_ERRORS", "INTERRUPTED"),
+            start=1,
+        ):
             control, _occurrence, attempt = self._attempt(f"reservation-terminal-{index}")
             self.service.capture_source(
                 attempt_id=attempt.id,
@@ -937,7 +940,11 @@ class ErpSyncEvidenceTests(unittest.TestCase):
                     attempt_id=attempt.id,
                     generation=attempt.generation,
                     status=status,
-                    phase="PUBLICATION_COMMITTED" if status == "SUCCEEDED" else "FAILED",
+                    phase=(
+                        "PUBLICATION_COMMITTED"
+                        if status in {"SUCCEEDED", "SUCCEEDED_WITH_ERRORS"}
+                        else "FAILED"
+                    ),
                     settings=self.control_settings,
                 )
             )
@@ -974,7 +981,7 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             )
         self.assertEqual(active_reserved, 0)
         self.assertEqual(released_used, sum(retained_used))
-        self.assertEqual(len(terminal_ids), 3)
+        self.assertEqual(len(terminal_ids), 4)
 
     def test_retention_purges_unpinned_payload_and_releases_accounted_bytes(self) -> None:
         control, _occurrence, attempt = self._attempt("retention")
