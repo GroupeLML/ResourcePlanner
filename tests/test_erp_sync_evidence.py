@@ -345,7 +345,8 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             manifests = tuple(
                 session.scalars(
                     select(ErpSyncEvidenceManifest).where(
-                        ErpSyncEvidenceManifest.attempt_id == first.id
+                        ErpSyncEvidenceManifest.attempt_id == first.id,
+                        ErpSyncEvidenceManifest.proof_type == "SOURCE",
                     )
                 )
             )
