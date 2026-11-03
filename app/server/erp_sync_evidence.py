@@ -148,6 +148,8 @@ class ErpSyncCapturedSource:
 class ErpSyncPlausibilityResult:
     accepted: bool
     diagnostics: tuple[str, ...]
+    rejected_projects: tuple[str, ...] = ()
+    reviewable: bool = False
 
 
 def _utc_now() -> datetime:
@@ -1194,7 +1196,6 @@ class ErpSyncEvidenceService:
             ErpSyncEvidenceManifest,
             ErpSyncPlausibilityException,
         )
-        from ..infrastructure.sql.base import new_id
         from ..infrastructure.sql.session import transactional_session
 
         with transactional_session(self._session_factory) as session:
@@ -1216,41 +1217,44 @@ class ErpSyncEvidenceService:
                 return ErpSyncPlausibilityResult(
                     accepted=False,
                     diagnostics=("erp_sync_baseline_required",),
+                    reviewable=False,
                 )
-            diagnostics: list[str] = []
+
+            # An explicitly empty task target set is a legitimate empty phase,
+            # not an amputated source compared with a historical positive baseline.
+            intentionally_empty_tasks = (
+                captured.source_type == "TASKS" and active_task_targets == 0
+            )
+            global_diagnostics: list[str] = []
+            project_diagnostics: list[tuple[str, str]] = []
             floor = (
                 self.settings.min_projects
                 if captured.source_type == "PROJECTS"
                 else self.settings.min_task_rows if active_task_targets else 0
             )
             if captured.row_count < floor:
-                diagnostics.append("erp_sync_source_below_floor")
+                global_diagnostics.append("erp_sync_source_below_floor")
             baseline_count = int(baseline.row_count)
-            if baseline_count > 0 and (
-                captured.row_count / baseline_count < self.settings.min_source_ratio
+            if (
+                not intentionally_empty_tasks
+                and baseline_count > 0
+                and captured.row_count / baseline_count < self.settings.min_source_ratio
             ):
-                diagnostics.append("erp_sync_source_ratio_too_low")
-            baseline_projects = self._baseline_project_counts(baseline)
-            for project, current_value in captured.project_counts.items():
-                previous = int(baseline_projects.get(project, 0))
-                if previous <= 0:
-                    continue
-                current = int(current_value)
-                if current / previous < self.settings.min_source_ratio:
-                    diagnostics.append(
-                        f"erp_sync_project_ratio_too_low:{project}"
-                    )
-            if not diagnostics:
-                return ErpSyncPlausibilityResult(accepted=True, diagnostics=())
+                global_diagnostics.append("erp_sync_source_ratio_too_low")
 
-            scopes = {
-                "GLOBAL"
-                if not diagnostic.startswith("erp_sync_project_ratio_too_low:")
-                else diagnostic.split(":", 1)[1]
-                for diagnostic in diagnostics
-            }
+            if not intentionally_empty_tasks:
+                baseline_projects = self._baseline_project_counts(baseline)
+                for project, previous_value in baseline_projects.items():
+                    previous = int(previous_value)
+                    if previous <= 0:
+                        continue
+                    current = int(captured.project_counts.get(project, 0))
+                    if current / previous < self.settings.min_source_ratio:
+                        project_diagnostics.append(
+                            (project, f"erp_sync_project_ratio_too_low:{project}")
+                        )
+
             now = _utc_now()
-
             current = tuple(
                 session.scalars(
                     select(ErpSyncPlausibilityException).where(
@@ -1264,25 +1268,24 @@ class ErpSyncEvidenceService:
                 )
             )
             approved = {str(row.threshold_scope) for row in current}
-
-            # Exceptions are attempt-scoped by ADR-033. A RETRY always creates
-            # a new attempt and therefore requires a new explicit approval even
-            # when its normalized source fingerprint is byte-for-byte identical.
-            remaining = [
+            remaining_global = tuple(
+                item for item in global_diagnostics if "GLOBAL" not in approved
+            )
+            rejected_projects = tuple(
+                project
+                for project, _diagnostic in project_diagnostics
+                if project not in approved
+            )
+            remaining_local = tuple(
                 diagnostic
-                for diagnostic in diagnostics
-                if (
-                    "GLOBAL"
-                    if not diagnostic.startswith(
-                        "erp_sync_project_ratio_too_low:"
-                    )
-                    else diagnostic.split(":", 1)[1]
-                )
-                not in approved
-            ]
+                for project, diagnostic in project_diagnostics
+                if project not in approved
+            )
             return ErpSyncPlausibilityResult(
-                accepted=not remaining,
-                diagnostics=tuple(remaining),
+                accepted=not remaining_global,
+                diagnostics=remaining_global + remaining_local,
+                rejected_projects=rejected_projects,
+                reviewable=bool(remaining_global or remaining_local),
             )
 
     @staticmethod
