@@ -970,6 +970,97 @@ class ErpSyncOrchestrator:
             )
         return projects, portfolio
 
+    def _validate_full_publication(
+        self,
+        *,
+        attempt_id: str,
+        generation: int,
+    ) -> None:
+        attempt = self._control.get_attempt(attempt_id)
+        run_id = str(attempt.task_sync_run_id or "").strip()
+        if not run_id:
+            if self._evidence is not None:
+                self._evidence.mark_recovery_required(
+                    attempt_id=attempt_id,
+                    reason_code="erp_sync_global_task_run_missing",
+                )
+            raise ApplicationConflictError(
+                "Le run tâches durable manque avant publication.",
+                code="erp_sync_global_validation_failed",
+            )
+        try:
+            with self._session_factory() as session:
+                SqlErpSyncControlRepository.guard_session(
+                    session,
+                    attempt_id=attempt_id,
+                    generation=generation,
+                    settings=self._settings,
+                )
+                run = session.get(AcumaticaProjectTaskSyncRun, run_id)
+                if run is None:
+                    raise ApplicationConflictError(
+                        "Le run tâches durable est introuvable.",
+                        code="erp_sync_global_validation_failed",
+                    )
+                results = tuple(
+                    session.scalars(
+                        select(AcumaticaProjectTaskSyncProjectResult).where(
+                            AcumaticaProjectTaskSyncProjectResult.run_id == run_id
+                        )
+                    )
+                )
+                if len(results) != int(run.projects_total):
+                    raise ApplicationConflictError(
+                        "Le nombre de reçus projet ne correspond pas aux cibles attendues.",
+                        code="erp_sync_global_validation_failed",
+                    )
+                if int(run.projects_processed) != len(results):
+                    raise ApplicationConflictError(
+                        "Le compteur de projets traités ne correspond pas aux reçus.",
+                        code="erp_sync_global_validation_failed",
+                    )
+                status_total = (
+                    int(run.projects_synchronized)
+                    + int(run.projects_ignored)
+                    + int(run.projects_rejected)
+                )
+                if status_total != len(results):
+                    raise ApplicationConflictError(
+                        "Les compteurs de statuts projet ne correspondent pas aux reçus.",
+                        code="erp_sync_global_validation_failed",
+                    )
+                synchronized = tuple(row for row in results if row.status == "synchronized")
+                if int(run.projects_synchronized) != len(synchronized):
+                    raise ApplicationConflictError(
+                        "Le compteur des projets synchronisés est incohérent.",
+                        code="erp_sync_global_validation_failed",
+                    )
+                counter_pairs = (
+                    ("source_rows_received", "source_rows"),
+                    ("source_rows_rejected", "source_rows_rejected"),
+                    ("tasks_received", "tasks_received"),
+                    ("tasks_created", "created"),
+                    ("tasks_updated", "updated"),
+                    ("tasks_unchanged", "unchanged"),
+                    ("tasks_deactivated", "deactivated"),
+                    ("tasks_rejected", "rejected"),
+                )
+                for run_field, result_field in counter_pairs:
+                    expected = sum(int(getattr(row, result_field) or 0) for row in synchronized)
+                    if int(getattr(run, run_field) or 0) != expected:
+                        raise ApplicationConflictError(
+                            "Un compteur global ne correspond pas aux reçus projet.",
+                            code="erp_sync_global_validation_failed",
+                            context={"counter": run_field},
+                        )
+        except (ApplicationConflictError, ErpSyncFenceLost):
+            if self._evidence is not None:
+                self._evidence.mark_recovery_required(
+                    attempt_id=attempt_id,
+                    reason_code="erp_sync_global_validation_failed",
+                )
+            raise
+
     def _execute_attempt(
         self,
         attempt_id: str,
@@ -1090,11 +1181,22 @@ class ErpSyncOrchestrator:
                 generation,
                 portfolio_snapshot=captured_portfolio,
             )
+            if attempt.intent == "PROJECTS_AND_ACTIVE_TASKS":
+                self._validate_full_publication(
+                    attempt_id=attempt_id,
+                    generation=generation,
+                )
             parent_status = (
                 ERP_ATTEMPT_SUCCEEDED_WITH_ERRORS
                 if task_status == SYNC_RUN_COMPLETED_WITH_ERRORS
                 else ERP_ATTEMPT_SUCCEEDED
             )
+            if (
+                parent_status == ERP_ATTEMPT_SUCCEEDED
+                and attempt.intent == "PROJECTS_AND_ACTIVE_TASKS"
+                and self._evidence is not None
+            ):
+                self._evidence.advance_approved_baselines(attempt_id=attempt_id)
             self._control.finish(
                 attempt_id=attempt_id,
                 generation=generation,
