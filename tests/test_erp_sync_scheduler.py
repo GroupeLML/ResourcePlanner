@@ -593,6 +593,72 @@ class ErpSyncControlTests(unittest.TestCase):
             )
         self.assertEqual(dates, (date(2026, 11, 3),))
 
+    def test_same_boundary_configuration_change_is_not_adopted_without_owner(self) -> None:
+        original = ErpSyncSchedulerSettings(
+            enabled=False,
+            source_identity="acumatica:boundary-original",
+        )
+        same_day = datetime(2026, 1, 15, 15, 0, tzinfo=timezone.utc)
+        with patch(
+            "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+            return_value=same_day,
+        ):
+            occurrence = self.repository.accept_manual(
+                intent="PROJECTS_ONLY",
+                actor_name="operator",
+                idempotency_key="boundary-original",
+                settings=original,
+            )
+            attempt = self.repository.claim(
+                occurrence_id=occurrence.id,
+                trigger="MANUAL",
+                actor_name="operator",
+                settings=original,
+            )
+            self.assertIsNotNone(attempt)
+            self.repository.start_attempt(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                settings=original,
+            )
+            self.repository.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status=ERP_ATTEMPT_SUCCEEDED,
+                phase="PUBLICATION_COMMITTED",
+                settings=original,
+            )
+
+            changed = ErpSyncSchedulerSettings(
+                enabled=False,
+                source_identity="acumatica:boundary-changed",
+            )
+            with self.assertRaises(ApplicationConflictError) as reconcile_error:
+                self.repository.reconcile_configuration(changed)
+            self.assertEqual(
+                reconcile_error.exception.code,
+                "erp_sync_configuration_incompatible",
+            )
+            with self.assertRaises(ApplicationConflictError) as manual_error:
+                self.repository.accept_manual(
+                    intent="PROJECTS_ONLY",
+                    actor_name="operator",
+                    idempotency_key="boundary-changed",
+                    settings=changed,
+                )
+            self.assertEqual(
+                manual_error.exception.code,
+                "erp_sync_configuration_incompatible",
+            )
+
+        with self.factory() as session:
+            authority = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+            self.assertIsNotNone(authority)
+            self.assertEqual(
+                authority.config_fingerprint,
+                original.config_fingerprint,
+            )
+
     def test_incompatible_peer_cannot_overwrite_active_fingerprint(self) -> None:
         occurrence = self.repository.accept_manual(
             intent="PROJECTS_ONLY",
