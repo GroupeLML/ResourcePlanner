@@ -1274,6 +1274,17 @@ class ErpSyncEvidenceService:
                     + len(str(row.encrypted_after or "").encode("utf-8"))
                     for row in mutation_rows
                 )
+                checkpoint.plaintext_bytes = sum(
+                    len(self._decrypt_bytes(row.encrypted_before))
+                    if row.encrypted_before
+                    else 0
+                    for row in mutation_rows
+                ) + sum(
+                    len(self._decrypt_bytes(row.encrypted_after))
+                    if row.encrypted_after
+                    else 0
+                    for row in mutation_rows
+                )
                 checkpoint.content_sha256 = content_sha256(
                     [
                         {
