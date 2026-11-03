@@ -963,6 +963,219 @@ class ErpSyncEvidenceTests(unittest.TestCase):
         self.assertNotEqual(changed.source_fingerprint, reviewed.source_fingerprint)
         self.assertFalse(self.service.validate_plausibility(changed).accepted)
 
+    def test_project_local_plausibility_drop_rejects_only_that_project(self) -> None:
+        control, _baseline_occurrence, baseline_attempt = self._attempt(
+            "plausibility-local-baseline"
+        )
+        projects_baseline = self.service.capture_source(
+            attempt_id=baseline_attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "records": [
+                    {
+                        "external_id": "8301",
+                        "number": "PL-A",
+                        "name": "A",
+                        "status": "Actif",
+                    },
+                    {
+                        "external_id": "8302",
+                        "number": "PL-B",
+                        "name": "B",
+                        "status": "Actif",
+                    },
+                ]
+            },
+            row_count=2,
+        )
+        baseline_a = TaskCatalogProjectSnapshot(
+            project_number="PL-A",
+            source_rows=100,
+            rejected_rows=0,
+            items=(snapshot("PL-A", task_id="98301").items[0],),
+        )
+        baseline_b = TaskCatalogProjectSnapshot(
+            project_number="PL-B",
+            source_rows=100,
+            rejected_rows=0,
+            items=(snapshot("PL-B", task_id="98302").items[0],),
+        )
+        tasks_baseline = self.service.capture_source(
+            attempt_id=baseline_attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "portfolio": TaskCatalogPortfolioSnapshot(
+                    source_rows=200,
+                    source_pages=1,
+                    snapshots=(baseline_a, baseline_b),
+                )
+            },
+            row_count=200,
+            project_counts={"PL-A": 100, "PL-B": 100},
+        )
+        for captured in (projects_baseline, tasks_baseline):
+            self.service.approve_baseline(
+                manifest_id=captured.manifest_id,
+                actor_name="admin",
+                reason="Approved balanced project baseline",
+            )
+        self.assertTrue(
+            control.finish(
+                attempt_id=baseline_attempt.id,
+                generation=baseline_attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.finalize_attempt(
+            attempt_id=baseline_attempt.id,
+            successful=False,
+        )
+
+        current_a = TaskCatalogProjectSnapshot(
+            project_number="PL-A",
+            source_rows=1,
+            rejected_rows=0,
+            items=(snapshot("PL-A", task_id="98401").items[0],),
+        )
+        current_b = TaskCatalogProjectSnapshot(
+            project_number="PL-B",
+            source_rows=199,
+            rejected_rows=0,
+            items=(snapshot("PL-B", task_id="98402").items[0],),
+        )
+        projects = ProjectSource(
+            (
+                project("PL-A", external_id="8301"),
+                project("PL-B", external_id="8302"),
+            )
+        )
+        tasks = PortfolioTaskSource({"PL-A": current_a, "PL-B": current_b})
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="operator",
+            idempotency_key="plausibility-local-current",
+            settings=self.control_settings,
+        )
+        attempt = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="operator",
+            settings=self.control_settings,
+        )
+        self.assertIsNotNone(attempt)
+        orchestrator._execute_attempt(attempt.id, attempt.generation)
+
+        completed = control.get_attempt(attempt.id)
+        self.assertEqual(completed.status, "SUCCEEDED_WITH_ERRORS")
+        with self.factory() as session:
+            task_a = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == "PL-A",
+                    TaskCatalogEntry.erp_task_id == "98401",
+                )
+            )
+            task_b = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == "PL-B",
+                    TaskCatalogEntry.erp_task_id == "98402",
+                )
+            )
+            quality_a = session.get(ErpSyncProjectQuality, "PL-A")
+            quality_b = session.get(ErpSyncProjectQuality, "PL-B")
+        self.assertIsNone(task_a)
+        self.assertIsNotNone(task_b)
+        self.assertIsNotNone(quality_a)
+        self.assertEqual(quality_a.quality_state, "STALE")
+        self.assertEqual(quality_a.producer_attempt_id, attempt.id)
+        self.assertEqual(
+            quality_a.reason_code,
+            "erp_sync_project_plausibility_rejected",
+        )
+        self.assertIsNotNone(quality_b)
+        self.assertEqual(quality_b.quality_state, "VALID")
+        self.assertEqual(quality_b.producer_attempt_id, attempt.id)
+        orchestrator.shutdown()
+
+    def test_intentionally_empty_task_target_set_does_not_fail_positive_baseline(self) -> None:
+        control, _baseline_occurrence, baseline_attempt = self._attempt(
+            "empty-target-baseline"
+        )
+        baseline = self.service.capture_source(
+            attempt_id=baseline_attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "portfolio": TaskCatalogPortfolioSnapshot(
+                    source_rows=100,
+                    source_pages=1,
+                    snapshots=(
+                        TaskCatalogProjectSnapshot(
+                            project_number="EMPTY-OLD",
+                            source_rows=100,
+                            rejected_rows=0,
+                            items=(),
+                        ),
+                    ),
+                )
+            },
+            row_count=100,
+            project_counts={"EMPTY-OLD": 100},
+        )
+        self.service.approve_baseline(
+            manifest_id=baseline.manifest_id,
+            actor_name="admin",
+            reason="Approved historical positive task baseline",
+        )
+        self.assertTrue(
+            control.finish(
+                attempt_id=baseline_attempt.id,
+                generation=baseline_attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.finalize_attempt(
+            attempt_id=baseline_attempt.id,
+            successful=False,
+        )
+
+        _control, _occurrence, current_attempt = self._attempt(
+            "empty-target-current"
+        )
+        current = self.service.capture_source(
+            attempt_id=current_attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "portfolio": TaskCatalogPortfolioSnapshot(
+                    source_rows=0,
+                    source_pages=0,
+                    snapshots=(),
+                )
+            },
+            row_count=0,
+            project_counts={},
+        )
+        result = self.service.validate_plausibility(
+            current,
+            active_task_targets=0,
+        )
+        self.assertTrue(result.accepted)
+        self.assertEqual(result.diagnostics, ())
+        self.assertEqual(result.rejected_projects, ())
+
     def test_plausibility_review_continues_same_attempt_after_restart_without_reread(self) -> None:
         control, _baseline_occurrence, baseline_attempt = self._attempt(
             "review-baseline"
