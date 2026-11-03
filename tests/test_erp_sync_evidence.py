@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from cryptography.fernet import Fernet
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.application import (
     ExternalProjectRecord,
@@ -250,7 +250,7 @@ class ErpSyncEvidenceTests(unittest.TestCase):
         self.assertEqual(tasks.calls, 0)
         with self.factory() as session:
             self.assertEqual(
-                int(session.scalar(select(__import__("sqlalchemy").func.count(Project.id))) or 0),
+                int(session.scalar(select(func.count(Project.id))) or 0),
                 0,
             )
         orchestrator.shutdown()
