@@ -80,6 +80,7 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
     "erp_sync_evidence_chunks",
     "erp_sync_evidence_reservations",
     "erp_sync_baselines",
+    "erp_sync_baseline_approval_audit",
     "erp_sync_plausibility_exceptions",
     "erp_sync_mutation_evidence",
     "erp_sync_project_quality",
@@ -328,6 +329,9 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
     ),
     "erp_sync_baselines": _rebuild(
         "Baselines de plausibilité approuvés 643B; leur perte silencieuse est interdite."
+    ),
+    "erp_sync_baseline_approval_audit": _rebuild(
+        "Historique d'approbation baseline 643B; sa perte silencieuse est interdite."
     ),
     "erp_sync_plausibility_exceptions": _rebuild(
         "Exceptions de plausibilité auditées 643B; doivent être absentes au cutover."
