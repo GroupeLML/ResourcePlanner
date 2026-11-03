@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
+from decimal import Decimal
 import os
 from threading import Barrier, Event, Thread
 import unittest
@@ -223,12 +224,14 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
                     ResourceClassConfig(
                         code=self.TEST_RESOURCE_CLASS,
                         label="SQL 643 test class",
+                        average_hourly_cost_cad=Decimal("125.0000"),
                         active=True,
                         version=1,
                     )
                 )
             else:
                 resource_class.active = True
+                resource_class.average_hourly_cost_cad = Decimal("125.0000")
             for task_code in self.TEST_TASK_CODES:
                 standard = session.get(TaskClassStandard, task_code)
                 if standard is None:
@@ -1011,6 +1014,154 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
         self.assertIsNone(control.last_success_attempt_id)
         self.assertEqual(baseline_after, baseline_before)
         self.assertIsNotNone(task_row)
+        orchestrator.shutdown()
+
+    def test_sqlserver_policy_change_between_project_commits_blocks_second_unit(self) -> None:
+        project_a = "SQL643B-POLICY-A"
+        project_b = "SQL643B-POLICY-B"
+        with transactional_session(self.factory) as session:
+            session.add_all(
+                [
+                    Project(
+                        id="SQL643B-POLICY-A-ID",
+                        erp_external_id="ERP-SQL643B-POLICY-A",
+                        number=project_a,
+                        name="Policy A",
+                        status="Actif",
+                    ),
+                    Project(
+                        id="SQL643B-POLICY-B-ID",
+                        erp_external_id="ERP-SQL643B-POLICY-B",
+                        number=project_b,
+                        name="Policy B",
+                        status="Actif",
+                    ),
+                ]
+            )
+
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = repository.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="sql-policy",
+            idempotency_key="sql-policy-change",
+            settings=self.settings,
+        )
+        attempt = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="sql-policy",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(attempt)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                settings=self.settings,
+            )
+        )
+        self.evidence.reserve_attempt(attempt_id=attempt.id)
+        self.evidence.bind_attempt_policy(
+            attempt_id=attempt.id,
+            generation=attempt.generation,
+        )
+        snapshot_a = _sql_snapshot(project_a, "SQL643-100", "Policy task A")
+        snapshot_b = _sql_snapshot(project_b, "SQL643-200", "Policy task B")
+        self.evidence.capture_source(
+            attempt_id=attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.settings.config_fingerprint,
+            payload={
+                "portfolio": TaskCatalogPortfolioSnapshot(
+                    source_rows=2,
+                    source_pages=1,
+                    snapshots=(snapshot_a, snapshot_b),
+                )
+            },
+            row_count=2,
+            project_counts={project_a: 1, project_b: 1},
+        )
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=None,
+            project_task_source=SqlServerPortfolioTaskSource(
+                {project_a: snapshot_a, project_b: snapshot_b}
+            ),
+            settings=self.settings,
+            evidence_service=self.evidence,
+        )
+        run_id = orchestrator._create_task_run(attempt.id, attempt.generation)
+        with transactional_session(self.factory) as session:
+            session.get(AcumaticaProjectTaskSyncRun, run_id).projects_total = 2
+        with self.factory() as discovery:
+            projected = {
+                row.number: row
+                for row in SqlPlannerQueryRepositoryWithLoadProfiles(
+                    discovery
+                ).list_projects(active_only=False)
+                if row.number in {project_a, project_b}
+            }
+        self.assertIsNotNone(
+            orchestrator._process_task_project(
+                run_id,
+                attempt.id,
+                attempt.generation,
+                projected[project_a],
+                {project_a: snapshot_a, project_b: snapshot_b},
+            )
+        )
+        with transactional_session(self.factory) as session:
+            session.get(
+                ResourceClassConfig,
+                self.TEST_RESOURCE_CLASS,
+            ).average_hourly_cost_cad = Decimal("250.0000")
+        self.assertIsNone(
+            orchestrator._process_task_project(
+                run_id,
+                attempt.id,
+                attempt.generation,
+                projected[project_b],
+                {project_a: snapshot_a, project_b: snapshot_b},
+            )
+        )
+
+        with self.factory() as session:
+            task_a = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == project_a,
+                    TaskCatalogEntry.task_code == "SQL643-100",
+                )
+            )
+            task_b = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == project_b,
+                    TaskCatalogEntry.task_code == "SQL643-200",
+                )
+            )
+            results = tuple(
+                session.scalars(
+                    select(AcumaticaProjectTaskSyncProjectResult)
+                    .where(AcumaticaProjectTaskSyncProjectResult.run_id == run_id)
+                    .order_by(AcumaticaProjectTaskSyncProjectResult.project_number)
+                )
+            )
+        self.assertIsNotNone(task_a)
+        self.assertEqual(
+            task_a.average_hourly_cost_cad,
+            Decimal("125.0000"),
+        )
+        self.assertIsNone(task_b)
+        self.assertEqual(
+            [(row.project_number, row.status, row.error_code) for row in results],
+            [
+                (project_a, "synchronized", None),
+                (
+                    project_b,
+                    "rejected",
+                    "erp_sync_policy_fingerprint_changed",
+                ),
+            ],
+        )
         orchestrator.shutdown()
 
     def test_sqlserver_stale_generation_cannot_write_mutation_evidence(self) -> None:
