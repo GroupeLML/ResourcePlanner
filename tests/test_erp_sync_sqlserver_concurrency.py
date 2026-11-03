@@ -53,8 +53,11 @@ from app.infrastructure.sql import (
     ErpSyncRecoveryState,
     ErpSyncOccurrence,
     Project,
+    ResourceClassConfig,
     SqlPlannerQueryRepositoryWithLoadProfiles,
     TaskCatalogEntry,
+    TaskCatalogProjectSyncState,
+    TaskClassStandard,
     create_session_factory,
     create_sql_engine,
     transactional_session,
@@ -152,6 +155,66 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
     def tearDownClass(cls) -> None:
         cls.engine.dispose()
 
+    TEST_PROJECT_PREFIX = "SQL643"
+    TEST_RESOURCE_CLASS = "SQL643_TEST"
+    TEST_TASK_CODES = ("100", "200", "300", "400", "643")
+
+    def _cleanup_test_business_rows(self) -> None:
+        with transactional_session(self.factory) as session:
+            test_numbers = tuple(
+                session.scalars(
+                    select(Project.number).where(
+                        Project.number.like(f"{self.TEST_PROJECT_PREFIX}%")
+                    )
+                )
+            )
+            if test_numbers:
+                session.execute(
+                    delete(TaskCatalogEntry).where(
+                        TaskCatalogEntry.project_number.in_(test_numbers)
+                    )
+                )
+                session.execute(
+                    delete(TaskCatalogProjectSyncState).where(
+                        TaskCatalogProjectSyncState.project_number.in_(test_numbers)
+                    )
+                )
+                session.execute(
+                    delete(Project).where(Project.number.in_(test_numbers))
+                )
+
+    def _ensure_test_workforce_policy(self) -> None:
+        with transactional_session(self.factory) as session:
+            resource_class = session.get(
+                ResourceClassConfig,
+                self.TEST_RESOURCE_CLASS,
+            )
+            if resource_class is None:
+                session.add(
+                    ResourceClassConfig(
+                        code=self.TEST_RESOURCE_CLASS,
+                        label="SQL 643 test class",
+                        active=True,
+                        version=1,
+                    )
+                )
+            else:
+                resource_class.active = True
+            for task_code in self.TEST_TASK_CODES:
+                standard = session.get(TaskClassStandard, task_code)
+                if standard is None:
+                    session.add(
+                        TaskClassStandard(
+                            task_code=task_code,
+                            resource_class_code=self.TEST_RESOURCE_CLASS,
+                            active=True,
+                            version=1,
+                        )
+                    )
+                else:
+                    standard.resource_class_code = self.TEST_RESOURCE_CLASS
+                    standard.active = True
+
     def setUp(self) -> None:
         with transactional_session(self.factory) as session:
             session.execute(
@@ -187,6 +250,9 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             control.last_success_attempt_id = None
             control.config_fingerprint = None
 
+        self._cleanup_test_business_rows()
+        self._ensure_test_workforce_policy()
+
         sql_now = SqlErpSyncControlRepository(self.factory).current_sql_time()
         zone_settings = ErpSyncSchedulerSettings(enabled=True)
         local_now = sql_now.astimezone(zone_settings.timezone())
@@ -205,6 +271,75 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             ),
             control_settings=self.settings,
         )
+
+    def test_sqlserver_fixture_cleanup_is_scoped_and_idempotent(self) -> None:
+        sentinel_number = "SENTINEL-NON-643"
+        owned_number = "SQL643-CLEANUP-PROBE"
+        with transactional_session(self.factory) as session:
+            sentinel = session.scalar(
+                select(Project).where(Project.number == sentinel_number)
+            )
+            if sentinel is None:
+                session.add(
+                    Project(
+                        id="SQL643-SENTINEL-ID",
+                        number=sentinel_number,
+                        name="Unrelated sentinel",
+                        status="Actif",
+                    )
+                )
+            session.add(
+                Project(
+                    id="SQL643-CLEANUP-ID",
+                    erp_external_id="ERP-SQL643-CLEANUP",
+                    number=owned_number,
+                    name="Owned cleanup probe",
+                    status="Actif",
+                )
+            )
+            session.add(
+                TaskCatalogEntry(
+                    project_number=owned_number,
+                    task_code="CLEAN",
+                    label="Owned cleanup task",
+                    active=True,
+                )
+            )
+            session.add(
+                TaskCatalogProjectSyncState(
+                    project_number=owned_number,
+                    last_attempt_at=datetime.now(timezone.utc),
+                    last_success_at=datetime.now(timezone.utc),
+                    source_rows=1,
+                    task_count=1,
+                    rejected_rows=0,
+                )
+            )
+
+        self._cleanup_test_business_rows()
+        self._cleanup_test_business_rows()
+
+        with self.factory() as session:
+            self.assertIsNotNone(
+                session.scalar(
+                    select(Project).where(Project.number == sentinel_number)
+                )
+            )
+            self.assertIsNone(
+                session.scalar(
+                    select(Project).where(Project.number == owned_number)
+                )
+            )
+            self.assertIsNone(
+                session.scalar(
+                    select(TaskCatalogEntry).where(
+                        TaskCatalogEntry.project_number == owned_number
+                    )
+                )
+            )
+            self.assertIsNone(
+                session.get(TaskCatalogProjectSyncState, owned_number)
+            )
 
     def _daily_occurrence(self) -> ErpSyncOccurrence:
         now = SqlErpSyncControlRepository(self.factory).current_sql_time()
