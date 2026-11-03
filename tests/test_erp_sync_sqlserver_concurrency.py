@@ -166,28 +166,23 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
     )
 
     def _cleanup_test_business_rows(self) -> None:
+        pattern = f"{self.TEST_PROJECT_PREFIX}%"
         with transactional_session(self.factory) as session:
-            test_numbers = tuple(
-                session.scalars(
-                    select(Project.number).where(
-                        Project.number.like(f"{self.TEST_PROJECT_PREFIX}%")
-                    )
+            # FK-safe, namespace-scoped cleanup. Do not touch unrelated business
+            # projects or sentinel rows in the shared live-test database.
+            session.execute(
+                delete(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number.like(pattern)
                 )
             )
-            if test_numbers:
-                session.execute(
-                    delete(TaskCatalogEntry).where(
-                        TaskCatalogEntry.project_number.in_(test_numbers)
-                    )
+            session.execute(
+                delete(TaskCatalogProjectSyncState).where(
+                    TaskCatalogProjectSyncState.project_number.like(pattern)
                 )
-                session.execute(
-                    delete(TaskCatalogProjectSyncState).where(
-                        TaskCatalogProjectSyncState.project_number.in_(test_numbers)
-                    )
-                )
-                session.execute(
-                    delete(Project).where(Project.number.in_(test_numbers))
-                )
+            )
+            session.execute(
+                delete(Project).where(Project.number.like(pattern))
+            )
 
     def _ensure_test_workforce_policy(self) -> None:
         with transactional_session(self.factory) as session:
