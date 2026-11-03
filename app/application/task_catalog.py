@@ -140,7 +140,12 @@ class TaskCatalogWorkforcePolicyPort(Protocol):
 class TaskCatalogRepositoryPort(Protocol):
     """Persistence/search contract independent from SQLite, SQL Server and Acumatica."""
 
-    def upsert(self, item: TaskCatalogItem) -> str: ...
+    def upsert(
+        self,
+        item: TaskCatalogItem,
+        *,
+        source_observed_at: datetime | None = None,
+    ) -> str: ...
 
     def search(
         self,
@@ -280,6 +285,7 @@ class TaskCatalogSyncService:
         *,
         expected_project_number: str | None = None,
         apply_workforce_policy: bool = False,
+        source_observed_at: datetime | None = None,
     ) -> TaskCatalogSyncResult:
         expected_project = str(expected_project_number or "").strip()
         seen: set[tuple[str, ...]] = set()
@@ -328,7 +334,10 @@ class TaskCatalogSyncService:
                     },
                 )
             seen.add(key)
-            action = self._repository.upsert(item)
+            action = self._repository.upsert(
+                item,
+                source_observed_at=source_observed_at,
+            )
             if action not in counts:
                 raise RuntimeError(f"Unsupported task catalog synchronization action: {action}")
             counts[action] += 1
@@ -356,6 +365,7 @@ class TaskCatalogSyncService:
         *,
         project_external_id: str,
         project_number: str,
+        source_observed_at: datetime | None = None,
     ) -> TaskCatalogProjectSyncResult:
         project_external = str(project_external_id or "").strip()
         project = str(project_number or "").strip()
@@ -398,6 +408,7 @@ class TaskCatalogSyncService:
             snapshot.items,
             expected_project_number=project,
             apply_workforce_policy=True,
+            source_observed_at=source_observed_at,
         )
         result = TaskCatalogProjectSyncResult(
             project_number=project,
