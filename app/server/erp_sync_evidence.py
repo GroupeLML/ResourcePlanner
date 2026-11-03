@@ -532,6 +532,54 @@ class ErpSyncEvidenceService:
                 )
         return decode_canonical_json_bytes(payload)
 
+    def load_captured_source(
+        self,
+        *,
+        attempt_id: str,
+        source_type: str,
+    ) -> ErpSyncCapturedSource:
+        from ..infrastructure.sql import (
+            EVIDENCE_PROOF_SOURCE,
+            ErpSyncEvidenceManifest,
+        )
+
+        with self._session_factory() as session:
+            manifest = session.scalar(
+                select(ErpSyncEvidenceManifest).where(
+                    ErpSyncEvidenceManifest.attempt_id == attempt_id,
+                    ErpSyncEvidenceManifest.source_type == source_type,
+                    ErpSyncEvidenceManifest.proof_type == EVIDENCE_PROOF_SOURCE,
+                )
+            )
+            if manifest is None or not manifest.source_fingerprint:
+                raise ApplicationConflictError(
+                    "La source ERP scellée requise est introuvable.",
+                    code="erp_sync_evidence_source_missing",
+                )
+            manifest_id = str(manifest.id)
+            row_count = int(manifest.row_count)
+            fingerprint = str(manifest.source_fingerprint)
+        payload = self.load_source(manifest_id=manifest_id)
+        project_counts: dict[str, int] = {}
+        if source_type == "TASKS" and isinstance(payload, dict):
+            portfolio = payload.get("portfolio")
+            if isinstance(portfolio, dict):
+                for snapshot in portfolio.get("snapshots") or ():
+                    if isinstance(snapshot, dict):
+                        number = str(snapshot.get("project_number") or "").strip()
+                        if number:
+                            project_counts[number] = int(
+                                snapshot.get("source_rows") or 0
+                            )
+        return ErpSyncCapturedSource(
+            source_type=source_type,
+            manifest_id=manifest_id,
+            source_fingerprint=fingerprint,
+            row_count=row_count,
+            project_counts=project_counts,
+            payload=payload,
+        )
+
     def mark_sources_ready(self, *, attempt_id: str) -> None:
         from ..infrastructure.sql import (
             EVIDENCE_PROOF_SOURCE,
