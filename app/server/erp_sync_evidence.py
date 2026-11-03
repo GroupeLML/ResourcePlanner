@@ -2188,21 +2188,69 @@ class ErpSyncEvidenceService:
                             code="erp_sync_compensation_current_state_changed",
                         )
                     if before is None:
-                        # Preserve local foreign keys; revoke ERP freshness/identity
-                        # rather than destructively deleting a newly created row.
+                        # Preserve local foreign keys/principal authority; revoke
+                        # ERP-owned state rather than destructively deleting a row.
                         task.active = False
                         task.erp_task_id = None
+                        task.account_group = None
+                        task.cost_code = None
+                        task.inventory_id = None
+                        task.budget_amount_cad = None
+                        task.budget_actual_cad = None
+                        task.budget_diagnostic = None
                         task.erp_budget_last_success_at = None
                     else:
-                        for field, value in before.items():
-                            if field in {
-                                "preferred_resource_id",
-                                "preferred_resource_version",
-                                "operational_responsible_contact_id",
-                                "coordinator_contact_id",
-                            }:
-                                continue
-                            setattr(task, field, value)
+                        erp_owned_fields = (
+                            "label",
+                            "status",
+                            "active",
+                            "billing_rule",
+                            "allocation_rule",
+                            "completion_percent",
+                            "erp_created_at",
+                            "branch",
+                            "approver_name",
+                            "cv_enabled",
+                            "time_entry_enabled",
+                            "expenses_enabled",
+                            "erp_task_id",
+                            "account_group",
+                            "cost_code",
+                            "inventory_id",
+                            "budget_amount_cad",
+                            "budget_actual_cad",
+                            "budget_diagnostic",
+                            "erp_budget_last_success_at",
+                        )
+                        for field in erp_owned_fields:
+                            if field in before:
+                                setattr(task, field, before.get(field))
+
+                    # Workforce eligibility/class/cost/budget-hours are derived
+                    # reference-policy state. Never restore their historical
+                    # serialized values as truth; recompute through the canonical
+                    # policy against current Standards/overrides/costs.
+                    from ..infrastructure.sql import SqlTaskCatalogWorkforcePolicy
+                    projection = SqlTaskCatalogWorkforcePolicy(
+                        session
+                    ).project_task_projection(
+                        project_number=task.project_number,
+                        task_code=task.task_code,
+                        budget_amount_cad=task.budget_amount_cad,
+                    )
+                    task.workforce_eligible = projection.eligible
+                    task.resource_class_code = projection.resource_class_code
+                    task.average_hourly_cost_cad = projection.average_hourly_cost_cad
+                    task.budget_hours = projection.budget_hours
+                    task.workforce_diagnostics = (
+                        json.dumps(
+                            list(projection.diagnostics),
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
+                        if projection.diagnostics
+                        else None
+                    )
                     affected += 1
                 elif row.entity_type == "TASK_SYNC_STATE":
                     state = session.get(TaskCatalogProjectSyncState, row.entity_key)
@@ -2258,6 +2306,9 @@ class ErpSyncEvidenceService:
                     quality.producer_attempt_id = None
                     quality.reason_code = "erp_sync_compensation_requires_refresh"
                     quality.validated_at = _utc_now()
+            if str(control.last_success_attempt_id or "") == attempt_id:
+                control.last_success_attempt_id = None
+
             receipt = ErpSyncCompensationReceipt(
                 id=new_id(),
                 attempt_id=attempt_id,
