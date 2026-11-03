@@ -820,6 +820,7 @@ class ErpSyncEvidenceService:
         from ..infrastructure.sql import (
             EVIDENCE_SOURCE_PROJECTS,
             EVIDENCE_SOURCE_TASKS,
+            EVIDENCE_STATE_READY,
             EVIDENCE_STATE_SEALED,
             ErpSyncBaseline,
             ErpSyncEvidenceManifest,
@@ -940,7 +941,7 @@ class ErpSyncEvidenceService:
             EVIDENCE_PROOF_SOURCE,
             EVIDENCE_SOURCE_PROJECTS,
             EVIDENCE_SOURCE_TASKS,
-            EVIDENCE_STATE_SEALED,
+            EVIDENCE_STATE_READY,
             ErpSyncBaseline,
             ErpSyncEvidenceManifest,
         )
