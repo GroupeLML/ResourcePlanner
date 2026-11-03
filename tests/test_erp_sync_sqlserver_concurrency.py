@@ -10,6 +10,7 @@ from unittest.mock import patch
 from cryptography.fernet import Fernet
 
 from sqlalchemy import delete, func, select, text
+from sqlalchemy.exc import IntegrityError
 
 from app.application import (
     ExternalProjectRecord,
@@ -735,6 +736,62 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             getattr(raised.exception, "code", None),
             "erp_sync_compensation_preview_stale",
         )
+
+    def test_sqlserver_evidence_unique_and_foreign_key_constraints_are_enforced(self) -> None:
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = repository.accept_manual(
+            intent="PROJECTS_ONLY",
+            actor_name="sql-constraints",
+            idempotency_key="sql-evidence-constraints",
+            settings=self.settings,
+        )
+        attempt = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="sql-constraints",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(attempt)
+
+        with self.assertRaises(IntegrityError):
+            with transactional_session(self.factory) as session:
+                session.add_all(
+                    [
+                        ErpSyncEvidenceReservation(
+                            attempt_id=attempt.id,
+                            reserved_bytes=1024,
+                            used_bytes=0,
+                            reserved_plaintext_bytes=1024,
+                            used_plaintext_bytes=0,
+                        ),
+                        ErpSyncEvidenceReservation(
+                            attempt_id=attempt.id,
+                            reserved_bytes=1024,
+                            used_bytes=0,
+                            reserved_plaintext_bytes=1024,
+                            used_plaintext_bytes=0,
+                        ),
+                    ]
+                )
+
+        with self.assertRaises(IntegrityError):
+            with transactional_session(self.factory) as session:
+                session.add(
+                    ErpSyncEvidenceManifest(
+                        id="SQL643B-MISSING-FK",
+                        attempt_id="MISSING-ATTEMPT",
+                        protocol_version=1,
+                        source_type="PROJECTS",
+                        proof_type="SOURCE",
+                        profile_fingerprint="f" * 64,
+                        observed_at=datetime.now(timezone.utc),
+                        row_count=0,
+                        chunk_count=0,
+                        plaintext_bytes=0,
+                        ciphertext_bytes=0,
+                        state="SEALED",
+                    )
+                )
 
     def test_terminal_run_now_replay_uses_one_sqlserver_attempt_and_execution(self) -> None:
         project_number = "SQL643A-R"
