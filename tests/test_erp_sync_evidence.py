@@ -1806,6 +1806,15 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             row_count=1,
         )
         with transactional_session(self.factory) as session:
+            session.add(
+                Project(
+                    id="COMP-TASK-PROJECT",
+                    erp_external_id="COMP-TASK-PROJECT-ERP",
+                    number="COMP-TASK",
+                    name="Compensation task project",
+                    status="Actif",
+                )
+            )
             task = TaskCatalogEntry(
                 project_number="COMP-TASK",
                 task_code="100",
