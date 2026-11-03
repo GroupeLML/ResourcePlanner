@@ -911,6 +911,28 @@ class ErpSyncEvidenceService:
             )
         reason_value = _safe_reason(reason)
         with transactional_session(self._session_factory) as session:
+            from ..infrastructure.sql import (
+                EVIDENCE_PROOF_SOURCE,
+                EVIDENCE_STATE_READY,
+                EVIDENCE_STATE_SEALED,
+                ErpSyncEvidenceManifest,
+            )
+            manifest = session.scalar(
+                select(ErpSyncEvidenceManifest).where(
+                    ErpSyncEvidenceManifest.attempt_id == attempt_id,
+                    ErpSyncEvidenceManifest.source_type == source_type,
+                    ErpSyncEvidenceManifest.proof_type == EVIDENCE_PROOF_SOURCE,
+                    ErpSyncEvidenceManifest.source_fingerprint == source_fingerprint,
+                )
+            )
+            if manifest is None or manifest.state not in {
+                EVIDENCE_STATE_SEALED,
+                EVIDENCE_STATE_READY,
+            }:
+                raise ApplicationConflictError(
+                    "L'exception ne correspond pas à une source scellée de cette tentative.",
+                    code="erp_sync_plausibility_exception_source_mismatch",
+                )
             existing = session.scalar(
                 select(ErpSyncPlausibilityException).where(
                     ErpSyncPlausibilityException.attempt_id == attempt_id,
@@ -1033,14 +1055,27 @@ class ErpSyncEvidenceService:
         *,
         active_task_targets: int = 0,
     ) -> ErpSyncPlausibilityResult:
-        from ..infrastructure.sql import ErpSyncBaseline
+        from ..infrastructure.sql import (
+            ErpSyncBaseline,
+            ErpSyncEvidenceManifest,
+            ErpSyncPlausibilityException,
+        )
+        from ..infrastructure.sql.base import new_id
+        from ..infrastructure.sql.session import transactional_session
 
-        with self._session_factory() as session:
+        with transactional_session(self._session_factory) as session:
+            manifest = session.get(ErpSyncEvidenceManifest, captured.manifest_id)
+            if manifest is None:
+                raise ApplicationValidationError(
+                    "La preuve ERP est introuvable.",
+                    code="erp_sync_evidence_not_found",
+                )
+            attempt_id = str(manifest.attempt_id)
             baseline = session.scalar(
                 select(ErpSyncBaseline).where(
                     ErpSyncBaseline.source_type == captured.source_type,
                     ErpSyncBaseline.profile_fingerprint
-                    == self._manifest_profile(session, captured.manifest_id),
+                    == manifest.profile_fingerprint,
                 )
             )
             if baseline is None:
@@ -1067,44 +1102,97 @@ class ErpSyncEvidenceService:
                     continue
                 current = int(captured.project_counts.get(project, 0))
                 if current / previous < self.settings.min_source_ratio:
-                    diagnostics.append(f"erp_sync_project_ratio_too_low:{project}")
-            if diagnostics:
-                from ..infrastructure.sql import ErpSyncPlausibilityException
+                    diagnostics.append(
+                        f"erp_sync_project_ratio_too_low:{project}"
+                    )
+            if not diagnostics:
+                return ErpSyncPlausibilityResult(accepted=True, diagnostics=())
 
-                scopes = {
-                    "GLOBAL"
-                    if not diagnostic.startswith("erp_sync_project_ratio_too_low:")
-                    else diagnostic.split(":", 1)[1]
-                    for diagnostic in diagnostics
-                }
-                now = _utc_now()
-                approved = {
-                    str(row.threshold_scope)
-                    for row in session.scalars(
-                        select(ErpSyncPlausibilityException).where(
-                            ErpSyncPlausibilityException.attempt_id
-                            == self._manifest_attempt(session, captured.manifest_id),
+            scopes = {
+                "GLOBAL"
+                if not diagnostic.startswith("erp_sync_project_ratio_too_low:")
+                else diagnostic.split(":", 1)[1]
+                for diagnostic in diagnostics
+            }
+            now = _utc_now()
+
+            current = tuple(
+                session.scalars(
+                    select(ErpSyncPlausibilityException).where(
+                        ErpSyncPlausibilityException.attempt_id == attempt_id,
+                        ErpSyncPlausibilityException.source_type
+                        == captured.source_type,
+                        ErpSyncPlausibilityException.source_fingerprint
+                        == captured.source_fingerprint,
+                        ErpSyncPlausibilityException.expires_at > now,
+                    )
+                )
+            )
+            approved = {str(row.threshold_scope) for row in current}
+
+            # A normal RETRY performs a fresh source read. If that normalized
+            # source is byte-for-byte identical to a previously reviewed source,
+            # carry the approval forward by creating new exception rows bound to
+            # this new attempt. Any changed fingerprint is a new source and cannot
+            # inherit the approval.
+            missing_scopes = scopes.difference(approved)
+            if missing_scopes:
+                prior = tuple(
+                    session.scalars(
+                        select(ErpSyncPlausibilityException)
+                        .where(
+                            ErpSyncPlausibilityException.attempt_id != attempt_id,
                             ErpSyncPlausibilityException.source_type
                             == captured.source_type,
                             ErpSyncPlausibilityException.source_fingerprint
                             == captured.source_fingerprint,
+                            ErpSyncPlausibilityException.threshold_scope.in_(
+                                tuple(missing_scopes)
+                            ),
                             ErpSyncPlausibilityException.expires_at > now,
                         )
+                        .order_by(ErpSyncPlausibilityException.created_at.desc())
                     )
-                }
-                diagnostics = [
-                    diagnostic
-                    for diagnostic in diagnostics
-                    if (
-                        "GLOBAL"
-                        if not diagnostic.startswith("erp_sync_project_ratio_too_low:")
-                        else diagnostic.split(":", 1)[1]
+                )
+                prior_by_scope: dict[str, Any] = {}
+                for row in prior:
+                    prior_by_scope.setdefault(str(row.threshold_scope), row)
+                for scope in missing_scopes:
+                    source_approval = prior_by_scope.get(scope)
+                    if source_approval is None:
+                        continue
+                    copied = ErpSyncPlausibilityException(
+                        id=new_id(),
+                        attempt_id=attempt_id,
+                        source_type=captured.source_type,
+                        source_fingerprint=captured.source_fingerprint,
+                        threshold_scope=scope,
+                        actor_name=source_approval.actor_name,
+                        reason=(
+                            "Exact-source approval inherited from "
+                            f"{source_approval.attempt_id}: "
+                            f"{source_approval.reason}"
+                        )[:1000],
+                        expires_at=source_approval.expires_at,
                     )
-                    not in approved
-                ]
+                    session.add(copied)
+                    approved.add(scope)
+
+            remaining = [
+                diagnostic
+                for diagnostic in diagnostics
+                if (
+                    "GLOBAL"
+                    if not diagnostic.startswith(
+                        "erp_sync_project_ratio_too_low:"
+                    )
+                    else diagnostic.split(":", 1)[1]
+                )
+                not in approved
+            ]
             return ErpSyncPlausibilityResult(
-                accepted=not diagnostics,
-                diagnostics=tuple(diagnostics),
+                accepted=not remaining,
+                diagnostics=tuple(remaining),
             )
 
     @staticmethod
