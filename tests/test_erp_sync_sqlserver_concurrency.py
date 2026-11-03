@@ -68,16 +68,22 @@ class SqlServerPortfolioTaskSource:
         *,
         project_targets: tuple[tuple[str, str], ...],
     ) -> TaskCatalogPortfolioSnapshot:
+        snapshots = tuple(
+            self.snapshots.get(
+                number,
+                TaskCatalogProjectSnapshot(
+                    project_number=number,
+                    source_rows=0,
+                    rejected_rows=0,
+                    items=(),
+                ),
+            )
+            for _external_id, number in project_targets
+        )
         return TaskCatalogPortfolioSnapshot(
-            source_rows=sum(
-                self.snapshots[number].source_rows
-                for _external_id, number in project_targets
-            ),
+            source_rows=sum(snapshot.source_rows for snapshot in snapshots),
             source_pages=1 if project_targets else 0,
-            snapshots=tuple(
-                self.snapshots[number]
-                for _external_id, number in project_targets
-            ),
+            snapshots=snapshots,
         )
 
 
@@ -487,9 +493,16 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
                     )
                 )
             )
-            self.assertEqual(len(replacement_results), 2)
-            self.assertTrue(
-                all(row.status == "synchronized" for row in replacement_results)
+            replacement_by_number = {
+                row.project_number: row for row in replacement_results
+            }
+            self.assertEqual(
+                replacement_by_number[project_a].status,
+                "synchronized",
+            )
+            self.assertEqual(
+                replacement_by_number[project_b].status,
+                "synchronized",
             )
 
         self.assertEqual(
