@@ -728,6 +728,85 @@ class SqlErpSyncControlRepository:
             occurrence.status = ERP_OCCURRENCE_PENDING
             return ErpSyncClaimOutcome(attempt, admitted=True)
 
+    def pause_for_review(
+        self,
+        *,
+        attempt_id: str,
+        generation: int,
+        settings: ErpSyncSchedulerSettings,
+        phase: str = "PLAUSIBILITY_REVIEW_REQUIRED",
+    ) -> bool:
+        with transactional_session(self._session_factory) as session:
+            control, now = self.guard_session(
+                session,
+                attempt_id=attempt_id,
+                generation=generation,
+                settings=settings,
+            )
+            attempt = session.get(ErpSyncAttempt, attempt_id)
+            if attempt is None or attempt.status in ERP_ATTEMPT_TERMINAL:
+                return False
+            attempt.status = ERP_ATTEMPT_PENDING
+            attempt.phase = phase
+            attempt.heartbeat_at = now
+            control.owner_attempt_id = None
+            control.lease_expires_at = None
+            control.owner_deadline_at = None
+            control.heartbeat_at = None
+            return True
+
+    def resume_review_attempt(
+        self,
+        *,
+        attempt_id: str,
+        settings: ErpSyncSchedulerSettings,
+    ) -> ErpSyncAttempt:
+        with transactional_session(self._session_factory) as session:
+            control = _lock_control(session)
+            now = _sql_now(session)
+            _ensure_config_compatible_locked(control, settings)
+            if control.owner_attempt_id:
+                raise ApplicationConflictError(
+                    "Une synchronisation ERP est déjà active.",
+                    code="erp_sync_run_active",
+                    context={"attempt_id": control.owner_attempt_id},
+                )
+            attempt = session.get(ErpSyncAttempt, attempt_id)
+            if attempt is None:
+                raise ApplicationNotFoundError(
+                    "Tentative de synchronisation ERP introuvable.",
+                    code="erp_sync_attempt_not_found",
+                )
+            occurrence = session.get(ErpSyncOccurrence, attempt.occurrence_id)
+            if (
+                occurrence is None
+                or occurrence.config_fingerprint != settings.config_fingerprint
+            ):
+                raise ApplicationConflictError(
+                    "La configuration figée de la tentative ERP est incompatible.",
+                    code="erp_sync_occurrence_configuration_incompatible",
+                )
+            if (
+                attempt.status != ERP_ATTEMPT_PENDING
+                or attempt.phase != "PLAUSIBILITY_REVIEW_REQUIRED"
+            ):
+                raise ApplicationConflictError(
+                    "La tentative ERP n'attend pas une approbation de plausibilité.",
+                    code="erp_sync_plausibility_review_not_pending",
+                )
+            generation = int(control.generation) + 1
+            control.generation = generation
+            control.owner_attempt_id = attempt.id
+            control.lease_expires_at = now + timedelta(seconds=settings.lease_seconds)
+            control.owner_deadline_at = now + timedelta(
+                seconds=settings.max_attempt_seconds
+            )
+            control.heartbeat_at = now
+            attempt.generation = generation
+            attempt.heartbeat_at = now
+            attempt.phase = "PLAUSIBILITY_REVIEW_APPROVED"
+            return attempt
+
     def renew(
         self,
         *,
