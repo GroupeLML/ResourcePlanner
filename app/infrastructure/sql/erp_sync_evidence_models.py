@@ -228,6 +228,35 @@ class ErpSyncMutationEvidence(TimestampMixin, Base):
     committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class ErpSyncProjectQuality(TimestampMixin, Base):
+    __tablename__ = "erp_sync_project_quality"
+    __table_args__ = (
+        CheckConstraint(
+            "quality_state IN ('VALID','STALE','UNKNOWN','QUARANTINED')",
+            name="erp_sync_project_quality_values",
+        ),
+        Index("ix_erp_sync_project_quality_attempt", "producer_attempt_id"),
+        Index("ix_erp_sync_project_quality_state", "quality_state"),
+    )
+
+    project_number: Mapped[str] = mapped_column(String(64), primary_key=True)
+    producer_attempt_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("erp_sync_attempts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    quality_state: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="UNKNOWN"
+    )
+    source_observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    validated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    reason_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+
 class ErpSyncRecoveryState(TimestampMixin, Base):
     __tablename__ = "erp_sync_recovery_state"
     __table_args__ = (
