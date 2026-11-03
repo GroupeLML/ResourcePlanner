@@ -654,6 +654,18 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
             backend_b.shutdown()
             engine.dispose()
 
+    def test_plausibility_continuation_requires_sensitive_erp_authority(self) -> None:
+        app = create_api_app(
+            self.database_url,
+            auth_resolver=TEST_PROJECT_MANAGER_AUTH_RESOLVER,
+            erp_sync_settings=ErpSyncSchedulerSettings(enabled=False),
+        )
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/integrations/acumatica/erp-sync/runs/attempt-x/plausibility-continue"
+            )
+        self.assertEqual(response.status_code, 403, response.text)
+
     def test_643a_scheduler_routes_require_sync_projects_permission(self) -> None:
         paths = (
             "/api/v1/integrations/acumatica/erp-sync/run-now",
