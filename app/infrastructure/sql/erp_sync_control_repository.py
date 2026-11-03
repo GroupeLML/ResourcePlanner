@@ -899,6 +899,59 @@ class SqlErpSyncControlRepository:
         if task_sync_run_id is not None:
             attempt.task_sync_run_id = task_sync_run_id
 
+    @classmethod
+    def finish_in_session(
+        cls,
+        session: Session,
+        *,
+        attempt_id: str,
+        generation: int,
+        status: str,
+        phase: str,
+        error_code: str | None = None,
+        diagnostic: str | None = None,
+        settings: ErpSyncSchedulerSettings | None = None,
+    ) -> bool:
+        control, now = cls.guard_session(
+            session,
+            attempt_id=attempt_id,
+            generation=generation,
+            settings=settings,
+        )
+        attempt = session.get(ErpSyncAttempt, attempt_id)
+        if attempt is None or attempt.status in ERP_ATTEMPT_TERMINAL:
+            return False
+
+        attempt.status = status
+        attempt.phase = phase
+        attempt.finished_at = now
+        attempt.error_code = error_code
+        attempt.diagnostic = diagnostic
+        occurrence = session.get(ErpSyncOccurrence, attempt.occurrence_id)
+        if occurrence is not None:
+            if status == ERP_ATTEMPT_SUCCEEDED:
+                occurrence.status = ERP_OCCURRENCE_SUCCEEDED
+                occurrence.success_attempt_id = attempt.id
+                occurrence.diagnostic = None
+                if attempt.intent == "PROJECTS_AND_ACTIVE_TASKS":
+                    control.last_success_attempt_id = attempt.id
+            elif status == ERP_ATTEMPT_SUCCEEDED_WITH_ERRORS:
+                occurrence.status = ERP_OCCURRENCE_SUCCEEDED_WITH_ERRORS
+                occurrence.success_attempt_id = None
+                occurrence.diagnostic = diagnostic
+            elif status == ERP_ATTEMPT_INTERRUPTED:
+                occurrence.status = ERP_OCCURRENCE_INTERRUPTED
+                occurrence.diagnostic = diagnostic
+            else:
+                occurrence.status = ERP_OCCURRENCE_FAILED
+                occurrence.diagnostic = diagnostic
+
+        control.owner_attempt_id = None
+        control.lease_expires_at = None
+        control.owner_deadline_at = None
+        control.heartbeat_at = None
+        return True
+
     def finish(
         self,
         *,
@@ -912,47 +965,18 @@ class SqlErpSyncControlRepository:
     ) -> bool:
         with transactional_session(self._session_factory) as session:
             try:
-                control, now = self.guard_session(
+                return self.finish_in_session(
                     session,
                     attempt_id=attempt_id,
                     generation=generation,
+                    status=status,
+                    phase=phase,
+                    error_code=error_code,
+                    diagnostic=diagnostic,
                     settings=settings,
                 )
             except ErpSyncFenceLost:
                 return False
-            attempt = session.get(ErpSyncAttempt, attempt_id)
-            if attempt is None or attempt.status in ERP_ATTEMPT_TERMINAL:
-                return False
-
-            attempt.status = status
-            attempt.phase = phase
-            attempt.finished_at = now
-            attempt.error_code = error_code
-            attempt.diagnostic = diagnostic
-            occurrence = session.get(ErpSyncOccurrence, attempt.occurrence_id)
-            if occurrence is not None:
-                if status == ERP_ATTEMPT_SUCCEEDED:
-                    occurrence.status = ERP_OCCURRENCE_SUCCEEDED
-                    occurrence.success_attempt_id = attempt.id
-                    occurrence.diagnostic = None
-                    if attempt.intent == "PROJECTS_AND_ACTIVE_TASKS":
-                        control.last_success_attempt_id = attempt.id
-                elif status == ERP_ATTEMPT_SUCCEEDED_WITH_ERRORS:
-                    occurrence.status = ERP_OCCURRENCE_SUCCEEDED_WITH_ERRORS
-                    occurrence.success_attempt_id = None
-                    occurrence.diagnostic = diagnostic
-                elif status == ERP_ATTEMPT_INTERRUPTED:
-                    occurrence.status = ERP_OCCURRENCE_INTERRUPTED
-                    occurrence.diagnostic = diagnostic
-                else:
-                    occurrence.status = ERP_OCCURRENCE_FAILED
-                    occurrence.diagnostic = diagnostic
-
-            control.owner_attempt_id = None
-            control.lease_expires_at = None
-            control.owner_deadline_at = None
-            control.heartbeat_at = None
-            return True
 
     def serialize_attempt(self, attempt_id: str) -> dict[str, object]:
         with self._session_factory() as session:
