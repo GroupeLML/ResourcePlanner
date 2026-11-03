@@ -305,6 +305,44 @@ class ErpSyncControlTests(unittest.TestCase):
         self.assertIsNone(blocked)
         self.assertEqual(len(attempts), self.settings.max_automatic_attempts)
 
+    def test_claim_outcome_distinguishes_observed_manual_owner_from_new_admission(self) -> None:
+        unavailable = UnavailableErpSyncAutomaticSafetyCapability()
+        with patch(
+            "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+            return_value=self.fixed_now(),
+        ):
+            occurrence = self.repository.record_daily_decision(
+                self.settings,
+                unavailable,
+            )
+            self.assertIsNotNone(occurrence)
+            self.assertEqual(occurrence.status, ERP_OCCURRENCE_DISABLED)
+
+            manual = self.repository.claim_outcome(
+                occurrence_id=occurrence.id,
+                trigger="RETRY",
+                actor_name="operator",
+                settings=self.settings,
+            )
+            self.assertTrue(manual.admitted)
+            self.assertIsNotNone(manual.attempt)
+
+            observed = self.repository.claim_outcome(
+                occurrence_id=occurrence.id,
+                trigger="CATCHUP",
+                actor_name="scheduler-observer",
+                settings=self.settings,
+                automatic=True,
+                automatic_safety=unavailable,
+            )
+
+        self.assertFalse(observed.admitted)
+        self.assertIsNotNone(observed.attempt)
+        self.assertEqual(observed.attempt.id, manual.attempt.id)
+        persisted = self.repository.get_attempt(manual.attempt.id)
+        self.assertEqual(persisted.trigger_kind, "RETRY")
+        self.assertEqual(persisted.status, ERP_ATTEMPT_PENDING)
+
     def test_disabled_occurrence_manual_failure_cannot_bypass_automatic_safety(self) -> None:
         unavailable = UnavailableErpSyncAutomaticSafetyCapability()
         with patch(
