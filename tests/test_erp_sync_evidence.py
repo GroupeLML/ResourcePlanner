@@ -1522,6 +1522,17 @@ class ErpSyncEvidenceTests(unittest.TestCase):
         self.assertEqual(paused.phase, "PLAUSIBILITY_REVIEW_REQUIRED")
         self.assertEqual(projects.calls, 1)
         self.assertEqual(tasks.calls, 1)
+        with self.assertRaises(Exception) as blocked:
+            control.accept_manual(
+                intent="PROJECTS_AND_ACTIVE_TASKS",
+                actor_name="other-operator",
+                idempotency_key="must-block-during-review",
+                settings=self.control_settings,
+            )
+        self.assertEqual(
+            getattr(blocked.exception, "code", None),
+            "erp_sync_plausibility_review_pending",
+        )
         with self.factory() as session:
             self.assertIsNone(
                 session.scalar(select(Project).where(Project.number == "P-REVIEW"))
