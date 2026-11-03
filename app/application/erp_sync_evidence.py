@@ -640,6 +640,100 @@ class ErpSyncEvidenceService:
             session.flush()
             return baseline.id
 
+    def approve_plausibility_exception(
+        self,
+        *,
+        attempt_id: str,
+        source_type: str,
+        source_fingerprint: str,
+        threshold_scope: str,
+        actor_name: str,
+        reason: str,
+    ) -> str:
+        from ..infrastructure.sql import ErpSyncPlausibilityException
+        from ..infrastructure.sql.base import new_id
+        from ..infrastructure.sql.session import transactional_session
+
+        scope = " ".join(str(threshold_scope or "").split())
+        actor = " ".join(str(actor_name or "").split())
+        if not scope or not actor:
+            raise ApplicationValidationError(
+                "Le périmètre et l'acteur de l'exception sont requis.",
+                code="erp_sync_plausibility_exception_invalid",
+            )
+        reason_value = _safe_reason(reason)
+        with transactional_session(self._session_factory) as session:
+            existing = session.scalar(
+                select(ErpSyncPlausibilityException).where(
+                    ErpSyncPlausibilityException.attempt_id == attempt_id,
+                    ErpSyncPlausibilityException.source_type == source_type,
+                    ErpSyncPlausibilityException.source_fingerprint == source_fingerprint,
+                    ErpSyncPlausibilityException.threshold_scope == scope,
+                )
+            )
+            if existing is not None:
+                return existing.id
+            row = ErpSyncPlausibilityException(
+                id=new_id(),
+                attempt_id=attempt_id,
+                source_type=source_type,
+                source_fingerprint=source_fingerprint,
+                threshold_scope=scope,
+                actor_name=actor,
+                reason=reason_value,
+                expires_at=_utc_now() + timedelta(days=1),
+            )
+            session.add(row)
+            session.flush()
+            return row.id
+
+    def advance_approved_baselines(self, *, attempt_id: str) -> None:
+        """Advance only already-human-approved comparable baselines after full success."""
+        from ..infrastructure.sql import (
+            EVIDENCE_PROOF_SOURCE,
+            EVIDENCE_SOURCE_PROJECTS,
+            EVIDENCE_SOURCE_TASKS,
+            EVIDENCE_STATE_SEALED,
+            ErpSyncBaseline,
+            ErpSyncEvidenceManifest,
+        )
+        from ..infrastructure.sql.session import transactional_session
+
+        with transactional_session(self._session_factory) as session:
+            manifests = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceManifest).where(
+                        ErpSyncEvidenceManifest.attempt_id == attempt_id,
+                        ErpSyncEvidenceManifest.proof_type == EVIDENCE_PROOF_SOURCE,
+                        ErpSyncEvidenceManifest.state == EVIDENCE_STATE_SEALED,
+                        ErpSyncEvidenceManifest.source_type.in_(
+                            (EVIDENCE_SOURCE_PROJECTS, EVIDENCE_SOURCE_TASKS)
+                        ),
+                    )
+                )
+            )
+            if len(manifests) != 2:
+                raise ApplicationConflictError(
+                    "Les deux preuves source scellées sont requises pour publier le baseline.",
+                    code="erp_sync_baseline_publication_incomplete",
+                )
+            for manifest in manifests:
+                baseline = session.scalar(
+                    select(ErpSyncBaseline).where(
+                        ErpSyncBaseline.source_type == manifest.source_type,
+                        ErpSyncBaseline.profile_fingerprint
+                        == manifest.profile_fingerprint,
+                    )
+                )
+                if baseline is None:
+                    raise ApplicationConflictError(
+                        "Un baseline humain approuvé est requis avant publication automatique.",
+                        code="erp_sync_baseline_required",
+                    )
+                baseline.source_fingerprint = str(manifest.source_fingerprint)
+                baseline.row_count = int(manifest.row_count)
+                baseline.approved_at = _utc_now()
+
     def _baseline_project_counts(self, baseline) -> dict[str, int]:
         if not baseline.encrypted_project_counts:
             return {}
@@ -697,10 +791,56 @@ class ErpSyncEvidenceService:
                 current = int(captured.project_counts.get(project, 0))
                 if current / previous < self.settings.min_source_ratio:
                     diagnostics.append(f"erp_sync_project_ratio_too_low:{project}")
+            if diagnostics:
+                from ..infrastructure.sql import ErpSyncPlausibilityException
+
+                scopes = {
+                    "GLOBAL"
+                    if not diagnostic.startswith("erp_sync_project_ratio_too_low:")
+                    else diagnostic.split(":", 1)[1]
+                    for diagnostic in diagnostics
+                }
+                now = _utc_now()
+                approved = {
+                    str(row.threshold_scope)
+                    for row in session.scalars(
+                        select(ErpSyncPlausibilityException).where(
+                            ErpSyncPlausibilityException.attempt_id
+                            == self._manifest_attempt(session, captured.manifest_id),
+                            ErpSyncPlausibilityException.source_type
+                            == captured.source_type,
+                            ErpSyncPlausibilityException.source_fingerprint
+                            == captured.source_fingerprint,
+                            ErpSyncPlausibilityException.expires_at > now,
+                        )
+                    )
+                }
+                diagnostics = [
+                    diagnostic
+                    for diagnostic in diagnostics
+                    if (
+                        "GLOBAL"
+                        if not diagnostic.startswith("erp_sync_project_ratio_too_low:")
+                        else diagnostic.split(":", 1)[1]
+                    )
+                    not in approved
+                ]
             return ErpSyncPlausibilityResult(
                 accepted=not diagnostics,
                 diagnostics=tuple(diagnostics),
             )
+
+    @staticmethod
+    def _manifest_attempt(session: Session, manifest_id: str) -> str:
+        from ..infrastructure.sql import ErpSyncEvidenceManifest
+
+        manifest = session.get(ErpSyncEvidenceManifest, manifest_id)
+        if manifest is None:
+            raise ApplicationValidationError(
+                "La preuve ERP est introuvable.",
+                code="erp_sync_evidence_not_found",
+            )
+        return str(manifest.attempt_id)
 
     @staticmethod
     def _manifest_profile(session: Session, manifest_id: str) -> str:
