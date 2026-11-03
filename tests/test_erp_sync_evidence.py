@@ -1342,8 +1342,19 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             payload=[{"number": "1"}],
             row_count=1,
         )
+        self.service.bind_attempt_policy(
+            attempt_id=attempt.id,
+            generation=attempt.generation,
+        )
         rejected = self.service.validate_plausibility(small)
         self.assertFalse(rejected.accepted)
+        self.assertTrue(
+            _control.pause_for_review(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                settings=self.control_settings,
+            )
+        )
 
         self.service.approve_plausibility_exception(
             attempt_id=attempt.id,
