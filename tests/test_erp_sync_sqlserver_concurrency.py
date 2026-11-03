@@ -7,6 +7,8 @@ from threading import Barrier, Event, Thread
 import unittest
 from unittest.mock import patch
 
+from cryptography.fernet import Fernet
+
 from sqlalchemy import delete, func, select, text
 
 from app.application import (
@@ -15,12 +17,17 @@ from app.application import (
     TaskCatalogPortfolioSnapshot,
     TaskCatalogProjectSnapshot,
 )
+from app.application.erp_sync_evidence import (
+    ErpSyncEvidenceService,
+    ErpSyncEvidenceSettings,
+)
 from app.application.erp_sync_scheduler import (
     ErpSyncSchedulerSettings,
     TestErpSyncAutomaticSafetyCapability,
     UnavailableErpSyncAutomaticSafetyCapability,
     resolve_scheduled_instant,
 )
+from app.infrastructure.smtp import FernetSecretCipher
 from app.infrastructure.sql import (
     AcumaticaProjectTaskSyncProjectResult,
     AcumaticaProjectTaskSyncRun,
@@ -34,7 +41,15 @@ from app.infrastructure.sql import (
     SYNC_RUN_INTERRUPTED,
     SYNC_RUN_RUNNING,
     ErpSyncAttempt,
+    ErpSyncBaseline,
+    ErpSyncCompensationReceipt,
     ErpSyncControl,
+    ErpSyncEvidenceChunk,
+    ErpSyncEvidenceManifest,
+    ErpSyncEvidenceReservation,
+    ErpSyncMutationEvidence,
+    ErpSyncPlausibilityException,
+    ErpSyncRecoveryState,
     ErpSyncOccurrence,
     Project,
     SqlPlannerQueryRepositoryWithLoadProfiles,
@@ -140,6 +155,14 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
                 text("DELETE FROM acumatica_project_task_sync_project_results")
             )
             session.execute(text("DELETE FROM acumatica_project_task_sync_runs"))
+            session.execute(text("DELETE FROM erp_sync_compensation_receipts"))
+            session.execute(text("DELETE FROM erp_sync_plausibility_exceptions"))
+            session.execute(text("DELETE FROM erp_sync_recovery_state"))
+            session.execute(text("DELETE FROM erp_sync_mutation_evidence"))
+            session.execute(text("DELETE FROM erp_sync_evidence_chunks"))
+            session.execute(text("DELETE FROM erp_sync_evidence_manifests"))
+            session.execute(text("DELETE FROM erp_sync_evidence_reservations"))
+            session.execute(text("DELETE FROM erp_sync_baselines"))
             session.execute(text("DELETE FROM erp_sync_attempts"))
             session.execute(text("DELETE FROM erp_sync_occurrences"))
             control = session.get(ErpSyncControl, ERP_SYNC_CONTROL_ROW_ID)
@@ -168,6 +191,15 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             timezone_name=zone_settings.timezone_name,
         )
         self.automatic_safety = TestErpSyncAutomaticSafetyCapability()
+        self.evidence = ErpSyncEvidenceService(
+            self.factory,
+            cipher=FernetSecretCipher(Fernet.generate_key().decode("ascii")),
+            settings=ErpSyncEvidenceSettings(
+                max_evidence_mib=16,
+                evidence_budget_mib=32,
+            ),
+            control_settings=self.settings,
+        )
 
     def _daily_occurrence(self) -> ErpSyncOccurrence:
         now = SqlErpSyncControlRepository(self.factory).current_sql_time()
@@ -256,6 +288,249 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             attempt_count = session.scalar(select(func.count(ErpSyncAttempt.id)))
         self.assertEqual(occurrence_count, 1)
         self.assertEqual(attempt_count, 1)
+
+    def test_evidence_and_business_mutation_rollback_together_on_sqlserver(self) -> None:
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = repository.accept_manual(
+            intent="PROJECTS_ONLY",
+            actor_name="sql-evidence",
+            idempotency_key="sql-evidence-rollback",
+            settings=self.settings,
+        )
+        attempt = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="sql-evidence",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(attempt)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                settings=self.settings,
+            )
+        )
+        self.evidence.reserve_attempt(attempt_id=attempt.id)
+
+        project_number = "SQL643B-ROLLBACK"
+        with transactional_session(self.factory) as session:
+            session.execute(delete(Project).where(Project.number == project_number))
+
+        with self.assertRaises(RuntimeError):
+            with transactional_session(self.factory) as session:
+                SqlErpSyncControlRepository.guard_session(
+                    session,
+                    attempt_id=attempt.id,
+                    generation=attempt.generation,
+                    settings=self.settings,
+                )
+                evidence_id = self.evidence.record_before_in_session(
+                    session,
+                    attempt_id=attempt.id,
+                    generation=attempt.generation,
+                    unit_type="PROJECT_SNAPSHOT",
+                    entity_type="PROJECT",
+                    entity_key="ERP-SQL643B-ROLLBACK",
+                    before=None,
+                )
+                row = Project(
+                    id="SQL643B-ROLLBACK-ID",
+                    erp_external_id="ERP-SQL643B-ROLLBACK",
+                    number=project_number,
+                    name="Must rollback",
+                    status="Actif",
+                )
+                session.add(row)
+                session.flush()
+                self.evidence.record_after_in_session(
+                    session,
+                    evidence_id=evidence_id,
+                    attempt_id=attempt.id,
+                    generation=attempt.generation,
+                    after={
+                        "erp_external_id": row.erp_external_id,
+                        "number": row.number,
+                        "name": row.name,
+                        "client": row.client,
+                        "project_manager_external_id": row.project_manager_external_id,
+                        "project_manager_name": row.project_manager_name,
+                        "status": row.status,
+                    },
+                )
+                raise RuntimeError("force rollback")
+
+        with self.factory() as session:
+            self.assertIsNone(
+                session.scalar(select(Project).where(Project.number == project_number))
+            )
+            evidence_count = int(
+                session.scalar(
+                    select(func.count(ErpSyncMutationEvidence.id)).where(
+                        ErpSyncMutationEvidence.attempt_id == attempt.id
+                    )
+                )
+                or 0
+            )
+        self.assertEqual(evidence_count, 0)
+
+    def test_sqlserver_evidence_reservation_is_idempotent_and_recovery_refuses_active_owner(self) -> None:
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = repository.accept_manual(
+            intent="PROJECTS_ONLY",
+            actor_name="sql-evidence",
+            idempotency_key="sql-evidence-reservation",
+            settings=self.settings,
+        )
+        attempt = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="sql-evidence",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(attempt)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            tuple(
+                pool.map(
+                    lambda _index: self.evidence.reserve_attempt(
+                        attempt_id=attempt.id
+                    ),
+                    (1, 2),
+                )
+            )
+
+        with self.factory() as session:
+            reservations = int(
+                session.scalar(
+                    select(func.count(ErpSyncEvidenceReservation.id)).where(
+                        ErpSyncEvidenceReservation.attempt_id == attempt.id
+                    )
+                )
+                or 0
+            )
+        self.assertEqual(reservations, 1)
+
+        # Recovery preview shares the same SQL control authority and cannot race
+        # an active writer.
+        with self.assertRaises(Exception) as raised:
+            self.evidence.compensation_preview(attempt_id=attempt.id)
+        self.assertEqual(
+            getattr(raised.exception, "code", None),
+            "erp_sync_recovery_owner_active",
+        )
+
+    def test_full_sqlserver_import_commits_task_result_and_evidence_atomically(self) -> None:
+        project_number = "SQL643B-ATOMIC"
+        with transactional_session(self.factory) as session:
+            session.execute(
+                delete(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == project_number
+                )
+            )
+            session.execute(delete(Project).where(Project.number == project_number))
+
+        projects = SqlServerProjectSource(
+            (_sql_project(project_number, "643B atomic evidence"),)
+        )
+        tasks = SqlServerPortfolioTaskSource(
+            {
+                project_number: _sql_snapshot(
+                    project_number,
+                    "643",
+                    "643B task",
+                )
+            }
+        )
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.settings,
+            automatic_safety=self.automatic_safety,
+            evidence_service=self.evidence,
+        )
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = repository.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="sql-evidence",
+            idempotency_key="sql-643b-bootstrap",
+            settings=self.settings,
+        )
+        first = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="sql-evidence",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(first)
+        orchestrator._execute_attempt(first.id, first.generation)
+        self.assertEqual(repository.get_attempt(first.id).status, "FAILED")
+
+        manifests = self.evidence.list_attempt_sources(attempt_id=first.id)
+        self.assertEqual({row["source_type"] for row in manifests}, {"PROJECTS", "TASKS"})
+        for manifest in manifests:
+            self.evidence.approve_baseline(
+                manifest_id=str(manifest["manifest_id"]),
+                actor_name="sql-admin",
+                reason="Reviewed SQL Server bootstrap source",
+            )
+
+        retry = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="sql-evidence",
+            settings=self.settings,
+            command_identity="retry:sql-643b-atomic",
+        )
+        self.assertIsNotNone(retry)
+        orchestrator._execute_attempt(retry.id, retry.generation)
+        completed = repository.get_attempt(retry.id)
+        self.assertEqual(completed.status, "SUCCEEDED")
+        self.assertIsNotNone(completed.task_sync_run_id)
+
+        with self.factory() as session:
+            task_row = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == project_number,
+                    TaskCatalogEntry.task_code == "643",
+                )
+            )
+            project_result = session.scalar(
+                select(AcumaticaProjectTaskSyncProjectResult).where(
+                    AcumaticaProjectTaskSyncProjectResult.run_id
+                    == completed.task_sync_run_id,
+                    AcumaticaProjectTaskSyncProjectResult.project_number
+                    == project_number,
+                )
+            )
+            evidence_rows = tuple(
+                session.scalars(
+                    select(ErpSyncMutationEvidence).where(
+                        ErpSyncMutationEvidence.attempt_id == retry.id
+                    )
+                )
+            )
+        self.assertIsNotNone(task_row)
+        self.assertIsNotNone(project_result)
+        self.assertEqual(project_result.status, "synchronized")
+        self.assertTrue(
+            any(
+                row.entity_type == "TASK"
+                and row.after_sha256
+                and row.committed_at is not None
+                for row in evidence_rows
+            )
+        )
+        self.assertTrue(
+            any(
+                row.entity_type == "TASK_SYNC_STATE"
+                and row.after_sha256
+                and row.committed_at is not None
+                for row in evidence_rows
+            )
+        )
+        orchestrator.shutdown()
 
     def test_terminal_run_now_replay_uses_one_sqlserver_attempt_and_execution(self) -> None:
         project_number = "SQL643A-R"
