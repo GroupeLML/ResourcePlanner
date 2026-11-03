@@ -3,9 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 from tempfile import TemporaryDirectory
-from threading import Event
+from threading import Event, current_thread
 from time import perf_counter, sleep
 import unittest
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -122,6 +123,38 @@ class BlockingBatchProjectTaskSource(BatchProjectTaskSource):
         if not self.release.wait(timeout=5):
             raise RuntimeError("test release timeout")
         return super().fetch_project_snapshots(project_targets=project_targets)
+
+
+class SlowProjectSource(StaticProjectSource):
+    def __init__(self, rows: tuple[ExternalProjectRecord, ...], *, delay: float = 1.4) -> None:
+        super().__init__(rows)
+        self.delay = delay
+        self.thread_name: str | None = None
+
+    def list_projects(self):
+        self.thread_name = current_thread().name
+        sleep(self.delay)
+        return super().list_projects()
+
+
+class SlowProjectTaskSource(StubProjectTaskSource):
+    def __init__(self, snapshot: TaskCatalogProjectSnapshot, *, delay: float = 1.4) -> None:
+        super().__init__(snapshot)
+        self.delay = delay
+        self.thread_name: str | None = None
+
+    def fetch_project_snapshot(
+        self,
+        *,
+        project_external_id: str,
+        project_number: str,
+    ) -> TaskCatalogProjectSnapshot:
+        self.thread_name = current_thread().name
+        sleep(self.delay)
+        return super().fetch_project_snapshot(
+            project_external_id=project_external_id,
+            project_number=project_number,
+        )
 
 
 class FailingBatchProjectTaskSource(BatchProjectTaskSource):
@@ -776,6 +809,79 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
         )
         self.assertIsNotNone(attempt)
         return repository, attempt
+
+    def test_legacy_project_sync_runs_on_managed_worker_and_renews_lease(self) -> None:
+        source = SlowProjectSource(
+            self._global_project_source().rows,
+        )
+        app = create_api_app(
+            self.database_url,
+            auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            project_source=source,
+            erp_sync_settings=ErpSyncSchedulerSettings(
+                enabled=False,
+                lease_seconds=1,
+                heartbeat_seconds=0.2,
+                max_attempt_seconds=10,
+            ),
+        )
+        orchestrator = app.state.erp_sync_orchestrator
+        self.assertIsNotNone(orchestrator)
+
+        with patch.object(
+            orchestrator._control,
+            "renew",
+            wraps=orchestrator._control.renew,
+        ) as renew:
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/v1/integrations/acumatica/projects/sync"
+                )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["received"], 2)
+        self.assertGreaterEqual(renew.call_count, 1)
+        self.assertIsNotNone(source.thread_name)
+        self.assertTrue(
+            source.thread_name.startswith("erp-sync-orchestration"),
+            source.thread_name,
+        )
+
+    def test_legacy_targeted_task_sync_runs_on_managed_worker_and_renews_lease(self) -> None:
+        source = SlowProjectTaskSource(self._snapshot())
+        app = create_api_app(
+            self.database_url,
+            auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            project_task_source=source,
+            erp_sync_settings=ErpSyncSchedulerSettings(
+                enabled=False,
+                lease_seconds=1,
+                heartbeat_seconds=0.2,
+                max_attempt_seconds=10,
+            ),
+        )
+        orchestrator = app.state.erp_sync_orchestrator
+        self.assertIsNotNone(orchestrator)
+
+        with patch.object(
+            orchestrator._control,
+            "renew",
+            wraps=orchestrator._control.renew,
+        ) as renew:
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/v1/integrations/acumatica/projects/PROJECT-ERP/tasks/sync"
+                )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["project_number"], "5118")
+        self.assertEqual(response.json()["task_count"], 1)
+        self.assertGreaterEqual(renew.call_count, 1)
+        self.assertIsNotNone(source.thread_name)
+        self.assertTrue(
+            source.thread_name.startswith("erp-sync-orchestration"),
+            source.thread_name,
+        )
 
     def test_legacy_project_sync_writer_is_blocked_by_healthy_owner(self) -> None:
         projects = self._global_project_source()
