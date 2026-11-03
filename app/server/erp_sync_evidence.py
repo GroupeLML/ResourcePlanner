@@ -1255,9 +1255,24 @@ class ErpSyncEvidenceService:
         with transactional_session(self._session_factory) as session:
             from ..infrastructure.sql import (
                 EVIDENCE_PROOF_SOURCE,
+                ErpSyncAttempt,
                 EVIDENCE_STATE_READY,
                 EVIDENCE_STATE_SEALED,
                 ErpSyncEvidenceManifest,
+            )
+            attempt = session.get(ErpSyncAttempt, attempt_id)
+            if (
+                attempt is None
+                or attempt.status != "PENDING"
+                or attempt.phase != "PLAUSIBILITY_REVIEW_REQUIRED"
+            ):
+                raise ApplicationConflictError(
+                    "La tentative ERP n'attend pas une approbation de plausibilité.",
+                    code="erp_sync_plausibility_review_not_pending",
+                )
+            self.assert_attempt_policy_in_session(
+                session,
+                attempt_id=attempt_id,
             )
             manifest = session.scalar(
                 select(ErpSyncEvidenceManifest).where(
@@ -1274,6 +1289,44 @@ class ErpSyncEvidenceService:
                 raise ApplicationConflictError(
                     "L'exception ne correspond pas à une source scellée de cette tentative.",
                     code="erp_sync_plausibility_exception_source_mismatch",
+                )
+            payload = self.load_source_in_session(
+                session,
+                manifest_id=str(manifest.id),
+            )
+            project_counts = (
+                self._project_counts_from_payload(payload)
+                if source_type == "TASKS"
+                else {}
+            )
+            captured = ErpSyncCapturedSource(
+                source_type=source_type,
+                manifest_id=str(manifest.id),
+                source_fingerprint=str(manifest.source_fingerprint),
+                row_count=int(manifest.row_count),
+                project_counts=project_counts,
+                payload=payload,
+            )
+            active_task_targets = (
+                len(project_counts)
+                if source_type == "TASKS"
+                else 0
+            )
+            current_result = self.validate_plausibility(
+                captured,
+                active_task_targets=active_task_targets,
+            )
+            valid_scope = (
+                scope == "GLOBAL"
+                and any(
+                    not item.startswith("erp_sync_project_ratio_too_low:")
+                    for item in current_result.diagnostics
+                )
+            ) or scope in current_result.rejected_projects
+            if not valid_scope:
+                raise ApplicationConflictError(
+                    "Le périmètre demandé ne correspond pas à un échec de plausibilité courant.",
+                    code="erp_sync_plausibility_exception_scope_mismatch",
                 )
             existing = session.scalar(
                 select(ErpSyncPlausibilityException).where(
