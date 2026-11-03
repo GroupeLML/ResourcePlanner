@@ -33,6 +33,7 @@ from app.infrastructure.sql import (
     ResourceClassConfig,
     TaskCatalogEntry,
     TaskClassStandard,
+    WorkPackage,
     create_session_factory,
     create_sql_engine,
     transactional_session,
@@ -771,6 +772,89 @@ class ErpSyncEvidenceTests(unittest.TestCase):
                 actor_name="admin",
                 reason="Must refuse stale state",
             )
+
+    def test_compensation_preview_refuses_new_local_dependency(self) -> None:
+        control, _occurrence, attempt = self._attempt("compensation-dependency")
+        self.service.reserve_attempt(attempt_id=attempt.id)
+        with transactional_session(self.factory) as session:
+            row = Project(
+                id="COMP-DEPENDENCY",
+                erp_external_id="7003",
+                number="COMP-3",
+                name="Imported",
+                status="Actif",
+            )
+            session.add(row)
+            session.flush()
+            evidence_id = self.service.record_before_in_session(
+                session,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                unit_type="PROJECT_SNAPSHOT",
+                entity_type="PROJECT",
+                entity_key="7003",
+                before=None,
+            )
+            after = {
+                "erp_external_id": row.erp_external_id,
+                "number": row.number,
+                "name": row.name,
+                "client": row.client,
+                "project_manager_external_id": row.project_manager_external_id,
+                "project_manager_name": row.project_manager_name,
+                "status": row.status,
+            }
+            self.service.record_after_in_session(
+                session,
+                evidence_id=evidence_id,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                after=after,
+            )
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.mark_recovery_required(
+            attempt_id=attempt.id,
+            reason_code="global_validation_failed",
+        )
+        with transactional_session(self.factory) as session:
+            session.add(
+                WorkPackage(
+                    project_id="COMP-DEPENDENCY",
+                    code="WP-LOCAL",
+                    name="Local dependency",
+                    status="planned",
+                )
+            )
+
+        preview = self.service.compensation_preview(attempt_id=attempt.id)
+        self.assertFalse(preview["can_confirm"])
+        self.assertEqual(preview["conflict_count"], 1)
+        self.assertTrue(
+            any(
+                value.startswith("dependency:PROJECT:")
+                for value in preview["conflicts"]
+            )
+        )
+        with self.assertRaises(Exception) as raised:
+            self.service.confirm_compensation(
+                attempt_id=attempt.id,
+                preview_hash=preview["preview_hash"],
+                command_identity="compensation:dependency",
+                actor_name="admin",
+                reason="Must refuse dependency",
+            )
+        self.assertEqual(
+            getattr(raised.exception, "code", None),
+            "erp_sync_compensation_dependency_changed",
+        )
 
     def test_required_recovery_pins_evidence_and_blocks_new_imports(self) -> None:
         control, _occurrence, attempt = self._attempt("recovery-pin")
