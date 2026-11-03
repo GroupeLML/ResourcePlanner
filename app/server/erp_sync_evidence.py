@@ -189,7 +189,11 @@ class ErpSyncEvidenceService:
         )
         from ..infrastructure.sql.session import transactional_session
 
-        requested = self.settings.max_evidence_bytes
+        requested_plaintext = self.settings.max_evidence_bytes
+        requested_storage = min(
+            self.settings.evidence_budget_bytes,
+            self.settings.max_evidence_bytes * 2,
+        )
         with transactional_session(self._session_factory) as session:
             if self._control_settings is None:
                 raise ApplicationUnavailableError(
@@ -231,15 +235,20 @@ class ErpSyncEvidenceService:
                 )
                 or 0
             )
-            if retained_used + active_reserved + requested > self.settings.evidence_budget_bytes:
+            if (
+                retained_used + active_reserved + requested_storage
+                > self.settings.evidence_budget_bytes
+            ):
                 raise ApplicationUnavailableError(
                     "Le budget de stockage des preuves ERP est insuffisant.",
                     code="erp_sync_evidence_storage_budget_unavailable",
                 )
             reservation = ErpSyncEvidenceReservation(
                 attempt_id=attempt_id,
-                reserved_bytes=requested,
+                reserved_bytes=requested_storage,
                 used_bytes=1024,
+                reserved_plaintext_bytes=requested_plaintext,
+                used_plaintext_bytes=0,
             )
             session.add(reservation)
             from ..infrastructure.sql import (
@@ -267,7 +276,14 @@ class ErpSyncEvidenceService:
                 )
             )
 
-    def _consume_bytes(self, session: Session, *, attempt_id: str, amount: int) -> None:
+    def _consume_bytes(
+        self,
+        session: Session,
+        *,
+        attempt_id: str,
+        plaintext_amount: int,
+        storage_amount: int,
+    ) -> None:
         from ..infrastructure.sql import ErpSyncEvidenceReservation
 
         reservation = session.scalar(
@@ -280,13 +296,23 @@ class ErpSyncEvidenceService:
                 "La tentative ERP ne possède pas de réservation de preuve.",
                 code="erp_sync_evidence_reservation_missing",
             )
-        next_used = int(reservation.used_bytes) + max(0, int(amount))
-        if next_used > int(reservation.reserved_bytes):
+        next_plaintext = int(reservation.used_plaintext_bytes) + max(
+            0, int(plaintext_amount)
+        )
+        if next_plaintext > int(reservation.reserved_plaintext_bytes):
             raise ApplicationUnavailableError(
-                "La tentative ERP dépasse son budget de preuve réservé.",
+                "La tentative ERP dépasse son plafond de preuve déchiffrée.",
                 code="erp_sync_evidence_attempt_budget_exceeded",
             )
-        reservation.used_bytes = next_used
+        next_storage = int(reservation.used_bytes) + max(0, int(storage_amount))
+        if next_storage > int(reservation.reserved_bytes):
+            raise ApplicationUnavailableError(
+                "La tentative ERP dépasse son enveloppe de stockage réservée.",
+                code="erp_sync_evidence_storage_reservation_exceeded",
+            )
+        reservation.used_plaintext_bytes = next_plaintext
+        reservation.used_bytes = next_storage
+
 
     def capture_source(
         self,
@@ -361,7 +387,8 @@ class ErpSyncEvidenceService:
             self._consume_bytes(
                 session,
                 attempt_id=attempt_id,
-                amount=ciphertext_total + 1024,
+                plaintext_amount=len(normalized),
+                storage_amount=ciphertext_total + 1024,
             )
             manifest = ErpSyncEvidenceManifest(
                 attempt_id=attempt_id,
@@ -557,7 +584,8 @@ class ErpSyncEvidenceService:
             self._consume_bytes(
                 session,
                 attempt_id=attempt_id,
-                amount=len(encrypted.encode("utf-8")),
+                plaintext_amount=len(plain),
+                storage_amount=len(encrypted.encode("utf-8")),
             )
         row = ErpSyncMutationEvidence(
             id=new_id(),
@@ -608,7 +636,8 @@ class ErpSyncEvidenceService:
         self._consume_bytes(
             session,
             attempt_id=attempt_id,
-            amount=len(encrypted.encode("utf-8")),
+            plaintext_amount=len(plain),
+            storage_amount=len(encrypted.encode("utf-8")),
         )
         row.encrypted_after = encrypted
         row.after_sha256 = digest
@@ -1923,4 +1952,5 @@ class ErpSyncEvidenceService:
                         )
                         if reservation is not None:
                             reservation.used_bytes = 0
+                            reservation.used_plaintext_bytes = 0
         return purged
