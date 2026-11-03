@@ -156,6 +156,12 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _normalized_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def content_sha256(value: Any) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
@@ -1933,12 +1939,15 @@ class ErpSyncEvidenceService:
         bind = session.get_bind()
         if bind.dialect.name == "mssql":
             sql_now = session.scalar(select(func.sysutcdatetime()))
-            now = sql_now.replace(tzinfo=timezone.utc) if sql_now.tzinfo is None else sql_now.astimezone(timezone.utc)
+            now = _normalized_utc(sql_now)
         else:
             now = _utc_now()
         if any(
             row.state in {EVIDENCE_STATE_EXPIRED, EVIDENCE_STATE_PURGED}
-            or (row.expires_at is not None and row.expires_at <= now)
+            or (
+                row.expires_at is not None
+                and _normalized_utc(row.expires_at) <= now
+            )
             for row in manifests
         ):
             raise ApplicationConflictError(
