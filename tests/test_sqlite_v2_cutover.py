@@ -25,6 +25,9 @@ from app.infrastructure.sql import (
     Base,
     DeliveryItemRow,
     DeliveryPlanRow,
+    ErpSyncAttempt,
+    ErpSyncControl,
+    ErpSyncOccurrence,
     Project,
     RequestLine,
     Resource,
@@ -351,6 +354,9 @@ def _reshape_source_as_0048(path: Path) -> None:
             DROP TABLE IF EXISTS planning_window_overrides;
             DROP TABLE IF EXISTS planning_resource_user_orders;
             DROP TABLE IF EXISTS request_completion_reductions;
+            DROP TABLE IF EXISTS erp_sync_attempts;
+            DROP TABLE IF EXISTS erp_sync_occurrences;
+            DROP TABLE IF EXISTS erp_sync_control;
             DROP TABLE IF EXISTS planning_work_queue_restorations;
             DROP TABLE IF EXISTS planning_work_queue_releases;
             DROP TABLE IF EXISTS request_requirement_planning_intents;
@@ -747,6 +753,100 @@ class SqliteV2CutoverTests(unittest.TestCase):
             self.assertIn("projects", report["transfer_order"])
             self.assertNotIn("auth_sessions", report["transfer_order"])
             self.assertNotIn("planning_mutation_state", report["transfer_order"])
+
+    def test_populated_scheduler_identity_and_watermark_block_cutover(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.db"
+            target = root / "target.db"
+            _seed_source(source)
+            _seed_target(target)
+
+            engine = create_sql_engine(_url(source))
+            try:
+                with engine.begin() as connection:
+                    occurrence_id = "ERP-DAILY-CUTOVER"
+                    attempt_id = "ERP-ATTEMPT-CUTOVER"
+                    connection.execute(
+                        ErpSyncOccurrence.__table__.insert(),
+                        {
+                            "id": occurrence_id,
+                            "occurrence_key": "ERP_PROJECTS_TASKS_DAILY:2026-09-29",
+                            "occurrence_type": "DAILY",
+                            "intent": "PROJECTS_AND_ACTIVE_TASKS",
+                            "business_date": date(2026, 9, 29),
+                            "scheduled_at": datetime(
+                                2026, 9, 29, 4, 0, tzinfo=timezone.utc
+                            ),
+                            "timezone_name": "America/Toronto",
+                            "scheduled_local_time": "00:00",
+                            "config_fingerprint": "cutover-fingerprint",
+                            "status": "SUCCEEDED",
+                            "last_attempt_id": attempt_id,
+                            "success_attempt_id": attempt_id,
+                        },
+                    )
+                    connection.execute(
+                        ErpSyncAttempt.__table__.insert(),
+                        {
+                            "id": attempt_id,
+                            "occurrence_id": occurrence_id,
+                            "attempt_number": 1,
+                            "trigger_kind": "SCHEDULED",
+                            "actor_name": "erp-scheduler",
+                            "intent": "PROJECTS_AND_ACTIVE_TASKS",
+                            "generation": 7,
+                            "status": "SUCCEEDED",
+                            "phase": "PUBLICATION_COMMITTED",
+                        },
+                    )
+                    connection.execute(
+                        ErpSyncControl.__table__.insert(),
+                        {
+                            "id": "ERP_PROJECTS_TASKS",
+                            "generation": 7,
+                            "last_evaluated_business_date": date(2026, 9, 29),
+                            "protocol_version": 1,
+                            "config_fingerprint": "cutover-fingerprint",
+                            "last_success_attempt_id": attempt_id,
+                        },
+                    )
+            finally:
+                engine.dispose()
+
+            source_before = _hash(source)
+            code, report = _run(root)
+
+            self.assertEqual(code, 2, report)
+            self.assertEqual(report["status"], "blocked")
+            anomaly_codes = {
+                row["code"]
+                for row in report["anomalies"]
+            }
+            self.assertIn("erp_sync_occurrences_populated", anomaly_codes)
+            self.assertIn("erp_sync_attempts_populated", anomaly_codes)
+            self.assertIn(
+                "erp_sync_control_durable_state_populated",
+                anomaly_codes,
+            )
+            self.assertEqual(_hash(source), source_before)
+
+            target_engine = create_sql_engine(_url(target))
+            try:
+                with target_engine.connect() as connection:
+                    self.assertEqual(
+                        int(
+                            connection.scalar(
+                                select(func.count()).select_from(
+                                    ErpSyncOccurrence.__table__
+                                )
+                            )
+                            or 0
+                        ),
+                        0,
+                    )
+            finally:
+                target_engine.dispose()
 
     def test_real_0048_shape_is_normalized_read_only_and_ready(self) -> None:
         with TemporaryDirectory() as directory:

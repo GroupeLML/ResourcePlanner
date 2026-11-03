@@ -3,10 +3,17 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 import os
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI
 import uvicorn
 
+from ..application.erp_sync_scheduler import (
+    ErpSyncScheduleConfigurationError,
+    ErpSyncSchedulerSettings,
+    parse_scheduler_time,
+    validate_timezone,
+)
 from ..application.identity_provisioning import AutoProvisioningPolicy
 from ..application.security import AuthPrincipal, ROLE_ADMIN, normalize_roles
 from ..infrastructure.acumatica import (
@@ -83,6 +90,10 @@ M365_GRAPH_BASE_URL_ENV = "RESOURCEPLANNER_M365_GRAPH_BASE_URL"
 M365_AUTHORITY_HOST_ENV = "RESOURCEPLANNER_M365_AUTHORITY_HOST"
 M365_TIMEOUT_SECONDS_ENV = "RESOURCEPLANNER_M365_TIMEOUT_SECONDS"
 CONFIG_ENCRYPTION_KEY_ENV = "RESOURCEPLANNER_CONFIG_ENCRYPTION_KEY"
+ERP_SYNC_ENABLED_ENV = "RESOURCEPLANNER_ERP_SYNC_ENABLED"
+ERP_SYNC_TIME_ENV = "RESOURCEPLANNER_ERP_SYNC_TIME"
+ERP_SYNC_TIMEZONE_ENV = "RESOURCEPLANNER_ERP_SYNC_TIMEZONE"
+ERP_SYNC_CATCHUP_HOURS_ENV = "RESOURCEPLANNER_ERP_SYNC_CATCHUP_HOURS"
 
 _ALLOWED_LOG_LEVELS = {"critical", "error", "warning", "info", "debug", "trace"}
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -143,6 +154,40 @@ def _positive_float(
             f"{label} doit être supérieur à 0 et inférieur ou égal à {maximum:g}."
         )
     return parsed
+
+
+def _erp_sync_source_identity(values: Mapping[str, str]) -> str:
+    raw_base = _text(values.get(ACUMATICA_BASE_URL_ENV))
+    if raw_base:
+        parsed = urlsplit(raw_base)
+        hostname = parsed.hostname or ""
+        if ":" in hostname and not hostname.startswith("["):
+            hostname = f"[{hostname}]"
+        port = f":{parsed.port}" if parsed.port is not None else ""
+        safe_base = (
+            f"{parsed.scheme.casefold()}://{hostname.casefold()}{port}"
+            f"{parsed.path.rstrip('/')}"
+        )
+    else:
+        safe_base = "unconfigured"
+    page_size = _positive_int(
+        values.get(ACUMATICA_PAGE_SIZE_ENV),
+        default=100,
+        label=ACUMATICA_PAGE_SIZE_ENV,
+        maximum=10000,
+    )
+    timeout_seconds = _positive_float(
+        values.get(ACUMATICA_TIMEOUT_SECONDS_ENV),
+        default=30.0,
+        label=ACUMATICA_TIMEOUT_SECONDS_ENV,
+        maximum=120.0,
+    )
+    return (
+        f"acumatica:{safe_base}"
+        "|RP_Projects|RP_ProjectTasks|DEPMO"
+        f"|page_size={page_size}"
+        f"|timeout_seconds={timeout_seconds:g}"
+    )
 
 
 def _acumatica_settings(values: Mapping[str, str]) -> ODataProjectSourceSettings | None:
@@ -317,6 +362,7 @@ class ServerSettings:
     acumatica: ODataProjectSourceSettings | None = field(default=None, repr=False)
     m365: MicrosoftGraphCommunicationSettings | None = field(default=None, repr=False)
     config_encryption_key: str | None = field(default=None, repr=False)
+    erp_sync: ErpSyncSchedulerSettings = field(default_factory=ErpSyncSchedulerSettings)
 
     @classmethod
     def from_environment(cls, environ: Mapping[str, str] | None = None) -> "ServerSettings":
@@ -393,6 +439,26 @@ class ServerSettings:
         )
 
         try:
+            erp_sync = ErpSyncSchedulerSettings(
+                enabled=_bool(values.get(ERP_SYNC_ENABLED_ENV), default=False),
+                local_time=parse_scheduler_time(
+                    _text(values.get(ERP_SYNC_TIME_ENV)) or "00:00"
+                ),
+                timezone_name=validate_timezone(
+                    _text(values.get(ERP_SYNC_TIMEZONE_ENV)) or "America/Toronto"
+                ),
+                catchup_hours=_positive_int(
+                    values.get(ERP_SYNC_CATCHUP_HOURS_ENV),
+                    default=4,
+                    label=ERP_SYNC_CATCHUP_HOURS_ENV,
+                    maximum=12,
+                ),
+                source_identity=_erp_sync_source_identity(values),
+            )
+        except ErpSyncScheduleConfigurationError as exc:
+            raise ServerConfigurationError(str(exc)) from exc
+
+        try:
             embedding = EmbeddingSettings.from_environment(
                 values,
                 secure_cookie=oidc_secure_cookie,
@@ -422,6 +488,7 @@ class ServerSettings:
             acumatica=_acumatica_settings(values),
             m365=_m365_settings(values),
             config_encryption_key=_text(values.get(CONFIG_ENCRYPTION_KEY_ENV)) or None,
+            erp_sync=erp_sync,
         )
 
 
@@ -544,6 +611,11 @@ def create_configured_app(settings: ServerSettings | None = None) -> FastAPI:
         communication_transport=communication_transport,
         smtp_cipher=smtp_cipher,
         smtp_client=smtp_client,
+        erp_sync_settings=(
+            resolved.erp_sync
+            if project_source is not None or project_task_source is not None
+            else None
+        ),
         runtime_dependencies={
             "oidc": {
                 "required": resolved.auth_mode == "oidc",

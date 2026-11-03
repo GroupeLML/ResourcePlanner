@@ -21,6 +21,9 @@ DAY = date(2026, 8, 26)
 EXPECTED_TABLES = {
     "acumatica_project_task_sync_runs",
     "acumatica_project_task_sync_project_results",
+    "erp_sync_control",
+    "erp_sync_occurrences",
+    "erp_sync_attempts",
     "approval_decisions",
     "approval_requirement_approvers",
     "approval_requirements",

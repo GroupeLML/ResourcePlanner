@@ -8,6 +8,9 @@ from unittest.mock import patch
 from app.application.security import ROLE_ADMIN, ROLE_COORDINATOR
 from app.server.runtime import (
     ACTOR_NAME_ENV,
+    ACUMATICA_BASE_URL_ENV,
+    ACUMATICA_PASSWORD_ENV,
+    ACUMATICA_USERNAME_ENV,
     ALLOW_LOCAL_AUTH_NETWORK_ENV,
     API_DOCS_ENABLED_ENV,
     AUTH_MODE_ENV,
@@ -15,6 +18,10 @@ from app.server.runtime import (
     CONFIG_ENCRYPTION_KEY_ENV,
     DATABASE_URL_ENV,
     DEV_USER_SWITCHER_ENV,
+    ERP_SYNC_CATCHUP_HOURS_ENV,
+    ERP_SYNC_ENABLED_ENV,
+    ERP_SYNC_TIME_ENV,
+    ERP_SYNC_TIMEZONE_ENV,
     HOST_ENV,
     LOCAL_AUTH_NAME_ENV,
     LOCAL_AUTH_ROLES_ENV,
@@ -53,6 +60,80 @@ class ServerRuntimeTests(unittest.TestCase):
         assert settings.auth_principal is not None
         self.assertEqual(settings.auth_principal.auth_mode, "local")
         self.assertEqual(settings.auth_principal.roles, (ROLE_ADMIN,))
+
+    def test_erp_scheduler_defaults_are_disabled_and_toronto_midnight(self) -> None:
+        settings = ServerSettings.from_environment(
+            {DATABASE_URL_ENV: "sqlite+pysqlite:///:memory:"}
+        )
+        self.assertFalse(settings.erp_sync.enabled)
+        self.assertEqual(settings.erp_sync.local_time.strftime("%H:%M"), "00:00")
+        self.assertEqual(settings.erp_sync.timezone_name, "America/Toronto")
+        self.assertEqual(settings.erp_sync.catchup_hours, 4)
+
+    def test_erp_scheduler_environment_is_parsed_and_invalid_timezone_fails_closed(self) -> None:
+        settings = ServerSettings.from_environment(
+            {
+                DATABASE_URL_ENV: "sqlite+pysqlite:///:memory:",
+                ERP_SYNC_ENABLED_ENV: "true",
+                ERP_SYNC_TIME_ENV: "01:30",
+                ERP_SYNC_TIMEZONE_ENV: "America/Toronto",
+                ERP_SYNC_CATCHUP_HOURS_ENV: "3",
+            }
+        )
+        self.assertTrue(settings.erp_sync.enabled)
+        self.assertEqual(settings.erp_sync.local_time.strftime("%H:%M"), "01:30")
+        self.assertEqual(settings.erp_sync.catchup_hours, 3)
+
+        with self.assertRaises(ServerConfigurationError) as caught:
+            ServerSettings.from_environment(
+                {
+                    DATABASE_URL_ENV: "sqlite+pysqlite:///:memory:",
+                    ERP_SYNC_TIMEZONE_ENV: "Invalid/Zone",
+                }
+            )
+        self.assertIn("Fuseau IANA", str(caught.exception))
+
+    def test_erp_scheduler_catchup_above_twelve_hours_fails_closed(self) -> None:
+        with self.assertRaises(ServerConfigurationError):
+            ServerSettings.from_environment(
+                {
+                    DATABASE_URL_ENV: "sqlite+pysqlite:///:memory:",
+                    ERP_SYNC_CATCHUP_HOURS_ENV: "13",
+                }
+            )
+
+    def test_erp_scheduler_source_identity_excludes_credentials_and_query_secrets(self) -> None:
+        settings = ServerSettings.from_environment(
+            {
+                DATABASE_URL_ENV: "sqlite+pysqlite:///:memory:",
+                ACUMATICA_BASE_URL_ENV: (
+                    "https://"
+                    + "embedded-user"
+                    + ":"
+                    + "embedded-secret"
+                    + chr(64)
+                    + "ERP.EXAMPLE.test/Instance?token=hidden"
+                ),
+                ACUMATICA_USERNAME_ENV: "configured-user",
+                ACUMATICA_PASSWORD_ENV: "configured-secret",
+            }
+        )
+        identity = settings.erp_sync.source_identity
+        self.assertIn("https://erp.example.test/Instance", identity)
+        self.assertNotIn("embedded-user", identity)
+        self.assertNotIn("embedded-secret", identity)
+        self.assertNotIn("token", identity)
+        self.assertNotIn("configured-user", identity)
+        self.assertNotIn("configured-secret", identity)
+
+    def test_erp_scheduler_invalid_time_fails_closed(self) -> None:
+        with self.assertRaises(ServerConfigurationError):
+            ServerSettings.from_environment(
+                {
+                    DATABASE_URL_ENV: "sqlite+pysqlite:///:memory:",
+                    ERP_SYNC_TIME_ENV: "25:90",
+                }
+            )
 
     def test_environment_overrides_server_values_and_local_roles(self) -> None:
         settings = ServerSettings.from_environment(

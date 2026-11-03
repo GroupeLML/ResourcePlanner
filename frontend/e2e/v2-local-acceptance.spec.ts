@@ -389,6 +389,13 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await expect(page.locator(".projects-sync-message").first()).toContainText("1 créées");
     await expect(page.locator(".projects-sync-message").first()).toContainText("1 requête(s) ERP");
     await expect(page.locator(".projects-sync-message").first()).toContainText("lignes ERP parcourues");
+
+    const ordering = await context.request.get("/__e2e__/erp-sync/events");
+    expect(ordering.ok()).toBeTruthy();
+    expect((await ordering.json() as { events: string[] }).events).toEqual([
+      "projects",
+      "tasks",
+    ]);
     await closeContext(context);
   });
 
@@ -2239,7 +2246,9 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
 
   aliceShift = aliceRow.locator(".shift-card").filter({ hasText: demandNumber }).first();
   bobShift = bobRow.locator(".shift-card").filter({ hasText: demandNumber }).first();
-  await expect(aliceShift).toContainText("Aucun actif");
+  // Resource-level vehicle assignments from other acceptance scenarios may
+  // legitimately be inherited onto Alice's shift. This scenario only proves
+  // that its Nacelle reservations are not linked as human-shift assets.
   await expect(aliceShift).not.toContainText("Nacelle #63");
   await expect(aliceShift).not.toContainText("Nacelle #64");
   await expect(bobShift).not.toContainText("Nacelle #63");
@@ -2249,9 +2258,23 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   const shiftAssetPopup = coordinator.page.getByRole("dialog", { name: "Modifier le quart" });
   const shiftAssetRegion = shiftAssetPopup.getByRole("region", { name: "Actif" });
   await expect(shiftAssetRegion).toContainText("Aucun actif associé");
-  await expect(shiftAssetRegion).toContainText("Réservations liées à la demande");
-  await expect(shiftAssetRegion).toContainText("Nacelle #63");
-  await expect(shiftAssetRegion).toContainText("Nacelle #64");
+  const relatedAssets = shiftAssetRegion.locator(".shift-related-assets");
+  const relatedHeading = relatedAssets.locator("strong").first();
+  const nacelle63Reservation = relatedAssets.locator("div").filter({ hasText: "Nacelle #63" }).first();
+  const nacelle64Reservation = relatedAssets.locator("div").filter({ hasText: "Nacelle #64" }).first();
+  await expect(nacelle63Reservation).toContainText("Réservation de la demande");
+  await expect(nacelle64Reservation).toContainText("Réservation de la demande");
+
+  const inheritedVehicleReservations = relatedAssets.locator("div").filter({ hasText: /VEH-775-/ });
+  if (await inheritedVehicleReservations.count()) {
+    await expect(relatedHeading).toHaveText("Réservations liées ou héritées");
+    for (let index = 0; index < await inheritedVehicleReservations.count(); index += 1) {
+      await expect(inheritedVehicleReservations.nth(index)).toContainText("Héritée de la période ressource");
+    }
+  } else {
+    await expect(relatedHeading).toHaveText("Réservations liées à la demande");
+  }
+
   await expect(shiftAssetRegion.getByRole("button", { name: "Assigner un actif" })).toBeVisible();
   await shiftAssetPopup.getByRole("button", { name: "Fermer" }).click();
 

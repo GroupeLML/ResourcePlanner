@@ -24,6 +24,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.application import (
+    ExternalProjectRecord,
     TaskCatalogItem,
     TaskCatalogPortfolioSnapshot,
     TaskCatalogProjectSnapshot,
@@ -108,14 +109,38 @@ ROLE_ASSIGNED_ROLES = {
 }
 
 
+class FakePlaywrightProjectSource:
+    """Deterministic RP_Projects source for the projects-first global workflow."""
+
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+
+    def list_projects(self):
+        self.events.append("projects")
+        return (
+            ExternalProjectRecord(
+                external_id="251",
+                number="P-251",
+                name="Projet Playwright V2",
+                status="Actif",
+            ),
+        )
+
+
 class FakePlaywrightProjectTaskSource:
     """Deterministic in-process RP_ProjectTasks batch source for browser acceptance."""
+
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
 
     def fetch_project_snapshots(
         self,
         *,
         project_targets,
     ) -> TaskCatalogPortfolioSnapshot:
+        if not self.events or self.events[-1] != "projects":
+            raise AssertionError("project synchronization must precede task synchronization")
+        self.events.append("tasks")
         sleep(2.0)
         snapshots = []
         for project_external_id, project_number in project_targets:
@@ -579,6 +604,7 @@ def build_app(database_path: Path, frontend_dist: Path):
     smtp_cipher = FernetSecretCipher(Fernet.generate_key().decode("ascii"))
     dev_runtime = DevUserSwitcherRuntime(bootstrap_principal=_bootstrap_principal())
     dev_resolver = dev_user_switcher_auth_resolver(dev_runtime)
+    erp_sync_events: list[str] = []
     app = create_api_app(
         database_url,
         auth_resolver=_combined_auth_resolver(dev_resolver),
@@ -586,8 +612,13 @@ def build_app(database_path: Path, frontend_dist: Path):
         communication_transport=transport,
         smtp_cipher=smtp_cipher,
         smtp_client=smtp_client,
-        project_task_source=FakePlaywrightProjectTaskSource(),
+        project_source=FakePlaywrightProjectSource(erp_sync_events),
+        project_task_source=FakePlaywrightProjectTaskSource(erp_sync_events),
     )
+    @app.get("/__e2e__/erp-sync/events", include_in_schema=False)
+    def erp_sync_event_order():
+        return {"events": list(erp_sync_events)}
+
     @app.get("/__e2e__/identity/link-pending", include_in_schema=False)
     def link_pending_oidc_identity():
         with app.state.session_factory.begin() as session:

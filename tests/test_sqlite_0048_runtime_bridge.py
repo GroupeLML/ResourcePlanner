@@ -123,6 +123,9 @@ def _reshape_as_0048(path: Path) -> None:
             DROP TABLE IF EXISTS planning_work_queue_restorations;
             DROP TABLE IF EXISTS planning_work_queue_releases;
             DROP TABLE IF EXISTS request_completion_reductions;
+            DROP TABLE IF EXISTS erp_sync_attempts;
+            DROP TABLE IF EXISTS erp_sync_occurrences;
+            DROP TABLE IF EXISTS erp_sync_control;
             DROP TABLE IF EXISTS request_requirement_planning_intents;
 
             DROP TABLE IF EXISTS competency_resource_class_audit;

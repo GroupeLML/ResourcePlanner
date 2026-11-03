@@ -61,6 +61,9 @@ SOURCE_MISSING_TABLES = {
     "planning_work_queue_releases",
     "planning_work_queue_restorations",
     "request_completion_reductions",
+    "erp_sync_control",
+    "erp_sync_occurrences",
+    "erp_sync_attempts",
 }
 SOURCE_MISSING_COLUMNS = {
     "projects": {
@@ -83,6 +86,10 @@ SOURCE_MISSING_COLUMNS = {
     },
     "shifts": {"operational_responsible_override_contact_id"},
     "auth_sessions": {"auth_mode"},
+    "acumatica_project_task_sync_runs": {
+        "parent_attempt_id",
+        "erp_generation",
+    },
     "communication_messages": {"to_recipients_json"},
     "competencies": {"resource_class_code", "resource_class_version"},
     "work_packages": {

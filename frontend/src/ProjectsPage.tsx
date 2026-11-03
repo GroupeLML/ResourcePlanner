@@ -17,6 +17,7 @@ import {
   ProjectTaskSyncMetadata,
   TaskCatalogItemReadModel,
   getAcumaticaIntegrationStatus,
+  getAcumaticaErpSyncRun,
   getAcumaticaProjectTaskSyncRun,
   getCurrentAcumaticaProjectTaskSyncRun,
   getAcumaticaProjectTaskSyncMetadata,
@@ -685,9 +686,21 @@ export default function ProjectsPage() {
     setSyncMessage(null);
     setSyncError(null);
     try {
-      const result = await syncAcumaticaProjects();
+      const accepted = await syncAcumaticaProjects(createClientId());
+      let run = accepted;
+      while (GLOBAL_TASK_SYNC_ACTIVE.has(run.status)) {
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+        run = await getAcumaticaErpSyncRun(run.run_id);
+      }
+      if (run.status !== "COMPLETED" && run.status !== "COMPLETED_WITH_ERRORS") {
+        throw new ApiError(
+          run.diagnostic || "La synchronisation Acumatica a échoué.",
+          409,
+          run.error_code,
+        );
+      }
       setSyncMessage(
-        `${result.received} reçu(s) · ${result.created} créé(s) · ${result.updated} mis à jour · ${result.unchanged} inchangé(s)`,
+        `${run.project_received ?? run.projects_total} reçu(s) · ${run.projects_created ?? 0} créé(s) · ${run.projects_updated ?? 0} mis à jour · ${run.projects_unchanged ?? 0} inchangé(s)`,
       );
       const projectRows = await getProjects(false, undefined, scope);
       setProjects(projectRows);

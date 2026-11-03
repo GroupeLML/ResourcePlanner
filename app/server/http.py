@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from collections.abc import Iterator
+import asyncio
 from pathlib import Path
 from typing import Any, Callable
 
@@ -10,6 +11,10 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
+from ..application.erp_sync_scheduler import (
+    ErpSyncAutomaticSafetyCapability,
+    ErpSyncSchedulerSettings,
+)
 from ..application import (
     ApplicationAuthorizationError,
     ApplicationConflictError,
@@ -49,7 +54,7 @@ from ..infrastructure.sql import (
     create_sql_engine,
     transactional_session,
 )
-from .acumatica_project_task_sync import AcumaticaProjectTaskSyncRunner
+from .erp_sync_orchestration import ErpSyncOrchestrator
 from .composition import (
     build_approval_progress_service,
     build_approval_scope_service,
@@ -504,6 +509,8 @@ def create_api_app(
     smtp_client: SmtpClientPort | None = None,
     performance_log_path: Path | None = None,
     runtime_dependencies: dict[str, Any] | None = None,
+    erp_sync_settings: ErpSyncSchedulerSettings | None = None,
+    erp_sync_automatic_safety: ErpSyncAutomaticSafetyCapability | None = None,
 ) -> FastAPI:
     if auth_resolver is None:
         raise ValueError(
@@ -516,7 +523,24 @@ def create_api_app(
     engine = create_sql_engine(database_url)
     install_sql_performance_instrumentation(engine)
     factory = create_session_factory(engine)
-    project_task_sync_runner = AcumaticaProjectTaskSyncRunner(factory, project_task_source)
+    resolved_erp_sync_settings = erp_sync_settings or ErpSyncSchedulerSettings()
+    install_erp_sync_orchestrator = (
+        erp_sync_settings is not None
+        or project_source is not None
+        or project_task_source is not None
+        or erp_sync_automatic_safety is not None
+    )
+    erp_sync_orchestrator = (
+        ErpSyncOrchestrator(
+            factory,
+            project_source=project_source,
+            project_task_source=project_task_source,
+            settings=resolved_erp_sync_settings,
+            automatic_safety=erp_sync_automatic_safety,
+        )
+        if install_erp_sync_orchestrator
+        else None
+    )
     session_dependency = make_session_dependency(factory)
     facade_dependency = make_facade_dependency(
         factory,
@@ -595,11 +619,35 @@ def create_api_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        project_task_sync_runner.reconcile_interrupted_runs()
+        scheduler_task: asyncio.Task[None] | None = None
+
+        async def scheduler_loop() -> None:
+            assert erp_sync_orchestrator is not None
+            while True:
+                try:
+                    await asyncio.to_thread(erp_sync_orchestrator.scheduler_tick)
+                except Exception:
+                    # Scheduler failures are durable/diagnostic concerns, never a
+                    # reason to take the Web process down.
+                    pass
+                await asyncio.sleep(resolved_erp_sync_settings.poll_seconds)
+
+        if erp_sync_orchestrator is not None:
+            erp_sync_orchestrator.reconcile_startup()
+            if resolved_erp_sync_settings.enabled:
+                scheduler_task = asyncio.create_task(
+                    scheduler_loop(),
+                    name="erp-sync-scheduler",
+                )
         try:
             yield
         finally:
-            project_task_sync_runner.shutdown()
+            if scheduler_task is not None:
+                scheduler_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await scheduler_task
+            if erp_sync_orchestrator is not None:
+                erp_sync_orchestrator.shutdown()
             engine.dispose()
 
     app = FastAPI(
@@ -629,7 +677,13 @@ def create_api_app(
     app.state.approval_scope_dependency = approval_scope_dependency
     app.state.approval_progress_dependency = approval_progress_dependency
     app.state.runtime_dependencies = dict(runtime_dependencies or {})
-    app.state.project_task_sync_runner = project_task_sync_runner
+    app.state.project_task_sync_runner = erp_sync_orchestrator
+    app.state.erp_sync_orchestrator = erp_sync_orchestrator
+    app.state.erp_sync_activation_diagnostic = (
+        erp_sync_orchestrator.automatic_activation_diagnostic
+        if erp_sync_orchestrator is not None
+        else None
+    )
     app.state.dev_user_switcher_enabled = dev_user_switcher_runtime is not None
 
     install_authorization_middleware(
@@ -775,7 +829,7 @@ def create_api_app(
             employee_source=employee_source,
             user_source=user_source,
             project_task_source=project_task_source,
-            project_task_sync_runner=project_task_sync_runner,
+            erp_sync_orchestrator=erp_sync_orchestrator,
             acumatica_info=acumatica_info,
         )
     )
