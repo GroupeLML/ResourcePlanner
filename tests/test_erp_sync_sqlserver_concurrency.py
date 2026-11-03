@@ -153,7 +153,35 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        cls.engine.dispose()
+        try:
+            with transactional_session(cls.factory) as session:
+                session.execute(
+                    delete(TaskCatalogEntry).where(
+                        TaskCatalogEntry.project_number.like("SQL643%")
+                    )
+                )
+                session.execute(
+                    delete(TaskCatalogProjectSyncState).where(
+                        TaskCatalogProjectSyncState.project_number.like("SQL643%")
+                    )
+                )
+                session.execute(
+                    delete(Project).where(Project.number.like("SQL643%"))
+                )
+                session.execute(
+                    delete(TaskClassStandard).where(
+                        TaskClassStandard.task_code.in_(cls.TEST_TASK_CODES),
+                        TaskClassStandard.resource_class_code
+                        == cls.TEST_RESOURCE_CLASS,
+                    )
+                )
+                session.execute(
+                    delete(ResourceClassConfig).where(
+                        ResourceClassConfig.code == cls.TEST_RESOURCE_CLASS
+                    )
+                )
+        finally:
+            cls.engine.dispose()
 
     TEST_PROJECT_PREFIX = "SQL643"
     TEST_RESOURCE_CLASS = "SQL643_TEST"
@@ -344,6 +372,10 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             )
             self.assertIsNone(
                 session.get(TaskCatalogProjectSyncState, owned_number)
+            )
+        with transactional_session(self.factory) as session:
+            session.execute(
+                delete(Project).where(Project.number == sentinel_number)
             )
 
     def _task_run_diagnostic(self, run_id: str | None) -> str:
@@ -720,6 +752,8 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
                 for row in evidence_rows
             )
         )
+        self.assertEqual(projects.calls, 2)
+        self.assertEqual(tasks.batch_calls, 2)
         orchestrator.shutdown()
 
     def test_sqlserver_stale_generation_cannot_write_mutation_evidence(self) -> None:
