@@ -3,8 +3,9 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
 import os
-from threading import Barrier
+from threading import Barrier, Event
 import unittest
+from unittest.mock import patch
 
 from sqlalchemy import delete, func, select, text
 
@@ -17,6 +18,7 @@ from app.application import (
 from app.application.erp_sync_scheduler import (
     ErpSyncSchedulerSettings,
     TestErpSyncAutomaticSafetyCapability,
+    UnavailableErpSyncAutomaticSafetyCapability,
     resolve_scheduled_instant,
 )
 from app.infrastructure.sql import (
@@ -51,8 +53,10 @@ from app.infrastructure.sql.erp_sync_control_repository import (
 class SqlServerProjectSource:
     def __init__(self, rows: tuple[ExternalProjectRecord, ...]) -> None:
         self.rows = rows
+        self.calls = 0
 
     def list_projects(self):
+        self.calls += 1
         return self.rows
 
 
@@ -62,12 +66,14 @@ class SqlServerPortfolioTaskSource:
         snapshots: dict[str, TaskCatalogProjectSnapshot],
     ) -> None:
         self.snapshots = snapshots
+        self.batch_calls = 0
 
     def fetch_project_snapshots(
         self,
         *,
         project_targets: tuple[tuple[str, str], ...],
     ) -> TaskCatalogPortfolioSnapshot:
+        self.batch_calls += 1
         snapshots = tuple(
             self.snapshots.get(
                 number,
@@ -250,6 +256,144 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             attempt_count = session.scalar(select(func.count(ErpSyncAttempt.id)))
         self.assertEqual(occurrence_count, 1)
         self.assertEqual(attempt_count, 1)
+
+    def test_manual_owner_is_only_observed_by_automatic_scheduler(self) -> None:
+        unavailable = UnavailableErpSyncAutomaticSafetyCapability()
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = repository.record_daily_decision(
+            self.settings,
+            unavailable,
+        )
+        self.assertIsNotNone(occurrence)
+        self.assertEqual(occurrence.status, "DISABLED")
+
+        manual = repository.claim_outcome(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="manual-backend",
+            settings=self.settings,
+        )
+        self.assertTrue(manual.admitted)
+        self.assertIsNotNone(manual.attempt)
+
+        project_number = "SQL643A-O"
+        with transactional_session(self.factory) as session:
+            session.execute(
+                delete(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == project_number
+                )
+            )
+            session.execute(
+                delete(Project).where(Project.number == project_number)
+            )
+
+        projects = SqlServerProjectSource(
+            (_sql_project(project_number, "Manual observer authority"),)
+        )
+        tasks = SqlServerPortfolioTaskSource(
+            {
+                project_number: _sql_snapshot(
+                    project_number,
+                    "300",
+                    "Manual observer task",
+                )
+            }
+        )
+        backend_a = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.settings,
+            automatic_safety=unavailable,
+            system_actor="manual-backend",
+        )
+        backend_b = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.settings,
+            automatic_safety=unavailable,
+            system_actor="automatic-observer",
+        )
+
+        worker_entered = Event()
+        release_worker = Event()
+        original_execute = backend_a._execute_attempt
+
+        def paused_execute(*args, **kwargs):
+            worker_entered.set()
+            if not release_worker.wait(timeout=10):
+                raise RuntimeError("SQL Server manual worker release timeout")
+            return original_execute(*args, **kwargs)
+
+        try:
+            with patch.object(backend_a, "_execute_attempt", side_effect=paused_execute):
+                future = backend_a._submit(
+                    manual.attempt.id,
+                    manual.attempt.generation,
+                )
+                self.assertTrue(worker_entered.wait(timeout=5))
+                self.assertEqual(
+                    repository.get_attempt(manual.attempt.id).status,
+                    ERP_ATTEMPT_PENDING,
+                )
+
+                with patch.object(
+                    backend_b,
+                    "_submit",
+                    wraps=backend_b._submit,
+                ) as observer_submit:
+                    observed = backend_b.scheduler_tick()
+
+                self.assertIsNotNone(observed)
+                self.assertEqual(observed["attempt_id"], manual.attempt.id)
+                self.assertEqual(observed["claim_outcome"], "OBSERVED")
+                self.assertEqual(observed["trigger"], "RETRY")
+                self.assertEqual(observed["status"], ERP_ATTEMPT_PENDING)
+                observer_submit.assert_not_called()
+                self.assertEqual(
+                    repository.get_attempt(manual.attempt.id).status,
+                    ERP_ATTEMPT_PENDING,
+                )
+
+                release_worker.set()
+                future.result(timeout=20)
+
+            completed = repository.get_attempt(manual.attempt.id)
+            self.assertEqual(completed.status, "SUCCEEDED")
+            self.assertEqual(completed.trigger_kind, "RETRY")
+            self.assertEqual(projects.calls, 1)
+            self.assertEqual(tasks.batch_calls, 1)
+
+            with self.factory() as session:
+                attempts = tuple(
+                    session.scalars(
+                        select(ErpSyncAttempt).where(
+                            ErpSyncAttempt.occurrence_id == occurrence.id
+                        )
+                    )
+                )
+                control = session.get(ErpSyncControl, ERP_SYNC_CONTROL_ROW_ID)
+                task_row = session.scalar(
+                    select(TaskCatalogEntry).where(
+                        TaskCatalogEntry.project_number == project_number,
+                        TaskCatalogEntry.task_code == "300",
+                    )
+                )
+            self.assertEqual(len(attempts), 1)
+            self.assertEqual(attempts[0].id, manual.attempt.id)
+            self.assertEqual(attempts[0].trigger_kind, "RETRY")
+            self.assertIsNotNone(control)
+            self.assertIsNone(control.owner_attempt_id)
+            self.assertIsNotNone(task_row)
+            self.assertEqual(
+                repository.get_occurrence(occurrence.id).success_attempt_id,
+                manual.attempt.id,
+            )
+        finally:
+            release_worker.set()
+            backend_a.shutdown()
+            backend_b.shutdown()
 
     def test_generation_takeover_releases_child_and_fences_all_stale_writes(self) -> None:
         project_a = "SQL643A-A"
