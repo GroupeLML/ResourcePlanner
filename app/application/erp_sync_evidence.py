@@ -648,6 +648,50 @@ class ErpSyncEvidenceService:
                 result.append((row, before, after))
             return tuple(result)
 
+    def source_observed_at_in_session(
+        self,
+        session: Session,
+        *,
+        attempt_id: str,
+        source_type: str,
+    ) -> datetime | None:
+        from ..infrastructure.sql import (
+            EVIDENCE_PROOF_SOURCE,
+            ErpSyncEvidenceManifest,
+        )
+
+        return session.scalar(
+            select(ErpSyncEvidenceManifest.observed_at).where(
+                ErpSyncEvidenceManifest.attempt_id == attempt_id,
+                ErpSyncEvidenceManifest.source_type == source_type,
+                ErpSyncEvidenceManifest.proof_type == EVIDENCE_PROOF_SOURCE,
+            )
+        )
+
+    def quarantine_attempt_provenance(
+        self,
+        *,
+        attempt_id: str,
+        reason_code: str,
+    ) -> int:
+        from ..infrastructure.sql import ErpSyncProjectQuality
+        from ..infrastructure.sql.session import transactional_session
+
+        changed = 0
+        with transactional_session(self._session_factory) as session:
+            rows = tuple(
+                session.scalars(
+                    select(ErpSyncProjectQuality).where(
+                        ErpSyncProjectQuality.producer_attempt_id == attempt_id
+                    )
+                )
+            )
+            for row in rows:
+                row.quality_state = "QUARANTINED"
+                row.reason_code = str(reason_code)
+                changed += 1
+        return changed
+
     def mark_recovery_required(
         self,
         *,
@@ -1579,6 +1623,26 @@ class ErpSyncEvidenceService:
                 recovery.pinned = False
                 recovery.resolved_by = actor_name
                 recovery.resolved_at = _utc_now()
+            affected_projects = {
+                str(before.get("number"))
+                for row, before, _after in payload_rows
+                if row.entity_type == "PROJECT"
+                and isinstance(before, dict)
+                and before.get("number")
+            }
+            affected_projects.update(
+                str(row.entity_key)
+                for row, _before, _after in payload_rows
+                if row.entity_type == "TASK_SYNC_STATE"
+            )
+            from ..infrastructure.sql import ErpSyncProjectQuality
+            for project_number in affected_projects:
+                quality = session.get(ErpSyncProjectQuality, project_number)
+                if quality is not None:
+                    quality.quality_state = "STALE"
+                    quality.producer_attempt_id = None
+                    quality.reason_code = "erp_sync_compensation_requires_refresh"
+                    quality.validated_at = _utc_now()
             receipt = ErpSyncCompensationReceipt(
                 id=new_id(),
                 attempt_id=attempt_id,
