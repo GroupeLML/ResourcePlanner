@@ -2460,6 +2460,13 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             payload=[{"number": "1"}],
             row_count=1,
         )
+        different = self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload=[{"different": True}],
+            row_count=0,
+        )
         self.service.bind_attempt_policy(
             attempt_id=attempt.id,
             generation=attempt.generation,
@@ -2484,13 +2491,6 @@ class ErpSyncEvidenceTests(unittest.TestCase):
         )
         self.assertTrue(self.service.validate_plausibility(small).accepted)
 
-        different = self.service.capture_source(
-            attempt_id=attempt.id,
-            source_type="TASKS",
-            profile_fingerprint=self.control_settings.config_fingerprint,
-            payload=[{"different": True}],
-            row_count=0,
-        )
         self.assertFalse(
             self.service.validate_plausibility(
                 different,
