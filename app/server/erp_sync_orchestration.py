@@ -2589,6 +2589,34 @@ class ErpSyncOrchestrator:
         except ErpSyncFenceLost:
             raise
         except ApplicationError as exc:
+            if (
+                self._evidence is not None
+                and exc.code
+                in {
+                    "erp_sync_evidence_attempt_budget_exceeded",
+                    "erp_sync_evidence_storage_budget_unavailable",
+                    "erp_sync_evidence_reservation_missing",
+                    "erp_sync_checkpoint_before_conflict",
+                    "erp_sync_checkpoint_after_conflict",
+                }
+            ):
+                with transactional_session(self._session_factory) as session:
+                    SqlErpSyncControlRepository.guard_session(
+                        session,
+                        attempt_id=attempt_id,
+                        generation=generation,
+                        settings=self._settings,
+                    )
+                    if self._evidence.committed_mutation_count_in_session(
+                        session,
+                        attempt_id=attempt_id,
+                    ):
+                        self._evidence.mark_recovery_required_in_session(
+                            session,
+                            attempt_id=attempt_id,
+                            reason_code="erp_sync_checkpoint_unavailable_after_commit",
+                        )
+                raise
             self._record_task_outcome(
                 run_id,
                 attempt_id,
