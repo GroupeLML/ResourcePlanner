@@ -173,7 +173,21 @@ class ErpSyncOrchestrator:
         self._control.ensure_control_row()
         # Protocol validation happens inside reconciliation before any owner,
         # attempt, or child state can be mutated.
-        reconciled = self._control.reconcile_expired_owner()
+        interrupted_attempts = self._control.reconcile_expired_owner_attempts()
+        reconciled = len(interrupted_attempts)
+        if self._evidence is not None:
+            for attempt_id in interrupted_attempts:
+                if self._evidence.committed_mutation_count(
+                    attempt_id=attempt_id
+                ):
+                    self._evidence.mark_recovery_required(
+                        attempt_id=attempt_id,
+                        reason_code="erp_sync_interrupted_after_committed_mutation",
+                    )
+                self._evidence.finalize_attempt(
+                    attempt_id=attempt_id,
+                    successful=False,
+                )
         # Configuration adoption is independent from automatic scheduling. This
         # permits a valid later-boundary restart/manual run while enabled=false.
         self._control.reconcile_configuration(self._settings)
