@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextvars import copy_context
 from datetime import datetime, timedelta, timezone
+from functools import partial
 import logging
 from threading import Event, Lock, Thread
 from time import perf_counter
@@ -152,7 +154,12 @@ class ErpSyncOrchestrator:
 
     def reconcile_startup(self) -> int:
         self._control.ensure_control_row()
+        # Protocol validation happens inside reconciliation before any owner,
+        # attempt, or child state can be mutated.
         reconciled = self._control.reconcile_expired_owner()
+        # Configuration adoption is independent from automatic scheduling. This
+        # permits a valid later-boundary restart/manual run while enabled=false.
+        self._control.reconcile_configuration(self._settings)
         reconciled += self._reconcile_expired_legacy_task_runs()
         return reconciled
 
@@ -380,40 +387,13 @@ class ErpSyncOrchestrator:
                 "La synchronisation projets n'a pas pu acquérir le contrôle ERP.",
                 code="erp_sync_command_not_claimed",
             )
-        try:
-            if not self._control.start_attempt(
-                attempt_id=attempt.id,
-                generation=int(attempt.generation),
-                settings=self._settings,
-            ):
-                raise ApplicationConflictError(
-                    "La tentative projets n'a pas pu démarrer.",
-                    code="erp_sync_command_not_started",
-                )
-            result = self._execute_projects(
-                attempt.id,
-                int(attempt.generation),
-                project_source=project_source,
-            )
-            self._control.finish(
-                attempt_id=attempt.id,
-                generation=int(attempt.generation),
-                status=ERP_ATTEMPT_SUCCEEDED,
-                phase="PUBLICATION_COMMITTED",
-                settings=self._settings,
-            )
-            return result
-        except Exception:
-            self._control.finish(
-                attempt_id=attempt.id,
-                generation=int(attempt.generation),
-                status=ERP_ATTEMPT_FAILED,
-                phase="FAILED",
-                error_code="acumatica_project_sync_failed",
-                diagnostic="La synchronisation projets Acumatica a échoué.",
-                settings=self._settings,
-            )
-            raise
+        future = self._submit(
+            attempt.id,
+            int(attempt.generation),
+            project_source=project_source,
+            propagate_errors=True,
+        )
+        return future.result()
 
     def run_targeted_project_tasks_compat(
         self,
@@ -467,63 +447,13 @@ class ErpSyncOrchestrator:
                 "La synchronisation ciblée n'a pas pu acquérir le contrôle ERP.",
                 code="erp_sync_command_not_claimed",
             )
-        try:
-            if not self._control.start_attempt(
-                attempt_id=attempt.id,
-                generation=int(attempt.generation),
-                settings=self._settings,
-            ):
-                raise ApplicationConflictError(
-                    "La tentative ciblée n'a pas pu démarrer.",
-                    code="erp_sync_command_not_started",
-                )
-            snapshot = source.fetch_project_snapshot(
-                project_external_id=project_external_id,
-                project_number=project_number,
-            )
-            with transactional_session(self._session_factory) as session:
-                SqlErpSyncControlRepository.guard_session(
-                    session,
-                    attempt_id=attempt.id,
-                    generation=int(attempt.generation),
-                    settings=self._settings,
-                )
-                repository = SqlTaskCatalogRepository(session)
-                result = TaskCatalogSyncService(
-                    _PreloadedProjectTaskSource(snapshot),
-                    repository,
-                    sync_metadata_repository=repository,
-                    workforce_policy=SqlTaskCatalogWorkforcePolicy(session),
-                ).synchronize_project(
-                    project_external_id=project_external_id,
-                    project_number=project_number,
-                )
-                SqlErpSyncControlRepository.update_phase_in_session(
-                    session,
-                    attempt_id=attempt.id,
-                    generation=int(attempt.generation),
-                    phase="TASKS_FINISHED",
-                    settings=self._settings,
-                )
-            self._control.finish(
-                attempt_id=attempt.id,
-                generation=int(attempt.generation),
-                status=ERP_ATTEMPT_SUCCEEDED,
-                phase="PUBLICATION_COMMITTED",
-                settings=self._settings,
-            )
-            return result
-        except Exception:
-            self._control.finish(
-                attempt_id=attempt.id,
-                generation=int(attempt.generation),
-                status=ERP_ATTEMPT_FAILED,
-                phase="FAILED",
-                error_code="targeted_project_task_sync_failed",
-                diagnostic="La synchronisation ciblée des tâches a échoué.",
-                settings=self._settings,
-            )
-            raise
+        future = self._submit(
+            attempt.id,
+            int(attempt.generation),
+            project_task_source=source,
+            propagate_errors=True,
+        )
+        return future.result()
 
     def launch_projects(self, *, actor_name: str = "api") -> dict[str, Any]:
         current = self.current()
@@ -678,7 +608,10 @@ class ErpSyncOrchestrator:
         generation: int,
         *,
         automatic: bool = False,
-    ) -> None:
+        project_source: ProjectSourcePort | None = None,
+        project_task_source: ProjectTaskCatalogSourcePort | None = None,
+        propagate_errors: bool = False,
+    ) -> Future[Any]:
         with self._launch_lock:
             if self._closed:
                 raise ApplicationUnavailableError(
@@ -686,12 +619,17 @@ class ErpSyncOrchestrator:
                     code="erp_sync_runner_unavailable",
                 )
             try:
-                self._executor.submit(
+                context = copy_context()
+                work = partial(
                     self._execute_attempt,
                     attempt_id,
                     generation,
                     automatic,
+                    project_source=project_source,
+                    project_task_source=project_task_source,
+                    propagate_errors=propagate_errors,
                 )
+                return self._executor.submit(context.run, work)
             except RuntimeError as exc:
                 raise ApplicationUnavailableError(
                     "Le worker ERP n'est pas disponible.",
@@ -718,7 +656,11 @@ class ErpSyncOrchestrator:
         attempt_id: str,
         generation: int,
         automatic: bool = False,
-    ) -> None:
+        *,
+        project_source: ProjectSourcePort | None = None,
+        project_task_source: ProjectTaskCatalogSourcePort | None = None,
+        propagate_errors: bool = False,
+    ) -> Any:
         stop = Event()
         heartbeat: Thread | None = None
         try:
@@ -727,7 +669,12 @@ class ErpSyncOrchestrator:
                 generation=generation,
                 settings=self._settings,
             ):
-                return
+                if propagate_errors:
+                    raise ApplicationConflictError(
+                        "La tentative ERP acceptée n'a pas pu démarrer.",
+                        code="erp_sync_command_not_started",
+                    )
+                return None
             heartbeat = Thread(
                 target=self._heartbeat,
                 kwargs={
@@ -753,6 +700,21 @@ class ErpSyncOrchestrator:
                 return
             if attempt.intent.startswith("TARGETED_PROJECT_TASKS:"):
                 project_id = attempt.intent.split(":", 1)[1]
+                if project_task_source is not None:
+                    result = self._execute_targeted_compat_business(
+                        attempt_id,
+                        generation,
+                        project_id,
+                        project_task_source,
+                    )
+                    self._control.finish(
+                        attempt_id=attempt_id,
+                        generation=generation,
+                        status=ERP_ATTEMPT_SUCCEEDED,
+                        phase="PUBLICATION_COMMITTED",
+                        settings=self._settings,
+                    )
+                    return result
                 task_status = self._execute_targeted_task_project(
                     attempt_id,
                     generation,
@@ -774,10 +736,14 @@ class ErpSyncOrchestrator:
                     ),
                     settings=self._settings,
                 )
-                return
+                return None
 
             if attempt.intent != "ACTIVE_PROJECT_TASKS_ONLY":
-                self._execute_projects(attempt_id, generation)
+                project_result = self._execute_projects(
+                    attempt_id,
+                    generation,
+                    project_source=project_source,
+                )
                 if attempt.intent == "PROJECTS_ONLY":
                     self._control.finish(
                         attempt_id=attempt_id,
@@ -786,7 +752,7 @@ class ErpSyncOrchestrator:
                         phase="PUBLICATION_COMMITTED",
                         settings=self._settings,
                     )
-                    return
+                    return project_result
 
             task_status = self._execute_tasks(attempt_id, generation)
             parent_status = (
@@ -814,6 +780,8 @@ class ErpSyncOrchestrator:
                 attempt_id,
                 generation,
             )
+            if propagate_errors:
+                raise
         except ApplicationError as exc:
             self._control.finish(
                 attempt_id=attempt_id,
@@ -824,6 +792,8 @@ class ErpSyncOrchestrator:
                 diagnostic="La synchronisation ERP n'a pas pu être exécutée.",
                 settings=self._settings,
             )
+            if propagate_errors:
+                raise
         except Exception as exc:
             logger.error(
                 "ERP sync orchestration failed attempt_id=%s generation=%s error_type=%s",
@@ -840,10 +810,66 @@ class ErpSyncOrchestrator:
                 diagnostic="La synchronisation ERP n'a pas pu être exécutée.",
                 settings=self._settings,
             )
+            if propagate_errors:
+                raise
         finally:
             stop.set()
             if heartbeat is not None:
                 heartbeat.join(timeout=1.0)
+
+    def _execute_targeted_compat_business(
+        self,
+        attempt_id: str,
+        generation: int,
+        project_id: str,
+        source: ProjectTaskCatalogSourcePort,
+    ):
+        with self._session_factory() as session:
+            project = session.get(Project, project_id)
+            if project is None:
+                raise ApplicationNotFoundError(
+                    "Le projet demandé n'existe pas.",
+                    code="project_not_found",
+                    context={"project_id": project_id},
+                )
+            project_external_id = str(project.erp_external_id or "").strip()
+            project_number = str(project.number)
+        if not project_external_id:
+            raise ApplicationValidationError(
+                "Ce projet local ne possède pas d'identifiant ERP pour synchroniser ses tâches.",
+                code="task_catalog_project_external_id_required",
+                context={"project_id": project_id, "project_number": project_number},
+            )
+
+        snapshot = source.fetch_project_snapshot(
+            project_external_id=project_external_id,
+            project_number=project_number,
+        )
+        with transactional_session(self._session_factory) as session:
+            SqlErpSyncControlRepository.guard_session(
+                session,
+                attempt_id=attempt_id,
+                generation=generation,
+                settings=self._settings,
+            )
+            repository = SqlTaskCatalogRepository(session)
+            result = TaskCatalogSyncService(
+                _PreloadedProjectTaskSource(snapshot),
+                repository,
+                sync_metadata_repository=repository,
+                workforce_policy=SqlTaskCatalogWorkforcePolicy(session),
+            ).synchronize_project(
+                project_external_id=project_external_id,
+                project_number=project_number,
+            )
+            SqlErpSyncControlRepository.update_phase_in_session(
+                session,
+                attempt_id=attempt_id,
+                generation=generation,
+                phase="TASKS_FINISHED",
+                settings=self._settings,
+            )
+            return result
 
     def _execute_projects(
         self,
