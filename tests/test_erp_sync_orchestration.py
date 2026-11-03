@@ -405,11 +405,10 @@ class ErpSyncOrchestrationTests(unittest.TestCase):
 
                 projects.fail = False
                 retry_completed = Event()
-                original_execute_retry = backend_a._execute_attempt
 
                 def observed_retry(*args, **kwargs):
                     try:
-                        return original_execute_retry(*args, **kwargs)
+                        return original_execute_a(*args, **kwargs)
                     finally:
                         retry_completed.set()
 
@@ -445,7 +444,6 @@ class ErpSyncOrchestrationTests(unittest.TestCase):
             backend_b.shutdown()
 
     def test_targeted_terminal_replay_observes_same_attempt(self) -> None:
-        source = PortfolioTaskSource({"A": snapshot("A", (task("A", "1"),))})
         # Targeted async launch uses fetch_project_snapshot, so use a minimal
         # source object with deterministic counting for that contract.
         class TargetedSource:
