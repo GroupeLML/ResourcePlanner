@@ -568,6 +568,66 @@ class ErpSyncEvidenceService:
             ):
                 manifest.pinned = True
 
+    def list_attempt_sources(self, *, attempt_id: str) -> tuple[dict[str, Any], ...]:
+        from ..infrastructure.sql import ErpSyncEvidenceManifest
+
+        with self._session_factory() as session:
+            rows = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceManifest)
+                    .where(ErpSyncEvidenceManifest.attempt_id == attempt_id)
+                    .order_by(
+                        ErpSyncEvidenceManifest.source_type,
+                        ErpSyncEvidenceManifest.proof_type,
+                    )
+                )
+            )
+            return tuple(
+                {
+                    "manifest_id": row.id,
+                    "attempt_id": row.attempt_id,
+                    "protocol_version": int(row.protocol_version),
+                    "source_type": row.source_type,
+                    "proof_type": row.proof_type,
+                    "profile_fingerprint": row.profile_fingerprint,
+                    "source_fingerprint": row.source_fingerprint,
+                    "observed_at": row.observed_at,
+                    "row_count": int(row.row_count),
+                    "chunk_count": int(row.chunk_count),
+                    "plaintext_bytes": int(row.plaintext_bytes),
+                    "ciphertext_bytes": int(row.ciphertext_bytes),
+                    "content_sha256": row.content_sha256,
+                    "state": row.state,
+                    "pinned": bool(row.pinned),
+                    "expires_at": row.expires_at,
+                    "diagnostic": row.diagnostic,
+                }
+                for row in rows
+            )
+
+    def get_baseline_summary(self, *, source_type: str, profile_fingerprint: str) -> dict[str, Any] | None:
+        from ..infrastructure.sql import ErpSyncBaseline
+
+        with self._session_factory() as session:
+            row = session.scalar(
+                select(ErpSyncBaseline).where(
+                    ErpSyncBaseline.source_type == source_type,
+                    ErpSyncBaseline.profile_fingerprint == profile_fingerprint,
+                )
+            )
+            if row is None:
+                return None
+            return {
+                "baseline_id": row.id,
+                "source_type": row.source_type,
+                "profile_fingerprint": row.profile_fingerprint,
+                "source_fingerprint": row.source_fingerprint,
+                "row_count": int(row.row_count),
+                "approved_by": row.approved_by,
+                "approval_reason": row.approval_reason,
+                "approved_at": row.approved_at,
+            }
+
     def approve_baseline(
         self,
         *,
@@ -870,6 +930,311 @@ class ErpSyncEvidenceService:
                 or 0
             )
             return count == 2
+
+    @staticmethod
+    def _preview_hash(attempt_id: str, rows: Sequence[tuple[Any, Mapping[str, Any] | None, Mapping[str, Any] | None]]) -> str:
+        material = [
+            {
+                "attempt_id": attempt_id,
+                "evidence_id": row.id,
+                "entity_type": row.entity_type,
+                "entity_key": row.entity_key,
+                "before_sha256": row.before_sha256,
+                "after_sha256": row.after_sha256,
+            }
+            for row, _before, _after in rows
+            if row.committed_at is not None and row.after_sha256 is not None
+        ]
+        return content_sha256(material)
+
+    def _current_owned_state(self, session: Session, row: Any) -> Mapping[str, Any] | None:
+        from ..infrastructure.sql import Project, TaskCatalogEntry, TaskCatalogProjectSyncState
+
+        if row.entity_type == "PROJECT":
+            project = session.scalar(
+                select(Project).where(
+                    (Project.erp_external_id == row.entity_key)
+                    | (Project.number == row.entity_key)
+                )
+            )
+            if project is None:
+                return None
+            return {
+                "erp_external_id": project.erp_external_id,
+                "number": project.number,
+                "name": project.name,
+                "client": project.client,
+                "project_manager_external_id": project.project_manager_external_id,
+                "project_manager_name": project.project_manager_name,
+                "status": project.status,
+            }
+        if row.entity_type == "TASK":
+            task = session.scalar(
+                select(TaskCatalogEntry).where(
+                    (TaskCatalogEntry.erp_task_id == row.entity_key)
+                    | (
+                        (TaskCatalogEntry.project_number + ":" + TaskCatalogEntry.task_code)
+                        == row.entity_key
+                    )
+                )
+            )
+            if task is None:
+                return None
+            return {
+                "project_number": task.project_number,
+                "task_code": task.task_code,
+                "label": task.label,
+                "status": task.status,
+                "active": bool(task.active),
+                "billing_rule": task.billing_rule,
+                "allocation_rule": task.allocation_rule,
+                "completion_percent": task.completion_percent,
+                "erp_created_at": task.erp_created_at,
+                "branch": task.branch,
+                "approver_name": task.approver_name,
+                "cv_enabled": task.cv_enabled,
+                "time_entry_enabled": task.time_entry_enabled,
+                "expenses_enabled": task.expenses_enabled,
+                "erp_task_id": task.erp_task_id,
+                "account_group": task.account_group,
+                "cost_code": task.cost_code,
+                "inventory_id": task.inventory_id,
+                "budget_amount_cad": task.budget_amount_cad,
+                "budget_actual_cad": task.budget_actual_cad,
+                "budget_diagnostic": task.budget_diagnostic,
+                "workforce_eligible": task.workforce_eligible,
+                "resource_class_code": task.resource_class_code,
+                "average_hourly_cost_cad": task.average_hourly_cost_cad,
+                "budget_hours": task.budget_hours,
+                "workforce_diagnostics": task.workforce_diagnostics,
+                "erp_budget_last_success_at": task.erp_budget_last_success_at,
+            }
+        if row.entity_type == "TASK_SYNC_STATE":
+            state = session.get(TaskCatalogProjectSyncState, row.entity_key)
+            if state is None:
+                return None
+            return {
+                "project_number": state.project_number,
+                "last_attempt_at": state.last_attempt_at,
+                "last_success_at": state.last_success_at,
+                "source_rows": state.source_rows,
+                "task_count": state.task_count,
+                "rejected_rows": state.rejected_rows,
+                "duration_ms": state.duration_ms,
+                "last_error_code": state.last_error_code,
+            }
+        return None
+
+    def compensation_preview(self, *, attempt_id: str) -> dict[str, Any]:
+        rows = self.mutation_payloads(attempt_id=attempt_id)
+        if not rows:
+            raise ApplicationValidationError(
+                "Aucune preuve de mutation n'est disponible pour cette tentative.",
+                code="erp_sync_compensation_evidence_missing",
+            )
+        conflicts: list[str] = []
+        eligible = 0
+        with self._session_factory() as session:
+            for row, _before, after in rows:
+                if row.committed_at is None or row.after_sha256 is None or after is None:
+                    continue
+                eligible += 1
+                current = self._current_owned_state(session, row)
+                if current is None or content_sha256(current) != row.after_sha256:
+                    conflicts.append(f"{row.entity_type}:{row.entity_key}")
+        preview_hash = self._preview_hash(attempt_id, rows)
+        return {
+            "attempt_id": attempt_id,
+            "preview_hash": preview_hash,
+            "eligible_records": eligible,
+            "conflict_count": len(conflicts),
+            "can_confirm": eligible > 0 and not conflicts,
+            "conflicts": tuple(conflicts[:50]),
+        }
+
+    def confirm_compensation(
+        self,
+        *,
+        attempt_id: str,
+        preview_hash: str,
+        command_identity: str,
+        actor_name: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        from ..infrastructure.sql import (
+            RECOVERY_RESOLVED,
+            ErpSyncCompensationReceipt,
+            ErpSyncMutationEvidence,
+            ErpSyncRecoveryState,
+            Project,
+            TaskCatalogEntry,
+            TaskCatalogProjectSyncState,
+        )
+        from ..infrastructure.sql.base import new_id
+        from ..infrastructure.sql.session import transactional_session
+
+        reason_value = _safe_reason(reason)
+        identity = " ".join(str(command_identity or "").split())
+        if not identity:
+            raise ApplicationValidationError(
+                "L'identité idempotente de compensation est requise.",
+                code="erp_sync_compensation_identity_required",
+            )
+        with transactional_session(self._session_factory) as session:
+            existing = session.scalar(
+                select(ErpSyncCompensationReceipt).where(
+                    ErpSyncCompensationReceipt.command_identity == identity
+                )
+            )
+            if existing is not None:
+                return {
+                    "receipt_id": existing.id,
+                    "status": existing.status,
+                    "affected_records": int(existing.affected_records),
+                }
+            rows = tuple(
+                session.scalars(
+                    select(ErpSyncMutationEvidence)
+                    .where(
+                        ErpSyncMutationEvidence.attempt_id == attempt_id,
+                        ErpSyncMutationEvidence.committed_at.is_not(None),
+                        ErpSyncMutationEvidence.after_sha256.is_not(None),
+                    )
+                    .order_by(
+                        ErpSyncMutationEvidence.unit_type.desc(),
+                        ErpSyncMutationEvidence.entity_type.desc(),
+                    )
+                )
+            )
+            payload_rows = []
+            for row in rows:
+                before = (
+                    json.loads(self._decrypt_bytes(row.encrypted_before).decode("utf-8"))
+                    if row.encrypted_before
+                    else None
+                )
+                after = (
+                    json.loads(self._decrypt_bytes(row.encrypted_after).decode("utf-8"))
+                    if row.encrypted_after
+                    else None
+                )
+                payload_rows.append((row, before, after))
+            if self._preview_hash(attempt_id, payload_rows) != str(preview_hash):
+                raise ApplicationConflictError(
+                    "La prévisualisation de compensation est périmée.",
+                    code="erp_sync_compensation_preview_stale",
+                )
+            affected = 0
+            for row, before, _after in payload_rows:
+                current = self._current_owned_state(session, row)
+                if current is None or content_sha256(current) != row.after_sha256:
+                    raise ApplicationConflictError(
+                        "L'état courant ne correspond plus au checkpoint.",
+                        code="erp_sync_compensation_current_state_changed",
+                        context={"entity_type": row.entity_type},
+                    )
+                if row.entity_type == "PROJECT":
+                    project = session.scalar(
+                        select(Project).where(
+                            (Project.erp_external_id == row.entity_key)
+                            | (Project.number == row.entity_key)
+                        )
+                    )
+                    if project is None:
+                        raise ApplicationConflictError(
+                            "Le projet checkpointé n'existe plus.",
+                            code="erp_sync_compensation_current_state_changed",
+                        )
+                    if before is None:
+                        # Never cascade-delete a newly imported project. Remove ERP
+                        # authority and mark it inactive while preserving all local
+                        # references/authority that may now depend on the row.
+                        project.erp_external_id = None
+                        project.status = "Annulé"
+                    else:
+                        for field in (
+                            "erp_external_id",
+                            "number",
+                            "name",
+                            "client",
+                            "project_manager_external_id",
+                            "project_manager_name",
+                            "status",
+                        ):
+                            setattr(project, field, before.get(field))
+                    affected += 1
+                elif row.entity_type == "TASK":
+                    task = session.scalar(
+                        select(TaskCatalogEntry).where(
+                            (TaskCatalogEntry.erp_task_id == row.entity_key)
+                            | (
+                                (TaskCatalogEntry.project_number + ":" + TaskCatalogEntry.task_code)
+                                == row.entity_key
+                            )
+                        )
+                    )
+                    if task is None:
+                        raise ApplicationConflictError(
+                            "La tâche checkpointée n'existe plus.",
+                            code="erp_sync_compensation_current_state_changed",
+                        )
+                    if before is None:
+                        # Preserve local foreign keys; revoke ERP freshness/identity
+                        # rather than destructively deleting a newly created row.
+                        task.active = False
+                        task.erp_task_id = None
+                        task.erp_budget_last_success_at = None
+                    else:
+                        for field, value in before.items():
+                            if field in {
+                                "preferred_resource_id",
+                                "preferred_resource_version",
+                                "operational_responsible_contact_id",
+                                "coordinator_contact_id",
+                            }:
+                                continue
+                            setattr(task, field, value)
+                    affected += 1
+                elif row.entity_type == "TASK_SYNC_STATE":
+                    state = session.get(TaskCatalogProjectSyncState, row.entity_key)
+                    if before is None:
+                        if state is not None:
+                            session.delete(state)
+                    else:
+                        if state is None:
+                            state = TaskCatalogProjectSyncState(**before)
+                            session.add(state)
+                        else:
+                            for field, value in before.items():
+                                setattr(state, field, value)
+                    affected += 1
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == attempt_id
+                )
+            )
+            if recovery is not None:
+                recovery.state = RECOVERY_RESOLVED
+                recovery.pinned = False
+                recovery.resolved_by = actor_name
+                recovery.resolved_at = _utc_now()
+            receipt = ErpSyncCompensationReceipt(
+                id=new_id(),
+                attempt_id=attempt_id,
+                command_identity=identity,
+                preview_hash=str(preview_hash),
+                actor_name=str(actor_name),
+                reason=reason_value,
+                status="COMPLETED",
+                affected_records=affected,
+            )
+            session.add(receipt)
+            session.flush()
+            return {
+                "receipt_id": receipt.id,
+                "status": receipt.status,
+                "affected_records": affected,
+            }
 
     def release_reservation(self, *, attempt_id: str) -> None:
         from ..infrastructure.sql import ErpSyncEvidenceReservation
