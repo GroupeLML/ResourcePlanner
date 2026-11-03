@@ -64,6 +64,14 @@ SOURCE_MISSING_TABLES = {
     "erp_sync_control",
     "erp_sync_occurrences",
     "erp_sync_attempts",
+    "erp_sync_evidence_manifests",
+    "erp_sync_evidence_chunks",
+    "erp_sync_evidence_reservations",
+    "erp_sync_baselines",
+    "erp_sync_plausibility_exceptions",
+    "erp_sync_mutation_evidence",
+    "erp_sync_recovery_state",
+    "erp_sync_compensation_receipts",
 }
 SOURCE_MISSING_COLUMNS = {
     "projects": {
