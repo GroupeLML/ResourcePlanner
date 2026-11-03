@@ -341,6 +341,43 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
                 session.get(TaskCatalogProjectSyncState, owned_number)
             )
 
+    def _task_run_diagnostic(self, run_id: str | None) -> str:
+        if not run_id:
+            return "task_sync_run_id=<none>"
+        with self.factory() as session:
+            run = session.get(AcumaticaProjectTaskSyncRun, run_id)
+            results = tuple(
+                session.scalars(
+                    select(AcumaticaProjectTaskSyncProjectResult)
+                    .where(AcumaticaProjectTaskSyncProjectResult.run_id == run_id)
+                    .order_by(AcumaticaProjectTaskSyncProjectResult.project_number)
+                )
+            )
+        return repr(
+            {
+                "run_status": getattr(run, "status", None),
+                "run_error_code": getattr(run, "error_code", None),
+                "projects_total": getattr(run, "projects_total", None),
+                "projects_processed": getattr(run, "projects_processed", None),
+                "projects_rejected": getattr(run, "projects_rejected", None),
+                "results": [
+                    {
+                        "project_number": row.project_number,
+                        "status": row.status,
+                        "error_code": row.error_code,
+                        "reason_code": row.reason_code,
+                        "source_rows": row.source_rows,
+                        "created": row.created,
+                        "updated": row.updated,
+                        "unchanged": row.unchanged,
+                        "deactivated": row.deactivated,
+                        "rejected": row.rejected,
+                    }
+                    for row in results
+                ],
+            }
+        )
+
     def _daily_occurrence(self) -> ErpSyncOccurrence:
         now = SqlErpSyncControlRepository(self.factory).current_sql_time()
         business_date = now.astimezone(self.settings.timezone()).date()
@@ -630,7 +667,11 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
         self.assertIsNotNone(retry)
         orchestrator._execute_attempt(retry.id, retry.generation)
         completed = repository.get_attempt(retry.id)
-        self.assertEqual(completed.status, "SUCCEEDED")
+        self.assertEqual(
+            completed.status,
+            "SUCCEEDED",
+            self._task_run_diagnostic(completed.task_sync_run_id),
+        )
         self.assertIsNotNone(completed.task_sync_run_id)
 
         with self.factory() as session:
@@ -1065,7 +1106,10 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             self.assertEqual(attempts[0].trigger_kind, "MANUAL")
             self.assertEqual(projects.calls, 1)
             self.assertEqual(tasks.batch_calls, 1)
-            self.assertIsNotNone(task_row)
+            self.assertIsNotNone(
+                task_row,
+                self._task_run_diagnostic(completed.task_sync_run_id),
+            )
         finally:
             release_b.set()
             backend_a.shutdown()
@@ -1199,7 +1243,10 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             self.assertEqual(attempts[0].trigger_kind, "RETRY")
             self.assertIsNotNone(control)
             self.assertIsNone(control.owner_attempt_id)
-            self.assertIsNotNone(task_row)
+            self.assertIsNotNone(
+                task_row,
+                self._task_run_diagnostic(completed.task_sync_run_id),
+            )
             self.assertEqual(
                 repository.get_occurrence(occurrence.id).success_attempt_id,
                 manual.attempt.id,
@@ -1283,7 +1330,10 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
                     TaskCatalogEntry.task_code == "100",
                 )
             )
-            self.assertIsNotNone(committed_a)
+            self.assertIsNotNone(
+                committed_a,
+                self._task_run_diagnostic(first_child_id),
+            )
             committed_a_id = committed_a.id
             first_results = tuple(
                 session.scalars(
