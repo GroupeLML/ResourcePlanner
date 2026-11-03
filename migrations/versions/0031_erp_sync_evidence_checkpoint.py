@@ -103,11 +103,14 @@ def upgrade() -> None:
         sa.Column("attempt_id", sa.String(length=36), nullable=False),
         sa.Column("reserved_bytes", sa.BigInteger(), nullable=False),
         sa.Column("used_bytes", sa.BigInteger(), nullable=False, server_default="0"),
+        sa.Column("reserved_plaintext_bytes", sa.BigInteger(), nullable=False),
+        sa.Column("used_plaintext_bytes", sa.BigInteger(), nullable=False, server_default="0"),
         sa.Column("released_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.CheckConstraint(
-            "reserved_bytes >= 0 AND used_bytes >= 0",
+            "reserved_bytes >= 0 AND used_bytes >= 0 "
+            "AND reserved_plaintext_bytes >= 0 AND used_plaintext_bytes >= 0",
             name="erp_sync_evidence_reservation_non_negative",
         ),
         sa.ForeignKeyConstraint(
