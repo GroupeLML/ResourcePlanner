@@ -22,6 +22,7 @@ from .base import Base, TimestampMixin, new_id
 
 
 ERP_EVIDENCE_PROTOCOL_VERSION = 1
+ERP_SYNC_MUTATION_UNIT_TYPE_LENGTH = 64
 
 EVIDENCE_SOURCE_PROJECTS = "PROJECTS"
 EVIDENCE_SOURCE_TASKS = "TASKS"
@@ -251,7 +252,10 @@ class ErpSyncMutationEvidence(TimestampMixin, Base):
         nullable=False,
     )
     generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    unit_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    unit_type: Mapped[str] = mapped_column(
+        String(ERP_SYNC_MUTATION_UNIT_TYPE_LENGTH),
+        nullable=False,
+    )
     entity_type: Mapped[str] = mapped_column(String(32), nullable=False)
     entity_key: Mapped[str] = mapped_column(String(160), nullable=False)
     before_present: Mapped[bool] = mapped_column(Boolean, nullable=False)
