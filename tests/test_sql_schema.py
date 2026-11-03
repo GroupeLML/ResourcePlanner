@@ -204,6 +204,9 @@ class SqlSchemaTests(unittest.TestCase):
         self.assertFalse(verification_history.action.nullable)
         self.assertFalse(verification_history.verification_version.nullable)
         self.assertFalse(verification_history.details_json.nullable)
+        erp_attempts = Base.metadata.tables["erp_sync_attempts"].c
+        self.assertTrue(erp_attempts.policy_fingerprint.nullable)
+        self.assertEqual(erp_attempts.policy_fingerprint.type.length, 64)
         task_catalog = Base.metadata.tables["task_catalog_items"].c
         work_packages = Base.metadata.tables["work_packages"].c
         work_package_audit = Base.metadata.tables["work_package_audit"].c
