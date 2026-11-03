@@ -496,7 +496,7 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             )
         orchestrator.shutdown()
 
-    def test_exact_source_exception_carries_to_fresh_retry_but_changed_source_does_not(self) -> None:
+    def test_plausibility_exception_is_attempt_scoped_even_for_identical_retry_source(self) -> None:
         control, occurrence, first = self._attempt("exception-source-first")
         baseline = self.service.capture_source(
             attempt_id=first.id,
@@ -571,6 +571,15 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             row_count=1,
         )
         self.assertEqual(identical.source_fingerprint, reviewed.source_fingerprint)
+        self.assertFalse(self.service.validate_plausibility(identical).accepted)
+        self.service.approve_plausibility_exception(
+            attempt_id=retry_two.id,
+            source_type="PROJECTS",
+            source_fingerprint=identical.source_fingerprint,
+            threshold_scope="GLOBAL",
+            actor_name="admin",
+            reason="Fresh retry requires its own explicit approval",
+        )
         self.assertTrue(self.service.validate_plausibility(identical).accepted)
         self.assertTrue(
             control.finish(
