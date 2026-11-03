@@ -1246,12 +1246,15 @@ class ErpSyncEvidenceService:
         attempt_id: str,
         successful: bool,
     ) -> None:
+        # Capacity ownership ends with the terminal attempt, independently of
+        # retention/checkpoint bookkeeping below. The release is idempotent and
+        # retained evidence remains charged through used_bytes.
+        self.release_reservation(attempt_id=attempt_id)
         from ..infrastructure.sql import (
             RECOVERY_AVAILABLE,
             RECOVERY_NONE,
             RECOVERY_REQUIRED,
             ErpSyncEvidenceManifest,
-            ErpSyncEvidenceReservation,
             ErpSyncRecoveryState,
         )
         from ..infrastructure.sql.session import transactional_session
@@ -1346,13 +1349,6 @@ class ErpSyncEvidenceService:
                 manifest.pinned = bool(manifest.pinned or pin)
                 if not manifest.pinned:
                     manifest.expires_at = now + timedelta(days=retention_days)
-            reservation = session.scalar(
-                select(ErpSyncEvidenceReservation).where(
-                    ErpSyncEvidenceReservation.attempt_id == attempt_id
-                )
-            )
-            if reservation is not None and reservation.released_at is None:
-                reservation.released_at = now
 
     def automatic_execution_available(self, *, profile_fingerprint: str) -> bool:
         if self._cipher is None or self._control_settings is None:
