@@ -935,22 +935,42 @@ class ErpSyncOrchestrator:
         )
 
         profile = self._settings.config_fingerprint
+        project_page_evidence = getattr(source, "last_read_evidence", lambda: None)()
         projects_evidence = self._evidence.capture_source(
             attempt_id=attempt_id,
             source_type="PROJECTS",
             profile_fingerprint=profile,
-            payload=projects,
+            payload={
+                "records": projects,
+                "page_evidence": project_page_evidence
+                or {
+                    "complete": True,
+                    "pages": 1,
+                    "rows": len(projects),
+                    "adapter": "injected",
+                },
+            },
             row_count=len(projects),
         )
         task_counts = {
             str(snapshot.project_number): int(snapshot.source_rows)
             for snapshot in portfolio.snapshots
         }
+        task_page_evidence = getattr(task_source, "last_read_evidence", lambda: None)()
         tasks_evidence = self._evidence.capture_source(
             attempt_id=attempt_id,
             source_type="TASKS",
             profile_fingerprint=profile,
-            payload=portfolio,
+            payload={
+                "portfolio": portfolio,
+                "page_evidence": task_page_evidence
+                or {
+                    "complete": True,
+                    "pages": int(portfolio.source_pages),
+                    "rows": int(portfolio.source_rows),
+                    "adapter": "injected",
+                },
+            },
             row_count=int(portfolio.source_rows),
             project_counts=task_counts,
         )
