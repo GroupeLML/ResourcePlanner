@@ -17,11 +17,15 @@ from app.application import (
     TaskCatalogPortfolioSnapshot,
     TaskCatalogProjectSnapshot,
 )
-from app.application.erp_sync_scheduler import ErpSyncSchedulerSettings
+from app.application.erp_sync_scheduler import (
+    ErpSyncSchedulerSettings,
+    UnavailableErpSyncAutomaticSafetyCapability,
+)
 from app.application.security import PERMISSION_SYNC_PROJECTS
 from app.infrastructure.sql import (
     AcumaticaProjectTaskSyncRun,
     Base,
+    ErpSyncAttempt,
     Project,
     ResourceClassConfig,
     TaskCatalogEntry,
@@ -497,6 +501,124 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
 
         self.assertIn(final["status"], {"COMPLETED", "COMPLETED_WITH_ERRORS"})
         self.assertEqual(len(source.batch_calls), 1)
+
+    def test_automatic_observer_does_not_redispatch_accepted_manual_retry(self) -> None:
+        fixed_now = datetime(2026, 1, 15, 5, 30, tzinfo=timezone.utc)
+        automatic_settings = ErpSyncSchedulerSettings(enabled=True)
+        manual_settings = ErpSyncSchedulerSettings(enabled=False)
+        unavailable = UnavailableErpSyncAutomaticSafetyCapability()
+
+        engine = create_sql_engine(self.database_url)
+        factory = create_session_factory(engine)
+        repository = SqlErpSyncControlRepository(factory)
+        repository.ensure_control_row()
+        with patch(
+            "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+            return_value=fixed_now,
+        ):
+            occurrence = repository.record_daily_decision(
+                automatic_settings,
+                unavailable,
+            )
+        self.assertIsNotNone(occurrence)
+        self.assertEqual(occurrence.status, "DISABLED")
+
+        projects = self._global_project_source()
+        tasks = BatchProjectTaskSource(self._global_snapshots())
+        app = create_api_app(
+            self.database_url,
+            auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            project_source=projects,
+            project_task_source=tasks,
+            erp_sync_settings=manual_settings,
+            erp_sync_automatic_safety=unavailable,
+        )
+        backend_a = app.state.erp_sync_orchestrator
+        self.assertIsNotNone(backend_a)
+        backend_b = ErpSyncOrchestrator(
+            factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=automatic_settings,
+            automatic_safety=unavailable,
+            system_actor="scheduler-observer",
+        )
+
+        worker_entered = Event()
+        release_worker = Event()
+        original_execute = backend_a._execute_attempt
+
+        def paused_execute(*args, **kwargs):
+            worker_entered.set()
+            if not release_worker.wait(timeout=5):
+                raise RuntimeError("manual worker release timeout")
+            return original_execute(*args, **kwargs)
+
+        try:
+            with patch.object(backend_a, "_execute_attempt", side_effect=paused_execute):
+                with patch.object(
+                    backend_b,
+                    "_submit",
+                    wraps=backend_b._submit,
+                ) as observer_submit:
+                    with patch(
+                        "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+                        return_value=fixed_now,
+                    ):
+                        before_manual = backend_b.scheduler_tick()
+                        self.assertEqual(before_manual["status"], "DISABLED")
+                        observer_submit.assert_not_called()
+
+                        with TestClient(app) as client:
+                            response = client.post(
+                                f"/api/v1/integrations/acumatica/erp-sync/occurrences/{occurrence.id}/retry",
+                                headers={"Idempotency-Key": "manual-retry-observer-race"},
+                            )
+                            self.assertEqual(response.status_code, 202, response.text)
+                            attempt_id = response.json()["run_id"]
+                            self.assertTrue(worker_entered.wait(timeout=2))
+
+                            accepted = repository.get_attempt(attempt_id)
+                            self.assertEqual(accepted.status, "PENDING")
+                            self.assertEqual(accepted.trigger_kind, "RETRY")
+
+                            observed = backend_b.scheduler_tick()
+                            self.assertEqual(observed["attempt_id"], attempt_id)
+                            self.assertEqual(observed["claim_outcome"], "OBSERVED")
+                            self.assertEqual(observed["trigger"], "RETRY")
+                            self.assertEqual(observed["status"], "PENDING")
+                            observer_submit.assert_not_called()
+                            self.assertEqual(repository.get_attempt(attempt_id).status, "PENDING")
+
+                            release_worker.set()
+                            deadline = perf_counter() + 5
+                            while perf_counter() < deadline:
+                                completed = repository.get_attempt(attempt_id)
+                                if completed.status == "SUCCEEDED":
+                                    break
+                                sleep(0.01)
+                            else:
+                                self.fail("manual retry did not complete successfully")
+
+            self.assertEqual(projects.calls, 1)
+            self.assertEqual(len(tasks.batch_calls), 1)
+            completed = repository.get_attempt(attempt_id)
+            self.assertEqual(completed.status, "SUCCEEDED")
+            self.assertEqual(completed.trigger_kind, "RETRY")
+            with factory() as session:
+                attempts = tuple(
+                    session.scalars(
+                        select(ErpSyncAttempt).where(
+                            ErpSyncAttempt.occurrence_id == occurrence.id
+                        )
+                    )
+                )
+            self.assertEqual(len(attempts), 1)
+            self.assertEqual(attempts[0].id, attempt_id)
+        finally:
+            release_worker.set()
+            backend_b.shutdown()
+            engine.dispose()
 
     def test_643a_scheduler_routes_require_sync_projects_permission(self) -> None:
         paths = (
