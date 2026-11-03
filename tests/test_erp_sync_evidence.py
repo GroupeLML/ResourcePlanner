@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -478,6 +479,49 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             manifest = session.get(ErpSyncEvidenceManifest, captured.manifest_id)
             self.assertTrue(manifest.pinned)
             self.assertIsNone(manifest.expires_at)
+
+    def test_retention_purges_unpinned_payload_and_releases_accounted_bytes(self) -> None:
+        control, _occurrence, attempt = self._attempt("retention")
+        captured = self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"records": [{"number": "P-RET"}]},
+            row_count=1,
+        )
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="SUCCEEDED",
+                phase="PUBLICATION_COMMITTED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.finalize_attempt(attempt_id=attempt.id, successful=True)
+        with transactional_session(self.factory) as session:
+            manifest = session.get(ErpSyncEvidenceManifest, captured.manifest_id)
+            manifest.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+        self.assertEqual(self.service.purge_expired(), 1)
+        with self.factory() as session:
+            manifest = session.get(ErpSyncEvidenceManifest, captured.manifest_id)
+            reservation = session.scalar(
+                select(__import__("app.infrastructure.sql", fromlist=["ErpSyncEvidenceReservation"]).ErpSyncEvidenceReservation).where(
+                    __import__("app.infrastructure.sql", fromlist=["ErpSyncEvidenceReservation"]).ErpSyncEvidenceReservation.attempt_id
+                    == attempt.id
+                )
+            )
+            chunks = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceChunk).where(
+                        ErpSyncEvidenceChunk.manifest_id == captured.manifest_id
+                    )
+                )
+            )
+        self.assertEqual(manifest.state, "PURGED")
+        self.assertEqual(chunks, ())
+        self.assertEqual(reservation.used_bytes, 0)
 
     def test_exact_source_plausibility_exception_does_not_bypass_other_source(self) -> None:
         _control, _occurrence, baseline_attempt = self._attempt("baseline-large")
