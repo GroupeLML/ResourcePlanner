@@ -577,6 +577,111 @@ class ErpSyncEvidenceTests(unittest.TestCase):
         self.assertIsNotNone(evidence_rows[0].committed_at)
         orchestrator.shutdown()
 
+    def test_existing_task_becoming_standard_excluded_records_real_transition(self) -> None:
+        control, _occurrence, attempt = self._attempt("existing-task-excluded")
+        self.service.reserve_attempt(attempt_id=attempt.id)
+        self.service.bind_attempt_policy(
+            attempt_id=attempt.id,
+            generation=attempt.generation,
+        )
+        with transactional_session(self.factory) as session:
+            session.add(
+                Project(
+                    id="EXISTING-EXCLUDED-PROJECT",
+                    erp_external_id="8111",
+                    number="EXISTING-EXCLUDED",
+                    name="Existing excluded",
+                    status="Actif",
+                )
+            )
+            session.add(
+                TaskCatalogEntry(
+                    project_number="EXISTING-EXCLUDED",
+                    task_code="999",
+                    label="Previously eligible",
+                    status="Actif",
+                    active=True,
+                    erp_task_id="98998",
+                    account_group="DEPMO",
+                    workforce_eligible=True,
+                    resource_class_code="PROGRAMMEUR",
+                    average_hourly_cost_cad=Decimal("125.0000"),
+                )
+            )
+        excluded_item = TaskCatalogItem(
+            project_number="EXISTING-EXCLUDED",
+            code="999",
+            label="Now outside Standards",
+            status="Actif",
+            active=True,
+            erp_task_id="98998",
+            account_group="DEPMO",
+        )
+        excluded_snapshot = TaskCatalogProjectSnapshot(
+            project_number="EXISTING-EXCLUDED",
+            source_rows=1,
+            rejected_rows=0,
+            items=(excluded_item,),
+        )
+        self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "portfolio": TaskCatalogPortfolioSnapshot(
+                    source_rows=1,
+                    source_pages=1,
+                    snapshots=(excluded_snapshot,),
+                )
+            },
+            row_count=1,
+            project_counts={"EXISTING-EXCLUDED": 1},
+        )
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=None,
+            project_task_source=PortfolioTaskSource(
+                {"EXISTING-EXCLUDED": excluded_snapshot}
+            ),
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        run_id = orchestrator._create_task_run(attempt.id, attempt.generation)
+        result = orchestrator._process_task_project(
+            run_id,
+            attempt.id,
+            attempt.generation,
+            SimpleNamespace(
+                id="EXISTING-EXCLUDED-PROJECT",
+                number="EXISTING-EXCLUDED",
+                active=True,
+                erp_external_id="8111",
+            ),
+            {"EXISTING-EXCLUDED": excluded_snapshot},
+        )
+        self.assertIsNotNone(result)
+        with self.factory() as session:
+            row = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.erp_task_id == "98998"
+                )
+            )
+            evidence = session.scalar(
+                select(ErpSyncMutationEvidence).where(
+                    ErpSyncMutationEvidence.attempt_id == attempt.id,
+                    ErpSyncMutationEvidence.entity_type == "TASK",
+                    ErpSyncMutationEvidence.entity_key == "98998",
+                )
+            )
+        self.assertIsNotNone(row)
+        self.assertFalse(row.workforce_eligible)
+        self.assertIsNone(row.resource_class_code)
+        self.assertIsNotNone(evidence)
+        self.assertTrue(evidence.before_present)
+        self.assertIsNotNone(evidence.after_sha256)
+        self.assertIsNotNone(evidence.committed_at)
+        orchestrator.shutdown()
+
     def test_policy_change_between_project_units_preserves_first_and_blocks_second(self) -> None:
         control, _occurrence, attempt = self._attempt("policy-change-between-projects")
         self.service.reserve_attempt(attempt_id=attempt.id)
@@ -1096,6 +1201,7 @@ class ErpSyncEvidenceTests(unittest.TestCase):
         self.assertIsNotNone(quality_a)
         self.assertEqual(quality_a.quality_state, "STALE")
         self.assertEqual(quality_a.producer_attempt_id, attempt.id)
+        self.assertIsNone(quality_a.source_observed_at)
         self.assertEqual(
             quality_a.reason_code,
             "erp_sync_project_plausibility_rejected",
