@@ -26,6 +26,7 @@ from app.infrastructure.sql import (
     DeliveryItemRow,
     DeliveryPlanRow,
     ErpSyncAttempt,
+    ErpSyncBaseline,
     ErpSyncControl,
     ErpSyncOccurrence,
     Project,
@@ -855,6 +856,44 @@ class SqliteV2CutoverTests(unittest.TestCase):
                     )
             finally:
                 target_engine.dispose()
+
+    def test_populated_643b_baseline_blocks_cutover(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.db"
+            target = root / "target.db"
+            _seed_source(source)
+            _seed_target(target)
+
+            engine = create_sql_engine(_url(source))
+            try:
+                with engine.begin() as connection:
+                    connection.execute(
+                        ErpSyncBaseline.__table__.insert(),
+                        {
+                            "id": "ERP-BASELINE-CUTOVER",
+                            "source_type": "PROJECTS",
+                            "profile_fingerprint": "f" * 64,
+                            "source_fingerprint": "a" * 64,
+                            "row_count": 1300,
+                            "approved_by": "admin",
+                            "approval_reason": "Approved production baseline",
+                            "approved_at": datetime(
+                                2026, 9, 29, 12, 0, tzinfo=timezone.utc
+                            ),
+                        },
+                    )
+            finally:
+                engine.dispose()
+
+            source_before = _hash(source)
+            code, report = _run(root)
+
+            self.assertEqual(code, 2, report)
+            self.assertEqual(report["status"], "blocked")
+            anomaly_codes = {row["code"] for row in report["anomalies"]}
+            self.assertIn("erp_sync_baselines_populated", anomaly_codes)
+            self.assertEqual(_hash(source), source_before)
 
     def test_real_0048_shape_is_normalized_read_only_and_ready(self) -> None:
         with TemporaryDirectory() as directory:
