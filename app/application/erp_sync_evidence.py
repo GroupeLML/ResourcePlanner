@@ -236,11 +236,34 @@ class ErpSyncEvidenceService:
                     "Le budget de stockage des preuves ERP est insuffisant.",
                     code="erp_sync_evidence_storage_budget_unavailable",
                 )
+            reservation = ErpSyncEvidenceReservation(
+                attempt_id=attempt_id,
+                reserved_bytes=requested,
+                used_bytes=1024,
+            )
+            session.add(reservation)
+            from ..infrastructure.sql import (
+                EVIDENCE_PROOF_CHECKPOINT,
+                EVIDENCE_SOURCE_CHECKPOINT,
+                EVIDENCE_STATE_READY,
+                ERP_EVIDENCE_PROTOCOL_VERSION,
+                ErpSyncEvidenceManifest,
+            )
             session.add(
-                ErpSyncEvidenceReservation(
+                ErpSyncEvidenceManifest(
                     attempt_id=attempt_id,
-                    reserved_bytes=requested,
-                    used_bytes=0,
+                    protocol_version=ERP_EVIDENCE_PROTOCOL_VERSION,
+                    source_type=EVIDENCE_SOURCE_CHECKPOINT,
+                    proof_type=EVIDENCE_PROOF_CHECKPOINT,
+                    profile_fingerprint=self._control_settings.config_fingerprint,
+                    source_fingerprint=None,
+                    observed_at=_utc_now(),
+                    row_count=0,
+                    chunk_count=0,
+                    plaintext_bytes=0,
+                    ciphertext_bytes=0,
+                    content_sha256=None,
+                    state=EVIDENCE_STATE_READY,
                 )
             )
 
@@ -1105,6 +1128,50 @@ class ErpSyncEvidenceService:
                 )
             )
             pin = recovery is not None and recovery.state == RECOVERY_REQUIRED
+            from ..infrastructure.sql import (
+                EVIDENCE_PROOF_CHECKPOINT,
+                EVIDENCE_SOURCE_CHECKPOINT,
+                ErpSyncMutationEvidence,
+            )
+            mutation_rows = tuple(
+                session.scalars(
+                    select(ErpSyncMutationEvidence)
+                    .where(ErpSyncMutationEvidence.attempt_id == attempt_id)
+                    .order_by(
+                        ErpSyncMutationEvidence.unit_type,
+                        ErpSyncMutationEvidence.entity_type,
+                        ErpSyncMutationEvidence.entity_key,
+                    )
+                )
+            )
+            checkpoint = session.scalar(
+                select(ErpSyncEvidenceManifest).where(
+                    ErpSyncEvidenceManifest.attempt_id == attempt_id,
+                    ErpSyncEvidenceManifest.source_type == EVIDENCE_SOURCE_CHECKPOINT,
+                    ErpSyncEvidenceManifest.proof_type == EVIDENCE_PROOF_CHECKPOINT,
+                )
+            )
+            if checkpoint is not None:
+                checkpoint.row_count = len(mutation_rows)
+                checkpoint.ciphertext_bytes = sum(
+                    len(str(row.encrypted_before or "").encode("utf-8"))
+                    + len(str(row.encrypted_after or "").encode("utf-8"))
+                    for row in mutation_rows
+                )
+                checkpoint.content_sha256 = content_sha256(
+                    [
+                        {
+                            "id": row.id,
+                            "unit_type": row.unit_type,
+                            "entity_type": row.entity_type,
+                            "entity_key": row.entity_key,
+                            "before_sha256": row.before_sha256,
+                            "after_sha256": row.after_sha256,
+                            "committed_at": row.committed_at,
+                        }
+                        for row in mutation_rows
+                    ]
+                )
             for manifest in session.scalars(
                 select(ErpSyncEvidenceManifest).where(
                     ErpSyncEvidenceManifest.attempt_id == attempt_id
