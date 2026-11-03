@@ -1714,6 +1714,44 @@ class ErpSyncOrchestrator:
                         attempt_id,
                     )
 
+    def _capture_targeted_task_snapshot(
+        self,
+        *,
+        attempt_id: str,
+        project_number: str,
+        snapshot: TaskCatalogProjectSnapshot,
+        source: ProjectTaskCatalogSourcePort,
+    ) -> None:
+        if self._evidence is None:
+            return
+        portfolio = TaskCatalogPortfolioSnapshot(
+            source_rows=int(snapshot.source_rows),
+            source_pages=1,
+            snapshots=(snapshot,),
+        )
+        self._validate_task_capture(
+            portfolio,
+            expected_projects=(project_number,),
+        )
+        page_evidence = getattr(source, "last_read_evidence", lambda: None)()
+        self._evidence.capture_source(
+            attempt_id=attempt_id,
+            source_type="TASKS",
+            profile_fingerprint=self._settings.config_fingerprint,
+            payload={
+                "portfolio": portfolio,
+                "page_evidence": page_evidence
+                or {
+                    "complete": True,
+                    "pages": 1,
+                    "rows": int(snapshot.source_rows),
+                    "adapter": "targeted",
+                },
+            },
+            row_count=int(snapshot.source_rows),
+            project_counts={project_number: int(snapshot.source_rows)},
+        )
+
     def _execute_targeted_compat_business(
         self,
         attempt_id: str,
@@ -1729,6 +1767,12 @@ class ErpSyncOrchestrator:
                     code="project_not_found",
                     context={"project_id": project_id},
                 )
+            if not self._project_source_active(project.status):
+                raise ApplicationValidationError(
+                    "Le projet demandé est inactif.",
+                    code="project_inactive",
+                    context={"project_id": project_id},
+                )
             project_external_id = str(project.erp_external_id or "").strip()
             project_number = str(project.number)
         if not project_external_id:
@@ -1742,6 +1786,34 @@ class ErpSyncOrchestrator:
             project_external_id=project_external_id,
             project_number=project_number,
         )
+        self._capture_targeted_task_snapshot(
+            attempt_id=attempt_id,
+            project_number=project_number,
+            snapshot=snapshot,
+            source=source,
+        )
+        with self._session_factory() as discovery:
+            projected = tuple(
+                SqlPlannerQueryRepositoryWithLoadProfiles(
+                    discovery
+                ).list_projects(active_only=False)
+            )
+        project_view = next(
+            (row for row in projected if row.id == project_id),
+            None,
+        )
+        if project_view is None:
+            raise ApplicationNotFoundError(
+                "Le projet demandé n'existe pas.",
+                code="project_not_found",
+                context={"project_id": project_id},
+            )
+
+        run_id = self._create_task_run(
+            attempt_id,
+            generation,
+            active_key=None,
+        )
         with transactional_session(self._session_factory) as session:
             SqlErpSyncControlRepository.guard_session(
                 session,
@@ -1749,24 +1821,60 @@ class ErpSyncOrchestrator:
                 generation=generation,
                 settings=self._settings,
             )
-            repository = SqlTaskCatalogRepository(session)
-            result = TaskCatalogSyncService(
-                _PreloadedProjectTaskSource(snapshot),
-                repository,
-                sync_metadata_repository=repository,
-                workforce_policy=SqlTaskCatalogWorkforcePolicy(session),
-            ).synchronize_project(
-                project_external_id=project_external_id,
-                project_number=project_number,
+            run = session.get(AcumaticaProjectTaskSyncRun, run_id)
+            if run is None:
+                raise RuntimeError("Run tâches enfant introuvable.")
+            run.projects_total = 1
+            run.source_requests = 1
+            run.source_rows_scanned = int(snapshot.source_rows)
+
+        result = self._process_task_project(
+            run_id,
+            attempt_id,
+            generation,
+            project_view,
+            {project_number: snapshot},
+        )
+        with transactional_session(self._session_factory) as session:
+            SqlErpSyncControlRepository.guard_session(
+                session,
+                attempt_id=attempt_id,
+                generation=generation,
+                settings=self._settings,
             )
+            run = session.get(AcumaticaProjectTaskSyncRun, run_id)
+            if run is None:
+                raise RuntimeError("Run tâches enfant introuvable.")
+            run.status = (
+                SYNC_RUN_COMPLETED_WITH_ERRORS
+                if run.projects_rejected
+                else SYNC_RUN_COMPLETED
+            )
+            run.finished_at = utc_now()
+            if run.started_at is not None:
+                run.duration_ms = max(
+                    0,
+                    int(
+                        (
+                            _utc(run.finished_at) - _utc(run.started_at)
+                        ).total_seconds()
+                        * 1000
+                    ),
+                )
             SqlErpSyncControlRepository.update_phase_in_session(
                 session,
                 attempt_id=attempt_id,
                 generation=generation,
                 phase="TASKS_FINISHED",
+                task_sync_run_id=run_id,
                 settings=self._settings,
             )
-            return result
+        if result is None:
+            raise ApplicationConflictError(
+                "La synchronisation ciblée des tâches projet a échoué.",
+                code="task_catalog_project_sync_failed",
+            )
+        return result
 
     def _execute_projects(
         self,
@@ -1943,6 +2051,12 @@ class ErpSyncOrchestrator:
             snapshot = self._project_task_source.fetch_project_snapshot(
                 project_external_id=project_external_id,
                 project_number=project_number,
+            )
+            self._capture_targeted_task_snapshot(
+                attempt_id=attempt_id,
+                project_number=project_number,
+                snapshot=snapshot,
+                source=self._project_task_source,
             )
         except Exception as exc:
             if isinstance(exc, ApplicationError):
@@ -2225,7 +2339,7 @@ class ErpSyncOrchestrator:
         generation: int,
         project: Any,
         snapshots: dict[str, Any],
-    ) -> None:
+    ) -> Any | None:
         base = {
             "project_id": project.id,
             "project_number": project.number,
@@ -2457,6 +2571,7 @@ class ErpSyncOrchestrator:
                         "duration_ms": result.duration_ms,
                     },
                 )
+                return result
         except ErpSyncFenceLost:
             raise
         except ApplicationError as exc:
