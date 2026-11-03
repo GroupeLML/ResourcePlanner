@@ -1526,6 +1526,32 @@ class ErpSyncEvidenceService:
                     code="erp_sync_recovery_required",
                 )
 
+    def committed_mutation_count_in_session(
+        self,
+        session: Session,
+        *,
+        attempt_id: str,
+    ) -> int:
+        from ..infrastructure.sql import ErpSyncMutationEvidence
+
+        return int(
+            session.scalar(
+                select(func.count(ErpSyncMutationEvidence.id)).where(
+                    ErpSyncMutationEvidence.attempt_id == attempt_id,
+                    ErpSyncMutationEvidence.committed_at.is_not(None),
+                    ErpSyncMutationEvidence.after_sha256.is_not(None),
+                )
+            )
+            or 0
+        )
+
+    def committed_mutation_count(self, *, attempt_id: str) -> int:
+        with self._session_factory() as session:
+            return self.committed_mutation_count_in_session(
+                session,
+                attempt_id=attempt_id,
+            )
+
     def finalize_attempt(
         self,
         *,
