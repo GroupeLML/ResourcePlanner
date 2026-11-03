@@ -71,11 +71,11 @@ from .models import (
     WorkforceRequestHistory,
     TaskCatalogEntry,
     TaskCatalogProjectSyncState,
-    ErpSyncProjectQuality,
     WorkPackage,
     WorkPackageLoadInterval,
     WorkPackageWeeklyLoad,
 )
+from .erp_sync_evidence_models import ErpSyncProjectQuality
 from .demand_period_models import (
     WorkforceRequestPeriod,
     WorkforceRequestPeriodSelection,
