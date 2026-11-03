@@ -1873,25 +1873,26 @@ class ErpSyncOrchestrator:
                 task_evidence: dict[str, str] = {}
                 sync_state_evidence: str | None = None
                 if self._evidence is not None:
-                    for item in tuple(snapshot.items):
-                        task_id = str(item.erp_task_id or "").strip()
-                        existing = (
-                            session.scalar(
-                                select(TaskCatalogEntry).where(
-                                    TaskCatalogEntry.erp_task_id == task_id
-                                )
+                    existing_rows = tuple(
+                        session.scalars(
+                            select(TaskCatalogEntry).where(
+                                TaskCatalogEntry.project_number == project.number
                             )
-                            if task_id
-                            else None
                         )
-                        if existing is None:
-                            existing = session.scalar(
-                                select(TaskCatalogEntry).where(
-                                    TaskCatalogEntry.project_number == project.number,
-                                    TaskCatalogEntry.task_code == str(item.code).strip(),
-                                )
-                            )
-                        key = task_id or f"{project.number}:{str(item.code).strip()}"
+                    )
+                    existing_by_erp = {
+                        str(row.erp_task_id).strip(): row
+                        for row in existing_rows
+                        if str(row.erp_task_id or "").strip()
+                    }
+                    existing_by_code = {
+                        str(row.task_code).strip(): row for row in existing_rows
+                    }
+                    for row in existing_rows:
+                        key = (
+                            str(row.erp_task_id).strip()
+                            or f"{project.number}:{str(row.task_code).strip()}"
+                        )
                         task_evidence[key] = self._evidence.record_before_in_session(
                             session,
                             attempt_id=attempt_id,
@@ -1899,8 +1900,27 @@ class ErpSyncOrchestrator:
                             unit_type=f"TASK_PROJECT:{project.id}",
                             entity_type="TASK",
                             entity_key=key,
-                            before=self._task_owned_state(existing),
+                            before=self._task_owned_state(row),
                         )
+                    for item in tuple(snapshot.items):
+                        task_id = str(item.erp_task_id or "").strip()
+                        task_code = str(item.code).strip()
+                        existing = (
+                            existing_by_erp.get(task_id)
+                            if task_id
+                            else None
+                        ) or existing_by_code.get(task_code)
+                        key = task_id or f"{project.number}:{task_code}"
+                        if key not in task_evidence:
+                            task_evidence[key] = self._evidence.record_before_in_session(
+                                session,
+                                attempt_id=attempt_id,
+                                generation=generation,
+                                unit_type=f"TASK_PROJECT:{project.id}",
+                                entity_type="TASK",
+                                entity_key=key,
+                                before=self._task_owned_state(existing),
+                            )
                     sync_state_evidence = self._evidence.record_before_in_session(
                         session,
                         attempt_id=attempt_id,
@@ -1923,6 +1943,38 @@ class ErpSyncOrchestrator:
                     project_number=project.number,
                 )
                 if self._evidence is not None:
+                    # Seal after-images for every row checkpointed above,
+                    # including rows deactivated because they were absent from
+                    # the accepted source.
+                    current_rows = tuple(
+                        session.scalars(
+                            select(TaskCatalogEntry).where(
+                                TaskCatalogEntry.project_number == project.number
+                            )
+                        )
+                    )
+                    current_by_key: dict[str, TaskCatalogEntry] = {}
+                    for row in current_rows:
+                        erp_key = str(row.erp_task_id or "").strip()
+                        current_by_key[
+                            erp_key or f"{project.number}:{str(row.task_code).strip()}"
+                        ] = row
+                        current_by_key[f"{project.number}:{str(row.task_code).strip()}"] = row
+                    for key, evidence_id in task_evidence.items():
+                        row = current_by_key.get(key)
+                        if row is None:
+                            raise ApplicationConflictError(
+                                "Une tâche checkpointée a disparu pendant la transaction.",
+                                code="erp_sync_task_post_validation_failed",
+                            )
+                        self._evidence.record_after_in_session(
+                            session,
+                            evidence_id=evidence_id,
+                            attempt_id=attempt_id,
+                            generation=generation,
+                            after=self._task_owned_state(row) or {},
+                        )
+
                     quality = session.get(ErpSyncProjectQuality, project.number)
                     if quality is None:
                         quality = ErpSyncProjectQuality(
@@ -1942,33 +1994,6 @@ class ErpSyncOrchestrator:
                     )
                     quality.validated_at = utc_now()
                     quality.reason_code = None
-                    for item in tuple(snapshot.items):
-                        task_id = str(item.erp_task_id or "").strip()
-                        row = (
-                            session.scalar(
-                                select(TaskCatalogEntry).where(
-                                    TaskCatalogEntry.erp_task_id == task_id
-                                )
-                            )
-                            if task_id
-                            else None
-                        )
-                        if row is None:
-                            row = session.scalar(
-                                select(TaskCatalogEntry).where(
-                                    TaskCatalogEntry.project_number == project.number,
-                                    TaskCatalogEntry.task_code == str(item.code).strip(),
-                                )
-                            )
-                        key = task_id or f"{project.number}:{str(item.code).strip()}"
-                        if key in task_evidence and row is not None:
-                            self._evidence.record_after_in_session(
-                                session,
-                                evidence_id=task_evidence[key],
-                                attempt_id=attempt_id,
-                                generation=generation,
-                                after=self._task_owned_state(row) or {},
-                            )
                     if sync_state_evidence is not None:
                         state_row = session.get(
                             TaskCatalogProjectSyncState,
