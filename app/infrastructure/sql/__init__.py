@@ -90,6 +90,7 @@ from .erp_sync_evidence_models import (
     ErpSyncEvidenceReservation,
     ErpSyncMutationEvidence,
     ErpSyncPlausibilityException,
+    ErpSyncProjectQuality,
     ErpSyncRecoveryState,
 )
 from .acumatica_project_task_sync_models import (
@@ -295,6 +296,7 @@ __all__ = [
     "ErpSyncEvidenceReservation",
     "ErpSyncMutationEvidence",
     "ErpSyncPlausibilityException",
+    "ErpSyncProjectQuality",
     "ErpSyncRecoveryState",
     "ERP_ATTEMPT_FAILED",
     "ERP_ATTEMPT_INTERRUPTED",
