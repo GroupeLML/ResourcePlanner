@@ -558,48 +558,74 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
         try:
             with patch.object(backend_a, "_execute_attempt", side_effect=paused_execute):
                 with patch.object(
-                    backend_b,
+                    backend_a,
                     "_submit",
-                    wraps=backend_b._submit,
-                ) as observer_submit:
-                    with patch(
-                        "app.infrastructure.sql.erp_sync_control_repository._sql_now",
-                        return_value=fixed_now,
-                    ):
-                        before_manual = backend_b.scheduler_tick()
-                        self.assertEqual(before_manual["status"], "DISABLED")
-                        observer_submit.assert_not_called()
-
-                        with TestClient(app) as client:
-                            response = client.post(
-                                f"/api/v1/integrations/acumatica/erp-sync/occurrences/{occurrence.id}/retry",
-                                headers={"Idempotency-Key": "manual-retry-observer-race"},
-                            )
-                            self.assertEqual(response.status_code, 202, response.text)
-                            attempt_id = response.json()["run_id"]
-                            self.assertTrue(worker_entered.wait(timeout=2))
-
-                            accepted = repository.get_attempt(attempt_id)
-                            self.assertEqual(accepted.status, "PENDING")
-                            self.assertEqual(accepted.trigger_kind, "RETRY")
-
-                            observed = backend_b.scheduler_tick()
-                            self.assertEqual(observed["attempt_id"], attempt_id)
-                            self.assertEqual(observed["claim_outcome"], "OBSERVED")
-                            self.assertEqual(observed["trigger"], "RETRY")
-                            self.assertEqual(observed["status"], "PENDING")
+                    wraps=backend_a._submit,
+                ) as manual_submit:
+                    with patch.object(
+                        backend_b,
+                        "_submit",
+                        wraps=backend_b._submit,
+                    ) as observer_submit:
+                        with patch(
+                            "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+                            return_value=fixed_now,
+                        ):
+                            before_manual = backend_b.scheduler_tick()
+                            self.assertEqual(before_manual["status"], "DISABLED")
                             observer_submit.assert_not_called()
-                            self.assertEqual(repository.get_attempt(attempt_id).status, "PENDING")
 
-                            release_worker.set()
-                            deadline = perf_counter() + 5
-                            while perf_counter() < deadline:
-                                completed = repository.get_attempt(attempt_id)
-                                if completed.status == "SUCCEEDED":
-                                    break
-                                sleep(0.01)
-                            else:
-                                self.fail("manual retry did not complete successfully")
+                            with TestClient(app) as client:
+                                retry_path = (
+                                    "/api/v1/integrations/acumatica/erp-sync/"
+                                    f"occurrences/{occurrence.id}/retry"
+                                )
+                                headers = {
+                                    "Idempotency-Key": "manual-retry-observer-race"
+                                }
+                                response = client.post(retry_path, headers=headers)
+                                self.assertEqual(
+                                    response.status_code,
+                                    202,
+                                    response.text,
+                                )
+                                attempt_id = response.json()["run_id"]
+                                self.assertTrue(worker_entered.wait(timeout=2))
+
+                                replay = client.post(retry_path, headers=headers)
+                                self.assertEqual(replay.status_code, 202, replay.text)
+                                self.assertEqual(replay.json()["run_id"], attempt_id)
+                                self.assertEqual(manual_submit.call_count, 1)
+
+                                accepted = repository.get_attempt(attempt_id)
+                                self.assertEqual(accepted.status, "PENDING")
+                                self.assertEqual(accepted.trigger_kind, "RETRY")
+
+                                observed = backend_b.scheduler_tick()
+                                self.assertEqual(observed["attempt_id"], attempt_id)
+                                self.assertEqual(
+                                    observed["claim_outcome"],
+                                    "OBSERVED",
+                                )
+                                self.assertEqual(observed["trigger"], "RETRY")
+                                self.assertEqual(observed["status"], "PENDING")
+                                observer_submit.assert_not_called()
+                                self.assertEqual(
+                                    repository.get_attempt(attempt_id).status,
+                                    "PENDING",
+                                )
+
+                                release_worker.set()
+                                deadline = perf_counter() + 5
+                                while perf_counter() < deadline:
+                                    completed = repository.get_attempt(attempt_id)
+                                    if completed.status == "SUCCEEDED":
+                                        break
+                                    sleep(0.01)
+                                else:
+                                    self.fail(
+                                        "manual retry did not complete successfully"
+                                    )
 
             self.assertEqual(projects.calls, 1)
             self.assertEqual(len(tasks.batch_calls), 1)
