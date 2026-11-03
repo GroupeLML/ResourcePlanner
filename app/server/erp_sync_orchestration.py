@@ -840,10 +840,16 @@ class ErpSyncOrchestrator:
                     )
                 task_id = str(item.erp_task_id or "").strip()
                 task_code = str(item.code or "").strip()
+                account_group = str(item.account_group or "").strip().upper()
                 if not task_id or not task_code:
                     raise ApplicationValidationError(
                         "Une tâche ERP ne possède pas son identité obligatoire.",
                         code="erp_sync_task_source_identity_missing",
+                    )
+                if account_group != "DEPMO":
+                    raise ApplicationValidationError(
+                        "La source globale contient une ligne hors filtre financier DEPMO.",
+                        code="erp_sync_task_source_financial_scope_invalid",
                     )
                 previous_project = seen_task_ids.get(task_id)
                 if previous_project is not None and previous_project != number:
