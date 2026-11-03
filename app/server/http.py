@@ -11,7 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from ..application.erp_sync_evidence import (
+from .erp_sync_evidence import (
     ErpSyncEvidenceService,
     ErpSyncEvidenceSettings,
     EvidenceBackedErpSyncAutomaticSafetyCapability,
