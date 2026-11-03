@@ -653,6 +653,19 @@ class ErpSyncEvidenceService:
                 code="erp_sync_baseline_actor_required",
             )
         reason_value = _safe_reason(reason)
+        if project_counts is None:
+            payload = self.load_source(manifest_id=manifest_id)
+            derived_counts: dict[str, int] = {}
+            if isinstance(payload, dict):
+                snapshots = payload.get("snapshots")
+                if isinstance(snapshots, list):
+                    for snapshot in snapshots:
+                        if not isinstance(snapshot, dict):
+                            continue
+                        number = str(snapshot.get("project_number") or "").strip()
+                        if number:
+                            derived_counts[number] = int(snapshot.get("source_rows") or 0)
+            project_counts = derived_counts or None
         with transactional_session(self._session_factory) as session:
             manifest = session.get(ErpSyncEvidenceManifest, manifest_id)
             if manifest is None or manifest.state != EVIDENCE_STATE_SEALED:
