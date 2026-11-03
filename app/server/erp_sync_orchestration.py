@@ -875,6 +875,13 @@ class ErpSyncOrchestrator:
                     code="erp_sync_task_source_structural_invalid",
                 )
             snapshots[number] = snapshot
+            if snapshot.hard_error_code:
+                if tuple(snapshot.items):
+                    raise ApplicationValidationError(
+                        "Un snapshot projet en erreur structurelle contient des tâches applicables.",
+                        code="erp_sync_task_source_structural_invalid",
+                    )
+                continue
             if int(snapshot.source_rows) < len(tuple(snapshot.items)):
                 raise ApplicationValidationError(
                     "Les compteurs de la source tâches ERP sont incohérents.",
@@ -1116,6 +1123,8 @@ class ErpSyncOrchestrator:
                     source_rows=int(raw_snapshot.get("source_rows") or 0),
                     rejected_rows=int(raw_snapshot.get("rejected_rows") or 0),
                     items=items,
+                    hard_error_code=raw_snapshot.get("hard_error_code"),
+                    hard_error_reason=raw_snapshot.get("hard_error_reason"),
                 )
             )
         portfolio = TaskCatalogPortfolioSnapshot(
@@ -2390,6 +2399,22 @@ class ErpSyncOrchestrator:
             return
 
         snapshot = snapshots.get(project.number)
+        if snapshot is not None and snapshot.hard_error_code:
+            self._record_task_outcome(
+                run_id,
+                attempt_id,
+                generation,
+                {
+                    **base,
+                    "status": "rejected",
+                    "error_code": snapshot.hard_error_code,
+                    "reason_code": snapshot.hard_error_reason
+                    or "project_source_structural_failed",
+                    "source_rows": int(snapshot.source_rows),
+                    "source_rows_rejected": int(snapshot.rejected_rows),
+                },
+            )
+            return None
         if snapshot is None:
             self._record_task_outcome(
                 run_id,
