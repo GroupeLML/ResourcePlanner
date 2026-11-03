@@ -160,6 +160,7 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             session.execute(text("DELETE FROM erp_sync_compensation_receipts"))
             session.execute(text("DELETE FROM erp_sync_plausibility_exceptions"))
             session.execute(text("DELETE FROM erp_sync_recovery_state"))
+            session.execute(text("DELETE FROM erp_sync_project_quality"))
             session.execute(text("DELETE FROM erp_sync_mutation_evidence"))
             session.execute(text("DELETE FROM erp_sync_evidence_chunks"))
             session.execute(text("DELETE FROM erp_sync_evidence_manifests"))
