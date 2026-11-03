@@ -121,8 +121,8 @@ class ODataProjectTaskSourceTests(unittest.TestCase):
                     project_number="5118      ",
                     task_id=102,
                     task_code="999",
-                    label="Matériel",
-                    account_group="MAT",
+                    label="Deuxième tâche valide",
+                    account_group="DEPMO",
                     budget_amount="900.00",
                 ),
             ),
@@ -147,8 +147,8 @@ class ODataProjectTaskSourceTests(unittest.TestCase):
 
         self.assertEqual(snapshot.project_number, "5118")
         self.assertEqual(snapshot.source_rows, 3)
-        self.assertEqual(snapshot.rejected_rows, 1)
-        self.assertEqual(len(snapshot.items), 1)
+        self.assertEqual(snapshot.rejected_rows, 0)
+        self.assertEqual(len(snapshot.items), 2)
         task = snapshot.items[0]
         self.assertEqual(task.project_number, "5118")
         self.assertEqual(task.erp_task_id, "101")
@@ -324,23 +324,8 @@ class ODataProjectTaskSourceTests(unittest.TestCase):
             "pagination_non_progressive",
         )
 
-    def test_adapter_rejects_other_projetid_non_depmo_and_code_mismatch(self) -> None:
+    def test_adapter_fails_closed_on_conflicting_project_identity(self) -> None:
         payload = _feed(
-            _entry(
-                project_erp_id=9999,
-                project_number="5118",
-                task_id=1,
-                task_code="216",
-                label="Autre projet technique",
-            ),
-            _entry(
-                project_erp_id=5469,
-                project_number="5118",
-                task_id=2,
-                task_code="117",
-                label="Matériel",
-                account_group="MAT",
-            ),
             _entry(
                 project_erp_id=5469,
                 project_number="9999",
@@ -348,16 +333,7 @@ class ODataProjectTaskSourceTests(unittest.TestCase):
                 task_code="117",
                 label="Code projet incohérent",
             ),
-            _entry(
-                project_erp_id=5469,
-                project_number="5118      ",
-                task_id=4,
-                task_code="117",
-                label="Main-d'oeuvre",
-                account_group=" DEPMO ",
-            ),
         )
-
         source = ODataProjectTaskSource(
             ODataProjectTaskSourceSettings(
                 base_url="https://example.invalid",
@@ -367,17 +343,106 @@ class ODataProjectTaskSourceTests(unittest.TestCase):
                 lambda request: httpx.Response(200, content=payload, request=request)
             ),
         )
+        with self.assertRaises(ApplicationOperationError) as raised:
+            source.fetch_project_snapshot(
+                project_external_id="5469",
+                project_number="5118",
+            )
+        self.assertEqual(
+            raised.exception.code,
+            "acumatica_project_task_response_invalid",
+        )
+        self.assertEqual(
+            raised.exception.context["reason"],
+            "project_code_conflict",
+        )
 
+    def test_adapter_accepts_canonical_project_and_depmo_scope(self) -> None:
+        payload = _feed(
+            _entry(
+                project_erp_id=5469,
+                project_number="5118      ",
+                task_id=4,
+                task_code="117",
+                label="Main-d'oeuvre",
+                account_group=" DEPMO ",
+            ),
+        )
+        source = ODataProjectTaskSource(
+            ODataProjectTaskSourceSettings(
+                base_url="https://example.invalid",
+                page_size=10,
+            ),
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, content=payload, request=request)
+            ),
+        )
         snapshot = source.fetch_project_snapshot(
             project_external_id="5469",
             project_number="5118",
         )
-
-        self.assertEqual(snapshot.source_rows, 4)
-        self.assertEqual(snapshot.rejected_rows, 3)
+        self.assertEqual(snapshot.source_rows, 1)
+        self.assertEqual(snapshot.rejected_rows, 0)
         self.assertEqual([item.erp_task_id for item in snapshot.items], ["4"])
-        self.assertEqual(snapshot.items[0].project_number, "5118")
-        self.assertEqual(snapshot.items[0].account_group, "DEPMO")
+
+    def test_targeted_source_rejects_partial_page_overlap(self) -> None:
+        pages = {
+            "0": _feed(
+                _entry(
+                    project_erp_id=5469,
+                    project_number="5118",
+                    task_id=101,
+                    task_code="216",
+                    label="A",
+                ),
+                _entry(
+                    project_erp_id=5469,
+                    project_number="5118",
+                    task_id=102,
+                    task_code="217",
+                    label="B",
+                ),
+            ),
+            "2": _feed(
+                _entry(
+                    project_erp_id=5469,
+                    project_number="5118",
+                    task_id=101,
+                    task_code="216",
+                    label="A",
+                ),
+                _entry(
+                    project_erp_id=5469,
+                    project_number="5118",
+                    task_id=103,
+                    task_code="218",
+                    label="C",
+                ),
+            ),
+        }
+        source = ODataProjectTaskSource(
+            ODataProjectTaskSourceSettings(
+                base_url="https://example.invalid",
+                page_size=2,
+            ),
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200,
+                    content=pages[request.url.params["$skip"]],
+                    request=request,
+                )
+            ),
+        )
+        with self.assertRaises(ApplicationOperationError) as raised:
+            source.fetch_project_snapshot(
+                project_external_id="5469",
+                project_number="5118",
+            )
+        self.assertEqual(
+            raised.exception.context["reason"],
+            "pagination_overlap",
+        )
+
 
     def test_zero_and_negative_budget_are_kept_with_diagnostic(self) -> None:
         payload = _feed(
