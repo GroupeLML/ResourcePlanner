@@ -1251,6 +1251,7 @@ class ErpSyncEvidenceService:
                     "erp_sync_evidence_reservations",
                     "erp_sync_baselines",
                     "erp_sync_mutation_evidence",
+                    "erp_sync_project_quality",
                     "erp_sync_recovery_state",
                 }
                 if not all(inspector.has_table(name) for name in required_tables):
