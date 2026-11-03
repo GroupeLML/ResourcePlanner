@@ -35,6 +35,7 @@ from app.infrastructure.sql import (
     ErpSyncEvidenceManifest,
     ErpSyncEvidenceReservation,
     ErpSyncMutationEvidence,
+    ErpSyncPlausibilityException,
     ErpSyncBaselineApprovalAudit,
     ErpSyncProjectQuality,
     ErpSyncRecoveryState,
@@ -1490,6 +1491,37 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             settings=self.control_settings,
             evidence_service=self.service,
         )
+        with transactional_session(self.factory) as session:
+            expiring = session.scalar(
+                select(ErpSyncPlausibilityException).where(
+                    ErpSyncPlausibilityException.attempt_id == attempt.id,
+                    ErpSyncPlausibilityException.source_type == "TASKS",
+                    ErpSyncPlausibilityException.threshold_scope == "GLOBAL",
+                )
+            )
+            self.assertIsNotNone(expiring)
+            expiring.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        with self.assertRaises(Exception) as expired:
+            second_process.continue_plausibility_review(
+                attempt_id=attempt.id,
+                actor_name="admin",
+            )
+        self.assertEqual(
+            getattr(expired.exception, "code", None),
+            "erp_sync_plausibility_review_incomplete",
+        )
+        self.assertEqual(control.get_attempt(attempt.id).status, "PENDING")
+        self.assertEqual(projects.calls, 1)
+        self.assertEqual(tasks.calls, 1)
+        with transactional_session(self.factory) as session:
+            session.scalar(
+                select(ErpSyncPlausibilityException).where(
+                    ErpSyncPlausibilityException.attempt_id == attempt.id,
+                    ErpSyncPlausibilityException.source_type == "TASKS",
+                    ErpSyncPlausibilityException.threshold_scope == "GLOBAL",
+                )
+            ).expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+
         resumed = second_process.continue_plausibility_review(
             attempt_id=attempt.id,
             actor_name="admin",
