@@ -363,6 +363,7 @@ def _reshape_source_as_0048(path: Path) -> None:
             DROP TABLE IF EXISTS erp_sync_evidence_chunks;
             DROP TABLE IF EXISTS erp_sync_evidence_manifests;
             DROP TABLE IF EXISTS erp_sync_evidence_reservations;
+            DROP TABLE IF EXISTS erp_sync_baseline_approval_audit;
             DROP TABLE IF EXISTS erp_sync_baselines;
             DROP TABLE IF EXISTS erp_sync_attempts;
             DROP TABLE IF EXISTS erp_sync_occurrences;
