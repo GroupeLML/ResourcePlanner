@@ -206,9 +206,9 @@ class ErpSyncOrchestrator:
             return reconciled
 
     def scheduler_tick(self) -> dict[str, Any] | None:
-        self._assert_recovery_clear()
         if self._closed or not self._control.schema_available():
             return None
+        self._assert_recovery_clear()
 
         try:
             occurrence = self._control.record_daily_decision(
