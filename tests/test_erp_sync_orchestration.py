@@ -14,16 +14,22 @@ from app.application import (
     TaskCatalogPortfolioSnapshot,
     TaskCatalogProjectSnapshot,
 )
+from app.application.errors import ApplicationConflictError
 from app.application.erp_sync_scheduler import (
     ErpSyncSchedulerSettings,
     TestErpSyncAutomaticSafetyCapability,
 )
 from app.infrastructure.sql import (
+    AcumaticaProjectTaskSyncRun,
     Base,
     ERP_ATTEMPT_FAILED,
     ERP_ATTEMPT_SUCCEEDED,
     ERP_ATTEMPT_SUCCEEDED_WITH_ERRORS,
+    ERP_SYNC_CONTROL_ROW_ID,
+    GLOBAL_SYNC_RUN_KEY,
+    SYNC_RUN_RUNNING,
     ErpSyncControl,
+    ErpSyncAttempt,
     TaskCatalogEntry,
     create_session_factory,
     create_sql_engine,
@@ -168,6 +174,140 @@ class ErpSyncOrchestrationTests(unittest.TestCase):
         )
         self.assertIsNotNone(attempt)
         return control, attempt
+
+    def test_disabled_scheduler_restart_adopts_later_boundary_for_manual_run(self) -> None:
+        control = SqlErpSyncControlRepository(self.factory)
+        old_settings = ErpSyncSchedulerSettings(
+            enabled=False,
+            source_identity="acumatica:old-boundary",
+        )
+        old_now = datetime(2026, 1, 15, 15, 0, tzinfo=timezone.utc)
+        with patch(
+            "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+            return_value=old_now,
+        ):
+            occurrence = control.accept_manual(
+                intent="PROJECTS_ONLY",
+                actor_name="operator",
+                idempotency_key="old-boundary",
+                settings=old_settings,
+            )
+            attempt = control.claim(
+                occurrence_id=occurrence.id,
+                trigger="MANUAL",
+                actor_name="operator",
+                settings=old_settings,
+            )
+            self.assertIsNotNone(attempt)
+            self.assertTrue(
+                control.start_attempt(
+                    attempt_id=attempt.id,
+                    generation=attempt.generation,
+                    settings=old_settings,
+                )
+            )
+            self.assertTrue(
+                control.finish(
+                    attempt_id=attempt.id,
+                    generation=attempt.generation,
+                    status=ERP_ATTEMPT_SUCCEEDED,
+                    phase="PUBLICATION_COMMITTED",
+                    settings=old_settings,
+                )
+            )
+
+        new_settings = ErpSyncSchedulerSettings(
+            enabled=False,
+            source_identity="acumatica:new-boundary",
+        )
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=ProjectSource((project("A"),)),
+            project_task_source=None,
+            settings=new_settings,
+        )
+        next_day = datetime(2026, 1, 16, 15, 0, tzinfo=timezone.utc)
+        with patch(
+            "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+            return_value=next_day,
+        ):
+            self.assertEqual(orchestrator.reconcile_startup(), 0)
+            result = orchestrator.run_projects_only_compat(
+                actor_name="operator",
+            )
+
+        self.assertEqual(result.received, 1)
+        with self.factory() as session:
+            authority = session.get(ErpSyncControl, ERP_SYNC_CONTROL_ROW_ID)
+            self.assertIsNotNone(authority)
+            self.assertEqual(
+                authority.config_fingerprint,
+                new_settings.config_fingerprint,
+            )
+        orchestrator.shutdown()
+
+    def test_startup_reconciliation_rejects_unsupported_protocol_without_mutation(self) -> None:
+        control = SqlErpSyncControlRepository(self.factory)
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="owner",
+            idempotency_key="unsupported-protocol",
+            settings=self.settings,
+        )
+        owner = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="owner",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(owner)
+
+        with transactional_session(self.factory) as session:
+            attempt = session.get(ErpSyncAttempt, owner.id)
+            self.assertIsNotNone(attempt)
+            child = AcumaticaProjectTaskSyncRun(
+                id="UNSUPPORTED-PROTOCOL-CHILD",
+                active_key=GLOBAL_SYNC_RUN_KEY,
+                status=SYNC_RUN_RUNNING,
+                parent_attempt_id=owner.id,
+                erp_generation=owner.generation,
+                started_at=datetime(2000, 1, 1, tzinfo=timezone.utc),
+            )
+            session.add(child)
+            attempt.task_sync_run_id = child.id
+            authority = session.get(ErpSyncControl, ERP_SYNC_CONTROL_ROW_ID)
+            self.assertIsNotNone(authority)
+            authority.protocol_version = 999
+            authority.lease_expires_at = datetime(2000, 1, 1, tzinfo=timezone.utc)
+            original_generation = authority.generation
+
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=None,
+            project_task_source=None,
+            settings=self.settings,
+        )
+        with self.assertRaises(ApplicationConflictError) as caught:
+            orchestrator.reconcile_startup()
+        self.assertEqual(caught.exception.code, "erp_sync_protocol_incompatible")
+
+        with self.factory() as session:
+            attempt = session.get(ErpSyncAttempt, owner.id)
+            child = session.get(
+                AcumaticaProjectTaskSyncRun,
+                "UNSUPPORTED-PROTOCOL-CHILD",
+            )
+            authority = session.get(ErpSyncControl, ERP_SYNC_CONTROL_ROW_ID)
+            self.assertIsNotNone(attempt)
+            self.assertIsNotNone(child)
+            self.assertIsNotNone(authority)
+            self.assertEqual(attempt.status, owner.status)
+            self.assertEqual(child.status, SYNC_RUN_RUNNING)
+            self.assertEqual(child.active_key, GLOBAL_SYNC_RUN_KEY)
+            self.assertEqual(authority.owner_attempt_id, owner.id)
+            self.assertEqual(authority.generation, original_generation)
+            self.assertEqual(authority.protocol_version, 999)
+        orchestrator.shutdown()
 
     def test_scheduler_exposes_safe_configuration_incompatibility_diagnostic(self) -> None:
         authority_settings = ErpSyncSchedulerSettings(
