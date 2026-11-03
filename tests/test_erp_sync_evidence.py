@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from uuid import uuid4
 from unittest.mock import patch
 
 from cryptography.fernet import Fernet
@@ -29,6 +30,7 @@ from app.infrastructure.sql import (
     ErpSyncEvidenceChunk,
     ErpSyncEvidenceManifest,
     ErpSyncEvidenceReservation,
+    ErpSyncMutationEvidence,
     ErpSyncBaselineApprovalAudit,
     ErpSyncProjectQuality,
     ErpSyncRecoveryState,
@@ -642,6 +644,60 @@ class ErpSyncEvidenceTests(unittest.TestCase):
         )
         self.assertNotEqual(changed.source_fingerprint, reviewed.source_fingerprint)
         self.assertFalse(self.service.validate_plausibility(changed).accepted)
+
+    def test_task_project_mutation_unit_identity_accepts_uuid_scope_and_remains_unique(self) -> None:
+        control, _occurrence, attempt = self._attempt("task-project-unit-identity")
+        self.service.reserve_attempt(attempt_id=attempt.id)
+        project_id = str(uuid4())
+        unit_type = f"TASK_PROJECT:{project_id}"
+        self.assertEqual(len(project_id), 36)
+        self.assertLessEqual(len(unit_type), 64)
+
+        with transactional_session(self.factory) as session:
+            first_id = self.service.record_before_in_session(
+                session,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                unit_type=unit_type,
+                entity_type="TASK",
+                entity_key="ERP-TASK-UUID",
+                before=None,
+            )
+            replay_id = self.service.record_before_in_session(
+                session,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                unit_type=unit_type,
+                entity_type="TASK",
+                entity_key="ERP-TASK-UUID",
+                before=None,
+            )
+            second_project_unit = f"TASK_PROJECT:{uuid4()}"
+            second_id = self.service.record_before_in_session(
+                session,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                unit_type=second_project_unit,
+                entity_type="TASK",
+                entity_key="ERP-TASK-UUID",
+                before=None,
+            )
+
+        self.assertEqual(first_id, replay_id)
+        self.assertNotEqual(first_id, second_id)
+        with self.factory() as session:
+            rows = tuple(
+                session.scalars(
+                    select(ErpSyncMutationEvidence)
+                    .where(ErpSyncMutationEvidence.attempt_id == attempt.id)
+                    .order_by(ErpSyncMutationEvidence.unit_type)
+                )
+            )
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(
+            {row.unit_type for row in rows},
+            {unit_type, second_project_unit},
+        )
 
     def test_compensation_restores_only_erp_owned_fields_and_is_idempotent(self) -> None:
         control, _occurrence, attempt = self._attempt("compensation")
