@@ -770,6 +770,158 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
         self.assertEqual(tasks.batch_calls, 2)
         orchestrator.shutdown()
 
+    def test_checkpoint_overflow_after_committed_unit_requires_recovery_on_sqlserver(self) -> None:
+        project_a = "SQL643B-OVERFLOW-A"
+        project_b = "SQL643B-OVERFLOW-B"
+        with transactional_session(self.factory) as session:
+            session.add_all(
+                [
+                    Project(
+                        id="SQL643B-OVERFLOW-A-ID",
+                        erp_external_id="ERP-SQL643B-OVERFLOW-A",
+                        number=project_a,
+                        name="Overflow A",
+                        status="Actif",
+                    ),
+                    Project(
+                        id="SQL643B-OVERFLOW-B-ID",
+                        erp_external_id="ERP-SQL643B-OVERFLOW-B",
+                        number=project_b,
+                        name="Overflow B",
+                        status="Actif",
+                    ),
+                ]
+            )
+
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = repository.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="sql-overflow",
+            idempotency_key="sql-checkpoint-overflow",
+            settings=self.settings,
+        )
+        attempt = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="sql-overflow",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(attempt)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                settings=self.settings,
+            )
+        )
+        self.evidence.reserve_attempt(attempt_id=attempt.id)
+        self.evidence.bind_attempt_policy(
+            attempt_id=attempt.id,
+            generation=attempt.generation,
+        )
+        snapshot_a = _sql_snapshot(project_a, "SQL643-100", "Overflow task A")
+        snapshot_b = _sql_snapshot(project_b, "SQL643-200", "Overflow task B")
+        self.evidence.capture_source(
+            attempt_id=attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.settings.config_fingerprint,
+            payload={
+                "portfolio": TaskCatalogPortfolioSnapshot(
+                    source_rows=2,
+                    source_pages=1,
+                    snapshots=(snapshot_a, snapshot_b),
+                )
+            },
+            row_count=2,
+            project_counts={project_a: 1, project_b: 1},
+        )
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=None,
+            project_task_source=SqlServerPortfolioTaskSource(
+                {project_a: snapshot_a, project_b: snapshot_b}
+            ),
+            settings=self.settings,
+            evidence_service=self.evidence,
+        )
+        run_id = orchestrator._create_task_run(attempt.id, attempt.generation)
+        with transactional_session(self.factory) as session:
+            session.get(AcumaticaProjectTaskSyncRun, run_id).projects_total = 2
+        with self.factory() as discovery:
+            projected = {
+                row.number: row
+                for row in SqlPlannerQueryRepositoryWithLoadProfiles(
+                    discovery
+                ).list_projects(active_only=False)
+                if row.number in {project_a, project_b}
+            }
+        first_result = orchestrator._process_task_project(
+            run_id,
+            attempt.id,
+            attempt.generation,
+            projected[project_a],
+            {project_a: snapshot_a, project_b: snapshot_b},
+        )
+        self.assertIsNotNone(first_result)
+
+        with transactional_session(self.factory) as session:
+            reservation = session.scalar(
+                select(ErpSyncEvidenceReservation).where(
+                    ErpSyncEvidenceReservation.attempt_id == attempt.id
+                )
+            )
+            reservation.reserved_bytes = int(reservation.used_bytes) + 1
+            reservation.reserved_plaintext_bytes = (
+                int(reservation.used_plaintext_bytes) + 1024 * 1024
+            )
+
+        with self.assertRaises(Exception) as raised:
+            orchestrator._process_task_project(
+                run_id,
+                attempt.id,
+                attempt.generation,
+                projected[project_b],
+                {project_a: snapshot_a, project_b: snapshot_b},
+            )
+        self.assertEqual(
+            getattr(raised.exception, "code", None),
+            "erp_sync_evidence_storage_reservation_exceeded",
+        )
+
+        with self.factory() as session:
+            task_a = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == project_a,
+                    TaskCatalogEntry.task_code == "SQL643-100",
+                )
+            )
+            task_b = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == project_b,
+                    TaskCatalogEntry.task_code == "SQL643-200",
+                )
+            )
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == attempt.id
+                )
+            )
+            manifests = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceManifest).where(
+                        ErpSyncEvidenceManifest.attempt_id == attempt.id
+                    )
+                )
+            )
+        self.assertIsNotNone(task_a)
+        self.assertIsNone(task_b)
+        self.assertIsNotNone(recovery)
+        self.assertEqual(recovery.state, "REQUIRED")
+        self.assertTrue(recovery.pinned)
+        self.assertTrue(manifests)
+        self.assertTrue(all(row.pinned for row in manifests))
+        orchestrator.shutdown()
+
     def test_sqlserver_stale_generation_cannot_write_mutation_evidence(self) -> None:
         repository = SqlErpSyncControlRepository(self.factory)
         occurrence = repository.accept_manual(
