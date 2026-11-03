@@ -577,6 +577,135 @@ class ErpSyncEvidenceTests(unittest.TestCase):
         self.assertIsNotNone(evidence_rows[0].committed_at)
         orchestrator.shutdown()
 
+    def test_policy_change_between_project_units_preserves_first_and_blocks_second(self) -> None:
+        control, _occurrence, attempt = self._attempt("policy-change-between-projects")
+        self.service.reserve_attempt(attempt_id=attempt.id)
+        self.service.bind_attempt_policy(
+            attempt_id=attempt.id,
+            generation=attempt.generation,
+        )
+        with transactional_session(self.factory) as session:
+            session.add_all(
+                [
+                    Project(
+                        id="POLICY-A-ID",
+                        erp_external_id="8201",
+                        number="POLICY-A",
+                        name="Policy A",
+                        status="Actif",
+                    ),
+                    Project(
+                        id="POLICY-B-ID",
+                        erp_external_id="8202",
+                        number="POLICY-B",
+                        name="Policy B",
+                        status="Actif",
+                    ),
+                ]
+            )
+        snapshot_a = snapshot("POLICY-A", task_id="98201")
+        snapshot_b = snapshot("POLICY-B", task_id="98202")
+        self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "portfolio": TaskCatalogPortfolioSnapshot(
+                    source_rows=2,
+                    source_pages=1,
+                    snapshots=(snapshot_a, snapshot_b),
+                )
+            },
+            row_count=2,
+            project_counts={"POLICY-A": 1, "POLICY-B": 1},
+        )
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=None,
+            project_task_source=PortfolioTaskSource(
+                {"POLICY-A": snapshot_a, "POLICY-B": snapshot_b}
+            ),
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        run_id = orchestrator._create_task_run(attempt.id, attempt.generation)
+        with transactional_session(self.factory) as session:
+            run = session.get(AcumaticaProjectTaskSyncRun, run_id)
+            run.projects_total = 2
+
+        result_a = orchestrator._process_task_project(
+            run_id,
+            attempt.id,
+            attempt.generation,
+            SimpleNamespace(
+                id="POLICY-A-ID",
+                number="POLICY-A",
+                active=True,
+                erp_external_id="8201",
+            ),
+            {"POLICY-A": snapshot_a, "POLICY-B": snapshot_b},
+        )
+        self.assertIsNotNone(result_a)
+        with transactional_session(self.factory) as session:
+            session.get(
+                ResourceClassConfig,
+                "PROGRAMMEUR",
+            ).average_hourly_cost_cad = Decimal("250.0000")
+
+        result_b = orchestrator._process_task_project(
+            run_id,
+            attempt.id,
+            attempt.generation,
+            SimpleNamespace(
+                id="POLICY-B-ID",
+                number="POLICY-B",
+                active=True,
+                erp_external_id="8202",
+            ),
+            {"POLICY-A": snapshot_a, "POLICY-B": snapshot_b},
+        )
+        self.assertIsNone(result_b)
+        with self.factory() as session:
+            task_a = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.erp_task_id == "98201"
+                )
+            )
+            task_b = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.erp_task_id == "98202"
+                )
+            )
+            receipts = tuple(
+                session.scalars(
+                    select(AcumaticaProjectTaskSyncRun)
+                    .where(AcumaticaProjectTaskSyncRun.id == run_id)
+                )
+            )
+            from app.infrastructure.sql import AcumaticaProjectTaskSyncProjectResult
+            project_results = tuple(
+                session.scalars(
+                    select(AcumaticaProjectTaskSyncProjectResult)
+                    .where(AcumaticaProjectTaskSyncProjectResult.run_id == run_id)
+                    .order_by(AcumaticaProjectTaskSyncProjectResult.project_number)
+                )
+            )
+        self.assertIsNotNone(task_a)
+        self.assertEqual(
+            task_a.average_hourly_cost_cad,
+            Decimal("125.0000"),
+        )
+        self.assertIsNone(task_b)
+        self.assertEqual(len(receipts), 1)
+        self.assertEqual(
+            [(row.project_number, row.status, row.error_code) for row in project_results],
+            [
+                ("POLICY-A", "synchronized", None),
+                ("POLICY-B", "rejected", "erp_sync_policy_fingerprint_changed"),
+            ],
+        )
+        orchestrator.shutdown()
+
     def test_global_hard_validation_failure_quarantines_provenance_without_rollback(self) -> None:
         projects = ProjectSource((project("P-GLOBAL", external_id="6001"),))
         tasks = PortfolioTaskSource({"P-GLOBAL": snapshot("P-GLOBAL", task_id="96001")})
