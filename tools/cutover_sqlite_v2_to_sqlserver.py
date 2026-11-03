@@ -1248,42 +1248,53 @@ def _scheduler_state_anomalies(source_engine: Engine) -> list[dict[str, Any]]:
         "erp_sync_control",
         "erp_sync_occurrences",
         "erp_sync_attempts",
+        "erp_sync_evidence_manifests",
+        "erp_sync_evidence_chunks",
+        "erp_sync_evidence_reservations",
+        "erp_sync_baselines",
+        "erp_sync_baseline_approval_audit",
+        "erp_sync_plausibility_exceptions",
+        "erp_sync_mutation_evidence",
+        "erp_sync_project_quality",
+        "erp_sync_recovery_state",
+        "erp_sync_compensation_receipts",
     }
     if not (detected & relevant):
         return []
 
     anomalies: list[dict[str, Any]] = []
     with source_engine.connect() as connection:
-        if "erp_sync_occurrences" in detected:
+        for table_name in (
+            "erp_sync_occurrences",
+            "erp_sync_attempts",
+            "erp_sync_evidence_manifests",
+            "erp_sync_evidence_chunks",
+            "erp_sync_evidence_reservations",
+            "erp_sync_baselines",
+            "erp_sync_baseline_approval_audit",
+            "erp_sync_plausibility_exceptions",
+            "erp_sync_mutation_evidence",
+            "erp_sync_project_quality",
+            "erp_sync_recovery_state",
+            "erp_sync_compensation_receipts",
+        ):
+            if table_name not in detected:
+                continue
             count = int(
                 connection.exec_driver_sql(
-                    'SELECT COUNT(*) FROM "erp_sync_occurrences"'
+                    f'SELECT COUNT(*) FROM "{table_name}"'
                 ).scalar_one()
             )
             if count:
                 anomalies.append(
                     {
-                        "code": "erp_sync_occurrences_populated",
+                        "code": f"{table_name}_populated",
                         "severity": "BLOCKING",
-                        "table": "erp_sync_occurrences",
+                        "table": table_name,
                         "row_count": count,
                     }
                 )
-        if "erp_sync_attempts" in detected:
-            count = int(
-                connection.exec_driver_sql(
-                    'SELECT COUNT(*) FROM "erp_sync_attempts"'
-                ).scalar_one()
-            )
-            if count:
-                anomalies.append(
-                    {
-                        "code": "erp_sync_attempts_populated",
-                        "severity": "BLOCKING",
-                        "table": "erp_sync_attempts",
-                        "row_count": count,
-                    }
-                )
+
         if "erp_sync_control" in detected:
             rows = list(
                 connection.exec_driver_sql(
