@@ -1309,6 +1309,143 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             backend_a.shutdown()
             backend_b.shutdown()
 
+    def test_stale_generation_cannot_publish_recovery_after_takeover(self) -> None:
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = self._daily_occurrence()
+        first = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="backend-A",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(first)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=first.id,
+                generation=first.generation,
+                settings=self.settings,
+            )
+        )
+        self.evidence.reserve_attempt(attempt_id=first.id)
+        self.evidence.bind_attempt_policy(
+            attempt_id=first.id,
+            generation=first.generation,
+        )
+        stale_orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=SqlServerProjectSource(()),
+            project_task_source=SqlServerPortfolioTaskSource({}),
+            settings=self.settings,
+            evidence_service=self.evidence,
+        )
+        with transactional_session(self.factory) as session:
+            session.execute(
+                text(
+                    "UPDATE erp_sync_control "
+                    "SET lease_expires_at = DATEADD(second, -10, SYSUTCDATETIME()) "
+                    "WHERE id = :id"
+                ),
+                {"id": ERP_SYNC_CONTROL_ROW_ID},
+            )
+        second = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="backend-B",
+            settings=self.settings,
+            command_identity="retry:sql-643b-stale-validation",
+        )
+        self.assertIsNotNone(second)
+        self.assertGreater(second.generation, first.generation)
+
+        with self.assertRaises(ErpSyncFenceLost):
+            stale_orchestrator._validate_full_publication(
+                attempt_id=first.id,
+                generation=first.generation,
+            )
+
+        with self.factory() as session:
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == first.id
+                )
+            )
+            control = session.get(ErpSyncControl, ERP_SYNC_CONTROL_ROW_ID)
+        self.assertIsNone(recovery)
+        self.assertEqual(control.owner_attempt_id, second.id)
+        self.assertEqual(repository.get_attempt(second.id).status, ERP_ATTEMPT_PENDING)
+        stale_orchestrator.shutdown()
+
+    def test_expired_owner_releases_reservation_and_replacement_can_reserve(self) -> None:
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = self._daily_occurrence()
+        first = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="backend-A",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(first)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=first.id,
+                generation=first.generation,
+                settings=self.settings,
+            )
+        )
+        captured = self.evidence.capture_source(
+            attempt_id=first.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.settings.config_fingerprint,
+            payload={"records": [{"number": "SQL643-ABANDONED"}]},
+            row_count=1,
+        )
+        with self.factory() as session:
+            before = session.scalar(
+                select(ErpSyncEvidenceReservation).where(
+                    ErpSyncEvidenceReservation.attempt_id == first.id
+                )
+            )
+            self.assertIsNotNone(before)
+            retained_used = int(before.used_bytes)
+            self.assertGreater(retained_used, 0)
+
+        with transactional_session(self.factory) as session:
+            session.execute(
+                text(
+                    "UPDATE erp_sync_control "
+                    "SET lease_expires_at = DATEADD(second, -10, SYSUTCDATETIME()) "
+                    "WHERE id = :id"
+                ),
+                {"id": ERP_SYNC_CONTROL_ROW_ID},
+            )
+        second = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="backend-B",
+            settings=self.settings,
+            command_identity="retry:sql-643b-reservation-after-expiry",
+        )
+        self.assertIsNotNone(second)
+        self.evidence.reserve_attempt(attempt_id=second.id)
+
+        with self.factory() as session:
+            first_reservation = session.scalar(
+                select(ErpSyncEvidenceReservation).where(
+                    ErpSyncEvidenceReservation.attempt_id == first.id
+                )
+            )
+            second_reservation = session.scalar(
+                select(ErpSyncEvidenceReservation).where(
+                    ErpSyncEvidenceReservation.attempt_id == second.id
+                )
+            )
+            manifest = session.get(ErpSyncEvidenceManifest, captured.manifest_id)
+        self.assertIsNotNone(first_reservation.released_at)
+        self.assertEqual(int(first_reservation.used_bytes), retained_used)
+        self.assertIsNotNone(second_reservation)
+        self.assertIsNone(second_reservation.released_at)
+        self.assertIsNotNone(manifest)
+
     def test_generation_takeover_releases_child_and_fences_all_stale_writes(self) -> None:
         project_a = "SQL643A-A"
         project_b = "SQL643A-B"
