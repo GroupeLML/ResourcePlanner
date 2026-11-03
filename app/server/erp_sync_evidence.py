@@ -754,9 +754,12 @@ class ErpSyncEvidenceService:
                     "Les deux sources ERP scellées sont requises avant mutation.",
                     code="erp_sync_evidence_sources_incomplete",
                 )
-            if any(row.state != EVIDENCE_STATE_SEALED for row in rows):
+            if any(
+                row.state not in {EVIDENCE_STATE_SEALED, EVIDENCE_STATE_READY}
+                for row in rows
+            ):
                 raise ApplicationConflictError(
-                    "Une source ERP n'est pas dans l'état SEALED attendu.",
+                    "Une source ERP n'est pas dans un état scellé compatible.",
                     code="erp_sync_evidence_source_not_sealed",
                 )
             for row in rows:
