@@ -608,6 +608,25 @@ class SqlErpSyncControlRepository:
                 )
                 if existing_command is not None:
                     return ErpSyncClaimOutcome(existing_command, admitted=False)
+            elif trigger == "MANUAL" and occurrence.command_identity:
+                # RUN_NOW idempotency is owned by the durable manual occurrence.
+                # A delayed caller may hold a stale occurrence snapshot from
+                # before attempt 1 was claimed/finished, so resolve the original
+                # manual attempt from current locked SQL state before considering
+                # any new admission. Explicit RETRY attempts carry their own
+                # distinct command identity and are intentionally excluded.
+                existing_manual = session.scalar(
+                    select(ErpSyncAttempt)
+                    .where(
+                        ErpSyncAttempt.occurrence_id == occurrence.id,
+                        ErpSyncAttempt.trigger_kind == "MANUAL",
+                        ErpSyncAttempt.command_identity.is_(None),
+                    )
+                    .order_by(ErpSyncAttempt.attempt_number)
+                    .limit(1)
+                )
+                if existing_manual is not None:
+                    return ErpSyncClaimOutcome(existing_manual, admitted=False)
 
             self._interrupt_expired_locked(session, control, now=now)
 
