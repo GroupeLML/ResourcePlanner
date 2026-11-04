@@ -1427,12 +1427,13 @@ class ErpSyncOrchestrator:
                 "La preuve source tâches ne contient pas le portefeuille figé.",
                 code="erp_sync_global_validation_failed",
             )
-        expected_active = {
-            str(snapshot.get("project_number") or "").strip()
+        snapshots_by_project = {
+            str(snapshot.get("project_number") or "").strip(): snapshot
             for snapshot in portfolio.get("snapshots") or ()
             if isinstance(snapshot, dict)
             and str(snapshot.get("project_number") or "").strip()
         }
+        expected_active = set(snapshots_by_project)
 
         # Technical proof validity is independent from business completion
         # classification. Every synchronized project must have complete,
@@ -1499,11 +1500,33 @@ class ErpSyncOrchestrator:
                     )
                 )
             )
-            expected_task_keys = {
-                str(row.erp_task_id or "").strip()
-                or f"{project_number}:{str(row.task_code).strip()}"
+            current_by_erp = {
+                str(row.erp_task_id or "").strip(): row
+                for row in current_tasks
+                if str(row.erp_task_id or "").strip()
+            }
+            current_by_code = {
+                str(row.task_code or "").strip(): row
                 for row in current_tasks
             }
+            expected_task_keys: set[str] = set()
+            frozen_snapshot = snapshots_by_project.get(project_number) or {}
+            for item in frozen_snapshot.get("items") or ():
+                if not isinstance(item, dict):
+                    continue
+                task_id = str(item.get("erp_task_id") or "").strip()
+                task_code = str(item.get("code") or "").strip()
+                durable = (
+                    current_by_erp.get(task_id) if task_id else None
+                ) or current_by_code.get(task_code)
+                # A valid Standards exclusion may intentionally produce no
+                # durable row. Every source item that did resolve to a physical
+                # row must have exactly one checkpoint identity.
+                if durable is not None:
+                    expected_task_keys.add(
+                        str(durable.erp_task_id or "").strip()
+                        or f"{project_number}:{str(durable.task_code).strip()}"
+                    )
             evidence_task_keys = {str(row.entity_key) for row in task_evidence}
             if evidence_task_keys != expected_task_keys:
                 raise ApplicationConflictError(
