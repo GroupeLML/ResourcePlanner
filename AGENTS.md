@@ -114,6 +114,8 @@ When DevCockpit/browser-extension orchestration is explicitly active, it may per
 
 If the orchestrator later sends a corrective prompt for the same WorkItem because current-head CI or review evidence identifies a defect, resume the same logical DEV session, inspect the exact evidence, make the smallest correct fix, run targeted validation, push the correction, report the updated PR/head SHA and any newly started CI run, and stop again. Do not wait for that CI run to finish unless the user explicitly instructs you to monitor it synchronously.
 
+If that corrective scope is complex under section 3B, the orchestrator should send a phased correction prompt instead of asking the DEV agent to clear every failure family in one session. The DEV agent must then complete only the authorized phase and stop for the Product Owner handoff before continuing.
+
 After GitHub proves that the PR is merged and required CI is green, roadmap reconciliation may be initiated manually by explicit Product Owner instruction or automatically by DevCockpit when that orchestration mode is explicitly active. That reconciliation turn is authorized only to reflect the already-proven delivery: mark the delivered WorkItem DONE, promote the true next already-defined item to READY according to the existing order/dependencies/gates, keep later items BLOCKED when appropriate, and keep human roadmap text/checklists coherent with the canonical block. It must not change scope, ordering, dependencies, REPLACES, WorkItem identity or decomposition.
 
 A completed implementation DEV turn is not the same as a completed WorkItem. The WorkItem remains unfinished until authoritative GitHub and roadmap evidence satisfy the Definition of Done.
@@ -148,6 +150,83 @@ For work that may span a long validation cycle:
 - if an interactive session is interrupted, resume from the branch/PR and observable CI state rather than restarting the implementation from memory.
 
 A quiet command that fails should become more verbose only for the failing scope. Do not flood the conversation with successful logs that add no diagnostic value.
+
+---
+
+## 3B. Phased DEV execution for complex work
+
+The default remains one coherent DEV turn per authorized implementation or correction. However, the orchestrator must deliberately split the work into **phases** when the authorized scope is too broad or risky for one reliable interactive DEV session.
+
+Phasing is appropriate when one or more of these signals are present:
+
+- the correction spans multiple distinct subsystems, for example backend orchestration, persistence, frontend acceptance and real SQL Server concurrency;
+- several independent CI failure families must be diagnosed rather than one root-cause fanout;
+- an architecture review returns a large set of independent implementation findings;
+- the work requires substantial sequential validation where later diagnosis depends on earlier fixes being stable;
+- the likely implementation + validation effort is large enough that an interactive session may time out or lose a clean handoff state;
+- the DEV agent discovers during execution that the remaining authorized work is materially larger than the current session can complete safely.
+
+Do not phase mechanically based only on file count, test count or a fixed number of failing jobs. Prefer one turn when the failures clearly share one small root cause.
+
+When phasing is warranted, the orchestrator must:
+
+1. define the overall phase plan at a high level;
+2. authorize **only the current phase**;
+3. give that phase a bounded objective and explicit validation scope;
+4. state what is intentionally deferred to later phases;
+5. require the DEV agent to push to the **same existing branch/PR** unless explicitly told otherwise;
+6. require an exact head SHA, targeted test results, newly started CI run evidence when already available, and a concise residual-risk/deferred-work report;
+7. require the DEV agent to **STOP** after the phase handoff;
+8. inspect the reported head/evidence before explicitly authorizing the next phase.
+
+The DEV agent must not work ahead into an unauthorized later phase merely because the next steps appear obvious.
+
+A phased correction normally remains one WorkItem and one PR:
+
+```text
+Phase 1 authorized
+→ implement bounded fixes
+→ targeted validation
+→ push same PR
+→ report exact head + results
+→ STOP
+→ Product Owner reviews evidence
+
+Phase 2 explicitly authorized
+→ continue from reported head
+→ targeted validation
+→ push same PR
+→ report exact head + results
+→ STOP
+
+...repeat as needed...
+
+final phase
+→ full required validation / CI handoff
+→ STOP
+```
+
+A phase may intentionally leave the **overall PR CI red** when the remaining red jobs belong to explicitly deferred later phases. That is acceptable only when:
+
+- the current phase's own targeted acceptance is green;
+- the remaining failures are identified and documented;
+- no current-phase invariant is knowingly broken;
+- the DEV agent does not claim the WorkItem or PR is complete.
+
+Phase boundaries are checkpoints, not releases. Do not merge an intermediate phase unless the WorkItem was explicitly decomposed into independently deliverable PRs by the Product Owner.
+
+If complexity is discovered unexpectedly during a DEV turn, the DEV agent should stop at the next safe checkpoint and report:
+
+- exact current head;
+- completed work;
+- tests run;
+- remaining failure families;
+- proposed next phase boundary;
+- any architecture concern.
+
+Under the default manual workflow, the Product Owner decides whether to authorize that next phase.
+
+Phasing does **not** by itself require Architect involvement. Escalate to the Architect only when the implementation reveals a genuine architecture question, a contradiction with an accepted ADR/invariant, or a required architecture gate. A large workload, timeout risk or multiple implementation defects are not architecture reasons on their own.
 
 ---
 
@@ -723,8 +802,8 @@ WorkItem A prompt
 → CI run reported if already started
 → DEV STOP
 → Product Owner observes CI / review / merge
-→ Product Owner sends corrective instructions or requests ROADMAP_RECONCILE as needed
-→ DEV performs only the requested correction or deterministic reconciliation and STOPS
+→ Product Owner sends corrective instructions, a bounded phased-DEV prompt when section 3B applies, or requests ROADMAP_RECONCILE as needed
+→ DEV performs only the requested correction/current authorized phase or deterministic reconciliation and STOPS
 → canonical roadmap exposes the next READY item
 → Product Owner explicitly starts the next WorkItem or architecture gate
 ```
