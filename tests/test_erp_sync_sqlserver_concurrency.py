@@ -1308,10 +1308,10 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
                 settings=self.settings,
             )
         )
-        self.evidence.mark_recovery_required(
-            attempt_id=attempt.id,
-            reason_code="global_validation_failed",
-        )
+        # Keep recovery non-blocking for this scenario: RECOVERY_REQUIRED
+        # deliberately prevents replacement admission. This test isolates the
+        # separate compensation invariant that any valid generation change
+        # invalidates a previously computed preview.
         preview = self.evidence.compensation_preview(attempt_id=attempt.id)
         self.assertTrue(preview["can_confirm"])
 
