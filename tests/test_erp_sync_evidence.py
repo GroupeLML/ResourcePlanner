@@ -326,7 +326,7 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             )
         )
 
-    def test_expired_owner_with_committed_mutation_blocks_replacement_until_recovery(self) -> None:
+    def test_expired_owner_with_valid_committed_mutation_admits_replacement(self) -> None:
         control, occurrence, first = self._attempt("expired-owner-committed")
         self.service.reserve_attempt(attempt_id=first.id)
         self.service.bind_attempt_policy(
@@ -377,8 +377,9 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             settings=self.control_settings,
             command_identity="retry:expired-owner-committed",
         )
-        self.assertIsNone(claim.attempt)
-        self.assertFalse(claim.admitted)
+        self.assertIsNotNone(claim.attempt)
+        self.assertTrue(claim.admitted)
+        self.assertGreater(claim.attempt.generation, first.generation)
         self.assertEqual(control.get_attempt(first.id).status, "INTERRUPTED")
         with self.factory() as session:
             recovery = session.scalar(
@@ -395,10 +396,20 @@ class ErpSyncEvidenceTests(unittest.TestCase):
                 )
             )
         self.assertIsNotNone(recovery)
-        self.assertEqual(recovery.state, "REQUIRED")
-        self.assertTrue(recovery.pinned)
-        self.assertIsNone(control_row.owner_attempt_id)
-        self.assertEqual(len(attempts), 1)
+        self.assertEqual(recovery.state, "AVAILABLE")
+        self.assertFalse(recovery.pinned)
+        self.assertEqual(control_row.owner_attempt_id, claim.attempt.id)
+        self.assertEqual(len(attempts), 2)
+        with self.factory() as session:
+            preserved = session.get(Project, "EXPIRED-COMMITTED")
+            reservation = session.scalar(
+                select(ErpSyncEvidenceReservation).where(
+                    ErpSyncEvidenceReservation.attempt_id == first.id
+                )
+            )
+        self.assertIsNotNone(preserved)
+        self.assertEqual(preserved.name, "Committed before expiry")
+        self.assertIsNotNone(reservation.released_at)
 
     def test_stale_generation_cannot_publish_recovery_after_takeover(self) -> None:
         control, occurrence, first = self._attempt("stale-validation-recovery")
@@ -3176,10 +3187,23 @@ class ErpSyncEvidenceTests(unittest.TestCase):
 
         with self.assertRaisesRegex(Exception, "récupération ERP requise"):
             self.service.assert_no_required_recovery()
-        with self.factory() as session:
+        with transactional_session(self.factory) as session:
             manifest = session.get(ErpSyncEvidenceManifest, captured.manifest_id)
             self.assertTrue(manifest.pinned)
-            self.assertIsNone(manifest.expires_at)
+            self.assertIsNotNone(manifest.expires_at)
+            manifest.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+        self.assertEqual(self.service.purge_expired(), 0)
+        with self.factory() as session:
+            manifest = session.get(ErpSyncEvidenceManifest, captured.manifest_id)
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == attempt.id
+                )
+            )
+        self.assertTrue(manifest.pinned)
+        self.assertNotEqual(manifest.state, "PURGED")
+        self.assertEqual(recovery.state, "REQUIRED")
 
     def test_terminal_attempts_release_reserved_capacity_but_keep_used_evidence_accounted(self) -> None:
         terminal_ids: list[str] = []
