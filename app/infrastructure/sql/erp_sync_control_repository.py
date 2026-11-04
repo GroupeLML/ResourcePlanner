@@ -328,11 +328,9 @@ class SqlErpSyncControlRepository:
         if not inspector.has_table("erp_sync_evidence_reservations"):
             return
         from .erp_sync_evidence_models import (
-            RECOVERY_REQUIRED,
+            ERP_SYNC_DEFAULT_PAYLOAD_RETENTION_DAYS,
             ErpSyncEvidenceManifest,
             ErpSyncEvidenceReservation,
-            ErpSyncMutationEvidence,
-            ErpSyncRecoveryState,
         )
 
         reservation = session.scalar(
@@ -343,44 +341,21 @@ class SqlErpSyncControlRepository:
         if reservation is not None and reservation.released_at is None:
             reservation.released_at = now
 
-        if not inspector.has_table("erp_sync_mutation_evidence"):
-            return
-        committed = int(
-            session.scalar(
-                select(func.count(ErpSyncMutationEvidence.id)).where(
-                    ErpSyncMutationEvidence.attempt_id == attempt_id,
-                    ErpSyncMutationEvidence.committed_at.is_not(None),
-                    ErpSyncMutationEvidence.after_sha256.is_not(None),
-                )
-            )
-            or 0
-        )
-        if not committed or not inspector.has_table("erp_sync_recovery_state"):
-            return
-        recovery = session.scalar(
-            select(ErpSyncRecoveryState).where(
-                ErpSyncRecoveryState.attempt_id == attempt_id
-            )
-        )
-        if recovery is None:
-            recovery = ErpSyncRecoveryState(
-                attempt_id=attempt_id,
-                state=RECOVERY_REQUIRED,
-                reason_code="erp_sync_interrupted_after_committed_mutation",
-                pinned=True,
-            )
-            session.add(recovery)
-        else:
-            recovery.state = RECOVERY_REQUIRED
-            recovery.reason_code = "erp_sync_interrupted_after_committed_mutation"
-            recovery.pinned = True
+        # Lease expiry is an ordinary interruption, not a hard recovery signal.
+        # Preserve committed evidence, release unused capacity, and make any
+        # unpinned payload purge-eligible. Explicit validation/storage failures
+        # continue to create RECOVERY_REQUIRED through their dedicated paths.
         if inspector.has_table("erp_sync_evidence_manifests"):
+            fallback_expiry = now + timedelta(
+                days=ERP_SYNC_DEFAULT_PAYLOAD_RETENTION_DAYS
+            )
             for manifest in session.scalars(
                 select(ErpSyncEvidenceManifest).where(
                     ErpSyncEvidenceManifest.attempt_id == attempt_id
                 )
             ):
-                manifest.pinned = True
+                if not bool(manifest.pinned) and manifest.expires_at is None:
+                    manifest.expires_at = fallback_expiry
 
     @staticmethod
     def _pending_plausibility_review_locked(
