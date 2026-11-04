@@ -20,6 +20,7 @@ from app.application import (
 )
 from app.server.erp_sync_evidence import (
     ERP_EVIDENCE_CODEC_VERSION,
+    EvidenceBackedErpSyncAutomaticSafetyCapability,
     ErpSyncEvidenceService,
     ErpSyncEvidenceSettings,
     canonical_json_bytes,
@@ -1623,6 +1624,47 @@ class ErpSyncEvidenceTests(unittest.TestCase):
                     ),
                     missing,
                 )
+                if missing == "erp_sync_compensation_receipts":
+                    projects = ProjectSource((project("AUTO-BLOCKED", external_id="8991"),))
+                    tasks = PortfolioTaskSource(
+                        {"AUTO-BLOCKED": snapshot("AUTO-BLOCKED", task_id="AUTO-1")}
+                    )
+                    orchestrator = ErpSyncOrchestrator(
+                        self.factory,
+                        project_source=projects,
+                        project_task_source=tasks,
+                        settings=self.control_settings,
+                        automatic_safety=EvidenceBackedErpSyncAutomaticSafetyCapability(
+                            self.service,
+                            profile_fingerprint=self.control_settings.config_fingerprint,
+                        ),
+                        evidence_service=self.service,
+                    )
+                    occurrence = control.accept_manual(
+                        intent="PROJECTS_AND_ACTIVE_TASKS",
+                        actor_name="scheduler-test",
+                        idempotency_key="automatic-missing-compensation",
+                        settings=self.control_settings,
+                    )
+                    automatic_attempt = control.claim(
+                        occurrence_id=occurrence.id,
+                        trigger="MANUAL",
+                        actor_name="scheduler-test",
+                        settings=self.control_settings,
+                    )
+                    self.assertIsNotNone(automatic_attempt)
+                    orchestrator._execute_attempt(
+                        automatic_attempt.id,
+                        automatic_attempt.generation,
+                        automatic=True,
+                    )
+                    self.assertEqual(
+                        control.get_attempt(automatic_attempt.id).error_code,
+                        "erp_sync_automatic_safety_unavailable",
+                    )
+                    self.assertEqual(projects.calls, 0)
+                    self.assertEqual(tasks.calls, 0)
+                    orchestrator.shutdown()
 
         # Automatic readiness is not a global manual-operation kill switch.
         _manual_control, _manual_occurrence, manual = self._attempt(
