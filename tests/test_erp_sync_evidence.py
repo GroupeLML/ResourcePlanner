@@ -1634,6 +1634,17 @@ class ErpSyncEvidenceTests(unittest.TestCase):
                 profile_fingerprint=self.control_settings.config_fingerprint
             )
         )
+        with transactional_session(self.factory) as session:
+            authority = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+            self.assertIsNotNone(authority)
+            authority.protocol_version = 999
+        self.assertFalse(
+            self.service.automatic_execution_available(
+                profile_fingerprint=self.control_settings.config_fingerprint
+            )
+        )
+        with transactional_session(self.factory) as session:
+            session.get(ErpSyncControl, "ERP_PROJECTS_TASKS").protocol_version = 1
 
         for missing in (
             "erp_sync_compensation_receipts",
