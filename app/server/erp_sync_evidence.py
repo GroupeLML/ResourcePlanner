@@ -2003,15 +2003,38 @@ class ErpSyncEvidenceService:
         }
         return content_sha256(material)
 
-    def _current_owned_state(self, session: Session, row: Any) -> Mapping[str, Any] | None:
+    @staticmethod
+    def _compensation_scalar(
+        session: Session,
+        model: Any,
+        *criteria: Any,
+        lock_for_compensation: bool,
+    ) -> Any | None:
+        statement = select(model).where(*criteria)
+        if lock_for_compensation and session.get_bind().dialect.name == "mssql":
+            statement = statement.with_hint(
+                model,
+                "WITH (UPDLOCK, HOLDLOCK)",
+                dialect_name="mssql",
+            )
+        return session.scalar(statement)
+
+    def _current_owned_state(
+        self,
+        session: Session,
+        row: Any,
+        *,
+        lock_for_compensation: bool = False,
+    ) -> Mapping[str, Any] | None:
         from ..infrastructure.sql import Project, TaskCatalogEntry, TaskCatalogProjectSyncState
 
         if row.entity_type == "PROJECT":
-            project = session.scalar(
-                select(Project).where(
-                    (Project.erp_external_id == row.entity_key)
-                    | (Project.number == row.entity_key)
-                )
+            project = self._compensation_scalar(
+                session,
+                Project,
+                (Project.erp_external_id == row.entity_key)
+                | (Project.number == row.entity_key),
+                lock_for_compensation=lock_for_compensation,
             )
             if project is None:
                 return None
@@ -2027,17 +2050,19 @@ class ErpSyncEvidenceService:
         if row.entity_type == "TASK":
             if ":" in row.entity_key:
                 project_number, task_code = row.entity_key.split(":", 1)
-                task = session.scalar(
-                    select(TaskCatalogEntry).where(
-                        TaskCatalogEntry.project_number == project_number,
-                        TaskCatalogEntry.task_code == task_code,
-                    )
+                task = self._compensation_scalar(
+                    session,
+                    TaskCatalogEntry,
+                    TaskCatalogEntry.project_number == project_number,
+                    TaskCatalogEntry.task_code == task_code,
+                    lock_for_compensation=lock_for_compensation,
                 )
             else:
-                task = session.scalar(
-                    select(TaskCatalogEntry).where(
-                        TaskCatalogEntry.erp_task_id == row.entity_key
-                    )
+                task = self._compensation_scalar(
+                    session,
+                    TaskCatalogEntry,
+                    TaskCatalogEntry.erp_task_id == row.entity_key,
+                    lock_for_compensation=lock_for_compensation,
                 )
             if task is None:
                 return None
@@ -2075,7 +2100,12 @@ class ErpSyncEvidenceService:
                 "preferred_resource_version": int(task.preferred_resource_version or 1),
             }
         if row.entity_type == "TASK_SYNC_STATE":
-            state = session.get(TaskCatalogProjectSyncState, row.entity_key)
+            state = self._compensation_scalar(
+                session,
+                TaskCatalogProjectSyncState,
+                TaskCatalogProjectSyncState.project_number == row.entity_key,
+                lock_for_compensation=lock_for_compensation,
+            )
             if state is None:
                 return None
             return {
@@ -2166,10 +2196,12 @@ class ErpSyncEvidenceService:
                 code="erp_sync_compensation_evidence_expired",
             )
 
-    @staticmethod
     def _new_row_has_dependencies(
+        self,
         session: Session,
         row: Any,
+        *,
+        lock_for_compensation: bool = False,
     ) -> bool:
         from ..infrastructure.sql import (
             Project,
@@ -2179,50 +2211,64 @@ class ErpSyncEvidenceService:
         )
 
         if row.entity_type == "PROJECT":
-            project = session.scalar(
-                select(Project).where(
-                    (Project.erp_external_id == row.entity_key)
-                    | (Project.number == row.entity_key)
-                )
+            project = self._compensation_scalar(
+                session,
+                Project,
+                (Project.erp_external_id == row.entity_key)
+                | (Project.number == row.entity_key),
+                lock_for_compensation=lock_for_compensation,
             )
             if project is None:
                 return True
-            has_package = session.scalar(
-                select(WorkPackage.id)
-                .where(WorkPackage.project_id == project.id)
-                .limit(1)
-            )
-            has_request = session.scalar(
-                select(WorkforceRequest.id)
-                .where(WorkforceRequest.project_id == project.id)
-                .limit(1)
-            )
+            package_statement = select(WorkPackage).where(
+                WorkPackage.project_id == project.id
+            ).limit(1)
+            request_statement = select(WorkforceRequest).where(
+                WorkforceRequest.project_id == project.id
+            ).limit(1)
+            if lock_for_compensation and session.get_bind().dialect.name == "mssql":
+                package_statement = package_statement.with_hint(
+                    WorkPackage,
+                    "WITH (UPDLOCK, HOLDLOCK)",
+                    dialect_name="mssql",
+                )
+                request_statement = request_statement.with_hint(
+                    WorkforceRequest,
+                    "WITH (UPDLOCK, HOLDLOCK)",
+                    dialect_name="mssql",
+                )
+            has_package = session.scalar(package_statement)
+            has_request = session.scalar(request_statement)
             return has_package is not None or has_request is not None
         if row.entity_type == "TASK":
             if ":" in row.entity_key:
                 project_number, task_code = row.entity_key.split(":", 1)
-                task = session.scalar(
-                    select(TaskCatalogEntry).where(
-                        TaskCatalogEntry.project_number == project_number,
-                        TaskCatalogEntry.task_code == task_code,
-                    )
+                task = self._compensation_scalar(
+                    session,
+                    TaskCatalogEntry,
+                    TaskCatalogEntry.project_number == project_number,
+                    TaskCatalogEntry.task_code == task_code,
+                    lock_for_compensation=lock_for_compensation,
                 )
             else:
-                task = session.scalar(
-                    select(TaskCatalogEntry).where(
-                        TaskCatalogEntry.erp_task_id == row.entity_key
-                    )
+                task = self._compensation_scalar(
+                    session,
+                    TaskCatalogEntry,
+                    TaskCatalogEntry.erp_task_id == row.entity_key,
+                    lock_for_compensation=lock_for_compensation,
                 )
             if task is None:
                 return True
-            return (
-                session.scalar(
-                    select(WorkPackage.id)
-                    .where(WorkPackage.task_catalog_item_id == task.id)
-                    .limit(1)
+            dependency_statement = select(WorkPackage).where(
+                WorkPackage.task_catalog_item_id == task.id
+            ).limit(1)
+            if lock_for_compensation and session.get_bind().dialect.name == "mssql":
+                dependency_statement = dependency_statement.with_hint(
+                    WorkPackage,
+                    "WITH (UPDLOCK, HOLDLOCK)",
+                    dialect_name="mssql",
                 )
-                is not None
-            )
+            return session.scalar(dependency_statement) is not None
         return False
 
     def compensation_preview(self, *, attempt_id: str) -> dict[str, Any]:
@@ -2259,11 +2305,19 @@ class ErpSyncEvidenceService:
                 if row.committed_at is None or row.after_sha256 is None or after is None:
                     continue
                 eligible += 1
-                current = self._current_owned_state(session, row)
+                current = self._current_owned_state(
+                    session,
+                    row,
+                    lock_for_compensation=True,
+                )
                 if current is None or content_sha256(current) != row.after_sha256:
                     conflicts.append(f"{row.entity_type}:{row.entity_key}")
                     continue
-                if before is None and self._new_row_has_dependencies(session, row):
+                if before is None and self._new_row_has_dependencies(
+                    session,
+                    row,
+                    lock_for_compensation=True,
+                ):
                     conflicts.append(
                         f"dependency:{row.entity_type}:{row.entity_key}"
                     )
