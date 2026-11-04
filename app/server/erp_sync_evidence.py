@@ -1857,6 +1857,46 @@ class ErpSyncEvidenceService:
                 if not manifest.pinned:
                     manifest.expires_at = now + timedelta(days=retention_days)
 
+    @staticmethod
+    def _required_automatic_protocol_tables() -> tuple[str, ...]:
+        """Return the current 643B persistence surface required for automatic use."""
+        from ..infrastructure.sql import (
+            AcumaticaProjectTaskSyncProjectResult,
+            AcumaticaProjectTaskSyncRun,
+            ErpSyncAttempt,
+            ErpSyncBaseline,
+            ErpSyncBaselineApprovalAudit,
+            ErpSyncCompensationReceipt,
+            ErpSyncControl,
+            ErpSyncEvidenceChunk,
+            ErpSyncEvidenceManifest,
+            ErpSyncEvidenceReservation,
+            ErpSyncMutationEvidence,
+            ErpSyncOccurrence,
+            ErpSyncPlausibilityException,
+            ErpSyncProjectQuality,
+            ErpSyncRecoveryState,
+        )
+
+        models = (
+            ErpSyncControl,
+            ErpSyncOccurrence,
+            ErpSyncAttempt,
+            AcumaticaProjectTaskSyncRun,
+            AcumaticaProjectTaskSyncProjectResult,
+            ErpSyncEvidenceManifest,
+            ErpSyncEvidenceChunk,
+            ErpSyncEvidenceReservation,
+            ErpSyncBaseline,
+            ErpSyncBaselineApprovalAudit,
+            ErpSyncPlausibilityException,
+            ErpSyncMutationEvidence,
+            ErpSyncProjectQuality,
+            ErpSyncRecoveryState,
+            ErpSyncCompensationReceipt,
+        )
+        return tuple(model.__table__.name for model in models)
+
     def automatic_execution_available(self, *, profile_fingerprint: str) -> bool:
         if self._cipher is None or self._control_settings is None:
             return False
@@ -1868,18 +1908,7 @@ class ErpSyncEvidenceService:
                 return False
             with self._session_factory() as session:
                 inspector = inspect(session.get_bind())
-                required_tables = {
-                    "erp_sync_control",
-                    "erp_sync_attempts",
-                    "erp_sync_evidence_manifests",
-                    "erp_sync_evidence_chunks",
-                    "erp_sync_evidence_reservations",
-                    "erp_sync_baselines",
-                    "erp_sync_baseline_approval_audit",
-                    "erp_sync_mutation_evidence",
-                    "erp_sync_project_quality",
-                    "erp_sync_recovery_state",
-                }
+                required_tables = self._required_automatic_protocol_tables()
                 if not all(inspector.has_table(name) for name in required_tables):
                     return False
                 from ..infrastructure.sql import (
