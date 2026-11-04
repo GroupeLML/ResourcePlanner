@@ -1207,10 +1207,16 @@ class ErpSyncEvidenceService:
         from ..infrastructure.sql import ErpSyncBaseline
 
         with self._session_factory() as session:
+            lookup_fingerprint = profile_fingerprint
+            if (
+                self._control_settings is not None
+                and profile_fingerprint == self._control_settings.config_fingerprint
+            ):
+                lookup_fingerprint = self.policy_fingerprint_in_session(session)
             row = session.scalar(
                 select(ErpSyncBaseline).where(
                     ErpSyncBaseline.source_type == source_type,
-                    ErpSyncBaseline.profile_fingerprint == profile_fingerprint,
+                    ErpSyncBaseline.profile_fingerprint == lookup_fingerprint,
                 )
             )
             if row is None:
