@@ -502,8 +502,8 @@ class ODataProjectTaskSource:
             else None
         )
         raw_rows: list[ODataProjectTaskRecord] = []
-        seen_page_signatures: set[tuple[ODataProjectTaskRecord, ...]] = set()
-        seen_transport_rows: set[ODataProjectTaskRecord] = set()
+        seen_page_task_ids: set[tuple[int, ...]] = set()
+        previous_last_task_id: int | None = None
         skip = 0
         try:
             with httpx.Client(
@@ -549,13 +549,28 @@ class ODataProjectTaskSource:
                             ),
                         ) from exc
 
-                    signature = tuple(page)
-                    if signature and signature in seen_page_signatures:
+                    task_ids = tuple(row.task_id for row in page)
+                    if any(
+                        task_ids[index] > task_ids[index + 1]
+                        for index in range(len(task_ids) - 1)
+                    ):
+                        reason = "pagination_non_progressive"
+                    elif task_ids and task_ids in seen_page_task_ids:
+                        reason = "pagination_non_progressive"
+                    elif (
+                        task_ids
+                        and previous_last_task_id is not None
+                        and task_ids[0] <= previous_last_task_id
+                    ):
+                        reason = "pagination_overlap"
+                    else:
+                        reason = None
+                    if reason is not None:
                         self._log_failure(
                             failure_kind="invalid_payload",
                             retryable=False,
                             http_status=response.status_code,
-                            reason="pagination_non_progressive",
+                            reason=reason,
                         )
                         raise ApplicationOperationError(
                             "La pagination OData Acumatica des tâches projet ne progresse pas.",
@@ -564,29 +579,12 @@ class ODataProjectTaskSource:
                                 failure_kind="invalid_payload",
                                 retryable=False,
                                 http_status=response.status_code,
-                                reason="pagination_non_progressive",
+                                reason=reason,
                             ),
                         )
-                    seen_page_signatures.add(signature)
-                    overlap = tuple(row for row in page if row in seen_transport_rows)
-                    if overlap:
-                        self._log_failure(
-                            failure_kind="invalid_payload",
-                            retryable=False,
-                            http_status=response.status_code,
-                            reason="pagination_overlap",
-                        )
-                        raise ApplicationOperationError(
-                            "La pagination OData Acumatica des tâches projet se chevauche.",
-                            code="acumatica_project_task_response_invalid",
-                            context=self._safe_context(
-                                failure_kind="invalid_payload",
-                                retryable=False,
-                                http_status=response.status_code,
-                                reason="pagination_overlap",
-                            ),
-                        )
-                    seen_transport_rows.update(page)
+                    if task_ids:
+                        seen_page_task_ids.add(task_ids)
+                        previous_last_task_id = task_ids[-1]
                     raw_rows.extend(page)
                     if len(page) < self._settings.page_size:
                         break
@@ -689,8 +687,8 @@ class ODataProjectTaskSource:
             else None
         )
         raw_rows: list[ODataProjectTaskRecord] = []
-        seen_page_signatures: set[tuple[ODataProjectTaskRecord, ...]] = set()
-        seen_transport_rows: set[ODataProjectTaskRecord] = set()
+        seen_page_task_ids: set[tuple[int, ...]] = set()
+        previous_last_task_id: int | None = None
         skip = 0
         page_count = 0
         started_at = perf_counter()
@@ -735,13 +733,28 @@ class ODataProjectTaskSource:
                             ),
                         ) from exc
 
-                    signature = tuple(page)
-                    if signature and signature in seen_page_signatures:
+                    task_ids = tuple(row.task_id for row in page)
+                    if any(
+                        task_ids[index] > task_ids[index + 1]
+                        for index in range(len(task_ids) - 1)
+                    ):
+                        reason = "pagination_non_progressive"
+                    elif task_ids and task_ids in seen_page_task_ids:
+                        reason = "pagination_non_progressive"
+                    elif (
+                        task_ids
+                        and previous_last_task_id is not None
+                        and task_ids[0] <= previous_last_task_id
+                    ):
+                        reason = "pagination_overlap"
+                    else:
+                        reason = None
+                    if reason is not None:
                         self._log_failure(
                             failure_kind="invalid_payload",
                             retryable=False,
                             http_status=response.status_code,
-                            reason="pagination_non_progressive",
+                            reason=reason,
                         )
                         raise ApplicationOperationError(
                             "La pagination OData Acumatica globale des tâches projet ne progresse pas.",
@@ -750,29 +763,12 @@ class ODataProjectTaskSource:
                                 failure_kind="invalid_payload",
                                 retryable=False,
                                 http_status=response.status_code,
-                                reason="pagination_non_progressive",
+                                reason=reason,
                             ),
                         )
-                    seen_page_signatures.add(signature)
-                    overlap = tuple(row for row in page if row in seen_transport_rows)
-                    if overlap:
-                        self._log_failure(
-                            failure_kind="invalid_payload",
-                            retryable=False,
-                            http_status=response.status_code,
-                            reason="pagination_overlap",
-                        )
-                        raise ApplicationOperationError(
-                            "La pagination OData Acumatica globale des tâches projet se chevauche.",
-                            code="acumatica_project_task_response_invalid",
-                            context=self._safe_context(
-                                failure_kind="invalid_payload",
-                                retryable=False,
-                                http_status=response.status_code,
-                                reason="pagination_overlap",
-                            ),
-                        )
-                    seen_transport_rows.update(page)
+                    if task_ids:
+                        seen_page_task_ids.add(task_ids)
+                        previous_last_task_id = task_ids[-1]
                     page_count += 1
                     raw_rows.extend(page)
                     if len(page) < self._settings.page_size:
