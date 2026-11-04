@@ -16,7 +16,10 @@ from ..application.errors import (
     ApplicationUnavailableError,
     ApplicationValidationError,
 )
-from ..application.erp_sync_scheduler import ErpSyncSchedulerSettings
+from ..application.erp_sync_scheduler import (
+    ERP_SYNC_PROTOCOL_VERSION,
+    ErpSyncSchedulerSettings,
+)
 from ..application.smtp_settings import SecretCipherPort
 
 
@@ -1912,9 +1915,17 @@ class ErpSyncEvidenceService:
                 if not all(inspector.has_table(name) for name in required_tables):
                     return False
                 from ..infrastructure.sql import (
+                    ERP_SYNC_CONTROL_ROW_ID,
                     RECOVERY_REQUIRED,
+                    ErpSyncControl,
                     ErpSyncRecoveryState,
                 )
+                control = session.get(ErpSyncControl, ERP_SYNC_CONTROL_ROW_ID)
+                if (
+                    control is None
+                    or int(control.protocol_version) != ERP_SYNC_PROTOCOL_VERSION
+                ):
+                    return False
                 recovery_required = session.scalar(
                     select(ErpSyncRecoveryState.id)
                     .where(ErpSyncRecoveryState.state == RECOVERY_REQUIRED)
