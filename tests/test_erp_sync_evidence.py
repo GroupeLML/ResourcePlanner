@@ -1552,6 +1552,343 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             )
         )
 
+    def test_automatic_readiness_requires_complete_643b_persistence_surface(self) -> None:
+        control, _occurrence, attempt = self._attempt("readiness-schema-surface")
+        project_source = self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"records": [{"number": "READY"}]},
+            row_count=1,
+        )
+        task_source = self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "portfolio": TaskCatalogPortfolioSnapshot(
+                    source_rows=1,
+                    source_pages=1,
+                    snapshots=(snapshot("READY", task_id="98801"),),
+                )
+            },
+            row_count=1,
+            project_counts={"READY": 1},
+        )
+        for captured in (project_source, task_source):
+            self.service.approve_baseline(
+                manifest_id=captured.manifest_id,
+                actor_name="admin",
+                reason="Approved readiness baseline",
+            )
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.finalize_attempt(attempt_id=attempt.id, successful=False)
+
+        self.assertTrue(
+            self.service.automatic_execution_available(
+                profile_fingerprint=self.control_settings.config_fingerprint
+            )
+        )
+
+        for missing in (
+            "erp_sync_compensation_receipts",
+            "erp_sync_plausibility_exceptions",
+        ):
+            real_inspect = __import__(
+                "app.server.erp_sync_evidence",
+                fromlist=["inspect"],
+            ).inspect
+            real = real_inspect(self.engine)
+            fake = SimpleNamespace(
+                has_table=lambda name, missing=missing: (
+                    False if name == missing else real.has_table(name)
+                )
+            )
+            with patch(
+                "app.server.erp_sync_evidence.inspect",
+                return_value=fake,
+            ):
+                self.assertFalse(
+                    self.service.automatic_execution_available(
+                        profile_fingerprint=self.control_settings.config_fingerprint
+                    ),
+                    missing,
+                )
+                # Automatic readiness is not a global manual-operation kill switch.
+                _manual_control, _manual_occurrence, manual = self._attempt(
+                    f"manual-without-{missing}"
+                )
+                self.assertIsNotNone(manual)
+
+    def test_missing_one_of_multiple_task_mutation_proofs_blocks_publication_and_pins_recovery(self) -> None:
+        project_number = "PROOF-MULTI"
+        with transactional_session(self.factory) as session:
+            session.add(
+                Project(
+                    id="PROOF-MULTI-ID",
+                    erp_external_id="8901",
+                    number=project_number,
+                    name="Existing proof project",
+                    status="Actif",
+                )
+            )
+            session.add(
+                TaskCatalogEntry(
+                    project_number=project_number,
+                    task_code="OLD",
+                    label="Existing task to deactivate",
+                    active=True,
+                    erp_task_id="PROOF-OLD",
+                    account_group="DEPMO",
+                )
+            )
+
+        projects = ProjectSource((project(project_number, external_id="8901"),))
+        tasks = PortfolioTaskSource(
+            {project_number: snapshot(project_number, task_id="PROOF-NEW")}
+        )
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        control = SqlErpSyncControlRepository(self.factory)
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="operator",
+            idempotency_key="proof-multiple-bootstrap",
+            settings=self.control_settings,
+        )
+        first = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="operator",
+            settings=self.control_settings,
+        )
+        self.assertIsNotNone(first)
+        orchestrator._execute_attempt(first.id, first.generation)
+        with self.factory() as session:
+            manifests = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceManifest).where(
+                        ErpSyncEvidenceManifest.attempt_id == first.id,
+                        ErpSyncEvidenceManifest.proof_type == "SOURCE",
+                    )
+                )
+            )
+        for manifest in manifests:
+            self.service.approve_baseline(
+                manifest_id=manifest.id,
+                actor_name="admin",
+                reason="Approved proof completeness baseline",
+            )
+
+        retry = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="operator",
+            settings=self.control_settings,
+            command_identity="retry:proof-multiple",
+        )
+        self.assertIsNotNone(retry)
+        original_publish = orchestrator._publish_full_success
+
+        def delete_one_task_proof_then_publish(*, attempt_id: str, generation: int) -> None:
+            attempt = control.get_attempt(attempt_id)
+            with transactional_session(self.factory) as session:
+                result = session.scalar(
+                    select(AcumaticaProjectTaskSyncProjectResult).where(
+                        AcumaticaProjectTaskSyncProjectResult.run_id
+                        == attempt.task_sync_run_id,
+                        AcumaticaProjectTaskSyncProjectResult.project_number
+                        == project_number,
+                    )
+                )
+                self.assertIsNotNone(result)
+                task_rows = tuple(
+                    session.scalars(
+                        select(ErpSyncMutationEvidence).where(
+                            ErpSyncMutationEvidence.attempt_id == attempt_id,
+                            ErpSyncMutationEvidence.unit_type
+                            == f"TASK_PROJECT:{result.project_id}",
+                            ErpSyncMutationEvidence.entity_type == "TASK",
+                        )
+                    )
+                )
+                self.assertEqual(len(task_rows), 2)
+                session.delete(task_rows[0])
+            original_publish(attempt_id=attempt_id, generation=generation)
+
+        with patch.object(
+            orchestrator,
+            "_publish_full_success",
+            side_effect=delete_one_task_proof_then_publish,
+        ):
+            orchestrator._execute_attempt(retry.id, retry.generation)
+
+        failed = control.get_attempt(retry.id)
+        self.assertEqual(failed.status, "FAILED")
+        self.assertEqual(failed.error_code, "erp_sync_global_validation_failed")
+        with self.factory() as session:
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == retry.id
+                )
+            )
+            manifests = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceManifest).where(
+                        ErpSyncEvidenceManifest.attempt_id == retry.id
+                    )
+                )
+            )
+        self.assertIsNotNone(recovery)
+        self.assertEqual(recovery.state, "REQUIRED")
+        self.assertTrue(recovery.pinned)
+        self.assertTrue(all(row.pinned for row in manifests))
+        orchestrator.shutdown()
+
+    def test_partial_success_still_requires_valid_proof_for_each_synchronized_project(self) -> None:
+        project_a = "PARTIAL-PROOF-A"
+        project_b = "PARTIAL-PROOF-B"
+        projects = ProjectSource(
+            (
+                project(project_a, external_id="8911"),
+                project(project_b, external_id="8912"),
+            )
+        )
+        tasks = PortfolioTaskSource(
+            {
+                project_a: snapshot(project_a, task_id="PARTIAL-A-1"),
+                project_b: snapshot(project_b, task_id="PARTIAL-B-1"),
+            }
+        )
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        control = SqlErpSyncControlRepository(self.factory)
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="operator",
+            idempotency_key="partial-proof-bootstrap",
+            settings=self.control_settings,
+        )
+        first = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="operator",
+            settings=self.control_settings,
+        )
+        self.assertIsNotNone(first)
+        orchestrator._execute_attempt(first.id, first.generation)
+        with self.factory() as session:
+            manifests = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceManifest).where(
+                        ErpSyncEvidenceManifest.attempt_id == first.id,
+                        ErpSyncEvidenceManifest.proof_type == "SOURCE",
+                    )
+                )
+            )
+        for manifest in manifests:
+            self.service.approve_baseline(
+                manifest_id=manifest.id,
+                actor_name="admin",
+                reason="Approved partial-proof baseline",
+            )
+
+        retry = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="operator",
+            settings=self.control_settings,
+            command_identity="retry:partial-proof",
+        )
+        self.assertIsNotNone(retry)
+        original_process = orchestrator._process_task_project
+        original_validate = orchestrator._validate_full_publication
+
+        def reject_b(run_id, attempt_id, generation, project_row, snapshots):
+            if project_row.number == project_b:
+                orchestrator._record_task_outcome(
+                    run_id,
+                    attempt_id,
+                    generation,
+                    {
+                        "project_id": project_row.id,
+                        "project_number": project_row.number,
+                        "status": "rejected",
+                        "error_code": "injected_local_failure",
+                        "reason_code": "project_sync_failed",
+                    },
+                )
+                return None
+            return original_process(
+                run_id,
+                attempt_id,
+                generation,
+                project_row,
+                snapshots,
+            )
+
+        def quarantine_a_then_validate(*, attempt_id: str, generation: int, require_complete_success: bool = False):
+            with transactional_session(self.factory) as session:
+                quality = session.get(ErpSyncProjectQuality, project_a)
+                self.assertIsNotNone(quality)
+                quality.quality_state = "QUARANTINED"
+                quality.reason_code = "injected_partial_proof_failure"
+            return original_validate(
+                attempt_id=attempt_id,
+                generation=generation,
+                require_complete_success=require_complete_success,
+            )
+
+        with patch.object(
+            orchestrator,
+            "_process_task_project",
+            side_effect=reject_b,
+        ), patch.object(
+            orchestrator,
+            "_validate_full_publication",
+            side_effect=quarantine_a_then_validate,
+        ):
+            orchestrator._execute_attempt(retry.id, retry.generation)
+
+        failed = control.get_attempt(retry.id)
+        self.assertEqual(failed.status, "FAILED")
+        self.assertEqual(failed.error_code, "erp_sync_global_validation_failed")
+        with self.factory() as session:
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == retry.id
+                )
+            )
+            task_a = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == project_a,
+                    TaskCatalogEntry.erp_task_id == "PARTIAL-A-1",
+                )
+            )
+        self.assertIsNotNone(task_a)
+        self.assertIsNotNone(recovery)
+        self.assertEqual(recovery.state, "REQUIRED")
+        self.assertTrue(recovery.pinned)
+        orchestrator.shutdown()
+
     def test_intentionally_empty_task_target_set_does_not_fail_positive_baseline(self) -> None:
         control, _baseline_occurrence, baseline_attempt = self._attempt(
             "empty-target-baseline"
