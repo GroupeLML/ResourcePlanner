@@ -492,6 +492,151 @@ class ODataProjectTaskSourceTests(unittest.TestCase):
         )
 
 
+    def test_pagination_progress_rejects_changed_overlap_backward_and_partial_in_both_paths(self) -> None:
+        scenarios = (
+            (
+                (
+                    (101, "A", "100.00"),
+                    (102, "B", "100.00"),
+                ),
+                (
+                    (101, "A changed", "101.00"),
+                    (103, "C", "100.00"),
+                ),
+            ),
+            (
+                (
+                    (102, "B", "100.00"),
+                    (103, "C", "100.00"),
+                ),
+                (
+                    (101, "A", "100.00"),
+                    (104, "D", "100.00"),
+                ),
+            ),
+            (
+                (
+                    (101, "A", "100.00"),
+                    (102, "B", "100.00"),
+                ),
+                (
+                    (102, "B changed", "101.00"),
+                    (103, "C", "100.00"),
+                ),
+            ),
+        )
+
+        for mode in ("targeted", "portfolio"):
+            for first_rows, second_rows in scenarios:
+                with self.subTest(mode=mode, second_first=second_rows[0][0]):
+                    def page(rows):
+                        return _feed(
+                            *(
+                                _entry(
+                                    project_erp_id=5469,
+                                    project_number="5118",
+                                    task_id=task_id,
+                                    task_code=str(task_id),
+                                    label=label,
+                                    budget_amount=amount,
+                                )
+                                for task_id, label, amount in rows
+                            )
+                        )
+
+                    pages = {"0": page(first_rows), "2": page(second_rows)}
+                    source = ODataProjectTaskSource(
+                        ODataProjectTaskSourceSettings(
+                            base_url="https://example.invalid",
+                            page_size=2,
+                        ),
+                        transport=httpx.MockTransport(
+                            lambda request: httpx.Response(
+                                200,
+                                content=pages[request.url.params["$skip"]],
+                                request=request,
+                            )
+                        ),
+                    )
+                    with self.assertRaises(ApplicationOperationError) as raised:
+                        if mode == "targeted":
+                            source.fetch_project_snapshot(
+                                project_external_id="5469",
+                                project_number="5118",
+                            )
+                        else:
+                            source.fetch_project_snapshots(
+                                project_targets=(("5469", "5118"),),
+                            )
+                    self.assertIn(
+                        raised.exception.context["reason"],
+                        {"pagination_overlap", "pagination_non_progressive"},
+                    )
+
+    def test_pagination_progress_preserves_same_task_financial_aggregation_in_both_paths(self) -> None:
+        pages = {
+            "0": _feed(
+                _entry(
+                    project_erp_id=5469,
+                    project_number="5118",
+                    task_id=101,
+                    task_code="216",
+                    label="A",
+                    budget_amount="100.00",
+                    budget_actual="10.00",
+                    cost_code="C1",
+                ),
+                _entry(
+                    project_erp_id=5469,
+                    project_number="5118",
+                    task_id=101,
+                    task_code="216",
+                    label="A",
+                    budget_amount="25.00",
+                    budget_actual="5.00",
+                    cost_code="C2",
+                ),
+            ),
+            "2": _feed(
+                _entry(
+                    project_erp_id=5469,
+                    project_number="5118",
+                    task_id=102,
+                    task_code="217",
+                    label="B",
+                    budget_amount="1.00",
+                ),
+            ),
+        }
+        for mode in ("targeted", "portfolio"):
+            with self.subTest(mode=mode):
+                source = ODataProjectTaskSource(
+                    ODataProjectTaskSourceSettings(
+                        base_url="https://example.invalid",
+                        page_size=2,
+                    ),
+                    transport=httpx.MockTransport(
+                        lambda request: httpx.Response(
+                            200,
+                            content=pages[request.url.params["$skip"]],
+                            request=request,
+                        )
+                    ),
+                )
+                if mode == "targeted":
+                    snapshot = source.fetch_project_snapshot(
+                        project_external_id="5469",
+                        project_number="5118",
+                    )
+                else:
+                    portfolio = source.fetch_project_snapshots(
+                        project_targets=(("5469", "5118"),),
+                    )
+                    snapshot = portfolio.snapshots[0]
+                task = next(item for item in snapshot.items if item.erp_task_id == "101")
+                self.assertEqual(task.budget_amount_cad, Decimal("125.00"))
+                self.assertEqual(task.budget_actual_cad, Decimal("15.00"))
+
     def test_zero_and_negative_budget_are_kept_with_diagnostic(self) -> None:
         payload = _feed(
             _entry(
