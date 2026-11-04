@@ -1701,11 +1701,36 @@ class ErpSyncEvidenceTests(unittest.TestCase):
                     self.assertEqual(tasks.calls, 0)
                     orchestrator.shutdown()
 
-        # Automatic readiness is not a global manual-operation kill switch.
-        _manual_control, _manual_occurrence, manual = self._attempt(
-            "manual-with-incomplete-automatic-surface"
-        )
-        self.assertIsNotNone(manual)
+                # Automatic readiness is not a global manual-operation kill switch.
+                manual_occurrence = control.accept_manual(
+                    intent="PROJECTS_AND_ACTIVE_TASKS",
+                    actor_name="manual-operator",
+                    idempotency_key=f"manual-without-{missing}",
+                    settings=self.control_settings,
+                )
+                manual = control.claim(
+                    occurrence_id=manual_occurrence.id,
+                    trigger="MANUAL",
+                    actor_name="manual-operator",
+                    settings=self.control_settings,
+                )
+                self.assertIsNotNone(manual)
+                self.assertTrue(
+                    control.start_attempt(
+                        attempt_id=manual.id,
+                        generation=manual.generation,
+                        settings=self.control_settings,
+                    )
+                )
+                self.assertTrue(
+                    control.finish(
+                        attempt_id=manual.id,
+                        generation=manual.generation,
+                        status="FAILED",
+                        phase="FAILED",
+                        settings=self.control_settings,
+                    )
+                )
 
     def test_missing_one_of_multiple_task_mutation_proofs_blocks_publication_and_pins_recovery(self) -> None:
         project_number = "PROOF-MULTI"
