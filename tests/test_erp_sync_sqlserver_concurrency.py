@@ -1703,6 +1703,262 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             backend_a.shutdown()
             backend_b.shutdown()
 
+    def test_takeover_during_source_encryption_fences_stale_source_seal(self) -> None:
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = self._daily_occurrence()
+        first = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="backend-A",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(first)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=first.id,
+                generation=first.generation,
+                settings=self.settings,
+            )
+        )
+
+        encrypt_entered = Event()
+        release_encrypt = Event()
+        original_encrypt = self.evidence._encrypt_bytes
+
+        def delayed_encrypt(payload: bytes) -> str:
+            encrypt_entered.set()
+            if not release_encrypt.wait(timeout=10):
+                raise RuntimeError("source encryption release timeout")
+            return original_encrypt(payload)
+
+        def capture() -> None:
+            self.evidence.capture_source(
+                attempt_id=first.id,
+                generation=first.generation,
+                source_type="PROJECTS",
+                profile_fingerprint=self.settings.config_fingerprint,
+                payload={"records": [{"number": "SQL643-STALE-SEAL"}]},
+                row_count=1,
+            )
+
+        with patch.object(self.evidence, "_encrypt_bytes", side_effect=delayed_encrypt):
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(capture)
+                self.assertTrue(encrypt_entered.wait(timeout=5))
+                with transactional_session(self.factory) as session:
+                    session.execute(
+                        text(
+                            "UPDATE erp_sync_control "
+                            "SET lease_expires_at = DATEADD(second, -10, SYSUTCDATETIME()) "
+                            "WHERE id = :id"
+                        ),
+                        {"id": ERP_SYNC_CONTROL_ROW_ID},
+                    )
+                second = repository.claim(
+                    occurrence_id=occurrence.id,
+                    trigger="RETRY",
+                    actor_name="backend-B",
+                    settings=self.settings,
+                    command_identity="retry:sql643-stale-source-seal",
+                )
+                self.assertIsNotNone(second)
+                self.assertGreater(second.generation, first.generation)
+                release_encrypt.set()
+                with self.assertRaises(ErpSyncFenceLost):
+                    future.result(timeout=10)
+
+        with self.factory() as session:
+            stale_source = session.scalar(
+                select(ErpSyncEvidenceManifest).where(
+                    ErpSyncEvidenceManifest.attempt_id == first.id,
+                    ErpSyncEvidenceManifest.source_type == "PROJECTS",
+                )
+            )
+            reservation = session.scalar(
+                select(ErpSyncEvidenceReservation).where(
+                    ErpSyncEvidenceReservation.attempt_id == first.id
+                )
+            )
+        self.assertIsNone(stale_source)
+        self.assertIsNotNone(reservation)
+        self.assertIsNotNone(reservation.released_at)
+
+    def test_startup_reconciliation_does_not_overwrite_resolved_recovery(self) -> None:
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = self._daily_occurrence()
+        first = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="backend-A",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(first)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=first.id,
+                generation=first.generation,
+                settings=self.settings,
+            )
+        )
+        self.evidence.reserve_attempt(attempt_id=first.id)
+        self.evidence.bind_attempt_policy(
+            attempt_id=first.id,
+            generation=first.generation,
+        )
+        with transactional_session(self.factory) as session:
+            row = Project(
+                id="SQL643-RECOVERY-RACE-ID",
+                erp_external_id="ERP-SQL643-RECOVERY-RACE",
+                number="SQL643-RECOVERY-RACE",
+                name="Before",
+                status="Actif",
+            )
+            session.add(row)
+            session.flush()
+            evidence_id = self.evidence.record_before_in_session(
+                session,
+                attempt_id=first.id,
+                generation=first.generation,
+                unit_type="PROJECT_SNAPSHOT",
+                entity_type="PROJECT",
+                entity_key=row.erp_external_id,
+                before=None,
+            )
+            self.evidence.record_after_in_session(
+                session,
+                evidence_id=evidence_id,
+                attempt_id=first.id,
+                generation=first.generation,
+                after={
+                    "erp_external_id": row.erp_external_id,
+                    "number": row.number,
+                    "name": row.name,
+                    "client": row.client,
+                    "project_manager_external_id": row.project_manager_external_id,
+                    "project_manager_name": row.project_manager_name,
+                    "status": row.status,
+                },
+            )
+        with transactional_session(self.factory) as session:
+            session.execute(
+                text(
+                    "UPDATE erp_sync_control "
+                    "SET lease_expires_at = DATEADD(second, -10, SYSUTCDATETIME()) "
+                    "WHERE id = :id"
+                ),
+                {"id": ERP_SYNC_CONTROL_ROW_ID},
+            )
+
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=None,
+            project_task_source=None,
+            settings=self.settings,
+            evidence_service=self.evidence,
+        )
+        original_reconcile = orchestrator._control.reconcile_expired_owner_attempts
+
+        def reconcile_then_resolve():
+            interrupted = original_reconcile()
+            with transactional_session(self.factory) as session:
+                recovery = session.scalar(
+                    select(ErpSyncRecoveryState).where(
+                        ErpSyncRecoveryState.attempt_id == first.id
+                    )
+                )
+                self.assertIsNotNone(recovery)
+                self.assertEqual(recovery.state, "REQUIRED")
+                recovery.state = "RESOLVED"
+                recovery.pinned = False
+                recovery.resolved_by = "sql-admin"
+                recovery.resolved_at = datetime.now(timezone.utc)
+            return interrupted
+
+        with patch.object(
+            orchestrator._control,
+            "reconcile_expired_owner_attempts",
+            side_effect=reconcile_then_resolve,
+        ):
+            self.assertEqual(orchestrator.reconcile_startup(), 1)
+
+        with self.factory() as session:
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == first.id
+                )
+            )
+        self.assertIsNotNone(recovery)
+        self.assertEqual(recovery.state, "RESOLVED")
+        self.assertFalse(recovery.pinned)
+        orchestrator.shutdown()
+
+    def test_policy_reference_rows_remain_locked_through_consumption(self) -> None:
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = self._daily_occurrence()
+        attempt = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="backend-A",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(attempt)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                settings=self.settings,
+            )
+        )
+        self.evidence.reserve_attempt(attempt_id=attempt.id)
+        self.evidence.bind_attempt_policy(
+            attempt_id=attempt.id,
+            generation=attempt.generation,
+        )
+
+        updater_entered = Event()
+        updater_committed = Event()
+
+        def update_policy() -> None:
+            updater_entered.set()
+            with transactional_session(self.factory) as session:
+                standard = session.scalar(
+                    select(TaskClassStandard).where(
+                        TaskClassStandard.task_code == self.TEST_TASK_CODES[0]
+                    )
+                )
+                self.assertIsNotNone(standard)
+                standard.version = int(standard.version) + 1
+            updater_committed.set()
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with transactional_session(self.factory) as consumer:
+                self.evidence.assert_attempt_policy_in_session(
+                    consumer,
+                    attempt_id=attempt.id,
+                )
+                future = pool.submit(update_policy)
+                self.assertTrue(updater_entered.wait(timeout=5))
+                self.assertFalse(updater_committed.wait(timeout=0.25))
+                standard = consumer.scalar(
+                    select(TaskClassStandard).where(
+                        TaskClassStandard.task_code == self.TEST_TASK_CODES[0]
+                    )
+                )
+                self.assertIsNotNone(standard)
+            future.result(timeout=10)
+            self.assertTrue(updater_committed.is_set())
+
+        with transactional_session(self.factory) as session:
+            with self.assertRaises(Exception) as raised:
+                self.evidence.assert_attempt_policy_in_session(
+                    session,
+                    attempt_id=attempt.id,
+                )
+        self.assertEqual(
+            getattr(raised.exception, "code", None),
+            "erp_sync_policy_fingerprint_changed",
+        )
+
     def test_stale_generation_cannot_publish_recovery_after_takeover(self) -> None:
         repository = SqlErpSyncControlRepository(self.factory)
         occurrence = self._daily_occurrence()
