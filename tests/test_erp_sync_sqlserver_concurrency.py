@@ -1759,6 +1759,8 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
                 ),
                 {"id": ERP_SYNC_CONTROL_ROW_ID},
             )
+        self.assertEqual(repository.reconcile_expired_owner(), 1)
+        self.assertEqual(repository.reconcile_expired_owner(), 0)
         second = repository.claim(
             occurrence_id=occurrence.id,
             trigger="RETRY",
