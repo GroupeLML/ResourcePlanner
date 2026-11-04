@@ -177,13 +177,10 @@ class ErpSyncOrchestrator:
         reconciled = len(interrupted_attempts)
         if self._evidence is not None:
             for attempt_id in interrupted_attempts:
-                if self._evidence.committed_mutation_count(
-                    attempt_id=attempt_id
-                ):
-                    self._evidence.mark_recovery_required(
-                        attempt_id=attempt_id,
-                        reason_code="erp_sync_interrupted_after_committed_mutation",
-                    )
+                # Recovery classification is committed atomically by the
+                # control repository while interrupting the expired owner.
+                # Do not replay that decision here after compensation may have
+                # already resolved the current recovery state.
                 self._evidence.finalize_attempt(
                     attempt_id=attempt_id,
                     successful=False,
@@ -419,7 +416,10 @@ class ErpSyncOrchestrator:
                 "Le stockage de preuve ERP n'est pas configuré.",
                 code="erp_sync_evidence_capability_unavailable",
             )
-        self._reload_reviewed_full_sources(attempt_id=attempt_id)
+        self._reload_reviewed_full_sources(
+            attempt_id=attempt_id,
+            mark_ready=False,
+        )
         attempt = self._control.resume_review_attempt(
             attempt_id=attempt_id,
             settings=self._settings,
@@ -924,6 +924,7 @@ class ErpSyncOrchestrator:
         self,
         *,
         attempt_id: str,
+        generation: int,
         project_source: ProjectSourcePort | None = None,
         project_task_source: ProjectTaskCatalogSourcePort | None = None,
     ) -> tuple[tuple[Any, ...], Any, tuple[str, ...]]:
@@ -992,7 +993,10 @@ class ErpSyncOrchestrator:
             expected_projects=expected_numbers,
         )
 
-        profile = self._settings.config_fingerprint
+        profile = self._evidence.bind_attempt_policy(
+            attempt_id=attempt_id,
+            generation=generation,
+        )
         project_page_evidence = getattr(source, "last_read_evidence", lambda: None)()
         projects_evidence = self._evidence.capture_source(
             attempt_id=attempt_id,
@@ -1009,6 +1013,7 @@ class ErpSyncOrchestrator:
                 },
             },
             row_count=len(projects),
+            generation=generation,
         )
         task_counts = {
             str(snapshot.project_number): int(snapshot.source_rows)
@@ -1031,6 +1036,7 @@ class ErpSyncOrchestrator:
             },
             row_count=int(portfolio.source_rows),
             project_counts=task_counts,
+            generation=generation,
         )
         projects_plausibility = self._evidence.validate_plausibility(
             projects_evidence,
@@ -1038,6 +1044,7 @@ class ErpSyncOrchestrator:
         tasks_plausibility = self._evidence.validate_plausibility(
             tasks_evidence,
             active_task_targets=len(project_targets),
+            active_task_projects=expected_numbers,
         )
         if not projects_plausibility.accepted or not tasks_plausibility.accepted:
             safe_codes = tuple(
@@ -1068,13 +1075,18 @@ class ErpSyncOrchestrator:
                 )
             )
         )
-        self._evidence.mark_sources_ready(attempt_id=attempt_id)
+        self._evidence.mark_sources_ready(
+            attempt_id=attempt_id,
+            generation=generation,
+        )
         return projects, portfolio, rejected_projects
 
     def _reload_reviewed_full_sources(
         self,
         *,
         attempt_id: str,
+        generation: int | None = None,
+        mark_ready: bool = True,
     ) -> tuple[tuple[Any, ...], TaskCatalogPortfolioSnapshot, tuple[str, ...]]:
         if self._evidence is None:
             raise ApplicationUnavailableError(
@@ -1139,9 +1151,14 @@ class ErpSyncOrchestrator:
         projects_plausibility = self._evidence.validate_plausibility(
             projects_capture,
         )
+        active_project_numbers = tuple(
+            str(snapshot.project_number)
+            for snapshot in portfolio.snapshots
+        )
         tasks_plausibility = self._evidence.validate_plausibility(
             tasks_capture,
             active_task_targets=active_targets,
+            active_task_projects=active_project_numbers,
         )
         if not projects_plausibility.accepted or not tasks_plausibility.accepted:
             raise ApplicationConflictError(
@@ -1156,7 +1173,16 @@ class ErpSyncOrchestrator:
                 )
             )
         )
-        self._evidence.mark_sources_ready(attempt_id=attempt_id)
+        if mark_ready:
+            if generation is None:
+                raise ApplicationConflictError(
+                    "La génération ERP est requise pour publier les sources READY.",
+                    code="erp_sync_generation_required",
+                )
+            self._evidence.mark_sources_ready(
+                attempt_id=attempt_id,
+                generation=generation,
+            )
         return projects, portfolio, rejected_projects
 
     def _validate_full_publication_in_session(
@@ -1667,6 +1693,7 @@ class ErpSyncOrchestrator:
                         plausibility_rejected_projects,
                     ) = self._reload_reviewed_full_sources(
                         attempt_id=attempt_id,
+                        generation=generation,
                     )
                 else:
                     (
@@ -1675,6 +1702,7 @@ class ErpSyncOrchestrator:
                         plausibility_rejected_projects,
                     ) = self._capture_full_sources(
                         attempt_id=attempt_id,
+                        generation=generation,
                         project_source=project_source,
                         project_task_source=project_task_source,
                     )
@@ -1816,6 +1844,7 @@ class ErpSyncOrchestrator:
         self,
         *,
         attempt_id: str,
+        generation: int,
         project_number: str,
         snapshot: TaskCatalogProjectSnapshot,
         source: ProjectTaskCatalogSourcePort,
@@ -1832,10 +1861,14 @@ class ErpSyncOrchestrator:
             expected_projects=(project_number,),
         )
         page_evidence = getattr(source, "last_read_evidence", lambda: None)()
+        policy_fingerprint = self._evidence.bind_attempt_policy(
+            attempt_id=attempt_id,
+            generation=generation,
+        )
         self._evidence.capture_source(
             attempt_id=attempt_id,
             source_type="TASKS",
-            profile_fingerprint=self._settings.config_fingerprint,
+            profile_fingerprint=policy_fingerprint,
             payload={
                 "portfolio": portfolio,
                 "page_evidence": page_evidence
@@ -1848,6 +1881,7 @@ class ErpSyncOrchestrator:
             },
             row_count=int(snapshot.source_rows),
             project_counts={project_number: int(snapshot.source_rows)},
+            generation=generation,
         )
 
     def _execute_targeted_compat_business(
@@ -1886,6 +1920,7 @@ class ErpSyncOrchestrator:
         )
         self._capture_targeted_task_snapshot(
             attempt_id=attempt_id,
+            generation=generation,
             project_number=project_number,
             snapshot=snapshot,
             source=source,
@@ -2155,6 +2190,7 @@ class ErpSyncOrchestrator:
             )
             self._capture_targeted_task_snapshot(
                 attempt_id=attempt_id,
+                generation=generation,
                 project_number=project_number,
                 snapshot=snapshot,
                 source=self._project_task_source,
