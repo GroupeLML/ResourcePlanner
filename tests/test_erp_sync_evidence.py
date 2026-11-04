@@ -842,6 +842,60 @@ class ErpSyncEvidenceTests(unittest.TestCase):
         self.assertIsNotNone(evidence.committed_at)
         orchestrator.shutdown()
 
+    def test_reservation_estimator_accepts_near_limit_encrypted_payload_and_rejects_over_limit(self) -> None:
+        control, _occurrence, attempt = self._attempt("near-limit-evidence")
+        payload = {"blob": "x" * (14 * 1024 * 1024)}
+        captured = self.service.capture_source(
+            attempt_id=attempt.id,
+            generation=attempt.generation,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload=payload,
+            row_count=1,
+        )
+        self.assertIsNotNone(captured.manifest_id)
+        with self.factory() as session:
+            reservation = session.scalar(
+                select(ErpSyncEvidenceReservation).where(
+                    ErpSyncEvidenceReservation.attempt_id == attempt.id
+                )
+            )
+        self.assertIsNotNone(reservation)
+        self.assertLessEqual(
+            int(reservation.used_bytes),
+            int(reservation.reserved_bytes),
+        )
+        self.assertLessEqual(
+            int(reservation.reserved_bytes),
+            32 * 1024 * 1024,
+        )
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+
+        _control2, _occurrence2, too_large = self._attempt(
+            "over-limit-evidence"
+        )
+        with self.assertRaises(Exception) as raised:
+            self.service.capture_source(
+                attempt_id=too_large.id,
+                generation=too_large.generation,
+                source_type="PROJECTS",
+                profile_fingerprint=self.control_settings.config_fingerprint,
+                payload={"blob": "x" * (17 * 1024 * 1024)},
+                row_count=1,
+            )
+        self.assertEqual(
+            getattr(raised.exception, "code", None),
+            "erp_sync_evidence_attempt_budget_exceeded",
+        )
+
     def test_incompatible_peer_evidence_policy_is_rejected_for_same_attempt(self) -> None:
         _control, _occurrence, attempt = self._attempt("policy-peer")
         self.service.reserve_attempt(attempt_id=attempt.id)
@@ -3208,7 +3262,26 @@ class ErpSyncEvidenceTests(unittest.TestCase):
                 settings=self.control_settings,
             )
         )
+        finalized_at = datetime.now(timezone.utc)
         self.service.finalize_attempt(attempt_id=attempt.id, successful=True)
+        with self.factory() as session:
+            successful_manifests = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceManifest).where(
+                        ErpSyncEvidenceManifest.attempt_id == attempt.id
+                    )
+                )
+            )
+        self.assertTrue(successful_manifests)
+        self.assertTrue(
+            all(
+                row.expires_at is not None
+                and row.expires_at
+                <= finalized_at
+                + timedelta(days=self.service.settings.failure_retention_days, minutes=1)
+                for row in successful_manifests
+            )
+        )
         with transactional_session(self.factory) as session:
             recovery = session.scalar(
                 select(ErpSyncRecoveryState).where(
