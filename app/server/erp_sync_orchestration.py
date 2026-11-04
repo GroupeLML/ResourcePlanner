@@ -2112,6 +2112,10 @@ class ErpSyncOrchestrator:
                 SqlProjectSyncRepository(session),
             ).synchronize()
             if self._evidence is not None:
+                # Re-read persisted values before sealing AFTER checkpoints so
+                # canonical hashes survive SQL type/scale normalization.
+                session.flush()
+                session.expire_all()
                 for incoming in projects:
                     external_id = str(incoming.external_id or "").strip()
                     number = str(incoming.number or "").strip()
@@ -2607,6 +2611,7 @@ class ErpSyncOrchestrator:
                 )
                 repository = SqlTaskCatalogRepository(session)
                 workforce_policy = SqlTaskCatalogWorkforcePolicy(session)
+                evidence_rows: list[tuple[str, str]] = []
                 if self._evidence is not None:
                     existing_rows = tuple(
                         session.scalars(
@@ -2616,35 +2621,34 @@ class ErpSyncOrchestrator:
                         )
                     )
                     existing_by_erp = {
-                        str(row.erp_task_id).strip(): row
+                        str(row.erp_task_id or "").strip(): row
                         for row in existing_rows
                         if str(row.erp_task_id or "").strip()
                     }
                     existing_by_code = {
                         str(row.task_code).strip(): row for row in existing_rows
                     }
-                    for row in existing_rows:
-                        key = (
-                            str(row.erp_task_id).strip()
-                            or f"{project.number}:{str(row.task_code).strip()}"
-                        )
-                        task_evidence[key] = self._evidence.record_before_in_session(
-                            session,
-                            attempt_id=attempt_id,
-                            generation=generation,
-                            unit_type=f"TASK_PROJECT:{project.id}",
-                            entity_type="TASK",
-                            entity_key=key,
-                            before=self._task_owned_state(row),
-                        )
+                    captured_physical_ids: set[str] = set()
+                    captured_new_keys: set[str] = set()
                     for item in tuple(snapshot.items):
                         task_id = str(item.erp_task_id or "").strip()
-                        task_code = str(item.code).strip()
-                        existing = (
-                            existing_by_erp.get(task_id)
-                            if task_id
-                            else None
-                        ) or existing_by_code.get(task_code)
+                        task_code = str(item.code or "").strip()
+                        erp_row = existing_by_erp.get(task_id) if task_id else None
+                        business_row = existing_by_code.get(task_code)
+                        if (
+                            erp_row is not None
+                            and business_row is not None
+                            and erp_row.id != business_row.id
+                        ):
+                            raise ApplicationConflictError(
+                                "L'identité ERP TaskID entre en conflit avec une tâche locale existante.",
+                                code="task_catalog_erp_identity_conflict",
+                                context={
+                                    "project_number": project.number,
+                                    "task_code": task_code,
+                                },
+                            )
+                        existing = erp_row or business_row
                         key = task_id or f"{project.number}:{task_code}"
                         if existing is None:
                             projection = workforce_policy.project_task_projection(
@@ -2655,16 +2659,25 @@ class ErpSyncOrchestrator:
                             if not projection.eligible:
                                 excluded_new_keys.add(key)
                                 continue
-                        if key not in task_evidence:
-                            task_evidence[key] = self._evidence.record_before_in_session(
-                                session,
-                                attempt_id=attempt_id,
-                                generation=generation,
-                                unit_type=f"TASK_PROJECT:{project.id}",
-                                entity_type="TASK",
-                                entity_key=key,
-                                before=self._task_owned_state(existing),
-                            )
+                            if key in captured_new_keys:
+                                continue
+                            captured_new_keys.add(key)
+                        else:
+                            physical_id = str(existing.id)
+                            if physical_id in captured_physical_ids:
+                                continue
+                            captured_physical_ids.add(physical_id)
+                        evidence_id = self._evidence.record_before_in_session(
+                            session,
+                            attempt_id=attempt_id,
+                            generation=generation,
+                            unit_type=f"TASK_PROJECT:{project.id}",
+                            entity_type="TASK",
+                            entity_key=key,
+                            before=self._task_owned_state(existing),
+                        )
+                        task_evidence[key] = evidence_id
+                        evidence_rows.append((key, evidence_id))
                     sync_state_evidence = self._evidence.record_before_in_session(
                         session,
                         attempt_id=attempt_id,
@@ -2687,9 +2700,10 @@ class ErpSyncOrchestrator:
                     source_observed_at=source_observed_at,
                 )
                 if self._evidence is not None:
-                    # Seal after-images for every row checkpointed above,
-                    # including rows deactivated because they were absent from
-                    # the accepted source.
+                    # AFTER authority must reflect the database-normalized
+                    # physical row, not the pre-flush Python representation.
+                    session.flush()
+                    session.expire_all()
                     current_rows = tuple(
                         session.scalars(
                             select(TaskCatalogEntry).where(
@@ -2704,7 +2718,7 @@ class ErpSyncOrchestrator:
                             erp_key or f"{project.number}:{str(row.task_code).strip()}"
                         ] = row
                         current_by_key[f"{project.number}:{str(row.task_code).strip()}"] = row
-                    for key, evidence_id in task_evidence.items():
+                    for key, evidence_id in evidence_rows:
                         row = current_by_key.get(key)
                         if row is None:
                             raise ApplicationConflictError(
