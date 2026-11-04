@@ -1364,6 +1364,190 @@ class ErpSyncEvidenceTests(unittest.TestCase):
         self.assertEqual(quality_b.producer_attempt_id, attempt.id)
         orchestrator.shutdown()
 
+    def test_explicitly_closed_project_is_excluded_from_current_task_plausibility_targets(self) -> None:
+        control, _baseline_occurrence, baseline_attempt = self._attempt(
+            "closed-target-baseline"
+        )
+        project_baseline = self.service.capture_source(
+            attempt_id=baseline_attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "records": [
+                    {"external_id": "8401", "number": "CL-A", "name": "A", "status": "Actif"},
+                    {"external_id": "8402", "number": "CL-B", "name": "B", "status": "Actif"},
+                ]
+            },
+            row_count=2,
+        )
+        task_baseline = self.service.capture_source(
+            attempt_id=baseline_attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "portfolio": TaskCatalogPortfolioSnapshot(
+                    source_rows=2,
+                    source_pages=1,
+                    snapshots=(
+                        snapshot("CL-A", task_id="98501"),
+                        snapshot("CL-B", task_id="98502"),
+                    ),
+                )
+            },
+            row_count=2,
+            project_counts={"CL-A": 1, "CL-B": 1},
+        )
+        for captured in (project_baseline, task_baseline):
+            self.service.approve_baseline(
+                manifest_id=captured.manifest_id,
+                actor_name="admin",
+                reason="Approved active A/B baseline",
+            )
+        self.assertTrue(
+            control.finish(
+                attempt_id=baseline_attempt.id,
+                generation=baseline_attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.finalize_attempt(
+            attempt_id=baseline_attempt.id,
+            successful=False,
+        )
+
+        projects = ProjectSource(
+            (
+                ExternalProjectRecord(
+                    external_id="8401",
+                    number="CL-A",
+                    name="Projet CL-A",
+                    status="Terminé",
+                ),
+                ExternalProjectRecord(
+                    external_id="8402",
+                    number="CL-B",
+                    name="Projet CL-B",
+                    status="Actif",
+                ),
+            )
+        )
+        tasks = PortfolioTaskSource(
+            {"CL-B": snapshot("CL-B", task_id="98602")}
+        )
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="operator",
+            idempotency_key="closed-target-current",
+            settings=self.control_settings,
+        )
+        attempt = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="operator",
+            settings=self.control_settings,
+        )
+        self.assertIsNotNone(attempt)
+
+        orchestrator._execute_attempt(attempt.id, attempt.generation)
+
+        completed = control.get_attempt(attempt.id)
+        self.assertEqual(completed.status, "SUCCEEDED")
+        with self.factory() as session:
+            task_a = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == "CL-A"
+                )
+            )
+            task_b = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == "CL-B",
+                    TaskCatalogEntry.erp_task_id == "98602",
+                )
+            )
+        self.assertIsNone(task_a)
+        self.assertIsNotNone(task_b)
+        orchestrator.shutdown()
+
+    def test_baseline_and_automatic_readiness_follow_current_policy_identity(self) -> None:
+        control, _occurrence, attempt = self._attempt("policy-baseline")
+        project_source = self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "records": [
+                    {"external_id": "8501", "number": "POL-A", "name": "A", "status": "Actif"}
+                ]
+            },
+            row_count=1,
+        )
+        task_source = self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "portfolio": TaskCatalogPortfolioSnapshot(
+                    source_rows=1,
+                    source_pages=1,
+                    snapshots=(snapshot("POL-A", task_id="98701"),),
+                )
+            },
+            row_count=1,
+            project_counts={"POL-A": 1},
+        )
+        for captured in (project_source, task_source):
+            self.service.approve_baseline(
+                manifest_id=captured.manifest_id,
+                actor_name="admin",
+                reason="Approved policy-bound baseline",
+            )
+        with self.factory() as session:
+            original_policy = self.service.policy_fingerprint_in_session(session)
+        summary = self.service.get_baseline_summary(
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+        )
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary["profile_fingerprint"], original_policy)
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.finalize_attempt(attempt_id=attempt.id, successful=False)
+        self.assertTrue(
+            self.service.automatic_execution_available(
+                profile_fingerprint=self.control_settings.config_fingerprint
+            )
+        )
+
+        with transactional_session(self.factory) as session:
+            standard = session.get(TaskClassStandard, "100")
+            self.assertIsNotNone(standard)
+            standard.version = int(standard.version) + 1
+
+        with self.factory() as session:
+            changed_policy = self.service.policy_fingerprint_in_session(session)
+        self.assertNotEqual(changed_policy, original_policy)
+        self.assertFalse(
+            self.service.automatic_execution_available(
+                profile_fingerprint=self.control_settings.config_fingerprint
+            )
+        )
+
     def test_intentionally_empty_task_target_set_does_not_fail_positive_baseline(self) -> None:
         control, _baseline_occurrence, baseline_attempt = self._attempt(
             "empty-target-baseline"
