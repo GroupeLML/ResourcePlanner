@@ -175,6 +175,41 @@ class ErpSyncEvidenceTests(unittest.TestCase):
         )
         return control, occurrence, attempt
 
+    def _approve_bootstrap_baselines(
+        self,
+        orchestrator: ErpSyncOrchestrator,
+        control: SqlErpSyncControlRepository,
+        occurrence,
+        *,
+        reason: str,
+    ):
+        first = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="operator",
+            settings=self.control_settings,
+        )
+        self.assertIsNotNone(first)
+        orchestrator._execute_attempt(first.id, first.generation)
+        self.assertEqual(control.get_attempt(first.id).status, "FAILED")
+        with self.factory() as session:
+            manifests = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceManifest).where(
+                        ErpSyncEvidenceManifest.attempt_id == first.id,
+                        ErpSyncEvidenceManifest.proof_type == "SOURCE",
+                    )
+                )
+            )
+        self.assertEqual({row.source_type for row in manifests}, {"PROJECTS", "TASKS"})
+        for manifest in manifests:
+            self.service.approve_baseline(
+                manifest_id=manifest.id,
+                actor_name="admin",
+                reason=reason,
+            )
+        return first
+
     def test_source_payload_is_encrypted_and_integrity_checked(self) -> None:
         _control, _occurrence, attempt = self._attempt("encrypted-source")
         payload = [{"external_id": "101", "name": "SENSITIVE-EVIDENCE-MARKER"}]
@@ -1931,6 +1966,189 @@ class ErpSyncEvidenceTests(unittest.TestCase):
         self.assertIsNotNone(recovery)
         self.assertEqual(recovery.state, "REQUIRED")
         self.assertTrue(recovery.pinned)
+        orchestrator.shutdown()
+
+    def test_missing_project_proof_blocks_complete_publication(self) -> None:
+        number = "PROOF-PROJECT"
+        projects = ProjectSource((project(number, external_id="8921"),))
+        tasks = PortfolioTaskSource({number: snapshot(number, task_id="PROJECT-PROOF-1")})
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        control = SqlErpSyncControlRepository(self.factory)
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="operator",
+            idempotency_key="missing-project-proof-bootstrap",
+            settings=self.control_settings,
+        )
+        self._approve_bootstrap_baselines(
+            orchestrator,
+            control,
+            occurrence,
+            reason="Approved missing-project-proof baseline",
+        )
+        retry = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="operator",
+            settings=self.control_settings,
+            command_identity="retry:missing-project-proof",
+        )
+        self.assertIsNotNone(retry)
+        original_publish = orchestrator._publish_full_success
+
+        def delete_project_proof(*, attempt_id: str, generation: int) -> None:
+            with transactional_session(self.factory) as session:
+                row = session.scalar(
+                    select(ErpSyncMutationEvidence).where(
+                        ErpSyncMutationEvidence.attempt_id == attempt_id,
+                        ErpSyncMutationEvidence.entity_type == "PROJECT",
+                    )
+                )
+                self.assertIsNotNone(row)
+                session.delete(row)
+            original_publish(attempt_id=attempt_id, generation=generation)
+
+        with patch.object(
+            orchestrator,
+            "_publish_full_success",
+            side_effect=delete_project_proof,
+        ):
+            orchestrator._execute_attempt(retry.id, retry.generation)
+
+        self.assertEqual(control.get_attempt(retry.id).status, "FAILED")
+        with self.factory() as session:
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == retry.id
+                )
+            )
+        self.assertIsNotNone(recovery)
+        self.assertEqual(recovery.state, "REQUIRED")
+        orchestrator.shutdown()
+
+    def test_missing_success_provenance_blocks_complete_publication(self) -> None:
+        number = "PROOF-PROVENANCE"
+        projects = ProjectSource((project(number, external_id="8931"),))
+        tasks = PortfolioTaskSource({number: snapshot(number, task_id="PROVENANCE-1")})
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        control = SqlErpSyncControlRepository(self.factory)
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="operator",
+            idempotency_key="missing-provenance-bootstrap",
+            settings=self.control_settings,
+        )
+        self._approve_bootstrap_baselines(
+            orchestrator,
+            control,
+            occurrence,
+            reason="Approved missing-provenance baseline",
+        )
+        retry = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="operator",
+            settings=self.control_settings,
+            command_identity="retry:missing-provenance",
+        )
+        self.assertIsNotNone(retry)
+        original_publish = orchestrator._publish_full_success
+
+        def delete_provenance(*, attempt_id: str, generation: int) -> None:
+            with transactional_session(self.factory) as session:
+                quality = session.get(ErpSyncProjectQuality, number)
+                self.assertIsNotNone(quality)
+                session.delete(quality)
+            original_publish(attempt_id=attempt_id, generation=generation)
+
+        with patch.object(
+            orchestrator,
+            "_publish_full_success",
+            side_effect=delete_provenance,
+        ):
+            orchestrator._execute_attempt(retry.id, retry.generation)
+
+        self.assertEqual(control.get_attempt(retry.id).status, "FAILED")
+        with self.factory() as session:
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == retry.id
+                )
+            )
+        self.assertIsNotNone(recovery)
+        self.assertEqual(recovery.state, "REQUIRED")
+        orchestrator.shutdown()
+
+    def test_wrong_child_generation_cannot_satisfy_publication_proof(self) -> None:
+        number = "PROOF-GENERATION"
+        projects = ProjectSource((project(number, external_id="8941"),))
+        tasks = PortfolioTaskSource({number: snapshot(number, task_id="GENERATION-1")})
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        control = SqlErpSyncControlRepository(self.factory)
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="operator",
+            idempotency_key="wrong-generation-bootstrap",
+            settings=self.control_settings,
+        )
+        self._approve_bootstrap_baselines(
+            orchestrator,
+            control,
+            occurrence,
+            reason="Approved wrong-generation baseline",
+        )
+        retry = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="operator",
+            settings=self.control_settings,
+            command_identity="retry:wrong-generation-proof",
+        )
+        self.assertIsNotNone(retry)
+        original_publish = orchestrator._publish_full_success
+
+        def corrupt_child_generation(*, attempt_id: str, generation: int) -> None:
+            attempt = control.get_attempt(attempt_id)
+            with transactional_session(self.factory) as session:
+                run = session.get(AcumaticaProjectTaskSyncRun, attempt.task_sync_run_id)
+                self.assertIsNotNone(run)
+                run.erp_generation = int(generation) + 1
+            original_publish(attempt_id=attempt_id, generation=generation)
+
+        with patch.object(
+            orchestrator,
+            "_publish_full_success",
+            side_effect=corrupt_child_generation,
+        ):
+            orchestrator._execute_attempt(retry.id, retry.generation)
+
+        self.assertEqual(control.get_attempt(retry.id).status, "FAILED")
+        with self.factory() as session:
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == retry.id
+                )
+            )
+        self.assertIsNotNone(recovery)
+        self.assertEqual(recovery.state, "REQUIRED")
         orchestrator.shutdown()
 
     def test_intentionally_empty_task_target_set_does_not_fail_positive_baseline(self) -> None:
