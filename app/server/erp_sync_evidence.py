@@ -582,13 +582,13 @@ class ErpSyncEvidenceService:
         )
         from ..infrastructure.sql.session import transactional_session
 
-        self.reserve_attempt(attempt_id=attempt_id)
         normalized = canonical_json_bytes(payload)
         if len(normalized) > self.settings.max_evidence_bytes:
             raise ApplicationUnavailableError(
                 "La source ERP dépasse la taille maximale de preuve par tentative.",
                 code="erp_sync_evidence_attempt_budget_exceeded",
             )
+        self.reserve_attempt(attempt_id=attempt_id)
         digest = hashlib.sha256(normalized).hexdigest()
         chunks = tuple(
             normalized[offset : offset + ERP_EVIDENCE_CHUNK_BYTES]
@@ -2265,12 +2265,12 @@ class ErpSyncEvidenceService:
             if lock_for_compensation and session.get_bind().dialect.name == "mssql":
                 package_statement = package_statement.with_hint(
                     WorkPackage,
-                    "WITH (UPDLOCK, HOLDLOCK)",
+                    "WITH (UPDLOCK, HOLDLOCK, INDEX(ix_work_packages_project_status))",
                     dialect_name="mssql",
                 )
                 request_statement = request_statement.with_hint(
                     WorkforceRequest,
-                    "WITH (UPDLOCK, HOLDLOCK)",
+                    "WITH (UPDLOCK, HOLDLOCK, INDEX(ix_workforce_requests_project_status))",
                     dialect_name="mssql",
                 )
             has_package = session.scalar(package_statement)
@@ -2301,7 +2301,7 @@ class ErpSyncEvidenceService:
             if lock_for_compensation and session.get_bind().dialect.name == "mssql":
                 dependency_statement = dependency_statement.with_hint(
                     WorkPackage,
-                    "WITH (UPDLOCK, HOLDLOCK)",
+                    "WITH (UPDLOCK, HOLDLOCK, INDEX(ix_work_packages_task_catalog_item))",
                     dialect_name="mssql",
                 )
             return session.scalar(dependency_statement) is not None
@@ -2481,14 +2481,22 @@ class ErpSyncEvidenceService:
                 )
             affected = 0
             for row, before, _after in payload_rows:
-                current = self._current_owned_state(session, row)
+                current = self._current_owned_state(
+                    session,
+                    row,
+                    lock_for_compensation=True,
+                )
                 if current is None or content_sha256(current) != row.after_sha256:
                     raise ApplicationConflictError(
                         "L'état courant ne correspond plus au checkpoint.",
                         code="erp_sync_compensation_current_state_changed",
                         context={"entity_type": row.entity_type},
                     )
-                if before is None and self._new_row_has_dependencies(session, row):
+                if before is None and self._new_row_has_dependencies(
+                    session,
+                    row,
+                    lock_for_compensation=True,
+                ):
                     raise ApplicationConflictError(
                         "Une nouvelle dépendance locale interdit la compensation.",
                         code="erp_sync_compensation_dependency_changed",
