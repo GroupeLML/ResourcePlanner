@@ -1245,6 +1245,303 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             )
         self.assertEqual(stale_rows, 0)
 
+    def _prepare_sqlserver_compensable_task(self, suffix: str):
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = repository.accept_manual(
+            intent="PROJECTS_ONLY",
+            actor_name="sql-compensation",
+            idempotency_key=f"sql-compensation-{suffix}",
+            settings=self.settings,
+        )
+        attempt = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="sql-compensation",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(attempt)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                settings=self.settings,
+            )
+        )
+        self.evidence.reserve_attempt(attempt_id=attempt.id)
+        self.evidence.bind_attempt_policy(
+            attempt_id=attempt.id,
+            generation=attempt.generation,
+        )
+        number = f"SQL643-CAS-{suffix}"
+        task_id = f"SQL643-CAS-TASK-{suffix}"
+        with transactional_session(self.factory) as session:
+            project = Project(
+                id=f"SQL643-CAS-PROJECT-{suffix}",
+                erp_external_id=f"ERP-{number}",
+                number=number,
+                name="Compensation CAS project",
+                status="Actif",
+            )
+            session.add(project)
+            task = TaskCatalogEntry(
+                id=task_id,
+                project_number=number,
+                task_code=self.TEST_TASK_CODES[0],
+                label="Before",
+                status="Actif",
+                active=True,
+                erp_task_id=f"ERP-{task_id}",
+                account_group="DEPMO",
+                workforce_eligible=True,
+                resource_class_code=self.TEST_RESOURCE_CLASS,
+                average_hourly_cost_cad=Decimal("125.0000"),
+                preferred_resource_version=1,
+            )
+            session.add(task)
+            session.flush()
+            before = ErpSyncOrchestrator._task_owned_state(task)
+            evidence_id = self.evidence.record_before_in_session(
+                session,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                unit_type=f"TASK_PROJECT:{project.id}",
+                entity_type="TASK",
+                entity_key=task.erp_task_id,
+                before=before,
+            )
+            task.label = "After"
+            session.flush()
+            session.expire(task)
+            persisted = session.get(TaskCatalogEntry, task_id)
+            self.evidence.record_after_in_session(
+                session,
+                evidence_id=evidence_id,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                after=ErpSyncOrchestrator._task_owned_state(persisted) or {},
+            )
+        self.assertTrue(
+            repository.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.settings,
+            )
+        )
+        preview = self.evidence.compensation_preview(attempt_id=attempt.id)
+        self.assertTrue(preview["can_confirm"])
+        return repository, attempt, task_id, preview
+
+    def test_sqlserver_compensation_locks_local_preference_through_commit_and_replays_idempotently(self) -> None:
+        _repository, attempt, task_id, preview = self._prepare_sqlserver_compensable_task(
+            "PREFERENCE"
+        )
+        compared = Event()
+        release = Event()
+        updater_started = Event()
+        updater_committed = Event()
+        original_current = self.evidence._current_owned_state
+
+        def pause_after_locked_compare(session, row, **kwargs):
+            value = original_current(session, row, **kwargs)
+            if (
+                row.entity_type == "TASK"
+                and kwargs.get("lock_for_compensation")
+                and not compared.is_set()
+            ):
+                compared.set()
+                if not release.wait(timeout=10):
+                    raise RuntimeError("compensation CAS release timeout")
+            return value
+
+        compensation_result: list[dict[str, object]] = []
+
+        def compensate() -> None:
+            compensation_result.append(
+                self.evidence.confirm_compensation(
+                    attempt_id=attempt.id,
+                    preview_hash=preview["preview_hash"],
+                    command_identity="sql-compensation-preference-confirm",
+                    actor_name="sql-admin",
+                    reason="Compensation with row CAS",
+                )
+            )
+
+        def mutate_preference() -> None:
+            updater_started.set()
+            with transactional_session(self.factory) as session:
+                task = session.get(TaskCatalogEntry, task_id)
+                self.assertIsNotNone(task)
+                task.preferred_resource_version = int(
+                    task.preferred_resource_version or 1
+                ) + 1
+            updater_committed.set()
+
+        with patch.object(
+            self.evidence,
+            "_current_owned_state",
+            side_effect=pause_after_locked_compare,
+        ):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                compensation_future = pool.submit(compensate)
+                self.assertTrue(compared.wait(timeout=5))
+                updater_future = pool.submit(mutate_preference)
+                self.assertTrue(updater_started.wait(timeout=5))
+                self.assertFalse(updater_committed.wait(timeout=0.25))
+                release.set()
+                compensation_future.result(timeout=10)
+                updater_future.result(timeout=10)
+
+        self.assertTrue(updater_committed.is_set())
+        self.assertEqual(len(compensation_result), 1)
+        replay = self.evidence.confirm_compensation(
+            attempt_id=attempt.id,
+            preview_hash=preview["preview_hash"],
+            command_identity="sql-compensation-preference-confirm",
+            actor_name="sql-admin",
+            reason="Idempotent replay",
+        )
+        self.assertEqual(
+            replay["receipt_id"],
+            compensation_result[0]["receipt_id"],
+        )
+        with self.factory() as session:
+            receipts = tuple(
+                session.scalars(
+                    select(ErpSyncCompensationReceipt).where(
+                        ErpSyncCompensationReceipt.attempt_id == attempt.id
+                    )
+                )
+            )
+        self.assertEqual(len(receipts), 1)
+
+    def test_sqlserver_compensation_locks_dependency_range_through_commit(self) -> None:
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = repository.accept_manual(
+            intent="PROJECTS_ONLY",
+            actor_name="sql-compensation",
+            idempotency_key="sql-compensation-dependency-range",
+            settings=self.settings,
+        )
+        attempt = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="sql-compensation",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(attempt)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                settings=self.settings,
+            )
+        )
+        self.evidence.reserve_attempt(attempt_id=attempt.id)
+        self.evidence.bind_attempt_policy(
+            attempt_id=attempt.id,
+            generation=attempt.generation,
+        )
+        project_id = "SQL643-CAS-DEPENDENCY-ID"
+        with transactional_session(self.factory) as session:
+            project = Project(
+                id=project_id,
+                erp_external_id="ERP-SQL643-CAS-DEPENDENCY",
+                number="SQL643-CAS-DEPENDENCY",
+                name="New imported project",
+                status="Actif",
+            )
+            session.add(project)
+            session.flush()
+            evidence_id = self.evidence.record_before_in_session(
+                session,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                unit_type="PROJECT_SNAPSHOT",
+                entity_type="PROJECT",
+                entity_key=project.erp_external_id,
+                before=None,
+            )
+            self.evidence.record_after_in_session(
+                session,
+                evidence_id=evidence_id,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                after=ErpSyncOrchestrator._project_owned_state(project) or {},
+            )
+        self.assertTrue(
+            repository.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.settings,
+            )
+        )
+        preview = self.evidence.compensation_preview(attempt_id=attempt.id)
+        self.assertTrue(preview["can_confirm"])
+
+        dependencies_checked = Event()
+        release = Event()
+        inserter_started = Event()
+        inserter_committed = Event()
+        original_dependencies = self.evidence._new_row_has_dependencies
+
+        def pause_after_dependency_lock(session, row, **kwargs):
+            value = original_dependencies(session, row, **kwargs)
+            if kwargs.get("lock_for_compensation") and not dependencies_checked.is_set():
+                self.assertFalse(value)
+                dependencies_checked.set()
+                if not release.wait(timeout=10):
+                    raise RuntimeError("dependency CAS release timeout")
+            return value
+
+        def add_dependency() -> None:
+            inserter_started.set()
+            with transactional_session(self.factory) as session:
+                session.add(
+                    WorkPackage(
+                        id="SQL643-CAS-DEPENDENCY-WP",
+                        project_id=project_id,
+                        code="CAS-WP",
+                        name="Concurrent dependency",
+                        status="planned",
+                    )
+                )
+            inserter_committed.set()
+
+        with patch.object(
+            self.evidence,
+            "_new_row_has_dependencies",
+            side_effect=pause_after_dependency_lock,
+        ):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                compensation_future = pool.submit(
+                    self.evidence.confirm_compensation,
+                    attempt_id=attempt.id,
+                    preview_hash=preview["preview_hash"],
+                    command_identity="sql-compensation-dependency-confirm",
+                    actor_name="sql-admin",
+                    reason="Compensation with dependency range lock",
+                )
+                self.assertTrue(dependencies_checked.wait(timeout=5))
+                dependency_future = pool.submit(add_dependency)
+                self.assertTrue(inserter_started.wait(timeout=5))
+                self.assertFalse(inserter_committed.wait(timeout=0.25))
+                release.set()
+                compensation_future.result(timeout=10)
+                dependency_future.result(timeout=10)
+
+        self.assertTrue(inserter_committed.is_set())
+        with self.factory() as session:
+            project = session.get(Project, project_id)
+            dependency = session.get(WorkPackage, "SQL643-CAS-DEPENDENCY-WP")
+        self.assertIsNotNone(project)
+        self.assertEqual(project.status, "Annulé")
+        self.assertIsNone(project.erp_external_id)
+        self.assertIsNotNone(dependency)
+
     def test_sqlserver_compensation_preview_is_invalidated_by_new_generation(self) -> None:
         repository = SqlErpSyncControlRepository(self.factory)
         occurrence = repository.accept_manual(
