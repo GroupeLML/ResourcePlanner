@@ -1656,9 +1656,15 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             child = session.get(AcumaticaProjectTaskSyncRun, child_id)
             self.assertIsNotNone(child)
             child.projects_total = 1
-            project_row = session.get(Project, project_id)
-            self.assertIsNotNone(project_row)
-            session.expunge(project_row)
+        # _process_task_project consumes the planning projection contract, not
+        # the SQL Project ORM model. Project operational activity is represented
+        # by canonical status in persistence and projected to active here.
+        project_row = SimpleNamespace(
+            id=project_id,
+            number=number,
+            active=True,
+            erp_external_id=f"ERP-{number}",
+        )
         orchestrator._process_task_project(
             child_id,
             attempt.id,
