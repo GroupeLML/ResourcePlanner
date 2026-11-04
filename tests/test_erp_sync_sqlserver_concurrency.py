@@ -1839,6 +1839,12 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
                     "status": row.status,
                 },
             )
+        # This race remains a hard-recovery scenario independently of lease
+        # expiry; Phase 6 ordinary interruption no longer invents REQUIRED.
+        self.evidence.mark_recovery_required(
+            attempt_id=first.id,
+            reason_code="injected_hard_recovery_before_startup",
+        )
         with transactional_session(self.factory) as session:
             session.execute(
                 text(
