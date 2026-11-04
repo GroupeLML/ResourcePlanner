@@ -5,6 +5,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 import os
 from threading import Barrier, Event, Thread
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
