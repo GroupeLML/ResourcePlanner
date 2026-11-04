@@ -1492,13 +1492,20 @@ class ErpSyncOrchestrator:
                     )
                 )
             )
-            expected_task_mutations = (
-                int(result.created or 0)
-                + int(result.updated or 0)
-                + int(result.unchanged or 0)
-                + int(result.deactivated or 0)
+            current_tasks = tuple(
+                session.scalars(
+                    select(TaskCatalogEntry).where(
+                        TaskCatalogEntry.project_number == project_number
+                    )
+                )
             )
-            if len(task_evidence) != expected_task_mutations:
+            expected_task_keys = {
+                str(row.erp_task_id or "").strip()
+                or f"{project_number}:{str(row.task_code).strip()}"
+                for row in current_tasks
+            }
+            evidence_task_keys = {str(row.entity_key) for row in task_evidence}
+            if evidence_task_keys != expected_task_keys:
                 raise ApplicationConflictError(
                     "La preuve de mutation tâches est incomplète.",
                     code="erp_sync_global_validation_failed",
