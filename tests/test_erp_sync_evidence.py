@@ -2194,6 +2194,15 @@ class ErpSyncEvidenceTests(unittest.TestCase):
 
     def test_compensation_refuses_changed_local_principal_and_recomputes_derived_cost(self) -> None:
         control, _occurrence, attempt = self._attempt("compensation-task-principal")
+        # The canonical reference cost is part of the 643B policy identity.
+        # Establish it before evidence/policy binding, then seed a stale derived
+        # task value so compensation can prove recomputation without changing
+        # authoritative policy after the attempt starts.
+        with transactional_session(self.factory) as session:
+            session.get(
+                ResourceClassConfig,
+                "PROGRAMMEUR",
+            ).average_hourly_cost_cad = Decimal("250.0000")
         self.service.capture_source(
             attempt_id=attempt.id,
             source_type="TASKS",
@@ -2279,10 +2288,6 @@ class ErpSyncEvidenceTests(unittest.TestCase):
                 )
             )
             task.preferred_resource_version = 1
-            session.get(
-                ResourceClassConfig,
-                "PROGRAMMEUR",
-            ).average_hourly_cost_cad = Decimal("250.0000")
         preview = self.service.compensation_preview(attempt_id=attempt.id)
         self.assertTrue(preview["can_confirm"])
         self.service.confirm_compensation(
