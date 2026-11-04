@@ -28,6 +28,7 @@ from app.server.erp_sync_evidence import (
 from app.application.erp_sync_scheduler import ErpSyncSchedulerSettings
 from app.infrastructure.smtp import FernetSecretCipher
 from app.infrastructure.sql import (
+    AcumaticaProjectTaskSyncProjectResult,
     AcumaticaProjectTaskSyncRun,
     Base,
     ErpSyncAttempt,
@@ -1622,11 +1623,12 @@ class ErpSyncEvidenceTests(unittest.TestCase):
                     ),
                     missing,
                 )
-                # Automatic readiness is not a global manual-operation kill switch.
-                _manual_control, _manual_occurrence, manual = self._attempt(
-                    f"manual-without-{missing}"
-                )
-                self.assertIsNotNone(manual)
+
+        # Automatic readiness is not a global manual-operation kill switch.
+        _manual_control, _manual_occurrence, manual = self._attempt(
+            "manual-with-incomplete-automatic-surface"
+        )
+        self.assertIsNotNone(manual)
 
     def test_missing_one_of_multiple_task_mutation_proofs_blocks_publication_and_pins_recovery(self) -> None:
         project_number = "PROOF-MULTI"
