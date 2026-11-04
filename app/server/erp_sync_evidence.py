@@ -1783,10 +1783,13 @@ class ErpSyncEvidenceService:
         # retained evidence remains charged through used_bytes.
         self.release_reservation(attempt_id=attempt_id)
         from ..infrastructure.sql import (
+            EVIDENCE_STATE_PURGED,
             RECOVERY_AVAILABLE,
             RECOVERY_NONE,
             RECOVERY_REQUIRED,
+            ErpSyncEvidenceChunk,
             ErpSyncEvidenceManifest,
+            ErpSyncEvidenceReservation,
             ErpSyncRecoveryState,
         )
         from ..infrastructure.sql.session import transactional_session
@@ -1862,25 +1865,56 @@ class ErpSyncEvidenceService:
             if recovery is None:
                 recovery = ErpSyncRecoveryState(
                     attempt_id=attempt_id,
-                    state=RECOVERY_AVAILABLE if mutation_rows else RECOVERY_NONE,
+                    state=(
+                        RECOVERY_NONE
+                        if successful
+                        else RECOVERY_AVAILABLE if mutation_rows else RECOVERY_NONE
+                    ),
                     pinned=False,
                 )
                 session.add(recovery)
             elif (
-                recovery.state == RECOVERY_NONE
+                not successful
+                and recovery.state == RECOVERY_NONE
                 and mutation_rows
             ):
                 recovery.state = RECOVERY_AVAILABLE
             pin = recovery.state == RECOVERY_REQUIRED
 
-            for manifest in session.scalars(
-                select(ErpSyncEvidenceManifest).where(
-                    ErpSyncEvidenceManifest.attempt_id == attempt_id
+            manifests = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceManifest).where(
+                        ErpSyncEvidenceManifest.attempt_id == attempt_id
+                    )
                 )
-            ):
-                manifest.pinned = bool(manifest.pinned or pin)
-                if not manifest.pinned:
-                    manifest.expires_at = now + timedelta(days=retention_days)
+            )
+            if successful and not pin:
+                # ADR-033: complete success keeps compact hashes/counters and
+                # purge proof, but not raw/encrypted source/checkpoint payloads.
+                for manifest in manifests:
+                    session.query(ErpSyncEvidenceChunk).filter(
+                        ErpSyncEvidenceChunk.manifest_id == manifest.id
+                    ).delete(synchronize_session=False)
+                    manifest.pinned = False
+                    manifest.expires_at = now
+                    manifest.state = EVIDENCE_STATE_PURGED
+                    manifest.diagnostic = "erp_sync_evidence_success_payload_purged"
+                for mutation in mutation_rows:
+                    mutation.encrypted_before = None
+                    mutation.encrypted_after = None
+                reservation = session.scalar(
+                    select(ErpSyncEvidenceReservation).where(
+                        ErpSyncEvidenceReservation.attempt_id == attempt_id
+                    )
+                )
+                if reservation is not None:
+                    reservation.used_bytes = 0
+                    reservation.used_plaintext_bytes = 0
+            else:
+                for manifest in manifests:
+                    manifest.pinned = bool(manifest.pinned or pin)
+                    if not manifest.pinned:
+                        manifest.expires_at = now + timedelta(days=retention_days)
 
     @staticmethod
     def _required_automatic_protocol_tables() -> tuple[str, ...]:
@@ -2784,9 +2818,16 @@ class ErpSyncEvidenceService:
                             and recovery.state == RECOVERY_REQUIRED
                         )
                     ):
-                        session.query(ErpSyncMutationEvidence).filter(
-                            ErpSyncMutationEvidence.attempt_id == attempt_id
-                        ).delete(synchronize_session=False)
+                        mutation_rows = tuple(
+                            session.scalars(
+                                select(ErpSyncMutationEvidence).where(
+                                    ErpSyncMutationEvidence.attempt_id == attempt_id
+                                )
+                            )
+                        )
+                        for mutation in mutation_rows:
+                            mutation.encrypted_before = None
+                            mutation.encrypted_after = None
                         reservation = session.scalar(
                             select(ErpSyncEvidenceReservation).where(
                                 ErpSyncEvidenceReservation.attempt_id == attempt_id
