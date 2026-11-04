@@ -1713,7 +1713,10 @@ class ErpSyncOrchestrator:
                 if task_status == SYNC_RUN_COMPLETED_WITH_ERRORS
                 else ERP_ATTEMPT_SUCCEEDED
             )
-            if attempt.intent == "PROJECTS_AND_ACTIVE_TASKS":
+            if (
+                attempt.intent == "PROJECTS_AND_ACTIVE_TASKS"
+                and self._evidence is not None
+            ):
                 if parent_status == ERP_ATTEMPT_SUCCEEDED:
                     self._publish_full_success(
                         attempt_id=attempt_id,
