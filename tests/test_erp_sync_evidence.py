@@ -1535,7 +1535,11 @@ class ErpSyncEvidenceTests(unittest.TestCase):
         )
 
         with transactional_session(self.factory) as session:
-            standard = session.get(TaskClassStandard, "100")
+            standard = session.scalar(
+                select(TaskClassStandard).where(
+                    TaskClassStandard.task_code == "100"
+                )
+            )
             self.assertIsNotNone(standard)
             standard.version = int(standard.version) + 1
 
