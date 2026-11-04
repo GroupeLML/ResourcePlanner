@@ -398,7 +398,9 @@ class ErpSyncEvidenceService:
     def _encrypted_storage_bound(plaintext_bytes: int) -> int:
         """Conservative bound for base64 + Fernet storage at source chunk size."""
         remaining = max(0, int(plaintext_bytes))
-        total = 1024  # checkpoint/accounting manifest allowance
+        # reserve_attempt starts at 1 KiB used and capture_source charges a
+        # further 1 KiB manifest/accounting allowance.
+        total = 2048
         while remaining:
             chunk = min(remaining, ERP_EVIDENCE_CHUNK_BYTES)
             encoded = 4 * ((chunk + 2) // 3)
