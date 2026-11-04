@@ -329,8 +329,12 @@ class SqlErpSyncControlRepository:
             return
         from .erp_sync_evidence_models import (
             ERP_SYNC_DEFAULT_PAYLOAD_RETENTION_DAYS,
+            RECOVERY_AVAILABLE,
+            RECOVERY_NONE,
             ErpSyncEvidenceManifest,
             ErpSyncEvidenceReservation,
+            ErpSyncMutationEvidence,
+            ErpSyncRecoveryState,
         )
 
         reservation = session.scalar(
@@ -340,6 +344,40 @@ class SqlErpSyncControlRepository:
         )
         if reservation is not None and reservation.released_at is None:
             reservation.released_at = now
+
+        if (
+            inspector.has_table("erp_sync_mutation_evidence")
+            and inspector.has_table("erp_sync_recovery_state")
+        ):
+            committed = int(
+                session.scalar(
+                    select(func.count(ErpSyncMutationEvidence.id)).where(
+                        ErpSyncMutationEvidence.attempt_id == attempt_id,
+                        ErpSyncMutationEvidence.committed_at.is_not(None),
+                        ErpSyncMutationEvidence.after_sha256.is_not(None),
+                    )
+                )
+                or 0
+            )
+            if committed:
+                recovery = session.scalar(
+                    select(ErpSyncRecoveryState).where(
+                        ErpSyncRecoveryState.attempt_id == attempt_id
+                    )
+                )
+                if recovery is None:
+                    session.add(
+                        ErpSyncRecoveryState(
+                            attempt_id=attempt_id,
+                            state=RECOVERY_AVAILABLE,
+                            reason_code="erp_sync_interrupted_replay_available",
+                            pinned=False,
+                        )
+                    )
+                elif recovery.state == RECOVERY_NONE:
+                    recovery.state = RECOVERY_AVAILABLE
+                    recovery.reason_code = "erp_sync_interrupted_replay_available"
+                    recovery.pinned = False
 
         # Lease expiry is an ordinary interruption, not a hard recovery signal.
         # Preserve committed evidence, release unused capacity, and make any
