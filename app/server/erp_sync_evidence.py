@@ -213,33 +213,48 @@ class ErpSyncEvidenceService:
         self.settings = settings
         self._control_settings = control_settings
 
-    def policy_fingerprint_in_session(self, session: Session) -> str:
+    def policy_fingerprint_in_session(
+        self,
+        session: Session,
+        *,
+        lock_for_use: bool = False,
+    ) -> str:
         from ..infrastructure.sql import (
             ProjectTaskClassOverride,
             ResourceClassConfig,
             TaskClassStandard,
         )
 
-        resource_classes = tuple(
-            session.scalars(
-                select(ResourceClassConfig).order_by(ResourceClassConfig.code)
-            )
-        )
-        standards = tuple(
-            session.scalars(
-                select(TaskClassStandard).order_by(TaskClassStandard.task_code)
-            )
-        )
-        overrides = tuple(
-            session.scalars(
-                select(ProjectTaskClassOverride).order_by(
-                    ProjectTaskClassOverride.project_id,
-                    ProjectTaskClassOverride.task_code,
+        def _policy_rows(model, *order_by):
+            statement = select(model).order_by(*order_by)
+            if lock_for_use and session.get_bind().dialect.name == "mssql":
+                statement = statement.with_hint(
+                    model,
+                    "WITH (UPDLOCK, HOLDLOCK)",
+                    dialect_name="mssql",
                 )
-            )
+            return tuple(session.scalars(statement))
+
+        resource_classes = _policy_rows(
+            ResourceClassConfig,
+            ResourceClassConfig.code,
+        )
+        standards = _policy_rows(
+            TaskClassStandard,
+            TaskClassStandard.task_code,
+        )
+        overrides = _policy_rows(
+            ProjectTaskClassOverride,
+            ProjectTaskClassOverride.project_id,
+            ProjectTaskClassOverride.task_code,
         )
         material = {
-            "contract": "ERP_SYNC_643B_POLICY_V1",
+            "contract": "ERP_SYNC_643B_POLICY_V2",
+            "control_profile": (
+                self._control_settings.config_fingerprint
+                if self._control_settings is not None
+                else None
+            ),
             "evidence_policy": {
                 "min_source_ratio": self.settings.min_source_ratio,
                 "min_projects": self.settings.min_projects,
@@ -310,7 +325,10 @@ class ErpSyncEvidenceService:
                     "La tentative ERP est introuvable.",
                     code="erp_sync_attempt_not_found",
                 )
-            fingerprint = self.policy_fingerprint_in_session(session)
+            fingerprint = self.policy_fingerprint_in_session(
+                session,
+                lock_for_use=True,
+            )
             if attempt.policy_fingerprint is None:
                 attempt.policy_fingerprint = fingerprint
             elif attempt.policy_fingerprint != fingerprint:
@@ -334,7 +352,10 @@ class ErpSyncEvidenceService:
                 "La politique de référence ERP n'est pas figée pour cette tentative.",
                 code="erp_sync_policy_fingerprint_missing",
             )
-        current = self.policy_fingerprint_in_session(session)
+        current = self.policy_fingerprint_in_session(
+            session,
+            lock_for_use=True,
+        )
         if str(attempt.policy_fingerprint) != current:
             raise ApplicationConflictError(
                 "La politique de référence ERP a changé pendant la tentative.",
@@ -405,6 +426,17 @@ class ErpSyncEvidenceService:
                 generation=int(attempt.generation),
                 settings=self._control_settings,
             )
+            fingerprint = self.policy_fingerprint_in_session(
+                session,
+                lock_for_use=True,
+            )
+            if attempt.policy_fingerprint is None:
+                attempt.policy_fingerprint = fingerprint
+            elif str(attempt.policy_fingerprint) != fingerprint:
+                raise ApplicationConflictError(
+                    "La politique de référence ERP a changé pendant la tentative.",
+                    code="erp_sync_policy_fingerprint_changed",
+                )
             existing = session.scalar(
                 select(ErpSyncEvidenceReservation).where(
                     ErpSyncEvidenceReservation.attempt_id == attempt_id
@@ -457,7 +489,7 @@ class ErpSyncEvidenceService:
                     protocol_version=ERP_EVIDENCE_PROTOCOL_VERSION,
                     source_type=EVIDENCE_SOURCE_CHECKPOINT,
                     proof_type=EVIDENCE_PROOF_CHECKPOINT,
-                    profile_fingerprint=self._control_settings.config_fingerprint,
+                    profile_fingerprint=fingerprint,
                     source_fingerprint=None,
                     observed_at=_utc_now(),
                     row_count=0,
@@ -516,6 +548,7 @@ class ErpSyncEvidenceService:
         payload: Any,
         row_count: int,
         project_counts: Mapping[str, int] | None = None,
+        generation: int | None = None,
     ) -> ErpSyncCapturedSource:
         from ..infrastructure.sql import (
             EVIDENCE_PROOF_SOURCE,
@@ -555,6 +588,38 @@ class ErpSyncEvidenceService:
             )
 
         with transactional_session(self._session_factory) as session:
+            from ..infrastructure.sql import ErpSyncAttempt
+            from ..infrastructure.sql.erp_sync_control_repository import (
+                SqlErpSyncControlRepository,
+            )
+
+            if self._control_settings is None:
+                raise ApplicationUnavailableError(
+                    "Le profil de contrôle ERP requis pour la preuve est absent.",
+                    code="erp_sync_evidence_control_unavailable",
+                )
+            attempt = session.get(ErpSyncAttempt, attempt_id)
+            if attempt is None:
+                raise ApplicationValidationError(
+                    "La tentative ERP est introuvable.",
+                    code="erp_sync_attempt_not_found",
+                )
+            expected_generation = (
+                int(generation)
+                if generation is not None
+                else int(attempt.generation)
+            )
+            SqlErpSyncControlRepository.guard_session(
+                session,
+                attempt_id=attempt_id,
+                generation=expected_generation,
+                settings=self._control_settings,
+            )
+            current_policy = self.assert_attempt_policy_in_session(
+                session,
+                attempt_id=attempt_id,
+            )
+            profile_fingerprint = current_policy
             existing = session.scalar(
                 select(ErpSyncEvidenceManifest).where(
                     ErpSyncEvidenceManifest.attempt_id == attempt_id,
@@ -729,7 +794,12 @@ class ErpSyncEvidenceService:
             payload=payload,
         )
 
-    def mark_sources_ready(self, *, attempt_id: str) -> None:
+    def mark_sources_ready(
+        self,
+        *,
+        attempt_id: str,
+        generation: int | None = None,
+    ) -> None:
         from ..infrastructure.sql import (
             EVIDENCE_PROOF_SOURCE,
             EVIDENCE_SOURCE_PROJECTS,
@@ -741,6 +811,37 @@ class ErpSyncEvidenceService:
         from ..infrastructure.sql.session import transactional_session
 
         with transactional_session(self._session_factory) as session:
+            from ..infrastructure.sql import ErpSyncAttempt
+            from ..infrastructure.sql.erp_sync_control_repository import (
+                SqlErpSyncControlRepository,
+            )
+
+            if self._control_settings is None:
+                raise ApplicationUnavailableError(
+                    "Le profil de contrôle ERP requis pour publier READY est absent.",
+                    code="erp_sync_evidence_control_unavailable",
+                )
+            attempt = session.get(ErpSyncAttempt, attempt_id)
+            if attempt is None:
+                raise ApplicationValidationError(
+                    "La tentative ERP est introuvable.",
+                    code="erp_sync_attempt_not_found",
+                )
+            expected_generation = (
+                int(generation)
+                if generation is not None
+                else int(attempt.generation)
+            )
+            SqlErpSyncControlRepository.guard_session(
+                session,
+                attempt_id=attempt_id,
+                generation=expected_generation,
+                settings=self._control_settings,
+            )
+            self.assert_attempt_policy_in_session(
+                session,
+                attempt_id=attempt_id,
+            )
             rows = tuple(
                 session.scalars(
                     select(ErpSyncEvidenceManifest).where(
@@ -1324,6 +1425,11 @@ class ErpSyncEvidenceService:
             current_result = self.validate_plausibility(
                 captured,
                 active_task_targets=active_task_targets,
+                active_task_projects=(
+                    tuple(project_counts)
+                    if source_type == "TASKS"
+                    else None
+                ),
             )
             valid_scope = (
                 scope == "GLOBAL"
@@ -1451,6 +1557,7 @@ class ErpSyncEvidenceService:
         captured: ErpSyncCapturedSource,
         *,
         active_task_targets: int = 0,
+        active_task_projects: Sequence[str] | None = None,
     ) -> ErpSyncPlausibilityResult:
         from ..infrastructure.sql import (
             ErpSyncBaseline,
@@ -1483,15 +1590,30 @@ class ErpSyncEvidenceService:
 
             # An explicitly empty task target set is a legitimate empty phase,
             # not an amputated source compared with a historical positive baseline.
+            current_task_projects = (
+                {
+                    str(project).strip()
+                    for project in active_task_projects
+                    if str(project).strip()
+                }
+                if active_task_projects is not None
+                else None
+            )
+            effective_task_targets = (
+                len(current_task_projects)
+                if current_task_projects is not None
+                else active_task_targets
+            )
             intentionally_empty_tasks = (
-                captured.source_type == "TASKS" and active_task_targets == 0
+                captured.source_type == "TASKS"
+                and effective_task_targets == 0
             )
             global_diagnostics: list[str] = []
             project_diagnostics: list[tuple[str, str]] = []
             floor = (
                 self.settings.min_projects
                 if captured.source_type == "PROJECTS"
-                else self.settings.min_task_rows if active_task_targets else 0
+                else self.settings.min_task_rows if effective_task_targets else 0
             )
             if captured.row_count < floor:
                 global_diagnostics.append("erp_sync_source_below_floor")
@@ -1506,6 +1628,11 @@ class ErpSyncEvidenceService:
             if not intentionally_empty_tasks:
                 baseline_projects = self._baseline_project_counts(baseline)
                 for project, previous_value in baseline_projects.items():
+                    if (
+                        current_task_projects is not None
+                        and project not in current_task_projects
+                    ):
+                        continue
                     previous = int(previous_value)
                     if previous <= 0:
                         continue
@@ -1760,10 +1887,13 @@ class ErpSyncEvidenceService:
                 )
                 if recovery_required is not None:
                     return False
+                if profile_fingerprint != self._control_settings.config_fingerprint:
+                    return False
+                current_policy = self.policy_fingerprint_in_session(session)
                 count = int(
                     session.scalar(
                         select(func.count(ErpSyncBaseline.id)).where(
-                            ErpSyncBaseline.profile_fingerprint == profile_fingerprint,
+                            ErpSyncBaseline.profile_fingerprint == current_policy,
                             ErpSyncBaseline.source_type.in_(("PROJECTS", "TASKS")),
                         )
                     )
@@ -1927,13 +2057,28 @@ class ErpSyncEvidenceService:
                 "La version de protocole de preuve ERP est incompatible.",
                 code="erp_sync_evidence_protocol_incompatible",
             )
-        if self._control_settings is None or any(
-            str(row.profile_fingerprint)
-            != self._control_settings.config_fingerprint
-            for row in manifests
+        from ..infrastructure.sql import ErpSyncAttempt
+
+        attempt = session.get(ErpSyncAttempt, attempt_id)
+        if (
+            self._control_settings is None
+            or attempt is None
+            or not attempt.policy_fingerprint
         ):
             raise ApplicationConflictError(
                 "Le profil de preuve ERP n'est plus compatible avec le contrôle courant.",
+                code="erp_sync_evidence_configuration_incompatible",
+            )
+        current_policy = self.policy_fingerprint_in_session(session)
+        if (
+            str(attempt.policy_fingerprint) != current_policy
+            or any(
+                str(row.profile_fingerprint) != current_policy
+                for row in manifests
+            )
+        ):
+            raise ApplicationConflictError(
+                "Le profil de preuve ERP n'est plus compatible avec la politique courante.",
                 code="erp_sync_evidence_configuration_incompatible",
             )
         bind = session.get_bind()
