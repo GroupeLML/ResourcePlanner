@@ -3222,7 +3222,10 @@ class ErpSyncEvidenceTests(unittest.TestCase):
                 )
                 self.assertIsNotNone(reservation)
                 self.assertIsNotNone(reservation.released_at)
-                self.assertGreater(reservation.used_bytes, 0)
+                if status == "SUCCEEDED":
+                    self.assertEqual(reservation.used_bytes, 0)
+                else:
+                    self.assertGreater(reservation.used_bytes, 0)
                 retained_used.append(int(reservation.used_bytes))
 
         with self.factory() as session:
@@ -3244,7 +3247,87 @@ class ErpSyncEvidenceTests(unittest.TestCase):
         self.assertEqual(released_used, sum(retained_used))
         self.assertEqual(len(terminal_ids), 4)
 
-    def test_retention_purges_unpinned_payload_and_releases_accounted_bytes(self) -> None:
+    def test_success_finalization_purges_payload_immediately_but_keeps_compact_proof(self) -> None:
+        control, _occurrence, attempt = self._attempt("success-payload-purge")
+        captured = self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"records": [{"number": "P-SUCCESS-PURGE"}]},
+            row_count=1,
+        )
+        with transactional_session(self.factory) as session:
+            row = Project(
+                id="SUCCESS-PURGE-PROJECT",
+                erp_external_id="SUCCESS-PURGE-ERP",
+                number="P-SUCCESS-PURGE",
+                name="Before",
+                status="Actif",
+            )
+            session.add(row)
+            session.flush()
+            before = ErpSyncOrchestrator._project_owned_state(row)
+            evidence_id = self.service.record_before_in_session(
+                session,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                unit_type="PROJECT_SNAPSHOT",
+                entity_type="PROJECT",
+                entity_key=row.erp_external_id,
+                before=before,
+            )
+            row.name = "After"
+            self.service.record_after_in_session(
+                session,
+                evidence_id=evidence_id,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                after=ErpSyncOrchestrator._project_owned_state(row) or {},
+            )
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="SUCCEEDED",
+                phase="PUBLICATION_COMMITTED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.finalize_attempt(attempt_id=attempt.id, successful=True)
+
+        with self.factory() as session:
+            manifest = session.get(ErpSyncEvidenceManifest, captured.manifest_id)
+            chunks = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceChunk).where(
+                        ErpSyncEvidenceChunk.manifest_id == captured.manifest_id
+                    )
+                )
+            )
+            mutation = session.get(ErpSyncMutationEvidence, evidence_id)
+            reservation = session.scalar(
+                select(ErpSyncEvidenceReservation).where(
+                    ErpSyncEvidenceReservation.attempt_id == attempt.id
+                )
+            )
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == attempt.id
+                )
+            )
+        self.assertEqual(manifest.state, "PURGED")
+        self.assertEqual(manifest.diagnostic, "erp_sync_evidence_success_payload_purged")
+        self.assertIsNotNone(manifest.content_sha256)
+        self.assertEqual(chunks, ())
+        self.assertIsNotNone(mutation.before_sha256)
+        self.assertIsNotNone(mutation.after_sha256)
+        self.assertIsNone(mutation.encrypted_before)
+        self.assertIsNone(mutation.encrypted_after)
+        self.assertEqual(reservation.used_bytes, 0)
+        self.assertEqual(reservation.used_plaintext_bytes, 0)
+        self.assertEqual(recovery.state, "NONE")
+
+    def test_retention_purges_unpinned_failure_payload_and_releases_accounted_bytes(self) -> None:
         control, _occurrence, attempt = self._attempt("retention")
         captured = self.service.capture_source(
             attempt_id=attempt.id,
@@ -3257,31 +3340,12 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             control.finish(
                 attempt_id=attempt.id,
                 generation=attempt.generation,
-                status="SUCCEEDED",
-                phase="PUBLICATION_COMMITTED",
+                status="FAILED",
+                phase="FAILED",
                 settings=self.control_settings,
             )
         )
-        finalized_at = datetime.now(timezone.utc)
-        self.service.finalize_attempt(attempt_id=attempt.id, successful=True)
-        with self.factory() as session:
-            successful_manifests = tuple(
-                session.scalars(
-                    select(ErpSyncEvidenceManifest).where(
-                        ErpSyncEvidenceManifest.attempt_id == attempt.id
-                    )
-                )
-            )
-        self.assertTrue(successful_manifests)
-        self.assertTrue(
-            all(
-                row.expires_at is not None
-                and row.expires_at
-                <= finalized_at
-                + timedelta(days=self.service.settings.failure_retention_days, minutes=1)
-                for row in successful_manifests
-            )
-        )
+        self.service.finalize_attempt(attempt_id=attempt.id, successful=False)
         with transactional_session(self.factory) as session:
             recovery = session.scalar(
                 select(ErpSyncRecoveryState).where(
@@ -3297,6 +3361,8 @@ class ErpSyncEvidenceTests(unittest.TestCase):
                     )
                 )
             )
+            self.assertTrue(manifests)
+            self.assertTrue(all(not row.pinned for row in manifests))
             for manifest in manifests:
                 manifest.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
 
@@ -3315,16 +3381,15 @@ class ErpSyncEvidenceTests(unittest.TestCase):
                     )
                 )
             )
-        self.assertEqual(manifest.state, "PURGED")
-        self.assertEqual(chunks, ())
-        self.assertEqual(reservation.used_bytes, 0)
-        self.assertEqual(reservation.used_plaintext_bytes, 0)
-        with self.factory() as session:
             recovery = session.scalar(
                 select(ErpSyncRecoveryState).where(
                     ErpSyncRecoveryState.attempt_id == attempt.id
                 )
             )
+        self.assertEqual(manifest.state, "PURGED")
+        self.assertEqual(chunks, ())
+        self.assertEqual(reservation.used_bytes, 0)
+        self.assertEqual(reservation.used_plaintext_bytes, 0)
         self.assertEqual(recovery.state, "EXPIRED")
 
     def test_exact_source_plausibility_exception_does_not_bypass_other_source(self) -> None:
