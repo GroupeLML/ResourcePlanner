@@ -1509,7 +1509,14 @@ class ErpSyncOrchestrator:
                 str(row.task_code or "").strip(): row
                 for row in current_tasks
             }
-            expected_task_keys: set[str] = set()
+            # Every durable ERP-owned row in the synchronized project
+            # is in mutation scope: accepted rows remain/update, while prior ERP
+            # rows absent from the frozen source may be deactivated.
+            expected_task_keys: set[str] = {
+                str(row.erp_task_id).strip()
+                for row in current_tasks
+                if str(row.erp_task_id or "").strip()
+            }
             frozen_snapshot = snapshots_by_project.get(project_number) or {}
             for item in frozen_snapshot.get("items") or ():
                 if not isinstance(item, dict):
@@ -2701,6 +2708,29 @@ class ErpSyncOrchestrator:
                         )
                         task_evidence[key] = evidence_id
                         evidence_rows.append((key, evidence_id))
+
+                    # Existing ERP-owned rows absent from the accepted source are
+                    # mutation candidates because synchronization deactivates
+                    # them. Checkpoint those physical rows exactly once, while
+                    # leaving unrelated legacy NULL-identity rows outside the
+                    # ERP mutation/evidence scope.
+                    for existing in existing_rows:
+                        erp_key = str(existing.erp_task_id or "").strip()
+                        physical_id = str(existing.id)
+                        if not erp_key or physical_id in captured_physical_ids:
+                            continue
+                        captured_physical_ids.add(physical_id)
+                        evidence_id = self._evidence.record_before_in_session(
+                            session,
+                            attempt_id=attempt_id,
+                            generation=generation,
+                            unit_type=f"TASK_PROJECT:{project.id}",
+                            entity_type="TASK",
+                            entity_key=erp_key,
+                            before=self._task_owned_state(existing),
+                        )
+                        task_evidence[erp_key] = evidence_id
+                        evidence_rows.append((erp_key, evidence_id))
                     sync_state_evidence = self._evidence.record_before_in_session(
                         session,
                         attempt_id=attempt_id,
