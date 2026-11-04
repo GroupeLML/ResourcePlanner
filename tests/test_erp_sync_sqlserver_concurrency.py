@@ -59,6 +59,7 @@ from app.infrastructure.sql import (
     TaskCatalogEntry,
     TaskCatalogProjectSyncState,
     TaskClassStandard,
+    WorkPackage,
     create_session_factory,
     create_sql_engine,
     transactional_session,
@@ -199,6 +200,13 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
         with transactional_session(self.factory) as session:
             # FK-safe, namespace-scoped cleanup. Do not touch unrelated business
             # projects or sentinel rows in the shared live-test database.
+            session.execute(
+                delete(WorkPackage).where(
+                    WorkPackage.project_id.in_(
+                        select(Project.id).where(Project.number.like(pattern))
+                    )
+                )
+            )
             session.execute(
                 delete(TaskCatalogEntry).where(
                     TaskCatalogEntry.project_number.like(pattern)
