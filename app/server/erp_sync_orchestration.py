@@ -1321,21 +1321,21 @@ class ErpSyncOrchestrator:
                     context={"counter": run_field},
                 )
 
-        if not require_complete_success:
-            return
-        if int(run.projects_rejected) or any(
-            row.status == "rejected" for row in results
-        ):
+        if self._evidence is None:
             raise ApplicationConflictError(
-                "Un projet rejeté ne peut pas être publié comme succès complet.",
+                "Les preuves ERP 643B sont requises avant publication.",
                 code="erp_sync_global_validation_failed",
             )
 
-        if self._evidence is None:
+        if (
+            str(run.parent_attempt_id or "") != attempt_id
+            or int(run.erp_generation or -1) != int(generation)
+        ):
             raise ApplicationConflictError(
-                "Les preuves ERP 643B sont requises avant succès complet.",
+                "Le run tâches n'appartient pas à la tentative/génération publiée.",
                 code="erp_sync_global_validation_failed",
             )
+
         project_manifest = session.scalar(
             select(ErpSyncEvidenceManifest).where(
                 ErpSyncEvidenceManifest.attempt_id == attempt_id,
@@ -1384,17 +1384,20 @@ class ErpSyncOrchestrator:
                     "Une entrée projet figée ne possède pas d'identité.",
                     code="erp_sync_global_validation_failed",
                 )
-            project_evidence = session.scalar(
-                select(ErpSyncMutationEvidence.id).where(
-                    ErpSyncMutationEvidence.attempt_id == attempt_id,
-                    ErpSyncMutationEvidence.unit_type == "PROJECT_SNAPSHOT",
-                    ErpSyncMutationEvidence.entity_type == "PROJECT",
-                    ErpSyncMutationEvidence.entity_key == project_key,
-                    ErpSyncMutationEvidence.committed_at.is_not(None),
-                    ErpSyncMutationEvidence.after_sha256.is_not(None),
+            project_evidence = tuple(
+                session.scalars(
+                    select(ErpSyncMutationEvidence).where(
+                        ErpSyncMutationEvidence.attempt_id == attempt_id,
+                        ErpSyncMutationEvidence.generation == generation,
+                        ErpSyncMutationEvidence.unit_type == "PROJECT_SNAPSHOT",
+                        ErpSyncMutationEvidence.entity_type == "PROJECT",
+                        ErpSyncMutationEvidence.entity_key == project_key,
+                        ErpSyncMutationEvidence.committed_at.is_not(None),
+                        ErpSyncMutationEvidence.after_sha256.is_not(None),
+                    )
                 )
             )
-            if project_evidence is None:
+            if len(project_evidence) != 1:
                 raise ApplicationConflictError(
                     "La preuve de mutation projets est incomplète.",
                     code="erp_sync_global_validation_failed",
@@ -1430,11 +1433,15 @@ class ErpSyncOrchestrator:
             if isinstance(snapshot, dict)
             and str(snapshot.get("project_number") or "").strip()
         }
-        for project_number in expected_active:
-            result = result_by_number.get(project_number)
-            if result is None or result.status != "synchronized":
+
+        # Technical proof validity is independent from business completion
+        # classification. Every synchronized project must have complete,
+        # generation-linked evidence even when another project failed locally.
+        for result in synchronized:
+            project_number = str(result.project_number)
+            if project_number not in expected_active:
                 raise ApplicationConflictError(
-                    "Une cible tâches figée n'a pas de reçu synchronisé.",
+                    "Un succès tâches ne correspond pas aux cibles figées.",
                     code="erp_sync_global_validation_failed",
                     context={"project_number": project_number},
                 )
@@ -1450,25 +1457,33 @@ class ErpSyncOrchestrator:
                     code="erp_sync_global_validation_failed",
                     context={"project_number": project_number},
                 )
-            sync_state_evidence = session.scalar(
-                select(ErpSyncMutationEvidence.id).where(
-                    ErpSyncMutationEvidence.attempt_id == attempt_id,
-                    ErpSyncMutationEvidence.entity_type == "TASK_SYNC_STATE",
-                    ErpSyncMutationEvidence.entity_key == project_number,
-                    ErpSyncMutationEvidence.committed_at.is_not(None),
-                    ErpSyncMutationEvidence.after_sha256.is_not(None),
+
+            sync_state_evidence = tuple(
+                session.scalars(
+                    select(ErpSyncMutationEvidence).where(
+                        ErpSyncMutationEvidence.attempt_id == attempt_id,
+                        ErpSyncMutationEvidence.generation == generation,
+                        ErpSyncMutationEvidence.unit_type
+                        == f"TASK_PROJECT:{result.project_id}",
+                        ErpSyncMutationEvidence.entity_type == "TASK_SYNC_STATE",
+                        ErpSyncMutationEvidence.entity_key == project_number,
+                        ErpSyncMutationEvidence.committed_at.is_not(None),
+                        ErpSyncMutationEvidence.after_sha256.is_not(None),
+                    )
                 )
             )
-            if sync_state_evidence is None:
+            if len(sync_state_evidence) != 1:
                 raise ApplicationConflictError(
                     "La preuve de provenance tâches est absente.",
                     code="erp_sync_global_validation_failed",
                     context={"project_number": project_number},
                 )
-            if int(result.tasks_received or 0) > 0:
-                task_evidence = session.scalar(
-                    select(ErpSyncMutationEvidence.id).where(
+
+            task_evidence = tuple(
+                session.scalars(
+                    select(ErpSyncMutationEvidence).where(
                         ErpSyncMutationEvidence.attempt_id == attempt_id,
+                        ErpSyncMutationEvidence.generation == generation,
                         ErpSyncMutationEvidence.unit_type
                         == f"TASK_PROJECT:{result.project_id}",
                         ErpSyncMutationEvidence.entity_type == "TASK",
@@ -1476,17 +1491,37 @@ class ErpSyncOrchestrator:
                         ErpSyncMutationEvidence.after_sha256.is_not(None),
                     )
                 )
-                # A source may contain only valid Standards exclusions. In that
-                # case no business task row is created and no mutation proof is
-                # required for the excluded row itself.
-                if task_evidence is None and int(result.rejected or 0) < int(
-                    result.tasks_received or 0
-                ):
-                    raise ApplicationConflictError(
-                        "La preuve de mutation tâches est incomplète.",
-                        code="erp_sync_global_validation_failed",
-                        context={"project_number": project_number},
-                    )
+            )
+            expected_task_mutations = (
+                int(result.created or 0)
+                + int(result.updated or 0)
+                + int(result.unchanged or 0)
+                + int(result.deactivated or 0)
+            )
+            if len(task_evidence) != expected_task_mutations:
+                raise ApplicationConflictError(
+                    "La preuve de mutation tâches est incomplète.",
+                    code="erp_sync_global_validation_failed",
+                    context={"project_number": project_number},
+                )
+
+        if not require_complete_success:
+            return
+        if int(run.projects_rejected) or any(
+            row.status == "rejected" for row in results
+        ):
+            raise ApplicationConflictError(
+                "Un projet rejeté ne peut pas être publié comme succès complet.",
+                code="erp_sync_global_validation_failed",
+            )
+        for project_number in expected_active:
+            result = result_by_number.get(project_number)
+            if result is None or result.status != "synchronized":
+                raise ApplicationConflictError(
+                    "Une cible tâches figée n'a pas de reçu synchronisé.",
+                    code="erp_sync_global_validation_failed",
+                    context={"project_number": project_number},
+                )
 
     def _mark_global_validation_failure(
         self,
