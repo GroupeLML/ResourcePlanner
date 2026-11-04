@@ -394,6 +394,22 @@ class ErpSyncEvidenceService:
                 code="erp_sync_evidence_decrypt_failed",
             ) from exc
 
+    @staticmethod
+    def _encrypted_storage_bound(plaintext_bytes: int) -> int:
+        """Conservative bound for base64 + Fernet storage at source chunk size."""
+        remaining = max(0, int(plaintext_bytes))
+        total = 1024  # checkpoint/accounting manifest allowance
+        while remaining:
+            chunk = min(remaining, ERP_EVIDENCE_CHUNK_BYTES)
+            encoded = 4 * ((chunk + 2) // 3)
+            # Fernet encrypts the encoded text with PKCS7/AES-CBC, then wraps
+            # version/timestamp/IV/ciphertext/HMAC in URL-safe base64.
+            padded = 16 * ((encoded // 16) + 1)
+            fernet_raw = 57 + padded
+            total += 4 * ((fernet_raw + 2) // 3)
+            remaining -= chunk
+        return total
+
     def reserve_attempt(self, *, attempt_id: str) -> None:
         from ..infrastructure.sql import ErpSyncAttempt, ErpSyncEvidenceReservation
         from ..infrastructure.sql.erp_sync_control_repository import (
@@ -402,15 +418,15 @@ class ErpSyncEvidenceService:
         from ..infrastructure.sql.session import transactional_session
 
         requested_plaintext = self.settings.max_evidence_bytes
-        # Reserve a bounded encrypted-storage envelope for the active attempt.
-        # Fernet/base64 expansion is below 1.5x for the configured chunk sizes;
-        # reserving the entire site budget would make any retained terminal
-        # evidence prevent the next attempt from starting.
-        requested_storage = min(
-            self.settings.evidence_budget_bytes,
-            self.settings.max_evidence_bytes
-            + (self.settings.max_evidence_bytes // 2),
-        )
+        # Reserve from the actual codec/encryption envelope rather than a 1.5x
+        # heuristic. This covers the configured maximum source payload after the
+        # outer base64 step, Fernet framing/AES padding, and chunking overhead.
+        requested_storage = self._encrypted_storage_bound(requested_plaintext)
+        if requested_storage > self.settings.evidence_budget_bytes:
+            raise ApplicationUnavailableError(
+                "Le budget de stockage des preuves ERP ne couvre pas le plafond configuré.",
+                code="erp_sync_evidence_storage_budget_unavailable",
+            )
         with transactional_session(self._session_factory) as session:
             if self._control_settings is None:
                 raise ApplicationUnavailableError(
@@ -501,6 +517,8 @@ class ErpSyncEvidenceService:
                     ciphertext_bytes=0,
                     content_sha256=None,
                     state=EVIDENCE_STATE_READY,
+                    expires_at=_utc_now()
+                    + timedelta(days=self.settings.failure_retention_days),
                 )
             )
 
@@ -665,6 +683,8 @@ class ErpSyncEvidenceService:
                 ciphertext_bytes=ciphertext_total,
                 content_sha256=digest,
                 state=EVIDENCE_STATE_SEALED,
+                expires_at=observed_at
+                + timedelta(days=self.settings.failure_retention_days),
             )
             session.add(manifest)
             session.flush()
@@ -1770,11 +1790,11 @@ class ErpSyncEvidenceService:
         from ..infrastructure.sql.session import transactional_session
 
         now = _utc_now()
-        retention_days = (
-            self.settings.history_days
-            if successful
-            else self.settings.failure_retention_days
-        )
+        # Raw/encrypted payload retention is intentionally shorter than
+        # durable run/result history. Successful publication keeps metadata
+        # authority, but payload bytes remain only for the bounded evidence
+        # retention window.
+        retention_days = self.settings.failure_retention_days
         with transactional_session(self._session_factory) as session:
             recovery = session.scalar(
                 select(ErpSyncRecoveryState).where(
