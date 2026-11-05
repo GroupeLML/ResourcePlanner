@@ -6,6 +6,7 @@ import unittest
 
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.server.erp_sync_evidence import ErpSyncEvidenceSettings
 from app.application.erp_sync_scheduler import ErpSyncSchedulerSettings
@@ -14,6 +15,7 @@ from app.infrastructure.smtp import FernetSecretCipher
 from app.infrastructure.sql import (
     Base,
     ErpSyncControl,
+    ErpSyncPlausibilityReviewDecision,
     create_session_factory,
     create_sql_engine,
     transactional_session,
@@ -187,13 +189,10 @@ class ErpSyncEvidenceApiTests(unittest.TestCase):
             terminal.error_code,
             "erp_sync_plausibility_review_declined",
         )
-        from app.infrastructure.sql import ErpSyncPlausibilityReviewDecision
         with factory() as session:
             decisions = tuple(
                 session.scalars(
-                    __import__("sqlalchemy", fromlist=["select"]).select(
-                        ErpSyncPlausibilityReviewDecision
-                    ).where(
+                    select(ErpSyncPlausibilityReviewDecision).where(
                         ErpSyncPlausibilityReviewDecision.attempt_id
                         == attempt_id
                     )
