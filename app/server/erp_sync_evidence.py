@@ -1933,6 +1933,7 @@ class ErpSyncEvidenceService:
             ErpSyncMutationEvidence,
             ErpSyncOccurrence,
             ErpSyncPlausibilityException,
+            ErpSyncPlausibilityReviewDecision,
             ErpSyncProjectQuality,
             ErpSyncRecoveryState,
         )
@@ -1949,6 +1950,7 @@ class ErpSyncEvidenceService:
             ErpSyncBaseline,
             ErpSyncBaselineApprovalAudit,
             ErpSyncPlausibilityException,
+            ErpSyncPlausibilityReviewDecision,
             ErpSyncMutationEvidence,
             ErpSyncProjectQuality,
             ErpSyncRecoveryState,
