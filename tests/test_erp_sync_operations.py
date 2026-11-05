@@ -270,6 +270,47 @@ class ErpSyncOperationsServiceTests(unittest.TestCase):
         self.assertEqual(snapshot.scheduler_observation_status, "MISSING")
         self.assertEqual(snapshot.scheduler_status, "MISSED")
 
+    def test_active_owner_with_stale_heartbeat_is_not_reported_healthy(self) -> None:
+        settings = ErpSyncSchedulerSettings(enabled=True, heartbeat_seconds=60)
+        now = datetime(2026, 11, 5, 15, tzinfo=timezone.utc)
+        running = attempt(
+            "RUNNING",
+            status="RUNNING",
+            phase="TASKS",
+        )
+        value = replace(
+            data(settings, now=now, attempts=(running,)),
+            owner_attempt_id=running.id,
+            lease_expires_at=now + timedelta(minutes=2),
+            control_heartbeat_at=now - timedelta(minutes=3),
+        )
+        snapshot = self.service(settings, value).snapshot(
+            evidence_budget_bytes=100
+        )
+        self.assertEqual(snapshot.scheduler_observation_status, "STALE")
+        self.assertEqual(snapshot.scheduler_status, "STALE")
+        self.assertEqual(snapshot.current_attempt_id, running.id)
+        self.assertEqual(snapshot.scheduler_observation_age_seconds, 180)
+
+    def test_pending_review_remains_current_without_being_lease_owner(self) -> None:
+        settings = ErpSyncSchedulerSettings(enabled=True)
+        now = datetime(2026, 11, 5, 15, tzinfo=timezone.utc)
+        pending = attempt(
+            "REVIEW",
+            status="PENDING",
+            phase="PLAUSIBILITY_REVIEW_REQUIRED",
+        )
+        snapshot = self.service(
+            settings,
+            data(settings, now=now, attempts=(pending,)),
+        ).snapshot(evidence_budget_bytes=100)
+        self.assertEqual(snapshot.current_attempt_id, "REVIEW")
+        self.assertEqual(
+            snapshot.current_phase,
+            "PLAUSIBILITY_REVIEW_REQUIRED",
+        )
+        self.assertIsNone(snapshot.current_owner_attempt_id)
+
     def test_dst_next_run_reuses_scheduler_calendar_resolution(self) -> None:
         settings = ErpSyncSchedulerSettings(
             enabled=True,
@@ -577,6 +618,21 @@ class ErpSyncOperationsSqlAndApiTests(unittest.TestCase):
             "erp_sync_operations_database_unavailable",
         )
         self.assertNotIn("private database failure", response.text)
+
+        healthy_app = create_api_app(
+            self.database_url,
+            auth_resolver=static_auth_resolver(
+                self._principal((PERMISSION_SYNC_PROJECTS,))
+            ),
+            erp_sync_settings=self.settings,
+            erp_sync_automatic_safety=TestErpSyncAutomaticSafetyCapability(),
+        )
+        with patch(
+            "app.server.routes_integrations.SqlErpSyncOperationsRepository.read",
+            side_effect=RuntimeError("private database failure"),
+        ):
+            with TestClient(healthy_app) as client:
+                self.assertEqual(client.get("/health").status_code, 200)
 
 
 if __name__ == "__main__":
