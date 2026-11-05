@@ -70,21 +70,23 @@ class SqlErpSyncOperationsRepository:
                 )
             )
             attempts = tuple(self._attempt(row) for row in attempt_rows)
-            latest_task_run_id = (
-                attempt_rows[0].task_sync_run_id
-                if attempt_rows
-                else None
-            )
-            latest_results = {
-                row.project_number: row
+            task_run_by_attempt = {
+                row.id: row.task_sync_run_id
+                for row in session.scalars(select(ErpSyncAttempt))
+                if row.task_sync_run_id
+            }
+            task_run_ids = tuple(dict.fromkeys(task_run_by_attempt.values()))
+            results_by_run_project = {
+                (row.run_id, row.project_number): row
                 for row in (
                     session.scalars(
                         select(AcumaticaProjectTaskSyncProjectResult).where(
-                            AcumaticaProjectTaskSyncProjectResult.run_id
-                            == latest_task_run_id
+                            AcumaticaProjectTaskSyncProjectResult.run_id.in_(
+                                task_run_ids
+                            )
                         )
                     )
-                    if latest_task_run_id
+                    if task_run_ids
                     else ()
                 )
             }
@@ -113,8 +115,17 @@ class SqlErpSyncOperationsRepository:
                 ErpSyncProjectOperations(
                     project_number=row.project_number,
                     result_status=(
-                        latest_results[row.project_number].status
-                        if row.project_number in latest_results
+                        results_by_run_project[
+                            (
+                                task_run_by_attempt.get(row.producer_attempt_id),
+                                row.project_number,
+                            )
+                        ].status
+                        if (
+                            task_run_by_attempt.get(row.producer_attempt_id),
+                            row.project_number,
+                        )
+                        in results_by_run_project
                         else None
                     ),
                     quality_state=row.quality_state,
@@ -122,8 +133,17 @@ class SqlErpSyncOperationsRepository:
                     validated_at=row.validated_at,
                     reason_code=row.reason_code,
                     error_code=(
-                        latest_results[row.project_number].error_code
-                        if row.project_number in latest_results
+                        results_by_run_project[
+                            (
+                                task_run_by_attempt.get(row.producer_attempt_id),
+                                row.project_number,
+                            )
+                        ].error_code
+                        if (
+                            task_run_by_attempt.get(row.producer_attempt_id),
+                            row.project_number,
+                        )
+                        in results_by_run_project
                         else None
                     ),
                     producer_attempt_id=row.producer_attempt_id,
