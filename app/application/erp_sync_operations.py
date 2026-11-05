@@ -268,7 +268,10 @@ class ErpSyncOperationsService:
             scheduler_status = "QUARANTINED"
         elif current is not None and current.status in {"RUNNING", "PENDING"}:
             scheduler_status = "IN_PROGRESS"
-        elif observation_status == "MISSING" or decision.state == "MISSED":
+        elif observation_status == "MISSING" or (
+            decision.state == "MISSED"
+            and not current_occurrence_exists
+        ) or data.current_daily_occurrence_status == "MISSED":
             scheduler_status = "MISSED"
         elif last_attempt is not None and last_attempt.status in {"FAILED", "INTERRUPTED"}:
             scheduler_status = "FAILED"
