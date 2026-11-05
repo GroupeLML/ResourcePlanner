@@ -2617,6 +2617,11 @@ test("ERP operations use authoritative RUN_NOW, review, RETRY and compensation c
     "/api/v1/integrations/acumatica/erp-sync/operations",
   );
   expect(deniedRead.status()).toBe(403);
+  const deniedMutation = await unauthorized.page.request.post(
+    "/api/v1/integrations/acumatica/erp-sync/run-now",
+    { headers: { "Idempotency-Key": "unauthorized-phase2-run" } },
+  );
+  expect(deniedMutation.status()).toBe(403);
   await closeContext(unauthorized.context);
 
   const { context, page } = await openAs(browser, "ADMIN");
