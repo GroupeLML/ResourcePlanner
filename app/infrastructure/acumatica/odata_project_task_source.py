@@ -757,22 +757,7 @@ class ODataProjectTaskSource:
                             ),
                         ) from exc
 
-                    task_ids = tuple(row.task_id for row in page)
-                    if any(
-                        task_ids[index] > task_ids[index + 1]
-                        for index in range(len(task_ids) - 1)
-                    ):
-                        reason = "pagination_non_progressive"
-                    elif task_ids and task_ids in seen_page_task_ids:
-                        reason = "pagination_non_progressive"
-                    elif (
-                        task_ids
-                        and previous_last_task_id is not None
-                        and task_ids[0] <= previous_last_task_id
-                    ):
-                        reason = "pagination_overlap"
-                    else:
-                        reason = None
+                    reason = pagination.validate(page)
                     if reason is not None:
                         self._log_failure(
                             failure_kind="invalid_payload",
