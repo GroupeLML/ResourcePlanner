@@ -68,6 +68,7 @@ from app.infrastructure.sql import (
     create_sql_engine,
 )
 from app.server import create_api_app
+from app.server.erp_sync_evidence import ErpSyncEvidenceSettings
 from app.server.dev_user_switcher import (
     DevUserSwitcherRuntime,
     dev_user_switcher_auth_resolver,
@@ -114,6 +115,7 @@ class FakePlaywrightProjectSource:
 
     def __init__(self, events: list[str]) -> None:
         self.events = events
+        self.mutate_name = False
 
     def list_projects(self):
         self.events.append("projects")
@@ -121,7 +123,11 @@ class FakePlaywrightProjectSource:
             ExternalProjectRecord(
                 external_id="251",
                 number="P-251",
-                name="Projet Playwright V2",
+                name=(
+                    "Projet Playwright V2 synchronisé"
+                    if self.mutate_name
+                    else "Projet Playwright V2"
+                ),
                 status="Actif",
             ),
         )
@@ -132,6 +138,7 @@ class FakePlaywrightProjectTaskSource:
 
     def __init__(self, events: list[str]) -> None:
         self.events = events
+        self.fail = False
 
     def fetch_project_snapshots(
         self,
@@ -141,6 +148,8 @@ class FakePlaywrightProjectTaskSource:
         if not self.events or self.events[-1] != "projects":
             raise AssertionError("project synchronization must precede task synchronization")
         self.events.append("tasks")
+        if self.fail:
+            raise RuntimeError("controlled E2E task source failure")
         sleep(2.0)
         snapshots = []
         for project_external_id, project_number in project_targets:
@@ -605,6 +614,8 @@ def build_app(database_path: Path, frontend_dist: Path):
     dev_runtime = DevUserSwitcherRuntime(bootstrap_principal=_bootstrap_principal())
     dev_resolver = dev_user_switcher_auth_resolver(dev_runtime)
     erp_sync_events: list[str] = []
+    project_source = FakePlaywrightProjectSource(erp_sync_events)
+    project_task_source = FakePlaywrightProjectTaskSource(erp_sync_events)
     app = create_api_app(
         database_url,
         auth_resolver=_combined_auth_resolver(dev_resolver),
@@ -612,12 +623,28 @@ def build_app(database_path: Path, frontend_dist: Path):
         communication_transport=transport,
         smtp_cipher=smtp_cipher,
         smtp_client=smtp_client,
-        project_source=FakePlaywrightProjectSource(erp_sync_events),
-        project_task_source=FakePlaywrightProjectTaskSource(erp_sync_events),
+        project_source=project_source,
+        project_task_source=project_task_source,
+        erp_sync_evidence_settings=ErpSyncEvidenceSettings(
+            max_evidence_mib=16,
+            evidence_budget_mib=64,
+        ),
     )
     @app.get("/__e2e__/erp-sync/events", include_in_schema=False)
     def erp_sync_event_order():
         return {"events": list(erp_sync_events)}
+
+    @app.post("/__e2e__/erp-sync/source-mode", include_in_schema=False)
+    def erp_sync_source_mode(
+        project_mutation: bool = False,
+        task_failure: bool = False,
+    ):
+        project_source.mutate_name = bool(project_mutation)
+        project_task_source.fail = bool(task_failure)
+        return {
+            "project_mutation": project_source.mutate_name,
+            "task_failure": project_task_source.fail,
+        }
 
     @app.get("/__e2e__/identity/link-pending", include_in_schema=False)
     def link_pending_oidc_identity():
