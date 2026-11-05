@@ -1,0 +1,141 @@
+.erp-sync-page {
+  display: grid;
+  gap: 1rem;
+}
+
+.erp-sync-heading,
+.erp-sync-section-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.erp-sync-heading h2,
+.erp-sync-section-heading h3 {
+  margin: 0.15rem 0 0.35rem;
+}
+
+.erp-sync-heading p,
+.erp-sync-card p {
+  margin: 0;
+  max-width: 78ch;
+}
+
+.erp-sync-status-grid,
+.erp-sync-attempt-grid {
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.erp-sync-card {
+  display: grid;
+  gap: 0.55rem;
+  padding: 1rem;
+  border: 1px solid var(--border-color, #d8dde5);
+  border-radius: 12px;
+  background: var(--surface, #fff);
+}
+
+.erp-sync-card small,
+.erp-sync-card code {
+  overflow-wrap: anywhere;
+}
+
+.erp-sync-status {
+  display: inline-flex;
+  width: fit-content;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  font-size: 0.82rem;
+  letter-spacing: 0.03em;
+}
+
+.erp-sync-status.is-failed,
+.erp-sync-status.is-quarantined,
+.erp-sync-status.is-required,
+.erp-sync-status.is-incompatible {
+  font-weight: 700;
+}
+
+.erp-sync-status.is-healthy,
+.erp-sync-status.is-fresh,
+.erp-sync-status.is-compatible,
+.erp-sync-status.is-resolved {
+  font-weight: 700;
+}
+
+.erp-sync-metrics,
+.erp-sync-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.erp-sync-metrics span {
+  display: inline-flex;
+  gap: 0.35rem;
+  align-items: baseline;
+}
+
+.erp-sync-blockers ul {
+  margin: 0;
+  padding-left: 1.2rem;
+}
+
+.erp-sync-baselines,
+.erp-sync-review-sources,
+.erp-sync-project-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.erp-sync-baselines {
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+}
+
+.erp-sync-baselines > div,
+.erp-sync-review-source,
+.erp-sync-project-list > div,
+.erp-sync-preview {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.8rem;
+  border: 1px solid var(--border-color, #d8dde5);
+  border-radius: 10px;
+}
+
+.erp-sync-review-source button {
+  width: fit-content;
+}
+
+.erp-sync-reason {
+  display: grid;
+  gap: 0.35rem;
+  font-weight: 600;
+}
+
+.erp-sync-reason textarea {
+  min-height: 5rem;
+  resize: vertical;
+}
+
+.erp-sync-notice {
+  padding: 0.8rem 1rem;
+  border-radius: 10px;
+  border: 1px solid var(--border-color, #d8dde5);
+  background: var(--surface, #fff);
+}
+
+.erp-sync-preview small {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 760px) {
+  .erp-sync-heading,
+  .erp-sync-section-heading {
+    flex-direction: column;
+  }
+}
