@@ -12,6 +12,7 @@ from ...application.erp_sync_operations import (
 )
 from .acumatica_project_task_sync_models import (
     AcumaticaProjectTaskSyncProjectResult,
+    AcumaticaProjectTaskSyncRun,
 )
 from .erp_sync_control_models import (
     ERP_SYNC_CONTROL_ROW_ID,
@@ -42,7 +43,10 @@ class SqlErpSyncOperationsRepository:
         self._timezone = ZoneInfo(timezone_name)
 
     @staticmethod
-    def _attempt(row: ErpSyncAttempt) -> ErpSyncAttemptOperations:
+    def _attempt(
+        row: ErpSyncAttempt,
+        task_run: AcumaticaProjectTaskSyncRun | None = None,
+    ) -> ErpSyncAttemptOperations:
         return ErpSyncAttemptOperations(
             id=row.id,
             occurrence_id=row.occurrence_id,
@@ -53,6 +57,29 @@ class SqlErpSyncOperationsRepository:
             started_at=row.started_at,
             finished_at=row.finished_at,
             heartbeat_at=row.heartbeat_at,
+            duration_ms=task_run.duration_ms if task_run is not None else None,
+            projects_received=int(row.project_received),
+            projects_created=int(row.projects_created),
+            projects_updated=int(row.projects_updated),
+            projects_unchanged=int(row.projects_unchanged),
+            task_projects_total=int(task_run.projects_total) if task_run is not None else None,
+            task_projects_synchronized=(
+                int(task_run.projects_synchronized) if task_run is not None else None
+            ),
+            task_projects_rejected=(
+                int(task_run.projects_rejected) if task_run is not None else None
+            ),
+            task_rows_received=(
+                int(task_run.source_rows_received) if task_run is not None else None
+            ),
+            tasks_received=int(task_run.tasks_received) if task_run is not None else None,
+            tasks_created=int(task_run.tasks_created) if task_run is not None else None,
+            tasks_updated=int(task_run.tasks_updated) if task_run is not None else None,
+            tasks_unchanged=int(task_run.tasks_unchanged) if task_run is not None else None,
+            tasks_deactivated=(
+                int(task_run.tasks_deactivated) if task_run is not None else None
+            ),
+            tasks_rejected=int(task_run.tasks_rejected) if task_run is not None else None,
             error_code=row.error_code,
             diagnostic=row.diagnostic,
         )
@@ -78,7 +105,36 @@ class SqlErpSyncOperationsRepository:
                 owner = session.get(ErpSyncAttempt, control.owner_attempt_id)
                 if owner is not None:
                     attempt_rows = (owner, *attempt_rows)
-            attempts = tuple(self._attempt(row) for row in attempt_rows)
+            task_run_ids_for_attempts = tuple(
+                dict.fromkeys(
+                    row.task_sync_run_id
+                    for row in attempt_rows
+                    if row.task_sync_run_id
+                )
+            )
+            task_runs = {
+                row.id: row
+                for row in (
+                    session.scalars(
+                        select(AcumaticaProjectTaskSyncRun).where(
+                            AcumaticaProjectTaskSyncRun.id.in_(
+                                task_run_ids_for_attempts
+                            )
+                        )
+                    )
+                    if task_run_ids_for_attempts
+                    else ()
+                )
+            }
+            attempts = tuple(
+                self._attempt(
+                    row,
+                    task_runs.get(row.task_sync_run_id)
+                    if row.task_sync_run_id
+                    else None,
+                )
+                for row in attempt_rows
+            )
             task_run_by_attempt = {
                 row.id: row.task_sync_run_id
                 for row in session.scalars(select(ErpSyncAttempt))
@@ -255,7 +311,14 @@ class SqlErpSyncOperationsRepository:
                 current_daily_occurrence_status=daily.status if daily is not None else None,
                 attempts=attempts,
                 last_complete_success=(
-                    self._attempt(last_success) if last_success is not None else None
+                    self._attempt(
+                        last_success,
+                        task_runs.get(last_success.task_sync_run_id)
+                        if last_success is not None and last_success.task_sync_run_id
+                        else None,
+                    )
+                    if last_success is not None
+                    else None
                 ),
                 projects=projects,
                 recovery=recovery,
