@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 from decimal import Decimal
 from time import sleep
-from datetime import time
+from datetime import datetime, time, timezone
 from pathlib import Path
 import sys
 
@@ -58,6 +58,7 @@ from app.infrastructure.sql import (
     Base,
     Competency,
     ErpUserDirectoryEntry,
+    ErpSyncBaseline,
     Project,
     Resource,
     ResourceAvailabilityRule,
@@ -116,9 +117,12 @@ class FakePlaywrightProjectSource:
     def __init__(self, events: list[str]) -> None:
         self.events = events
         self.mutate_name = False
+        self.empty = False
 
     def list_projects(self):
         self.events.append("projects")
+        if self.empty:
+            return ()
         return (
             ExternalProjectRecord(
                 external_id="251",
@@ -630,6 +634,28 @@ def build_app(database_path: Path, frontend_dist: Path):
             evidence_budget_mib=64,
         ),
     )
+    assert app.state.erp_sync_evidence_service is not None
+    with app.state.session_factory.begin() as session:
+        policy_fingerprint = (
+            app.state.erp_sync_evidence_service.policy_fingerprint_in_session(
+                session
+            )
+        )
+        now = datetime.now(timezone.utc)
+        for source_type in ("PROJECTS", "TASKS"):
+            session.add(
+                ErpSyncBaseline(
+                    source_type=source_type,
+                    profile_fingerprint=policy_fingerprint,
+                    source_fingerprint=("a" if source_type == "PROJECTS" else "b") * 64,
+                    row_count=1,
+                    encrypted_project_counts=None,
+                    approved_by="Fixture E2E",
+                    approval_reason="Baseline contrôlé pour acceptance 643C",
+                    approved_at=now,
+                )
+            )
+
     @app.get("/__e2e__/erp-sync/events", include_in_schema=False)
     def erp_sync_event_order():
         return {"events": list(erp_sync_events)}
@@ -637,12 +663,15 @@ def build_app(database_path: Path, frontend_dist: Path):
     @app.post("/__e2e__/erp-sync/source-mode", include_in_schema=False)
     def erp_sync_source_mode(
         project_mutation: bool = False,
+        project_empty: bool = False,
         task_failure: bool = False,
     ):
         project_source.mutate_name = bool(project_mutation)
+        project_source.empty = bool(project_empty)
         project_task_source.fail = bool(task_failure)
         return {
             "project_mutation": project_source.mutate_name,
+            "project_empty": project_source.empty,
             "task_failure": project_task_source.fail,
         }
 
