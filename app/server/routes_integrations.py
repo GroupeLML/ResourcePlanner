@@ -344,6 +344,41 @@ def build_integration_router(
                 code="erp_sync_operations_database_unavailable",
             ) from exc
 
+    @router.get("/erp-sync/baselines")
+    def erp_sync_baselines() -> dict[str, Any]:
+        if erp_sync_orchestrator is None:
+            raise ApplicationUnavailableError(
+                "L'orchestration ERP n'est pas configurée sur ce serveur.",
+                code="erp_sync_orchestrator_not_configured",
+            )
+        if erp_sync_evidence_service is None:
+            return {
+                "available": False,
+                "sources": {"PROJECTS": None, "TASKS": None},
+            }
+        profile = erp_sync_orchestrator.settings.config_fingerprint
+        return {
+            "available": True,
+            "sources": {
+                source_type: erp_sync_evidence_service.get_baseline_summary(
+                    source_type=source_type,
+                    profile_fingerprint=profile,
+                )
+                for source_type in ("PROJECTS", "TASKS")
+            },
+        }
+
+    @router.get("/erp-sync/runs/{attempt_id}/plausibility-review")
+    def erp_sync_plausibility_review(attempt_id: str) -> dict[str, Any]:
+        if erp_sync_evidence_service is None:
+            raise ApplicationUnavailableError(
+                "Le stockage de preuve ERP n'est pas configuré.",
+                code="erp_sync_evidence_capability_unavailable",
+            )
+        return erp_sync_evidence_service.plausibility_review_summary(
+            attempt_id=attempt_id,
+        )
+
     @router.post("/erp-sync/projects/run-now", status_code=202)
     def run_projects_now(
         request: Request,
