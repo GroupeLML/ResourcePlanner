@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Protocol
 
 from .erp_sync_scheduler import (
+    ERP_SYNC_PROTOCOL_VERSION,
     ErpSyncAutomaticSafetyCapability,
     ErpSyncSchedulerSettings,
     resolve_scheduled_instant,
@@ -30,10 +31,12 @@ class ErpSyncAttemptOperations:
 @dataclass(frozen=True, slots=True)
 class ErpSyncProjectOperations:
     project_number: str
+    result_status: str | None
     quality_state: str
     source_observed_at: datetime | None
     validated_at: datetime | None
     reason_code: str | None
+    error_code: str | None
     producer_attempt_id: str | None
     producer_generation: int | None
 
@@ -75,6 +78,7 @@ class ErpSyncOperationsData:
     lease_expires_at: datetime | None
     owner_deadline_at: datetime | None
     control_heartbeat_at: datetime | None
+    control_updated_at: datetime | None
     last_evaluated_business_date: date | None
     control_protocol_version: int
     control_config_fingerprint: str | None
@@ -118,6 +122,14 @@ class ErpSyncOperationsSnapshot:
     compatibility: ErpSyncCompatibilityOperations
     readiness_blockers: tuple[str, ...]
     safe_to_operate: bool
+
+
+def _utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 class ErpSyncOperationsService:
@@ -196,7 +208,10 @@ class ErpSyncOperationsService:
             freshness_status = "UNKNOWN"
             freshness_age_seconds = None
         else:
-            age = max(0, int((now - success.finished_at).total_seconds()))
+            success_at = _utc(success.finished_at)
+            current_at = _utc(now)
+            assert success_at is not None and current_at is not None
+            age = max(0, int((current_at - success_at).total_seconds()))
             freshness_age_seconds = age
             freshness_status = (
                 "STALE"
@@ -212,7 +227,7 @@ class ErpSyncOperationsService:
             self._automatic_safety.automatic_execution_available()
         )
 
-        protocol_ok = data.control_protocol_version == 1
+        protocol_ok = data.control_protocol_version == ERP_SYNC_PROTOCOL_VERSION
         config_known = bool(data.control_config_fingerprint)
         config_ok = (
             data.control_config_fingerprint == self._settings.config_fingerprint
@@ -279,7 +294,13 @@ class ErpSyncOperationsService:
             automatic_execution_available=automatic_available,
             scheduler_status=scheduler_status,
             scheduler_observation_status=observation_status,
-            scheduler_observed_at=data.control_heartbeat_at,
+            scheduler_observed_at=(
+                data.control_heartbeat_at
+                if observation_status == "ACTIVE"
+                else data.control_updated_at
+                if observation_status == "OBSERVED"
+                else None
+            ),
             next_scheduled_run=next_run,
             business_timezone=self._settings.timezone_name,
             current_business_date=business_date,
@@ -300,5 +321,9 @@ class ErpSyncOperationsService:
             evidence=data.evidence,
             compatibility=compatibility,
             readiness_blockers=tuple(blockers),
-            safe_to_operate=not blockers,
+            safe_to_operate=(
+                not has_required_recovery
+                and compatibility_status != "INCOMPATIBLE"
+                and data.evidence.status != "UNAVAILABLE"
+            ),
         )
