@@ -871,7 +871,7 @@ class ODataProjectTaskSourceTests(unittest.TestCase):
                             )
                     self.assertEqual(
                         raised.exception.context["reason"],
-                        "pagination_overlap",
+                        "pagination_non_progressive",
                     )
 
     def test_pagination_rejects_repeated_page_backward_and_partial_overlap_in_both_paths(self) -> None:
