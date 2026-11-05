@@ -22,6 +22,8 @@ from .erp_sync_control_models import (
 )
 from .erp_sync_control_repository import SqlErpSyncControlRepository
 from .erp_sync_evidence_models import (
+    EVIDENCE_PROOF_CHECKPOINT,
+    EVIDENCE_PROOF_SOURCE,
     EVIDENCE_STATE_EXPIRED,
     EVIDENCE_STATE_READY,
     EVIDENCE_STATE_SEALED,
@@ -221,6 +223,14 @@ class SqlErpSyncOperationsRepository:
             evidence = ErpSyncEvidenceOperations(
                 status=evidence_status,
                 manifests_total=len(manifests),
+                source_manifests=sum(
+                    1 for row in manifests if row.proof_type == EVIDENCE_PROOF_SOURCE
+                ),
+                checkpoint_manifests=sum(
+                    1
+                    for row in manifests
+                    if row.proof_type == EVIDENCE_PROOF_CHECKPOINT
+                ),
                 manifests_ready=ready,
                 manifests_expired=expired,
                 manifests_pinned=pinned,
