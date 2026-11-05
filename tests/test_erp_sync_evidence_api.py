@@ -127,6 +127,84 @@ class ErpSyncEvidenceApiTests(unittest.TestCase):
         self.assertEqual(evidence.status_code, 200, evidence.text)
         self.assertNotIn("PRIVATE-SOURCE-MARKER", evidence.text)
 
+    def test_plausibility_review_decline_requires_sensitive_authority_and_preserves_state(self) -> None:
+        app = self._app(SYNC_ONLY)
+        attempt_id, _manifest_id = self._sealed_manifest(app)
+        factory = app.state.erp_sync_orchestrator._session_factory
+        control = SqlErpSyncControlRepository(factory)
+        attempt = control.get_attempt(attempt_id)
+        self.assertTrue(
+            control.pause_for_review(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                settings=self.settings,
+            )
+        )
+
+        with TestClient(app) as client:
+            response = client.post(
+                f"/api/v1/integrations/acumatica/erp-sync/runs/{attempt_id}/plausibility-decline",
+                json={"reason": "Source temporaire incorrecte"},
+            )
+
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertEqual(
+            response.json()["error"]["code"],
+            "erp_sync_sensitive_authority_required",
+        )
+        unchanged = control.get_attempt(attempt_id)
+        self.assertEqual(unchanged.status, "PENDING")
+        self.assertEqual(
+            unchanged.phase,
+            "PLAUSIBILITY_REVIEW_REQUIRED",
+        )
+
+    def test_admin_can_decline_plausibility_review_and_actor_is_audited(self) -> None:
+        app = self._app(TEST_ADMIN_AUTH_RESOLVER)
+        attempt_id, _manifest_id = self._sealed_manifest(app)
+        factory = app.state.erp_sync_orchestrator._session_factory
+        control = SqlErpSyncControlRepository(factory)
+        attempt = control.get_attempt(attempt_id)
+        self.assertTrue(
+            control.pause_for_review(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                settings=self.settings,
+            )
+        )
+
+        with TestClient(app) as client:
+            response = client.post(
+                f"/api/v1/integrations/acumatica/erp-sync/runs/{attempt_id}/plausibility-decline",
+                json={"reason": "Source obsolète après correction amont"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["review_decision"], "DECLINED")
+        terminal = control.get_attempt(attempt_id)
+        self.assertEqual(terminal.status, "FAILED")
+        self.assertEqual(
+            terminal.error_code,
+            "erp_sync_plausibility_review_declined",
+        )
+        from app.infrastructure.sql import ErpSyncPlausibilityReviewDecision
+        with factory() as session:
+            decisions = tuple(
+                session.scalars(
+                    __import__("sqlalchemy", fromlist=["select"]).select(
+                        ErpSyncPlausibilityReviewDecision
+                    ).where(
+                        ErpSyncPlausibilityReviewDecision.attempt_id
+                        == attempt_id
+                    )
+                )
+            )
+        self.assertEqual(len(decisions), 1)
+        self.assertEqual(
+            decisions[0].actor_name,
+            "Administrateur de test explicite",
+        )
+
     def test_admin_can_approve_sealed_baseline_and_actor_is_authenticated_identity(self) -> None:
         app = self._app(TEST_ADMIN_AUTH_RESOLVER)
         _attempt_id, manifest_id = self._sealed_manifest(app)
