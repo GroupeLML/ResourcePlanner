@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.application.erp_sync_operations import (
     ErpSyncAttemptOperations,
@@ -114,6 +115,8 @@ def evidence(status: str = "AVAILABLE") -> ErpSyncEvidenceOperations:
     return ErpSyncEvidenceOperations(
         status=status,
         manifests_total=2,
+        source_manifests=1,
+        checkpoint_manifests=1,
         manifests_ready=2,
         manifests_expired=0,
         manifests_pinned=1 if status == "PINNED" else 0,
