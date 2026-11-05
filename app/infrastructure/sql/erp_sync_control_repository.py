@@ -19,6 +19,7 @@ from ...application.erp_sync_scheduler import (
 from ...application.errors import (
     ApplicationConflictError,
     ApplicationNotFoundError,
+    ApplicationValidationError,
 )
 from .acumatica_project_task_sync_models import (
     SYNC_RUN_ACTIVE_STATUSES,
@@ -662,6 +663,45 @@ class SqlErpSyncControlRepository:
             session.flush()
             return occurrence
 
+    def find_manual_occurrence(
+        self,
+        *,
+        intent: str,
+        actor_name: str,
+        idempotency_key: str,
+    ) -> ErpSyncOccurrence | None:
+        identity = _command_identity(
+            actor_name=actor_name,
+            intent=intent,
+            idempotency_key=idempotency_key,
+        )
+        with self._session_factory() as session:
+            row = session.scalar(
+                select(ErpSyncOccurrence).where(
+                    ErpSyncOccurrence.command_identity == identity
+                )
+            )
+            if row is not None:
+                session.expunge(row)
+            return row
+
+    def find_attempt_by_command_identity(
+        self,
+        command_identity: str,
+    ) -> ErpSyncAttempt | None:
+        identity = " ".join(str(command_identity or "").split())
+        if not identity:
+            return None
+        with self._session_factory() as session:
+            row = session.scalar(
+                select(ErpSyncAttempt).where(
+                    ErpSyncAttempt.command_identity == identity
+                )
+            )
+            if row is not None:
+                session.expunge(row)
+            return row
+
     def get_occurrence(self, occurrence_id: str) -> ErpSyncOccurrence:
         with self._session_factory() as session:
             row = session.get(ErpSyncOccurrence, occurrence_id)
@@ -898,6 +938,145 @@ class SqlErpSyncControlRepository:
             control.owner_deadline_at = None
             control.heartbeat_at = None
             return True
+
+    def decline_review_attempt(
+        self,
+        *,
+        attempt_id: str,
+        actor_name: str,
+        reason: str,
+        settings: ErpSyncSchedulerSettings,
+    ) -> ErpSyncAttempt:
+        actor = " ".join(str(actor_name or "").split())
+        reason_value = " ".join(str(reason or "").split())
+        if not actor or not reason_value:
+            raise ApplicationValidationError(
+                "L'acteur et la raison du refus de revue sont requis.",
+                code="erp_sync_plausibility_review_decline_invalid",
+            )
+        if len(reason_value) > 1000:
+            raise ApplicationValidationError(
+                "La raison du refus de revue dépasse la longueur permise.",
+                code="erp_sync_plausibility_review_decline_invalid",
+            )
+        with transactional_session(self._session_factory) as session:
+            from .erp_sync_evidence_models import (
+                EVIDENCE_PROOF_SOURCE,
+                EVIDENCE_STATE_READY,
+                EVIDENCE_STATE_SEALED,
+                ErpSyncEvidenceManifest,
+                ErpSyncPlausibilityReviewDecision,
+            )
+
+            control = _lock_control(session)
+            now = _sql_now(session)
+            _ensure_config_compatible_locked(control, settings)
+            attempt = session.get(ErpSyncAttempt, attempt_id)
+            if attempt is None:
+                raise ApplicationNotFoundError(
+                    "Tentative de synchronisation ERP introuvable.",
+                    code="erp_sync_attempt_not_found",
+                )
+
+            existing = session.scalar(
+                select(ErpSyncPlausibilityReviewDecision).where(
+                    ErpSyncPlausibilityReviewDecision.attempt_id == attempt_id
+                )
+            )
+            if existing is not None:
+                if (
+                    attempt.status == ERP_ATTEMPT_FAILED
+                    and attempt.error_code
+                    == "erp_sync_plausibility_review_declined"
+                ):
+                    session.expunge(attempt)
+                    return attempt
+                raise ApplicationConflictError(
+                    "La décision de revue de plausibilité est incohérente.",
+                    code="erp_sync_plausibility_review_decision_conflict",
+                )
+
+            if (
+                attempt.status != ERP_ATTEMPT_PENDING
+                or attempt.phase != "PLAUSIBILITY_REVIEW_REQUIRED"
+            ):
+                raise ApplicationConflictError(
+                    "La tentative ERP n'attend pas une décision de plausibilité.",
+                    code="erp_sync_plausibility_review_not_pending",
+                )
+            if control.owner_attempt_id not in {None, attempt.id}:
+                raise ApplicationConflictError(
+                    "Une synchronisation ERP incompatible est déjà active.",
+                    code="erp_sync_run_active",
+                    context={"attempt_id": control.owner_attempt_id},
+                )
+
+            manifests = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceManifest)
+                    .where(
+                        ErpSyncEvidenceManifest.attempt_id == attempt_id,
+                        ErpSyncEvidenceManifest.proof_type == EVIDENCE_PROOF_SOURCE,
+                        ErpSyncEvidenceManifest.state.in_(
+                            (EVIDENCE_STATE_SEALED, EVIDENCE_STATE_READY)
+                        ),
+                    )
+                    .order_by(
+                        ErpSyncEvidenceManifest.source_type,
+                        ErpSyncEvidenceManifest.id,
+                    )
+                )
+            )
+            if not manifests:
+                raise ApplicationConflictError(
+                    "Aucune source scellée n'est disponible pour cette revue.",
+                    code="erp_sync_plausibility_review_source_missing",
+                )
+            source_identity_json = json.dumps(
+                [
+                    {
+                        "manifest_id": str(row.id),
+                        "source_type": str(row.source_type),
+                        "source_fingerprint": str(row.source_fingerprint or ""),
+                    }
+                    for row in manifests
+                ],
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            session.add(
+                ErpSyncPlausibilityReviewDecision(
+                    id=new_id(),
+                    attempt_id=attempt_id,
+                    decision="DECLINED",
+                    actor_name=actor,
+                    reason=reason_value,
+                    source_identity_json=source_identity_json,
+                    decided_at=now,
+                )
+            )
+            attempt.status = ERP_ATTEMPT_FAILED
+            attempt.phase = "FAILED"
+            attempt.finished_at = now
+            attempt.heartbeat_at = None
+            attempt.error_code = "erp_sync_plausibility_review_declined"
+            attempt.diagnostic = "La source scellée a été refusée lors de la revue de plausibilité."
+
+            occurrence = session.get(ErpSyncOccurrence, attempt.occurrence_id)
+            if occurrence is not None:
+                occurrence.status = ERP_OCCURRENCE_FAILED
+                occurrence.success_attempt_id = None
+                occurrence.diagnostic = attempt.diagnostic
+
+            if control.owner_attempt_id == attempt.id:
+                control.owner_attempt_id = None
+            control.lease_expires_at = None
+            control.owner_deadline_at = None
+            control.heartbeat_at = None
+            session.flush()
+            session.expunge(attempt)
+            return attempt
 
     def resume_review_attempt(
         self,
