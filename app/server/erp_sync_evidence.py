@@ -1502,6 +1502,122 @@ class ErpSyncEvidenceService:
             session.flush()
             return row.id
 
+    def plausibility_review_summary(
+        self,
+        *,
+        attempt_id: str,
+    ) -> dict[str, Any]:
+        from ..infrastructure.sql import (
+            EVIDENCE_PROOF_SOURCE,
+            EVIDENCE_STATE_READY,
+            EVIDENCE_STATE_SEALED,
+            ErpSyncAttempt,
+            ErpSyncEvidenceManifest,
+        )
+
+        with self._session_factory() as session:
+            attempt = session.get(ErpSyncAttempt, attempt_id)
+            if attempt is None:
+                raise ApplicationValidationError(
+                    "La tentative ERP est introuvable.",
+                    code="erp_sync_attempt_not_found",
+                )
+            if (
+                attempt.status != "PENDING"
+                or attempt.phase != "PLAUSIBILITY_REVIEW_REQUIRED"
+            ):
+                raise ApplicationConflictError(
+                    "La tentative ERP n'attend pas une revue de plausibilité.",
+                    code="erp_sync_plausibility_review_not_pending",
+                )
+            self.assert_attempt_policy_in_session(
+                session,
+                attempt_id=attempt_id,
+            )
+            rows = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceManifest)
+                    .where(
+                        ErpSyncEvidenceManifest.attempt_id == attempt_id,
+                        ErpSyncEvidenceManifest.proof_type == EVIDENCE_PROOF_SOURCE,
+                        ErpSyncEvidenceManifest.state.in_(
+                            (EVIDENCE_STATE_READY, EVIDENCE_STATE_SEALED)
+                        ),
+                    )
+                    .order_by(ErpSyncEvidenceManifest.source_type)
+                )
+            )
+            sources: list[dict[str, Any]] = []
+            allowed_scopes: list[dict[str, str]] = []
+            for row in rows:
+                payload = self.load_source_in_session(
+                    session,
+                    manifest_id=str(row.id),
+                )
+                project_counts = (
+                    self._project_counts_from_payload(payload)
+                    if row.source_type == "TASKS"
+                    else {}
+                )
+                captured = ErpSyncCapturedSource(
+                    source_type=str(row.source_type),
+                    manifest_id=str(row.id),
+                    source_fingerprint=str(row.source_fingerprint),
+                    row_count=int(row.row_count),
+                    project_counts=project_counts,
+                    payload=payload,
+                )
+                result = self.validate_plausibility(
+                    captured,
+                    active_task_targets=(
+                        len(project_counts)
+                        if row.source_type == "TASKS"
+                        else 0
+                    ),
+                    active_task_projects=(
+                        tuple(project_counts)
+                        if row.source_type == "TASKS"
+                        else None
+                    ),
+                )
+                scopes: list[str] = []
+                if any(
+                    not item.startswith("erp_sync_project_ratio_too_low:")
+                    for item in result.diagnostics
+                ):
+                    scopes.append("GLOBAL")
+                scopes.extend(
+                    scope
+                    for scope in result.rejected_projects
+                    if scope not in scopes
+                )
+                for scope in scopes:
+                    allowed_scopes.append(
+                        {
+                            "manifest_id": str(row.id),
+                            "source_type": str(row.source_type),
+                            "threshold_scope": str(scope),
+                        }
+                    )
+                sources.append(
+                    {
+                        "manifest_id": str(row.id),
+                        "source_type": str(row.source_type),
+                        "source_fingerprint": str(row.source_fingerprint),
+                        "row_count": int(row.row_count),
+                        "state": str(row.state),
+                        "diagnostics": list(result.diagnostics),
+                        "rejected_projects": list(result.rejected_projects),
+                    }
+                )
+            return {
+                "attempt_id": attempt_id,
+                "status": attempt.status,
+                "phase": attempt.phase,
+                "sources": sources,
+                "allowed_exception_scopes": allowed_scopes,
+            }
+
     def advance_approved_baselines_in_session(
         self,
         session: Session,
