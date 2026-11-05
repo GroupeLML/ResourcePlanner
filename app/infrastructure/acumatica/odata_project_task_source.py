@@ -29,6 +29,10 @@ logger = logging.getLogger(__name__)
 _INT32_MIN: Final = -(2**31)
 _INT32_MAX: Final = 2**31 - 1
 _WORKFORCE_ACCOUNT_GROUP: Final = "DEPMO"
+_TARGETED_ORDER_BY: Final = "TaskID asc, CostCode asc, InventoryID asc"
+_PORTFOLIO_ORDER_BY: Final = (
+    "ProjetID asc, TaskID asc, CostCode asc, InventoryID asc"
+)
 
 
 class ODataProjectTaskFeedError(ValueError):
@@ -60,6 +64,46 @@ class ODataProjectTaskRecord:
     budget_actual_cad: Decimal | None
     cost_code: str | None = None
     inventory_id: str | None = None
+
+
+_PhysicalRowKey = tuple[int, int, str, str]
+
+
+def _physical_row_key(row: ODataProjectTaskRecord) -> _PhysicalRowKey:
+    """Stable physical DEPMO row identity; excludes mutable financial values."""
+    return (
+        int(row.project_erp_id),
+        int(row.task_id),
+        str(row.cost_code or "").strip(),
+        str(row.inventory_id or "").strip(),
+    )
+
+
+@dataclass(slots=True)
+class _PaginationProgress:
+    seen_rows: set[_PhysicalRowKey] = field(default_factory=set)
+    seen_pages: set[tuple[_PhysicalRowKey, ...]] = field(default_factory=set)
+    previous_last: _PhysicalRowKey | None = None
+
+    def validate(self, page: Sequence[ODataProjectTaskRecord]) -> str | None:
+        keys = tuple(_physical_row_key(row) for row in page)
+        if not keys:
+            return None
+        if keys in self.seen_pages:
+            return "pagination_non_progressive"
+        if any(keys[index] > keys[index + 1] for index in range(len(keys) - 1)):
+            return "pagination_non_progressive"
+        if len(set(keys)) != len(keys):
+            return "pagination_overlap"
+        if self.previous_last is not None and keys[0] <= self.previous_last:
+            return "pagination_overlap"
+        if any(key in self.seen_rows for key in keys):
+            return "pagination_overlap"
+
+        self.seen_pages.add(keys)
+        self.seen_rows.update(keys)
+        self.previous_last = keys[-1]
+        return None
 
 
 def _required_text(
@@ -308,7 +352,7 @@ class ODataProjectTaskSourceSettings:
             "workforce_account_group": _WORKFORCE_ACCOUNT_GROUP,
             "pagination": {
                 "mode": "top_skip",
-                "orderby": "TaskID asc",
+                "orderby": _TARGETED_ORDER_BY,
                 "page_size": self.page_size,
             },
             "runtime_wired": True,
@@ -502,8 +546,7 @@ class ODataProjectTaskSource:
             else None
         )
         raw_rows: list[ODataProjectTaskRecord] = []
-        seen_page_task_ids: set[tuple[int, ...]] = set()
-        previous_last_task_id: int | None = None
+        pagination = _PaginationProgress()
         skip = 0
         try:
             with httpx.Client(
@@ -521,7 +564,7 @@ class ODataProjectTaskSource:
                                 f"ProjetID eq {project_erp_id} "
                                 "and AccountGroup eq 'DEPMO'"
                             ),
-                            "$orderby": "TaskID asc",
+                            "$orderby": _TARGETED_ORDER_BY,
                             "$top": str(self._settings.page_size),
                             "$skip": str(skip),
                         },
@@ -549,22 +592,7 @@ class ODataProjectTaskSource:
                             ),
                         ) from exc
 
-                    task_ids = tuple(row.task_id for row in page)
-                    if any(
-                        task_ids[index] > task_ids[index + 1]
-                        for index in range(len(task_ids) - 1)
-                    ):
-                        reason = "pagination_non_progressive"
-                    elif task_ids and task_ids in seen_page_task_ids:
-                        reason = "pagination_non_progressive"
-                    elif (
-                        task_ids
-                        and previous_last_task_id is not None
-                        and task_ids[0] <= previous_last_task_id
-                    ):
-                        reason = "pagination_overlap"
-                    else:
-                        reason = None
+                    reason = pagination.validate(page)
                     if reason is not None:
                         self._log_failure(
                             failure_kind="invalid_payload",
@@ -582,9 +610,6 @@ class ODataProjectTaskSource:
                                 reason=reason,
                             ),
                         )
-                    if task_ids:
-                        seen_page_task_ids.add(task_ids)
-                        previous_last_task_id = task_ids[-1]
                     raw_rows.extend(page)
                     if len(page) < self._settings.page_size:
                         break
@@ -687,8 +712,7 @@ class ODataProjectTaskSource:
             else None
         )
         raw_rows: list[ODataProjectTaskRecord] = []
-        seen_page_task_ids: set[tuple[int, ...]] = set()
-        previous_last_task_id: int | None = None
+        pagination = _PaginationProgress()
         skip = 0
         page_count = 0
         started_at = perf_counter()
@@ -705,7 +729,7 @@ class ODataProjectTaskSource:
                         headers=headers,
                         params={
                             "$filter": "AccountGroup eq 'DEPMO'",
-                            "$orderby": "TaskID asc",
+                            "$orderby": _PORTFOLIO_ORDER_BY,
                             "$top": str(self._settings.page_size),
                             "$skip": str(skip),
                         },
@@ -766,9 +790,6 @@ class ODataProjectTaskSource:
                                 reason=reason,
                             ),
                         )
-                    if task_ids:
-                        seen_page_task_ids.add(task_ids)
-                        previous_last_task_id = task_ids[-1]
                     page_count += 1
                     raw_rows.extend(page)
                     if len(page) < self._settings.page_size:
@@ -864,7 +885,7 @@ class ODataProjectTaskSource:
             "feed_path": self._settings.feed_path,
             "filter": "AccountGroup eq 'DEPMO'",
             "pagination_mode": "top_skip",
-            "orderby": "TaskID asc",
+            "orderby": _PORTFOLIO_ORDER_BY,
             "page_size": int(self._settings.page_size),
             "pages": page_count,
             "rows": len(raw_rows),
