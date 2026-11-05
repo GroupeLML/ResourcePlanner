@@ -22,8 +22,6 @@ import {
 
 import "./erp-sync-operations.css";
 
-const TERMINAL = new Set(["SUCCEEDED", "SUCCEEDED_WITH_ERRORS", "FAILED", "INTERRUPTED"]);
-
 const ERROR_MESSAGES: Record<string, string> = {
   erp_sync_recovery_required: "Une récupération ERP est requise avant de lancer de nouveaux travaux.",
   erp_sync_run_active: "Une autre tentative ERP est déjà active.",
@@ -165,11 +163,7 @@ export default function ErpSyncOperationsPage() {
     ?? null
   );
   const newWorkBlocked = operations?.recovery_state.state === "REQUIRED";
-  const currentActive = Boolean(
-    operations?.current_attempt_id
-    && operations?.last_attempt
-    && !TERMINAL.has(operations.last_attempt.status),
-  );
+  const currentActive = Boolean(operations?.current_attempt_id);
 
   const projectProblems = useMemo(
     () => operations?.projects.filter((project) => (
