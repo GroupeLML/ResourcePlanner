@@ -323,6 +323,8 @@ class ErpSyncOperationsService:
             and not current_occurrence_exists
         ) or data.current_daily_occurrence_status == "MISSED":
             scheduler_status = "MISSED"
+        elif data.current_daily_occurrence_status == "DISABLED":
+            scheduler_status = "BLOCKED"
         elif last_attempt is not None and last_attempt.status in {"FAILED", "INTERRUPTED"}:
             scheduler_status = "FAILED"
         elif (
@@ -371,8 +373,10 @@ class ErpSyncOperationsService:
             compatibility=compatibility,
             readiness_blockers=tuple(blockers),
             safe_to_operate=(
-                not has_required_recovery
+                automatic_available
+                and not has_required_recovery
+                and not has_quarantine
                 and compatibility_status != "INCOMPATIBLE"
-                and data.evidence.status != "UNAVAILABLE"
+                and data.evidence.status not in {"UNAVAILABLE", "PRESSURE"}
             ),
         )
