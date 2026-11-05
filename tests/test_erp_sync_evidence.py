@@ -4,6 +4,7 @@ from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import json
 import unittest
 from types import SimpleNamespace
 from uuid import uuid4
@@ -38,6 +39,7 @@ from app.infrastructure.sql import (
     ErpSyncEvidenceReservation,
     ErpSyncMutationEvidence,
     ErpSyncPlausibilityException,
+    ErpSyncPlausibilityReviewDecision,
     ErpSyncBaselineApprovalAudit,
     ErpSyncProjectQuality,
     ErpSyncRecoveryState,
@@ -2526,6 +2528,361 @@ class ErpSyncEvidenceTests(unittest.TestCase):
                 )
             )
         self.assertEqual(len(attempts), 1)
+
+    def test_declined_plausibility_review_terminalizes_attempt_and_retry_rereads_corrected_source(self) -> None:
+        control, _baseline_occurrence, baseline_attempt = self._attempt(
+            "decline-review-baseline"
+        )
+        project_baseline = self.service.capture_source(
+            attempt_id=baseline_attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "records": [
+                    {
+                        "external_id": str(7300 + index),
+                        "number": f"DECLINE-B-{index}",
+                        "name": f"Baseline {index}",
+                        "status": "Actif",
+                    }
+                    for index in range(20)
+                ]
+            },
+            row_count=20,
+        )
+        baseline_task_snapshot = TaskCatalogProjectSnapshot(
+            project_number="P-DECLINE",
+            source_rows=20,
+            rejected_rows=0,
+            items=(snapshot("P-DECLINE", task_id="97201").items[0],),
+        )
+        task_baseline = self.service.capture_source(
+            attempt_id=baseline_attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "portfolio": TaskCatalogPortfolioSnapshot(
+                    source_rows=20,
+                    source_pages=1,
+                    snapshots=(baseline_task_snapshot,),
+                )
+            },
+            row_count=20,
+            project_counts={"P-DECLINE": 20},
+        )
+        for captured in (project_baseline, task_baseline):
+            self.service.approve_baseline(
+                manifest_id=captured.manifest_id,
+                actor_name="admin",
+                reason="Reference population for decline/retry",
+            )
+        self.assertTrue(
+            control.finish(
+                attempt_id=baseline_attempt.id,
+                generation=baseline_attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.finalize_attempt(
+            attempt_id=baseline_attempt.id,
+            successful=False,
+        )
+
+        projects = ProjectSource((project("P-DECLINE", external_id="7201"),))
+        tasks = PortfolioTaskSource(
+            {"P-DECLINE": snapshot("P-DECLINE", task_id="97211")}
+        )
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="operator",
+            idempotency_key="decline-review",
+            settings=self.control_settings,
+        )
+        attempt = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="operator",
+            settings=self.control_settings,
+        )
+        self.assertIsNotNone(attempt)
+        orchestrator._execute_attempt(attempt.id, attempt.generation)
+        paused = control.get_attempt(attempt.id)
+        self.assertEqual(paused.status, "PENDING")
+        self.assertEqual(paused.phase, "PLAUSIBILITY_REVIEW_REQUIRED")
+        self.assertEqual(projects.calls, 1)
+        self.assertEqual(tasks.calls, 1)
+
+        old_sources = {
+            row["source_type"]: row
+            for row in self.service.list_attempt_sources(attempt_id=attempt.id)
+            if row["proof_type"] == "SOURCE"
+        }
+        old_project_exception = self.service.approve_plausibility_exception(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            source_fingerprint=str(
+                old_sources["PROJECTS"]["source_fingerprint"]
+            ),
+            threshold_scope="GLOBAL",
+            actor_name="admin",
+            reason="Old reviewed project source only",
+        )
+        self.assertIsNotNone(old_project_exception)
+
+        # Upstream is corrected before the operator abandons the sealed review.
+        projects.rows = tuple(
+            [project("P-DECLINE", external_id="7201")]
+            + [
+                ExternalProjectRecord(
+                    external_id=str(7400 + index),
+                    number=f"P-DECLINE-CLOSED-{index}",
+                    name=f"Closed {index}",
+                    status="Terminé",
+                )
+                for index in range(19)
+            ]
+        )
+        tasks.snapshots["P-DECLINE"] = TaskCatalogProjectSnapshot(
+            project_number="P-DECLINE",
+            source_rows=20,
+            rejected_rows=0,
+            items=(snapshot("P-DECLINE", task_id="97221").items[0],),
+        )
+
+        declined = orchestrator.decline_plausibility_review(
+            attempt_id=attempt.id,
+            actor_name="review-admin",
+            reason="Upstream source corrected; abandon obsolete sealed review",
+        )
+        self.assertEqual(declined["attempt_id"], attempt.id)
+        self.assertEqual(declined["review_decision"], "DECLINED")
+        terminal = control.get_attempt(attempt.id)
+        self.assertEqual(terminal.status, "FAILED")
+        self.assertEqual(terminal.phase, "FAILED")
+        self.assertEqual(
+            terminal.error_code,
+            "erp_sync_plausibility_review_declined",
+        )
+        self.assertEqual(projects.calls, 1)
+        self.assertEqual(tasks.calls, 1)
+
+        # Repeating the same decline is idempotent: one terminal transition and
+        # one immutable audit row.
+        replay_decline = orchestrator.decline_plausibility_review(
+            attempt_id=attempt.id,
+            actor_name="review-admin",
+            reason="Upstream source corrected; abandon obsolete sealed review",
+        )
+        self.assertEqual(replay_decline["attempt_id"], attempt.id)
+        with self.factory() as session:
+            decisions = tuple(
+                session.scalars(
+                    select(ErpSyncPlausibilityReviewDecision).where(
+                        ErpSyncPlausibilityReviewDecision.attempt_id
+                        == attempt.id
+                    )
+                )
+            )
+        self.assertEqual(len(decisions), 1)
+        decision = decisions[0]
+        self.assertEqual(decision.decision, "DECLINED")
+        self.assertEqual(decision.actor_name, "review-admin")
+        self.assertIn("Upstream source corrected", decision.reason)
+        identities = json.loads(decision.source_identity_json)
+        self.assertEqual(
+            {row["manifest_id"] for row in identities},
+            {
+                str(old_sources["PROJECTS"]["manifest_id"]),
+                str(old_sources["TASKS"]["manifest_id"]),
+            },
+        )
+        self.assertTrue(
+            all("source_fingerprint" in row for row in identities)
+        )
+
+        # Stale approval/continuation cannot reopen the terminal attempt.
+        with self.assertRaises(Exception) as stale_approval:
+            self.service.approve_plausibility_exception(
+                attempt_id=attempt.id,
+                source_type="TASKS",
+                source_fingerprint=str(
+                    old_sources["TASKS"]["source_fingerprint"]
+                ),
+                threshold_scope="GLOBAL",
+                actor_name="admin",
+                reason="Too late",
+            )
+        self.assertEqual(
+            getattr(stale_approval.exception, "code", None),
+            "erp_sync_plausibility_review_not_pending",
+        )
+        with self.assertRaises(Exception) as stale_continue:
+            orchestrator.continue_plausibility_review(
+                attempt_id=attempt.id,
+                actor_name="admin",
+            )
+        self.assertEqual(
+            getattr(stale_continue.exception, "code", None),
+            "erp_sync_plausibility_review_not_pending",
+        )
+        self.assertEqual(projects.calls, 1)
+        self.assertEqual(tasks.calls, 1)
+
+        with patch.object(orchestrator, "_submit") as submit:
+            retry_payload = orchestrator.retry(
+                occurrence_id=occurrence.id,
+                actor_name="operator",
+                idempotency_key="decline-review-fresh-retry",
+            )
+        retry_attempt = control.get_attempt(str(retry_payload["run_id"]))
+        self.assertNotEqual(retry_attempt.id, attempt.id)
+        self.assertGreater(retry_attempt.generation, attempt.generation)
+        submit.assert_called_once_with(
+            retry_attempt.id,
+            retry_attempt.generation,
+        )
+        with self.factory() as session:
+            inherited = tuple(
+                session.scalars(
+                    select(ErpSyncPlausibilityException).where(
+                        ErpSyncPlausibilityException.attempt_id
+                        == retry_attempt.id
+                    )
+                )
+            )
+        self.assertEqual(inherited, ())
+
+        orchestrator._execute_attempt(
+            retry_attempt.id,
+            retry_attempt.generation,
+        )
+        completed = control.get_attempt(retry_attempt.id)
+        self.assertEqual(completed.status, "SUCCEEDED")
+        self.assertEqual(projects.calls, 2)
+        self.assertEqual(tasks.calls, 2)
+        new_sources = {
+            row["source_type"]: row
+            for row in self.service.list_attempt_sources(
+                attempt_id=retry_attempt.id
+            )
+            if row["proof_type"] == "SOURCE"
+        }
+        self.assertNotEqual(
+            new_sources["PROJECTS"]["source_fingerprint"],
+            old_sources["PROJECTS"]["source_fingerprint"],
+        )
+        self.assertNotEqual(
+            new_sources["TASKS"]["source_fingerprint"],
+            old_sources["TASKS"]["source_fingerprint"],
+        )
+        orchestrator.shutdown()
+
+    def test_terminal_run_now_replay_bypasses_required_recovery_but_new_work_does_not(self) -> None:
+        projects = ProjectSource((project("REPLAY", external_id="7501"),))
+        tasks = PortfolioTaskSource(
+            {"REPLAY": snapshot("REPLAY", task_id="97301")}
+        )
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        control = SqlErpSyncControlRepository(self.factory)
+        with patch.object(orchestrator, "_submit") as initial_submit:
+            first = orchestrator.run_now(
+                intent="PROJECTS_AND_ACTIVE_TASKS",
+                actor_name="operator",
+                idempotency_key="terminal-recovery-replay",
+            )
+        initial_submit.assert_called_once()
+        attempt = control.get_attempt(str(first["run_id"]))
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                error_code="injected_terminal_failure",
+                settings=self.control_settings,
+            )
+        )
+        self.service.mark_recovery_required(
+            attempt_id=attempt.id,
+            reason_code="injected_required_recovery",
+        )
+
+        with patch.object(orchestrator, "_submit") as replay_submit:
+            replay = orchestrator.run_now(
+                intent="PROJECTS_AND_ACTIVE_TASKS",
+                actor_name="operator",
+                idempotency_key="terminal-recovery-replay",
+            )
+        replay_submit.assert_not_called()
+        self.assertEqual(replay["run_id"], attempt.id)
+        self.assertEqual(replay["status"], "FAILED")
+        self.assertEqual(projects.calls, 0)
+        self.assertEqual(tasks.calls, 0)
+
+        with self.assertRaises(Exception) as distinct:
+            orchestrator.run_now(
+                intent="PROJECTS_AND_ACTIVE_TASKS",
+                actor_name="operator",
+                idempotency_key="new-command-under-recovery",
+            )
+        self.assertEqual(
+            getattr(distinct.exception, "code", None),
+            "erp_sync_recovery_required",
+        )
+        with self.assertRaises(Exception) as retry_blocked:
+            orchestrator.retry(
+                occurrence_id=attempt.occurrence_id,
+                actor_name="operator",
+                idempotency_key="new-retry-under-recovery",
+            )
+        self.assertEqual(
+            getattr(retry_blocked.exception, "code", None),
+            "erp_sync_recovery_required",
+        )
+
+        restarted = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        with patch.object(restarted, "_submit") as restarted_submit:
+            durable_replay = restarted.run_now(
+                intent="PROJECTS_AND_ACTIVE_TASKS",
+                actor_name="operator",
+                idempotency_key="terminal-recovery-replay",
+            )
+        restarted_submit.assert_not_called()
+        self.assertEqual(durable_replay["run_id"], attempt.id)
+        with self.factory() as session:
+            attempts = tuple(
+                session.scalars(
+                    select(ErpSyncAttempt).where(
+                        ErpSyncAttempt.occurrence_id == attempt.occurrence_id
+                    )
+                )
+            )
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(projects.calls, 0)
+        self.assertEqual(tasks.calls, 0)
+        orchestrator.shutdown()
+        restarted.shutdown()
 
     def test_task_project_mutation_unit_identity_accepts_uuid_scope_and_remains_unique(self) -> None:
         control, _occurrence, attempt = self._attempt("task-project-unit-identity")
