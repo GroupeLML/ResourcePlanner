@@ -322,7 +322,10 @@ def build_integration_router(
             )
         evidence_budget_bytes = (
             erp_sync_evidence_service.settings.evidence_budget_bytes
-            if erp_sync_evidence_service is not None
+            if (
+                erp_sync_evidence_service is not None
+                and erp_sync_evidence_service.storage_available
+            )
             else None
         )
         try:
