@@ -204,6 +204,75 @@ class ErpSyncEvidenceApiTests(unittest.TestCase):
             "Administrateur de test explicite",
         )
 
+    def test_phase2_read_projections_are_safe_for_sync_operator(self) -> None:
+        app = self._app(SYNC_ONLY)
+        attempt_id, _manifest_id = self._sealed_manifest(app)
+        factory = app.state.erp_sync_orchestrator._session_factory
+        control = SqlErpSyncControlRepository(factory)
+        attempt = control.get_attempt(attempt_id)
+        self.assertTrue(
+            control.pause_for_review(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                settings=self.settings,
+            )
+        )
+
+        with TestClient(app) as client:
+            baselines = client.get(
+                "/api/v1/integrations/acumatica/erp-sync/baselines"
+            )
+            review = client.get(
+                f"/api/v1/integrations/acumatica/erp-sync/runs/{attempt_id}/plausibility-review"
+            )
+
+        self.assertEqual(baselines.status_code, 200, baselines.text)
+        self.assertTrue(baselines.json()["available"])
+        self.assertIsNone(baselines.json()["sources"]["PROJECTS"])
+        self.assertIsNone(baselines.json()["sources"]["TASKS"])
+
+        self.assertEqual(review.status_code, 200, review.text)
+        payload = review.json()
+        self.assertEqual(payload["attempt_id"], attempt_id)
+        self.assertEqual(payload["phase"], "PLAUSIBILITY_REVIEW_REQUIRED")
+        self.assertEqual(payload["allowed_exception_scopes"], [])
+        self.assertEqual(payload["sources"][0]["source_type"], "PROJECTS")
+        self.assertIn(
+            "erp_sync_baseline_required",
+            payload["sources"][0]["diagnostics"],
+        )
+        self.assertNotIn("PRIVATE-SOURCE-MARKER", review.text)
+
+    def test_sensitive_payload_cannot_supply_authoritative_actor(self) -> None:
+        app = self._app(TEST_ADMIN_AUTH_RESOLVER)
+        attempt_id, manifest_id = self._sealed_manifest(app)
+        factory = app.state.erp_sync_orchestrator._session_factory
+        control = SqlErpSyncControlRepository(factory)
+        attempt = control.get_attempt(attempt_id)
+        self.assertTrue(
+            control.pause_for_review(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                settings=self.settings,
+            )
+        )
+
+        with TestClient(app) as client:
+            baseline = client.post(
+                f"/api/v1/integrations/acumatica/erp-sync/evidence/{manifest_id}/approve-baseline",
+                json={"reason": "reviewed", "actor_name": "SYSTEM"},
+            )
+            decline = client.post(
+                f"/api/v1/integrations/acumatica/erp-sync/runs/{attempt_id}/plausibility-decline",
+                json={"reason": "reviewed", "actor": "scheduler"},
+            )
+
+        self.assertEqual(baseline.status_code, 422, baseline.text)
+        self.assertEqual(decline.status_code, 422, decline.text)
+        unchanged = control.get_attempt(attempt_id)
+        self.assertEqual(unchanged.status, "PENDING")
+        self.assertEqual(unchanged.phase, "PLAUSIBILITY_REVIEW_REQUIRED")
+
     def test_admin_can_approve_sealed_baseline_and_actor_is_authenticated_identity(self) -> None:
         app = self._app(TEST_ADMIN_AUTH_RESOLVER)
         _attempt_id, manifest_id = self._sealed_manifest(app)
