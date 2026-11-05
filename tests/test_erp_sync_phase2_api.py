@@ -6,6 +6,7 @@ from threading import Event
 from time import sleep
 import unittest
 
+from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
 from app.application import (
@@ -15,8 +16,10 @@ from app.application import (
     TaskCatalogProjectSnapshot,
 )
 from app.application.security import AuthPrincipal, PERMISSION_SYNC_PROJECTS
+from app.infrastructure.smtp import FernetSecretCipher
 from app.infrastructure.sql import Base, create_session_factory, create_sql_engine
 from app.server import create_api_app
+from app.server.erp_sync_evidence import ErpSyncEvidenceSettings
 from app.server.security import static_auth_resolver
 
 
@@ -173,6 +176,49 @@ class ErpSyncPhase2ApiTests(unittest.TestCase):
                 self._wait_terminal(client, first.json()["run_id"])
         finally:
             self.projects.release.set()
+
+    def test_recovery_required_blocks_explicit_retry(self) -> None:
+        projects = ToggleProjectSource()
+        projects.fail = True
+        recovery_app = create_api_app(
+            self.database_url,
+            auth_resolver=static_auth_resolver(SYNC_PRINCIPAL),
+            project_source=projects,
+            project_task_source=TaskSource(),
+            smtp_cipher=FernetSecretCipher(Fernet.generate_key().decode("ascii")),
+            erp_sync_evidence_settings=ErpSyncEvidenceSettings(
+                max_evidence_mib=16,
+                evidence_budget_mib=32,
+            ),
+        )
+        with TestClient(recovery_app) as client:
+            failed_launch = client.post(
+                "/api/v1/integrations/acumatica/erp-sync/run-now",
+                headers={"Idempotency-Key": "phase2-recovery-failure"},
+            )
+            self.assertEqual(failed_launch.status_code, 202, failed_launch.text)
+            failed = self._wait_terminal(
+                client,
+                failed_launch.json()["run_id"],
+            )
+            self.assertEqual(failed["status"], "FAILED")
+            recovery_app.state.erp_sync_evidence_service.mark_recovery_required(
+                attempt_id=failed_launch.json()["run_id"],
+                reason_code="phase2_recovery_required",
+            )
+
+            retry = client.post(
+                "/api/v1/integrations/acumatica/erp-sync/occurrences/"
+                + str(failed["occurrence_id"])
+                + "/retry",
+                headers={"Idempotency-Key": "phase2-recovery-retry"},
+            )
+
+        self.assertEqual(retry.status_code, 409, retry.text)
+        self.assertEqual(
+            retry.json()["error"]["code"],
+            "erp_sync_recovery_required",
+        )
 
     def test_retry_creates_new_attempt_and_retry_command_is_idempotent(self) -> None:
         self.projects.fail = True
