@@ -72,6 +72,11 @@ class ErpPlausibilityExceptionRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=1000)
 
 
+class ErpPlausibilityReviewDeclineRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=1, max_length=1000)
+
+
 class ErpCompensationPreviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     reason: str = Field(min_length=1, max_length=1000)
@@ -423,6 +428,24 @@ def build_integration_router(
             reason=payload.reason,
         )
         return {"exception_id": exception_id, "attempt_id": attempt_id}
+
+    @router.post("/erp-sync/runs/{attempt_id}/plausibility-decline")
+    def decline_erp_plausibility_review(
+        attempt_id: str,
+        payload: ErpPlausibilityReviewDeclineRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_sensitive_erp_authority(request)
+        if erp_sync_orchestrator is None:
+            raise ApplicationUnavailableError(
+                "L'orchestration ERP n'est pas configurée sur ce serveur.",
+                code="erp_sync_orchestrator_not_configured",
+            )
+        return erp_sync_orchestrator.decline_plausibility_review(
+            attempt_id=attempt_id,
+            actor_name=_actor_name(request),
+            reason=payload.reason,
+        )
 
     @router.post("/erp-sync/runs/{attempt_id}/plausibility-continue", status_code=202)
     def continue_erp_plausibility_review(
