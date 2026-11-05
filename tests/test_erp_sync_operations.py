@@ -378,6 +378,7 @@ class ErpSyncOperationsServiceTests(unittest.TestCase):
         self.assertIn("erp_sync_test_safety_not_ready", snapshot.readiness_blockers)
         self.assertIn("erp_sync_evidence_pressure", snapshot.readiness_blockers)
         self.assertEqual(snapshot.evidence.pressure_ratio, 0.9)
+        self.assertFalse(snapshot.safe_to_operate)
 
 
     def test_explicit_missed_occurrence_preserves_bounded_catchup_classification(self) -> None:
@@ -397,6 +398,22 @@ class ErpSyncOperationsServiceTests(unittest.TestCase):
             snapshot.next_scheduled_run,
             datetime(2026, 11, 6, 5, 0, tzinfo=timezone.utc),
         )
+
+    def test_safety_disabled_daily_occurrence_is_blocked_not_intentionally_disabled(self) -> None:
+        settings = ErpSyncSchedulerSettings(enabled=True)
+        now = datetime(2026, 11, 5, 15, tzinfo=timezone.utc)
+        snapshot = self.service(
+            settings,
+            data(
+                settings,
+                now=now,
+                current_daily_occurrence_status="DISABLED",
+            ),
+            available=True,
+        ).snapshot(evidence_budget_bytes=100)
+        self.assertTrue(snapshot.automation_enabled)
+        self.assertEqual(snapshot.scheduler_status, "BLOCKED")
+        self.assertNotEqual(snapshot.scheduler_status, "DISABLED")
 
     def test_incompatible_control_profile_is_visible_and_blocks_operation(self) -> None:
         settings = ErpSyncSchedulerSettings(enabled=True)
