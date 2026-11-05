@@ -102,6 +102,7 @@ ERP_SYNC_MAX_EVIDENCE_MIB_ENV = "RESOURCEPLANNER_ERP_SYNC_MAX_EVIDENCE_MIB"
 ERP_SYNC_EVIDENCE_BUDGET_MIB_ENV = "RESOURCEPLANNER_ERP_SYNC_EVIDENCE_BUDGET_MIB"
 ERP_SYNC_FAILURE_RETENTION_DAYS_ENV = "RESOURCEPLANNER_ERP_SYNC_FAILURE_RETENTION_DAYS"
 ERP_SYNC_HISTORY_DAYS_ENV = "RESOURCEPLANNER_ERP_SYNC_HISTORY_DAYS"
+ERP_SYNC_FRESHNESS_SLA_HOURS_ENV = "RESOURCEPLANNER_ERP_SYNC_FRESHNESS_SLA_HOURS"
 
 _ALLOWED_LOG_LEVELS = {"critical", "error", "warning", "info", "debug", "trace"}
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -497,6 +498,12 @@ class ServerSettings:
                     default=4,
                     label=ERP_SYNC_CATCHUP_HOURS_ENV,
                     maximum=12,
+                ),
+                freshness_sla_hours=_positive_int(
+                    values.get(ERP_SYNC_FRESHNESS_SLA_HOURS_ENV),
+                    default=30,
+                    label=ERP_SYNC_FRESHNESS_SLA_HOURS_ENV,
+                    maximum=168,
                 ),
                 source_identity=_erp_sync_source_identity(values),
             )
