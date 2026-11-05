@@ -22,6 +22,7 @@ from app.server.runtime import (
     ERP_SYNC_ENABLED_ENV,
     ERP_SYNC_EVIDENCE_BUDGET_MIB_ENV,
     ERP_SYNC_FAILURE_RETENTION_DAYS_ENV,
+    ERP_SYNC_FRESHNESS_SLA_HOURS_ENV,
     ERP_SYNC_HISTORY_DAYS_ENV,
     ERP_SYNC_MAX_EVIDENCE_MIB_ENV,
     ERP_SYNC_MIN_PROJECTS_ENV,
@@ -76,6 +77,7 @@ class ServerRuntimeTests(unittest.TestCase):
         self.assertEqual(settings.erp_sync.local_time.strftime("%H:%M"), "00:00")
         self.assertEqual(settings.erp_sync.timezone_name, "America/Toronto")
         self.assertEqual(settings.erp_sync.catchup_hours, 4)
+        self.assertEqual(settings.erp_sync.freshness_sla_hours, 30)
 
     def test_erp_sync_evidence_defaults_match_accepted_contract(self) -> None:
         settings = ServerSettings.from_environment(
@@ -155,6 +157,23 @@ class ServerRuntimeTests(unittest.TestCase):
                 }
             )
         self.assertIn("Fuseau IANA", str(caught.exception))
+
+    def test_erp_sync_freshness_sla_environment_is_parsed_and_bounded(self) -> None:
+        settings = ServerSettings.from_environment(
+            {
+                DATABASE_URL_ENV: "sqlite+pysqlite:///:memory:",
+                ERP_SYNC_FRESHNESS_SLA_HOURS_ENV: "48",
+            }
+        )
+        self.assertEqual(settings.erp_sync.freshness_sla_hours, 48)
+
+        with self.assertRaises(ServerConfigurationError):
+            ServerSettings.from_environment(
+                {
+                    DATABASE_URL_ENV: "sqlite+pysqlite:///:memory:",
+                    ERP_SYNC_FRESHNESS_SLA_HOURS_ENV: "169",
+                }
+            )
 
     def test_erp_scheduler_catchup_above_twelve_hours_fails_closed(self) -> None:
         with self.assertRaises(ServerConfigurationError):
