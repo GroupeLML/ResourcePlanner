@@ -125,6 +125,21 @@ class ErpSyncPhase2ApiTests(unittest.TestCase):
             sleep(0.02)
         raise AssertionError(f"ERP run {run_id} did not reach a terminal state")
 
+    def test_run_now_rejects_client_supplied_system_actor(self) -> None:
+        with TestClient(self.app) as client:
+            response = client.post(
+                "/api/v1/integrations/acumatica/erp-sync/run-now?actor=SYSTEM",
+                headers={"Idempotency-Key": "phase2-client-actor"},
+            )
+
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(
+            response.json()["error"]["code"],
+            "erp_sync_client_actor_forbidden",
+        )
+        self.assertEqual(self.projects.calls, 0)
+        self.assertEqual(self.tasks.calls, 0)
+
     def test_run_now_duplicate_and_terminal_replay_share_authoritative_attempt(self) -> None:
         with TestClient(self.app) as client:
             first = client.post(
