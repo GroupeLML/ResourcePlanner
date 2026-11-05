@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, Header, Request
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ..application import (
@@ -20,6 +21,10 @@ from ..application import (
     TaskCatalogProjectSyncMetadata,
     TaskCatalogProjectSyncResult,
 )
+from ..application.erp_sync_operations import (
+    ErpSyncOperationsService,
+    ErpSyncOperationsSnapshot,
+)
 from ..application.errors import (
     ApplicationAuthorizationError,
     ApplicationNotFoundError,
@@ -34,6 +39,9 @@ from ..infrastructure.sql import (
     SqlErpUserDirectoryRepository,
     SqlSessionFactory,
     SqlTaskCatalogRepository,
+)
+from ..infrastructure.sql.erp_sync_operations_repository import (
+    SqlErpSyncOperationsRepository,
 )
 from .erp_sync_orchestration import ErpSyncOrchestrator
 from .performance import performance_phase, record_external_call, record_external_items
@@ -304,6 +312,34 @@ def build_integration_router(
                     project_task_source
                 ),
             )
+
+    @router.get("/erp-sync/operations")
+    def erp_sync_operations() -> ErpSyncOperationsSnapshot:
+        if erp_sync_orchestrator is None:
+            raise ApplicationUnavailableError(
+                "L'observabilité ERP n'est pas configurée sur ce serveur.",
+                code="erp_sync_operations_not_configured",
+            )
+        evidence_budget_bytes = (
+            erp_sync_evidence_service.settings.evidence_budget_bytes
+            if erp_sync_evidence_service is not None
+            else None
+        )
+        try:
+            return ErpSyncOperationsService(
+                SqlErpSyncOperationsRepository(
+                    session_factory,
+                    timezone_name=erp_sync_orchestrator.settings.timezone_name,
+                ),
+                settings=erp_sync_orchestrator.settings,
+                automatic_safety=erp_sync_orchestrator.automatic_safety,
+                freshness_sla_hours=erp_sync_orchestrator.settings.freshness_sla_hours,
+            ).snapshot(evidence_budget_bytes=evidence_budget_bytes)
+        except (SQLAlchemyError, RuntimeError) as exc:
+            raise ApplicationUnavailableError(
+                "L'état opérationnel ERP durable est indisponible.",
+                code="erp_sync_operations_database_unavailable",
+            ) from exc
 
     @router.post("/erp-sync/projects/run-now", status_code=202)
     def run_projects_now(
