@@ -21,7 +21,7 @@ MIGRATIONS = ROOT / "migrations"
 VERSIONS = MIGRATIONS / "versions"
 BASELINE_FILE = VERSIONS / "0001_v2_production_baseline.py"
 BASELINE_REVISION = "v2_production_baseline"
-HEAD_REVISION = "0031_erp_sync_evidence_checkpoint"
+HEAD_REVISION = "0032_erp_sync_plausibility_review_decisions"
 
 
 def alembic_config(database_path: Path) -> Config:
@@ -100,6 +100,7 @@ class SqlMigrationTests(unittest.TestCase):
                 "0029_erp_sync_scheduler_control.py",
                 "0030_erp_sync_retry_identity.py",
                 "0031_erp_sync_evidence_checkpoint.py",
+                "0032_erp_sync_plausibility_review_decisions.py",
             ],
         )
 
@@ -118,6 +119,7 @@ class SqlMigrationTests(unittest.TestCase):
             [revision.revision for revision in script.walk_revisions()],
             [
                 HEAD_REVISION,
+                "0031_erp_sync_evidence_checkpoint",
                 "0030_erp_sync_retry_identity",
                 "0029_erp_sync_scheduler_control",
                 "0028_resource_residence_city",
@@ -207,6 +209,7 @@ class SqlMigrationTests(unittest.TestCase):
                     "erp_sync_baselines",
                     "erp_sync_baseline_approval_audit",
                     "erp_sync_plausibility_exceptions",
+                    "erp_sync_plausibility_review_decisions",
                     "erp_sync_mutation_evidence",
                     "erp_sync_project_quality",
                     "erp_sync_recovery_state",
