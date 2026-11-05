@@ -216,6 +216,10 @@ class ErpSyncEvidenceService:
         self.settings = settings
         self._control_settings = control_settings
 
+    @property
+    def storage_available(self) -> bool:
+        return self._cipher is not None
+
     def policy_fingerprint_in_session(
         self,
         session: Session,
