@@ -156,6 +156,10 @@ class ErpSyncOrchestrator:
         return self._settings
 
     @property
+    def automatic_safety(self) -> ErpSyncAutomaticSafetyCapability:
+        return self._automatic_safety
+
+    @property
     def automatic_activation_diagnostic(self) -> str | None:
         if not self._settings.enabled:
             return "erp_sync_scheduler_disabled"
