@@ -97,6 +97,17 @@ class ErpCompensationConfirmRequest(BaseModel):
 
 
 def _actor_name(request: Request) -> str:
+    forbidden_actor_inputs = {
+        key
+        for key in ("actor", "actor_name", "system_actor")
+        if key in request.query_params
+    }
+    if forbidden_actor_inputs:
+        raise ApplicationValidationError(
+            "L'acteur ERP est dérivé de l'identité authentifiée et ne peut pas être fourni par le client.",
+            code="erp_sync_client_actor_forbidden",
+            context={"fields": sorted(forbidden_actor_inputs)},
+        )
     principal = getattr(request.state, "auth_principal", None)
     if principal is None:
         return "api"
