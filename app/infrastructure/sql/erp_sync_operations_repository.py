@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import timezone
+
 from sqlalchemy import select
 from zoneinfo import ZoneInfo
 
@@ -36,6 +38,22 @@ from .erp_sync_evidence_models import (
 )
 
 
+def _duration_ms(started_at, finished_at) -> int | None:
+    if started_at is None or finished_at is None:
+        return None
+    start = (
+        started_at.replace(tzinfo=timezone.utc)
+        if started_at.tzinfo is None
+        else started_at.astimezone(timezone.utc)
+    )
+    finish = (
+        finished_at.replace(tzinfo=timezone.utc)
+        if finished_at.tzinfo is None
+        else finished_at.astimezone(timezone.utc)
+    )
+    return max(0, int((finish - start).total_seconds() * 1000))
+
+
 class SqlErpSyncOperationsRepository:
     def __init__(self, session_factory, *, timezone_name: str) -> None:
         self._session_factory = session_factory
@@ -57,7 +75,7 @@ class SqlErpSyncOperationsRepository:
             started_at=row.started_at,
             finished_at=row.finished_at,
             heartbeat_at=row.heartbeat_at,
-            duration_ms=task_run.duration_ms if task_run is not None else None,
+            duration_ms=_duration_ms(row.started_at, row.finished_at),
             projects_received=int(row.project_received),
             projects_created=int(row.projects_created),
             projects_updated=int(row.projects_updated),
