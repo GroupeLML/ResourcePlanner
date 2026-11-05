@@ -30,6 +30,7 @@ EXPECTED_TABLES = {
     "erp_sync_baselines",
     "erp_sync_baseline_approval_audit",
     "erp_sync_plausibility_exceptions",
+    "erp_sync_plausibility_review_decisions",
     "erp_sync_mutation_evidence",
     "erp_sync_project_quality",
     "erp_sync_recovery_state",
@@ -229,6 +230,10 @@ class SqlSchemaTests(unittest.TestCase):
         baselines = Base.metadata.tables["erp_sync_baselines"].c
         baseline_audit = Base.metadata.tables["erp_sync_baseline_approval_audit"].c
         plausibility = Base.metadata.tables["erp_sync_plausibility_exceptions"].c
+        review_decisions_table = Base.metadata.tables[
+            "erp_sync_plausibility_review_decisions"
+        ]
+        review_decisions = review_decisions_table.c
         mutation_evidence = Base.metadata.tables["erp_sync_mutation_evidence"].c
         project_quality = Base.metadata.tables["erp_sync_project_quality"].c
         recovery = Base.metadata.tables["erp_sync_recovery_state"].c
@@ -247,6 +252,27 @@ class SqlSchemaTests(unittest.TestCase):
         self.assertFalse(baseline_audit.baseline_id.nullable)
         self.assertFalse(baseline_audit.manifest_id.nullable)
         self.assertFalse(plausibility.attempt_id.nullable)
+        self.assertFalse(review_decisions.attempt_id.nullable)
+        self.assertFalse(review_decisions.decision.nullable)
+        self.assertFalse(review_decisions.actor_name.nullable)
+        self.assertFalse(review_decisions.reason.nullable)
+        self.assertFalse(review_decisions.source_identity_json.nullable)
+        self.assertFalse(review_decisions.decided_at.nullable)
+        self.assertEqual(
+            next(iter(review_decisions.attempt_id.foreign_keys)).target_fullname,
+            "erp_sync_attempts.id",
+        )
+        self.assertTrue(
+            any(
+                constraint.name
+                == "uq_erp_sync_plausibility_review_decision_attempt"
+                for constraint in review_decisions_table.constraints
+            )
+        )
+        self.assertIn(
+            "ix_erp_sync_plausibility_review_decision_attempt",
+            {index.name for index in review_decisions_table.indexes},
+        )
         self.assertFalse(mutation_evidence.attempt_id.nullable)
         self.assertFalse(mutation_evidence.generation.nullable)
         self.assertFalse(mutation_evidence.unit_type.nullable)
