@@ -313,7 +313,10 @@ class SqlErpSyncOperationsRepository:
                 last_complete_success=(
                     self._attempt(
                         last_success,
-                        task_runs.get(last_success.task_sync_run_id)
+                        session.get(
+                            AcumaticaProjectTaskSyncRun,
+                            last_success.task_sync_run_id,
+                        )
                         if last_success is not None and last_success.task_sync_run_id
                         else None,
                     )
