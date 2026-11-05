@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from sqlalchemy import select
+from zoneinfo import ZoneInfo
 
 from ...application.erp_sync_operations import (
     ErpSyncAttemptOperations,
@@ -30,9 +31,10 @@ from .erp_sync_evidence_models import (
 
 
 class SqlErpSyncOperationsRepository:
-    def __init__(self, session_factory) -> None:
+    def __init__(self, session_factory, *, timezone_name: str) -> None:
         self._session_factory = session_factory
         self._control = SqlErpSyncControlRepository(session_factory)
+        self._timezone = ZoneInfo(timezone_name)
 
     @staticmethod
     def _attempt(row: ErpSyncAttempt) -> ErpSyncAttemptOperations:
@@ -71,7 +73,7 @@ class SqlErpSyncOperationsRepository:
                 else None
             )
 
-            business_date = now.date()
+            business_date = now.astimezone(self._timezone).date()
             daily = session.scalar(
                 select(ErpSyncOccurrence)
                 .where(
