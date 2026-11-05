@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, true
 from zoneinfo import ZoneInfo
 
 from ...application.erp_sync_operations import (
@@ -321,7 +321,7 @@ class SqlErpSyncOperationsRepository:
             pinned = int(
                 session.scalar(
                     select(func.count(ErpSyncEvidenceManifest.id)).where(
-                        ErpSyncEvidenceManifest.pinned.is_(True)
+                        ErpSyncEvidenceManifest.pinned == true()
                     )
                 )
                 or 0
