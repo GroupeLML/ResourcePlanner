@@ -24,6 +24,21 @@ class ErpSyncAttemptOperations:
     started_at: datetime | None
     finished_at: datetime | None
     heartbeat_at: datetime | None
+    duration_ms: int | None
+    projects_received: int
+    projects_created: int
+    projects_updated: int
+    projects_unchanged: int
+    task_projects_total: int | None
+    task_projects_synchronized: int | None
+    task_projects_rejected: int | None
+    task_rows_received: int | None
+    tasks_received: int | None
+    tasks_created: int | None
+    tasks_updated: int | None
+    tasks_unchanged: int | None
+    tasks_deactivated: int | None
+    tasks_rejected: int | None
     error_code: str | None
     diagnostic: str | None
 
@@ -114,6 +129,7 @@ class ErpSyncOperationsSnapshot:
     current_generation: int
     current_owner_attempt_id: str | None
     lease_expires_at: datetime | None
+    owner_deadline_at: datetime | None
     recovery_state: ErpSyncRecoveryOperations
     freshness_status: str
     freshness_age_seconds: int | None
@@ -326,6 +342,7 @@ class ErpSyncOperationsService:
             current_generation=data.control_generation,
             current_owner_attempt_id=data.owner_attempt_id,
             lease_expires_at=data.lease_expires_at,
+            owner_deadline_at=data.owner_deadline_at,
             recovery_state=data.recovery,
             freshness_status=freshness_status,
             freshness_age_seconds=freshness_age_seconds,
