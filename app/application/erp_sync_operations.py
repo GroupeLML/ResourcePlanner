@@ -118,6 +118,7 @@ class ErpSyncOperationsSnapshot:
     scheduler_status: str
     scheduler_observation_status: str
     scheduler_observed_at: datetime | None
+    scheduler_observation_age_seconds: int | None
     next_scheduled_run: datetime | None
     business_timezone: str
     current_business_date: date
@@ -188,16 +189,36 @@ class ErpSyncOperationsService:
                 self._settings,
             )
 
+        current_now = _utc(now)
+        assert current_now is not None
+        observed_at: datetime | None = None
         if not self._settings.enabled:
             observation_status = "DISABLED"
-        elif data.owner_attempt_id and data.control_heartbeat_at:
-            observation_status = "ACTIVE"
+        elif data.owner_attempt_id:
+            heartbeat = _utc(data.control_heartbeat_at)
+            lease = _utc(data.lease_expires_at)
+            observed_at = heartbeat
+            heartbeat_stale = (
+                heartbeat is None
+                or (current_now - heartbeat).total_seconds()
+                > max(self._settings.heartbeat_seconds * 2, 1)
+            )
+            lease_stale = lease is None or lease <= current_now
+            observation_status = (
+                "STALE" if heartbeat_stale or lease_stale else "ACTIVE"
+            )
         elif data.last_evaluated_business_date == business_date:
             observation_status = "OBSERVED"
+            observed_at = _utc(data.control_updated_at)
         elif decision.state == "NOT_DUE":
             observation_status = "PENDING"
         else:
             observation_status = "MISSING"
+        observation_age_seconds = (
+            max(0, int((current_now - observed_at).total_seconds()))
+            if observed_at is not None
+            else None
+        )
 
         attempts = data.attempts
         last_attempt = attempts[0] if attempts else None
@@ -293,6 +314,8 @@ class ErpSyncOperationsService:
             scheduler_status = "DISABLED"
         elif has_required_recovery or has_quarantine:
             scheduler_status = "QUARANTINED"
+        elif observation_status == "STALE":
+            scheduler_status = "STALE"
         elif current is not None and current.status in {"RUNNING", "PENDING"}:
             scheduler_status = "IN_PROGRESS"
         elif observation_status == "MISSING" or (
@@ -324,13 +347,8 @@ class ErpSyncOperationsService:
             automatic_execution_available=automatic_available,
             scheduler_status=scheduler_status,
             scheduler_observation_status=observation_status,
-            scheduler_observed_at=(
-                data.control_heartbeat_at
-                if observation_status == "ACTIVE"
-                else data.control_updated_at
-                if observation_status == "OBSERVED"
-                else None
-            ),
+            scheduler_observed_at=observed_at,
+            scheduler_observation_age_seconds=observation_age_seconds,
             next_scheduled_run=next_run,
             business_timezone=self._settings.timezone_name,
             current_business_date=business_date,
