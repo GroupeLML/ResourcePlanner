@@ -129,6 +129,46 @@ class ErpSyncEvidenceApiTests(unittest.TestCase):
         self.assertEqual(evidence.status_code, 200, evidence.text)
         self.assertNotIn("PRIVATE-SOURCE-MARKER", evidence.text)
 
+    def test_sync_only_operator_cannot_approve_exception_or_compensate(self) -> None:
+        app = self._app(SYNC_ONLY)
+        attempt_id, manifest_id = self._sealed_manifest(app)
+        factory = app.state.erp_sync_orchestrator._session_factory
+        control = SqlErpSyncControlRepository(factory)
+        attempt = control.get_attempt(attempt_id)
+        self.assertTrue(
+            control.pause_for_review(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                settings=self.settings,
+            )
+        )
+
+        with TestClient(app) as client:
+            exception = client.post(
+                f"/api/v1/integrations/acumatica/erp-sync/runs/{attempt_id}/plausibility-exceptions",
+                json={
+                    "manifest_id": manifest_id,
+                    "threshold_scope": "GLOBAL",
+                    "reason": "unauthorized",
+                },
+            )
+            preview = client.post(
+                f"/api/v1/integrations/acumatica/erp-sync/runs/{attempt_id}/compensation/preview",
+                json={"reason": "unauthorized"},
+            )
+            confirm = client.post(
+                f"/api/v1/integrations/acumatica/erp-sync/runs/{attempt_id}/compensation/confirm",
+                headers={"Idempotency-Key": "unauthorized-confirm"},
+                json={"preview_hash": "0" * 64, "reason": "unauthorized"},
+            )
+
+        for response in (exception, preview, confirm):
+            self.assertEqual(response.status_code, 403, response.text)
+            self.assertEqual(
+                response.json()["error"]["code"],
+                "erp_sync_sensitive_authority_required",
+            )
+
     def test_plausibility_review_decline_requires_sensitive_authority_and_preserves_state(self) -> None:
         app = self._app(SYNC_ONLY)
         attempt_id, _manifest_id = self._sealed_manifest(app)
