@@ -91,6 +91,7 @@ from .erp_sync_evidence_models import (
     ErpSyncEvidenceReservation,
     ErpSyncMutationEvidence,
     ErpSyncPlausibilityException,
+    ErpSyncPlausibilityReviewDecision,
     ErpSyncProjectQuality,
     ErpSyncRecoveryState,
 )
@@ -298,6 +299,7 @@ __all__ = [
     "ErpSyncEvidenceReservation",
     "ErpSyncMutationEvidence",
     "ErpSyncPlausibilityException",
+    "ErpSyncPlausibilityReviewDecision",
     "ErpSyncProjectQuality",
     "ErpSyncRecoveryState",
     "ERP_ATTEMPT_FAILED",
