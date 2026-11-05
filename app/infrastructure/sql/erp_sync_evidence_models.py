@@ -233,6 +233,36 @@ class ErpSyncPlausibilityException(TimestampMixin, Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class ErpSyncPlausibilityReviewDecision(TimestampMixin, Base):
+    __tablename__ = "erp_sync_plausibility_review_decisions"
+    __table_args__ = (
+        CheckConstraint(
+            "decision IN ('DECLINED')",
+            name="erp_sync_plausibility_review_decision_values",
+        ),
+        UniqueConstraint(
+            "attempt_id",
+            name="uq_erp_sync_plausibility_review_decision_attempt",
+        ),
+        Index(
+            "ix_erp_sync_plausibility_review_decision_attempt",
+            "attempt_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    attempt_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("erp_sync_attempts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    actor_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    source_identity_json: Mapped[str] = mapped_column(Text, nullable=False)
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ErpSyncMutationEvidence(TimestampMixin, Base):
     __tablename__ = "erp_sync_mutation_evidence"
     __table_args__ = (
