@@ -2635,6 +2635,7 @@ test("ERP operations use authoritative RUN_NOW, review, RETRY and compensation c
     expect(response.ok(), await response.text()).toBeTruthy();
   };
 
+  try {
   // Decline makes the reviewed attempt terminal; RETRY then creates a fresh attempt.
   await setSourceMode("project_empty=true");
   const declineLaunchPromise = page.waitForResponse((response) => (
@@ -2750,12 +2751,14 @@ test("ERP operations use authoritative RUN_NOW, review, RETRY and compensation c
   };
   expect(compensatedState.recovery_state.state).toBe("RESOLVED");
 
-  await setSourceMode("project_mutation=false&project_empty=false&task_failure=false");
-  await page.reload();
-  await navigateMain(page, "Opérations ERP");
-  await expect(page.getByText("RESOLVED", { exact: true }).first()).toBeVisible();
-
-  await closeContext(context);
+    await setSourceMode("project_mutation=false&project_empty=false&task_failure=false");
+    await page.reload();
+    await navigateMain(page, "Opérations ERP");
+    await expect(page.getByText("RESOLVED", { exact: true }).first()).toBeVisible();
+  } finally {
+    await setSourceMode("project_mutation=false&project_empty=false&task_failure=false").catch(() => undefined);
+    await closeContext(context);
+  }
 });
 
 test("development identity selector switches real local users and technician schedules", async ({ browser }) => {
