@@ -556,7 +556,6 @@ class ErpSyncOperationsSqlAndApiTests(unittest.TestCase):
                 self._principal((PERMISSION_SYNC_PROJECTS,))
             ),
             erp_sync_settings=self.settings,
-            erp_sync_automatic_safety=TestErpSyncAutomaticSafetyCapability(),
         )
         with TestClient(app) as client:
             response = client.get(
@@ -571,6 +570,16 @@ class ErpSyncOperationsSqlAndApiTests(unittest.TestCase):
         self.assertFalse(payload["automation_enabled"])
         self.assertEqual(payload["scheduler_status"], "DISABLED")
         self.assertEqual(payload["freshness_status"], "UNKNOWN")
+        self.assertFalse(payload["automatic_execution_available"])
+        self.assertEqual(payload["evidence"]["status"], "UNAVAILABLE")
+        self.assertIn(
+            "erp_sync_643b_safety_capability_unavailable",
+            payload["readiness_blockers"],
+        )
+        self.assertIn(
+            "erp_sync_evidence_unavailable",
+            payload["readiness_blockers"],
+        )
         self.assertEqual(sensitive.status_code, 403, sensitive.text)
 
         denied_app = create_api_app(
@@ -579,7 +588,6 @@ class ErpSyncOperationsSqlAndApiTests(unittest.TestCase):
                 self._principal((PERMISSION_READ,))
             ),
             erp_sync_settings=self.settings,
-            erp_sync_automatic_safety=TestErpSyncAutomaticSafetyCapability(),
         )
         with TestClient(denied_app) as client:
             denied = client.get(
