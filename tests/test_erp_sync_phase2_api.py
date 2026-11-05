@@ -23,10 +23,17 @@ from app.server.security import static_auth_resolver
 class ToggleProjectSource:
     def __init__(self) -> None:
         self.fail = False
+        self.block = False
         self.calls = 0
+        self.started = Event()
+        self.release = Event()
 
     def list_projects(self):
         self.calls += 1
+        if self.block:
+            self.started.set()
+            if not self.release.wait(timeout=5):
+                raise RuntimeError("phase2 blocking source timeout")
         if self.fail:
             raise RuntimeError("controlled phase2 source failure")
         return (
@@ -37,19 +44,6 @@ class ToggleProjectSource:
                 status="Actif",
             ),
         )
-
-
-class BlockingProjectSource(ToggleProjectSource):
-    def __init__(self) -> None:
-        super().__init__()
-        self.started = Event()
-        self.release = Event()
-
-    def list_projects(self):
-        self.started.set()
-        if not self.release.wait(timeout=5):
-            raise RuntimeError("phase2 blocking source timeout")
-        return super().list_projects()
 
 
 class TaskSource:
@@ -155,15 +149,7 @@ class ErpSyncPhase2ApiTests(unittest.TestCase):
         self.assertEqual(self.tasks.calls, 1)
 
     def test_run_now_conflict_does_not_create_duplicate_attempt(self) -> None:
-        self.app.state.erp_sync_orchestrator.shutdown()
-        blocking = BlockingProjectSource()
-        self.projects = blocking
-        self.app = create_api_app(
-            self.database_url,
-            auth_resolver=static_auth_resolver(SYNC_PRINCIPAL),
-            project_source=blocking,
-            project_task_source=self.tasks,
-        )
+        self.projects.block = True
         try:
             with TestClient(self.app) as client:
                 first = client.post(
@@ -171,7 +157,7 @@ class ErpSyncPhase2ApiTests(unittest.TestCase):
                     headers={"Idempotency-Key": "phase2-active-owner"},
                 )
                 self.assertEqual(first.status_code, 202, first.text)
-                self.assertTrue(blocking.started.wait(timeout=2))
+                self.assertTrue(self.projects.started.wait(timeout=2))
 
                 conflict = client.post(
                     "/api/v1/integrations/acumatica/erp-sync/run-now",
@@ -183,10 +169,10 @@ class ErpSyncPhase2ApiTests(unittest.TestCase):
                     {"erp_sync_run_active", "erp_sync_command_not_claimed"},
                 )
 
-                blocking.release.set()
+                self.projects.release.set()
                 self._wait_terminal(client, first.json()["run_id"])
         finally:
-            blocking.release.set()
+            self.projects.release.set()
 
     def test_retry_creates_new_attempt_and_retry_command_is_idempotent(self) -> None:
         self.projects.fail = True
