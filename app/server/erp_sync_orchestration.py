@@ -340,14 +340,25 @@ class ErpSyncOrchestrator:
         actor_name: str,
         idempotency_key: str,
     ) -> dict[str, Any]:
-        self._assert_recovery_clear()
-        self._assert_sources(intent)
-        occurrence = self._control.accept_manual(
+        # Terminal replay is observation, not new work. Resolve the durable
+        # accepted command before applying recovery/source admission guards.
+        occurrence = self._control.find_manual_occurrence(
             intent=intent,
             actor_name=actor_name,
             idempotency_key=idempotency_key,
-            settings=self._settings,
         )
+        if occurrence is not None and occurrence.last_attempt_id:
+            return self._compat_payload(occurrence.last_attempt_id)
+
+        self._assert_recovery_clear()
+        self._assert_sources(intent)
+        if occurrence is None:
+            occurrence = self._control.accept_manual(
+                intent=intent,
+                actor_name=actor_name,
+                idempotency_key=idempotency_key,
+                settings=self._settings,
+            )
         if occurrence.last_attempt_id:
             return self._compat_payload(occurrence.last_attempt_id)
 
@@ -377,21 +388,27 @@ class ErpSyncOrchestrator:
         actor_name: str,
         idempotency_key: str,
     ) -> dict[str, Any]:
-        self._assert_recovery_clear()
+        command_identity = retry_command_identity(
+            actor_name=actor_name,
+            occurrence_id=occurrence_id,
+            idempotency_key=idempotency_key,
+        )
+        existing = self._control.find_attempt_by_command_identity(command_identity)
+        if existing is not None:
+            return self._compat_payload(existing.id)
+
         occurrence = self._control.get_occurrence(occurrence_id)
-        self._assert_sources(occurrence.intent)
         if occurrence.success_attempt_id:
             return self._compat_payload(occurrence.success_attempt_id)
+
+        self._assert_recovery_clear()
+        self._assert_sources(occurrence.intent)
         claim = self._control.claim_outcome(
             occurrence_id=occurrence.id,
             trigger="RETRY",
             actor_name=actor_name,
             settings=self._settings,
-            command_identity=retry_command_identity(
-                actor_name=actor_name,
-                occurrence_id=occurrence.id,
-                idempotency_key=idempotency_key,
-            ),
+            command_identity=command_identity,
         )
         attempt = claim.attempt
         if attempt is None:
@@ -411,6 +428,15 @@ class ErpSyncOrchestrator:
         actor_name: str,
     ) -> dict[str, Any]:
         self._assert_recovery_clear()
+        current = self._control.get_attempt(attempt_id)
+        if (
+            current.status != "PENDING"
+            or current.phase != "PLAUSIBILITY_REVIEW_REQUIRED"
+        ):
+            raise ApplicationConflictError(
+                "La tentative ERP n'attend pas une approbation de plausibilité.",
+                code="erp_sync_plausibility_review_not_pending",
+            )
         if self._evidence is None:
             raise ApplicationUnavailableError(
                 "Le stockage de preuve ERP n'est pas configuré.",
@@ -427,6 +453,33 @@ class ErpSyncOrchestrator:
         self._submit(attempt.id, int(attempt.generation))
         payload = self._compat_payload(attempt.id)
         payload["review_continued_by"] = actor_name
+        return payload
+
+    def decline_plausibility_review(
+        self,
+        *,
+        attempt_id: str,
+        actor_name: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        if self._evidence is None:
+            raise ApplicationUnavailableError(
+                "Le stockage de preuve ERP n'est pas configuré.",
+                code="erp_sync_evidence_capability_unavailable",
+            )
+        attempt = self._control.decline_review_attempt(
+            attempt_id=attempt_id,
+            actor_name=actor_name,
+            reason=reason,
+            settings=self._settings,
+        )
+        self._evidence.finalize_attempt(
+            attempt_id=attempt.id,
+            successful=False,
+        )
+        payload = self._compat_payload(attempt.id)
+        payload["review_decision"] = "DECLINED"
+        payload["review_decided_by"] = actor_name
         return payload
 
     def run_projects_only_compat(
