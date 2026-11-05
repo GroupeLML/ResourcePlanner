@@ -69,6 +69,13 @@ class SqlErpSyncOperationsRepository:
                     .limit(50)
                 )
             )
+            if (
+                control.owner_attempt_id
+                and all(row.id != control.owner_attempt_id for row in attempt_rows)
+            ):
+                owner = session.get(ErpSyncAttempt, control.owner_attempt_id)
+                if owner is not None:
+                    attempt_rows = (owner, *attempt_rows)
             attempts = tuple(self._attempt(row) for row in attempt_rows)
             task_run_by_attempt = {
                 row.id: row.task_sync_run_id
