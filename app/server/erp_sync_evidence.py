@@ -1581,16 +1581,17 @@ class ErpSyncEvidenceService:
                     ),
                 )
                 scopes: list[str] = []
-                if any(
-                    not item.startswith("erp_sync_project_ratio_too_low:")
-                    for item in result.diagnostics
-                ):
-                    scopes.append("GLOBAL")
-                scopes.extend(
-                    scope
-                    for scope in result.rejected_projects
-                    if scope not in scopes
-                )
+                if result.reviewable:
+                    if any(
+                        not item.startswith("erp_sync_project_ratio_too_low:")
+                        for item in result.diagnostics
+                    ):
+                        scopes.append("GLOBAL")
+                    scopes.extend(
+                        scope
+                        for scope in result.rejected_projects
+                        if scope not in scopes
+                    )
                 for scope in scopes:
                     allowed_scopes.append(
                         {
