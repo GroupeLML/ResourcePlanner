@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from zoneinfo import ZoneInfo
 
 from ...application.erp_sync_operations import (
@@ -153,9 +153,35 @@ class SqlErpSyncOperationsRepository:
                 )
                 for row in attempt_rows
             )
+            quality_rows = tuple(
+                session.scalars(
+                    select(ErpSyncProjectQuality).order_by(
+                        ErpSyncProjectQuality.project_number
+                    )
+                )
+            )
+            producer_ids = tuple(
+                dict.fromkeys(
+                    row.producer_attempt_id
+                    for row in quality_rows
+                    if row.producer_attempt_id
+                )
+            )
+            producer_attempts = {
+                row.id: row
+                for row in (
+                    session.scalars(
+                        select(ErpSyncAttempt).where(
+                            ErpSyncAttempt.id.in_(producer_ids)
+                        )
+                    )
+                    if producer_ids
+                    else ()
+                )
+            }
             task_run_by_attempt = {
-                row.id: row.task_sync_run_id
-                for row in session.scalars(select(ErpSyncAttempt))
+                attempt_id: row.task_sync_run_id
+                for attempt_id, row in producer_attempts.items()
                 if row.task_sync_run_id
             }
             task_run_ids = tuple(dict.fromkeys(task_run_by_attempt.values()))
@@ -191,8 +217,8 @@ class SqlErpSyncOperationsRepository:
             )
 
             generations = {
-                row.id: int(row.generation)
-                for row in session.scalars(select(ErpSyncAttempt))
+                attempt_id: int(row.generation)
+                for attempt_id, row in producer_attempts.items()
             }
             projects = tuple(
                 ErpSyncProjectOperations(
@@ -236,11 +262,7 @@ class SqlErpSyncOperationsRepository:
                         else None
                     ),
                 )
-                for row in session.scalars(
-                    select(ErpSyncProjectQuality).order_by(
-                        ErpSyncProjectQuality.project_number
-                    )
-                )
+                for row in quality_rows
             )
 
             recovery_row = session.scalar(
@@ -258,25 +280,75 @@ class SqlErpSyncOperationsRepository:
                 pinned=bool(recovery_row.pinned) if recovery_row is not None else False,
             )
 
-            manifests = tuple(session.scalars(select(ErpSyncEvidenceManifest)))
-            reservations = tuple(
-                session.scalars(select(ErpSyncEvidenceReservation))
+            manifests_total = int(
+                session.scalar(select(func.count(ErpSyncEvidenceManifest.id))) or 0
             )
-            active_reservations = tuple(
-                row for row in reservations if row.released_at is None
+            source_manifests = int(
+                session.scalar(
+                    select(func.count(ErpSyncEvidenceManifest.id)).where(
+                        ErpSyncEvidenceManifest.proof_type == EVIDENCE_PROOF_SOURCE
+                    )
+                )
+                or 0
             )
-            reserved_bytes = sum(int(row.reserved_bytes) for row in active_reservations)
-            used_bytes = sum(int(row.used_bytes) for row in active_reservations)
-            pinned = sum(1 for row in manifests if bool(row.pinned))
-            expired = sum(
-                1
-                for row in manifests
-                if row.state == EVIDENCE_STATE_EXPIRED
+            checkpoint_manifests = int(
+                session.scalar(
+                    select(func.count(ErpSyncEvidenceManifest.id)).where(
+                        ErpSyncEvidenceManifest.proof_type
+                        == EVIDENCE_PROOF_CHECKPOINT
+                    )
+                )
+                or 0
             )
-            ready = sum(
-                1
-                for row in manifests
-                if row.state in {EVIDENCE_STATE_READY, EVIDENCE_STATE_SEALED}
+            ready = int(
+                session.scalar(
+                    select(func.count(ErpSyncEvidenceManifest.id)).where(
+                        ErpSyncEvidenceManifest.state.in_(
+                            (EVIDENCE_STATE_READY, EVIDENCE_STATE_SEALED)
+                        )
+                    )
+                )
+                or 0
+            )
+            expired = int(
+                session.scalar(
+                    select(func.count(ErpSyncEvidenceManifest.id)).where(
+                        ErpSyncEvidenceManifest.state == EVIDENCE_STATE_EXPIRED
+                    )
+                )
+                or 0
+            )
+            pinned = int(
+                session.scalar(
+                    select(func.count(ErpSyncEvidenceManifest.id)).where(
+                        ErpSyncEvidenceManifest.pinned.is_(True)
+                    )
+                )
+                or 0
+            )
+            active_reservations = int(
+                session.scalar(
+                    select(func.count(ErpSyncEvidenceReservation.id)).where(
+                        ErpSyncEvidenceReservation.released_at.is_(None)
+                    )
+                )
+                or 0
+            )
+            reserved_bytes = int(
+                session.scalar(
+                    select(func.coalesce(func.sum(ErpSyncEvidenceReservation.reserved_bytes), 0)).where(
+                        ErpSyncEvidenceReservation.released_at.is_(None)
+                    )
+                )
+                or 0
+            )
+            used_bytes = int(
+                session.scalar(
+                    select(func.coalesce(func.sum(ErpSyncEvidenceReservation.used_bytes), 0)).where(
+                        ErpSyncEvidenceReservation.released_at.is_(None)
+                    )
+                )
+                or 0
             )
             pressure = (
                 reserved_bytes / evidence_budget_bytes
@@ -289,26 +361,20 @@ class SqlErpSyncOperationsRepository:
                 evidence_status = "PRESSURE"
             elif pinned:
                 evidence_status = "PINNED"
-            elif manifests:
+            elif manifests_total:
                 evidence_status = "AVAILABLE"
             else:
                 evidence_status = "EMPTY"
 
             evidence = ErpSyncEvidenceOperations(
                 status=evidence_status,
-                manifests_total=len(manifests),
-                source_manifests=sum(
-                    1 for row in manifests if row.proof_type == EVIDENCE_PROOF_SOURCE
-                ),
-                checkpoint_manifests=sum(
-                    1
-                    for row in manifests
-                    if row.proof_type == EVIDENCE_PROOF_CHECKPOINT
-                ),
+                manifests_total=manifests_total,
+                source_manifests=source_manifests,
+                checkpoint_manifests=checkpoint_manifests,
                 manifests_ready=ready,
                 manifests_expired=expired,
                 manifests_pinned=pinned,
-                active_reservations=len(active_reservations),
+                active_reservations=active_reservations,
                 reserved_bytes=reserved_bytes,
                 used_bytes=used_bytes,
                 budget_bytes=evidence_budget_bytes,
