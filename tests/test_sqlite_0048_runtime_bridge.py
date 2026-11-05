@@ -124,6 +124,7 @@ def _reshape_as_0048(path: Path) -> None:
             DROP TABLE IF EXISTS planning_work_queue_releases;
             DROP TABLE IF EXISTS request_completion_reductions;
             DROP TABLE IF EXISTS erp_sync_compensation_receipts;
+            DROP TABLE IF EXISTS erp_sync_plausibility_review_decisions;
             DROP TABLE IF EXISTS erp_sync_plausibility_exceptions;
             DROP TABLE IF EXISTS erp_sync_project_quality;
             DROP TABLE IF EXISTS erp_sync_recovery_state;
