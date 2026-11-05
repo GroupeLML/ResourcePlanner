@@ -262,6 +262,15 @@ class ErpSyncOperationsService:
             (row for row in attempts if row.id == data.owner_attempt_id),
             None,
         )
+        if current is None:
+            current = next(
+                (
+                    row
+                    for row in attempts
+                    if row.status in {"RUNNING", "PENDING"}
+                ),
+                None,
+            )
         if not self._settings.enabled:
             scheduler_status = "DISABLED"
         elif has_required_recovery or has_quarantine:
