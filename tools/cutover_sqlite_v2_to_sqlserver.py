@@ -76,6 +76,17 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
             "erp_sync_control",
             "erp_sync_occurrences",
             "erp_sync_attempts",
+    "erp_sync_evidence_manifests",
+    "erp_sync_evidence_chunks",
+    "erp_sync_evidence_reservations",
+    "erp_sync_baselines",
+    "erp_sync_baseline_approval_audit",
+    "erp_sync_plausibility_exceptions",
+    "erp_sync_plausibility_review_decisions",
+    "erp_sync_mutation_evidence",
+    "erp_sync_project_quality",
+    "erp_sync_recovery_state",
+    "erp_sync_compensation_receipts",
         },
         "missing_columns": {
             "auth_sessions": {
@@ -307,6 +318,39 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
     ),
     "erp_sync_attempts": _rebuild(
         "Table recréée seulement si vide; toute tentative durable bloque le cutover jusqu'à un transfert supporté."
+    ),
+    "erp_sync_evidence_manifests": _rebuild(
+        "Preuves source/checkpoint 643B; toute preuve durable bloque le cutover jusqu'à un transfert de recovery supporté."
+    ),
+    "erp_sync_evidence_chunks": _rebuild(
+        "Payloads chiffrés 643B; toute donnée durable bloque le cutover."
+    ),
+    "erp_sync_evidence_reservations": _rebuild(
+        "Comptabilité de stockage 643B liée aux tentatives; doit être vide au cutover."
+    ),
+    "erp_sync_baselines": _rebuild(
+        "Baselines de plausibilité approuvés 643B; leur perte silencieuse est interdite."
+    ),
+    "erp_sync_baseline_approval_audit": _rebuild(
+        "Historique d'approbation baseline 643B; sa perte silencieuse est interdite."
+    ),
+    "erp_sync_plausibility_exceptions": _rebuild(
+        "Exceptions de plausibilité auditées 643B; doivent être absentes au cutover."
+    ),
+    "erp_sync_plausibility_review_decisions": _rebuild(
+        "Décisions auditées de revue de plausibilité 643B; toute présence bloque le cutover jusqu'à un transfert supporté."
+    ),
+    "erp_sync_mutation_evidence": _rebuild(
+        "Before/after recovery 643B; toute preuve durable bloque le cutover."
+    ),
+    "erp_sync_project_quality": _rebuild(
+        "Qualité/provenance ERP 643B; toute projection durable bloque le cutover non supporté."
+    ),
+    "erp_sync_recovery_state": _rebuild(
+        "État de recovery 643B; REQUIRED/AVAILABLE ne peut jamais être abandonné au cutover."
+    ),
+    "erp_sync_compensation_receipts": _rebuild(
+        "Reçus idempotents de compensation 643B; leur présence bloque le cutover."
     ),
     "task_class_standards": _keep("Configuration locale des standards tâche → classe."),
 }
@@ -1208,42 +1252,55 @@ def _scheduler_state_anomalies(source_engine: Engine) -> list[dict[str, Any]]:
         "erp_sync_control",
         "erp_sync_occurrences",
         "erp_sync_attempts",
+        "erp_sync_evidence_manifests",
+        "erp_sync_evidence_chunks",
+        "erp_sync_evidence_reservations",
+        "erp_sync_baselines",
+        "erp_sync_baseline_approval_audit",
+        "erp_sync_plausibility_exceptions",
+        "erp_sync_plausibility_review_decisions",
+        "erp_sync_mutation_evidence",
+        "erp_sync_project_quality",
+        "erp_sync_recovery_state",
+        "erp_sync_compensation_receipts",
     }
     if not (detected & relevant):
         return []
 
     anomalies: list[dict[str, Any]] = []
     with source_engine.connect() as connection:
-        if "erp_sync_occurrences" in detected:
+        for table_name in (
+            "erp_sync_occurrences",
+            "erp_sync_attempts",
+            "erp_sync_evidence_manifests",
+            "erp_sync_evidence_chunks",
+            "erp_sync_evidence_reservations",
+            "erp_sync_baselines",
+            "erp_sync_baseline_approval_audit",
+            "erp_sync_plausibility_exceptions",
+            "erp_sync_plausibility_review_decisions",
+            "erp_sync_mutation_evidence",
+            "erp_sync_project_quality",
+            "erp_sync_recovery_state",
+            "erp_sync_compensation_receipts",
+        ):
+            if table_name not in detected:
+                continue
             count = int(
                 connection.exec_driver_sql(
-                    'SELECT COUNT(*) FROM "erp_sync_occurrences"'
+                    f'SELECT COUNT(*) FROM "{table_name}"'
                 ).scalar_one()
             )
             if count:
                 anomalies.append(
                     {
-                        "code": "erp_sync_occurrences_populated",
+                        "code": f"{table_name}_populated",
                         "severity": "BLOCKING",
-                        "table": "erp_sync_occurrences",
+                        "table": table_name,
                         "row_count": count,
                     }
                 )
-        if "erp_sync_attempts" in detected:
-            count = int(
-                connection.exec_driver_sql(
-                    'SELECT COUNT(*) FROM "erp_sync_attempts"'
-                ).scalar_one()
-            )
-            if count:
-                anomalies.append(
-                    {
-                        "code": "erp_sync_attempts_populated",
-                        "severity": "BLOCKING",
-                        "table": "erp_sync_attempts",
-                        "row_count": count,
-                    }
-                )
+
         if "erp_sync_control" in detected:
             rows = list(
                 connection.exec_driver_sql(

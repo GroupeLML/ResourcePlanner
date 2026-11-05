@@ -9,13 +9,20 @@ from threading import Event, Lock, Thread
 from time import perf_counter
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import null, select
 
 from ..application import (
+    ExternalProjectRecord,
     ProjectSourcePort,
     ProjectSyncService,
     ProjectTaskCatalogSourcePort,
+    TaskCatalogItem,
+    TaskCatalogPortfolioSnapshot,
+    TaskCatalogProjectSnapshot,
     TaskCatalogSyncService,
+)
+from .erp_sync_evidence import (
+    ErpSyncEvidenceService,
 )
 from ..application.erp_sync_scheduler import (
     ErpSyncAutomaticSafetyCapability,
@@ -38,6 +45,7 @@ from ..infrastructure.sql import (
     ERP_ATTEMPT_RUNNING,
     ERP_ATTEMPT_SUCCEEDED,
     ERP_ATTEMPT_SUCCEEDED_WITH_ERRORS,
+    ERP_ATTEMPT_TERMINAL,
     ERP_OCCURRENCE_DISABLED,
     ERP_OCCURRENCE_FAILED,
     ERP_OCCURRENCE_INTERRUPTED,
@@ -47,6 +55,9 @@ from ..infrastructure.sql import (
     ERP_OCCURRENCE_SUCCEEDED_WITH_ERRORS,
     GLOBAL_SYNC_RUN_KEY,
     Project,
+    ErpSyncProjectQuality,
+    TaskCatalogEntry,
+    TaskCatalogProjectSyncState,
     SqlPlannerQueryRepositoryWithLoadProfiles,
     SqlProjectSyncRepository,
     SqlSessionFactory,
@@ -114,6 +125,7 @@ class ErpSyncOrchestrator:
         project_task_source: ProjectTaskCatalogSourcePort | None,
         settings: ErpSyncSchedulerSettings,
         automatic_safety: ErpSyncAutomaticSafetyCapability | None = None,
+        evidence_service: ErpSyncEvidenceService | None = None,
         system_actor: str = "erp-scheduler",
     ) -> None:
         self._session_factory = session_factory
@@ -126,6 +138,7 @@ class ErpSyncOrchestrator:
             else UnavailableErpSyncAutomaticSafetyCapability()
         )
         self._system_actor = system_actor
+        self._evidence = evidence_service
         self._control = SqlErpSyncControlRepository(session_factory)
         self._executor = ThreadPoolExecutor(
             max_workers=1,
@@ -133,6 +146,10 @@ class ErpSyncOrchestrator:
         )
         self._launch_lock = Lock()
         self._closed = False
+
+    def _assert_recovery_clear(self) -> None:
+        if self._evidence is not None:
+            self._evidence.assert_no_required_recovery()
 
     @property
     def settings(self) -> ErpSyncSchedulerSettings:
@@ -156,7 +173,18 @@ class ErpSyncOrchestrator:
         self._control.ensure_control_row()
         # Protocol validation happens inside reconciliation before any owner,
         # attempt, or child state can be mutated.
-        reconciled = self._control.reconcile_expired_owner()
+        interrupted_attempts = self._control.reconcile_expired_owner_attempts()
+        reconciled = len(interrupted_attempts)
+        if self._evidence is not None:
+            for attempt_id in interrupted_attempts:
+                # Recovery classification is committed atomically by the
+                # control repository while interrupting the expired owner.
+                # Do not replay that decision here after compensation may have
+                # already resolved the current recovery state.
+                self._evidence.finalize_attempt(
+                    attempt_id=attempt_id,
+                    successful=False,
+                )
         # Configuration adoption is independent from automatic scheduling. This
         # permits a valid later-boundary restart/manual run while enabled=false.
         self._control.reconcile_configuration(self._settings)
@@ -196,6 +224,7 @@ class ErpSyncOrchestrator:
     def scheduler_tick(self) -> dict[str, Any] | None:
         if self._closed or not self._control.schema_available():
             return None
+        self._assert_recovery_clear()
 
         try:
             occurrence = self._control.record_daily_decision(
@@ -311,13 +340,25 @@ class ErpSyncOrchestrator:
         actor_name: str,
         idempotency_key: str,
     ) -> dict[str, Any]:
-        self._assert_sources(intent)
-        occurrence = self._control.accept_manual(
+        # Terminal replay is observation, not new work. Resolve the durable
+        # accepted command before applying recovery/source admission guards.
+        occurrence = self._control.find_manual_occurrence(
             intent=intent,
             actor_name=actor_name,
             idempotency_key=idempotency_key,
-            settings=self._settings,
         )
+        if occurrence is not None and occurrence.last_attempt_id:
+            return self._compat_payload(occurrence.last_attempt_id)
+
+        self._assert_recovery_clear()
+        self._assert_sources(intent)
+        if occurrence is None:
+            occurrence = self._control.accept_manual(
+                intent=intent,
+                actor_name=actor_name,
+                idempotency_key=idempotency_key,
+                settings=self._settings,
+            )
         if occurrence.last_attempt_id:
             return self._compat_payload(occurrence.last_attempt_id)
 
@@ -347,20 +388,27 @@ class ErpSyncOrchestrator:
         actor_name: str,
         idempotency_key: str,
     ) -> dict[str, Any]:
+        command_identity = retry_command_identity(
+            actor_name=actor_name,
+            occurrence_id=occurrence_id,
+            idempotency_key=idempotency_key,
+        )
+        existing = self._control.find_attempt_by_command_identity(command_identity)
+        if existing is not None:
+            return self._compat_payload(existing.id)
+
         occurrence = self._control.get_occurrence(occurrence_id)
-        self._assert_sources(occurrence.intent)
         if occurrence.success_attempt_id:
             return self._compat_payload(occurrence.success_attempt_id)
+
+        self._assert_recovery_clear()
+        self._assert_sources(occurrence.intent)
         claim = self._control.claim_outcome(
             occurrence_id=occurrence.id,
             trigger="RETRY",
             actor_name=actor_name,
             settings=self._settings,
-            command_identity=retry_command_identity(
-                actor_name=actor_name,
-                occurrence_id=occurrence.id,
-                idempotency_key=idempotency_key,
-            ),
+            command_identity=command_identity,
         )
         attempt = claim.attempt
         if attempt is None:
@@ -372,6 +420,67 @@ class ErpSyncOrchestrator:
         if claim.admitted:
             self._submit(attempt.id, int(attempt.generation))
         return accepted
+
+    def continue_plausibility_review(
+        self,
+        *,
+        attempt_id: str,
+        actor_name: str,
+    ) -> dict[str, Any]:
+        self._assert_recovery_clear()
+        current = self._control.get_attempt(attempt_id)
+        if (
+            current.status != "PENDING"
+            or current.phase != "PLAUSIBILITY_REVIEW_REQUIRED"
+        ):
+            raise ApplicationConflictError(
+                "La tentative ERP n'attend pas une approbation de plausibilité.",
+                code="erp_sync_plausibility_review_not_pending",
+            )
+        if self._evidence is None:
+            raise ApplicationUnavailableError(
+                "Le stockage de preuve ERP n'est pas configuré.",
+                code="erp_sync_evidence_capability_unavailable",
+            )
+        self._reload_reviewed_full_sources(
+            attempt_id=attempt_id,
+            mark_ready=False,
+        )
+        attempt = self._control.resume_review_attempt(
+            attempt_id=attempt_id,
+            settings=self._settings,
+        )
+        self._submit(attempt.id, int(attempt.generation))
+        payload = self._compat_payload(attempt.id)
+        payload["review_continued_by"] = actor_name
+        return payload
+
+    def decline_plausibility_review(
+        self,
+        *,
+        attempt_id: str,
+        actor_name: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        if self._evidence is None:
+            raise ApplicationUnavailableError(
+                "Le stockage de preuve ERP n'est pas configuré.",
+                code="erp_sync_evidence_capability_unavailable",
+            )
+        attempt = self._control.decline_review_attempt(
+            attempt_id=attempt_id,
+            actor_name=actor_name,
+            reason=reason,
+            settings=self._settings,
+        )
+        self._evidence.finalize_attempt(
+            attempt_id=attempt.id,
+            successful=False,
+        )
+        payload = self._compat_payload(attempt.id)
+        payload["review_decision"] = "DECLINED"
+        payload["review_decided_by"] = actor_name
+        return payload
 
     def run_projects_only_compat(
         self,
@@ -488,6 +597,7 @@ class ErpSyncOrchestrator:
         actor_name: str,
         idempotency_key: str,
     ) -> dict[str, Any]:
+        self._assert_recovery_clear()
         self._assert_sources(f"TARGETED_PROJECT_TASKS:{project_id}")
         occurrence = self._control.accept_manual(
             intent=f"TARGETED_PROJECT_TASKS:{project_id}",
@@ -669,6 +779,935 @@ class ErpSyncOrchestrator:
             ):
                 return
 
+    @staticmethod
+    def _project_owned_state(row: Project | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        return {
+            "erp_external_id": row.erp_external_id,
+            "number": row.number,
+            "name": row.name,
+            "client": row.client,
+            "project_manager_external_id": row.project_manager_external_id,
+            "project_manager_name": row.project_manager_name,
+            "status": row.status,
+        }
+
+    @staticmethod
+    def _task_owned_state(row: TaskCatalogEntry | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        return {
+            "project_number": row.project_number,
+            "task_code": row.task_code,
+            "label": row.label,
+            "status": row.status,
+            "active": bool(row.active),
+            "billing_rule": row.billing_rule,
+            "allocation_rule": row.allocation_rule,
+            "completion_percent": row.completion_percent,
+            "erp_created_at": row.erp_created_at,
+            "branch": row.branch,
+            "approver_name": row.approver_name,
+            "cv_enabled": row.cv_enabled,
+            "time_entry_enabled": row.time_entry_enabled,
+            "expenses_enabled": row.expenses_enabled,
+            "erp_task_id": row.erp_task_id,
+            "account_group": row.account_group,
+            "cost_code": row.cost_code,
+            "inventory_id": row.inventory_id,
+            "budget_amount_cad": row.budget_amount_cad,
+            "budget_actual_cad": row.budget_actual_cad,
+            "budget_diagnostic": row.budget_diagnostic,
+            "workforce_eligible": row.workforce_eligible,
+            "resource_class_code": row.resource_class_code,
+            "average_hourly_cost_cad": row.average_hourly_cost_cad,
+            "budget_hours": row.budget_hours,
+            "workforce_diagnostics": row.workforce_diagnostics,
+            "erp_budget_last_success_at": row.erp_budget_last_success_at,
+            # Local principal/preference authority participates in compensation
+            # CAS but is never restored from ERP evidence.
+            "operational_responsible_contact_id": row.operational_responsible_contact_id,
+            "coordinator_contact_id": row.coordinator_contact_id,
+            "preferred_resource_id": row.preferred_resource_id,
+            "preferred_resource_version": int(row.preferred_resource_version or 1),
+        }
+
+    @staticmethod
+    def _task_sync_state(row: TaskCatalogProjectSyncState | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        return {
+            "project_number": row.project_number,
+            "last_attempt_at": row.last_attempt_at,
+            "last_success_at": row.last_success_at,
+            "source_rows": row.source_rows,
+            "task_count": row.task_count,
+            "rejected_rows": row.rejected_rows,
+            "duration_ms": row.duration_ms,
+            "last_error_code": row.last_error_code,
+        }
+
+    @staticmethod
+    def _project_source_active(status: object) -> bool:
+        return str(status or "active").strip().casefold() not in {
+            "annulé",
+            "annule",
+            "fermé",
+            "ferme",
+            "terminé",
+            "termine",
+            "closed",
+            "cancelled",
+        }
+
+    def _validate_project_capture(self, projects: tuple[Any, ...]) -> None:
+        external_ids: set[str] = set()
+        numbers: set[str] = set()
+        for row in projects:
+            external_id = str(row.external_id or "").strip()
+            number = str(row.number or "").strip()
+            name = str(row.name or "").strip()
+            status = str(row.status or "").strip()
+            if not external_id or not number or not name or not status:
+                raise ApplicationValidationError(
+                    "La source projets ERP est structurellement incomplète.",
+                    code="erp_sync_project_source_structural_invalid",
+                )
+            if external_id in external_ids or number in numbers:
+                raise ApplicationValidationError(
+                    "La source projets ERP contient une identité dupliquée.",
+                    code="erp_sync_project_source_duplicate_identity",
+                )
+            external_ids.add(external_id)
+            numbers.add(number)
+
+        with self._session_factory() as session:
+            for row in projects:
+                external_id = str(row.external_id).strip()
+                number = str(row.number).strip()
+                by_external = session.scalar(
+                    select(Project).where(Project.erp_external_id == external_id)
+                )
+                by_number = session.scalar(
+                    select(Project).where(Project.number == number)
+                )
+                if (
+                    by_external is not None
+                    and by_number is not None
+                    and by_external.id != by_number.id
+                ):
+                    raise ApplicationValidationError(
+                        "La source projets ERP entre en conflit avec les identités locales.",
+                        code="erp_sync_project_source_identity_conflict",
+                    )
+                if (
+                    by_number is not None
+                    and str(by_number.erp_external_id or "").strip()
+                    and str(by_number.erp_external_id).strip() != external_id
+                ):
+                    raise ApplicationValidationError(
+                        "La source projets ERP tente de relier un numéro à un autre identifiant.",
+                        code="erp_sync_project_source_identity_conflict",
+                    )
+
+    @staticmethod
+    def _validate_task_capture(
+        portfolio: Any,
+        *,
+        expected_projects: tuple[str, ...],
+    ) -> None:
+        snapshots: dict[str, Any] = {}
+        expected = set(expected_projects)
+        seen_task_ids: dict[str, str] = {}
+        for snapshot in tuple(portfolio.snapshots):
+            number = str(snapshot.project_number or "").strip()
+            if not number or number in snapshots or number not in expected:
+                raise ApplicationValidationError(
+                    "La source tâches ERP contient une partition projet invalide.",
+                    code="erp_sync_task_source_structural_invalid",
+                )
+            snapshots[number] = snapshot
+            if snapshot.hard_error_code:
+                if tuple(snapshot.items):
+                    raise ApplicationValidationError(
+                        "Un snapshot projet en erreur structurelle contient des tâches applicables.",
+                        code="erp_sync_task_source_structural_invalid",
+                    )
+                continue
+            if int(snapshot.source_rows) < len(tuple(snapshot.items)):
+                raise ApplicationValidationError(
+                    "Les compteurs de la source tâches ERP sont incohérents.",
+                    code="erp_sync_task_source_counter_invalid",
+                )
+            for item in tuple(snapshot.items):
+                if str(item.project_number or "").strip() != number:
+                    raise ApplicationValidationError(
+                        "Une tâche ERP appartient à un projet incohérent.",
+                        code="erp_sync_task_source_project_mismatch",
+                    )
+                task_id = str(item.erp_task_id or "").strip()
+                task_code = str(item.code or "").strip()
+                account_group = str(item.account_group or "").strip().upper()
+                if not task_id or not task_code:
+                    raise ApplicationValidationError(
+                        "Une tâche ERP ne possède pas son identité obligatoire.",
+                        code="erp_sync_task_source_identity_missing",
+                    )
+                if account_group != "DEPMO":
+                    raise ApplicationValidationError(
+                        "La source globale contient une ligne hors filtre financier DEPMO.",
+                        code="erp_sync_task_source_financial_scope_invalid",
+                    )
+                previous_project = seen_task_ids.get(task_id)
+                if previous_project is not None and previous_project != number:
+                    raise ApplicationValidationError(
+                        "Une identité TaskID ERP appartient à plusieurs projets.",
+                        code="erp_sync_task_source_identity_conflict",
+                    )
+                seen_task_ids[task_id] = number
+        missing = expected.difference(snapshots)
+        if missing:
+            raise ApplicationValidationError(
+                "La source tâches ERP ne contient pas toutes les partitions attendues.",
+                code="erp_sync_task_source_partition_missing",
+            )
+
+    def _capture_full_sources(
+        self,
+        *,
+        attempt_id: str,
+        generation: int,
+        project_source: ProjectSourcePort | None = None,
+        project_task_source: ProjectTaskCatalogSourcePort | None = None,
+    ) -> tuple[tuple[Any, ...], Any, tuple[str, ...]]:
+        if self._evidence is None:
+            raise ApplicationUnavailableError(
+                "Les garde-fous de preuve ERP 643B ne sont pas configurés.",
+                code="erp_sync_evidence_capability_unavailable",
+            )
+        source = project_source or self._project_source
+        task_source = project_task_source or self._project_task_source
+        if source is None or task_source is None:
+            raise ApplicationUnavailableError(
+                "Les sources ERP requises ne sont pas configurées.",
+                code="erp_sync_source_not_configured",
+            )
+        try:
+            projects = tuple(source.list_projects())
+        except Exception as exc:
+            if isinstance(exc, ApplicationError):
+                raise
+            raise ApplicationUnavailableError(
+                "La lecture des projets Acumatica a échoué.",
+                code="acumatica_project_read_failed",
+            ) from exc
+        self._validate_project_capture(projects)
+
+        # Freeze the post-project active target set before mutation. Absence from
+        # RP_Projects does not deactivate an existing local project, while an
+        # explicitly received ERP status does override the target status.
+        with self._session_factory() as session:
+            local_projects = tuple(session.scalars(select(Project)))
+        target_by_number: dict[str, tuple[str, str]] = {
+            str(row.number): (str(row.erp_external_id).strip(), str(row.number))
+            for row in local_projects
+            if self._project_source_active(row.status)
+            and str(row.erp_external_id or "").strip()
+        }
+        for row in projects:
+            number = str(row.number).strip()
+            external_id = str(row.external_id).strip()
+            if self._project_source_active(row.status):
+                target_by_number[number] = (external_id, number)
+            else:
+                target_by_number.pop(number, None)
+        project_targets = tuple(
+            target_by_number[number] for number in sorted(target_by_number)
+        )
+        fetch_many = getattr(task_source, "fetch_project_snapshots", None)
+        if not callable(fetch_many):
+            raise ApplicationUnavailableError(
+                "La lecture globale batch RP_ProjectTasks n'est pas disponible.",
+                code="acumatica_project_task_batch_required",
+            )
+        try:
+            portfolio = fetch_many(project_targets=project_targets)
+        except Exception as exc:
+            if isinstance(exc, ApplicationError):
+                raise
+            raise ApplicationUnavailableError(
+                "La lecture globale des tâches projet Acumatica a échoué.",
+                code="acumatica_project_task_read_failed",
+            ) from exc
+        expected_numbers = tuple(number for _external_id, number in project_targets)
+        self._validate_task_capture(
+            portfolio,
+            expected_projects=expected_numbers,
+        )
+
+        profile = self._evidence.bind_attempt_policy(
+            attempt_id=attempt_id,
+            generation=generation,
+        )
+        project_page_evidence = getattr(source, "last_read_evidence", lambda: None)()
+        projects_evidence = self._evidence.capture_source(
+            attempt_id=attempt_id,
+            source_type="PROJECTS",
+            profile_fingerprint=profile,
+            payload={
+                "records": projects,
+                "page_evidence": project_page_evidence
+                or {
+                    "complete": True,
+                    "pages": 1,
+                    "rows": len(projects),
+                    "adapter": "injected",
+                },
+            },
+            row_count=len(projects),
+            generation=generation,
+        )
+        task_counts = {
+            str(snapshot.project_number): int(snapshot.source_rows)
+            for snapshot in portfolio.snapshots
+        }
+        task_page_evidence = getattr(task_source, "last_read_evidence", lambda: None)()
+        tasks_evidence = self._evidence.capture_source(
+            attempt_id=attempt_id,
+            source_type="TASKS",
+            profile_fingerprint=profile,
+            payload={
+                "portfolio": portfolio,
+                "page_evidence": task_page_evidence
+                or {
+                    "complete": True,
+                    "pages": int(portfolio.source_pages),
+                    "rows": int(portfolio.source_rows),
+                    "adapter": "injected",
+                },
+            },
+            row_count=int(portfolio.source_rows),
+            project_counts=task_counts,
+            generation=generation,
+        )
+        projects_plausibility = self._evidence.validate_plausibility(
+            projects_evidence,
+        )
+        tasks_plausibility = self._evidence.validate_plausibility(
+            tasks_evidence,
+            active_task_targets=len(project_targets),
+            active_task_projects=expected_numbers,
+        )
+        if not projects_plausibility.accepted or not tasks_plausibility.accepted:
+            safe_codes = tuple(
+                dict.fromkeys(
+                    item.split(":", 1)[0]
+                    for item in (
+                        *projects_plausibility.diagnostics,
+                        *tasks_plausibility.diagnostics,
+                    )
+                )
+            )
+            if projects_plausibility.reviewable or tasks_plausibility.reviewable:
+                raise ApplicationConflictError(
+                    "La source ERP attend une approbation de plausibilité.",
+                    code="erp_sync_plausibility_review_required",
+                    context={"diagnostics": list(safe_codes)},
+                )
+            raise ApplicationValidationError(
+                "La source ERP requiert une baseline approuvée.",
+                code="erp_sync_source_plausibility_failed",
+                context={"diagnostics": list(safe_codes)},
+            )
+        rejected_projects = tuple(
+            dict.fromkeys(
+                (
+                    *projects_plausibility.rejected_projects,
+                    *tasks_plausibility.rejected_projects,
+                )
+            )
+        )
+        self._evidence.mark_sources_ready(
+            attempt_id=attempt_id,
+            generation=generation,
+        )
+        return projects, portfolio, rejected_projects
+
+    def _reload_reviewed_full_sources(
+        self,
+        *,
+        attempt_id: str,
+        generation: int | None = None,
+        mark_ready: bool = True,
+    ) -> tuple[tuple[Any, ...], TaskCatalogPortfolioSnapshot, tuple[str, ...]]:
+        if self._evidence is None:
+            raise ApplicationUnavailableError(
+                "Les garde-fous de preuve ERP 643B ne sont pas configurés.",
+                code="erp_sync_evidence_capability_unavailable",
+            )
+        projects_capture = self._evidence.load_captured_source(
+            attempt_id=attempt_id,
+            source_type="PROJECTS",
+        )
+        tasks_capture = self._evidence.load_captured_source(
+            attempt_id=attempt_id,
+            source_type="TASKS",
+        )
+        project_payload = projects_capture.payload
+        task_payload = tasks_capture.payload
+        if not isinstance(project_payload, dict) or not isinstance(task_payload, dict):
+            raise ApplicationConflictError(
+                "La preuve source ERP scellée est invalide.",
+                code="erp_sync_evidence_payload_invalid",
+            )
+        project_records = project_payload.get("records") or ()
+        projects = tuple(
+            ExternalProjectRecord(**dict(row))
+            for row in project_records
+            if isinstance(row, dict)
+        )
+        portfolio_data = task_payload.get("portfolio")
+        if not isinstance(portfolio_data, dict):
+            raise ApplicationConflictError(
+                "La preuve tâches ERP scellée est invalide.",
+                code="erp_sync_evidence_payload_invalid",
+            )
+        snapshots: list[TaskCatalogProjectSnapshot] = []
+        for raw_snapshot in portfolio_data.get("snapshots") or ():
+            if not isinstance(raw_snapshot, dict):
+                continue
+            items = tuple(
+                TaskCatalogItem(**dict(item))
+                for item in raw_snapshot.get("items") or ()
+                if isinstance(item, dict)
+            )
+            snapshots.append(
+                TaskCatalogProjectSnapshot(
+                    project_number=str(raw_snapshot.get("project_number") or ""),
+                    source_rows=int(raw_snapshot.get("source_rows") or 0),
+                    rejected_rows=int(raw_snapshot.get("rejected_rows") or 0),
+                    items=items,
+                    hard_error_code=raw_snapshot.get("hard_error_code"),
+                    hard_error_reason=raw_snapshot.get("hard_error_reason"),
+                )
+            )
+        portfolio = TaskCatalogPortfolioSnapshot(
+            source_rows=int(portfolio_data.get("source_rows") or 0),
+            source_pages=int(portfolio_data.get("source_pages") or 0),
+            snapshots=tuple(snapshots),
+        )
+        # The frozen TASKS portfolio is the authoritative target set. It
+        # includes pre-existing active ERP-backed local projects that may be
+        # absent from the incoming projects feed.
+        active_targets = len(portfolio.snapshots)
+        projects_plausibility = self._evidence.validate_plausibility(
+            projects_capture,
+        )
+        active_project_numbers = tuple(
+            str(snapshot.project_number)
+            for snapshot in portfolio.snapshots
+        )
+        tasks_plausibility = self._evidence.validate_plausibility(
+            tasks_capture,
+            active_task_targets=active_targets,
+            active_task_projects=active_project_numbers,
+        )
+        if not projects_plausibility.accepted or not tasks_plausibility.accepted:
+            raise ApplicationConflictError(
+                "L'approbation de plausibilité ne couvre pas la source scellée.",
+                code="erp_sync_plausibility_review_incomplete",
+            )
+        rejected_projects = tuple(
+            dict.fromkeys(
+                (
+                    *projects_plausibility.rejected_projects,
+                    *tasks_plausibility.rejected_projects,
+                )
+            )
+        )
+        if mark_ready:
+            if generation is None:
+                raise ApplicationConflictError(
+                    "La génération ERP est requise pour publier les sources READY.",
+                    code="erp_sync_generation_required",
+                )
+            self._evidence.mark_sources_ready(
+                attempt_id=attempt_id,
+                generation=generation,
+            )
+        return projects, portfolio, rejected_projects
+
+    def _validate_full_publication_in_session(
+        self,
+        session,
+        *,
+        attempt_id: str,
+        generation: int,
+        require_complete_success: bool,
+    ) -> None:
+        from ..infrastructure.sql import (
+            EVIDENCE_PROOF_SOURCE,
+            EVIDENCE_SOURCE_PROJECTS,
+            EVIDENCE_SOURCE_TASKS,
+            EVIDENCE_STATE_READY,
+            ErpSyncAttempt,
+            ErpSyncEvidenceManifest,
+            ErpSyncMutationEvidence,
+            ErpSyncProjectQuality,
+        )
+
+        SqlErpSyncControlRepository.guard_session(
+            session,
+            attempt_id=attempt_id,
+            generation=generation,
+            settings=self._settings,
+        )
+        attempt = session.get(ErpSyncAttempt, attempt_id)
+        if attempt is None:
+            raise ApplicationConflictError(
+                "La tentative ERP est introuvable avant publication.",
+                code="erp_sync_global_validation_failed",
+            )
+        run_id = str(attempt.task_sync_run_id or "").strip()
+        if not run_id:
+            raise ApplicationConflictError(
+                "Le run tâches durable manque avant publication.",
+                code="erp_sync_global_validation_failed",
+            )
+        if self._evidence is not None:
+            self._evidence.assert_attempt_policy_in_session(
+                session,
+                attempt_id=attempt_id,
+            )
+            self._evidence.assert_full_sources_ready_in_session(
+                session,
+                attempt_id=attempt_id,
+            )
+
+        run = session.get(AcumaticaProjectTaskSyncRun, run_id)
+        if run is None:
+            raise ApplicationConflictError(
+                "Le run tâches durable est introuvable.",
+                code="erp_sync_global_validation_failed",
+            )
+        results = tuple(
+            session.scalars(
+                select(AcumaticaProjectTaskSyncProjectResult).where(
+                    AcumaticaProjectTaskSyncProjectResult.run_id == run_id
+                )
+            )
+        )
+        if len(results) != int(run.projects_total):
+            raise ApplicationConflictError(
+                "Le nombre de reçus projet ne correspond pas aux cibles attendues.",
+                code="erp_sync_global_validation_failed",
+            )
+
+        seen_project_ids: set[str] = set()
+        seen_project_numbers: set[str] = set()
+        result_by_number: dict[str, Any] = {}
+        for result in results:
+            project_id = str(result.project_id or "").strip()
+            project_number = str(result.project_number or "").strip()
+            if (
+                not project_id
+                or not project_number
+                or project_id in seen_project_ids
+                or project_number in seen_project_numbers
+            ):
+                raise ApplicationConflictError(
+                    "Les reçus projet contiennent une identité manquante ou dupliquée.",
+                    code="erp_sync_global_validation_failed",
+                )
+            seen_project_ids.add(project_id)
+            seen_project_numbers.add(project_number)
+            result_by_number[project_number] = result
+            project = session.get(Project, project_id)
+            if project is None or str(project.number) != project_number:
+                raise ApplicationConflictError(
+                    "Un reçu projet ne correspond pas à son propriétaire durable.",
+                    code="erp_sync_global_validation_failed",
+                )
+
+        if int(run.projects_processed) != len(results):
+            raise ApplicationConflictError(
+                "Le compteur de projets traités ne correspond pas aux reçus.",
+                code="erp_sync_global_validation_failed",
+            )
+        status_total = (
+            int(run.projects_synchronized)
+            + int(run.projects_ignored)
+            + int(run.projects_rejected)
+        )
+        if status_total != len(results):
+            raise ApplicationConflictError(
+                "Les compteurs de statuts projet ne correspondent pas aux reçus.",
+                code="erp_sync_global_validation_failed",
+            )
+        synchronized = tuple(row for row in results if row.status == "synchronized")
+        if int(run.projects_synchronized) != len(synchronized):
+            raise ApplicationConflictError(
+                "Le compteur des projets synchronisés est incohérent.",
+                code="erp_sync_global_validation_failed",
+            )
+
+        counter_pairs = (
+            ("source_rows_received", "source_rows"),
+            ("source_rows_rejected", "source_rows_rejected"),
+            ("tasks_received", "tasks_received"),
+            ("tasks_created", "created"),
+            ("tasks_updated", "updated"),
+            ("tasks_unchanged", "unchanged"),
+            ("tasks_deactivated", "deactivated"),
+            ("tasks_rejected", "rejected"),
+        )
+        for run_field, result_field in counter_pairs:
+            expected = sum(
+                int(getattr(row, result_field) or 0)
+                for row in synchronized
+            )
+            if int(getattr(run, run_field) or 0) != expected:
+                raise ApplicationConflictError(
+                    "Un compteur global ne correspond pas aux reçus projet.",
+                    code="erp_sync_global_validation_failed",
+                    context={"counter": run_field},
+                )
+
+        if self._evidence is None:
+            raise ApplicationConflictError(
+                "Les preuves ERP 643B sont requises avant publication.",
+                code="erp_sync_global_validation_failed",
+            )
+
+        if (
+            str(run.parent_attempt_id or "") != attempt_id
+            or int(run.erp_generation or -1) != int(generation)
+        ):
+            raise ApplicationConflictError(
+                "Le run tâches n'appartient pas à la tentative/génération publiée.",
+                code="erp_sync_global_validation_failed",
+            )
+
+        project_manifest = session.scalar(
+            select(ErpSyncEvidenceManifest).where(
+                ErpSyncEvidenceManifest.attempt_id == attempt_id,
+                ErpSyncEvidenceManifest.source_type == EVIDENCE_SOURCE_PROJECTS,
+                ErpSyncEvidenceManifest.proof_type == EVIDENCE_PROOF_SOURCE,
+                ErpSyncEvidenceManifest.state == EVIDENCE_STATE_READY,
+            )
+        )
+        if project_manifest is None:
+            raise ApplicationConflictError(
+                "La preuve source projets READY est absente.",
+                code="erp_sync_global_validation_failed",
+            )
+        project_payload = self._evidence.load_source_in_session(
+            session,
+            manifest_id=str(project_manifest.id),
+        )
+        project_records = (
+            project_payload.get("records")
+            if isinstance(project_payload, dict)
+            else None
+        )
+        if not isinstance(project_records, list):
+            raise ApplicationConflictError(
+                "La preuve source projets ne contient pas le snapshot figé.",
+                code="erp_sync_global_validation_failed",
+            )
+        if len(project_records) != int(attempt.project_received or 0):
+            raise ApplicationConflictError(
+                "Le nombre de projets figés ne correspond pas au reçu de publication.",
+                code="erp_sync_global_validation_failed",
+            )
+        for project_record in project_records:
+            if not isinstance(project_record, dict):
+                raise ApplicationConflictError(
+                    "Une entrée projet figée est invalide.",
+                    code="erp_sync_global_validation_failed",
+                )
+            project_key = str(
+                project_record.get("external_id")
+                or project_record.get("number")
+                or ""
+            ).strip()
+            if not project_key:
+                raise ApplicationConflictError(
+                    "Une entrée projet figée ne possède pas d'identité.",
+                    code="erp_sync_global_validation_failed",
+                )
+            project_evidence = tuple(
+                session.scalars(
+                    select(ErpSyncMutationEvidence).where(
+                        ErpSyncMutationEvidence.attempt_id == attempt_id,
+                        ErpSyncMutationEvidence.generation == generation,
+                        ErpSyncMutationEvidence.unit_type == "PROJECT_SNAPSHOT",
+                        ErpSyncMutationEvidence.entity_type == "PROJECT",
+                        ErpSyncMutationEvidence.entity_key == project_key,
+                        ErpSyncMutationEvidence.committed_at.is_not(None),
+                        ErpSyncMutationEvidence.after_sha256.is_not(None),
+                    )
+                )
+            )
+            if len(project_evidence) != 1:
+                raise ApplicationConflictError(
+                    "La preuve de mutation projets est incomplète.",
+                    code="erp_sync_global_validation_failed",
+                    context={"project_key": project_key},
+                )
+
+        task_manifest = session.scalar(
+            select(ErpSyncEvidenceManifest).where(
+                ErpSyncEvidenceManifest.attempt_id == attempt_id,
+                ErpSyncEvidenceManifest.source_type == EVIDENCE_SOURCE_TASKS,
+                ErpSyncEvidenceManifest.proof_type == EVIDENCE_PROOF_SOURCE,
+                ErpSyncEvidenceManifest.state == EVIDENCE_STATE_READY,
+            )
+        )
+        if task_manifest is None:
+            raise ApplicationConflictError(
+                "La preuve source tâches READY est absente.",
+                code="erp_sync_global_validation_failed",
+            )
+        task_payload = self._evidence.load_source_in_session(
+            session,
+            manifest_id=str(task_manifest.id),
+        )
+        portfolio = task_payload.get("portfolio") if isinstance(task_payload, dict) else None
+        if not isinstance(portfolio, dict):
+            raise ApplicationConflictError(
+                "La preuve source tâches ne contient pas le portefeuille figé.",
+                code="erp_sync_global_validation_failed",
+            )
+        snapshots_by_project = {
+            str(snapshot.get("project_number") or "").strip(): snapshot
+            for snapshot in portfolio.get("snapshots") or ()
+            if isinstance(snapshot, dict)
+            and str(snapshot.get("project_number") or "").strip()
+        }
+        expected_active = set(snapshots_by_project)
+
+        # Technical proof validity is independent from business completion
+        # classification. Every synchronized project must have complete,
+        # generation-linked evidence even when another project failed locally.
+        for result in synchronized:
+            project_number = str(result.project_number)
+            if project_number not in expected_active:
+                raise ApplicationConflictError(
+                    "Un succès tâches ne correspond pas aux cibles figées.",
+                    code="erp_sync_global_validation_failed",
+                    context={"project_number": project_number},
+                )
+            quality = session.get(ErpSyncProjectQuality, project_number)
+            if (
+                quality is None
+                or quality.quality_state != "VALID"
+                or quality.producer_attempt_id != attempt_id
+                or quality.source_observed_at is None
+            ):
+                raise ApplicationConflictError(
+                    "La qualité/provenance projet est incompatible avec le succès.",
+                    code="erp_sync_global_validation_failed",
+                    context={"project_number": project_number},
+                )
+
+            sync_state_evidence = tuple(
+                session.scalars(
+                    select(ErpSyncMutationEvidence).where(
+                        ErpSyncMutationEvidence.attempt_id == attempt_id,
+                        ErpSyncMutationEvidence.generation == generation,
+                        ErpSyncMutationEvidence.unit_type
+                        == f"TASK_PROJECT:{result.project_id}",
+                        ErpSyncMutationEvidence.entity_type == "TASK_SYNC_STATE",
+                        ErpSyncMutationEvidence.entity_key == project_number,
+                        ErpSyncMutationEvidence.committed_at.is_not(None),
+                        ErpSyncMutationEvidence.after_sha256.is_not(None),
+                    )
+                )
+            )
+            if len(sync_state_evidence) != 1:
+                raise ApplicationConflictError(
+                    "La preuve de provenance tâches est absente.",
+                    code="erp_sync_global_validation_failed",
+                    context={"project_number": project_number},
+                )
+
+            task_evidence = tuple(
+                session.scalars(
+                    select(ErpSyncMutationEvidence).where(
+                        ErpSyncMutationEvidence.attempt_id == attempt_id,
+                        ErpSyncMutationEvidence.generation == generation,
+                        ErpSyncMutationEvidence.unit_type
+                        == f"TASK_PROJECT:{result.project_id}",
+                        ErpSyncMutationEvidence.entity_type == "TASK",
+                        ErpSyncMutationEvidence.committed_at.is_not(None),
+                        ErpSyncMutationEvidence.after_sha256.is_not(None),
+                    )
+                )
+            )
+            current_tasks = tuple(
+                session.scalars(
+                    select(TaskCatalogEntry).where(
+                        TaskCatalogEntry.project_number == project_number
+                    )
+                )
+            )
+            current_by_erp = {
+                str(row.erp_task_id or "").strip(): row
+                for row in current_tasks
+                if str(row.erp_task_id or "").strip()
+            }
+            current_by_code = {
+                str(row.task_code or "").strip(): row
+                for row in current_tasks
+            }
+            # Every durable ERP-owned row in the synchronized project
+            # is in mutation scope: accepted rows remain/update, while prior ERP
+            # rows absent from the frozen source may be deactivated.
+            expected_task_keys: set[str] = {
+                str(row.erp_task_id).strip()
+                for row in current_tasks
+                if str(row.erp_task_id or "").strip()
+            }
+            frozen_snapshot = snapshots_by_project.get(project_number) or {}
+            for item in frozen_snapshot.get("items") or ():
+                if not isinstance(item, dict):
+                    continue
+                task_id = str(item.get("erp_task_id") or "").strip()
+                task_code = str(item.get("code") or "").strip()
+                durable = (
+                    current_by_erp.get(task_id) if task_id else None
+                ) or current_by_code.get(task_code)
+                # A valid Standards exclusion may intentionally produce no
+                # durable row. Every source item that did resolve to a physical
+                # row must have exactly one checkpoint identity.
+                if durable is not None:
+                    expected_task_keys.add(
+                        str(durable.erp_task_id or "").strip()
+                        or f"{project_number}:{str(durable.task_code).strip()}"
+                    )
+            evidence_task_keys = {str(row.entity_key) for row in task_evidence}
+            if evidence_task_keys != expected_task_keys:
+                raise ApplicationConflictError(
+                    "La preuve de mutation tâches est incomplète.",
+                    code="erp_sync_global_validation_failed",
+                    context={"project_number": project_number},
+                )
+
+        if not require_complete_success:
+            return
+        if int(run.projects_rejected) or any(
+            row.status == "rejected" for row in results
+        ):
+            raise ApplicationConflictError(
+                "Un projet rejeté ne peut pas être publié comme succès complet.",
+                code="erp_sync_global_validation_failed",
+            )
+        for project_number in expected_active:
+            result = result_by_number.get(project_number)
+            if result is None or result.status != "synchronized":
+                raise ApplicationConflictError(
+                    "Une cible tâches figée n'a pas de reçu synchronisé.",
+                    code="erp_sync_global_validation_failed",
+                    context={"project_number": project_number},
+                )
+
+    def _mark_global_validation_failure(
+        self,
+        *,
+        attempt_id: str,
+        generation: int,
+    ) -> None:
+        if self._evidence is None:
+            return
+        with transactional_session(self._session_factory) as session:
+            SqlErpSyncControlRepository.guard_session(
+                session,
+                attempt_id=attempt_id,
+                generation=generation,
+                settings=self._settings,
+            )
+            self._evidence.mark_recovery_required_in_session(
+                session,
+                attempt_id=attempt_id,
+                reason_code="erp_sync_global_validation_failed",
+            )
+            self._evidence.quarantine_attempt_provenance_in_session(
+                session,
+                attempt_id=attempt_id,
+                reason_code="erp_sync_global_validation_failed",
+            )
+
+    def _validate_full_publication(
+        self,
+        *,
+        attempt_id: str,
+        generation: int,
+        require_complete_success: bool = False,
+    ) -> None:
+        try:
+            with self._session_factory() as session:
+                self._validate_full_publication_in_session(
+                    session,
+                    attempt_id=attempt_id,
+                    generation=generation,
+                    require_complete_success=require_complete_success,
+                )
+        except ErpSyncFenceLost:
+            raise
+        except ApplicationConflictError:
+            self._mark_global_validation_failure(
+                attempt_id=attempt_id,
+                generation=generation,
+            )
+            raise
+
+    def _publish_full_success(
+        self,
+        *,
+        attempt_id: str,
+        generation: int,
+    ) -> None:
+        if self._evidence is None:
+            raise ApplicationConflictError(
+                "Les preuves ERP 643B sont requises avant succès complet.",
+                code="erp_sync_global_validation_failed",
+            )
+        try:
+            with transactional_session(self._session_factory) as session:
+                self._validate_full_publication_in_session(
+                    session,
+                    attempt_id=attempt_id,
+                    generation=generation,
+                    require_complete_success=True,
+                )
+                self._evidence.advance_approved_baselines_in_session(
+                    session,
+                    attempt_id=attempt_id,
+                )
+                published = SqlErpSyncControlRepository.finish_in_session(
+                    session,
+                    attempt_id=attempt_id,
+                    generation=generation,
+                    status=ERP_ATTEMPT_SUCCEEDED,
+                    phase="PUBLICATION_COMMITTED",
+                    settings=self._settings,
+                )
+                if not published:
+                    raise ApplicationConflictError(
+                        "La publication terminale ERP a été refusée.",
+                        code="erp_sync_global_validation_failed",
+                    )
+        except ErpSyncFenceLost:
+            raise
+        except Exception:
+            self._mark_global_validation_failure(
+                attempt_id=attempt_id,
+                generation=generation,
+            )
+            raise
+
     def _execute_attempt(
         self,
         attempt_id: str,
@@ -695,6 +1734,12 @@ class ErpSyncOrchestrator:
                     )
                 return None
             started = True
+            if self._evidence is not None:
+                self._evidence.reserve_attempt(attempt_id=attempt_id)
+                self._evidence.bind_attempt_policy(
+                    attempt_id=attempt_id,
+                    generation=generation,
+                )
             heartbeat = Thread(
                 target=self._heartbeat,
                 kwargs={
@@ -707,6 +1752,7 @@ class ErpSyncOrchestrator:
             )
             heartbeat.start()
             attempt = self._control.get_attempt(attempt_id)
+            self._assert_recovery_clear()
             if automatic and not self._automatic_safety.automatic_execution_available():
                 self._control.finish(
                     attempt_id=attempt_id,
@@ -758,11 +1804,46 @@ class ErpSyncOrchestrator:
                 )
                 return None
 
+            captured_projects: tuple[Any, ...] | None = None
+            captured_portfolio: Any | None = None
+            plausibility_rejected_projects: tuple[str, ...] = ()
+            if (
+                attempt.intent == "PROJECTS_AND_ACTIVE_TASKS"
+                and self._evidence is not None
+            ):
+                if attempt.phase == "PLAUSIBILITY_REVIEW_APPROVED":
+                    (
+                        captured_projects,
+                        captured_portfolio,
+                        plausibility_rejected_projects,
+                    ) = self._reload_reviewed_full_sources(
+                        attempt_id=attempt_id,
+                        generation=generation,
+                    )
+                else:
+                    (
+                        captured_projects,
+                        captured_portfolio,
+                        plausibility_rejected_projects,
+                    ) = self._capture_full_sources(
+                        attempt_id=attempt_id,
+                        generation=generation,
+                        project_source=project_source,
+                        project_task_source=project_task_source,
+                    )
+
+            if (
+                attempt.intent == "PROJECTS_AND_ACTIVE_TASKS"
+                and self._evidence is not None
+            ):
+                self._evidence.assert_full_sources_ready(attempt_id=attempt_id)
+
             if attempt.intent != "ACTIVE_PROJECT_TASKS_ONLY":
                 project_result = self._execute_projects(
                     attempt_id,
                     generation,
                     project_source=project_source,
+                    projects_snapshot=captured_projects,
                 )
                 if attempt.intent == "PROJECTS_ONLY":
                     self._control.finish(
@@ -774,12 +1855,32 @@ class ErpSyncOrchestrator:
                     )
                     return project_result
 
-            task_status = self._execute_tasks(attempt_id, generation)
+            task_status = self._execute_tasks(
+                attempt_id,
+                generation,
+                portfolio_snapshot=captured_portfolio,
+                plausibility_rejected_projects=plausibility_rejected_projects,
+            )
             parent_status = (
                 ERP_ATTEMPT_SUCCEEDED_WITH_ERRORS
                 if task_status == SYNC_RUN_COMPLETED_WITH_ERRORS
                 else ERP_ATTEMPT_SUCCEEDED
             )
+            if (
+                attempt.intent == "PROJECTS_AND_ACTIVE_TASKS"
+                and self._evidence is not None
+            ):
+                if parent_status == ERP_ATTEMPT_SUCCEEDED:
+                    self._publish_full_success(
+                        attempt_id=attempt_id,
+                        generation=generation,
+                    )
+                    return None
+                self._validate_full_publication(
+                    attempt_id=attempt_id,
+                    generation=generation,
+                    require_complete_success=False,
+                )
             self._control.finish(
                 attempt_id=attempt_id,
                 generation=generation,
@@ -803,6 +1904,18 @@ class ErpSyncOrchestrator:
             if propagate_errors:
                 raise
         except ApplicationError as exc:
+            if (
+                started
+                and exc.code == "erp_sync_plausibility_review_required"
+            ):
+                self._control.pause_for_review(
+                    attempt_id=attempt_id,
+                    generation=generation,
+                    settings=self._settings,
+                )
+                if propagate_errors:
+                    raise
+                return None
             if started:
                 self._control.finish(
                     attempt_id=attempt_id,
@@ -838,6 +1951,63 @@ class ErpSyncOrchestrator:
             stop.set()
             if heartbeat is not None:
                 heartbeat.join(timeout=1.0)
+            if self._evidence is not None:
+                try:
+                    terminal = self._control.get_attempt(attempt_id)
+                    if terminal.status in ERP_ATTEMPT_TERMINAL:
+                        self._evidence.finalize_attempt(
+                            attempt_id=attempt_id,
+                            successful=terminal.status == ERP_ATTEMPT_SUCCEEDED,
+                        )
+                except Exception:
+                    logger.exception(
+                        "ERP evidence finalization failed attempt_id=%s",
+                        attempt_id,
+                    )
+
+    def _capture_targeted_task_snapshot(
+        self,
+        *,
+        attempt_id: str,
+        generation: int,
+        project_number: str,
+        snapshot: TaskCatalogProjectSnapshot,
+        source: ProjectTaskCatalogSourcePort,
+    ) -> None:
+        if self._evidence is None:
+            return
+        portfolio = TaskCatalogPortfolioSnapshot(
+            source_rows=int(snapshot.source_rows),
+            source_pages=1,
+            snapshots=(snapshot,),
+        )
+        self._validate_task_capture(
+            portfolio,
+            expected_projects=(project_number,),
+        )
+        page_evidence = getattr(source, "last_read_evidence", lambda: None)()
+        policy_fingerprint = self._evidence.bind_attempt_policy(
+            attempt_id=attempt_id,
+            generation=generation,
+        )
+        self._evidence.capture_source(
+            attempt_id=attempt_id,
+            source_type="TASKS",
+            profile_fingerprint=policy_fingerprint,
+            payload={
+                "portfolio": portfolio,
+                "page_evidence": page_evidence
+                or {
+                    "complete": True,
+                    "pages": 1,
+                    "rows": int(snapshot.source_rows),
+                    "adapter": "targeted",
+                },
+            },
+            row_count=int(snapshot.source_rows),
+            project_counts={project_number: int(snapshot.source_rows)},
+            generation=generation,
+        )
 
     def _execute_targeted_compat_business(
         self,
@@ -854,6 +2024,12 @@ class ErpSyncOrchestrator:
                     code="project_not_found",
                     context={"project_id": project_id},
                 )
+            if not self._project_source_active(project.status):
+                raise ApplicationValidationError(
+                    "Le projet demandé est inactif.",
+                    code="project_inactive",
+                    context={"project_id": project_id},
+                )
             project_external_id = str(project.erp_external_id or "").strip()
             project_number = str(project.number)
         if not project_external_id:
@@ -867,6 +2043,35 @@ class ErpSyncOrchestrator:
             project_external_id=project_external_id,
             project_number=project_number,
         )
+        self._capture_targeted_task_snapshot(
+            attempt_id=attempt_id,
+            generation=generation,
+            project_number=project_number,
+            snapshot=snapshot,
+            source=source,
+        )
+        with self._session_factory() as discovery:
+            projected = tuple(
+                SqlPlannerQueryRepositoryWithLoadProfiles(
+                    discovery
+                ).list_projects(active_only=False)
+            )
+        project_view = next(
+            (row for row in projected if row.id == project_id),
+            None,
+        )
+        if project_view is None:
+            raise ApplicationNotFoundError(
+                "Le projet demandé n'existe pas.",
+                code="project_not_found",
+                context={"project_id": project_id},
+            )
+
+        run_id = self._create_task_run(
+            attempt_id,
+            generation,
+            active_key=None,
+        )
         with transactional_session(self._session_factory) as session:
             SqlErpSyncControlRepository.guard_session(
                 session,
@@ -874,24 +2079,60 @@ class ErpSyncOrchestrator:
                 generation=generation,
                 settings=self._settings,
             )
-            repository = SqlTaskCatalogRepository(session)
-            result = TaskCatalogSyncService(
-                _PreloadedProjectTaskSource(snapshot),
-                repository,
-                sync_metadata_repository=repository,
-                workforce_policy=SqlTaskCatalogWorkforcePolicy(session),
-            ).synchronize_project(
-                project_external_id=project_external_id,
-                project_number=project_number,
+            run = session.get(AcumaticaProjectTaskSyncRun, run_id)
+            if run is None:
+                raise RuntimeError("Run tâches enfant introuvable.")
+            run.projects_total = 1
+            run.source_requests = 1
+            run.source_rows_scanned = int(snapshot.source_rows)
+
+        result = self._process_task_project(
+            run_id,
+            attempt_id,
+            generation,
+            project_view,
+            {project_number: snapshot},
+        )
+        with transactional_session(self._session_factory) as session:
+            SqlErpSyncControlRepository.guard_session(
+                session,
+                attempt_id=attempt_id,
+                generation=generation,
+                settings=self._settings,
             )
+            run = session.get(AcumaticaProjectTaskSyncRun, run_id)
+            if run is None:
+                raise RuntimeError("Run tâches enfant introuvable.")
+            run.status = (
+                SYNC_RUN_COMPLETED_WITH_ERRORS
+                if run.projects_rejected
+                else SYNC_RUN_COMPLETED
+            )
+            run.finished_at = utc_now()
+            if run.started_at is not None:
+                run.duration_ms = max(
+                    0,
+                    int(
+                        (
+                            _utc(run.finished_at) - _utc(run.started_at)
+                        ).total_seconds()
+                        * 1000
+                    ),
+                )
             SqlErpSyncControlRepository.update_phase_in_session(
                 session,
                 attempt_id=attempt_id,
                 generation=generation,
                 phase="TASKS_FINISHED",
+                task_sync_run_id=run_id,
                 settings=self._settings,
             )
-            return result
+        if result is None:
+            raise ApplicationConflictError(
+                "La synchronisation ciblée des tâches projet a échoué.",
+                code="task_catalog_project_sync_failed",
+            )
+        return result
 
     def _execute_projects(
         self,
@@ -899,6 +2140,7 @@ class ErpSyncOrchestrator:
         generation: int,
         *,
         project_source: ProjectSourcePort | None = None,
+        projects_snapshot: tuple[Any, ...] | None = None,
     ):
         source = project_source or self._project_source
         if source is None:
@@ -906,15 +2148,18 @@ class ErpSyncOrchestrator:
                 "La synchronisation projets Acumatica n'est pas configurée.",
                 code="acumatica_not_configured",
             )
-        try:
-            projects = tuple(source.list_projects())
-        except Exception as exc:
-            if isinstance(exc, ApplicationError):
-                raise
-            raise ApplicationUnavailableError(
-                "La lecture des projets Acumatica a échoué.",
-                code="acumatica_project_read_failed",
-            ) from exc
+        if projects_snapshot is not None:
+            projects = tuple(projects_snapshot)
+        else:
+            try:
+                projects = tuple(source.list_projects())
+            except Exception as exc:
+                if isinstance(exc, ApplicationError):
+                    raise
+                raise ApplicationUnavailableError(
+                    "La lecture des projets Acumatica a échoué.",
+                    code="acumatica_project_read_failed",
+                ) from exc
 
         with transactional_session(self._session_factory) as session:
             SqlErpSyncControlRepository.guard_session(
@@ -923,10 +2168,60 @@ class ErpSyncOrchestrator:
                 generation=generation,
                 settings=self._settings,
             )
+            project_evidence: dict[str, str] = {}
+            if self._evidence is not None:
+                for incoming in projects:
+                    external_id = str(incoming.external_id or "").strip()
+                    number = str(incoming.number or "").strip()
+                    existing = (
+                        session.scalar(
+                            select(Project).where(Project.erp_external_id == external_id)
+                        )
+                        if external_id
+                        else None
+                    ) or session.scalar(select(Project).where(Project.number == number))
+                    key = external_id or number
+                    project_evidence[key] = self._evidence.record_before_in_session(
+                        session,
+                        attempt_id=attempt_id,
+                        generation=generation,
+                        unit_type="PROJECT_SNAPSHOT",
+                        entity_type="PROJECT",
+                        entity_key=key,
+                        before=self._project_owned_state(existing),
+                    )
             result = ProjectSyncService(
                 _PreloadedProjectSource(projects),
                 SqlProjectSyncRepository(session),
             ).synchronize()
+            if self._evidence is not None:
+                # Re-read persisted values before sealing AFTER checkpoints so
+                # canonical hashes survive SQL type/scale normalization.
+                session.flush()
+                session.expire_all()
+                for incoming in projects:
+                    external_id = str(incoming.external_id or "").strip()
+                    number = str(incoming.number or "").strip()
+                    row = (
+                        session.scalar(
+                            select(Project).where(Project.erp_external_id == external_id)
+                        )
+                        if external_id
+                        else None
+                    ) or session.scalar(select(Project).where(Project.number == number))
+                    if row is None:
+                        raise ApplicationConflictError(
+                            "Le projet ERP reçu n'existe pas après synchronisation.",
+                            code="erp_sync_project_post_validation_failed",
+                        )
+                    key = external_id or number
+                    self._evidence.record_after_in_session(
+                        session,
+                        evidence_id=project_evidence[key],
+                        attempt_id=attempt_id,
+                        generation=generation,
+                        after=self._project_owned_state(row) or {},
+                    )
             SqlErpSyncControlRepository.update_phase_in_session(
                 session,
                 attempt_id=attempt_id,
@@ -954,7 +2249,10 @@ class ErpSyncOrchestrator:
             )
             run = AcumaticaProjectTaskSyncRun(
                 id=run_id,
-                active_key=active_key,
+                # SQLAlchemy omits Python None for a column with a scalar
+                # default; use an explicit SQL NULL for targeted child runs so
+                # they never contend for the singleton GLOBAL active key.
+                active_key=null() if active_key is None else active_key,
                 status=SYNC_RUN_RUNNING,
                 parent_attempt_id=attempt_id,
                 erp_generation=generation,
@@ -1018,6 +2316,13 @@ class ErpSyncOrchestrator:
             snapshot = self._project_task_source.fetch_project_snapshot(
                 project_external_id=project_external_id,
                 project_number=project_number,
+            )
+            self._capture_targeted_task_snapshot(
+                attempt_id=attempt_id,
+                generation=generation,
+                project_number=project_number,
+                snapshot=snapshot,
+                source=self._project_task_source,
             )
         except Exception as exc:
             if isinstance(exc, ApplicationError):
@@ -1089,7 +2394,14 @@ class ErpSyncOrchestrator:
             )
             return run.status
 
-    def _execute_tasks(self, attempt_id: str, generation: int) -> str:
+    def _execute_tasks(
+        self,
+        attempt_id: str,
+        generation: int,
+        *,
+        portfolio_snapshot: Any | None = None,
+        plausibility_rejected_projects: tuple[str, ...] = (),
+    ) -> str:
         if self._project_task_source is None:
             raise ApplicationUnavailableError(
                 "La synchronisation des tâches projet Acumatica n'est pas configurée.",
@@ -1127,30 +2439,32 @@ class ErpSyncOrchestrator:
             source_rows = 0
             source_duration = 0
             if project_targets:
-                fetch_many = getattr(
-                    self._project_task_source,
-                    "fetch_project_snapshots",
-                    None,
-                )
-                if not callable(fetch_many):
-                    raise ApplicationUnavailableError(
-                        "La lecture globale batch RP_ProjectTasks n'est pas disponible.",
-                        code="acumatica_project_task_batch_required",
+                portfolio = portfolio_snapshot
+                if portfolio is None:
+                    fetch_many = getattr(
+                        self._project_task_source,
+                        "fetch_project_snapshots",
+                        None,
                     )
-                started = perf_counter()
-                try:
-                    portfolio = fetch_many(project_targets=project_targets)
-                except Exception as exc:
-                    if isinstance(exc, ApplicationError):
-                        raise
-                    raise ApplicationUnavailableError(
-                        "La lecture globale des tâches projet Acumatica a échoué.",
-                        code="acumatica_project_task_read_failed",
-                    ) from exc
-                source_duration = max(
-                    0,
-                    int((perf_counter() - started) * 1000),
-                )
+                    if not callable(fetch_many):
+                        raise ApplicationUnavailableError(
+                            "La lecture globale batch RP_ProjectTasks n'est pas disponible.",
+                            code="acumatica_project_task_batch_required",
+                        )
+                    started = perf_counter()
+                    try:
+                        portfolio = fetch_many(project_targets=project_targets)
+                    except Exception as exc:
+                        if isinstance(exc, ApplicationError):
+                            raise
+                        raise ApplicationUnavailableError(
+                            "La lecture globale des tâches projet Acumatica a échoué.",
+                            code="acumatica_project_task_read_failed",
+                        ) from exc
+                    source_duration = max(
+                        0,
+                        int((perf_counter() - started) * 1000),
+                    )
                 source_requests = int(portfolio.source_pages)
                 source_rows = int(portfolio.source_rows)
                 for snapshot in portfolio.snapshots:
@@ -1176,7 +2490,22 @@ class ErpSyncOrchestrator:
                 run.source_rows_scanned = source_rows
                 run.source_read_duration_ms = source_duration
 
+            rejected_by_plausibility = set(plausibility_rejected_projects)
             for project in projects:
+                if project.number in rejected_by_plausibility:
+                    self._record_task_outcome(
+                        run_id,
+                        attempt_id,
+                        generation,
+                        {
+                            "project_id": project.id,
+                            "project_number": project.number,
+                            "status": "rejected",
+                            "error_code": "erp_sync_project_plausibility_rejected",
+                            "reason_code": "project_plausibility_failed",
+                        },
+                    )
+                    continue
                 self._process_task_project(
                     run_id,
                     attempt_id,
@@ -1276,7 +2605,7 @@ class ErpSyncOrchestrator:
         generation: int,
         project: Any,
         snapshots: dict[str, Any],
-    ) -> None:
+    ) -> Any | None:
         base = {
             "project_id": project.id,
             "project_number": project.number,
@@ -1308,6 +2637,22 @@ class ErpSyncOrchestrator:
             return
 
         snapshot = snapshots.get(project.number)
+        if snapshot is not None and snapshot.hard_error_code:
+            self._record_task_outcome(
+                run_id,
+                attempt_id,
+                generation,
+                {
+                    **base,
+                    "status": "rejected",
+                    "error_code": snapshot.hard_error_code,
+                    "reason_code": snapshot.hard_error_reason
+                    or "project_source_structural_failed",
+                    "source_rows": int(snapshot.source_rows),
+                    "source_rows_rejected": int(snapshot.rejected_rows),
+                },
+            )
+            return None
         if snapshot is None:
             self._record_task_outcome(
                 run_id,
@@ -1330,16 +2675,200 @@ class ErpSyncOrchestrator:
                     generation=generation,
                     settings=self._settings,
                 )
+                if self._evidence is not None:
+                    self._evidence.assert_attempt_policy_in_session(
+                        session,
+                        attempt_id=attempt_id,
+                    )
+                task_evidence: dict[str, str] = {}
+                excluded_new_keys: set[str] = set()
+                sync_state_evidence: str | None = None
+                source_observed_at = (
+                    self._evidence.source_observed_at_in_session(
+                        session,
+                        attempt_id=attempt_id,
+                        source_type="TASKS",
+                    )
+                    if self._evidence is not None
+                    else None
+                )
                 repository = SqlTaskCatalogRepository(session)
+                workforce_policy = SqlTaskCatalogWorkforcePolicy(session)
+                evidence_rows: list[tuple[str, str]] = []
+                if self._evidence is not None:
+                    existing_rows = tuple(
+                        session.scalars(
+                            select(TaskCatalogEntry).where(
+                                TaskCatalogEntry.project_number == project.number
+                            )
+                        )
+                    )
+                    existing_by_erp = {
+                        str(row.erp_task_id or "").strip(): row
+                        for row in existing_rows
+                        if str(row.erp_task_id or "").strip()
+                    }
+                    existing_by_code = {
+                        str(row.task_code).strip(): row for row in existing_rows
+                    }
+                    captured_physical_ids: set[str] = set()
+                    captured_new_keys: set[str] = set()
+                    for item in tuple(snapshot.items):
+                        task_id = str(item.erp_task_id or "").strip()
+                        task_code = str(item.code or "").strip()
+                        erp_row = existing_by_erp.get(task_id) if task_id else None
+                        business_row = existing_by_code.get(task_code)
+                        if (
+                            erp_row is not None
+                            and business_row is not None
+                            and erp_row.id != business_row.id
+                        ):
+                            raise ApplicationConflictError(
+                                "L'identité ERP TaskID entre en conflit avec une tâche locale existante.",
+                                code="task_catalog_erp_identity_conflict",
+                                context={
+                                    "project_number": project.number,
+                                    "task_code": task_code,
+                                },
+                            )
+                        existing = erp_row or business_row
+                        key = task_id or f"{project.number}:{task_code}"
+                        if existing is None:
+                            projection = workforce_policy.project_task_projection(
+                                project_number=project.number,
+                                task_code=task_code,
+                                budget_amount_cad=item.budget_amount_cad,
+                            )
+                            if not projection.eligible:
+                                excluded_new_keys.add(key)
+                                continue
+                            if key in captured_new_keys:
+                                continue
+                            captured_new_keys.add(key)
+                        else:
+                            physical_id = str(existing.id)
+                            if physical_id in captured_physical_ids:
+                                continue
+                            captured_physical_ids.add(physical_id)
+                        evidence_id = self._evidence.record_before_in_session(
+                            session,
+                            attempt_id=attempt_id,
+                            generation=generation,
+                            unit_type=f"TASK_PROJECT:{project.id}",
+                            entity_type="TASK",
+                            entity_key=key,
+                            before=self._task_owned_state(existing),
+                        )
+                        task_evidence[key] = evidence_id
+                        evidence_rows.append((key, evidence_id))
+
+                    # Existing ERP-owned rows absent from the accepted source are
+                    # mutation candidates because synchronization deactivates
+                    # them. Checkpoint those physical rows exactly once, while
+                    # leaving unrelated legacy NULL-identity rows outside the
+                    # ERP mutation/evidence scope.
+                    for existing in existing_rows:
+                        erp_key = str(existing.erp_task_id or "").strip()
+                        physical_id = str(existing.id)
+                        if not erp_key or physical_id in captured_physical_ids:
+                            continue
+                        captured_physical_ids.add(physical_id)
+                        evidence_id = self._evidence.record_before_in_session(
+                            session,
+                            attempt_id=attempt_id,
+                            generation=generation,
+                            unit_type=f"TASK_PROJECT:{project.id}",
+                            entity_type="TASK",
+                            entity_key=erp_key,
+                            before=self._task_owned_state(existing),
+                        )
+                        task_evidence[erp_key] = evidence_id
+                        evidence_rows.append((erp_key, evidence_id))
+                    sync_state_evidence = self._evidence.record_before_in_session(
+                        session,
+                        attempt_id=attempt_id,
+                        generation=generation,
+                        unit_type=f"TASK_PROJECT:{project.id}",
+                        entity_type="TASK_SYNC_STATE",
+                        entity_key=project.number,
+                        before=self._task_sync_state(
+                            session.get(TaskCatalogProjectSyncState, project.number)
+                        ),
+                    )
                 result = TaskCatalogSyncService(
                     _PreloadedProjectTaskSource(snapshot),
                     repository,
                     sync_metadata_repository=repository,
-                    workforce_policy=SqlTaskCatalogWorkforcePolicy(session),
+                    workforce_policy=workforce_policy,
                 ).synchronize_project(
                     project_external_id=project_external_id,
                     project_number=project.number,
+                    source_observed_at=source_observed_at,
                 )
+                if self._evidence is not None:
+                    # AFTER authority must reflect the database-normalized
+                    # physical row, not the pre-flush Python representation.
+                    session.flush()
+                    session.expire_all()
+                    current_rows = tuple(
+                        session.scalars(
+                            select(TaskCatalogEntry).where(
+                                TaskCatalogEntry.project_number == project.number
+                            )
+                        )
+                    )
+                    current_by_key: dict[str, TaskCatalogEntry] = {}
+                    for row in current_rows:
+                        erp_key = str(row.erp_task_id or "").strip()
+                        current_by_key[
+                            erp_key or f"{project.number}:{str(row.task_code).strip()}"
+                        ] = row
+                        current_by_key[f"{project.number}:{str(row.task_code).strip()}"] = row
+                    for key, evidence_id in evidence_rows:
+                        row = current_by_key.get(key)
+                        if row is None:
+                            raise ApplicationConflictError(
+                                "Une tâche checkpointée a disparu pendant la transaction.",
+                                code="erp_sync_task_post_validation_failed",
+                            )
+                        self._evidence.record_after_in_session(
+                            session,
+                            evidence_id=evidence_id,
+                            attempt_id=attempt_id,
+                            generation=generation,
+                            after=self._task_owned_state(row) or {},
+                        )
+
+                    quality = session.get(ErpSyncProjectQuality, project.number)
+                    if quality is None:
+                        quality = ErpSyncProjectQuality(
+                            project_number=project.number,
+                            producer_attempt_id=attempt_id,
+                            quality_state="VALID",
+                        )
+                        session.add(quality)
+                    quality.producer_attempt_id = attempt_id
+                    quality.quality_state = "VALID"
+                    quality.source_observed_at = source_observed_at
+                    quality.validated_at = utc_now()
+                    quality.reason_code = None
+                    if sync_state_evidence is not None:
+                        state_row = session.get(
+                            TaskCatalogProjectSyncState,
+                            project.number,
+                        )
+                        if state_row is None:
+                            raise ApplicationConflictError(
+                                "La provenance tâches n'a pas été publiée dans la transaction.",
+                                code="erp_sync_task_provenance_missing",
+                            )
+                        self._evidence.record_after_in_session(
+                            session,
+                            evidence_id=sync_state_evidence,
+                            attempt_id=attempt_id,
+                            generation=generation,
+                            after=self._task_sync_state(state_row) or {},
+                        )
                 self._record_task_outcome_in_session(
                     session,
                     run_id,
@@ -1357,9 +2886,39 @@ class ErpSyncOrchestrator:
                         "duration_ms": result.duration_ms,
                     },
                 )
+                return result
         except ErpSyncFenceLost:
             raise
         except ApplicationError as exc:
+            if (
+                self._evidence is not None
+                and exc.code
+                in {
+                    "erp_sync_evidence_attempt_budget_exceeded",
+                    "erp_sync_evidence_storage_budget_unavailable",
+                    "erp_sync_evidence_storage_reservation_exceeded",
+                    "erp_sync_evidence_reservation_missing",
+                    "erp_sync_checkpoint_before_conflict",
+                    "erp_sync_checkpoint_after_conflict",
+                }
+            ):
+                with transactional_session(self._session_factory) as session:
+                    SqlErpSyncControlRepository.guard_session(
+                        session,
+                        attempt_id=attempt_id,
+                        generation=generation,
+                        settings=self._settings,
+                    )
+                    if self._evidence.committed_mutation_count_in_session(
+                        session,
+                        attempt_id=attempt_id,
+                    ):
+                        self._evidence.mark_recovery_required_in_session(
+                            session,
+                            attempt_id=attempt_id,
+                            reason_code="erp_sync_checkpoint_unavailable_after_commit",
+                        )
+                raise
             self._record_task_outcome(
                 run_id,
                 attempt_id,
@@ -1372,11 +2931,15 @@ class ErpSyncOrchestrator:
                 },
             )
         except Exception as exc:
+            dbapi_error = getattr(exc, "orig", None)
             logger.error(
-                "ERP task project failed attempt_id=%s project_id=%s error_type=%s",
+                "ERP task project failed attempt_id=%s project_id=%s "
+                "error_type=%s error_code=%s dbapi_type=%s",
                 attempt_id,
                 project.id,
                 type(exc).__name__,
+                getattr(exc, "code", None),
+                type(dbapi_error).__name__ if dbapi_error is not None else None,
             )
             self._record_task_outcome(
                 run_id,
@@ -1405,6 +2968,30 @@ class ErpSyncOrchestrator:
                 settings=self._settings,
             )
             self._record_task_outcome_in_session(session, run_id, outcome)
+            if (
+                self._evidence is not None
+                and str(outcome.get("status")) == "rejected"
+            ):
+                quality = session.get(
+                    ErpSyncProjectQuality,
+                    str(outcome["project_number"]),
+                )
+                if quality is None:
+                    quality = ErpSyncProjectQuality(
+                        project_number=str(outcome["project_number"]),
+                        producer_attempt_id=attempt_id,
+                        quality_state="STALE",
+                    )
+                    session.add(quality)
+                quality.producer_attempt_id = attempt_id
+                quality.quality_state = "STALE"
+                quality.reason_code = str(
+                    outcome.get("error_code") or "erp_sync_project_failed"
+                )
+                # A failed/rejected project never advances successful source
+                # freshness. Preserve any prior successful observed_at, or NULL
+                # for a first-ever failed attempt.
+                quality.validated_at = utc_now()
 
     @staticmethod
     def _record_task_outcome_in_session(

@@ -208,6 +208,7 @@ class ODataProjectSource(ProjectSourcePort):
         # Generic seam for #207B. 207A deliberately does not choose Basic, bearer,
         # OAuth or cookie/session authentication.
         self._request_headers = dict(request_headers or {})
+        self._last_read_evidence: dict[str, object] | None = None
 
     def _url(self) -> str:
         base = self._settings.base_url.rstrip("/") + "/"
@@ -270,6 +271,7 @@ class ODataProjectSource(ProjectSourcePort):
         )
         records: list[ODataProjectRecord] = []
         seen_project_ids: set[int] = set()
+        page_count = 0
         skip = 0
         try:
             with httpx.Client(
@@ -311,6 +313,7 @@ class ODataProjectSource(ProjectSourcePort):
                             ),
                         ) from exc
 
+                    page_count += 1
                     duplicate_id = next(
                         (record.project_id for record in page if record.project_id in seen_project_ids),
                         None,
@@ -372,4 +375,21 @@ class ODataProjectSource(ProjectSourcePort):
                 context=self._safe_context(failure_kind="network", retryable=True),
             ) from exc
 
+        self._last_read_evidence = {
+            "protocol": "odata",
+            "feed_path": self._settings.feed_path,
+            "pagination_mode": "top_skip",
+            "orderby": "ProjectId asc",
+            "page_size": int(self._settings.page_size),
+            "pages": page_count,
+            "rows": len(records),
+            "complete": True,
+        }
         return tuple(record.to_external_record() for record in records)
+
+    def last_read_evidence(self) -> dict[str, object] | None:
+        return (
+            dict(self._last_read_evidence)
+            if self._last_read_evidence is not None
+            else None
+        )

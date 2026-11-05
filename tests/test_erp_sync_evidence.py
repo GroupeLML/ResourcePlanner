@@ -1,0 +1,3850 @@
+from __future__ import annotations
+
+from decimal import Decimal
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import json
+import unittest
+from types import SimpleNamespace
+from uuid import uuid4
+from unittest.mock import patch
+
+from cryptography.fernet import Fernet
+from sqlalchemy import func, select
+
+from app.application import (
+    ExternalProjectRecord,
+    TaskCatalogItem,
+    TaskCatalogPortfolioSnapshot,
+    TaskCatalogProjectSnapshot,
+)
+from app.server.erp_sync_evidence import (
+    ERP_EVIDENCE_CODEC_VERSION,
+    EvidenceBackedErpSyncAutomaticSafetyCapability,
+    ErpSyncEvidenceService,
+    ErpSyncEvidenceSettings,
+    canonical_json_bytes,
+    decode_canonical_json_bytes,
+)
+from app.application.erp_sync_scheduler import ErpSyncSchedulerSettings
+from app.infrastructure.smtp import FernetSecretCipher
+from app.infrastructure.sql import (
+    AcumaticaProjectTaskSyncProjectResult,
+    AcumaticaProjectTaskSyncRun,
+    Base,
+    ErpSyncAttempt,
+    ErpSyncEvidenceChunk,
+    ErpSyncEvidenceManifest,
+    ErpSyncEvidenceReservation,
+    ErpSyncMutationEvidence,
+    ErpSyncPlausibilityException,
+    ErpSyncPlausibilityReviewDecision,
+    ErpSyncBaselineApprovalAudit,
+    ErpSyncProjectQuality,
+    ErpSyncRecoveryState,
+    ErpSyncControl,
+    Project,
+    ResourceClassConfig,
+    TaskCatalogEntry,
+    TaskClassStandard,
+    WorkPackage,
+    create_session_factory,
+    create_sql_engine,
+    transactional_session,
+)
+from app.infrastructure.sql.erp_sync_control_repository import (
+    SqlErpSyncControlRepository,
+)
+from app.server.erp_sync_orchestration import ErpSyncOrchestrator
+
+
+class ProjectSource:
+    def __init__(self, rows) -> None:
+        self.rows = tuple(rows)
+        self.calls = 0
+
+    def list_projects(self):
+        self.calls += 1
+        return self.rows
+
+
+class PortfolioTaskSource:
+    def __init__(self, snapshots) -> None:
+        self.snapshots = dict(snapshots)
+        self.calls = 0
+
+    def fetch_project_snapshots(self, *, project_targets):
+        self.calls += 1
+        snapshots = tuple(self.snapshots[number] for _external_id, number in project_targets)
+        return TaskCatalogPortfolioSnapshot(
+            source_rows=sum(snapshot.source_rows for snapshot in snapshots),
+            source_pages=1,
+            snapshots=snapshots,
+        )
+
+
+def project(number: str, external_id: str = "101") -> ExternalProjectRecord:
+    return ExternalProjectRecord(
+        external_id=external_id,
+        number=number,
+        name=f"Projet {number}",
+        status="Actif",
+    )
+
+
+def snapshot(number: str, task_id: str = "9001") -> TaskCatalogProjectSnapshot:
+    return TaskCatalogProjectSnapshot(
+        project_number=number,
+        source_rows=1,
+        rejected_rows=0,
+        items=(
+            TaskCatalogItem(
+                project_number=number,
+                code="100",
+                label="Task evidence",
+                status="Actif",
+                active=True,
+                erp_task_id=task_id,
+                account_group="DEPMO",
+            ),
+        ),
+    )
+
+
+class ErpSyncEvidenceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = TemporaryDirectory()
+        path = Path(self.tmp.name) / "evidence.db"
+        self.engine = create_sql_engine(f"sqlite+pysqlite:///{path.as_posix()}")
+        Base.metadata.create_all(self.engine)
+        self.factory = create_session_factory(self.engine)
+        with transactional_session(self.factory) as session:
+            session.add_all(
+                [
+                    ErpSyncControl(id="ERP_PROJECTS_TASKS", generation=0),
+                    ResourceClassConfig(
+                        code="PROGRAMMEUR",
+                        label="Programmeur",
+                        average_hourly_cost_cad=Decimal("125.0000"),
+                        active=True,
+                        version=1,
+                    ),
+                    TaskClassStandard(
+                        task_code="100",
+                        resource_class_code="PROGRAMMEUR",
+                        active=True,
+                        version=1,
+                    ),
+                ]
+            )
+        self.control_settings = ErpSyncSchedulerSettings(enabled=False)
+        self.service = ErpSyncEvidenceService(
+            self.factory,
+            cipher=FernetSecretCipher(Fernet.generate_key().decode("ascii")),
+            settings=ErpSyncEvidenceSettings(
+                max_evidence_mib=16,
+                evidence_budget_mib=32,
+            ),
+            control_settings=self.control_settings,
+        )
+
+    def tearDown(self) -> None:
+        self.engine.dispose()
+        self.tmp.cleanup()
+
+    def _attempt(self, key: str):
+        control = SqlErpSyncControlRepository(self.factory)
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="operator",
+            idempotency_key=key,
+            settings=self.control_settings,
+        )
+        attempt = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="operator",
+            settings=self.control_settings,
+        )
+        self.assertIsNotNone(attempt)
+        self.assertTrue(
+            control.start_attempt(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                settings=self.control_settings,
+            )
+        )
+        return control, occurrence, attempt
+
+    def _approve_bootstrap_baselines(
+        self,
+        orchestrator: ErpSyncOrchestrator,
+        control: SqlErpSyncControlRepository,
+        occurrence,
+        *,
+        reason: str,
+    ):
+        first = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="operator",
+            settings=self.control_settings,
+        )
+        self.assertIsNotNone(first)
+        orchestrator._execute_attempt(first.id, first.generation)
+        self.assertEqual(control.get_attempt(first.id).status, "FAILED")
+        with self.factory() as session:
+            manifests = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceManifest).where(
+                        ErpSyncEvidenceManifest.attempt_id == first.id,
+                        ErpSyncEvidenceManifest.proof_type == "SOURCE",
+                    )
+                )
+            )
+        self.assertEqual({row.source_type for row in manifests}, {"PROJECTS", "TASKS"})
+        for manifest in manifests:
+            self.service.approve_baseline(
+                manifest_id=manifest.id,
+                actor_name="admin",
+                reason=reason,
+            )
+        return first
+
+    def test_source_payload_is_encrypted_and_integrity_checked(self) -> None:
+        _control, _occurrence, attempt = self._attempt("encrypted-source")
+        payload = [{"external_id": "101", "name": "SENSITIVE-EVIDENCE-MARKER"}]
+
+        captured = self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload=payload,
+            row_count=1,
+        )
+
+        with self.factory() as session:
+            manifest = session.get(ErpSyncEvidenceManifest, captured.manifest_id)
+            chunks = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceChunk).where(
+                        ErpSyncEvidenceChunk.manifest_id == captured.manifest_id
+                    )
+                )
+            )
+        self.assertIsNotNone(manifest)
+        self.assertEqual(manifest.state, "SEALED")
+        self.assertEqual(len(chunks), 1)
+        self.assertNotIn("SENSITIVE-EVIDENCE-MARKER", chunks[0].encrypted_payload)
+        self.assertEqual(self.service.load_source(manifest_id=captured.manifest_id), payload)
+
+    def test_typed_codec_round_trips_datetime_decimal_and_multibyte_payload(self) -> None:
+        observed = datetime(2026, 11, 3, 4, 59, 59, tzinfo=timezone.utc)
+        payload = {
+            "observed_at": observed,
+            "amount": Decimal("125.0000"),
+            "accented": "é" * (530 * 1024),
+            "flags": [True, False, None, 7, "texte"],
+        }
+        decoded = decode_canonical_json_bytes(canonical_json_bytes(payload))
+        self.assertEqual(decoded["observed_at"], observed)
+        self.assertEqual(decoded["amount"], Decimal("125.0000"))
+        self.assertEqual(decoded["accented"], payload["accented"])
+
+        _control, _occurrence, attempt = self._attempt("multibyte-codec")
+        captured = self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload=payload,
+            row_count=1,
+        )
+        loaded = self.service.load_source(manifest_id=captured.manifest_id)
+        self.assertEqual(loaded["observed_at"], observed)
+        self.assertEqual(loaded["amount"], Decimal("125.0000"))
+        self.assertEqual(loaded["accented"], payload["accented"])
+        with self.factory() as session:
+            manifest = session.get(ErpSyncEvidenceManifest, captured.manifest_id)
+            self.assertGreater(int(manifest.chunk_count), 1)
+
+    def test_unknown_typed_codec_version_fails_closed(self) -> None:
+        payload = (
+            '{"codec_version":'
+            + str(ERP_EVIDENCE_CODEC_VERSION + 1)
+            + ',"payload":{"value":"future"}}'
+        ).encode("utf-8")
+        with self.assertRaises(Exception) as raised:
+            decode_canonical_json_bytes(payload)
+        self.assertEqual(
+            getattr(raised.exception, "code", None),
+            "erp_sync_evidence_codec_incompatible",
+        )
+
+    def test_future_evidence_protocol_is_persistable_but_current_reader_fails_closed(self) -> None:
+        _control, _occurrence, attempt = self._attempt("future-evidence-protocol")
+        captured = self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"records": [{"number": "P-FUTURE"}]},
+            row_count=1,
+        )
+        with transactional_session(self.factory) as session:
+            session.get(
+                ErpSyncEvidenceManifest,
+                captured.manifest_id,
+            ).protocol_version = 2
+
+        with self.assertRaises(Exception) as raised:
+            self.service.load_source(manifest_id=captured.manifest_id)
+        self.assertEqual(
+            getattr(raised.exception, "code", None),
+            "erp_sync_evidence_protocol_incompatible",
+        )
+
+    def test_missing_crypto_fails_closed_before_evidence_write(self) -> None:
+        _control, _occurrence, attempt = self._attempt("missing-crypto")
+        unavailable = ErpSyncEvidenceService(
+            self.factory,
+            cipher=None,
+            settings=ErpSyncEvidenceSettings(
+                max_evidence_mib=16,
+                evidence_budget_mib=32,
+            ),
+            control_settings=self.control_settings,
+        )
+        with self.assertRaisesRegex(Exception, "chiffrement"):
+            unavailable.capture_source(
+                attempt_id=attempt.id,
+                source_type="PROJECTS",
+                profile_fingerprint=self.control_settings.config_fingerprint,
+                payload=[{"external_id": "101"}],
+                row_count=1,
+            )
+        self.assertFalse(
+            unavailable.automatic_execution_available(
+                profile_fingerprint=self.control_settings.config_fingerprint
+            )
+        )
+
+    def test_expired_owner_with_valid_committed_mutation_admits_replacement(self) -> None:
+        control, occurrence, first = self._attempt("expired-owner-committed")
+        self.service.reserve_attempt(attempt_id=first.id)
+        self.service.bind_attempt_policy(
+            attempt_id=first.id,
+            generation=first.generation,
+        )
+        with transactional_session(self.factory) as session:
+            row = Project(
+                id="EXPIRED-COMMITTED",
+                erp_external_id="EXPIRED-COMMITTED-ERP",
+                number="EXPIRED-COMMITTED",
+                name="Committed before expiry",
+                status="Actif",
+            )
+            session.add(row)
+            session.flush()
+            evidence_id = self.service.record_before_in_session(
+                session,
+                attempt_id=first.id,
+                generation=first.generation,
+                unit_type="PROJECT_SNAPSHOT",
+                entity_type="PROJECT",
+                entity_key=row.erp_external_id,
+                before=None,
+            )
+            self.service.record_after_in_session(
+                session,
+                evidence_id=evidence_id,
+                attempt_id=first.id,
+                generation=first.generation,
+                after={
+                    "erp_external_id": row.erp_external_id,
+                    "number": row.number,
+                    "name": row.name,
+                    "client": row.client,
+                    "project_manager_external_id": row.project_manager_external_id,
+                    "project_manager_name": row.project_manager_name,
+                    "status": row.status,
+                },
+            )
+            control_row = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+            control_row.lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=10)
+
+        claim = control.claim_outcome(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="peer",
+            settings=self.control_settings,
+            command_identity="retry:expired-owner-committed",
+        )
+        self.assertIsNotNone(claim.attempt)
+        self.assertTrue(claim.admitted)
+        self.assertGreater(claim.attempt.generation, first.generation)
+        self.assertEqual(control.get_attempt(first.id).status, "INTERRUPTED")
+        with self.factory() as session:
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == first.id
+                )
+            )
+            control_row = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+            attempts = tuple(
+                session.scalars(
+                    select(ErpSyncAttempt).where(
+                        ErpSyncAttempt.occurrence_id == occurrence.id
+                    )
+                )
+            )
+        self.assertIsNotNone(recovery)
+        self.assertEqual(recovery.state, "AVAILABLE")
+        self.assertFalse(recovery.pinned)
+        self.assertEqual(control_row.owner_attempt_id, claim.attempt.id)
+        self.assertEqual(len(attempts), 2)
+        with self.factory() as session:
+            preserved = session.get(Project, "EXPIRED-COMMITTED")
+            reservation = session.scalar(
+                select(ErpSyncEvidenceReservation).where(
+                    ErpSyncEvidenceReservation.attempt_id == first.id
+                )
+            )
+        self.assertIsNotNone(preserved)
+        self.assertEqual(preserved.name, "Committed before expiry")
+        self.assertIsNotNone(reservation.released_at)
+
+    def test_stale_generation_cannot_publish_recovery_after_takeover(self) -> None:
+        control, occurrence, first = self._attempt("stale-validation-recovery")
+        self.service.reserve_attempt(attempt_id=first.id)
+        self.service.bind_attempt_policy(
+            attempt_id=first.id,
+            generation=first.generation,
+        )
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=ProjectSource(()),
+            project_task_source=PortfolioTaskSource({}),
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        with transactional_session(self.factory) as session:
+            row = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+            row.lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=10)
+        second = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="peer",
+            settings=self.control_settings,
+            command_identity="retry:stale-validation-recovery",
+        )
+        self.assertIsNotNone(second)
+        self.assertGreater(second.generation, first.generation)
+
+        from app.infrastructure.sql.erp_sync_control_repository import ErpSyncFenceLost
+        with self.assertRaises(ErpSyncFenceLost):
+            orchestrator._validate_full_publication(
+                attempt_id=first.id,
+                generation=first.generation,
+            )
+        with self.factory() as session:
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == first.id
+                )
+            )
+            control_row = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+        self.assertIsNone(recovery)
+        self.assertEqual(control_row.owner_attempt_id, second.id)
+        orchestrator.shutdown()
+
+    def test_duplicate_project_identity_blocks_before_any_business_mutation(self) -> None:
+        projects = ProjectSource(
+            (
+                project("DUP-1", external_id="5001"),
+                project("DUP-2", external_id="5001"),
+            )
+        )
+        tasks = PortfolioTaskSource({})
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        control = SqlErpSyncControlRepository(self.factory)
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="operator",
+            idempotency_key="duplicate-project-source",
+            settings=self.control_settings,
+        )
+        attempt = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="operator",
+            settings=self.control_settings,
+        )
+        self.assertIsNotNone(attempt)
+
+        orchestrator._execute_attempt(attempt.id, attempt.generation)
+
+        failed = control.get_attempt(attempt.id)
+        self.assertEqual(failed.status, "FAILED")
+        self.assertEqual(failed.error_code, "erp_sync_project_source_duplicate_identity")
+        self.assertEqual(tasks.calls, 0)
+        with self.factory() as session:
+            self.assertEqual(
+                int(session.scalar(select(func.count(Project.id))) or 0),
+                0,
+            )
+        orchestrator.shutdown()
+
+    def test_malformed_task_source_blocks_before_project_mutation(self) -> None:
+        projects = ProjectSource((project("P-MAL", external_id="5002"),))
+        malformed = TaskCatalogProjectSnapshot(
+            project_number="P-MAL",
+            source_rows=1,
+            rejected_rows=0,
+            items=(
+                TaskCatalogItem(
+                    project_number="P-MAL",
+                    code="100",
+                    label="Missing TaskID",
+                    status="Actif",
+                    active=True,
+                    erp_task_id=None,
+                    account_group="DEPMO",
+                ),
+            ),
+        )
+        tasks = PortfolioTaskSource({"P-MAL": malformed})
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        control = SqlErpSyncControlRepository(self.factory)
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="operator",
+            idempotency_key="malformed-task-source",
+            settings=self.control_settings,
+        )
+        attempt = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="operator",
+            settings=self.control_settings,
+        )
+        self.assertIsNotNone(attempt)
+
+        orchestrator._execute_attempt(attempt.id, attempt.generation)
+
+        failed = control.get_attempt(attempt.id)
+        self.assertEqual(failed.status, "FAILED")
+        self.assertEqual(failed.error_code, "erp_sync_task_source_identity_missing")
+        with self.factory() as session:
+            self.assertIsNone(
+                session.scalar(select(Project).where(Project.number == "P-MAL"))
+            )
+        self.assertEqual(projects.calls, 1)
+        self.assertEqual(tasks.calls, 1)
+        orchestrator.shutdown()
+
+    def test_full_run_requires_human_baseline_then_retry_reads_sources_again(self) -> None:
+        projects = ProjectSource((project("P-643B"),))
+        tasks = PortfolioTaskSource({"P-643B": snapshot("P-643B")})
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        control = SqlErpSyncControlRepository(self.factory)
+
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="operator",
+            idempotency_key="bootstrap-baseline",
+            settings=self.control_settings,
+        )
+        first = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="operator",
+            settings=self.control_settings,
+        )
+        self.assertIsNotNone(first)
+        orchestrator._execute_attempt(first.id, first.generation)
+
+        failed = control.get_attempt(first.id)
+        self.assertEqual(failed.status, "FAILED")
+        with self.factory() as session:
+            self.assertIsNone(
+                session.scalar(select(Project).where(Project.number == "P-643B"))
+            )
+            manifests = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceManifest).where(
+                        ErpSyncEvidenceManifest.attempt_id == first.id,
+                        ErpSyncEvidenceManifest.proof_type == "SOURCE",
+                    )
+                )
+            )
+        self.assertEqual({row.source_type for row in manifests}, {"PROJECTS", "TASKS"})
+        for manifest in manifests:
+            self.service.approve_baseline(
+                manifest_id=manifest.id,
+                actor_name="admin",
+                reason="Bootstrap reviewed against complete source",
+            )
+        with self.factory() as session:
+            approvals = tuple(session.scalars(select(ErpSyncBaselineApprovalAudit)))
+        self.assertEqual(len(approvals), 2)
+        self.assertTrue(all(row.actor_name == "admin" for row in approvals))
+
+        retry = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="operator",
+            settings=self.control_settings,
+            command_identity="retry:643b-bootstrap",
+        )
+        self.assertIsNotNone(retry)
+        orchestrator._execute_attempt(retry.id, retry.generation)
+
+        completed = control.get_attempt(retry.id)
+        self.assertEqual(completed.status, "SUCCEEDED")
+        self.assertEqual(projects.calls, 2)
+        self.assertEqual(tasks.calls, 2)
+        with self.factory() as session:
+            self.assertIsNotNone(
+                session.scalar(select(Project).where(Project.number == "P-643B"))
+            )
+            self.assertIsNotNone(
+                session.scalar(
+                    select(TaskCatalogEntry).where(
+                        TaskCatalogEntry.project_number == "P-643B",
+                        TaskCatalogEntry.erp_task_id == "9001",
+                    )
+                )
+            )
+
+    def test_task_unit_commits_eligible_row_skips_new_standard_exclusion_and_uses_source_time(self) -> None:
+        control, _occurrence, attempt = self._attempt("task-exclusion-source-time")
+        self.service.reserve_attempt(attempt_id=attempt.id)
+        self.service.bind_attempt_policy(
+            attempt_id=attempt.id,
+            generation=attempt.generation,
+        )
+        with transactional_session(self.factory) as session:
+            session.add(
+                Project(
+                    id="P-EXCLUSION-ID",
+                    erp_external_id="8101",
+                    number="P-EXCLUSION",
+                    name="Project exclusion",
+                    status="Actif",
+                )
+            )
+
+        eligible = TaskCatalogItem(
+            project_number="P-EXCLUSION",
+            code="100",
+            label="Eligible",
+            status="Actif",
+            active=True,
+            erp_task_id="98100",
+            account_group="DEPMO",
+        )
+        excluded = TaskCatalogItem(
+            project_number="P-EXCLUSION",
+            code="999",
+            label="Outside Standards",
+            status="Actif",
+            active=True,
+            erp_task_id="98999",
+            account_group="DEPMO",
+        )
+        task_snapshot = TaskCatalogProjectSnapshot(
+            project_number="P-EXCLUSION",
+            source_rows=2,
+            rejected_rows=0,
+            items=(eligible, excluded),
+        )
+        captured = self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "portfolio": TaskCatalogPortfolioSnapshot(
+                    source_rows=2,
+                    source_pages=1,
+                    snapshots=(task_snapshot,),
+                )
+            },
+            row_count=2,
+            project_counts={"P-EXCLUSION": 2},
+        )
+        observed = datetime(2026, 11, 3, 4, 59, 59, tzinfo=timezone.utc)
+        with transactional_session(self.factory) as session:
+            session.get(ErpSyncEvidenceManifest, captured.manifest_id).observed_at = observed
+
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=None,
+            project_task_source=PortfolioTaskSource({"P-EXCLUSION": task_snapshot}),
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        run_id = orchestrator._create_task_run(attempt.id, attempt.generation)
+        result = orchestrator._process_task_project(
+            run_id,
+            attempt.id,
+            attempt.generation,
+            SimpleNamespace(
+                id="P-EXCLUSION-ID",
+                number="P-EXCLUSION",
+                active=True,
+                erp_external_id="8101",
+            ),
+            {"P-EXCLUSION": task_snapshot},
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result.created, 1)
+        self.assertEqual(result.ignored, 1)
+
+        with self.factory() as session:
+            eligible_row = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.erp_task_id == "98100"
+                )
+            )
+            excluded_row = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.erp_task_id == "98999"
+                )
+            )
+            evidence_rows = tuple(
+                session.scalars(
+                    select(ErpSyncMutationEvidence).where(
+                        ErpSyncMutationEvidence.attempt_id == attempt.id,
+                        ErpSyncMutationEvidence.entity_type == "TASK",
+                    )
+                )
+            )
+        self.assertIsNotNone(eligible_row)
+        freshness = eligible_row.erp_budget_last_success_at
+        self.assertIsNotNone(freshness)
+        if freshness.tzinfo is None:
+            freshness = freshness.replace(tzinfo=timezone.utc)
+        self.assertEqual(freshness.astimezone(timezone.utc), observed)
+        self.assertIsNone(excluded_row)
+        self.assertEqual(len(evidence_rows), 1)
+        self.assertEqual(evidence_rows[0].entity_key, "98100")
+        self.assertIsNotNone(evidence_rows[0].after_sha256)
+        self.assertIsNotNone(evidence_rows[0].committed_at)
+        orchestrator.shutdown()
+
+    def test_existing_task_becoming_standard_excluded_records_real_transition(self) -> None:
+        control, _occurrence, attempt = self._attempt("existing-task-excluded")
+        self.service.reserve_attempt(attempt_id=attempt.id)
+        self.service.bind_attempt_policy(
+            attempt_id=attempt.id,
+            generation=attempt.generation,
+        )
+        with transactional_session(self.factory) as session:
+            session.add(
+                Project(
+                    id="EXISTING-EXCLUDED-PROJECT",
+                    erp_external_id="8111",
+                    number="EXISTING-EXCLUDED",
+                    name="Existing excluded",
+                    status="Actif",
+                )
+            )
+            session.add(
+                TaskCatalogEntry(
+                    project_number="EXISTING-EXCLUDED",
+                    task_code="999",
+                    label="Previously eligible",
+                    status="Actif",
+                    active=True,
+                    erp_task_id="98998",
+                    account_group="DEPMO",
+                    workforce_eligible=True,
+                    resource_class_code="PROGRAMMEUR",
+                    average_hourly_cost_cad=Decimal("125.0000"),
+                )
+            )
+        excluded_item = TaskCatalogItem(
+            project_number="EXISTING-EXCLUDED",
+            code="999",
+            label="Now outside Standards",
+            status="Actif",
+            active=True,
+            erp_task_id="98998",
+            account_group="DEPMO",
+        )
+        excluded_snapshot = TaskCatalogProjectSnapshot(
+            project_number="EXISTING-EXCLUDED",
+            source_rows=1,
+            rejected_rows=0,
+            items=(excluded_item,),
+        )
+        self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "portfolio": TaskCatalogPortfolioSnapshot(
+                    source_rows=1,
+                    source_pages=1,
+                    snapshots=(excluded_snapshot,),
+                )
+            },
+            row_count=1,
+            project_counts={"EXISTING-EXCLUDED": 1},
+        )
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=None,
+            project_task_source=PortfolioTaskSource(
+                {"EXISTING-EXCLUDED": excluded_snapshot}
+            ),
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        run_id = orchestrator._create_task_run(attempt.id, attempt.generation)
+        result = orchestrator._process_task_project(
+            run_id,
+            attempt.id,
+            attempt.generation,
+            SimpleNamespace(
+                id="EXISTING-EXCLUDED-PROJECT",
+                number="EXISTING-EXCLUDED",
+                active=True,
+                erp_external_id="8111",
+            ),
+            {"EXISTING-EXCLUDED": excluded_snapshot},
+        )
+        self.assertIsNotNone(result)
+        with self.factory() as session:
+            row = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.erp_task_id == "98998"
+                )
+            )
+            evidence = session.scalar(
+                select(ErpSyncMutationEvidence).where(
+                    ErpSyncMutationEvidence.attempt_id == attempt.id,
+                    ErpSyncMutationEvidence.entity_type == "TASK",
+                    ErpSyncMutationEvidence.entity_key == "98998",
+                )
+            )
+        self.assertIsNotNone(row)
+        self.assertFalse(row.workforce_eligible)
+        self.assertIsNone(row.resource_class_code)
+        self.assertIsNotNone(evidence)
+        self.assertTrue(evidence.before_present)
+        self.assertIsNotNone(evidence.after_sha256)
+        self.assertIsNotNone(evidence.committed_at)
+        orchestrator.shutdown()
+
+    def test_reservation_estimator_accepts_near_limit_encrypted_payload_and_rejects_over_limit(self) -> None:
+        control, _occurrence, attempt = self._attempt("near-limit-evidence")
+        payload = {"blob": "x" * (14 * 1024 * 1024)}
+        captured = self.service.capture_source(
+            attempt_id=attempt.id,
+            generation=attempt.generation,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload=payload,
+            row_count=1,
+        )
+        self.assertIsNotNone(captured.manifest_id)
+        with self.factory() as session:
+            reservation = session.scalar(
+                select(ErpSyncEvidenceReservation).where(
+                    ErpSyncEvidenceReservation.attempt_id == attempt.id
+                )
+            )
+        self.assertIsNotNone(reservation)
+        self.assertLessEqual(
+            int(reservation.used_bytes),
+            int(reservation.reserved_bytes),
+        )
+        self.assertLessEqual(
+            int(reservation.reserved_bytes),
+            32 * 1024 * 1024,
+        )
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+
+        _control2, _occurrence2, too_large = self._attempt(
+            "over-limit-evidence"
+        )
+        with self.assertRaises(Exception) as raised:
+            self.service.capture_source(
+                attempt_id=too_large.id,
+                generation=too_large.generation,
+                source_type="PROJECTS",
+                profile_fingerprint=self.control_settings.config_fingerprint,
+                payload={"blob": "x" * (17 * 1024 * 1024)},
+                row_count=1,
+            )
+        self.assertEqual(
+            getattr(raised.exception, "code", None),
+            "erp_sync_evidence_attempt_budget_exceeded",
+        )
+
+    def test_incompatible_peer_evidence_policy_is_rejected_for_same_attempt(self) -> None:
+        _control, _occurrence, attempt = self._attempt("policy-peer")
+        self.service.reserve_attempt(attempt_id=attempt.id)
+        frozen = self.service.bind_attempt_policy(
+            attempt_id=attempt.id,
+            generation=attempt.generation,
+        )
+        peer = ErpSyncEvidenceService(
+            self.factory,
+            cipher=self.service._cipher,
+            settings=ErpSyncEvidenceSettings(
+                min_source_ratio=0.75,
+                max_evidence_mib=16,
+                evidence_budget_mib=32,
+            ),
+            control_settings=self.control_settings,
+        )
+        with self.assertRaises(Exception) as raised:
+            peer.bind_attempt_policy(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+            )
+        self.assertEqual(
+            getattr(raised.exception, "code", None),
+            "erp_sync_policy_fingerprint_changed",
+        )
+        with self.factory() as session:
+            persisted = session.get(ErpSyncAttempt, attempt.id)
+        self.assertEqual(persisted.policy_fingerprint, frozen)
+
+    def test_policy_change_between_project_units_preserves_first_and_blocks_second(self) -> None:
+        control, _occurrence, attempt = self._attempt("policy-change-between-projects")
+        self.service.reserve_attempt(attempt_id=attempt.id)
+        self.service.bind_attempt_policy(
+            attempt_id=attempt.id,
+            generation=attempt.generation,
+        )
+        with transactional_session(self.factory) as session:
+            session.add_all(
+                [
+                    Project(
+                        id="POLICY-A-ID",
+                        erp_external_id="8201",
+                        number="POLICY-A",
+                        name="Policy A",
+                        status="Actif",
+                    ),
+                    Project(
+                        id="POLICY-B-ID",
+                        erp_external_id="8202",
+                        number="POLICY-B",
+                        name="Policy B",
+                        status="Actif",
+                    ),
+                ]
+            )
+        snapshot_a = snapshot("POLICY-A", task_id="98201")
+        snapshot_b = snapshot("POLICY-B", task_id="98202")
+        self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "portfolio": TaskCatalogPortfolioSnapshot(
+                    source_rows=2,
+                    source_pages=1,
+                    snapshots=(snapshot_a, snapshot_b),
+                )
+            },
+            row_count=2,
+            project_counts={"POLICY-A": 1, "POLICY-B": 1},
+        )
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=None,
+            project_task_source=PortfolioTaskSource(
+                {"POLICY-A": snapshot_a, "POLICY-B": snapshot_b}
+            ),
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        run_id = orchestrator._create_task_run(attempt.id, attempt.generation)
+        with transactional_session(self.factory) as session:
+            run = session.get(AcumaticaProjectTaskSyncRun, run_id)
+            run.projects_total = 2
+
+        result_a = orchestrator._process_task_project(
+            run_id,
+            attempt.id,
+            attempt.generation,
+            SimpleNamespace(
+                id="POLICY-A-ID",
+                number="POLICY-A",
+                active=True,
+                erp_external_id="8201",
+            ),
+            {"POLICY-A": snapshot_a, "POLICY-B": snapshot_b},
+        )
+        self.assertIsNotNone(result_a)
+        with transactional_session(self.factory) as session:
+            session.get(
+                ResourceClassConfig,
+                "PROGRAMMEUR",
+            ).average_hourly_cost_cad = Decimal("250.0000")
+
+        result_b = orchestrator._process_task_project(
+            run_id,
+            attempt.id,
+            attempt.generation,
+            SimpleNamespace(
+                id="POLICY-B-ID",
+                number="POLICY-B",
+                active=True,
+                erp_external_id="8202",
+            ),
+            {"POLICY-A": snapshot_a, "POLICY-B": snapshot_b},
+        )
+        self.assertIsNone(result_b)
+        with self.factory() as session:
+            task_a = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.erp_task_id == "98201"
+                )
+            )
+            task_b = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.erp_task_id == "98202"
+                )
+            )
+            receipts = tuple(
+                session.scalars(
+                    select(AcumaticaProjectTaskSyncRun)
+                    .where(AcumaticaProjectTaskSyncRun.id == run_id)
+                )
+            )
+            from app.infrastructure.sql import AcumaticaProjectTaskSyncProjectResult
+            project_results = tuple(
+                session.scalars(
+                    select(AcumaticaProjectTaskSyncProjectResult)
+                    .where(AcumaticaProjectTaskSyncProjectResult.run_id == run_id)
+                    .order_by(AcumaticaProjectTaskSyncProjectResult.project_number)
+                )
+            )
+        self.assertIsNotNone(task_a)
+        self.assertEqual(
+            task_a.average_hourly_cost_cad,
+            Decimal("125.0000"),
+        )
+        self.assertIsNone(task_b)
+        self.assertEqual(len(receipts), 1)
+        self.assertEqual(
+            [(row.project_number, row.status, row.error_code) for row in project_results],
+            [
+                ("POLICY-A", "synchronized", None),
+                ("POLICY-B", "rejected", "erp_sync_policy_fingerprint_changed"),
+            ],
+        )
+        orchestrator.shutdown()
+
+    def test_global_hard_validation_failure_quarantines_provenance_without_rollback(self) -> None:
+        projects = ProjectSource((project("P-GLOBAL", external_id="6001"),))
+        tasks = PortfolioTaskSource({"P-GLOBAL": snapshot("P-GLOBAL", task_id="96001")})
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        control = SqlErpSyncControlRepository(self.factory)
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="operator",
+            idempotency_key="global-hard-validation",
+            settings=self.control_settings,
+        )
+        first = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="operator",
+            settings=self.control_settings,
+        )
+        self.assertIsNotNone(first)
+        orchestrator._execute_attempt(first.id, first.generation)
+        self.assertEqual(control.get_attempt(first.id).status, "FAILED")
+        with self.factory() as session:
+            source_manifests = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceManifest).where(
+                        ErpSyncEvidenceManifest.attempt_id == first.id,
+                        ErpSyncEvidenceManifest.proof_type == "SOURCE",
+                    )
+                )
+            )
+        for manifest in source_manifests:
+            self.service.approve_baseline(
+                manifest_id=manifest.id,
+                actor_name="admin",
+                reason="Reviewed bootstrap for global hard validation",
+            )
+
+        retry = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="operator",
+            settings=self.control_settings,
+            command_identity="retry:global-hard-validation",
+        )
+        self.assertIsNotNone(retry)
+        original_publish = orchestrator._publish_full_success
+
+        def corrupt_then_publish(*, attempt_id: str, generation: int) -> None:
+            attempt = control.get_attempt(attempt_id)
+            self.assertIsNotNone(attempt.task_sync_run_id)
+            with transactional_session(self.factory) as session:
+                quality = session.get(ErpSyncProjectQuality, "P-GLOBAL")
+                self.assertIsNotNone(quality)
+                quality.quality_state = "QUARANTINED"
+                quality.reason_code = "injected_prepublication_quarantine"
+            original_publish(
+                attempt_id=attempt_id,
+                generation=generation,
+            )
+
+        with patch.object(
+            orchestrator,
+            "_publish_full_success",
+            side_effect=corrupt_then_publish,
+        ):
+            orchestrator._execute_attempt(retry.id, retry.generation)
+
+        failed = control.get_attempt(retry.id)
+        self.assertEqual(failed.status, "FAILED")
+        self.assertEqual(failed.error_code, "erp_sync_global_validation_failed")
+        self.assertIsNone(control.get_occurrence(occurrence.id).success_attempt_id)
+        with self.factory() as session:
+            self.assertIsNotNone(
+                session.scalar(select(Project).where(Project.number == "P-GLOBAL"))
+            )
+            self.assertIsNotNone(
+                session.scalar(
+                    select(TaskCatalogEntry).where(
+                        TaskCatalogEntry.project_number == "P-GLOBAL",
+                        TaskCatalogEntry.erp_task_id == "96001",
+                    )
+                )
+            )
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == retry.id
+                )
+            )
+            quality = session.get(ErpSyncProjectQuality, "P-GLOBAL")
+            self.assertIsNotNone(recovery)
+            self.assertEqual(recovery.state, "REQUIRED")
+            self.assertTrue(recovery.pinned)
+            self.assertIsNotNone(quality)
+            self.assertEqual(quality.quality_state, "QUARANTINED")
+            self.assertEqual(quality.producer_attempt_id, retry.id)
+        with self.assertRaisesRegex(Exception, "récupération ERP requise"):
+            orchestrator.run_now(
+                intent="PROJECTS_AND_ACTIVE_TASKS",
+                actor_name="operator",
+                idempotency_key="blocked-after-recovery",
+            )
+        orchestrator.shutdown()
+
+    def test_plausibility_exception_is_attempt_scoped_even_for_identical_retry_source(self) -> None:
+        control, occurrence, first = self._attempt("exception-source-first")
+        baseline = self.service.capture_source(
+            attempt_id=first.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"records": [{"number": str(index)} for index in range(20)]},
+            row_count=20,
+        )
+        self.service.approve_baseline(
+            manifest_id=baseline.manifest_id,
+            actor_name="admin",
+            reason="Approved comparable population",
+        )
+        self.assertTrue(
+            control.finish(
+                attempt_id=first.id,
+                generation=first.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.finalize_attempt(attempt_id=first.id, successful=False)
+
+        retry_one = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="operator",
+            settings=self.control_settings,
+            command_identity="retry:exception-one",
+        )
+        self.assertIsNotNone(retry_one)
+        reviewed = self.service.capture_source(
+            attempt_id=retry_one.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"records": [{"number": "1"}]},
+            row_count=1,
+        )
+        self.service.bind_attempt_policy(
+            attempt_id=retry_one.id,
+            generation=retry_one.generation,
+        )
+        self.assertFalse(self.service.validate_plausibility(reviewed).accepted)
+        self.assertTrue(
+            control.pause_for_review(
+                attempt_id=retry_one.id,
+                generation=retry_one.generation,
+                settings=self.control_settings,
+            )
+        )
+        self.service.approve_plausibility_exception(
+            attempt_id=retry_one.id,
+            source_type="PROJECTS",
+            source_fingerprint=reviewed.source_fingerprint,
+            threshold_scope="GLOBAL",
+            actor_name="admin",
+            reason="Reviewed planned reduction",
+        )
+        self.assertTrue(self.service.validate_plausibility(reviewed).accepted)
+        resumed_one = control.resume_review_attempt(
+            attempt_id=retry_one.id,
+            settings=self.control_settings,
+        )
+        self.assertEqual(resumed_one.id, retry_one.id)
+        self.assertTrue(
+            control.finish(
+                attempt_id=retry_one.id,
+                generation=resumed_one.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.finalize_attempt(attempt_id=retry_one.id, successful=False)
+
+        retry_two = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="operator",
+            settings=self.control_settings,
+            command_identity="retry:exception-two",
+        )
+        self.assertIsNotNone(retry_two)
+        identical = self.service.capture_source(
+            attempt_id=retry_two.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"records": [{"number": "1"}]},
+            row_count=1,
+        )
+        self.assertEqual(identical.source_fingerprint, reviewed.source_fingerprint)
+        self.service.bind_attempt_policy(
+            attempt_id=retry_two.id,
+            generation=retry_two.generation,
+        )
+        self.assertFalse(self.service.validate_plausibility(identical).accepted)
+        self.assertTrue(
+            control.pause_for_review(
+                attempt_id=retry_two.id,
+                generation=retry_two.generation,
+                settings=self.control_settings,
+            )
+        )
+        self.service.approve_plausibility_exception(
+            attempt_id=retry_two.id,
+            source_type="PROJECTS",
+            source_fingerprint=identical.source_fingerprint,
+            threshold_scope="GLOBAL",
+            actor_name="admin",
+            reason="Fresh retry requires its own explicit approval",
+        )
+        self.assertTrue(self.service.validate_plausibility(identical).accepted)
+        resumed_two = control.resume_review_attempt(
+            attempt_id=retry_two.id,
+            settings=self.control_settings,
+        )
+        self.assertTrue(
+            control.finish(
+                attempt_id=retry_two.id,
+                generation=resumed_two.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.finalize_attempt(attempt_id=retry_two.id, successful=False)
+
+        retry_three = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="operator",
+            settings=self.control_settings,
+            command_identity="retry:exception-three",
+        )
+        self.assertIsNotNone(retry_three)
+        changed = self.service.capture_source(
+            attempt_id=retry_three.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"records": [{"number": "2"}]},
+            row_count=1,
+        )
+        self.assertNotEqual(changed.source_fingerprint, reviewed.source_fingerprint)
+        self.assertFalse(self.service.validate_plausibility(changed).accepted)
+
+    def test_project_local_plausibility_drop_rejects_only_that_project(self) -> None:
+        control, _baseline_occurrence, baseline_attempt = self._attempt(
+            "plausibility-local-baseline"
+        )
+        projects_baseline = self.service.capture_source(
+            attempt_id=baseline_attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "records": [
+                    {
+                        "external_id": "8301",
+                        "number": "PL-A",
+                        "name": "A",
+                        "status": "Actif",
+                    },
+                    {
+                        "external_id": "8302",
+                        "number": "PL-B",
+                        "name": "B",
+                        "status": "Actif",
+                    },
+                ]
+            },
+            row_count=2,
+        )
+        baseline_a = TaskCatalogProjectSnapshot(
+            project_number="PL-A",
+            source_rows=100,
+            rejected_rows=0,
+            items=(snapshot("PL-A", task_id="98301").items[0],),
+        )
+        baseline_b = TaskCatalogProjectSnapshot(
+            project_number="PL-B",
+            source_rows=100,
+            rejected_rows=0,
+            items=(snapshot("PL-B", task_id="98302").items[0],),
+        )
+        tasks_baseline = self.service.capture_source(
+            attempt_id=baseline_attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "portfolio": TaskCatalogPortfolioSnapshot(
+                    source_rows=200,
+                    source_pages=1,
+                    snapshots=(baseline_a, baseline_b),
+                )
+            },
+            row_count=200,
+            project_counts={"PL-A": 100, "PL-B": 100},
+        )
+        for captured in (projects_baseline, tasks_baseline):
+            self.service.approve_baseline(
+                manifest_id=captured.manifest_id,
+                actor_name="admin",
+                reason="Approved balanced project baseline",
+            )
+        self.assertTrue(
+            control.finish(
+                attempt_id=baseline_attempt.id,
+                generation=baseline_attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.finalize_attempt(
+            attempt_id=baseline_attempt.id,
+            successful=False,
+        )
+
+        current_a = TaskCatalogProjectSnapshot(
+            project_number="PL-A",
+            source_rows=1,
+            rejected_rows=0,
+            items=(snapshot("PL-A", task_id="98401").items[0],),
+        )
+        current_b = TaskCatalogProjectSnapshot(
+            project_number="PL-B",
+            source_rows=199,
+            rejected_rows=0,
+            items=(snapshot("PL-B", task_id="98402").items[0],),
+        )
+        projects = ProjectSource(
+            (
+                project("PL-A", external_id="8301"),
+                project("PL-B", external_id="8302"),
+            )
+        )
+        tasks = PortfolioTaskSource({"PL-A": current_a, "PL-B": current_b})
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="operator",
+            idempotency_key="plausibility-local-current",
+            settings=self.control_settings,
+        )
+        attempt = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="operator",
+            settings=self.control_settings,
+        )
+        self.assertIsNotNone(attempt)
+        orchestrator._execute_attempt(attempt.id, attempt.generation)
+
+        completed = control.get_attempt(attempt.id)
+        self.assertEqual(completed.status, "SUCCEEDED_WITH_ERRORS")
+        with self.factory() as session:
+            task_a = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == "PL-A",
+                    TaskCatalogEntry.erp_task_id == "98401",
+                )
+            )
+            task_b = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == "PL-B",
+                    TaskCatalogEntry.erp_task_id == "98402",
+                )
+            )
+            quality_a = session.get(ErpSyncProjectQuality, "PL-A")
+            quality_b = session.get(ErpSyncProjectQuality, "PL-B")
+        self.assertIsNone(task_a)
+        self.assertIsNotNone(task_b)
+        self.assertIsNotNone(quality_a)
+        self.assertEqual(quality_a.quality_state, "STALE")
+        self.assertEqual(quality_a.producer_attempt_id, attempt.id)
+        self.assertIsNone(quality_a.source_observed_at)
+        self.assertEqual(
+            quality_a.reason_code,
+            "erp_sync_project_plausibility_rejected",
+        )
+        self.assertIsNotNone(quality_b)
+        self.assertEqual(quality_b.quality_state, "VALID")
+        self.assertEqual(quality_b.producer_attempt_id, attempt.id)
+        orchestrator.shutdown()
+
+    def test_explicitly_closed_project_is_excluded_from_current_task_plausibility_targets(self) -> None:
+        control, _baseline_occurrence, baseline_attempt = self._attempt(
+            "closed-target-baseline"
+        )
+        project_baseline = self.service.capture_source(
+            attempt_id=baseline_attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "records": [
+                    {"external_id": "8401", "number": "CL-A", "name": "A", "status": "Actif"},
+                    {"external_id": "8402", "number": "CL-B", "name": "B", "status": "Actif"},
+                ]
+            },
+            row_count=2,
+        )
+        task_baseline = self.service.capture_source(
+            attempt_id=baseline_attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "portfolio": TaskCatalogPortfolioSnapshot(
+                    source_rows=2,
+                    source_pages=1,
+                    snapshots=(
+                        snapshot("CL-A", task_id="98501"),
+                        snapshot("CL-B", task_id="98502"),
+                    ),
+                )
+            },
+            row_count=2,
+            project_counts={"CL-A": 1, "CL-B": 1},
+        )
+        for captured in (project_baseline, task_baseline):
+            self.service.approve_baseline(
+                manifest_id=captured.manifest_id,
+                actor_name="admin",
+                reason="Approved active A/B baseline",
+            )
+        self.assertTrue(
+            control.finish(
+                attempt_id=baseline_attempt.id,
+                generation=baseline_attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.finalize_attempt(
+            attempt_id=baseline_attempt.id,
+            successful=False,
+        )
+
+        projects = ProjectSource(
+            (
+                ExternalProjectRecord(
+                    external_id="8401",
+                    number="CL-A",
+                    name="Projet CL-A",
+                    status="Terminé",
+                ),
+                ExternalProjectRecord(
+                    external_id="8402",
+                    number="CL-B",
+                    name="Projet CL-B",
+                    status="Actif",
+                ),
+            )
+        )
+        tasks = PortfolioTaskSource(
+            {"CL-B": snapshot("CL-B", task_id="98602")}
+        )
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="operator",
+            idempotency_key="closed-target-current",
+            settings=self.control_settings,
+        )
+        attempt = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="operator",
+            settings=self.control_settings,
+        )
+        self.assertIsNotNone(attempt)
+
+        orchestrator._execute_attempt(attempt.id, attempt.generation)
+
+        completed = control.get_attempt(attempt.id)
+        self.assertEqual(completed.status, "SUCCEEDED")
+        with self.factory() as session:
+            task_a = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == "CL-A"
+                )
+            )
+            task_b = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == "CL-B",
+                    TaskCatalogEntry.erp_task_id == "98602",
+                )
+            )
+        self.assertIsNone(task_a)
+        self.assertIsNotNone(task_b)
+        orchestrator.shutdown()
+
+    def test_baseline_and_automatic_readiness_follow_current_policy_identity(self) -> None:
+        control, _occurrence, attempt = self._attempt("policy-baseline")
+        project_source = self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "records": [
+                    {"external_id": "8501", "number": "POL-A", "name": "A", "status": "Actif"}
+                ]
+            },
+            row_count=1,
+        )
+        task_source = self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "portfolio": TaskCatalogPortfolioSnapshot(
+                    source_rows=1,
+                    source_pages=1,
+                    snapshots=(snapshot("POL-A", task_id="98701"),),
+                )
+            },
+            row_count=1,
+            project_counts={"POL-A": 1},
+        )
+        for captured in (project_source, task_source):
+            self.service.approve_baseline(
+                manifest_id=captured.manifest_id,
+                actor_name="admin",
+                reason="Approved policy-bound baseline",
+            )
+        with self.factory() as session:
+            original_policy = self.service.policy_fingerprint_in_session(session)
+        summary = self.service.get_baseline_summary(
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+        )
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary["profile_fingerprint"], original_policy)
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.finalize_attempt(attempt_id=attempt.id, successful=False)
+        self.assertTrue(
+            self.service.automatic_execution_available(
+                profile_fingerprint=self.control_settings.config_fingerprint
+            )
+        )
+
+        with transactional_session(self.factory) as session:
+            standard = session.scalar(
+                select(TaskClassStandard).where(
+                    TaskClassStandard.task_code == "100"
+                )
+            )
+            self.assertIsNotNone(standard)
+            standard.version = int(standard.version) + 1
+
+        with self.factory() as session:
+            changed_policy = self.service.policy_fingerprint_in_session(session)
+        self.assertNotEqual(changed_policy, original_policy)
+        self.assertFalse(
+            self.service.automatic_execution_available(
+                profile_fingerprint=self.control_settings.config_fingerprint
+            )
+        )
+
+    def test_automatic_readiness_requires_complete_643b_persistence_surface(self) -> None:
+        control, _occurrence, attempt = self._attempt("readiness-schema-surface")
+        project_source = self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"records": [{"number": "READY"}]},
+            row_count=1,
+        )
+        task_source = self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "portfolio": TaskCatalogPortfolioSnapshot(
+                    source_rows=1,
+                    source_pages=1,
+                    snapshots=(snapshot("READY", task_id="98801"),),
+                )
+            },
+            row_count=1,
+            project_counts={"READY": 1},
+        )
+        for captured in (project_source, task_source):
+            self.service.approve_baseline(
+                manifest_id=captured.manifest_id,
+                actor_name="admin",
+                reason="Approved readiness baseline",
+            )
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.finalize_attempt(attempt_id=attempt.id, successful=False)
+
+        self.assertTrue(
+            self.service.automatic_execution_available(
+                profile_fingerprint=self.control_settings.config_fingerprint
+            )
+        )
+        with transactional_session(self.factory) as session:
+            authority = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+            self.assertIsNotNone(authority)
+            authority.protocol_version = 999
+        self.assertFalse(
+            self.service.automatic_execution_available(
+                profile_fingerprint=self.control_settings.config_fingerprint
+            )
+        )
+        with transactional_session(self.factory) as session:
+            session.get(ErpSyncControl, "ERP_PROJECTS_TASKS").protocol_version = 1
+
+        for missing in (
+            "erp_sync_compensation_receipts",
+            "erp_sync_plausibility_exceptions",
+        ):
+            real_inspect = __import__(
+                "app.server.erp_sync_evidence",
+                fromlist=["inspect"],
+            ).inspect
+            real = real_inspect(self.engine)
+            fake = SimpleNamespace(
+                has_table=lambda name, missing=missing: (
+                    False if name == missing else real.has_table(name)
+                )
+            )
+            with patch(
+                "app.server.erp_sync_evidence.inspect",
+                return_value=fake,
+            ):
+                self.assertFalse(
+                    self.service.automatic_execution_available(
+                        profile_fingerprint=self.control_settings.config_fingerprint
+                    ),
+                    missing,
+                )
+                if missing == "erp_sync_compensation_receipts":
+                    projects = ProjectSource((project("AUTO-BLOCKED", external_id="8991"),))
+                    tasks = PortfolioTaskSource(
+                        {"AUTO-BLOCKED": snapshot("AUTO-BLOCKED", task_id="AUTO-1")}
+                    )
+                    orchestrator = ErpSyncOrchestrator(
+                        self.factory,
+                        project_source=projects,
+                        project_task_source=tasks,
+                        settings=self.control_settings,
+                        automatic_safety=EvidenceBackedErpSyncAutomaticSafetyCapability(
+                            self.service,
+                            profile_fingerprint=self.control_settings.config_fingerprint,
+                        ),
+                        evidence_service=self.service,
+                    )
+                    occurrence = control.accept_manual(
+                        intent="PROJECTS_AND_ACTIVE_TASKS",
+                        actor_name="scheduler-test",
+                        idempotency_key="automatic-missing-compensation",
+                        settings=self.control_settings,
+                    )
+                    automatic_attempt = control.claim(
+                        occurrence_id=occurrence.id,
+                        trigger="MANUAL",
+                        actor_name="scheduler-test",
+                        settings=self.control_settings,
+                    )
+                    self.assertIsNotNone(automatic_attempt)
+                    orchestrator._execute_attempt(
+                        automatic_attempt.id,
+                        automatic_attempt.generation,
+                        automatic=True,
+                    )
+                    self.assertEqual(
+                        control.get_attempt(automatic_attempt.id).error_code,
+                        "erp_sync_automatic_safety_unavailable",
+                    )
+                    self.assertEqual(projects.calls, 0)
+                    self.assertEqual(tasks.calls, 0)
+                    orchestrator.shutdown()
+
+                # Automatic readiness is not a global manual-operation kill switch.
+                manual_occurrence = control.accept_manual(
+                    intent="PROJECTS_AND_ACTIVE_TASKS",
+                    actor_name="manual-operator",
+                    idempotency_key=f"manual-without-{missing}",
+                    settings=self.control_settings,
+                )
+                manual = control.claim(
+                    occurrence_id=manual_occurrence.id,
+                    trigger="MANUAL",
+                    actor_name="manual-operator",
+                    settings=self.control_settings,
+                )
+                self.assertIsNotNone(manual)
+                self.assertTrue(
+                    control.start_attempt(
+                        attempt_id=manual.id,
+                        generation=manual.generation,
+                        settings=self.control_settings,
+                    )
+                )
+                self.assertTrue(
+                    control.finish(
+                        attempt_id=manual.id,
+                        generation=manual.generation,
+                        status="FAILED",
+                        phase="FAILED",
+                        settings=self.control_settings,
+                    )
+                )
+
+    def test_missing_one_of_multiple_task_mutation_proofs_blocks_publication_and_pins_recovery(self) -> None:
+        project_number = "PROOF-MULTI"
+        with transactional_session(self.factory) as session:
+            session.add(
+                Project(
+                    id="PROOF-MULTI-ID",
+                    erp_external_id="8901",
+                    number=project_number,
+                    name="Existing proof project",
+                    status="Actif",
+                )
+            )
+            session.add(
+                TaskCatalogEntry(
+                    project_number=project_number,
+                    task_code="OLD",
+                    label="Existing task to deactivate",
+                    active=True,
+                    erp_task_id="PROOF-OLD",
+                    account_group="DEPMO",
+                )
+            )
+
+        projects = ProjectSource((project(project_number, external_id="8901"),))
+        tasks = PortfolioTaskSource(
+            {project_number: snapshot(project_number, task_id="PROOF-NEW")}
+        )
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        control = SqlErpSyncControlRepository(self.factory)
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="operator",
+            idempotency_key="proof-multiple-bootstrap",
+            settings=self.control_settings,
+        )
+        first = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="operator",
+            settings=self.control_settings,
+        )
+        self.assertIsNotNone(first)
+        orchestrator._execute_attempt(first.id, first.generation)
+        with self.factory() as session:
+            manifests = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceManifest).where(
+                        ErpSyncEvidenceManifest.attempt_id == first.id,
+                        ErpSyncEvidenceManifest.proof_type == "SOURCE",
+                    )
+                )
+            )
+        for manifest in manifests:
+            self.service.approve_baseline(
+                manifest_id=manifest.id,
+                actor_name="admin",
+                reason="Approved proof completeness baseline",
+            )
+
+        retry = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="operator",
+            settings=self.control_settings,
+            command_identity="retry:proof-multiple",
+        )
+        self.assertIsNotNone(retry)
+        original_publish = orchestrator._publish_full_success
+
+        def delete_one_task_proof_then_publish(*, attempt_id: str, generation: int) -> None:
+            attempt = control.get_attempt(attempt_id)
+            with transactional_session(self.factory) as session:
+                result = session.scalar(
+                    select(AcumaticaProjectTaskSyncProjectResult).where(
+                        AcumaticaProjectTaskSyncProjectResult.run_id
+                        == attempt.task_sync_run_id,
+                        AcumaticaProjectTaskSyncProjectResult.project_number
+                        == project_number,
+                    )
+                )
+                self.assertIsNotNone(result)
+                task_rows = tuple(
+                    session.scalars(
+                        select(ErpSyncMutationEvidence).where(
+                            ErpSyncMutationEvidence.attempt_id == attempt_id,
+                            ErpSyncMutationEvidence.unit_type
+                            == f"TASK_PROJECT:{result.project_id}",
+                            ErpSyncMutationEvidence.entity_type == "TASK",
+                        )
+                    )
+                )
+                self.assertEqual(len(task_rows), 2)
+                session.delete(task_rows[0])
+            original_publish(attempt_id=attempt_id, generation=generation)
+
+        with patch.object(
+            orchestrator,
+            "_publish_full_success",
+            side_effect=delete_one_task_proof_then_publish,
+        ):
+            orchestrator._execute_attempt(retry.id, retry.generation)
+
+        failed = control.get_attempt(retry.id)
+        self.assertEqual(failed.status, "FAILED")
+        self.assertEqual(failed.error_code, "erp_sync_global_validation_failed")
+        with self.factory() as session:
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == retry.id
+                )
+            )
+            manifests = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceManifest).where(
+                        ErpSyncEvidenceManifest.attempt_id == retry.id
+                    )
+                )
+            )
+        self.assertIsNotNone(recovery)
+        self.assertEqual(recovery.state, "REQUIRED")
+        self.assertTrue(recovery.pinned)
+        self.assertTrue(all(row.pinned for row in manifests))
+        orchestrator.shutdown()
+
+    def test_partial_success_still_requires_valid_proof_for_each_synchronized_project(self) -> None:
+        project_a = "PARTIAL-PROOF-A"
+        project_b = "PARTIAL-PROOF-B"
+        projects = ProjectSource(
+            (
+                project(project_a, external_id="8911"),
+                project(project_b, external_id="8912"),
+            )
+        )
+        tasks = PortfolioTaskSource(
+            {
+                project_a: snapshot(project_a, task_id="PARTIAL-A-1"),
+                project_b: snapshot(project_b, task_id="PARTIAL-B-1"),
+            }
+        )
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        control = SqlErpSyncControlRepository(self.factory)
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="operator",
+            idempotency_key="partial-proof-bootstrap",
+            settings=self.control_settings,
+        )
+        first = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="operator",
+            settings=self.control_settings,
+        )
+        self.assertIsNotNone(first)
+        orchestrator._execute_attempt(first.id, first.generation)
+        with self.factory() as session:
+            manifests = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceManifest).where(
+                        ErpSyncEvidenceManifest.attempt_id == first.id,
+                        ErpSyncEvidenceManifest.proof_type == "SOURCE",
+                    )
+                )
+            )
+        for manifest in manifests:
+            self.service.approve_baseline(
+                manifest_id=manifest.id,
+                actor_name="admin",
+                reason="Approved partial-proof baseline",
+            )
+
+        retry = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="operator",
+            settings=self.control_settings,
+            command_identity="retry:partial-proof",
+        )
+        self.assertIsNotNone(retry)
+        original_process = orchestrator._process_task_project
+        original_validate = orchestrator._validate_full_publication
+
+        def reject_b(run_id, attempt_id, generation, project_row, snapshots):
+            if project_row.number == project_b:
+                orchestrator._record_task_outcome(
+                    run_id,
+                    attempt_id,
+                    generation,
+                    {
+                        "project_id": project_row.id,
+                        "project_number": project_row.number,
+                        "status": "rejected",
+                        "error_code": "injected_local_failure",
+                        "reason_code": "project_sync_failed",
+                    },
+                )
+                return None
+            return original_process(
+                run_id,
+                attempt_id,
+                generation,
+                project_row,
+                snapshots,
+            )
+
+        def quarantine_a_then_validate(*, attempt_id: str, generation: int, require_complete_success: bool = False):
+            with transactional_session(self.factory) as session:
+                quality = session.get(ErpSyncProjectQuality, project_a)
+                self.assertIsNotNone(quality)
+                quality.quality_state = "QUARANTINED"
+                quality.reason_code = "injected_partial_proof_failure"
+            return original_validate(
+                attempt_id=attempt_id,
+                generation=generation,
+                require_complete_success=require_complete_success,
+            )
+
+        with patch.object(
+            orchestrator,
+            "_process_task_project",
+            side_effect=reject_b,
+        ), patch.object(
+            orchestrator,
+            "_validate_full_publication",
+            side_effect=quarantine_a_then_validate,
+        ):
+            orchestrator._execute_attempt(retry.id, retry.generation)
+
+        failed = control.get_attempt(retry.id)
+        self.assertEqual(failed.status, "FAILED")
+        self.assertEqual(failed.error_code, "erp_sync_global_validation_failed")
+        with self.factory() as session:
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == retry.id
+                )
+            )
+            task_a = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == project_a,
+                    TaskCatalogEntry.erp_task_id == "PARTIAL-A-1",
+                )
+            )
+        self.assertIsNotNone(task_a)
+        self.assertIsNotNone(recovery)
+        self.assertEqual(recovery.state, "REQUIRED")
+        self.assertTrue(recovery.pinned)
+        orchestrator.shutdown()
+
+    def test_missing_project_proof_blocks_complete_publication(self) -> None:
+        number = "PROOF-PROJECT"
+        projects = ProjectSource((project(number, external_id="8921"),))
+        tasks = PortfolioTaskSource({number: snapshot(number, task_id="PROJECT-PROOF-1")})
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        control = SqlErpSyncControlRepository(self.factory)
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="operator",
+            idempotency_key="missing-project-proof-bootstrap",
+            settings=self.control_settings,
+        )
+        self._approve_bootstrap_baselines(
+            orchestrator,
+            control,
+            occurrence,
+            reason="Approved missing-project-proof baseline",
+        )
+        retry = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="operator",
+            settings=self.control_settings,
+            command_identity="retry:missing-project-proof",
+        )
+        self.assertIsNotNone(retry)
+        original_publish = orchestrator._publish_full_success
+
+        def delete_project_proof(*, attempt_id: str, generation: int) -> None:
+            with transactional_session(self.factory) as session:
+                row = session.scalar(
+                    select(ErpSyncMutationEvidence).where(
+                        ErpSyncMutationEvidence.attempt_id == attempt_id,
+                        ErpSyncMutationEvidence.entity_type == "PROJECT",
+                    )
+                )
+                self.assertIsNotNone(row)
+                session.delete(row)
+            original_publish(attempt_id=attempt_id, generation=generation)
+
+        with patch.object(
+            orchestrator,
+            "_publish_full_success",
+            side_effect=delete_project_proof,
+        ):
+            orchestrator._execute_attempt(retry.id, retry.generation)
+
+        self.assertEqual(control.get_attempt(retry.id).status, "FAILED")
+        with self.factory() as session:
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == retry.id
+                )
+            )
+        self.assertIsNotNone(recovery)
+        self.assertEqual(recovery.state, "REQUIRED")
+        orchestrator.shutdown()
+
+    def test_missing_success_provenance_blocks_complete_publication(self) -> None:
+        number = "PROOF-PROVENANCE"
+        projects = ProjectSource((project(number, external_id="8931"),))
+        tasks = PortfolioTaskSource({number: snapshot(number, task_id="PROVENANCE-1")})
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        control = SqlErpSyncControlRepository(self.factory)
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="operator",
+            idempotency_key="missing-provenance-bootstrap",
+            settings=self.control_settings,
+        )
+        self._approve_bootstrap_baselines(
+            orchestrator,
+            control,
+            occurrence,
+            reason="Approved missing-provenance baseline",
+        )
+        retry = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="operator",
+            settings=self.control_settings,
+            command_identity="retry:missing-provenance",
+        )
+        self.assertIsNotNone(retry)
+        original_publish = orchestrator._publish_full_success
+
+        def delete_provenance(*, attempt_id: str, generation: int) -> None:
+            with transactional_session(self.factory) as session:
+                quality = session.get(ErpSyncProjectQuality, number)
+                self.assertIsNotNone(quality)
+                session.delete(quality)
+            original_publish(attempt_id=attempt_id, generation=generation)
+
+        with patch.object(
+            orchestrator,
+            "_publish_full_success",
+            side_effect=delete_provenance,
+        ):
+            orchestrator._execute_attempt(retry.id, retry.generation)
+
+        self.assertEqual(control.get_attempt(retry.id).status, "FAILED")
+        with self.factory() as session:
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == retry.id
+                )
+            )
+        self.assertIsNotNone(recovery)
+        self.assertEqual(recovery.state, "REQUIRED")
+        orchestrator.shutdown()
+
+    def test_wrong_child_generation_cannot_satisfy_publication_proof(self) -> None:
+        number = "PROOF-GENERATION"
+        projects = ProjectSource((project(number, external_id="8941"),))
+        tasks = PortfolioTaskSource({number: snapshot(number, task_id="GENERATION-1")})
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        control = SqlErpSyncControlRepository(self.factory)
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="operator",
+            idempotency_key="wrong-generation-bootstrap",
+            settings=self.control_settings,
+        )
+        self._approve_bootstrap_baselines(
+            orchestrator,
+            control,
+            occurrence,
+            reason="Approved wrong-generation baseline",
+        )
+        retry = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="operator",
+            settings=self.control_settings,
+            command_identity="retry:wrong-generation-proof",
+        )
+        self.assertIsNotNone(retry)
+        original_publish = orchestrator._publish_full_success
+
+        def corrupt_child_generation(*, attempt_id: str, generation: int) -> None:
+            attempt = control.get_attempt(attempt_id)
+            with transactional_session(self.factory) as session:
+                run = session.get(AcumaticaProjectTaskSyncRun, attempt.task_sync_run_id)
+                self.assertIsNotNone(run)
+                run.erp_generation = int(generation) + 1
+            original_publish(attempt_id=attempt_id, generation=generation)
+
+        with patch.object(
+            orchestrator,
+            "_publish_full_success",
+            side_effect=corrupt_child_generation,
+        ):
+            orchestrator._execute_attempt(retry.id, retry.generation)
+
+        self.assertEqual(control.get_attempt(retry.id).status, "FAILED")
+        with self.factory() as session:
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == retry.id
+                )
+            )
+        self.assertIsNotNone(recovery)
+        self.assertEqual(recovery.state, "REQUIRED")
+        orchestrator.shutdown()
+
+    def test_intentionally_empty_task_target_set_does_not_fail_positive_baseline(self) -> None:
+        control, _baseline_occurrence, baseline_attempt = self._attempt(
+            "empty-target-baseline"
+        )
+        baseline = self.service.capture_source(
+            attempt_id=baseline_attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "portfolio": TaskCatalogPortfolioSnapshot(
+                    source_rows=100,
+                    source_pages=1,
+                    snapshots=(
+                        TaskCatalogProjectSnapshot(
+                            project_number="EMPTY-OLD",
+                            source_rows=100,
+                            rejected_rows=0,
+                            items=(),
+                        ),
+                    ),
+                )
+            },
+            row_count=100,
+            project_counts={"EMPTY-OLD": 100},
+        )
+        self.service.approve_baseline(
+            manifest_id=baseline.manifest_id,
+            actor_name="admin",
+            reason="Approved historical positive task baseline",
+        )
+        self.assertTrue(
+            control.finish(
+                attempt_id=baseline_attempt.id,
+                generation=baseline_attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.finalize_attempt(
+            attempt_id=baseline_attempt.id,
+            successful=False,
+        )
+
+        _control, _occurrence, current_attempt = self._attempt(
+            "empty-target-current"
+        )
+        current = self.service.capture_source(
+            attempt_id=current_attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "portfolio": TaskCatalogPortfolioSnapshot(
+                    source_rows=0,
+                    source_pages=0,
+                    snapshots=(),
+                )
+            },
+            row_count=0,
+            project_counts={},
+        )
+        result = self.service.validate_plausibility(
+            current,
+            active_task_targets=0,
+        )
+        self.assertTrue(result.accepted)
+        self.assertEqual(result.diagnostics, ())
+        self.assertEqual(result.rejected_projects, ())
+
+    def test_plausibility_review_continues_same_attempt_after_restart_without_reread(self) -> None:
+        control, _baseline_occurrence, baseline_attempt = self._attempt(
+            "review-baseline"
+        )
+        project_baseline = self.service.capture_source(
+            attempt_id=baseline_attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "records": [
+                    {
+                        "external_id": str(7000 + index),
+                        "number": f"B-{index}",
+                        "name": f"Baseline {index}",
+                        "status": "Actif",
+                    }
+                    for index in range(20)
+                ]
+            },
+            row_count=20,
+        )
+        baseline_portfolio = TaskCatalogPortfolioSnapshot(
+            source_rows=20,
+            source_pages=1,
+            snapshots=(
+                TaskCatalogProjectSnapshot(
+                    project_number="P-REVIEW",
+                    source_rows=20,
+                    rejected_rows=0,
+                    items=(snapshot("P-REVIEW").items[0],),
+                ),
+            ),
+        )
+        task_baseline = self.service.capture_source(
+            attempt_id=baseline_attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"portfolio": baseline_portfolio},
+            row_count=20,
+            project_counts={"P-REVIEW": 20},
+        )
+        for captured in (project_baseline, task_baseline):
+            self.service.approve_baseline(
+                manifest_id=captured.manifest_id,
+                actor_name="admin",
+                reason="Reviewed complete reference population",
+            )
+        self.assertTrue(
+            control.finish(
+                attempt_id=baseline_attempt.id,
+                generation=baseline_attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.finalize_attempt(
+            attempt_id=baseline_attempt.id,
+            successful=False,
+        )
+
+        projects = ProjectSource((project("P-REVIEW", external_id="7101"),))
+        tasks = PortfolioTaskSource({"P-REVIEW": snapshot("P-REVIEW", task_id="97101")})
+        first_process = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="operator",
+            idempotency_key="review-continuation",
+            settings=self.control_settings,
+        )
+        attempt = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="operator",
+            settings=self.control_settings,
+        )
+        self.assertIsNotNone(attempt)
+        first_process._execute_attempt(attempt.id, attempt.generation)
+        paused = control.get_attempt(attempt.id)
+        self.assertEqual(paused.status, "PENDING")
+        self.assertEqual(paused.phase, "PLAUSIBILITY_REVIEW_REQUIRED")
+        self.assertEqual(projects.calls, 1)
+        self.assertEqual(tasks.calls, 1)
+        with self.assertRaises(Exception) as blocked:
+            control.accept_manual(
+                intent="PROJECTS_AND_ACTIVE_TASKS",
+                actor_name="other-operator",
+                idempotency_key="must-block-during-review",
+                settings=self.control_settings,
+            )
+        self.assertEqual(
+            getattr(blocked.exception, "code", None),
+            "erp_sync_plausibility_review_pending",
+        )
+        with self.factory() as session:
+            self.assertIsNone(
+                session.scalar(select(Project).where(Project.number == "P-REVIEW"))
+            )
+        first_process.shutdown()
+
+        manifests = {
+            row["source_type"]: row
+            for row in self.service.list_attempt_sources(attempt_id=attempt.id)
+            if row["proof_type"] == "SOURCE"
+        }
+        self.service.approve_plausibility_exception(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            source_fingerprint=str(manifests["PROJECTS"]["source_fingerprint"]),
+            threshold_scope="GLOBAL",
+            actor_name="admin",
+            reason="Reviewed planned project population reduction",
+        )
+        self.service.approve_plausibility_exception(
+            attempt_id=attempt.id,
+            source_type="TASKS",
+            source_fingerprint=str(manifests["TASKS"]["source_fingerprint"]),
+            threshold_scope="GLOBAL",
+            actor_name="admin",
+            reason="Reviewed planned task population reduction",
+        )
+        self.service.approve_plausibility_exception(
+            attempt_id=attempt.id,
+            source_type="TASKS",
+            source_fingerprint=str(manifests["TASKS"]["source_fingerprint"]),
+            threshold_scope="P-REVIEW",
+            actor_name="admin",
+            reason="Reviewed project-local task reduction",
+        )
+
+        second_process = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        with transactional_session(self.factory) as session:
+            expiring = session.scalar(
+                select(ErpSyncPlausibilityException).where(
+                    ErpSyncPlausibilityException.attempt_id == attempt.id,
+                    ErpSyncPlausibilityException.source_type == "TASKS",
+                    ErpSyncPlausibilityException.threshold_scope == "GLOBAL",
+                )
+            )
+            self.assertIsNotNone(expiring)
+            expiring.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        with self.assertRaises(Exception) as expired:
+            second_process.continue_plausibility_review(
+                attempt_id=attempt.id,
+                actor_name="admin",
+            )
+        self.assertEqual(
+            getattr(expired.exception, "code", None),
+            "erp_sync_plausibility_review_incomplete",
+        )
+        self.assertEqual(control.get_attempt(attempt.id).status, "PENDING")
+        self.assertEqual(projects.calls, 1)
+        self.assertEqual(tasks.calls, 1)
+        with transactional_session(self.factory) as session:
+            session.scalar(
+                select(ErpSyncPlausibilityException).where(
+                    ErpSyncPlausibilityException.attempt_id == attempt.id,
+                    ErpSyncPlausibilityException.source_type == "TASKS",
+                    ErpSyncPlausibilityException.threshold_scope == "GLOBAL",
+                )
+            ).expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+
+        resumed = second_process.continue_plausibility_review(
+            attempt_id=attempt.id,
+            actor_name="admin",
+        )
+        self.assertEqual(resumed["attempt_id"], attempt.id)
+        second_process.shutdown()
+
+        completed = control.get_attempt(attempt.id)
+        self.assertEqual(completed.status, "SUCCEEDED")
+        self.assertEqual(projects.calls, 1)
+        self.assertEqual(tasks.calls, 1)
+        with self.factory() as session:
+            self.assertIsNotNone(
+                session.scalar(select(Project).where(Project.number == "P-REVIEW"))
+            )
+            self.assertIsNotNone(
+                session.scalar(
+                    select(TaskCatalogEntry).where(
+                        TaskCatalogEntry.project_number == "P-REVIEW",
+                        TaskCatalogEntry.erp_task_id == "97101",
+                    )
+                )
+            )
+            attempts = tuple(
+                session.scalars(
+                    select(ErpSyncAttempt).where(
+                        ErpSyncAttempt.occurrence_id == occurrence.id
+                    )
+                )
+            )
+        self.assertEqual(len(attempts), 1)
+
+    def test_declined_plausibility_review_terminalizes_attempt_and_retry_rereads_corrected_source(self) -> None:
+        control, _baseline_occurrence, baseline_attempt = self._attempt(
+            "decline-review-baseline"
+        )
+        project_baseline = self.service.capture_source(
+            attempt_id=baseline_attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "records": [
+                    {
+                        "external_id": str(7300 + index),
+                        "number": f"DECLINE-B-{index}",
+                        "name": f"Baseline {index}",
+                        "status": "Actif",
+                    }
+                    for index in range(20)
+                ]
+            },
+            row_count=20,
+        )
+        baseline_task_snapshot = TaskCatalogProjectSnapshot(
+            project_number="P-DECLINE",
+            source_rows=20,
+            rejected_rows=0,
+            items=(snapshot("P-DECLINE", task_id="97201").items[0],),
+        )
+        task_baseline = self.service.capture_source(
+            attempt_id=baseline_attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={
+                "portfolio": TaskCatalogPortfolioSnapshot(
+                    source_rows=20,
+                    source_pages=1,
+                    snapshots=(baseline_task_snapshot,),
+                )
+            },
+            row_count=20,
+            project_counts={"P-DECLINE": 20},
+        )
+        for captured in (project_baseline, task_baseline):
+            self.service.approve_baseline(
+                manifest_id=captured.manifest_id,
+                actor_name="admin",
+                reason="Reference population for decline/retry",
+            )
+        self.assertTrue(
+            control.finish(
+                attempt_id=baseline_attempt.id,
+                generation=baseline_attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.finalize_attempt(
+            attempt_id=baseline_attempt.id,
+            successful=False,
+        )
+
+        projects = ProjectSource((project("P-DECLINE", external_id="7201"),))
+        tasks = PortfolioTaskSource(
+            {"P-DECLINE": snapshot("P-DECLINE", task_id="97211")}
+        )
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="operator",
+            idempotency_key="decline-review",
+            settings=self.control_settings,
+        )
+        attempt = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="operator",
+            settings=self.control_settings,
+        )
+        self.assertIsNotNone(attempt)
+        orchestrator._execute_attempt(attempt.id, attempt.generation)
+        paused = control.get_attempt(attempt.id)
+        self.assertEqual(paused.status, "PENDING")
+        self.assertEqual(paused.phase, "PLAUSIBILITY_REVIEW_REQUIRED")
+        self.assertEqual(projects.calls, 1)
+        self.assertEqual(tasks.calls, 1)
+
+        old_sources = {
+            row["source_type"]: row
+            for row in self.service.list_attempt_sources(attempt_id=attempt.id)
+            if row["proof_type"] == "SOURCE"
+        }
+        old_project_exception = self.service.approve_plausibility_exception(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            source_fingerprint=str(
+                old_sources["PROJECTS"]["source_fingerprint"]
+            ),
+            threshold_scope="GLOBAL",
+            actor_name="admin",
+            reason="Old reviewed project source only",
+        )
+        self.assertIsNotNone(old_project_exception)
+
+        # Upstream is corrected before the operator abandons the sealed review.
+        projects.rows = tuple(
+            [project("P-DECLINE", external_id="7201")]
+            + [
+                ExternalProjectRecord(
+                    external_id=str(7400 + index),
+                    number=f"P-DECLINE-CLOSED-{index}",
+                    name=f"Closed {index}",
+                    status="Terminé",
+                )
+                for index in range(19)
+            ]
+        )
+        tasks.snapshots["P-DECLINE"] = TaskCatalogProjectSnapshot(
+            project_number="P-DECLINE",
+            source_rows=20,
+            rejected_rows=0,
+            items=(snapshot("P-DECLINE", task_id="97221").items[0],),
+        )
+
+        declined = orchestrator.decline_plausibility_review(
+            attempt_id=attempt.id,
+            actor_name="review-admin",
+            reason="Upstream source corrected; abandon obsolete sealed review",
+        )
+        self.assertEqual(declined["attempt_id"], attempt.id)
+        self.assertEqual(declined["review_decision"], "DECLINED")
+        terminal = control.get_attempt(attempt.id)
+        self.assertEqual(terminal.status, "FAILED")
+        self.assertEqual(terminal.phase, "FAILED")
+        self.assertEqual(
+            terminal.error_code,
+            "erp_sync_plausibility_review_declined",
+        )
+        self.assertEqual(projects.calls, 1)
+        self.assertEqual(tasks.calls, 1)
+
+        # Repeating the same decline is idempotent: one terminal transition and
+        # one immutable audit row.
+        replay_decline = orchestrator.decline_plausibility_review(
+            attempt_id=attempt.id,
+            actor_name="review-admin",
+            reason="Upstream source corrected; abandon obsolete sealed review",
+        )
+        self.assertEqual(replay_decline["attempt_id"], attempt.id)
+        with self.factory() as session:
+            decisions = tuple(
+                session.scalars(
+                    select(ErpSyncPlausibilityReviewDecision).where(
+                        ErpSyncPlausibilityReviewDecision.attempt_id
+                        == attempt.id
+                    )
+                )
+            )
+        self.assertEqual(len(decisions), 1)
+        decision = decisions[0]
+        self.assertEqual(decision.decision, "DECLINED")
+        self.assertEqual(decision.actor_name, "review-admin")
+        self.assertIn("Upstream source corrected", decision.reason)
+        identities = json.loads(decision.source_identity_json)
+        self.assertEqual(
+            {row["manifest_id"] for row in identities},
+            {
+                str(old_sources["PROJECTS"]["manifest_id"]),
+                str(old_sources["TASKS"]["manifest_id"]),
+            },
+        )
+        self.assertTrue(
+            all("source_fingerprint" in row for row in identities)
+        )
+
+        # Stale approval/continuation cannot reopen the terminal attempt.
+        with self.assertRaises(Exception) as stale_approval:
+            self.service.approve_plausibility_exception(
+                attempt_id=attempt.id,
+                source_type="TASKS",
+                source_fingerprint=str(
+                    old_sources["TASKS"]["source_fingerprint"]
+                ),
+                threshold_scope="GLOBAL",
+                actor_name="admin",
+                reason="Too late",
+            )
+        self.assertEqual(
+            getattr(stale_approval.exception, "code", None),
+            "erp_sync_plausibility_review_not_pending",
+        )
+        with self.assertRaises(Exception) as stale_continue:
+            orchestrator.continue_plausibility_review(
+                attempt_id=attempt.id,
+                actor_name="admin",
+            )
+        self.assertEqual(
+            getattr(stale_continue.exception, "code", None),
+            "erp_sync_plausibility_review_not_pending",
+        )
+        self.assertEqual(projects.calls, 1)
+        self.assertEqual(tasks.calls, 1)
+
+        with patch.object(orchestrator, "_submit") as submit:
+            retry_payload = orchestrator.retry(
+                occurrence_id=occurrence.id,
+                actor_name="operator",
+                idempotency_key="decline-review-fresh-retry",
+            )
+        retry_attempt = control.get_attempt(str(retry_payload["run_id"]))
+        self.assertNotEqual(retry_attempt.id, attempt.id)
+        self.assertGreater(retry_attempt.generation, attempt.generation)
+        submit.assert_called_once_with(
+            retry_attempt.id,
+            retry_attempt.generation,
+        )
+        with self.factory() as session:
+            inherited = tuple(
+                session.scalars(
+                    select(ErpSyncPlausibilityException).where(
+                        ErpSyncPlausibilityException.attempt_id
+                        == retry_attempt.id
+                    )
+                )
+            )
+        self.assertEqual(inherited, ())
+
+        orchestrator._execute_attempt(
+            retry_attempt.id,
+            retry_attempt.generation,
+        )
+        completed = control.get_attempt(retry_attempt.id)
+        self.assertEqual(completed.status, "SUCCEEDED")
+        self.assertEqual(projects.calls, 2)
+        self.assertEqual(tasks.calls, 2)
+        new_sources = {
+            row["source_type"]: row
+            for row in self.service.list_attempt_sources(
+                attempt_id=retry_attempt.id
+            )
+            if row["proof_type"] == "SOURCE"
+        }
+        self.assertNotEqual(
+            new_sources["PROJECTS"]["source_fingerprint"],
+            old_sources["PROJECTS"]["source_fingerprint"],
+        )
+        self.assertNotEqual(
+            new_sources["TASKS"]["source_fingerprint"],
+            old_sources["TASKS"]["source_fingerprint"],
+        )
+        orchestrator.shutdown()
+
+    def test_terminal_run_now_replay_bypasses_required_recovery_but_new_work_does_not(self) -> None:
+        projects = ProjectSource((project("REPLAY", external_id="7501"),))
+        tasks = PortfolioTaskSource(
+            {"REPLAY": snapshot("REPLAY", task_id="97301")}
+        )
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        control = SqlErpSyncControlRepository(self.factory)
+        with patch.object(orchestrator, "_submit") as initial_submit:
+            first = orchestrator.run_now(
+                intent="PROJECTS_AND_ACTIVE_TASKS",
+                actor_name="operator",
+                idempotency_key="terminal-recovery-replay",
+            )
+        initial_submit.assert_called_once()
+        attempt = control.get_attempt(str(first["run_id"]))
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                error_code="injected_terminal_failure",
+                settings=self.control_settings,
+            )
+        )
+        self.service.mark_recovery_required(
+            attempt_id=attempt.id,
+            reason_code="injected_required_recovery",
+        )
+
+        with patch.object(orchestrator, "_submit") as replay_submit:
+            replay = orchestrator.run_now(
+                intent="PROJECTS_AND_ACTIVE_TASKS",
+                actor_name="operator",
+                idempotency_key="terminal-recovery-replay",
+            )
+        replay_submit.assert_not_called()
+        self.assertEqual(replay["run_id"], attempt.id)
+        self.assertEqual(replay["status"], "FAILED")
+        self.assertEqual(projects.calls, 0)
+        self.assertEqual(tasks.calls, 0)
+
+        with self.assertRaises(Exception) as distinct:
+            orchestrator.run_now(
+                intent="PROJECTS_AND_ACTIVE_TASKS",
+                actor_name="operator",
+                idempotency_key="new-command-under-recovery",
+            )
+        self.assertEqual(
+            getattr(distinct.exception, "code", None),
+            "erp_sync_recovery_required",
+        )
+        with self.assertRaises(Exception) as retry_blocked:
+            orchestrator.retry(
+                occurrence_id=attempt.occurrence_id,
+                actor_name="operator",
+                idempotency_key="new-retry-under-recovery",
+            )
+        self.assertEqual(
+            getattr(retry_blocked.exception, "code", None),
+            "erp_sync_recovery_required",
+        )
+
+        restarted = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.control_settings,
+            evidence_service=self.service,
+        )
+        with patch.object(restarted, "_submit") as restarted_submit:
+            durable_replay = restarted.run_now(
+                intent="PROJECTS_AND_ACTIVE_TASKS",
+                actor_name="operator",
+                idempotency_key="terminal-recovery-replay",
+            )
+        restarted_submit.assert_not_called()
+        self.assertEqual(durable_replay["run_id"], attempt.id)
+        with self.factory() as session:
+            attempts = tuple(
+                session.scalars(
+                    select(ErpSyncAttempt).where(
+                        ErpSyncAttempt.occurrence_id == attempt.occurrence_id
+                    )
+                )
+            )
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(projects.calls, 0)
+        self.assertEqual(tasks.calls, 0)
+        orchestrator.shutdown()
+        restarted.shutdown()
+
+    def test_task_project_mutation_unit_identity_accepts_uuid_scope_and_remains_unique(self) -> None:
+        control, _occurrence, attempt = self._attempt("task-project-unit-identity")
+        self.service.reserve_attempt(attempt_id=attempt.id)
+        project_id = str(uuid4())
+        unit_type = f"TASK_PROJECT:{project_id}"
+        self.assertEqual(len(project_id), 36)
+        self.assertLessEqual(len(unit_type), 64)
+
+        with transactional_session(self.factory) as session:
+            first_id = self.service.record_before_in_session(
+                session,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                unit_type=unit_type,
+                entity_type="TASK",
+                entity_key="ERP-TASK-UUID",
+                before=None,
+            )
+            replay_id = self.service.record_before_in_session(
+                session,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                unit_type=unit_type,
+                entity_type="TASK",
+                entity_key="ERP-TASK-UUID",
+                before=None,
+            )
+            second_project_unit = f"TASK_PROJECT:{uuid4()}"
+            second_id = self.service.record_before_in_session(
+                session,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                unit_type=second_project_unit,
+                entity_type="TASK",
+                entity_key="ERP-TASK-UUID",
+                before=None,
+            )
+
+        self.assertEqual(first_id, replay_id)
+        self.assertNotEqual(first_id, second_id)
+        with self.factory() as session:
+            rows = tuple(
+                session.scalars(
+                    select(ErpSyncMutationEvidence)
+                    .where(ErpSyncMutationEvidence.attempt_id == attempt.id)
+                    .order_by(ErpSyncMutationEvidence.unit_type)
+                )
+            )
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(
+            {row.unit_type for row in rows},
+            {unit_type, second_project_unit},
+        )
+
+    def test_compensation_restores_only_erp_owned_fields_and_is_idempotent(self) -> None:
+        control, _occurrence, attempt = self._attempt("compensation")
+        self.service.reserve_attempt(attempt_id=attempt.id)
+        with transactional_session(self.factory) as session:
+            row = Project(
+                id="COMP-PROJECT",
+                erp_external_id="7001",
+                number="COMP-1",
+                name="Avant",
+                client="Client A",
+                status="Actif",
+                co_managers_version=7,
+            )
+            session.add(row)
+            session.flush()
+            before = {
+                "erp_external_id": row.erp_external_id,
+                "number": row.number,
+                "name": row.name,
+                "client": row.client,
+                "project_manager_external_id": row.project_manager_external_id,
+                "project_manager_name": row.project_manager_name,
+                "status": row.status,
+            }
+            evidence_id = self.service.record_before_in_session(
+                session,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                unit_type="PROJECT_SNAPSHOT",
+                entity_type="PROJECT",
+                entity_key="7001",
+                before=before,
+            )
+            row.name = "Après"
+            row.client = "Client B"
+            row.status = "Terminé"
+            after = {
+                "erp_external_id": row.erp_external_id,
+                "number": row.number,
+                "name": row.name,
+                "client": row.client,
+                "project_manager_external_id": row.project_manager_external_id,
+                "project_manager_name": row.project_manager_name,
+                "status": row.status,
+            }
+            self.service.record_after_in_session(
+                session,
+                evidence_id=evidence_id,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                after=after,
+            )
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.mark_recovery_required(
+            attempt_id=attempt.id,
+            reason_code="global_validation_failed",
+        )
+
+        preview = self.service.compensation_preview(attempt_id=attempt.id)
+        self.assertTrue(preview["can_confirm"])
+        self.assertEqual(preview["conflict_count"], 0)
+
+        first = self.service.confirm_compensation(
+            attempt_id=attempt.id,
+            preview_hash=preview["preview_hash"],
+            command_identity="compensation:one",
+            actor_name="admin",
+            reason="Restore accepted ERP fields",
+        )
+        second = self.service.confirm_compensation(
+            attempt_id=attempt.id,
+            preview_hash=preview["preview_hash"],
+            command_identity="compensation:one",
+            actor_name="admin",
+            reason="Replay",
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual(first["affected_records"], 1)
+        with self.factory() as session:
+            restored = session.get(Project, "COMP-PROJECT")
+            self.assertIsNotNone(restored)
+            self.assertEqual(restored.name, "Avant")
+            self.assertEqual(restored.client, "Client A")
+            self.assertEqual(restored.status, "Actif")
+            self.assertEqual(restored.co_managers_version, 7)
+
+    def test_compensation_rejects_elapsed_expiration_before_purge(self) -> None:
+        control, _occurrence, attempt = self._attempt("compensation-expired")
+        captured = self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"records": [{"number": "EXP"}]},
+            row_count=1,
+        )
+        with transactional_session(self.factory) as session:
+            row = Project(
+                id="COMP-EXPIRED",
+                erp_external_id="EXP-1",
+                number="COMP-EXP",
+                name="Expired",
+                status="Actif",
+            )
+            session.add(row)
+            session.flush()
+            evidence_id = self.service.record_before_in_session(
+                session,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                unit_type="PROJECT_SNAPSHOT",
+                entity_type="PROJECT",
+                entity_key="EXP-1",
+                before=None,
+            )
+            self.service.record_after_in_session(
+                session,
+                evidence_id=evidence_id,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                after={
+                    "erp_external_id": row.erp_external_id,
+                    "number": row.number,
+                    "name": row.name,
+                    "client": row.client,
+                    "project_manager_external_id": row.project_manager_external_id,
+                    "project_manager_name": row.project_manager_name,
+                    "status": row.status,
+                },
+            )
+            session.get(
+                ErpSyncEvidenceManifest,
+                captured.manifest_id,
+            ).expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        with self.assertRaises(Exception) as raised:
+            self.service.compensation_preview(attempt_id=attempt.id)
+        self.assertEqual(
+            getattr(raised.exception, "code", None),
+            "erp_sync_compensation_evidence_expired",
+        )
+
+    def test_compensation_rejects_tampered_before_ciphertext(self) -> None:
+        control, _occurrence, attempt = self._attempt("compensation-before-tamper")
+        self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"records": [{"number": "TAMPER"}]},
+            row_count=1,
+        )
+        with transactional_session(self.factory) as session:
+            row = Project(
+                id="COMP-TAMPER",
+                erp_external_id="TAMPER-1",
+                number="COMP-TAMPER",
+                name="Before",
+                status="Actif",
+            )
+            session.add(row)
+            session.flush()
+            before = {
+                "erp_external_id": row.erp_external_id,
+                "number": row.number,
+                "name": row.name,
+                "client": row.client,
+                "project_manager_external_id": row.project_manager_external_id,
+                "project_manager_name": row.project_manager_name,
+                "status": row.status,
+            }
+            evidence_id = self.service.record_before_in_session(
+                session,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                unit_type="PROJECT_SNAPSHOT",
+                entity_type="PROJECT",
+                entity_key=row.erp_external_id,
+                before=before,
+            )
+            row.name = "After"
+            self.service.record_after_in_session(
+                session,
+                evidence_id=evidence_id,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                after={**before, "name": "After"},
+            )
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        with transactional_session(self.factory) as session:
+            evidence = session.get(ErpSyncMutationEvidence, evidence_id)
+            evidence.encrypted_before = self.service._encrypt_bytes(
+                canonical_json_bytes({**before, "name": "Forged"})
+            )
+        with self.assertRaises(Exception) as raised:
+            self.service.compensation_preview(attempt_id=attempt.id)
+        self.assertEqual(
+            getattr(raised.exception, "code", None),
+            "erp_sync_checkpoint_before_integrity_invalid",
+        )
+
+    def test_multi_record_compensation_preview_and_confirmation_are_order_independent(self) -> None:
+        control, occurrence, attempt = self._attempt("compensation-multi-record")
+        self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"records": [{"number": "CMP-A"}, {"number": "CMP-B"}]},
+            row_count=2,
+        )
+        with transactional_session(self.factory) as session:
+            for suffix in ("A", "B"):
+                row = Project(
+                    id=f"COMP-MULTI-{suffix}",
+                    erp_external_id=f"CMP-{suffix}",
+                    number=f"CMP-{suffix}",
+                    name=f"Before {suffix}",
+                    status="Actif",
+                )
+                session.add(row)
+                session.flush()
+                before = {
+                    "erp_external_id": row.erp_external_id,
+                    "number": row.number,
+                    "name": row.name,
+                    "client": row.client,
+                    "project_manager_external_id": row.project_manager_external_id,
+                    "project_manager_name": row.project_manager_name,
+                    "status": row.status,
+                }
+                evidence_id = self.service.record_before_in_session(
+                    session,
+                    attempt_id=attempt.id,
+                    generation=attempt.generation,
+                    unit_type="PROJECT_SNAPSHOT",
+                    entity_type="PROJECT",
+                    entity_key=row.erp_external_id,
+                    before=before,
+                )
+                row.name = f"After {suffix}"
+                self.service.record_after_in_session(
+                    session,
+                    evidence_id=evidence_id,
+                    attempt_id=attempt.id,
+                    generation=attempt.generation,
+                    after={**before, "name": f"After {suffix}"},
+                )
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="SUCCEEDED",
+                phase="PUBLICATION_COMMITTED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.mark_recovery_required(
+            attempt_id=attempt.id,
+            reason_code="multi_record_compensation",
+        )
+        original_status = control.get_attempt(attempt.id).status
+        self.assertEqual(original_status, "SUCCEEDED")
+        self.assertEqual(
+            control.get_occurrence(occurrence.id).success_attempt_id,
+            attempt.id,
+        )
+        preview = self.service.compensation_preview(attempt_id=attempt.id)
+        self.assertTrue(preview["can_confirm"])
+        self.assertEqual(preview["eligible_records"], 2)
+        result = self.service.confirm_compensation(
+            attempt_id=attempt.id,
+            preview_hash=preview["preview_hash"],
+            command_identity="compensation:multi-record",
+            actor_name="admin",
+            reason="Restore both project records",
+        )
+        self.assertEqual(result["affected_records"], 2)
+        with self.factory() as session:
+            self.assertEqual(session.get(Project, "COMP-MULTI-A").name, "Before A")
+            self.assertEqual(session.get(Project, "COMP-MULTI-B").name, "Before B")
+            control_row = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+            persisted_attempt = session.get(ErpSyncAttempt, attempt.id)
+        self.assertIsNone(control_row.last_success_attempt_id)
+        compensated_occurrence = control.get_occurrence(occurrence.id)
+        self.assertIsNone(compensated_occurrence.success_attempt_id)
+        self.assertEqual(compensated_occurrence.status, "FAILED")
+        self.assertEqual(persisted_attempt.status, original_status)
+
+    def test_compensation_refuses_changed_local_principal_and_recomputes_derived_cost(self) -> None:
+        control, _occurrence, attempt = self._attempt("compensation-task-principal")
+        # The canonical reference cost is part of the 643B policy identity.
+        # Establish it before evidence/policy binding, then seed a stale derived
+        # task value so compensation can prove recomputation without changing
+        # authoritative policy after the attempt starts.
+        with transactional_session(self.factory) as session:
+            session.get(
+                ResourceClassConfig,
+                "PROGRAMMEUR",
+            ).average_hourly_cost_cad = Decimal("250.0000")
+        self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"portfolio": {"source_rows": 1, "source_pages": 1, "snapshots": []}},
+            row_count=1,
+        )
+        with transactional_session(self.factory) as session:
+            session.add(
+                Project(
+                    id="COMP-TASK-PROJECT",
+                    erp_external_id="COMP-TASK-PROJECT-ERP",
+                    number="COMP-TASK",
+                    name="Compensation task project",
+                    status="Actif",
+                )
+            )
+            task = TaskCatalogEntry(
+                project_number="COMP-TASK",
+                task_code="100",
+                label="Before",
+                status="Actif",
+                active=True,
+                erp_task_id="COMP-TASK-ERP",
+                account_group="DEPMO",
+                workforce_eligible=True,
+                resource_class_code="PROGRAMMEUR",
+                average_hourly_cost_cad=Decimal("125.0000"),
+                preferred_resource_version=1,
+            )
+            session.add(task)
+            session.flush()
+            before = ErpSyncOrchestrator._task_owned_state(task)
+            evidence_id = self.service.record_before_in_session(
+                session,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                unit_type=f"TASK_PROJECT:{uuid4()}",
+                entity_type="TASK",
+                entity_key=task.erp_task_id,
+                before=before,
+            )
+            task.label = "After"
+            after = ErpSyncOrchestrator._task_owned_state(task)
+            self.service.record_after_in_session(
+                session,
+                evidence_id=evidence_id,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                after=after,
+            )
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.mark_recovery_required(
+            attempt_id=attempt.id,
+            reason_code="task_compensation",
+        )
+
+        with transactional_session(self.factory) as session:
+            task = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.erp_task_id == "COMP-TASK-ERP"
+                )
+            )
+            task.preferred_resource_version = 2
+        principal_preview = self.service.compensation_preview(
+            attempt_id=attempt.id
+        )
+        self.assertFalse(principal_preview["can_confirm"])
+        self.assertEqual(principal_preview["conflict_count"], 1)
+
+        with transactional_session(self.factory) as session:
+            task = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.erp_task_id == "COMP-TASK-ERP"
+                )
+            )
+            task.preferred_resource_version = 1
+        preview = self.service.compensation_preview(attempt_id=attempt.id)
+        self.assertTrue(preview["can_confirm"])
+        self.service.confirm_compensation(
+            attempt_id=attempt.id,
+            preview_hash=preview["preview_hash"],
+            command_identity="compensation:task-derived",
+            actor_name="admin",
+            reason="Restore ERP-owned fields and recalculate derived state",
+        )
+        with self.factory() as session:
+            task = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.erp_task_id == "COMP-TASK-ERP"
+                )
+            )
+        self.assertEqual(task.label, "Before")
+        self.assertEqual(
+            task.average_hourly_cost_cad,
+            Decimal("250.0000"),
+        )
+        self.assertEqual(task.preferred_resource_version, 1)
+
+    def test_compensation_preview_refuses_changed_current_erp_state(self) -> None:
+        control, _occurrence, attempt = self._attempt("compensation-conflict")
+        self.service.reserve_attempt(attempt_id=attempt.id)
+        with transactional_session(self.factory) as session:
+            row = Project(
+                id="COMP-CONFLICT",
+                erp_external_id="7002",
+                number="COMP-2",
+                name="Avant",
+                status="Actif",
+            )
+            session.add(row)
+            session.flush()
+            before = {
+                "erp_external_id": row.erp_external_id,
+                "number": row.number,
+                "name": row.name,
+                "client": row.client,
+                "project_manager_external_id": row.project_manager_external_id,
+                "project_manager_name": row.project_manager_name,
+                "status": row.status,
+            }
+            evidence_id = self.service.record_before_in_session(
+                session,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                unit_type="PROJECT_SNAPSHOT",
+                entity_type="PROJECT",
+                entity_key="7002",
+                before=before,
+            )
+            row.name = "Après"
+            after = {**before, "name": "Après"}
+            self.service.record_after_in_session(
+                session,
+                evidence_id=evidence_id,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                after=after,
+            )
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.mark_recovery_required(
+            attempt_id=attempt.id,
+            reason_code="global_validation_failed",
+        )
+        with transactional_session(self.factory) as session:
+            session.get(Project, "COMP-CONFLICT").name = "Modification locale plus récente"
+
+        preview = self.service.compensation_preview(attempt_id=attempt.id)
+        self.assertFalse(preview["can_confirm"])
+        self.assertEqual(preview["conflict_count"], 1)
+        with self.assertRaisesRegex(Exception, "correspond plus"):
+            self.service.confirm_compensation(
+                attempt_id=attempt.id,
+                preview_hash=preview["preview_hash"],
+                command_identity="compensation:conflict",
+                actor_name="admin",
+                reason="Must refuse stale state",
+            )
+
+    def test_compensation_preview_refuses_new_local_dependency(self) -> None:
+        control, _occurrence, attempt = self._attempt("compensation-dependency")
+        self.service.reserve_attempt(attempt_id=attempt.id)
+        with transactional_session(self.factory) as session:
+            row = Project(
+                id="COMP-DEPENDENCY",
+                erp_external_id="7003",
+                number="COMP-3",
+                name="Imported",
+                status="Actif",
+            )
+            session.add(row)
+            session.flush()
+            evidence_id = self.service.record_before_in_session(
+                session,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                unit_type="PROJECT_SNAPSHOT",
+                entity_type="PROJECT",
+                entity_key="7003",
+                before=None,
+            )
+            after = {
+                "erp_external_id": row.erp_external_id,
+                "number": row.number,
+                "name": row.name,
+                "client": row.client,
+                "project_manager_external_id": row.project_manager_external_id,
+                "project_manager_name": row.project_manager_name,
+                "status": row.status,
+            }
+            self.service.record_after_in_session(
+                session,
+                evidence_id=evidence_id,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                after=after,
+            )
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.mark_recovery_required(
+            attempt_id=attempt.id,
+            reason_code="global_validation_failed",
+        )
+        with transactional_session(self.factory) as session:
+            session.add(
+                WorkPackage(
+                    project_id="COMP-DEPENDENCY",
+                    code="WP-LOCAL",
+                    name="Local dependency",
+                    status="planned",
+                )
+            )
+
+        preview = self.service.compensation_preview(attempt_id=attempt.id)
+        self.assertFalse(preview["can_confirm"])
+        self.assertEqual(preview["conflict_count"], 1)
+        self.assertTrue(
+            any(
+                value.startswith("dependency:PROJECT:")
+                for value in preview["conflicts"]
+            )
+        )
+        with self.assertRaises(Exception) as raised:
+            self.service.confirm_compensation(
+                attempt_id=attempt.id,
+                preview_hash=preview["preview_hash"],
+                command_identity="compensation:dependency",
+                actor_name="admin",
+                reason="Must refuse dependency",
+            )
+        self.assertEqual(
+            getattr(raised.exception, "code", None),
+            "erp_sync_compensation_dependency_changed",
+        )
+
+    def test_required_recovery_pins_evidence_and_blocks_new_imports(self) -> None:
+        control, _occurrence, attempt = self._attempt("recovery-pin")
+        captured = self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"records": [{"number": "P"}]},
+            row_count=1,
+        )
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.mark_recovery_required(
+            attempt_id=attempt.id,
+            reason_code="global_validation_failed",
+        )
+        self.service.finalize_attempt(attempt_id=attempt.id, successful=False)
+
+        with self.assertRaisesRegex(Exception, "récupération ERP requise"):
+            self.service.assert_no_required_recovery()
+        with transactional_session(self.factory) as session:
+            manifest = session.get(ErpSyncEvidenceManifest, captured.manifest_id)
+            self.assertTrue(manifest.pinned)
+            self.assertIsNotNone(manifest.expires_at)
+            manifest.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+        self.assertEqual(self.service.purge_expired(), 0)
+        with self.factory() as session:
+            manifest = session.get(ErpSyncEvidenceManifest, captured.manifest_id)
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == attempt.id
+                )
+            )
+        self.assertTrue(manifest.pinned)
+        self.assertNotEqual(manifest.state, "PURGED")
+        self.assertEqual(recovery.state, "REQUIRED")
+
+    def test_terminal_attempts_release_reserved_capacity_but_keep_used_evidence_accounted(self) -> None:
+        terminal_ids: list[str] = []
+        retained_used: list[int] = []
+        for index, status in enumerate(
+            ("FAILED", "SUCCEEDED", "SUCCEEDED_WITH_ERRORS", "INTERRUPTED"),
+            start=1,
+        ):
+            control, _occurrence, attempt = self._attempt(f"reservation-terminal-{index}")
+            self.service.capture_source(
+                attempt_id=attempt.id,
+                source_type="PROJECTS",
+                profile_fingerprint=self.control_settings.config_fingerprint,
+                payload={"records": [{"number": f"P-{index}"}]},
+                row_count=1,
+            )
+            self.assertTrue(
+                control.finish(
+                    attempt_id=attempt.id,
+                    generation=attempt.generation,
+                    status=status,
+                    phase=(
+                        "PUBLICATION_COMMITTED"
+                        if status in {"SUCCEEDED", "SUCCEEDED_WITH_ERRORS"}
+                        else "FAILED"
+                    ),
+                    settings=self.control_settings,
+                )
+            )
+            self.service.finalize_attempt(
+                attempt_id=attempt.id,
+                successful=status == "SUCCEEDED",
+            )
+            terminal_ids.append(attempt.id)
+            with self.factory() as session:
+                reservation = session.scalar(
+                    select(ErpSyncEvidenceReservation).where(
+                        ErpSyncEvidenceReservation.attempt_id == attempt.id
+                    )
+                )
+                self.assertIsNotNone(reservation)
+                self.assertIsNotNone(reservation.released_at)
+                if status == "SUCCEEDED":
+                    self.assertEqual(reservation.used_bytes, 0)
+                else:
+                    self.assertGreater(reservation.used_bytes, 0)
+                retained_used.append(int(reservation.used_bytes))
+
+        with self.factory() as session:
+            active_reserved = int(
+                session.scalar(
+                    select(func.coalesce(func.sum(ErpSyncEvidenceReservation.reserved_bytes), 0))
+                    .where(ErpSyncEvidenceReservation.released_at.is_(None))
+                )
+                or 0
+            )
+            released_used = int(
+                session.scalar(
+                    select(func.coalesce(func.sum(ErpSyncEvidenceReservation.used_bytes), 0))
+                    .where(ErpSyncEvidenceReservation.released_at.is_not(None))
+                )
+                or 0
+            )
+        self.assertEqual(active_reserved, 0)
+        self.assertEqual(released_used, sum(retained_used))
+        self.assertEqual(len(terminal_ids), 4)
+
+    def test_success_finalization_purges_payload_immediately_but_keeps_compact_proof(self) -> None:
+        control, _occurrence, attempt = self._attempt("success-payload-purge")
+        captured = self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"records": [{"number": "P-SUCCESS-PURGE"}]},
+            row_count=1,
+        )
+        with transactional_session(self.factory) as session:
+            row = Project(
+                id="SUCCESS-PURGE-PROJECT",
+                erp_external_id="SUCCESS-PURGE-ERP",
+                number="P-SUCCESS-PURGE",
+                name="Before",
+                status="Actif",
+            )
+            session.add(row)
+            session.flush()
+            before = ErpSyncOrchestrator._project_owned_state(row)
+            evidence_id = self.service.record_before_in_session(
+                session,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                unit_type="PROJECT_SNAPSHOT",
+                entity_type="PROJECT",
+                entity_key=row.erp_external_id,
+                before=before,
+            )
+            row.name = "After"
+            self.service.record_after_in_session(
+                session,
+                evidence_id=evidence_id,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                after=ErpSyncOrchestrator._project_owned_state(row) or {},
+            )
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="SUCCEEDED",
+                phase="PUBLICATION_COMMITTED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.finalize_attempt(attempt_id=attempt.id, successful=True)
+
+        with self.factory() as session:
+            manifest = session.get(ErpSyncEvidenceManifest, captured.manifest_id)
+            chunks = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceChunk).where(
+                        ErpSyncEvidenceChunk.manifest_id == captured.manifest_id
+                    )
+                )
+            )
+            mutation = session.get(ErpSyncMutationEvidence, evidence_id)
+            reservation = session.scalar(
+                select(ErpSyncEvidenceReservation).where(
+                    ErpSyncEvidenceReservation.attempt_id == attempt.id
+                )
+            )
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == attempt.id
+                )
+            )
+        self.assertEqual(manifest.state, "PURGED")
+        self.assertEqual(manifest.diagnostic, "erp_sync_evidence_success_payload_purged")
+        self.assertIsNotNone(manifest.content_sha256)
+        self.assertEqual(chunks, ())
+        self.assertIsNotNone(mutation.before_sha256)
+        self.assertIsNotNone(mutation.after_sha256)
+        self.assertIsNone(mutation.encrypted_before)
+        self.assertIsNone(mutation.encrypted_after)
+        self.assertEqual(reservation.used_bytes, 0)
+        self.assertEqual(reservation.used_plaintext_bytes, 0)
+        self.assertEqual(recovery.state, "NONE")
+
+    def test_retention_purges_unpinned_failure_payload_and_releases_accounted_bytes(self) -> None:
+        control, _occurrence, attempt = self._attempt("retention")
+        captured = self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"records": [{"number": "P-RET"}]},
+            row_count=1,
+        )
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.finalize_attempt(attempt_id=attempt.id, successful=False)
+        with transactional_session(self.factory) as session:
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == attempt.id
+                )
+            )
+            self.assertIsNotNone(recovery)
+            self.assertEqual(recovery.state, "NONE")
+            manifests = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceManifest).where(
+                        ErpSyncEvidenceManifest.attempt_id == attempt.id
+                    )
+                )
+            )
+            self.assertTrue(manifests)
+            self.assertTrue(all(not row.pinned for row in manifests))
+            for manifest in manifests:
+                manifest.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+        self.assertGreaterEqual(self.service.purge_expired(), 1)
+        with self.factory() as session:
+            manifest = session.get(ErpSyncEvidenceManifest, captured.manifest_id)
+            reservation = session.scalar(
+                select(ErpSyncEvidenceReservation).where(
+                    ErpSyncEvidenceReservation.attempt_id == attempt.id
+                )
+            )
+            chunks = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceChunk).where(
+                        ErpSyncEvidenceChunk.manifest_id == captured.manifest_id
+                    )
+                )
+            )
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == attempt.id
+                )
+            )
+        self.assertEqual(manifest.state, "PURGED")
+        self.assertEqual(chunks, ())
+        self.assertEqual(reservation.used_bytes, 0)
+        self.assertEqual(reservation.used_plaintext_bytes, 0)
+        self.assertEqual(recovery.state, "EXPIRED")
+
+    def test_exact_source_plausibility_exception_does_not_bypass_other_source(self) -> None:
+        _control, _occurrence, baseline_attempt = self._attempt("baseline-large")
+        baseline = self.service.capture_source(
+            attempt_id=baseline_attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload=[{"number": str(index)} for index in range(20)],
+            row_count=20,
+        )
+        self.service.approve_baseline(
+            manifest_id=baseline.manifest_id,
+            actor_name="admin",
+            reason="Known complete baseline",
+        )
+        SqlErpSyncControlRepository(self.factory).finish(
+            attempt_id=baseline_attempt.id,
+            generation=baseline_attempt.generation,
+            status="FAILED",
+            phase="FAILED",
+            settings=self.control_settings,
+        )
+        self.service.finalize_attempt(
+            attempt_id=baseline_attempt.id,
+            successful=False,
+        )
+
+        _control, _occurrence, attempt = self._attempt("small-source")
+        small = self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload=[{"number": "1"}],
+            row_count=1,
+        )
+        different = self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload=[{"different": True}],
+            row_count=0,
+        )
+        self.service.bind_attempt_policy(
+            attempt_id=attempt.id,
+            generation=attempt.generation,
+        )
+        rejected = self.service.validate_plausibility(small)
+        self.assertFalse(rejected.accepted)
+        self.assertTrue(
+            _control.pause_for_review(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                settings=self.control_settings,
+            )
+        )
+
+        self.service.approve_plausibility_exception(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            source_fingerprint=small.source_fingerprint,
+            threshold_scope="GLOBAL",
+            actor_name="admin",
+            reason="Confirmed planned source reduction",
+        )
+        self.assertTrue(self.service.validate_plausibility(small).accepted)
+
+        self.assertFalse(
+            self.service.validate_plausibility(
+                different,
+                active_task_targets=1,
+            ).accepted
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

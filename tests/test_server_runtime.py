@@ -20,6 +20,13 @@ from app.server.runtime import (
     DEV_USER_SWITCHER_ENV,
     ERP_SYNC_CATCHUP_HOURS_ENV,
     ERP_SYNC_ENABLED_ENV,
+    ERP_SYNC_EVIDENCE_BUDGET_MIB_ENV,
+    ERP_SYNC_FAILURE_RETENTION_DAYS_ENV,
+    ERP_SYNC_HISTORY_DAYS_ENV,
+    ERP_SYNC_MAX_EVIDENCE_MIB_ENV,
+    ERP_SYNC_MIN_PROJECTS_ENV,
+    ERP_SYNC_MIN_SOURCE_RATIO_ENV,
+    ERP_SYNC_MIN_TASK_ROWS_ENV,
     ERP_SYNC_TIME_ENV,
     ERP_SYNC_TIMEZONE_ENV,
     HOST_ENV,
@@ -69,6 +76,62 @@ class ServerRuntimeTests(unittest.TestCase):
         self.assertEqual(settings.erp_sync.local_time.strftime("%H:%M"), "00:00")
         self.assertEqual(settings.erp_sync.timezone_name, "America/Toronto")
         self.assertEqual(settings.erp_sync.catchup_hours, 4)
+
+    def test_erp_sync_evidence_defaults_match_accepted_contract(self) -> None:
+        settings = ServerSettings.from_environment(
+            {DATABASE_URL_ENV: "sqlite+pysqlite:///:memory:"}
+        )
+        evidence = settings.erp_sync_evidence
+        self.assertEqual(evidence.min_source_ratio, 0.50)
+        self.assertEqual(evidence.min_projects, 1)
+        self.assertEqual(evidence.min_task_rows, 1)
+        self.assertEqual(evidence.max_evidence_mib, 256)
+        self.assertEqual(evidence.evidence_budget_mib, 2048)
+        self.assertEqual(evidence.failure_retention_days, 14)
+        self.assertEqual(evidence.history_days, 90)
+
+    def test_erp_sync_evidence_environment_is_parsed_and_invalid_values_fail_closed(self) -> None:
+        settings = ServerSettings.from_environment(
+            {
+                DATABASE_URL_ENV: "sqlite+pysqlite:///:memory:",
+                ERP_SYNC_MIN_SOURCE_RATIO_ENV: "0.75",
+                ERP_SYNC_MIN_PROJECTS_ENV: "2",
+                ERP_SYNC_MIN_TASK_ROWS_ENV: "3",
+                ERP_SYNC_MAX_EVIDENCE_MIB_ENV: "64",
+                ERP_SYNC_EVIDENCE_BUDGET_MIB_ENV: "512",
+                ERP_SYNC_FAILURE_RETENTION_DAYS_ENV: "21",
+                ERP_SYNC_HISTORY_DAYS_ENV: "120",
+            }
+        )
+        evidence = settings.erp_sync_evidence
+        self.assertEqual(evidence.min_source_ratio, 0.75)
+        self.assertEqual(evidence.min_projects, 2)
+        self.assertEqual(evidence.min_task_rows, 3)
+        self.assertEqual(evidence.max_evidence_mib, 64)
+        self.assertEqual(evidence.evidence_budget_mib, 512)
+        self.assertEqual(evidence.failure_retention_days, 21)
+        self.assertEqual(evidence.history_days, 120)
+
+        invalid_cases = (
+            {ERP_SYNC_MIN_SOURCE_RATIO_ENV: "0"},
+            {ERP_SYNC_MIN_SOURCE_RATIO_ENV: "1.1"},
+            {ERP_SYNC_MAX_EVIDENCE_MIB_ENV: "15"},
+            {
+                ERP_SYNC_MAX_EVIDENCE_MIB_ENV: "256",
+                ERP_SYNC_EVIDENCE_BUDGET_MIB_ENV: "128",
+            },
+            {ERP_SYNC_FAILURE_RETENTION_DAYS_ENV: "91"},
+            {ERP_SYNC_HISTORY_DAYS_ENV: "29"},
+        )
+        for values in invalid_cases:
+            with self.subTest(values=values):
+                with self.assertRaises(ServerConfigurationError):
+                    ServerSettings.from_environment(
+                        {
+                            DATABASE_URL_ENV: "sqlite+pysqlite:///:memory:",
+                            **values,
+                        }
+                    )
 
     def test_erp_scheduler_environment_is_parsed_and_invalid_timezone_fails_closed(self) -> None:
         settings = ServerSettings.from_environment(

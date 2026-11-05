@@ -108,7 +108,12 @@ class SqlTaskCatalogRepository(
             preferred_resource_version=int(row.preferred_resource_version or 1),
         )
 
-    def upsert(self, item: TaskCatalogItem) -> str:
+    def upsert(
+        self,
+        item: TaskCatalogItem,
+        *,
+        source_observed_at: datetime | None = None,
+    ) -> str:
         project_number = _text(item.project_number)
         task_code = _text(item.code)
         erp_task_id = _optional_text(item.erp_task_id)
@@ -185,7 +190,11 @@ class SqlTaskCatalogRepository(
                 }
             )
 
-        freshness_at = datetime.now(timezone.utc) if erp_task_id is not None else None
+        freshness_at = None
+        if erp_task_id is not None:
+            freshness_at = source_observed_at or datetime.now(timezone.utc)
+            if freshness_at.tzinfo is None:
+                freshness_at = freshness_at.replace(tzinfo=timezone.utc)
         if row is None:
             if freshness_at is not None:
                 values["erp_budget_last_success_at"] = freshness_at

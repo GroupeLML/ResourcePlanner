@@ -26,6 +26,7 @@ from app.infrastructure.sql import (
     RequestLine,
     TaskCatalogEntry,
     TaskCatalogProjectSyncState,
+    ErpSyncProjectQuality,
     WorkforceRequest,
     WorkforceRequestPeriod,
     WorkforceRequestPeriodSelection,
@@ -869,6 +870,56 @@ class MediumTermBudgetReadModelTests(unittest.TestCase):
         self.assertEqual(
             unknown_load["diagnostic_state"],
             "WORK_PACKAGE_LOAD_UNAVAILABLE",
+        )
+
+    def test_quarantined_erp_quality_hides_freshness_without_erasing_budget_rows(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    session.add(
+                        ErpSyncProjectQuality(
+                            project_number="P-1",
+                            producer_attempt_id=None,
+                            quality_state="QUARANTINED",
+                            source_observed_at=datetime(
+                                2026, 10, 1, 13, 42, tzinfo=timezone.utc
+                            ),
+                            validated_at=datetime(
+                                2026, 10, 1, 14, 0, tzinfo=timezone.utc
+                            ),
+                            reason_code="erp_sync_global_validation_failed",
+                        )
+                    )
+            finally:
+                engine.dispose()
+
+            app = create_api_app(database_url)
+            with TestClient(app) as client:
+                response = client.get(
+                    "/api/v1/medium-term/budget",
+                    params={"project_number": "P-1"},
+                )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertIsNone(payload["erp_budget_last_success_at"])
+        programming = self._task(payload, "216")
+        self.assertIsNone(programming["erp_budget_last_success_at"])
+        self.assertIsNone(programming["remaining_reference_date"])
+        self.assertIn(
+            "ERP_SYNC_QUALITY_QUARANTINED",
+            programming["remaining_mode_diagnostics"],
+        )
+        self.assertEqual(
+            Decimal(str(programming["budget_amount_cad"])),
+            Decimal("50000"),
+        )
+        self.assertEqual(
+            Decimal(str(programming["budget_actual_cad"])),
+            Decimal("31000"),
         )
 
     def test_reference_week_keeps_current_monday_when_as_of_is_monday(self) -> None:

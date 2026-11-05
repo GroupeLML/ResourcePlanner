@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI
 import uvicorn
 
+from .erp_sync_evidence import ErpSyncEvidenceSettings
 from ..application.erp_sync_scheduler import (
     ErpSyncScheduleConfigurationError,
     ErpSyncSchedulerSettings,
@@ -94,6 +95,13 @@ ERP_SYNC_ENABLED_ENV = "RESOURCEPLANNER_ERP_SYNC_ENABLED"
 ERP_SYNC_TIME_ENV = "RESOURCEPLANNER_ERP_SYNC_TIME"
 ERP_SYNC_TIMEZONE_ENV = "RESOURCEPLANNER_ERP_SYNC_TIMEZONE"
 ERP_SYNC_CATCHUP_HOURS_ENV = "RESOURCEPLANNER_ERP_SYNC_CATCHUP_HOURS"
+ERP_SYNC_MIN_SOURCE_RATIO_ENV = "RESOURCEPLANNER_ERP_SYNC_MIN_SOURCE_RATIO"
+ERP_SYNC_MIN_PROJECTS_ENV = "RESOURCEPLANNER_ERP_SYNC_MIN_PROJECTS"
+ERP_SYNC_MIN_TASK_ROWS_ENV = "RESOURCEPLANNER_ERP_SYNC_MIN_TASK_ROWS"
+ERP_SYNC_MAX_EVIDENCE_MIB_ENV = "RESOURCEPLANNER_ERP_SYNC_MAX_EVIDENCE_MIB"
+ERP_SYNC_EVIDENCE_BUDGET_MIB_ENV = "RESOURCEPLANNER_ERP_SYNC_EVIDENCE_BUDGET_MIB"
+ERP_SYNC_FAILURE_RETENTION_DAYS_ENV = "RESOURCEPLANNER_ERP_SYNC_FAILURE_RETENTION_DAYS"
+ERP_SYNC_HISTORY_DAYS_ENV = "RESOURCEPLANNER_ERP_SYNC_HISTORY_DAYS"
 
 _ALLOWED_LOG_LEVELS = {"critical", "error", "warning", "info", "debug", "trace"}
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -128,6 +136,40 @@ def _positive_int(value: object, *, default: int, label: str, maximum: int) -> i
         raise ServerConfigurationError(f"{label} doit être un entier positif.") from exc
     if not 1 <= parsed <= maximum:
         raise ServerConfigurationError(f"{label} doit être compris entre 1 et {maximum}.")
+    return parsed
+
+
+def _ratio(value: object, *, default: float, label: str) -> float:
+    text = _text(value)
+    if not text:
+        return default
+    try:
+        parsed = float(text)
+    except ValueError as exc:
+        raise ServerConfigurationError(f"{label} doit être un nombre.") from exc
+    if not 0 < parsed <= 1:
+        raise ServerConfigurationError(f"{label} doit être > 0 et <= 1.")
+    return parsed
+
+
+def _non_negative_int(
+    value: object,
+    *,
+    default: int,
+    label: str,
+    maximum: int,
+) -> int:
+    text = _text(value)
+    if not text:
+        return default
+    try:
+        parsed = int(text)
+    except ValueError as exc:
+        raise ServerConfigurationError(f"{label} doit être un entier.") from exc
+    if not 0 <= parsed <= maximum:
+        raise ServerConfigurationError(
+            f"{label} doit être compris entre 0 et {maximum}."
+        )
     return parsed
 
 
@@ -363,6 +405,9 @@ class ServerSettings:
     m365: MicrosoftGraphCommunicationSettings | None = field(default=None, repr=False)
     config_encryption_key: str | None = field(default=None, repr=False)
     erp_sync: ErpSyncSchedulerSettings = field(default_factory=ErpSyncSchedulerSettings)
+    erp_sync_evidence: ErpSyncEvidenceSettings = field(
+        default_factory=ErpSyncEvidenceSettings
+    )
 
     @classmethod
     def from_environment(cls, environ: Mapping[str, str] | None = None) -> "ServerSettings":
@@ -459,6 +504,53 @@ class ServerSettings:
             raise ServerConfigurationError(str(exc)) from exc
 
         try:
+            erp_sync_evidence = ErpSyncEvidenceSettings(
+                min_source_ratio=_ratio(
+                    values.get(ERP_SYNC_MIN_SOURCE_RATIO_ENV),
+                    default=0.50,
+                    label=ERP_SYNC_MIN_SOURCE_RATIO_ENV,
+                ),
+                min_projects=_non_negative_int(
+                    values.get(ERP_SYNC_MIN_PROJECTS_ENV),
+                    default=1,
+                    label=ERP_SYNC_MIN_PROJECTS_ENV,
+                    maximum=1_000_000,
+                ),
+                min_task_rows=_non_negative_int(
+                    values.get(ERP_SYNC_MIN_TASK_ROWS_ENV),
+                    default=1,
+                    label=ERP_SYNC_MIN_TASK_ROWS_ENV,
+                    maximum=100_000_000,
+                ),
+                max_evidence_mib=_positive_int(
+                    values.get(ERP_SYNC_MAX_EVIDENCE_MIB_ENV),
+                    default=256,
+                    label=ERP_SYNC_MAX_EVIDENCE_MIB_ENV,
+                    maximum=1024,
+                ),
+                evidence_budget_mib=_positive_int(
+                    values.get(ERP_SYNC_EVIDENCE_BUDGET_MIB_ENV),
+                    default=2048,
+                    label=ERP_SYNC_EVIDENCE_BUDGET_MIB_ENV,
+                    maximum=16384,
+                ),
+                failure_retention_days=_positive_int(
+                    values.get(ERP_SYNC_FAILURE_RETENTION_DAYS_ENV),
+                    default=14,
+                    label=ERP_SYNC_FAILURE_RETENTION_DAYS_ENV,
+                    maximum=90,
+                ),
+                history_days=_positive_int(
+                    values.get(ERP_SYNC_HISTORY_DAYS_ENV),
+                    default=90,
+                    label=ERP_SYNC_HISTORY_DAYS_ENV,
+                    maximum=365,
+                ),
+            )
+        except ValueError as exc:
+            raise ServerConfigurationError(str(exc)) from exc
+
+        try:
             embedding = EmbeddingSettings.from_environment(
                 values,
                 secure_cookie=oidc_secure_cookie,
@@ -489,6 +581,7 @@ class ServerSettings:
             m365=_m365_settings(values),
             config_encryption_key=_text(values.get(CONFIG_ENCRYPTION_KEY_ENV)) or None,
             erp_sync=erp_sync,
+            erp_sync_evidence=erp_sync_evidence,
         )
 
 
@@ -616,6 +709,11 @@ def create_configured_app(settings: ServerSettings | None = None) -> FastAPI:
             if project_source is not None or project_task_source is not None
             else None
         ),
+        erp_sync_evidence_settings=(
+            resolved.erp_sync_evidence
+            if project_source is not None or project_task_source is not None
+            else None
+        ),
         runtime_dependencies={
             "oidc": {
                 "required": resolved.auth_mode == "oidc",
@@ -641,6 +739,11 @@ def create_configured_app(settings: ServerSettings | None = None) -> FastAPI:
                 "required": False,
                 "secret_key_configured": smtp_cipher is not None,
                 "check": "configuration_only",
+            },
+            "erp_sync_evidence": {
+                "required": resolved.erp_sync.enabled,
+                "crypto_configured": smtp_cipher is not None,
+                "check": "baseline_and_storage",
             },
         },
     )

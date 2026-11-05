@@ -293,18 +293,22 @@ jobs:
         run: |
           occurrence_before="$(docker compose exec -T backend python - <<'PY'
           import os
+          from dataclasses import replace
           from app.application.erp_sync_scheduler import (
-              ErpSyncSchedulerSettings,
               UnavailableErpSyncAutomaticSafetyCapability,
           )
           from app.infrastructure.sql import create_session_factory, create_sql_engine
           from app.infrastructure.sql.erp_sync_control_repository import SqlErpSyncControlRepository
+          from app.server.runtime import ServerSettings
 
           engine = create_sql_engine(os.environ["RESOURCEPLANNER_DATABASE_URL"])
           repository = SqlErpSyncControlRepository(create_session_factory(engine))
           repository.ensure_control_row()
+          runtime_settings = ServerSettings.from_environment().erp_sync
+          decision_settings = replace(runtime_settings, enabled=True)
+          assert decision_settings.config_fingerprint == runtime_settings.config_fingerprint
           occurrence = repository.record_daily_decision(
-              ErpSyncSchedulerSettings(enabled=True, catchup_hours=12),
+              decision_settings,
               UnavailableErpSyncAutomaticSafetyCapability(),
           )
           assert occurrence is not None
@@ -366,7 +370,7 @@ jobs:
   sqlserver-live-573e:
     name: SQL Server live 363F / 573E / 594D
     needs: changes
-    if: ${{ startsWith(github.event.pull_request.title, '363F') || startsWith(github.event.pull_request.title, '573E') || startsWith(github.event.pull_request.title, '594D') || startsWith(github.event.pull_request.title, '655C') || startsWith(github.event.pull_request.title, '#778') || startsWith(github.event.pull_request.title, '#777') || startsWith(github.event.pull_request.title, '#781') || startsWith(github.event.pull_request.title, '#742') || startsWith(github.event.pull_request.title, '643A') }}
+    if: ${{ startsWith(github.event.pull_request.title, '363F') || startsWith(github.event.pull_request.title, '573E') || startsWith(github.event.pull_request.title, '594D') || startsWith(github.event.pull_request.title, '655C') || startsWith(github.event.pull_request.title, '#778') || startsWith(github.event.pull_request.title, '#777') || startsWith(github.event.pull_request.title, '#781') || startsWith(github.event.pull_request.title, '#742') || startsWith(github.event.pull_request.title, '643A') || startsWith(github.event.pull_request.title, '643B') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

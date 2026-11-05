@@ -1899,10 +1899,25 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   await labelled(typeEditor, "Catégorie", "select").selectOption("EQUIPMENT");
   await typeEditor.getByLabel("Compétences / permis requis", { exact: true }).selectOption(["C-SCADA"]);
   await typeEditor.getByRole("button", { name: "Enregistrer le type" }).click();
-  await expect(catalogPanel.locator(".asset-catalog-notice")).toContainText("Type d’actif créé");
 
   const typeRow = catalogPanel.locator(".asset-type-row").filter({ hasText: "LIFT496" }).first();
   await expect(typeRow).toContainText("Nacelle");
+
+  const createdTypeResponse = await catalogManager.page.request.get("/api/v1/assets/catalog");
+  expect(createdTypeResponse.ok(), await createdTypeResponse.text()).toBeTruthy();
+  const createdTypeCatalog = await createdTypeResponse.json() as {
+    types: Array<{
+      id: string;
+      code: string;
+      label: string;
+      required_competencies: Array<{ id: string; name: string }>;
+    }>;
+  };
+  const createdType = createdTypeCatalog.types.find((row) => row.code === "LIFT496");
+  expect(createdType).toBeTruthy();
+  expect(createdType?.label).toBe("Nacelle");
+  expect(createdType?.required_competencies.map((item) => item.id)).toContain("C-SCADA");
+
   await typeRow.click();
   await catalogPanel.getByRole("button", { name: "+ Unité" }).click();
   const unitEditor = catalogPanel.locator(".asset-unit-editor");

@@ -11,6 +11,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
+from .erp_sync_evidence import (
+    ErpSyncEvidenceService,
+    ErpSyncEvidenceSettings,
+    EvidenceBackedErpSyncAutomaticSafetyCapability,
+)
 from ..application.erp_sync_scheduler import (
     ErpSyncAutomaticSafetyCapability,
     ErpSyncSchedulerSettings,
@@ -511,6 +516,7 @@ def create_api_app(
     runtime_dependencies: dict[str, Any] | None = None,
     erp_sync_settings: ErpSyncSchedulerSettings | None = None,
     erp_sync_automatic_safety: ErpSyncAutomaticSafetyCapability | None = None,
+    erp_sync_evidence_settings: ErpSyncEvidenceSettings | None = None,
 ) -> FastAPI:
     if auth_resolver is None:
         raise ValueError(
@@ -524,11 +530,28 @@ def create_api_app(
     install_sql_performance_instrumentation(engine)
     factory = create_session_factory(engine)
     resolved_erp_sync_settings = erp_sync_settings or ErpSyncSchedulerSettings()
+    erp_sync_evidence_service = (
+        ErpSyncEvidenceService(
+            factory,
+            cipher=smtp_cipher,
+            settings=erp_sync_evidence_settings,
+            control_settings=resolved_erp_sync_settings,
+        )
+        if erp_sync_evidence_settings is not None
+        else None
+    )
+    resolved_automatic_safety = erp_sync_automatic_safety
+    if resolved_automatic_safety is None and erp_sync_evidence_service is not None:
+        resolved_automatic_safety = EvidenceBackedErpSyncAutomaticSafetyCapability(
+            erp_sync_evidence_service,
+            profile_fingerprint=resolved_erp_sync_settings.config_fingerprint,
+        )
     install_erp_sync_orchestrator = (
         erp_sync_settings is not None
         or project_source is not None
         or project_task_source is not None
-        or erp_sync_automatic_safety is not None
+        or resolved_automatic_safety is not None
+        or erp_sync_evidence_service is not None
     )
     erp_sync_orchestrator = (
         ErpSyncOrchestrator(
@@ -536,7 +559,8 @@ def create_api_app(
             project_source=project_source,
             project_task_source=project_task_source,
             settings=resolved_erp_sync_settings,
-            automatic_safety=erp_sync_automatic_safety,
+            automatic_safety=resolved_automatic_safety,
+            evidence_service=erp_sync_evidence_service,
         )
         if install_erp_sync_orchestrator
         else None
@@ -679,6 +703,7 @@ def create_api_app(
     app.state.runtime_dependencies = dict(runtime_dependencies or {})
     app.state.project_task_sync_runner = erp_sync_orchestrator
     app.state.erp_sync_orchestrator = erp_sync_orchestrator
+    app.state.erp_sync_evidence_service = erp_sync_evidence_service
     app.state.erp_sync_activation_diagnostic = (
         erp_sync_orchestrator.automatic_activation_diagnostic
         if erp_sync_orchestrator is not None
@@ -830,6 +855,7 @@ def create_api_app(
             user_source=user_source,
             project_task_source=project_task_source,
             erp_sync_orchestrator=erp_sync_orchestrator,
+            erp_sync_evidence_service=erp_sync_evidence_service,
             acumatica_info=acumatica_info,
         )
     )

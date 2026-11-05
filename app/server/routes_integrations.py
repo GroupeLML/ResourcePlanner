@@ -4,6 +4,7 @@ from collections.abc import Iterator
 from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, Header, Request
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from ..application import (
@@ -20,10 +21,13 @@ from ..application import (
     TaskCatalogProjectSyncResult,
 )
 from ..application.errors import (
+    ApplicationAuthorizationError,
     ApplicationNotFoundError,
     ApplicationUnavailableError,
     ApplicationValidationError,
 )
+from .erp_sync_evidence import ErpSyncEvidenceService
+from ..application.security import PERMISSION_ADMIN_SETTINGS, PERMISSION_SYNC_PROJECTS
 from ..infrastructure.sql import (
     Project,
     SqlEmployeeSyncRepository,
@@ -36,6 +40,52 @@ from .performance import performance_phase, record_external_call, record_externa
 
 
 SessionProvider = Callable[[], Iterator[Session]]
+
+
+def _require_sensitive_erp_authority(request: Request) -> None:
+    principal = getattr(request.state, "auth_principal", None)
+    if principal is None or not all(
+        principal.has_permission(permission)
+        for permission in (PERMISSION_SYNC_PROJECTS, PERMISSION_ADMIN_SETTINGS)
+    ):
+        raise ApplicationAuthorizationError(
+            "Cette opération ERP sensible exige sync_projects et admin_settings.",
+            code="erp_sync_sensitive_authority_required",
+            context={
+                "required_permissions": [
+                    PERMISSION_SYNC_PROJECTS,
+                    PERMISSION_ADMIN_SETTINGS,
+                ]
+            },
+        )
+
+
+class ErpBaselineApprovalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class ErpPlausibilityExceptionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    manifest_id: str = Field(min_length=1, max_length=36)
+    threshold_scope: str = Field(min_length=1, max_length=255)
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class ErpPlausibilityReviewDeclineRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class ErpCompensationPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class ErpCompensationConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    preview_hash: str = Field(min_length=64, max_length=64)
+    reason: str = Field(min_length=1, max_length=1000)
 
 
 def _actor_name(request: Request) -> str:
@@ -121,6 +171,7 @@ def build_integration_router(
     user_source: ErpUserSourcePort | None = None,
     project_task_source: ProjectTaskCatalogSourcePort | None = None,
     erp_sync_orchestrator: ErpSyncOrchestrator | None = None,
+    erp_sync_evidence_service: ErpSyncEvidenceService | None = None,
     acumatica_info: dict[str, Any] | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/v1/integrations/acumatica", tags=["integrations"])
@@ -308,6 +359,149 @@ def build_integration_router(
         if erp_sync_orchestrator is None:
             return None
         return erp_sync_orchestrator.current()
+
+    @router.get("/erp-sync/runs/{attempt_id}/evidence")
+    def erp_sync_evidence(attempt_id: str) -> dict[str, Any]:
+        if erp_sync_evidence_service is None:
+            raise ApplicationUnavailableError(
+                "Le stockage de preuve ERP n'est pas configuré.",
+                code="erp_sync_evidence_capability_unavailable",
+            )
+        return {
+            "attempt_id": attempt_id,
+            "sources": list(
+                erp_sync_evidence_service.list_attempt_sources(
+                    attempt_id=attempt_id
+                )
+            ),
+        }
+
+    @router.post("/erp-sync/evidence/{manifest_id}/approve-baseline")
+    def approve_erp_baseline(
+        manifest_id: str,
+        payload: ErpBaselineApprovalRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_sensitive_erp_authority(request)
+        if erp_sync_evidence_service is None:
+            raise ApplicationUnavailableError(
+                "Le stockage de preuve ERP n'est pas configuré.",
+                code="erp_sync_evidence_capability_unavailable",
+            )
+        baseline_id = erp_sync_evidence_service.approve_baseline(
+            manifest_id=manifest_id,
+            actor_name=_actor_name(request),
+            reason=payload.reason,
+        )
+        return {"baseline_id": baseline_id, "manifest_id": manifest_id}
+
+    @router.post("/erp-sync/runs/{attempt_id}/plausibility-exceptions")
+    def approve_erp_plausibility_exception(
+        attempt_id: str,
+        payload: ErpPlausibilityExceptionRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_sensitive_erp_authority(request)
+        if erp_sync_evidence_service is None:
+            raise ApplicationUnavailableError(
+                "Le stockage de preuve ERP n'est pas configuré.",
+                code="erp_sync_evidence_capability_unavailable",
+            )
+        manifests = {
+            row["manifest_id"]: row
+            for row in erp_sync_evidence_service.list_attempt_sources(
+                attempt_id=attempt_id
+            )
+        }
+        manifest = manifests.get(payload.manifest_id)
+        if manifest is None or not manifest.get("source_fingerprint"):
+            raise ApplicationNotFoundError(
+                "La preuve source demandée n'existe pas pour cette tentative.",
+                code="erp_sync_evidence_not_found",
+            )
+        exception_id = erp_sync_evidence_service.approve_plausibility_exception(
+            attempt_id=attempt_id,
+            source_type=str(manifest["source_type"]),
+            source_fingerprint=str(manifest["source_fingerprint"]),
+            threshold_scope=payload.threshold_scope,
+            actor_name=_actor_name(request),
+            reason=payload.reason,
+        )
+        return {"exception_id": exception_id, "attempt_id": attempt_id}
+
+    @router.post("/erp-sync/runs/{attempt_id}/plausibility-decline")
+    def decline_erp_plausibility_review(
+        attempt_id: str,
+        payload: ErpPlausibilityReviewDeclineRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_sensitive_erp_authority(request)
+        if erp_sync_orchestrator is None:
+            raise ApplicationUnavailableError(
+                "L'orchestration ERP n'est pas configurée sur ce serveur.",
+                code="erp_sync_orchestrator_not_configured",
+            )
+        return erp_sync_orchestrator.decline_plausibility_review(
+            attempt_id=attempt_id,
+            actor_name=_actor_name(request),
+            reason=payload.reason,
+        )
+
+    @router.post("/erp-sync/runs/{attempt_id}/plausibility-continue", status_code=202)
+    def continue_erp_plausibility_review(
+        attempt_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_sensitive_erp_authority(request)
+        if erp_sync_orchestrator is None:
+            raise ApplicationUnavailableError(
+                "L'orchestration ERP n'est pas configurée sur ce serveur.",
+                code="erp_sync_orchestrator_not_configured",
+            )
+        return erp_sync_orchestrator.continue_plausibility_review(
+            attempt_id=attempt_id,
+            actor_name=_actor_name(request),
+        )
+
+    @router.post("/erp-sync/runs/{attempt_id}/compensation/preview")
+    def preview_erp_compensation(
+        attempt_id: str,
+        payload: ErpCompensationPreviewRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_sensitive_erp_authority(request)
+        if erp_sync_evidence_service is None:
+            raise ApplicationUnavailableError(
+                "Le stockage de preuve ERP n'est pas configuré.",
+                code="erp_sync_evidence_capability_unavailable",
+            )
+        preview = erp_sync_evidence_service.compensation_preview(
+            attempt_id=attempt_id
+        )
+        return {**preview, "reason": payload.reason}
+
+    @router.post("/erp-sync/runs/{attempt_id}/compensation/confirm")
+    def confirm_erp_compensation(
+        attempt_id: str,
+        payload: ErpCompensationConfirmRequest,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> dict[str, Any]:
+        _require_sensitive_erp_authority(request)
+        if erp_sync_evidence_service is None:
+            raise ApplicationUnavailableError(
+                "Le stockage de preuve ERP n'est pas configuré.",
+                code="erp_sync_evidence_capability_unavailable",
+            )
+        return erp_sync_evidence_service.confirm_compensation(
+            attempt_id=attempt_id,
+            preview_hash=payload.preview_hash,
+            command_identity=(
+                f"erp-sync-compensation:{attempt_id}:{idempotency_key}"
+            ),
+            actor_name=_actor_name(request),
+            reason=payload.reason,
+        )
 
     @router.get("/erp-sync/runs/{attempt_id}")
     def erp_sync_status(attempt_id: str) -> dict[str, Any]:

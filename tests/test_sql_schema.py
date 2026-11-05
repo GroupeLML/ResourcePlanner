@@ -24,6 +24,17 @@ EXPECTED_TABLES = {
     "erp_sync_control",
     "erp_sync_occurrences",
     "erp_sync_attempts",
+    "erp_sync_evidence_manifests",
+    "erp_sync_evidence_chunks",
+    "erp_sync_evidence_reservations",
+    "erp_sync_baselines",
+    "erp_sync_baseline_approval_audit",
+    "erp_sync_plausibility_exceptions",
+    "erp_sync_plausibility_review_decisions",
+    "erp_sync_mutation_evidence",
+    "erp_sync_project_quality",
+    "erp_sync_recovery_state",
+    "erp_sync_compensation_receipts",
     "approval_decisions",
     "approval_requirement_approvers",
     "approval_requirements",
@@ -194,6 +205,9 @@ class SqlSchemaTests(unittest.TestCase):
         self.assertFalse(verification_history.action.nullable)
         self.assertFalse(verification_history.verification_version.nullable)
         self.assertFalse(verification_history.details_json.nullable)
+        erp_attempts = Base.metadata.tables["erp_sync_attempts"].c
+        self.assertTrue(erp_attempts.policy_fingerprint.nullable)
+        self.assertEqual(erp_attempts.policy_fingerprint.type.length, 64)
         task_catalog = Base.metadata.tables["task_catalog_items"].c
         work_packages = Base.metadata.tables["work_packages"].c
         work_package_audit = Base.metadata.tables["work_package_audit"].c
@@ -209,6 +223,66 @@ class SqlSchemaTests(unittest.TestCase):
         self.assertFalse(global_task_sync_results["run_id"].nullable)
         self.assertFalse(global_task_sync_results["project_id"].nullable)
         self.assertFalse(global_task_sync_results["status"].nullable)
+
+        evidence_manifests = Base.metadata.tables["erp_sync_evidence_manifests"].c
+        evidence_chunks = Base.metadata.tables["erp_sync_evidence_chunks"].c
+        evidence_reservations = Base.metadata.tables["erp_sync_evidence_reservations"].c
+        baselines = Base.metadata.tables["erp_sync_baselines"].c
+        baseline_audit = Base.metadata.tables["erp_sync_baseline_approval_audit"].c
+        plausibility = Base.metadata.tables["erp_sync_plausibility_exceptions"].c
+        review_decisions_table = Base.metadata.tables[
+            "erp_sync_plausibility_review_decisions"
+        ]
+        review_decisions = review_decisions_table.c
+        mutation_evidence = Base.metadata.tables["erp_sync_mutation_evidence"].c
+        project_quality = Base.metadata.tables["erp_sync_project_quality"].c
+        recovery = Base.metadata.tables["erp_sync_recovery_state"].c
+        compensation = Base.metadata.tables["erp_sync_compensation_receipts"].c
+        self.assertFalse(evidence_manifests.attempt_id.nullable)
+        self.assertFalse(evidence_manifests.protocol_version.nullable)
+        self.assertFalse(evidence_manifests.source_type.nullable)
+        self.assertFalse(evidence_chunks.manifest_id.nullable)
+        self.assertFalse(evidence_chunks.encrypted_payload.nullable)
+        self.assertFalse(evidence_reservations.attempt_id.nullable)
+        self.assertFalse(evidence_reservations.reserved_bytes.nullable)
+        self.assertFalse(evidence_reservations.reserved_plaintext_bytes.nullable)
+        self.assertTrue(evidence_reservations.released_at.nullable)
+        self.assertFalse(baselines.source_type.nullable)
+        self.assertFalse(baselines.approved_by.nullable)
+        self.assertFalse(baseline_audit.baseline_id.nullable)
+        self.assertFalse(baseline_audit.manifest_id.nullable)
+        self.assertFalse(plausibility.attempt_id.nullable)
+        self.assertFalse(review_decisions.attempt_id.nullable)
+        self.assertFalse(review_decisions.decision.nullable)
+        self.assertFalse(review_decisions.actor_name.nullable)
+        self.assertFalse(review_decisions.reason.nullable)
+        self.assertFalse(review_decisions.source_identity_json.nullable)
+        self.assertFalse(review_decisions.decided_at.nullable)
+        self.assertEqual(
+            next(iter(review_decisions.attempt_id.foreign_keys)).target_fullname,
+            "erp_sync_attempts.id",
+        )
+        self.assertTrue(
+            any(
+                constraint.name
+                == "uq_erp_sync_plausibility_review_decision_attempt"
+                for constraint in review_decisions_table.constraints
+            )
+        )
+        self.assertIn(
+            "ix_erp_sync_plausibility_review_decision_attempt",
+            {index.name for index in review_decisions_table.indexes},
+        )
+        self.assertFalse(mutation_evidence.attempt_id.nullable)
+        self.assertFalse(mutation_evidence.generation.nullable)
+        self.assertFalse(mutation_evidence.unit_type.nullable)
+        self.assertEqual(mutation_evidence.unit_type.type.length, 64)
+        self.assertFalse(project_quality.quality_state.nullable)
+        self.assertTrue(project_quality.producer_attempt_id.nullable)
+        self.assertFalse(recovery.attempt_id.nullable)
+        self.assertFalse(recovery.state.nullable)
+        self.assertFalse(compensation.attempt_id.nullable)
+        self.assertFalse(compensation.command_identity.nullable)
 
         competencies = Base.metadata.tables["competencies"].c
         resource_competencies = Base.metadata.tables["resource_competencies"].c

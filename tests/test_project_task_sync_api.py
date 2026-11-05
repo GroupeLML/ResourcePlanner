@@ -8,6 +8,8 @@ from time import perf_counter, sleep
 import unittest
 from unittest.mock import patch
 
+from cryptography.fernet import Fernet
+
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -17,15 +19,20 @@ from app.application import (
     TaskCatalogPortfolioSnapshot,
     TaskCatalogProjectSnapshot,
 )
+from app.server.erp_sync_evidence import ErpSyncEvidenceSettings
 from app.application.erp_sync_scheduler import (
     ErpSyncSchedulerSettings,
     UnavailableErpSyncAutomaticSafetyCapability,
 )
 from app.application.security import PERMISSION_SYNC_PROJECTS
+from app.infrastructure.smtp import FernetSecretCipher
 from app.infrastructure.sql import (
     AcumaticaProjectTaskSyncRun,
     Base,
     ErpSyncAttempt,
+    ErpSyncEvidenceManifest,
+    ErpSyncMutationEvidence,
+    ErpSyncProjectQuality,
     Project,
     ResourceClassConfig,
     TaskCatalogEntry,
@@ -647,6 +654,18 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
             backend_b.shutdown()
             engine.dispose()
 
+    def test_plausibility_continuation_requires_sensitive_erp_authority(self) -> None:
+        app = create_api_app(
+            self.database_url,
+            auth_resolver=TEST_PROJECT_MANAGER_AUTH_RESOLVER,
+            erp_sync_settings=ErpSyncSchedulerSettings(enabled=False),
+        )
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/integrations/acumatica/erp-sync/runs/attempt-x/plausibility-continue"
+            )
+        self.assertEqual(response.status_code, 403, response.text)
+
     def test_643a_scheduler_routes_require_sync_projects_permission(self) -> None:
         paths = (
             "/api/v1/integrations/acumatica/erp-sync/run-now",
@@ -1125,6 +1144,71 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
             "acumatica_project_task_not_configured",
         )
 
+    def test_legacy_targeted_http_sync_publishes_643b_evidence_and_quality(self) -> None:
+        source = StubProjectTaskSource(self._snapshot())
+        app = create_api_app(
+            self.database_url,
+            auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            project_task_source=source,
+            erp_sync_settings=ErpSyncSchedulerSettings(enabled=False),
+            erp_sync_evidence_settings=ErpSyncEvidenceSettings(
+                max_evidence_mib=16,
+                evidence_budget_mib=32,
+            ),
+            smtp_cipher=FernetSecretCipher(
+                Fernet.generate_key().decode("ascii")
+            ),
+        )
+        path = "/api/v1/integrations/acumatica/projects/PROJECT-ERP/tasks/sync"
+        with TestClient(app) as client:
+            response = client.post(path)
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["project_number"], "5118")
+        self.assertEqual(response.json()["task_count"], 1)
+
+        factory = app.state.session_factory
+        with factory() as session:
+            attempt = session.scalar(
+                select(ErpSyncAttempt)
+                .where(
+                    ErpSyncAttempt.intent == "TARGETED_PROJECT_TASKS:PROJECT-ERP"
+                )
+                .order_by(ErpSyncAttempt.created_at.desc())
+                .limit(1)
+            )
+            self.assertIsNotNone(attempt)
+            source_manifest = session.scalar(
+                select(ErpSyncEvidenceManifest).where(
+                    ErpSyncEvidenceManifest.attempt_id == attempt.id,
+                    ErpSyncEvidenceManifest.source_type == "TASKS",
+                    ErpSyncEvidenceManifest.proof_type == "SOURCE",
+                )
+            )
+            task_evidence = session.scalar(
+                select(ErpSyncMutationEvidence).where(
+                    ErpSyncMutationEvidence.attempt_id == attempt.id,
+                    ErpSyncMutationEvidence.entity_type == "TASK",
+                    ErpSyncMutationEvidence.after_sha256.is_not(None),
+                    ErpSyncMutationEvidence.committed_at.is_not(None),
+                )
+            )
+            sync_state_evidence = session.scalar(
+                select(ErpSyncMutationEvidence).where(
+                    ErpSyncMutationEvidence.attempt_id == attempt.id,
+                    ErpSyncMutationEvidence.entity_type == "TASK_SYNC_STATE",
+                    ErpSyncMutationEvidence.after_sha256.is_not(None),
+                    ErpSyncMutationEvidence.committed_at.is_not(None),
+                )
+            )
+            quality = session.get(ErpSyncProjectQuality, "5118")
+        self.assertIsNotNone(source_manifest)
+        self.assertIsNotNone(task_evidence)
+        self.assertIsNotNone(sync_state_evidence)
+        self.assertIsNotNone(quality)
+        self.assertEqual(quality.quality_state, "VALID")
+        self.assertEqual(quality.producer_attempt_id, attempt.id)
+
     def test_sync_uses_erp_identity_persists_workforce_projection_and_replays(self) -> None:
         source = StubProjectTaskSource(self._snapshot())
         app = create_api_app(
@@ -1167,7 +1251,18 @@ class ProjectTaskSyncApiTests(unittest.TestCase):
             rows = session.scalars(
                 select(TaskCatalogEntry).where(TaskCatalogEntry.erp_task_id == "9001")
             ).all()
+            targeted_runs = tuple(
+                session.scalars(
+                    select(AcumaticaProjectTaskSyncRun)
+                    .where(
+                        AcumaticaProjectTaskSyncRun.parent_attempt_id.is_not(None)
+                    )
+                    .order_by(AcumaticaProjectTaskSyncRun.created_at)
+                )
+            )
             self.assertEqual(len(rows), 1)
+            self.assertGreaterEqual(len(targeted_runs), 2)
+            self.assertTrue(all(run.active_key is None for run in targeted_runs))
             row = rows[0]
             self.assertEqual(row.project_number, "5118")
             self.assertEqual(row.budget_amount_cad, Decimal("1000.0000000000"))

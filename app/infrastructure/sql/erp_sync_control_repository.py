@@ -19,6 +19,7 @@ from ...application.erp_sync_scheduler import (
 from ...application.errors import (
     ApplicationConflictError,
     ApplicationNotFoundError,
+    ApplicationValidationError,
 )
 from .acumatica_project_task_sync_models import (
     SYNC_RUN_ACTIVE_STATUSES,
@@ -204,6 +205,23 @@ class SqlErpSyncControlRepository:
     def __init__(self, session_factory: SqlSessionFactory) -> None:
         self._session_factory = session_factory
 
+    @staticmethod
+    def guard_recovery_session(
+        session: Session,
+        *,
+        settings: ErpSyncSchedulerSettings,
+    ) -> ErpSyncControl:
+        """Serialize compensation against all ERP writers without reviving an attempt."""
+        control = _lock_control(session)
+        _ensure_config_compatible_locked(control, settings)
+        if control.owner_attempt_id:
+            raise ApplicationConflictError(
+                "Une synchronisation ERP active interdit la compensation.",
+                code="erp_sync_recovery_owner_active",
+                context={"attempt_id": control.owner_attempt_id},
+            )
+        return control
+
     def schema_available(self) -> bool:
         with self._session_factory() as session:
             return inspect(session.get_bind()).has_table("erp_sync_control")
@@ -300,12 +318,124 @@ class SqlErpSyncControlRepository:
             )
         return control, now
 
+    @staticmethod
+    def _finalize_interrupted_evidence_locked(
+        session: Session,
+        *,
+        attempt_id: str,
+        now: datetime,
+    ) -> None:
+        inspector = inspect(session.get_bind())
+        if not inspector.has_table("erp_sync_evidence_reservations"):
+            return
+        from .erp_sync_evidence_models import (
+            ERP_SYNC_DEFAULT_PAYLOAD_RETENTION_DAYS,
+            RECOVERY_AVAILABLE,
+            RECOVERY_NONE,
+            ErpSyncEvidenceManifest,
+            ErpSyncEvidenceReservation,
+            ErpSyncMutationEvidence,
+            ErpSyncRecoveryState,
+        )
+
+        reservation = session.scalar(
+            select(ErpSyncEvidenceReservation).where(
+                ErpSyncEvidenceReservation.attempt_id == attempt_id
+            )
+        )
+        if reservation is not None and reservation.released_at is None:
+            reservation.released_at = now
+
+        if (
+            inspector.has_table("erp_sync_mutation_evidence")
+            and inspector.has_table("erp_sync_recovery_state")
+        ):
+            committed = int(
+                session.scalar(
+                    select(func.count(ErpSyncMutationEvidence.id)).where(
+                        ErpSyncMutationEvidence.attempt_id == attempt_id,
+                        ErpSyncMutationEvidence.committed_at.is_not(None),
+                        ErpSyncMutationEvidence.after_sha256.is_not(None),
+                    )
+                )
+                or 0
+            )
+            if committed:
+                recovery = session.scalar(
+                    select(ErpSyncRecoveryState).where(
+                        ErpSyncRecoveryState.attempt_id == attempt_id
+                    )
+                )
+                if recovery is None:
+                    session.add(
+                        ErpSyncRecoveryState(
+                            attempt_id=attempt_id,
+                            state=RECOVERY_AVAILABLE,
+                            reason_code="erp_sync_interrupted_replay_available",
+                            pinned=False,
+                        )
+                    )
+                elif recovery.state == RECOVERY_NONE:
+                    recovery.state = RECOVERY_AVAILABLE
+                    recovery.reason_code = "erp_sync_interrupted_replay_available"
+                    recovery.pinned = False
+
+        # Lease expiry is an ordinary interruption, not a hard recovery signal.
+        # Preserve committed evidence, release unused capacity, and make any
+        # unpinned payload purge-eligible. Explicit validation/storage failures
+        # continue to create RECOVERY_REQUIRED through their dedicated paths.
+        if inspector.has_table("erp_sync_evidence_manifests"):
+            fallback_expiry = now + timedelta(
+                days=ERP_SYNC_DEFAULT_PAYLOAD_RETENTION_DAYS
+            )
+            for manifest in session.scalars(
+                select(ErpSyncEvidenceManifest).where(
+                    ErpSyncEvidenceManifest.attempt_id == attempt_id
+                )
+            ):
+                if not bool(manifest.pinned) and manifest.expires_at is None:
+                    manifest.expires_at = fallback_expiry
+
+    @staticmethod
+    def _pending_plausibility_review_locked(
+        session: Session,
+    ) -> ErpSyncAttempt | None:
+        return session.scalar(
+            select(ErpSyncAttempt)
+            .where(
+                ErpSyncAttempt.status == ERP_ATTEMPT_PENDING,
+                ErpSyncAttempt.phase == "PLAUSIBILITY_REVIEW_REQUIRED",
+            )
+            .order_by(ErpSyncAttempt.created_at)
+            .limit(1)
+        )
+
+    @staticmethod
+    def _recovery_required_locked(session: Session) -> bool:
+        inspector = inspect(session.get_bind())
+        if not inspector.has_table("erp_sync_recovery_state"):
+            return False
+        from .erp_sync_evidence_models import (
+            RECOVERY_REQUIRED,
+            ErpSyncRecoveryState,
+        )
+
+        return (
+            session.scalar(
+                select(ErpSyncRecoveryState.id)
+                .where(ErpSyncRecoveryState.state == RECOVERY_REQUIRED)
+                .limit(1)
+            )
+            is not None
+        )
+
     def _interrupt_expired_locked(
         self,
         session: Session,
         control: ErpSyncControl,
         *,
         now: datetime,
+        interrupted_attempts: list[str] | None = None,
     ) -> int:
         _assert_control_protocol(control)
         owner_id = str(control.owner_attempt_id or "").strip()
@@ -331,6 +461,8 @@ class SqlErpSyncControlRepository:
 
         attempt = session.get(ErpSyncAttempt, owner_id)
         if attempt is not None and attempt.status not in ERP_ATTEMPT_TERMINAL:
+            if interrupted_attempts is not None:
+                interrupted_attempts.append(str(attempt.id))
             attempt.status = ERP_ATTEMPT_INTERRUPTED
             attempt.finished_at = now
             attempt.error_code = "lease_expired"
@@ -352,6 +484,11 @@ class SqlErpSyncControlRepository:
                     child.diagnostic = (
                         "Le propriétaire ERP parent a perdu sa lease ou sa durée maximale."
                     )
+            self._finalize_interrupted_evidence_locked(
+                session,
+                attempt_id=str(attempt.id),
+                now=now,
+            )
 
         control.owner_attempt_id = None
         control.lease_expires_at = None
@@ -359,16 +496,22 @@ class SqlErpSyncControlRepository:
         control.heartbeat_at = None
         return 1
 
-    def reconcile_expired_owner(self) -> int:
+    def reconcile_expired_owner_attempts(self) -> tuple[str, ...]:
         if not self.schema_available():
-            return 0
+            return ()
+        interrupted: list[str] = []
         with transactional_session(self._session_factory) as session:
             control = _lock_control(session)
-            return self._interrupt_expired_locked(
+            self._interrupt_expired_locked(
                 session,
                 control,
                 now=_sql_now(session),
+                interrupted_attempts=interrupted,
             )
+        return tuple(interrupted)
+
+    def reconcile_expired_owner(self) -> int:
+        return len(self.reconcile_expired_owner_attempts())
 
     def reconcile_configuration(
         self,
@@ -495,6 +638,13 @@ class SqlErpSyncControlRepository:
             )
             if existing is not None:
                 return existing
+            pending_review = self._pending_plausibility_review_locked(session)
+            if pending_review is not None:
+                raise ApplicationConflictError(
+                    "Une synchronisation ERP attend une revue de plausibilité.",
+                    code="erp_sync_plausibility_review_pending",
+                    context={"attempt_id": pending_review.id},
+                )
 
             occurrence = ErpSyncOccurrence(
                 id=new_id(),
@@ -512,6 +662,45 @@ class SqlErpSyncControlRepository:
             session.add(occurrence)
             session.flush()
             return occurrence
+
+    def find_manual_occurrence(
+        self,
+        *,
+        intent: str,
+        actor_name: str,
+        idempotency_key: str,
+    ) -> ErpSyncOccurrence | None:
+        identity = _command_identity(
+            actor_name=actor_name,
+            intent=intent,
+            idempotency_key=idempotency_key,
+        )
+        with self._session_factory() as session:
+            row = session.scalar(
+                select(ErpSyncOccurrence).where(
+                    ErpSyncOccurrence.command_identity == identity
+                )
+            )
+            if row is not None:
+                session.expunge(row)
+            return row
+
+    def find_attempt_by_command_identity(
+        self,
+        command_identity: str,
+    ) -> ErpSyncAttempt | None:
+        identity = " ".join(str(command_identity or "").split())
+        if not identity:
+            return None
+        with self._session_factory() as session:
+            row = session.scalar(
+                select(ErpSyncAttempt).where(
+                    ErpSyncAttempt.command_identity == identity
+                )
+            )
+            if row is not None:
+                session.expunge(row)
+            return row
 
     def get_occurrence(self, occurrence_id: str) -> ErpSyncOccurrence:
         with self._session_factory() as session:
@@ -629,6 +818,18 @@ class SqlErpSyncControlRepository:
                     return ErpSyncClaimOutcome(existing_manual, admitted=False)
 
             self._interrupt_expired_locked(session, control, now=now)
+            if self._recovery_required_locked(session):
+                # Persist the interruption/recovery classification but do not
+                # admit replacement ERP work until compensation/recovery clears
+                # the durable REQUIRED state.
+                return ErpSyncClaimOutcome(None, admitted=False)
+            pending_review = self._pending_plausibility_review_locked(session)
+            if pending_review is not None:
+                raise ApplicationConflictError(
+                    "Une synchronisation ERP attend une revue de plausibilité.",
+                    code="erp_sync_plausibility_review_pending",
+                    context={"attempt_id": pending_review.id},
+                )
 
             # Existing authoritative work wins before evaluating admission for a
             # genuinely new automatic start/retry. A delayed observer must not
@@ -710,6 +911,224 @@ class SqlErpSyncControlRepository:
             occurrence.last_attempt_id = attempt.id
             occurrence.status = ERP_OCCURRENCE_PENDING
             return ErpSyncClaimOutcome(attempt, admitted=True)
+
+    def pause_for_review(
+        self,
+        *,
+        attempt_id: str,
+        generation: int,
+        settings: ErpSyncSchedulerSettings,
+        phase: str = "PLAUSIBILITY_REVIEW_REQUIRED",
+    ) -> bool:
+        with transactional_session(self._session_factory) as session:
+            control, now = self.guard_session(
+                session,
+                attempt_id=attempt_id,
+                generation=generation,
+                settings=settings,
+            )
+            attempt = session.get(ErpSyncAttempt, attempt_id)
+            if attempt is None or attempt.status in ERP_ATTEMPT_TERMINAL:
+                return False
+            attempt.status = ERP_ATTEMPT_PENDING
+            attempt.phase = phase
+            attempt.heartbeat_at = now
+            control.owner_attempt_id = None
+            control.lease_expires_at = None
+            control.owner_deadline_at = None
+            control.heartbeat_at = None
+            return True
+
+    def decline_review_attempt(
+        self,
+        *,
+        attempt_id: str,
+        actor_name: str,
+        reason: str,
+        settings: ErpSyncSchedulerSettings,
+    ) -> ErpSyncAttempt:
+        actor = " ".join(str(actor_name or "").split())
+        reason_value = " ".join(str(reason or "").split())
+        if not actor or not reason_value:
+            raise ApplicationValidationError(
+                "L'acteur et la raison du refus de revue sont requis.",
+                code="erp_sync_plausibility_review_decline_invalid",
+            )
+        if len(reason_value) > 1000:
+            raise ApplicationValidationError(
+                "La raison du refus de revue dépasse la longueur permise.",
+                code="erp_sync_plausibility_review_decline_invalid",
+            )
+        with transactional_session(self._session_factory) as session:
+            from .erp_sync_evidence_models import (
+                EVIDENCE_PROOF_SOURCE,
+                EVIDENCE_STATE_READY,
+                EVIDENCE_STATE_SEALED,
+                ErpSyncEvidenceManifest,
+                ErpSyncPlausibilityReviewDecision,
+            )
+
+            control = _lock_control(session)
+            now = _sql_now(session)
+            _ensure_config_compatible_locked(control, settings)
+            attempt = session.get(ErpSyncAttempt, attempt_id)
+            if attempt is None:
+                raise ApplicationNotFoundError(
+                    "Tentative de synchronisation ERP introuvable.",
+                    code="erp_sync_attempt_not_found",
+                )
+
+            existing = session.scalar(
+                select(ErpSyncPlausibilityReviewDecision).where(
+                    ErpSyncPlausibilityReviewDecision.attempt_id == attempt_id
+                )
+            )
+            if existing is not None:
+                if (
+                    attempt.status == ERP_ATTEMPT_FAILED
+                    and attempt.error_code
+                    == "erp_sync_plausibility_review_declined"
+                ):
+                    session.expunge(attempt)
+                    return attempt
+                raise ApplicationConflictError(
+                    "La décision de revue de plausibilité est incohérente.",
+                    code="erp_sync_plausibility_review_decision_conflict",
+                )
+
+            if (
+                attempt.status != ERP_ATTEMPT_PENDING
+                or attempt.phase != "PLAUSIBILITY_REVIEW_REQUIRED"
+            ):
+                raise ApplicationConflictError(
+                    "La tentative ERP n'attend pas une décision de plausibilité.",
+                    code="erp_sync_plausibility_review_not_pending",
+                )
+            if control.owner_attempt_id not in {None, attempt.id}:
+                raise ApplicationConflictError(
+                    "Une synchronisation ERP incompatible est déjà active.",
+                    code="erp_sync_run_active",
+                    context={"attempt_id": control.owner_attempt_id},
+                )
+
+            manifests = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceManifest)
+                    .where(
+                        ErpSyncEvidenceManifest.attempt_id == attempt_id,
+                        ErpSyncEvidenceManifest.proof_type == EVIDENCE_PROOF_SOURCE,
+                        ErpSyncEvidenceManifest.state.in_(
+                            (EVIDENCE_STATE_SEALED, EVIDENCE_STATE_READY)
+                        ),
+                    )
+                    .order_by(
+                        ErpSyncEvidenceManifest.source_type,
+                        ErpSyncEvidenceManifest.id,
+                    )
+                )
+            )
+            if not manifests:
+                raise ApplicationConflictError(
+                    "Aucune source scellée n'est disponible pour cette revue.",
+                    code="erp_sync_plausibility_review_source_missing",
+                )
+            source_identity_json = json.dumps(
+                [
+                    {
+                        "manifest_id": str(row.id),
+                        "source_type": str(row.source_type),
+                        "source_fingerprint": str(row.source_fingerprint or ""),
+                    }
+                    for row in manifests
+                ],
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            session.add(
+                ErpSyncPlausibilityReviewDecision(
+                    id=new_id(),
+                    attempt_id=attempt_id,
+                    decision="DECLINED",
+                    actor_name=actor,
+                    reason=reason_value,
+                    source_identity_json=source_identity_json,
+                    decided_at=now,
+                )
+            )
+            attempt.status = ERP_ATTEMPT_FAILED
+            attempt.phase = "FAILED"
+            attempt.finished_at = now
+            attempt.heartbeat_at = None
+            attempt.error_code = "erp_sync_plausibility_review_declined"
+            attempt.diagnostic = "La source scellée a été refusée lors de la revue de plausibilité."
+
+            occurrence = session.get(ErpSyncOccurrence, attempt.occurrence_id)
+            if occurrence is not None:
+                occurrence.status = ERP_OCCURRENCE_FAILED
+                occurrence.success_attempt_id = None
+                occurrence.diagnostic = attempt.diagnostic
+
+            if control.owner_attempt_id == attempt.id:
+                control.owner_attempt_id = None
+            control.lease_expires_at = None
+            control.owner_deadline_at = None
+            control.heartbeat_at = None
+            session.flush()
+            session.expunge(attempt)
+            return attempt
+
+    def resume_review_attempt(
+        self,
+        *,
+        attempt_id: str,
+        settings: ErpSyncSchedulerSettings,
+    ) -> ErpSyncAttempt:
+        with transactional_session(self._session_factory) as session:
+            control = _lock_control(session)
+            now = _sql_now(session)
+            _ensure_config_compatible_locked(control, settings)
+            if control.owner_attempt_id:
+                raise ApplicationConflictError(
+                    "Une synchronisation ERP est déjà active.",
+                    code="erp_sync_run_active",
+                    context={"attempt_id": control.owner_attempt_id},
+                )
+            attempt = session.get(ErpSyncAttempt, attempt_id)
+            if attempt is None:
+                raise ApplicationNotFoundError(
+                    "Tentative de synchronisation ERP introuvable.",
+                    code="erp_sync_attempt_not_found",
+                )
+            occurrence = session.get(ErpSyncOccurrence, attempt.occurrence_id)
+            if (
+                occurrence is None
+                or occurrence.config_fingerprint != settings.config_fingerprint
+            ):
+                raise ApplicationConflictError(
+                    "La configuration figée de la tentative ERP est incompatible.",
+                    code="erp_sync_occurrence_configuration_incompatible",
+                )
+            if (
+                attempt.status != ERP_ATTEMPT_PENDING
+                or attempt.phase != "PLAUSIBILITY_REVIEW_REQUIRED"
+            ):
+                raise ApplicationConflictError(
+                    "La tentative ERP n'attend pas une approbation de plausibilité.",
+                    code="erp_sync_plausibility_review_not_pending",
+                )
+            generation = int(control.generation) + 1
+            control.generation = generation
+            control.owner_attempt_id = attempt.id
+            control.lease_expires_at = now + timedelta(seconds=settings.lease_seconds)
+            control.owner_deadline_at = now + timedelta(
+                seconds=settings.max_attempt_seconds
+            )
+            control.heartbeat_at = now
+            attempt.generation = generation
+            attempt.heartbeat_at = now
+            attempt.phase = "PLAUSIBILITY_REVIEW_APPROVED"
+            return attempt
 
     def renew(
         self,
@@ -803,6 +1222,59 @@ class SqlErpSyncControlRepository:
         if task_sync_run_id is not None:
             attempt.task_sync_run_id = task_sync_run_id
 
+    @classmethod
+    def finish_in_session(
+        cls,
+        session: Session,
+        *,
+        attempt_id: str,
+        generation: int,
+        status: str,
+        phase: str,
+        error_code: str | None = None,
+        diagnostic: str | None = None,
+        settings: ErpSyncSchedulerSettings | None = None,
+    ) -> bool:
+        control, now = cls.guard_session(
+            session,
+            attempt_id=attempt_id,
+            generation=generation,
+            settings=settings,
+        )
+        attempt = session.get(ErpSyncAttempt, attempt_id)
+        if attempt is None or attempt.status in ERP_ATTEMPT_TERMINAL:
+            return False
+
+        attempt.status = status
+        attempt.phase = phase
+        attempt.finished_at = now
+        attempt.error_code = error_code
+        attempt.diagnostic = diagnostic
+        occurrence = session.get(ErpSyncOccurrence, attempt.occurrence_id)
+        if occurrence is not None:
+            if status == ERP_ATTEMPT_SUCCEEDED:
+                occurrence.status = ERP_OCCURRENCE_SUCCEEDED
+                occurrence.success_attempt_id = attempt.id
+                occurrence.diagnostic = None
+                if attempt.intent == "PROJECTS_AND_ACTIVE_TASKS":
+                    control.last_success_attempt_id = attempt.id
+            elif status == ERP_ATTEMPT_SUCCEEDED_WITH_ERRORS:
+                occurrence.status = ERP_OCCURRENCE_SUCCEEDED_WITH_ERRORS
+                occurrence.success_attempt_id = None
+                occurrence.diagnostic = diagnostic
+            elif status == ERP_ATTEMPT_INTERRUPTED:
+                occurrence.status = ERP_OCCURRENCE_INTERRUPTED
+                occurrence.diagnostic = diagnostic
+            else:
+                occurrence.status = ERP_OCCURRENCE_FAILED
+                occurrence.diagnostic = diagnostic
+
+        control.owner_attempt_id = None
+        control.lease_expires_at = None
+        control.owner_deadline_at = None
+        control.heartbeat_at = None
+        return True
+
     def finish(
         self,
         *,
@@ -816,47 +1288,18 @@ class SqlErpSyncControlRepository:
     ) -> bool:
         with transactional_session(self._session_factory) as session:
             try:
-                control, now = self.guard_session(
+                return self.finish_in_session(
                     session,
                     attempt_id=attempt_id,
                     generation=generation,
+                    status=status,
+                    phase=phase,
+                    error_code=error_code,
+                    diagnostic=diagnostic,
                     settings=settings,
                 )
             except ErpSyncFenceLost:
                 return False
-            attempt = session.get(ErpSyncAttempt, attempt_id)
-            if attempt is None or attempt.status in ERP_ATTEMPT_TERMINAL:
-                return False
-
-            attempt.status = status
-            attempt.phase = phase
-            attempt.finished_at = now
-            attempt.error_code = error_code
-            attempt.diagnostic = diagnostic
-            occurrence = session.get(ErpSyncOccurrence, attempt.occurrence_id)
-            if occurrence is not None:
-                if status == ERP_ATTEMPT_SUCCEEDED:
-                    occurrence.status = ERP_OCCURRENCE_SUCCEEDED
-                    occurrence.success_attempt_id = attempt.id
-                    occurrence.diagnostic = None
-                    if attempt.intent == "PROJECTS_AND_ACTIVE_TASKS":
-                        control.last_success_attempt_id = attempt.id
-                elif status == ERP_ATTEMPT_SUCCEEDED_WITH_ERRORS:
-                    occurrence.status = ERP_OCCURRENCE_SUCCEEDED_WITH_ERRORS
-                    occurrence.success_attempt_id = None
-                    occurrence.diagnostic = diagnostic
-                elif status == ERP_ATTEMPT_INTERRUPTED:
-                    occurrence.status = ERP_OCCURRENCE_INTERRUPTED
-                    occurrence.diagnostic = diagnostic
-                else:
-                    occurrence.status = ERP_OCCURRENCE_FAILED
-                    occurrence.diagnostic = diagnostic
-
-            control.owner_attempt_id = None
-            control.lease_expires_at = None
-            control.owner_deadline_at = None
-            control.heartbeat_at = None
-            return True
 
     def serialize_attempt(self, attempt_id: str) -> dict[str, object]:
         with self._session_factory() as session:

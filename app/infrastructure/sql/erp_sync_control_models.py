@@ -162,3 +162,4 @@ class ErpSyncAttempt(TimestampMixin, Base):
     task_sync_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
     diagnostic: Mapped[str | None] = mapped_column(Text, nullable=True)
+    policy_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)

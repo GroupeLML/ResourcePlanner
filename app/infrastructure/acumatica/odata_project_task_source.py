@@ -29,6 +29,10 @@ logger = logging.getLogger(__name__)
 _INT32_MIN: Final = -(2**31)
 _INT32_MAX: Final = 2**31 - 1
 _WORKFORCE_ACCOUNT_GROUP: Final = "DEPMO"
+_TARGETED_ORDER_BY: Final = "TaskID asc, CostCode asc, InventoryID asc"
+_PORTFOLIO_ORDER_BY: Final = (
+    "ProjetID asc, TaskID asc, CostCode asc, InventoryID asc"
+)
 
 
 class ODataProjectTaskFeedError(ValueError):
@@ -60,6 +64,46 @@ class ODataProjectTaskRecord:
     budget_actual_cad: Decimal | None
     cost_code: str | None = None
     inventory_id: str | None = None
+
+
+_PhysicalRowKey = tuple[int, int, str, str]
+
+
+def _physical_row_key(row: ODataProjectTaskRecord) -> _PhysicalRowKey:
+    """Stable physical DEPMO row identity; excludes mutable financial values."""
+    return (
+        int(row.project_erp_id),
+        int(row.task_id),
+        str(row.cost_code or "").strip(),
+        str(row.inventory_id or "").strip(),
+    )
+
+
+@dataclass(slots=True)
+class _PaginationProgress:
+    seen_rows: set[_PhysicalRowKey] = field(default_factory=set)
+    seen_pages: set[tuple[_PhysicalRowKey, ...]] = field(default_factory=set)
+    previous_last: _PhysicalRowKey | None = None
+
+    def validate(self, page: Sequence[ODataProjectTaskRecord]) -> str | None:
+        keys = tuple(_physical_row_key(row) for row in page)
+        if not keys:
+            return None
+        if keys in self.seen_pages:
+            return "pagination_non_progressive"
+        if any(keys[index] > keys[index + 1] for index in range(len(keys) - 1)):
+            return "pagination_non_progressive"
+        if len(set(keys)) != len(keys):
+            return "pagination_overlap"
+        if self.previous_last is not None and keys[0] <= self.previous_last:
+            return "pagination_overlap"
+        if any(key in self.seen_rows for key in keys):
+            return "pagination_overlap"
+
+        self.seen_pages.add(keys)
+        self.seen_rows.update(keys)
+        self.previous_last = keys[-1]
+        return None
 
 
 def _required_text(
@@ -308,7 +352,7 @@ class ODataProjectTaskSourceSettings:
             "workforce_account_group": _WORKFORCE_ACCOUNT_GROUP,
             "pagination": {
                 "mode": "top_skip",
-                "orderby": "TaskID asc",
+                "orderby": _TARGETED_ORDER_BY,
                 "page_size": self.page_size,
             },
             "runtime_wired": True,
@@ -334,6 +378,7 @@ class ODataProjectTaskSource:
         self._settings = settings
         self._transport = transport
         self._request_headers = dict(request_headers or {})
+        self._last_read_evidence: dict[str, object] | None = None
 
     def _url(self) -> str:
         base = self._settings.base_url.rstrip("/") + "/"
@@ -392,15 +437,39 @@ class ODataProjectTaskSource:
         aggregated: dict[int, _AggregatedTask] = {}
         rejected_rows = 0
         for entry_index, row in enumerate(raw_rows):
-            if (
-                row.project_erp_id != project_erp_id
-                or row.account_group.strip() != _WORKFORCE_ACCOUNT_GROUP
-            ):
-                rejected_rows += 1
-                continue
+            if row.project_erp_id != project_erp_id:
+                raise ApplicationOperationError(
+                    "La source tâches ERP contient une identité projet contradictoire.",
+                    code="acumatica_project_task_response_invalid",
+                    context=self._safe_context(
+                        failure_kind="invalid_payload",
+                        retryable=False,
+                        reason="project_identity_conflict",
+                        entry_index=entry_index,
+                    ),
+                )
             if row.project_code != project_number:
-                rejected_rows += 1
-                continue
+                raise ApplicationOperationError(
+                    "La source tâches ERP contient un code projet contradictoire.",
+                    code="acumatica_project_task_response_invalid",
+                    context=self._safe_context(
+                        failure_kind="invalid_payload",
+                        retryable=False,
+                        reason="project_code_conflict",
+                        entry_index=entry_index,
+                    ),
+                )
+            if row.account_group.strip() != _WORKFORCE_ACCOUNT_GROUP:
+                raise ApplicationOperationError(
+                    "La source tâches ERP sort du périmètre financier attendu.",
+                    code="acumatica_project_task_response_invalid",
+                    context=self._safe_context(
+                        failure_kind="invalid_payload",
+                        retryable=False,
+                        reason="financial_scope_conflict",
+                        entry_index=entry_index,
+                    ),
+                )
 
             existing = aggregated.get(row.task_id)
             if existing is None:
@@ -477,6 +546,7 @@ class ODataProjectTaskSource:
             else None
         )
         raw_rows: list[ODataProjectTaskRecord] = []
+        pagination = _PaginationProgress()
         skip = 0
         try:
             with httpx.Client(
@@ -494,7 +564,7 @@ class ODataProjectTaskSource:
                                 f"ProjetID eq {project_erp_id} "
                                 "and AccountGroup eq 'DEPMO'"
                             ),
-                            "$orderby": "TaskID asc",
+                            "$orderby": _TARGETED_ORDER_BY,
                             "$top": str(self._settings.page_size),
                             "$skip": str(skip),
                         },
@@ -522,6 +592,24 @@ class ODataProjectTaskSource:
                             ),
                         ) from exc
 
+                    reason = pagination.validate(page)
+                    if reason is not None:
+                        self._log_failure(
+                            failure_kind="invalid_payload",
+                            retryable=False,
+                            http_status=response.status_code,
+                            reason=reason,
+                        )
+                        raise ApplicationOperationError(
+                            "La pagination OData Acumatica des tâches projet ne progresse pas.",
+                            code="acumatica_project_task_response_invalid",
+                            context=self._safe_context(
+                                failure_kind="invalid_payload",
+                                retryable=False,
+                                http_status=response.status_code,
+                                reason=reason,
+                            ),
+                        )
                     raw_rows.extend(page)
                     if len(page) < self._settings.page_size:
                         break
@@ -624,6 +712,7 @@ class ODataProjectTaskSource:
             else None
         )
         raw_rows: list[ODataProjectTaskRecord] = []
+        pagination = _PaginationProgress()
         skip = 0
         page_count = 0
         started_at = perf_counter()
@@ -640,7 +729,7 @@ class ODataProjectTaskSource:
                         headers=headers,
                         params={
                             "$filter": "AccountGroup eq 'DEPMO'",
-                            "$orderby": "TaskID asc",
+                            "$orderby": _PORTFOLIO_ORDER_BY,
                             "$top": str(self._settings.page_size),
                             "$skip": str(skip),
                         },
@@ -668,6 +757,24 @@ class ODataProjectTaskSource:
                             ),
                         ) from exc
 
+                    reason = pagination.validate(page)
+                    if reason is not None:
+                        self._log_failure(
+                            failure_kind="invalid_payload",
+                            retryable=False,
+                            http_status=response.status_code,
+                            reason=reason,
+                        )
+                        raise ApplicationOperationError(
+                            "La pagination OData Acumatica globale des tâches projet ne progresse pas.",
+                            code="acumatica_project_task_response_invalid",
+                            context=self._safe_context(
+                                failure_kind="invalid_payload",
+                                retryable=False,
+                                http_status=response.status_code,
+                                reason=reason,
+                            ),
+                        )
                     page_count += 1
                     raw_rows.extend(page)
                     if len(page) < self._settings.page_size:
@@ -721,14 +828,35 @@ class ODataProjectTaskSource:
             if project_rows is not None:
                 project_rows.append(row)
 
-        snapshots = tuple(
-            self._build_snapshot(
-                project_erp_id=project_erp_id,
-                project_number=project,
-                raw_rows=rows_by_erp_id[project_erp_id],
-            )
-            for project_erp_id, project in targets
-        )
+        snapshots_list: list[TaskCatalogProjectSnapshot] = []
+        for project_erp_id, project in targets:
+            project_rows = rows_by_erp_id[project_erp_id]
+            try:
+                snapshots_list.append(
+                    self._build_snapshot(
+                        project_erp_id=project_erp_id,
+                        project_number=project,
+                        raw_rows=project_rows,
+                    )
+                )
+            except ApplicationOperationError as exc:
+                reason = str(exc.context.get("reason") or "")
+                if reason not in {
+                    "project_code_conflict",
+                    "financial_scope_conflict",
+                }:
+                    raise
+                snapshots_list.append(
+                    TaskCatalogProjectSnapshot(
+                        project_number=project,
+                        source_rows=len(project_rows),
+                        rejected_rows=len(project_rows),
+                        items=(),
+                        hard_error_code=exc.code,
+                        hard_error_reason=reason,
+                    )
+                )
+        snapshots = tuple(snapshots_list)
         duration_ms = max(0, int((perf_counter() - started_at) * 1000))
         logger.info(
             "Acumatica OData project-task portfolio read completed targets=%s pages=%s rows=%s duration_ms=%s",
@@ -737,9 +865,28 @@ class ODataProjectTaskSource:
             len(raw_rows),
             duration_ms,
         )
+        self._last_read_evidence = {
+            "protocol": "odata",
+            "feed_path": self._settings.feed_path,
+            "filter": "AccountGroup eq 'DEPMO'",
+            "pagination_mode": "top_skip",
+            "orderby": _PORTFOLIO_ORDER_BY,
+            "page_size": int(self._settings.page_size),
+            "pages": page_count,
+            "rows": len(raw_rows),
+            "targets": len(targets),
+            "complete": True,
+        }
         return TaskCatalogPortfolioSnapshot(
             source_rows=len(raw_rows),
             source_pages=page_count,
             snapshots=snapshots,
+        )
+
+    def last_read_evidence(self) -> dict[str, object] | None:
+        return (
+            dict(self._last_read_evidence)
+            if self._last_read_evidence is not None
+            else None
         )
 

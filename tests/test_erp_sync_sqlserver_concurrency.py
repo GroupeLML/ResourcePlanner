@@ -2,12 +2,17 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
+from decimal import Decimal
 import os
 from threading import Barrier, Event, Thread
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from cryptography.fernet import Fernet
+
 from sqlalchemy import delete, func, select, text
+from sqlalchemy.exc import IntegrityError
 
 from app.application import (
     ExternalProjectRecord,
@@ -15,12 +20,17 @@ from app.application import (
     TaskCatalogPortfolioSnapshot,
     TaskCatalogProjectSnapshot,
 )
+from app.server.erp_sync_evidence import (
+    ErpSyncEvidenceService,
+    ErpSyncEvidenceSettings,
+)
 from app.application.erp_sync_scheduler import (
     ErpSyncSchedulerSettings,
     TestErpSyncAutomaticSafetyCapability,
     UnavailableErpSyncAutomaticSafetyCapability,
     resolve_scheduled_instant,
 )
+from app.infrastructure.smtp import FernetSecretCipher
 from app.infrastructure.sql import (
     AcumaticaProjectTaskSyncProjectResult,
     AcumaticaProjectTaskSyncRun,
@@ -34,11 +44,23 @@ from app.infrastructure.sql import (
     SYNC_RUN_INTERRUPTED,
     SYNC_RUN_RUNNING,
     ErpSyncAttempt,
+    ErpSyncBaseline,
+    ErpSyncCompensationReceipt,
     ErpSyncControl,
+    ErpSyncEvidenceChunk,
+    ErpSyncEvidenceManifest,
+    ErpSyncEvidenceReservation,
+    ErpSyncMutationEvidence,
+    ErpSyncPlausibilityException,
+    ErpSyncRecoveryState,
     ErpSyncOccurrence,
     Project,
+    ResourceClassConfig,
     SqlPlannerQueryRepositoryWithLoadProfiles,
     TaskCatalogEntry,
+    TaskCatalogProjectSyncState,
+    TaskClassStandard,
+    WorkPackage,
     create_session_factory,
     create_sql_engine,
     transactional_session,
@@ -114,6 +136,8 @@ def _sql_snapshot(number: str, code: str, label: str) -> TaskCatalogProjectSnaps
                 label=label,
                 status="Actif",
                 active=True,
+                erp_task_id=f"ERP-{number}-{code}",
+                account_group="DEPMO",
             ),
         ),
     )
@@ -132,7 +156,109 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        cls.engine.dispose()
+        try:
+            with transactional_session(cls.factory) as session:
+                session.execute(
+                    delete(TaskCatalogEntry).where(
+                        TaskCatalogEntry.project_number.like("SQL643%")
+                    )
+                )
+                session.execute(
+                    delete(TaskCatalogProjectSyncState).where(
+                        TaskCatalogProjectSyncState.project_number.like("SQL643%")
+                    )
+                )
+                session.execute(
+                    delete(Project).where(Project.number.like("SQL643%"))
+                )
+                session.execute(
+                    delete(TaskClassStandard).where(
+                        TaskClassStandard.task_code.in_(cls.TEST_TASK_CODES),
+                        TaskClassStandard.resource_class_code
+                        == cls.TEST_RESOURCE_CLASS,
+                    )
+                )
+                session.execute(
+                    delete(ResourceClassConfig).where(
+                        ResourceClassConfig.code == cls.TEST_RESOURCE_CLASS
+                    )
+                )
+        finally:
+            cls.engine.dispose()
+
+    TEST_PROJECT_PREFIX = "SQL643"
+    TEST_RESOURCE_CLASS = "SQL643_TEST"
+    TEST_TASK_CODES = (
+        "SQL643-100",
+        "SQL643-200",
+        "SQL643-300",
+        "SQL643-400",
+        "SQL643-643",
+    )
+
+    def _cleanup_test_business_rows(self) -> None:
+        pattern = f"{self.TEST_PROJECT_PREFIX}%"
+        with transactional_session(self.factory) as session:
+            # FK-safe, namespace-scoped cleanup. Do not touch unrelated business
+            # projects or sentinel rows in the shared live-test database.
+            session.execute(
+                delete(WorkPackage).where(
+                    WorkPackage.project_id.in_(
+                        select(Project.id).where(Project.number.like(pattern))
+                    )
+                )
+            )
+            session.execute(
+                delete(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number.like(pattern)
+                )
+            )
+            session.execute(
+                delete(TaskCatalogProjectSyncState).where(
+                    TaskCatalogProjectSyncState.project_number.like(pattern)
+                )
+            )
+            session.execute(
+                delete(Project).where(Project.number.like(pattern))
+            )
+
+    def _ensure_test_workforce_policy(self) -> None:
+        with transactional_session(self.factory) as session:
+            resource_class = session.get(
+                ResourceClassConfig,
+                self.TEST_RESOURCE_CLASS,
+            )
+            if resource_class is None:
+                session.add(
+                    ResourceClassConfig(
+                        code=self.TEST_RESOURCE_CLASS,
+                        label="SQL 643 test class",
+                        average_hourly_cost_cad=Decimal("125.0000"),
+                        active=True,
+                        version=1,
+                    )
+                )
+            else:
+                resource_class.active = True
+                resource_class.average_hourly_cost_cad = Decimal("125.0000")
+            for task_code in self.TEST_TASK_CODES:
+                standard = session.get(TaskClassStandard, task_code)
+                if standard is None:
+                    session.add(
+                        TaskClassStandard(
+                            task_code=task_code,
+                            resource_class_code=self.TEST_RESOURCE_CLASS,
+                            active=True,
+                            version=1,
+                        )
+                    )
+                else:
+                    self.assertEqual(
+                        standard.resource_class_code,
+                        self.TEST_RESOURCE_CLASS,
+                        f"test-owned task standard unexpectedly reused: {task_code}",
+                    )
+                    self.assertTrue(standard.active)
 
     def setUp(self) -> None:
         with transactional_session(self.factory) as session:
@@ -140,6 +266,16 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
                 text("DELETE FROM acumatica_project_task_sync_project_results")
             )
             session.execute(text("DELETE FROM acumatica_project_task_sync_runs"))
+            session.execute(text("DELETE FROM erp_sync_compensation_receipts"))
+            session.execute(text("DELETE FROM erp_sync_plausibility_exceptions"))
+            session.execute(text("DELETE FROM erp_sync_recovery_state"))
+            session.execute(text("DELETE FROM erp_sync_project_quality"))
+            session.execute(text("DELETE FROM erp_sync_mutation_evidence"))
+            session.execute(text("DELETE FROM erp_sync_baseline_approval_audit"))
+            session.execute(text("DELETE FROM erp_sync_evidence_chunks"))
+            session.execute(text("DELETE FROM erp_sync_evidence_manifests"))
+            session.execute(text("DELETE FROM erp_sync_evidence_reservations"))
+            session.execute(text("DELETE FROM erp_sync_baselines"))
             session.execute(text("DELETE FROM erp_sync_attempts"))
             session.execute(text("DELETE FROM erp_sync_occurrences"))
             control = session.get(ErpSyncControl, ERP_SYNC_CONTROL_ROW_ID)
@@ -159,6 +295,9 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             control.last_success_attempt_id = None
             control.config_fingerprint = None
 
+        self._cleanup_test_business_rows()
+        self._ensure_test_workforce_policy()
+
         sql_now = SqlErpSyncControlRepository(self.factory).current_sql_time()
         zone_settings = ErpSyncSchedulerSettings(enabled=True)
         local_now = sql_now.astimezone(zone_settings.timezone())
@@ -168,6 +307,125 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             timezone_name=zone_settings.timezone_name,
         )
         self.automatic_safety = TestErpSyncAutomaticSafetyCapability()
+        self.evidence = ErpSyncEvidenceService(
+            self.factory,
+            cipher=FernetSecretCipher(Fernet.generate_key().decode("ascii")),
+            settings=ErpSyncEvidenceSettings(
+                max_evidence_mib=16,
+                evidence_budget_mib=32,
+            ),
+            control_settings=self.settings,
+        )
+
+    def test_sqlserver_fixture_cleanup_is_scoped_and_idempotent(self) -> None:
+        sentinel_number = "SENTINEL-NON-643"
+        owned_number = "SQL643-CLEANUP-PROBE"
+        with transactional_session(self.factory) as session:
+            sentinel = session.scalar(
+                select(Project).where(Project.number == sentinel_number)
+            )
+            if sentinel is None:
+                session.add(
+                    Project(
+                        id="SQL643-SENTINEL-ID",
+                        number=sentinel_number,
+                        name="Unrelated sentinel",
+                        status="Actif",
+                    )
+                )
+            session.add(
+                Project(
+                    id="SQL643-CLEANUP-ID",
+                    erp_external_id="ERP-SQL643-CLEANUP",
+                    number=owned_number,
+                    name="Owned cleanup probe",
+                    status="Actif",
+                )
+            )
+            session.add(
+                TaskCatalogEntry(
+                    project_number=owned_number,
+                    task_code="CLEAN",
+                    label="Owned cleanup task",
+                    active=True,
+                )
+            )
+            session.add(
+                TaskCatalogProjectSyncState(
+                    project_number=owned_number,
+                    last_attempt_at=datetime.now(timezone.utc),
+                    last_success_at=datetime.now(timezone.utc),
+                    source_rows=1,
+                    task_count=1,
+                    rejected_rows=0,
+                )
+            )
+
+        self._cleanup_test_business_rows()
+        self._cleanup_test_business_rows()
+
+        with self.factory() as session:
+            self.assertIsNotNone(
+                session.scalar(
+                    select(Project).where(Project.number == sentinel_number)
+                )
+            )
+            self.assertIsNone(
+                session.scalar(
+                    select(Project).where(Project.number == owned_number)
+                )
+            )
+            self.assertIsNone(
+                session.scalar(
+                    select(TaskCatalogEntry).where(
+                        TaskCatalogEntry.project_number == owned_number
+                    )
+                )
+            )
+            self.assertIsNone(
+                session.get(TaskCatalogProjectSyncState, owned_number)
+            )
+        with transactional_session(self.factory) as session:
+            session.execute(
+                delete(Project).where(Project.number == sentinel_number)
+            )
+
+    def _task_run_diagnostic(self, run_id: str | None) -> str:
+        if not run_id:
+            return "task_sync_run_id=<none>"
+        with self.factory() as session:
+            run = session.get(AcumaticaProjectTaskSyncRun, run_id)
+            results = tuple(
+                session.scalars(
+                    select(AcumaticaProjectTaskSyncProjectResult)
+                    .where(AcumaticaProjectTaskSyncProjectResult.run_id == run_id)
+                    .order_by(AcumaticaProjectTaskSyncProjectResult.project_number)
+                )
+            )
+        return repr(
+            {
+                "run_status": getattr(run, "status", None),
+                "run_error_code": getattr(run, "error_code", None),
+                "projects_total": getattr(run, "projects_total", None),
+                "projects_processed": getattr(run, "projects_processed", None),
+                "projects_rejected": getattr(run, "projects_rejected", None),
+                "results": [
+                    {
+                        "project_number": row.project_number,
+                        "status": row.status,
+                        "error_code": row.error_code,
+                        "reason_code": row.reason_code,
+                        "source_rows": row.source_rows,
+                        "created": row.created,
+                        "updated": row.updated,
+                        "unchanged": row.unchanged,
+                        "deactivated": row.deactivated,
+                        "rejected": row.rejected,
+                    }
+                    for row in results
+                ],
+            }
+        )
 
     def _daily_occurrence(self) -> ErpSyncOccurrence:
         now = SqlErpSyncControlRepository(self.factory).current_sql_time()
@@ -257,6 +515,1515 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
         self.assertEqual(occurrence_count, 1)
         self.assertEqual(attempt_count, 1)
 
+    def test_evidence_and_business_mutation_rollback_together_on_sqlserver(self) -> None:
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = repository.accept_manual(
+            intent="PROJECTS_ONLY",
+            actor_name="sql-evidence",
+            idempotency_key="sql-evidence-rollback",
+            settings=self.settings,
+        )
+        attempt = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="sql-evidence",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(attempt)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                settings=self.settings,
+            )
+        )
+        self.evidence.reserve_attempt(attempt_id=attempt.id)
+
+        project_number = "SQL643B-ROLLBACK"
+        with transactional_session(self.factory) as session:
+            session.execute(delete(Project).where(Project.number == project_number))
+
+        with self.assertRaises(RuntimeError):
+            with transactional_session(self.factory) as session:
+                SqlErpSyncControlRepository.guard_session(
+                    session,
+                    attempt_id=attempt.id,
+                    generation=attempt.generation,
+                    settings=self.settings,
+                )
+                evidence_id = self.evidence.record_before_in_session(
+                    session,
+                    attempt_id=attempt.id,
+                    generation=attempt.generation,
+                    unit_type="PROJECT_SNAPSHOT",
+                    entity_type="PROJECT",
+                    entity_key="ERP-SQL643B-ROLLBACK",
+                    before=None,
+                )
+                row = Project(
+                    id="SQL643B-ROLLBACK-ID",
+                    erp_external_id="ERP-SQL643B-ROLLBACK",
+                    number=project_number,
+                    name="Must rollback",
+                    status="Actif",
+                )
+                session.add(row)
+                session.flush()
+                self.evidence.record_after_in_session(
+                    session,
+                    evidence_id=evidence_id,
+                    attempt_id=attempt.id,
+                    generation=attempt.generation,
+                    after={
+                        "erp_external_id": row.erp_external_id,
+                        "number": row.number,
+                        "name": row.name,
+                        "client": row.client,
+                        "project_manager_external_id": row.project_manager_external_id,
+                        "project_manager_name": row.project_manager_name,
+                        "status": row.status,
+                    },
+                )
+                raise RuntimeError("force rollback")
+
+        with self.factory() as session:
+            self.assertIsNone(
+                session.scalar(select(Project).where(Project.number == project_number))
+            )
+            evidence_count = int(
+                session.scalar(
+                    select(func.count(ErpSyncMutationEvidence.id)).where(
+                        ErpSyncMutationEvidence.attempt_id == attempt.id
+                    )
+                )
+                or 0
+            )
+        self.assertEqual(evidence_count, 0)
+
+    def test_sqlserver_evidence_reservation_is_idempotent_and_recovery_refuses_active_owner(self) -> None:
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = repository.accept_manual(
+            intent="PROJECTS_ONLY",
+            actor_name="sql-evidence",
+            idempotency_key="sql-evidence-reservation",
+            settings=self.settings,
+        )
+        attempt = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="sql-evidence",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(attempt)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            tuple(
+                pool.map(
+                    lambda _index: self.evidence.reserve_attempt(
+                        attempt_id=attempt.id
+                    ),
+                    (1, 2),
+                )
+            )
+
+        with self.factory() as session:
+            reservations = int(
+                session.scalar(
+                    select(func.count(ErpSyncEvidenceReservation.id)).where(
+                        ErpSyncEvidenceReservation.attempt_id == attempt.id
+                    )
+                )
+                or 0
+            )
+        self.assertEqual(reservations, 1)
+
+        # Recovery preview shares the same SQL control authority and cannot race
+        # an active writer.
+        with self.assertRaises(Exception) as raised:
+            self.evidence.compensation_preview(attempt_id=attempt.id)
+        self.assertEqual(
+            getattr(raised.exception, "code", None),
+            "erp_sync_recovery_owner_active",
+        )
+
+    def test_full_sqlserver_import_commits_task_result_and_evidence_atomically(self) -> None:
+        project_number = "SQL643B-ATOMIC"
+        with transactional_session(self.factory) as session:
+            session.execute(
+                delete(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == project_number
+                )
+            )
+            session.execute(delete(Project).where(Project.number == project_number))
+
+        projects = SqlServerProjectSource(
+            (_sql_project(project_number, "643B atomic evidence"),)
+        )
+        tasks = SqlServerPortfolioTaskSource(
+            {
+                project_number: _sql_snapshot(
+                    project_number,
+                    "SQL643-643",
+                    "643B task",
+                )
+            }
+        )
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.settings,
+            automatic_safety=self.automatic_safety,
+            evidence_service=self.evidence,
+        )
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = repository.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="sql-evidence",
+            idempotency_key="sql-643b-bootstrap",
+            settings=self.settings,
+        )
+        first = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="sql-evidence",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(first)
+        orchestrator._execute_attempt(first.id, first.generation)
+        self.assertEqual(repository.get_attempt(first.id).status, "FAILED")
+
+        manifests = tuple(
+            row
+            for row in self.evidence.list_attempt_sources(attempt_id=first.id)
+            if row["proof_type"] == "SOURCE"
+        )
+        self.assertEqual({row["source_type"] for row in manifests}, {"PROJECTS", "TASKS"})
+        for manifest in manifests:
+            self.evidence.approve_baseline(
+                manifest_id=str(manifest["manifest_id"]),
+                actor_name="sql-admin",
+                reason="Reviewed SQL Server bootstrap source",
+            )
+
+        retry = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="sql-evidence",
+            settings=self.settings,
+            command_identity="retry:sql-643b-atomic",
+        )
+        self.assertIsNotNone(retry)
+        orchestrator._execute_attempt(retry.id, retry.generation)
+        completed = repository.get_attempt(retry.id)
+        self.assertEqual(
+            completed.status,
+            "SUCCEEDED",
+            self._task_run_diagnostic(completed.task_sync_run_id),
+        )
+        self.assertIsNotNone(completed.task_sync_run_id)
+
+        with self.factory() as session:
+            task_row = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == project_number,
+                    TaskCatalogEntry.task_code == "SQL643-643",
+                )
+            )
+            project_result = session.scalar(
+                select(AcumaticaProjectTaskSyncProjectResult).where(
+                    AcumaticaProjectTaskSyncProjectResult.run_id
+                    == completed.task_sync_run_id,
+                    AcumaticaProjectTaskSyncProjectResult.project_number
+                    == project_number,
+                )
+            )
+            evidence_rows = tuple(
+                session.scalars(
+                    select(ErpSyncMutationEvidence).where(
+                        ErpSyncMutationEvidence.attempt_id == retry.id
+                    )
+                )
+            )
+            project_row = session.scalar(
+                select(Project).where(Project.number == project_number)
+            )
+        self.assertIsNotNone(task_row)
+        self.assertIsNotNone(project_row)
+        self.assertIsNotNone(project_result)
+        self.assertEqual(project_result.status, "synchronized")
+        self.assertTrue(
+            any(
+                row.entity_type == "TASK"
+                and row.after_sha256
+                and row.committed_at is not None
+                for row in evidence_rows
+            )
+        )
+        task_unit = f"TASK_PROJECT:{project_row.id}"
+        self.assertLessEqual(len(task_unit), 64)
+        self.assertTrue(
+            any(
+                row.unit_type == task_unit
+                and row.entity_type == "TASK"
+                for row in evidence_rows
+            ),
+            [(row.unit_type, row.entity_type, row.entity_key) for row in evidence_rows],
+        )
+        self.assertTrue(
+            any(
+                row.entity_type == "TASK_SYNC_STATE"
+                and row.after_sha256
+                and row.committed_at is not None
+                for row in evidence_rows
+            )
+        )
+        self.assertEqual(projects.calls, 2)
+        self.assertEqual(tasks.batch_calls, 2)
+        orchestrator.shutdown()
+
+    def test_checkpoint_overflow_after_committed_unit_requires_recovery_on_sqlserver(self) -> None:
+        project_a = "SQL643B-OVERFLOW-A"
+        project_b = "SQL643B-OVERFLOW-B"
+        with transactional_session(self.factory) as session:
+            session.add_all(
+                [
+                    Project(
+                        id="SQL643B-OVERFLOW-A-ID",
+                        erp_external_id="ERP-SQL643B-OVERFLOW-A",
+                        number=project_a,
+                        name="Overflow A",
+                        status="Actif",
+                    ),
+                    Project(
+                        id="SQL643B-OVERFLOW-B-ID",
+                        erp_external_id="ERP-SQL643B-OVERFLOW-B",
+                        number=project_b,
+                        name="Overflow B",
+                        status="Actif",
+                    ),
+                ]
+            )
+
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = repository.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="sql-overflow",
+            idempotency_key="sql-checkpoint-overflow",
+            settings=self.settings,
+        )
+        attempt = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="sql-overflow",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(attempt)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                settings=self.settings,
+            )
+        )
+        self.evidence.reserve_attempt(attempt_id=attempt.id)
+        self.evidence.bind_attempt_policy(
+            attempt_id=attempt.id,
+            generation=attempt.generation,
+        )
+        snapshot_a = _sql_snapshot(project_a, "SQL643-100", "Overflow task A")
+        snapshot_b = _sql_snapshot(project_b, "SQL643-200", "Overflow task B")
+        self.evidence.capture_source(
+            attempt_id=attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.settings.config_fingerprint,
+            payload={
+                "portfolio": TaskCatalogPortfolioSnapshot(
+                    source_rows=2,
+                    source_pages=1,
+                    snapshots=(snapshot_a, snapshot_b),
+                )
+            },
+            row_count=2,
+            project_counts={project_a: 1, project_b: 1},
+        )
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=None,
+            project_task_source=SqlServerPortfolioTaskSource(
+                {project_a: snapshot_a, project_b: snapshot_b}
+            ),
+            settings=self.settings,
+            evidence_service=self.evidence,
+        )
+        run_id = orchestrator._create_task_run(attempt.id, attempt.generation)
+        with transactional_session(self.factory) as session:
+            session.get(AcumaticaProjectTaskSyncRun, run_id).projects_total = 2
+        with self.factory() as discovery:
+            projected = {
+                row.number: row
+                for row in SqlPlannerQueryRepositoryWithLoadProfiles(
+                    discovery
+                ).list_projects(active_only=False)
+                if row.number in {project_a, project_b}
+            }
+        first_result = orchestrator._process_task_project(
+            run_id,
+            attempt.id,
+            attempt.generation,
+            projected[project_a],
+            {project_a: snapshot_a, project_b: snapshot_b},
+        )
+        self.assertIsNotNone(first_result)
+
+        with transactional_session(self.factory) as session:
+            reservation = session.scalar(
+                select(ErpSyncEvidenceReservation).where(
+                    ErpSyncEvidenceReservation.attempt_id == attempt.id
+                )
+            )
+            reservation.reserved_bytes = int(reservation.used_bytes) + 1
+            reservation.reserved_plaintext_bytes = (
+                int(reservation.used_plaintext_bytes) + 1024 * 1024
+            )
+
+        with self.assertRaises(Exception) as raised:
+            orchestrator._process_task_project(
+                run_id,
+                attempt.id,
+                attempt.generation,
+                projected[project_b],
+                {project_a: snapshot_a, project_b: snapshot_b},
+            )
+        self.assertEqual(
+            getattr(raised.exception, "code", None),
+            "erp_sync_evidence_storage_reservation_exceeded",
+        )
+
+        with self.factory() as session:
+            task_a = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == project_a,
+                    TaskCatalogEntry.task_code == "SQL643-100",
+                )
+            )
+            task_b = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == project_b,
+                    TaskCatalogEntry.task_code == "SQL643-200",
+                )
+            )
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == attempt.id
+                )
+            )
+            manifests = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceManifest).where(
+                        ErpSyncEvidenceManifest.attempt_id == attempt.id
+                    )
+                )
+            )
+        self.assertIsNotNone(task_a)
+        self.assertIsNone(task_b)
+        self.assertIsNotNone(recovery)
+        self.assertEqual(recovery.state, "REQUIRED")
+        self.assertTrue(recovery.pinned)
+        self.assertTrue(manifests)
+        self.assertTrue(all(row.pinned for row in manifests))
+        orchestrator.shutdown()
+
+    def test_sqlserver_baseline_publication_failure_rolls_back_complete_success(self) -> None:
+        project_number = "SQL643B-PUBLISH"
+        projects = SqlServerProjectSource(
+            (_sql_project(project_number, "Atomic publication"),)
+        )
+        tasks = SqlServerPortfolioTaskSource(
+            {
+                project_number: _sql_snapshot(
+                    project_number,
+                    "SQL643-643",
+                    "Atomic publication task",
+                )
+            }
+        )
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=projects,
+            project_task_source=tasks,
+            settings=self.settings,
+            evidence_service=self.evidence,
+        )
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = repository.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="sql-publication",
+            idempotency_key="sql-publication-bootstrap",
+            settings=self.settings,
+        )
+        bootstrap = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="sql-publication",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(bootstrap)
+        orchestrator._execute_attempt(bootstrap.id, bootstrap.generation)
+        self.assertEqual(repository.get_attempt(bootstrap.id).status, "FAILED")
+
+        manifests = tuple(
+            row
+            for row in self.evidence.list_attempt_sources(attempt_id=bootstrap.id)
+            if row["proof_type"] == "SOURCE"
+        )
+        for manifest in manifests:
+            self.evidence.approve_baseline(
+                manifest_id=str(manifest["manifest_id"]),
+                actor_name="sql-admin",
+                reason="Approved SQL publication baseline",
+            )
+        with self.factory() as session:
+            baseline_before = {
+                row.source_type: (row.source_fingerprint, int(row.row_count))
+                for row in session.scalars(select(ErpSyncBaseline))
+            }
+
+        retry = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="sql-publication",
+            settings=self.settings,
+            command_identity="retry:sql-publication-failure",
+        )
+        self.assertIsNotNone(retry)
+        with patch.object(
+            self.evidence,
+            "advance_approved_baselines_in_session",
+            side_effect=RuntimeError("injected baseline publication failure"),
+        ):
+            orchestrator._execute_attempt(retry.id, retry.generation)
+
+        failed = repository.get_attempt(retry.id)
+        self.assertEqual(failed.status, "FAILED")
+        occurrence_after = repository.get_occurrence(occurrence.id)
+        self.assertIsNone(occurrence_after.success_attempt_id)
+        with self.factory() as session:
+            control = session.get(ErpSyncControl, ERP_SYNC_CONTROL_ROW_ID)
+            baseline_after = {
+                row.source_type: (row.source_fingerprint, int(row.row_count))
+                for row in session.scalars(select(ErpSyncBaseline))
+            }
+            task_row = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == project_number,
+                    TaskCatalogEntry.task_code == "SQL643-643",
+                )
+            )
+        self.assertIsNone(control.last_success_attempt_id)
+        self.assertEqual(baseline_after, baseline_before)
+        self.assertIsNotNone(task_row)
+        orchestrator.shutdown()
+
+    def test_sqlserver_policy_change_between_project_commits_blocks_second_unit(self) -> None:
+        project_a = "SQL643B-POLICY-A"
+        project_b = "SQL643B-POLICY-B"
+        with transactional_session(self.factory) as session:
+            session.add_all(
+                [
+                    Project(
+                        id="SQL643B-POLICY-A-ID",
+                        erp_external_id="ERP-SQL643B-POLICY-A",
+                        number=project_a,
+                        name="Policy A",
+                        status="Actif",
+                    ),
+                    Project(
+                        id="SQL643B-POLICY-B-ID",
+                        erp_external_id="ERP-SQL643B-POLICY-B",
+                        number=project_b,
+                        name="Policy B",
+                        status="Actif",
+                    ),
+                ]
+            )
+
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = repository.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="sql-policy",
+            idempotency_key="sql-policy-change",
+            settings=self.settings,
+        )
+        attempt = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="sql-policy",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(attempt)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                settings=self.settings,
+            )
+        )
+        self.evidence.reserve_attempt(attempt_id=attempt.id)
+        self.evidence.bind_attempt_policy(
+            attempt_id=attempt.id,
+            generation=attempt.generation,
+        )
+        snapshot_a = _sql_snapshot(project_a, "SQL643-100", "Policy task A")
+        snapshot_b = _sql_snapshot(project_b, "SQL643-200", "Policy task B")
+        self.evidence.capture_source(
+            attempt_id=attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=self.settings.config_fingerprint,
+            payload={
+                "portfolio": TaskCatalogPortfolioSnapshot(
+                    source_rows=2,
+                    source_pages=1,
+                    snapshots=(snapshot_a, snapshot_b),
+                )
+            },
+            row_count=2,
+            project_counts={project_a: 1, project_b: 1},
+        )
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=None,
+            project_task_source=SqlServerPortfolioTaskSource(
+                {project_a: snapshot_a, project_b: snapshot_b}
+            ),
+            settings=self.settings,
+            evidence_service=self.evidence,
+        )
+        run_id = orchestrator._create_task_run(attempt.id, attempt.generation)
+        with transactional_session(self.factory) as session:
+            session.get(AcumaticaProjectTaskSyncRun, run_id).projects_total = 2
+        with self.factory() as discovery:
+            projected = {
+                row.number: row
+                for row in SqlPlannerQueryRepositoryWithLoadProfiles(
+                    discovery
+                ).list_projects(active_only=False)
+                if row.number in {project_a, project_b}
+            }
+        self.assertIsNotNone(
+            orchestrator._process_task_project(
+                run_id,
+                attempt.id,
+                attempt.generation,
+                projected[project_a],
+                {project_a: snapshot_a, project_b: snapshot_b},
+            )
+        )
+        with transactional_session(self.factory) as session:
+            session.get(
+                ResourceClassConfig,
+                self.TEST_RESOURCE_CLASS,
+            ).average_hourly_cost_cad = Decimal("250.0000")
+        self.assertIsNone(
+            orchestrator._process_task_project(
+                run_id,
+                attempt.id,
+                attempt.generation,
+                projected[project_b],
+                {project_a: snapshot_a, project_b: snapshot_b},
+            )
+        )
+
+        with self.factory() as session:
+            task_a = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == project_a,
+                    TaskCatalogEntry.task_code == "SQL643-100",
+                )
+            )
+            task_b = session.scalar(
+                select(TaskCatalogEntry).where(
+                    TaskCatalogEntry.project_number == project_b,
+                    TaskCatalogEntry.task_code == "SQL643-200",
+                )
+            )
+            results = tuple(
+                session.scalars(
+                    select(AcumaticaProjectTaskSyncProjectResult)
+                    .where(AcumaticaProjectTaskSyncProjectResult.run_id == run_id)
+                    .order_by(AcumaticaProjectTaskSyncProjectResult.project_number)
+                )
+            )
+        self.assertIsNotNone(task_a)
+        self.assertEqual(
+            task_a.average_hourly_cost_cad,
+            Decimal("125.0000"),
+        )
+        self.assertIsNone(task_b)
+        self.assertEqual(
+            [(row.project_number, row.status, row.error_code) for row in results],
+            [
+                (project_a, "synchronized", None),
+                (
+                    project_b,
+                    "rejected",
+                    "erp_sync_policy_fingerprint_changed",
+                ),
+            ],
+        )
+        orchestrator.shutdown()
+
+    def test_sqlserver_stale_generation_cannot_write_mutation_evidence(self) -> None:
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = repository.accept_manual(
+            intent="PROJECTS_ONLY",
+            actor_name="sql-evidence",
+            idempotency_key="sql-evidence-stale-generation",
+            settings=self.settings,
+        )
+        first = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="sql-evidence",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(first)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=first.id,
+                generation=first.generation,
+                settings=self.settings,
+            )
+        )
+        self.evidence.reserve_attempt(attempt_id=first.id)
+
+        with transactional_session(self.factory) as session:
+            session.execute(
+                text(
+                    "UPDATE erp_sync_control "
+                    "SET lease_expires_at = DATEADD(second, -10, SYSUTCDATETIME()) "
+                    "WHERE id = :id"
+                ),
+                {"id": ERP_SYNC_CONTROL_ROW_ID},
+            )
+
+        second = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="sql-evidence-replacement",
+            settings=self.settings,
+            command_identity="retry:sql-evidence-stale-generation",
+        )
+        self.assertIsNotNone(second)
+        self.assertGreater(second.generation, first.generation)
+
+        with self.assertRaises(ErpSyncFenceLost):
+            with transactional_session(self.factory) as session:
+                SqlErpSyncControlRepository.guard_session(
+                    session,
+                    attempt_id=first.id,
+                    generation=first.generation,
+                    settings=self.settings,
+                )
+                self.evidence.record_before_in_session(
+                    session,
+                    attempt_id=first.id,
+                    generation=first.generation,
+                    unit_type="PROJECT_SNAPSHOT",
+                    entity_type="PROJECT",
+                    entity_key="STALE-SQL-EVIDENCE",
+                    before=None,
+                )
+
+        with self.factory() as session:
+            stale_rows = int(
+                session.scalar(
+                    select(func.count(ErpSyncMutationEvidence.id)).where(
+                        ErpSyncMutationEvidence.attempt_id == first.id
+                    )
+                )
+                or 0
+            )
+        self.assertEqual(stale_rows, 0)
+
+    def _prepare_sqlserver_compensable_task(self, suffix: str):
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = repository.accept_manual(
+            intent="PROJECTS_ONLY",
+            actor_name="sql-compensation",
+            idempotency_key=f"sql-compensation-{suffix}",
+            settings=self.settings,
+        )
+        attempt = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="sql-compensation",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(attempt)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                settings=self.settings,
+            )
+        )
+        self.evidence.reserve_attempt(attempt_id=attempt.id)
+        self.evidence.bind_attempt_policy(
+            attempt_id=attempt.id,
+            generation=attempt.generation,
+        )
+        number = f"SQL643-CAS-{suffix}"
+        task_id = f"SQL643-CAS-TASK-{suffix}"
+        with transactional_session(self.factory) as session:
+            project = Project(
+                id=f"SQL643-CAS-PROJECT-{suffix}",
+                erp_external_id=f"ERP-{number}",
+                number=number,
+                name="Compensation CAS project",
+                status="Actif",
+            )
+            session.add(project)
+            task = TaskCatalogEntry(
+                id=task_id,
+                project_number=number,
+                task_code=self.TEST_TASK_CODES[0],
+                label="Before",
+                status="Actif",
+                active=True,
+                erp_task_id=f"ERP-{task_id}",
+                account_group="DEPMO",
+                workforce_eligible=True,
+                resource_class_code=self.TEST_RESOURCE_CLASS,
+                average_hourly_cost_cad=Decimal("125.0000"),
+                preferred_resource_version=1,
+            )
+            session.add(task)
+            session.flush()
+            before = ErpSyncOrchestrator._task_owned_state(task)
+            evidence_id = self.evidence.record_before_in_session(
+                session,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                unit_type=f"TASK_PROJECT:{project.id}",
+                entity_type="TASK",
+                entity_key=task.erp_task_id,
+                before=before,
+            )
+            task.label = "After"
+            session.flush()
+            session.expire(task)
+            persisted = session.get(TaskCatalogEntry, task_id)
+            self.evidence.record_after_in_session(
+                session,
+                evidence_id=evidence_id,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                after=ErpSyncOrchestrator._task_owned_state(persisted) or {},
+            )
+        self.assertTrue(
+            repository.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.settings,
+            )
+        )
+        preview = self.evidence.compensation_preview(attempt_id=attempt.id)
+        self.assertTrue(preview["can_confirm"])
+        return repository, attempt, task_id, preview
+
+    def test_sqlserver_compensation_locks_local_preference_through_commit_and_replays_idempotently(self) -> None:
+        _repository, attempt, task_id, preview = self._prepare_sqlserver_compensable_task(
+            "PREFERENCE"
+        )
+        compared = Event()
+        release = Event()
+        updater_started = Event()
+        updater_committed = Event()
+        original_current = self.evidence._current_owned_state
+
+        def pause_after_locked_compare(session, row, **kwargs):
+            value = original_current(session, row, **kwargs)
+            if (
+                row.entity_type == "TASK"
+                and kwargs.get("lock_for_compensation")
+                and not compared.is_set()
+            ):
+                compared.set()
+                if not release.wait(timeout=10):
+                    raise RuntimeError("compensation CAS release timeout")
+            return value
+
+        compensation_result: list[dict[str, object]] = []
+
+        def compensate() -> None:
+            compensation_result.append(
+                self.evidence.confirm_compensation(
+                    attempt_id=attempt.id,
+                    preview_hash=preview["preview_hash"],
+                    command_identity="sql-compensation-preference-confirm",
+                    actor_name="sql-admin",
+                    reason="Compensation with row CAS",
+                )
+            )
+
+        def mutate_preference() -> None:
+            updater_started.set()
+            with transactional_session(self.factory) as session:
+                task = session.get(TaskCatalogEntry, task_id)
+                self.assertIsNotNone(task)
+                task.preferred_resource_version = int(
+                    task.preferred_resource_version or 1
+                ) + 1
+            updater_committed.set()
+
+        with patch.object(
+            self.evidence,
+            "_current_owned_state",
+            side_effect=pause_after_locked_compare,
+        ):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                compensation_future = pool.submit(compensate)
+                self.assertTrue(compared.wait(timeout=5))
+                updater_future = pool.submit(mutate_preference)
+                self.assertTrue(updater_started.wait(timeout=5))
+                self.assertFalse(updater_committed.wait(timeout=0.25))
+                release.set()
+                compensation_future.result(timeout=10)
+                updater_future.result(timeout=10)
+
+        self.assertTrue(updater_committed.is_set())
+        self.assertEqual(len(compensation_result), 1)
+        replay = self.evidence.confirm_compensation(
+            attempt_id=attempt.id,
+            preview_hash=preview["preview_hash"],
+            command_identity="sql-compensation-preference-confirm",
+            actor_name="sql-admin",
+            reason="Idempotent replay",
+        )
+        self.assertEqual(
+            replay["receipt_id"],
+            compensation_result[0]["receipt_id"],
+        )
+        with self.factory() as session:
+            receipts = tuple(
+                session.scalars(
+                    select(ErpSyncCompensationReceipt).where(
+                        ErpSyncCompensationReceipt.attempt_id == attempt.id
+                    )
+                )
+            )
+        self.assertEqual(len(receipts), 1)
+
+    def test_sqlserver_compensation_locks_dependency_range_through_commit(self) -> None:
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = repository.accept_manual(
+            intent="PROJECTS_ONLY",
+            actor_name="sql-compensation",
+            idempotency_key="sql-compensation-dependency-range",
+            settings=self.settings,
+        )
+        attempt = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="sql-compensation",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(attempt)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                settings=self.settings,
+            )
+        )
+        self.evidence.reserve_attempt(attempt_id=attempt.id)
+        self.evidence.bind_attempt_policy(
+            attempt_id=attempt.id,
+            generation=attempt.generation,
+        )
+        project_id = "SQL643-CAS-DEPENDENCY-ID"
+        with transactional_session(self.factory) as session:
+            project = Project(
+                id=project_id,
+                erp_external_id="ERP-SQL643-CAS-DEPENDENCY",
+                number="SQL643-CAS-DEPENDENCY",
+                name="New imported project",
+                status="Actif",
+            )
+            session.add(project)
+            session.flush()
+            evidence_id = self.evidence.record_before_in_session(
+                session,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                unit_type="PROJECT_SNAPSHOT",
+                entity_type="PROJECT",
+                entity_key=project.erp_external_id,
+                before=None,
+            )
+            self.evidence.record_after_in_session(
+                session,
+                evidence_id=evidence_id,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                after=ErpSyncOrchestrator._project_owned_state(project) or {},
+            )
+        self.assertTrue(
+            repository.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.settings,
+            )
+        )
+        preview = self.evidence.compensation_preview(attempt_id=attempt.id)
+        self.assertTrue(preview["can_confirm"])
+
+        dependencies_checked = Event()
+        release = Event()
+        inserter_started = Event()
+        inserter_committed = Event()
+        original_dependencies = self.evidence._new_row_has_dependencies
+
+        def pause_after_dependency_lock(session, row, **kwargs):
+            value = original_dependencies(session, row, **kwargs)
+            if kwargs.get("lock_for_compensation") and not dependencies_checked.is_set():
+                self.assertFalse(value)
+                dependencies_checked.set()
+                if not release.wait(timeout=10):
+                    raise RuntimeError("dependency CAS release timeout")
+            return value
+
+        def add_dependency() -> None:
+            inserter_started.set()
+            with transactional_session(self.factory) as session:
+                session.add(
+                    WorkPackage(
+                        id="SQL643-CAS-DEPENDENCY-WP",
+                        project_id=project_id,
+                        code="CAS-WP",
+                        name="Concurrent dependency",
+                        status="planned",
+                    )
+                )
+            inserter_committed.set()
+
+        with patch.object(
+            self.evidence,
+            "_new_row_has_dependencies",
+            side_effect=pause_after_dependency_lock,
+        ):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                compensation_future = pool.submit(
+                    self.evidence.confirm_compensation,
+                    attempt_id=attempt.id,
+                    preview_hash=preview["preview_hash"],
+                    command_identity="sql-compensation-dependency-confirm",
+                    actor_name="sql-admin",
+                    reason="Compensation with dependency range lock",
+                )
+                self.assertTrue(dependencies_checked.wait(timeout=5))
+                dependency_future = pool.submit(add_dependency)
+                self.assertTrue(inserter_started.wait(timeout=5))
+                self.assertFalse(inserter_committed.wait(timeout=0.25))
+                release.set()
+                compensation_future.result(timeout=10)
+                dependency_future.result(timeout=10)
+
+        self.assertTrue(inserter_committed.is_set())
+        with self.factory() as session:
+            project = session.get(Project, project_id)
+            dependency = session.get(WorkPackage, "SQL643-CAS-DEPENDENCY-WP")
+        self.assertIsNotNone(project)
+        self.assertEqual(project.status, "Annulé")
+        self.assertIsNone(project.erp_external_id)
+        self.assertIsNotNone(dependency)
+
+    def test_sqlserver_persisted_decimal_and_legacy_null_task_identity_compensate_cleanly(self) -> None:
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = repository.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="sql-checkpoint",
+            idempotency_key="sql-checkpoint-persisted-legacy",
+            settings=self.settings,
+        )
+        attempt = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="sql-checkpoint",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(attempt)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                settings=self.settings,
+            )
+        )
+        self.evidence.reserve_attempt(attempt_id=attempt.id)
+        self.evidence.bind_attempt_policy(
+            attempt_id=attempt.id,
+            generation=attempt.generation,
+        )
+        number = "SQL643-LEGACY-NULL"
+        project_id = "SQL643-LEGACY-NULL-PROJECT"
+        legacy_task_id = "SQL643-LEGACY-NULL-TASK"
+        unrelated_task_id = "SQL643-LEGACY-UNRELATED-TASK"
+        incoming_erp_task_id = "SQL643-ERP-CANONICAL-9001"
+        snapshot = TaskCatalogProjectSnapshot(
+            project_number=number,
+            source_rows=1,
+            rejected_rows=0,
+            items=(
+                TaskCatalogItem(
+                    project_number=number,
+                    code=self.TEST_TASK_CODES[0],
+                    label="Canonical ERP task",
+                    status="Actif",
+                    active=True,
+                    erp_task_id=incoming_erp_task_id,
+                    account_group="DEPMO",
+                    budget_amount_cad=Decimal("200.00"),
+                    budget_actual_cad=Decimal("50.00"),
+                ),
+            ),
+        )
+        self.evidence.capture_source(
+            attempt_id=attempt.id,
+            generation=attempt.generation,
+            source_type="TASKS",
+            profile_fingerprint=self.settings.config_fingerprint,
+            payload={
+                "portfolio": TaskCatalogPortfolioSnapshot(
+                    source_rows=1,
+                    source_pages=1,
+                    snapshots=(snapshot,),
+                )
+            },
+            row_count=1,
+            project_counts={number: 1},
+        )
+        with transactional_session(self.factory) as session:
+            session.add(
+                Project(
+                    id=project_id,
+                    erp_external_id=f"ERP-{number}",
+                    number=number,
+                    name="Legacy identity project",
+                    status="Actif",
+                )
+            )
+            session.add_all(
+                [
+                    TaskCatalogEntry(
+                        id=legacy_task_id,
+                        project_number=number,
+                        task_code=self.TEST_TASK_CODES[0],
+                        label="Legacy task",
+                        status="Actif",
+                        active=True,
+                        erp_task_id=None,
+                        account_group=None,
+                    ),
+                    TaskCatalogEntry(
+                        id=unrelated_task_id,
+                        project_number=number,
+                        task_code=self.TEST_TASK_CODES[1],
+                        label="Unrelated legacy task",
+                        status="Actif",
+                        active=True,
+                        erp_task_id=None,
+                        account_group=None,
+                    ),
+                ]
+            )
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=None,
+            project_task_source=SqlServerPortfolioTaskSource({number: snapshot}),
+            settings=self.settings,
+            evidence_service=self.evidence,
+        )
+        child_id = orchestrator._create_task_run(
+            attempt.id,
+            attempt.generation,
+        )
+        with transactional_session(self.factory) as session:
+            child = session.get(AcumaticaProjectTaskSyncRun, child_id)
+            self.assertIsNotNone(child)
+            child.projects_total = 1
+        # _process_task_project consumes the planning projection contract, not
+        # the SQL Project ORM model. Project operational activity is represented
+        # by canonical status in persistence and projected to active here.
+        project_row = SimpleNamespace(
+            id=project_id,
+            number=number,
+            active=True,
+            erp_external_id=f"ERP-{number}",
+        )
+        orchestrator._process_task_project(
+            child_id,
+            attempt.id,
+            attempt.generation,
+            project_row,
+            {number: snapshot},
+        )
+        self.assertTrue(
+            repository.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.settings,
+            )
+        )
+
+        with self.factory() as session:
+            bound = session.get(TaskCatalogEntry, legacy_task_id)
+            unrelated = session.get(TaskCatalogEntry, unrelated_task_id)
+            evidence_rows = tuple(
+                session.scalars(
+                    select(ErpSyncMutationEvidence).where(
+                        ErpSyncMutationEvidence.attempt_id == attempt.id,
+                        ErpSyncMutationEvidence.entity_type == "TASK",
+                    )
+                )
+            )
+        self.assertIsNotNone(bound)
+        self.assertEqual(bound.erp_task_id, incoming_erp_task_id)
+        self.assertEqual(bound.budget_amount_cad, Decimal("200.0000000000"))
+        self.assertEqual(bound.average_hourly_cost_cad, Decimal("125.0000"))
+        self.assertIsNotNone(unrelated)
+        self.assertIsNone(unrelated.erp_task_id)
+        self.assertEqual(len(evidence_rows), 1)
+        self.assertEqual(evidence_rows[0].entity_key, incoming_erp_task_id)
+        self.assertNotEqual(evidence_rows[0].entity_key, "None")
+
+        preview = self.evidence.compensation_preview(attempt_id=attempt.id)
+        self.assertTrue(preview["can_confirm"], preview)
+        self.evidence.confirm_compensation(
+            attempt_id=attempt.id,
+            preview_hash=preview["preview_hash"],
+            command_identity="sql-checkpoint-persisted-legacy-confirm",
+            actor_name="sql-admin",
+            reason="Persisted canonical state must compensate cleanly",
+        )
+        with self.factory() as session:
+            restored = session.get(TaskCatalogEntry, legacy_task_id)
+            unrelated_after = session.get(TaskCatalogEntry, unrelated_task_id)
+        self.assertIsNotNone(restored)
+        self.assertIsNone(restored.erp_task_id)
+        self.assertEqual(restored.label, "Legacy task")
+        self.assertEqual(unrelated_after.label, "Unrelated legacy task")
+        orchestrator.shutdown()
+
+    def test_sqlserver_normal_interruption_keeps_commits_available_and_admits_replacement(self) -> None:
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = self._daily_occurrence()
+        first = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="backend-A",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(first)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=first.id,
+                generation=first.generation,
+                settings=self.settings,
+            )
+        )
+        first_source = SqlServerProjectSource(
+            (_sql_project("SQL643-CRASH-REPLAY", "Committed before crash"),)
+        )
+        first_orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=first_source,
+            project_task_source=None,
+            settings=self.settings,
+            evidence_service=self.evidence,
+        )
+        self.evidence.reserve_attempt(attempt_id=first.id)
+        self.evidence.bind_attempt_policy(
+            attempt_id=first.id,
+            generation=first.generation,
+        )
+        first_orchestrator._execute_projects(first.id, first.generation)
+        self.assertEqual(first_source.calls, 1)
+
+        with transactional_session(self.factory) as session:
+            session.execute(
+                text(
+                    "UPDATE erp_sync_control "
+                    "SET lease_expires_at = DATEADD(second, -10, SYSUTCDATETIME()) "
+                    "WHERE id = :id"
+                ),
+                {"id": ERP_SYNC_CONTROL_ROW_ID},
+            )
+        self.assertEqual(repository.reconcile_expired_owner(), 1)
+        self.assertEqual(repository.reconcile_expired_owner(), 0)
+        second = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="backend-B",
+            settings=self.settings,
+            command_identity="retry:sql643-normal-crash",
+        )
+        self.assertIsNotNone(second)
+        self.assertGreater(second.generation, first.generation)
+        self.assertEqual(repository.get_attempt(first.id).status, ERP_ATTEMPT_INTERRUPTED)
+
+        with self.factory() as session:
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == first.id
+                )
+            )
+            reservation = session.scalar(
+                select(ErpSyncEvidenceReservation).where(
+                    ErpSyncEvidenceReservation.attempt_id == first.id
+                )
+            )
+            manifests = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceManifest).where(
+                        ErpSyncEvidenceManifest.attempt_id == first.id
+                    )
+                )
+            )
+            committed = session.scalar(
+                select(Project).where(Project.number == "SQL643-CRASH-REPLAY")
+            )
+        self.assertIsNotNone(recovery)
+        self.assertEqual(recovery.state, "AVAILABLE")
+        self.assertFalse(recovery.pinned)
+        self.assertIsNotNone(reservation.released_at)
+        self.assertTrue(manifests)
+        self.assertTrue(
+            all((not row.pinned) and row.expires_at is not None for row in manifests)
+        )
+        self.assertIsNotNone(committed)
+        self.assertEqual(committed.name, "Committed before crash")
+
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=second.id,
+                generation=second.generation,
+                settings=self.settings,
+            )
+        )
+        self.evidence.reserve_attempt(attempt_id=second.id)
+        self.evidence.bind_attempt_policy(
+            attempt_id=second.id,
+            generation=second.generation,
+        )
+        replacement_source = SqlServerProjectSource(
+            (_sql_project("SQL643-CRASH-REPLAY", "Reread after crash"),)
+        )
+        replacement = ErpSyncOrchestrator(
+            self.factory,
+            project_source=replacement_source,
+            project_task_source=None,
+            settings=self.settings,
+            evidence_service=self.evidence,
+        )
+        replacement._execute_projects(second.id, second.generation)
+        self.assertEqual(replacement_source.calls, 1)
+        with self.factory() as session:
+            current = session.scalar(
+                select(Project).where(Project.number == "SQL643-CRASH-REPLAY")
+            )
+        self.assertIsNotNone(current)
+        self.assertEqual(current.name, "Reread after crash")
+        first_orchestrator.shutdown()
+        replacement.shutdown()
+
+    def test_sqlserver_compensation_preview_is_invalidated_by_new_generation(self) -> None:
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = repository.accept_manual(
+            intent="PROJECTS_ONLY",
+            actor_name="sql-evidence",
+            idempotency_key="sql-compensation-generation",
+            settings=self.settings,
+        )
+        attempt = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="sql-evidence",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(attempt)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                settings=self.settings,
+            )
+        )
+        self.evidence.reserve_attempt(attempt_id=attempt.id)
+
+        project_id = "SQL643B-COMP-GEN"
+        with transactional_session(self.factory) as session:
+            session.execute(delete(Project).where(Project.id == project_id))
+            row = Project(
+                id=project_id,
+                erp_external_id="ERP-SQL643B-COMP-GEN",
+                number="SQL643B-COMP-GEN",
+                name="Before",
+                status="Actif",
+            )
+            session.add(row)
+            session.flush()
+            before = {
+                "erp_external_id": row.erp_external_id,
+                "number": row.number,
+                "name": row.name,
+                "client": row.client,
+                "project_manager_external_id": row.project_manager_external_id,
+                "project_manager_name": row.project_manager_name,
+                "status": row.status,
+            }
+            evidence_id = self.evidence.record_before_in_session(
+                session,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                unit_type="PROJECT_SNAPSHOT",
+                entity_type="PROJECT",
+                entity_key=row.erp_external_id,
+                before=before,
+            )
+            row.name = "After"
+            self.evidence.record_after_in_session(
+                session,
+                evidence_id=evidence_id,
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                after={**before, "name": "After"},
+            )
+        self.assertTrue(
+            repository.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.settings,
+            )
+        )
+        # Keep recovery non-blocking for this scenario: RECOVERY_REQUIRED
+        # deliberately prevents replacement admission. This test isolates the
+        # separate compensation invariant that any valid generation change
+        # invalidates a previously computed preview.
+        preview = self.evidence.compensation_preview(attempt_id=attempt.id)
+        self.assertTrue(preview["can_confirm"])
+
+        # A separately authorized control-plane command changes generation after
+        # preview. Even if the ERP-owned row itself is unchanged, confirmation
+        # must refuse the stale preview.
+        other_occurrence = repository.accept_manual(
+            intent="PROJECTS_ONLY",
+            actor_name="sql-other",
+            idempotency_key="sql-compensation-generation-other",
+            settings=self.settings,
+        )
+        other = repository.claim(
+            occurrence_id=other_occurrence.id,
+            trigger="MANUAL",
+            actor_name="sql-other",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(other)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=other.id,
+                generation=other.generation,
+                settings=self.settings,
+            )
+        )
+        self.assertTrue(
+            repository.finish(
+                attempt_id=other.id,
+                generation=other.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.settings,
+            )
+        )
+
+        with self.assertRaises(Exception) as raised:
+            self.evidence.confirm_compensation(
+                attempt_id=attempt.id,
+                preview_hash=preview["preview_hash"],
+                command_identity="sql-compensation-generation-confirm",
+                actor_name="sql-admin",
+                reason="Must reject stale generation",
+            )
+        self.assertEqual(
+            getattr(raised.exception, "code", None),
+            "erp_sync_compensation_preview_stale",
+        )
+
+    def test_sqlserver_evidence_unique_and_foreign_key_constraints_are_enforced(self) -> None:
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = repository.accept_manual(
+            intent="PROJECTS_ONLY",
+            actor_name="sql-constraints",
+            idempotency_key="sql-evidence-constraints",
+            settings=self.settings,
+        )
+        attempt = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="sql-constraints",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(attempt)
+
+        with self.assertRaises(IntegrityError):
+            with transactional_session(self.factory) as session:
+                session.add_all(
+                    [
+                        ErpSyncEvidenceReservation(
+                            attempt_id=attempt.id,
+                            reserved_bytes=1024,
+                            used_bytes=0,
+                            reserved_plaintext_bytes=1024,
+                            used_plaintext_bytes=0,
+                        ),
+                        ErpSyncEvidenceReservation(
+                            attempt_id=attempt.id,
+                            reserved_bytes=1024,
+                            used_bytes=0,
+                            reserved_plaintext_bytes=1024,
+                            used_plaintext_bytes=0,
+                        ),
+                    ]
+                )
+
+        with self.assertRaises(IntegrityError):
+            with transactional_session(self.factory) as session:
+                session.add(
+                    ErpSyncEvidenceManifest(
+                        id="SQL643B-MISSING-FK",
+                        attempt_id="MISSING-ATTEMPT",
+                        protocol_version=1,
+                        source_type="PROJECTS",
+                        proof_type="SOURCE",
+                        profile_fingerprint="f" * 64,
+                        observed_at=datetime.now(timezone.utc),
+                        row_count=0,
+                        chunk_count=0,
+                        plaintext_bytes=0,
+                        ciphertext_bytes=0,
+                        state="SEALED",
+                    )
+                )
+
     def test_terminal_run_now_replay_uses_one_sqlserver_attempt_and_execution(self) -> None:
         project_number = "SQL643A-R"
         with transactional_session(self.factory) as session:
@@ -276,7 +2043,7 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             {
                 project_number: _sql_snapshot(
                     project_number,
-                    "400",
+                    "SQL643-400",
                     "Terminal replay task",
                 )
             }
@@ -385,7 +2152,7 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
                 task_row = session.scalar(
                     select(TaskCatalogEntry).where(
                         TaskCatalogEntry.project_number == project_number,
-                        TaskCatalogEntry.task_code == "400",
+                        TaskCatalogEntry.task_code == "SQL643-400",
                     )
                 )
             self.assertEqual(len(attempts), 1)
@@ -393,7 +2160,10 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             self.assertEqual(attempts[0].trigger_kind, "MANUAL")
             self.assertEqual(projects.calls, 1)
             self.assertEqual(tasks.batch_calls, 1)
-            self.assertIsNotNone(task_row)
+            self.assertIsNotNone(
+                task_row,
+                self._task_run_diagnostic(completed.task_sync_run_id),
+            )
         finally:
             release_b.set()
             backend_a.shutdown()
@@ -436,7 +2206,7 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             {
                 project_number: _sql_snapshot(
                     project_number,
-                    "300",
+                    "SQL643-300",
                     "Manual observer task",
                 )
             }
@@ -519,7 +2289,7 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
                 task_row = session.scalar(
                     select(TaskCatalogEntry).where(
                         TaskCatalogEntry.project_number == project_number,
-                        TaskCatalogEntry.task_code == "300",
+                        TaskCatalogEntry.task_code == "SQL643-300",
                     )
                 )
             self.assertEqual(len(attempts), 1)
@@ -527,7 +2297,10 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             self.assertEqual(attempts[0].trigger_kind, "RETRY")
             self.assertIsNotNone(control)
             self.assertIsNone(control.owner_attempt_id)
-            self.assertIsNotNone(task_row)
+            self.assertIsNotNone(
+                task_row,
+                self._task_run_diagnostic(completed.task_sync_run_id),
+            )
             self.assertEqual(
                 repository.get_occurrence(occurrence.id).success_attempt_id,
                 manual.attempt.id,
@@ -536,6 +2309,407 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             release_worker.set()
             backend_a.shutdown()
             backend_b.shutdown()
+
+    def test_takeover_during_source_encryption_fences_stale_source_seal(self) -> None:
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = self._daily_occurrence()
+        first = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="backend-A",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(first)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=first.id,
+                generation=first.generation,
+                settings=self.settings,
+            )
+        )
+
+        encrypt_entered = Event()
+        release_encrypt = Event()
+        original_encrypt = self.evidence._encrypt_bytes
+
+        def delayed_encrypt(payload: bytes) -> str:
+            encrypt_entered.set()
+            if not release_encrypt.wait(timeout=10):
+                raise RuntimeError("source encryption release timeout")
+            return original_encrypt(payload)
+
+        def capture() -> None:
+            self.evidence.capture_source(
+                attempt_id=first.id,
+                generation=first.generation,
+                source_type="PROJECTS",
+                profile_fingerprint=self.settings.config_fingerprint,
+                payload={"records": [{"number": "SQL643-STALE-SEAL"}]},
+                row_count=1,
+            )
+
+        with patch.object(self.evidence, "_encrypt_bytes", side_effect=delayed_encrypt):
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(capture)
+                self.assertTrue(encrypt_entered.wait(timeout=5))
+                with transactional_session(self.factory) as session:
+                    session.execute(
+                        text(
+                            "UPDATE erp_sync_control "
+                            "SET lease_expires_at = DATEADD(second, -10, SYSUTCDATETIME()) "
+                            "WHERE id = :id"
+                        ),
+                        {"id": ERP_SYNC_CONTROL_ROW_ID},
+                    )
+                second = repository.claim(
+                    occurrence_id=occurrence.id,
+                    trigger="RETRY",
+                    actor_name="backend-B",
+                    settings=self.settings,
+                    command_identity="retry:sql643-stale-source-seal",
+                )
+                self.assertIsNotNone(second)
+                self.assertGreater(second.generation, first.generation)
+                release_encrypt.set()
+                with self.assertRaises(ErpSyncFenceLost):
+                    future.result(timeout=10)
+
+        with self.factory() as session:
+            stale_source = session.scalar(
+                select(ErpSyncEvidenceManifest).where(
+                    ErpSyncEvidenceManifest.attempt_id == first.id,
+                    ErpSyncEvidenceManifest.source_type == "PROJECTS",
+                )
+            )
+            reservation = session.scalar(
+                select(ErpSyncEvidenceReservation).where(
+                    ErpSyncEvidenceReservation.attempt_id == first.id
+                )
+            )
+        self.assertIsNone(stale_source)
+        self.assertIsNotNone(reservation)
+        self.assertIsNotNone(reservation.released_at)
+
+    def test_startup_reconciliation_does_not_overwrite_resolved_recovery(self) -> None:
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = self._daily_occurrence()
+        first = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="backend-A",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(first)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=first.id,
+                generation=first.generation,
+                settings=self.settings,
+            )
+        )
+        self.evidence.reserve_attempt(attempt_id=first.id)
+        self.evidence.bind_attempt_policy(
+            attempt_id=first.id,
+            generation=first.generation,
+        )
+        with transactional_session(self.factory) as session:
+            row = Project(
+                id="SQL643-RECOVERY-RACE-ID",
+                erp_external_id="ERP-SQL643-RECOVERY-RACE",
+                number="SQL643-RECOVERY-RACE",
+                name="Before",
+                status="Actif",
+            )
+            session.add(row)
+            session.flush()
+            evidence_id = self.evidence.record_before_in_session(
+                session,
+                attempt_id=first.id,
+                generation=first.generation,
+                unit_type="PROJECT_SNAPSHOT",
+                entity_type="PROJECT",
+                entity_key=row.erp_external_id,
+                before=None,
+            )
+            self.evidence.record_after_in_session(
+                session,
+                evidence_id=evidence_id,
+                attempt_id=first.id,
+                generation=first.generation,
+                after={
+                    "erp_external_id": row.erp_external_id,
+                    "number": row.number,
+                    "name": row.name,
+                    "client": row.client,
+                    "project_manager_external_id": row.project_manager_external_id,
+                    "project_manager_name": row.project_manager_name,
+                    "status": row.status,
+                },
+            )
+        # This race remains a hard-recovery scenario independently of lease
+        # expiry; Phase 6 ordinary interruption no longer invents REQUIRED.
+        self.evidence.mark_recovery_required(
+            attempt_id=first.id,
+            reason_code="injected_hard_recovery_before_startup",
+        )
+        with transactional_session(self.factory) as session:
+            session.execute(
+                text(
+                    "UPDATE erp_sync_control "
+                    "SET lease_expires_at = DATEADD(second, -10, SYSUTCDATETIME()) "
+                    "WHERE id = :id"
+                ),
+                {"id": ERP_SYNC_CONTROL_ROW_ID},
+            )
+
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=None,
+            project_task_source=None,
+            settings=self.settings,
+            evidence_service=self.evidence,
+        )
+        original_reconcile = orchestrator._control.reconcile_expired_owner_attempts
+
+        def reconcile_then_resolve():
+            interrupted = original_reconcile()
+            with transactional_session(self.factory) as session:
+                recovery = session.scalar(
+                    select(ErpSyncRecoveryState).where(
+                        ErpSyncRecoveryState.attempt_id == first.id
+                    )
+                )
+                self.assertIsNotNone(recovery)
+                self.assertEqual(recovery.state, "REQUIRED")
+                recovery.state = "RESOLVED"
+                recovery.pinned = False
+                recovery.resolved_by = "sql-admin"
+                recovery.resolved_at = datetime.now(timezone.utc)
+            return interrupted
+
+        with patch.object(
+            orchestrator._control,
+            "reconcile_expired_owner_attempts",
+            side_effect=reconcile_then_resolve,
+        ):
+            self.assertEqual(orchestrator.reconcile_startup(), 1)
+
+        with self.factory() as session:
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == first.id
+                )
+            )
+        self.assertIsNotNone(recovery)
+        self.assertEqual(recovery.state, "RESOLVED")
+        self.assertFalse(recovery.pinned)
+        orchestrator.shutdown()
+
+    def test_policy_reference_rows_remain_locked_through_consumption(self) -> None:
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = self._daily_occurrence()
+        attempt = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="backend-A",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(attempt)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                settings=self.settings,
+            )
+        )
+        self.evidence.reserve_attempt(attempt_id=attempt.id)
+        self.evidence.bind_attempt_policy(
+            attempt_id=attempt.id,
+            generation=attempt.generation,
+        )
+
+        updater_entered = Event()
+        updater_committed = Event()
+
+        def update_policy() -> None:
+            updater_entered.set()
+            with transactional_session(self.factory) as session:
+                standard = session.scalar(
+                    select(TaskClassStandard).where(
+                        TaskClassStandard.task_code == self.TEST_TASK_CODES[0]
+                    )
+                )
+                self.assertIsNotNone(standard)
+                standard.version = int(standard.version) + 1
+            updater_committed.set()
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with transactional_session(self.factory) as consumer:
+                self.evidence.assert_attempt_policy_in_session(
+                    consumer,
+                    attempt_id=attempt.id,
+                )
+                future = pool.submit(update_policy)
+                self.assertTrue(updater_entered.wait(timeout=5))
+                self.assertFalse(updater_committed.wait(timeout=0.25))
+                standard = consumer.scalar(
+                    select(TaskClassStandard).where(
+                        TaskClassStandard.task_code == self.TEST_TASK_CODES[0]
+                    )
+                )
+                self.assertIsNotNone(standard)
+            future.result(timeout=10)
+            self.assertTrue(updater_committed.is_set())
+
+        with transactional_session(self.factory) as session:
+            with self.assertRaises(Exception) as raised:
+                self.evidence.assert_attempt_policy_in_session(
+                    session,
+                    attempt_id=attempt.id,
+                )
+        self.assertEqual(
+            getattr(raised.exception, "code", None),
+            "erp_sync_policy_fingerprint_changed",
+        )
+
+    def test_stale_generation_cannot_publish_recovery_after_takeover(self) -> None:
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = self._daily_occurrence()
+        first = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="backend-A",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(first)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=first.id,
+                generation=first.generation,
+                settings=self.settings,
+            )
+        )
+        self.evidence.reserve_attempt(attempt_id=first.id)
+        self.evidence.bind_attempt_policy(
+            attempt_id=first.id,
+            generation=first.generation,
+        )
+        stale_orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=SqlServerProjectSource(()),
+            project_task_source=SqlServerPortfolioTaskSource({}),
+            settings=self.settings,
+            evidence_service=self.evidence,
+        )
+        with transactional_session(self.factory) as session:
+            session.execute(
+                text(
+                    "UPDATE erp_sync_control "
+                    "SET lease_expires_at = DATEADD(second, -10, SYSUTCDATETIME()) "
+                    "WHERE id = :id"
+                ),
+                {"id": ERP_SYNC_CONTROL_ROW_ID},
+            )
+        second = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="backend-B",
+            settings=self.settings,
+            command_identity="retry:sql-643b-stale-validation",
+        )
+        self.assertIsNotNone(second)
+        self.assertGreater(second.generation, first.generation)
+
+        with self.assertRaises(ErpSyncFenceLost):
+            stale_orchestrator._validate_full_publication(
+                attempt_id=first.id,
+                generation=first.generation,
+            )
+
+        with self.factory() as session:
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == first.id
+                )
+            )
+            control = session.get(ErpSyncControl, ERP_SYNC_CONTROL_ROW_ID)
+        self.assertIsNone(recovery)
+        self.assertEqual(control.owner_attempt_id, second.id)
+        self.assertEqual(repository.get_attempt(second.id).status, ERP_ATTEMPT_PENDING)
+        stale_orchestrator.shutdown()
+
+    def test_expired_owner_releases_reservation_and_replacement_can_reserve(self) -> None:
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = self._daily_occurrence()
+        first = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="backend-A",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(first)
+        self.assertTrue(
+            repository.start_attempt(
+                attempt_id=first.id,
+                generation=first.generation,
+                settings=self.settings,
+            )
+        )
+        captured = self.evidence.capture_source(
+            attempt_id=first.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.settings.config_fingerprint,
+            payload={"records": [{"number": "SQL643-ABANDONED"}]},
+            row_count=1,
+        )
+        with self.factory() as session:
+            before = session.scalar(
+                select(ErpSyncEvidenceReservation).where(
+                    ErpSyncEvidenceReservation.attempt_id == first.id
+                )
+            )
+            self.assertIsNotNone(before)
+            retained_used = int(before.used_bytes)
+            self.assertGreater(retained_used, 0)
+
+        with transactional_session(self.factory) as session:
+            session.execute(
+                text(
+                    "UPDATE erp_sync_control "
+                    "SET lease_expires_at = DATEADD(second, -10, SYSUTCDATETIME()) "
+                    "WHERE id = :id"
+                ),
+                {"id": ERP_SYNC_CONTROL_ROW_ID},
+            )
+        second = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="RETRY",
+            actor_name="backend-B",
+            settings=self.settings,
+            command_identity="retry:sql-643b-reservation-after-expiry",
+        )
+        self.assertIsNotNone(second)
+        self.evidence.reserve_attempt(attempt_id=second.id)
+
+        with self.factory() as session:
+            first_reservation = session.scalar(
+                select(ErpSyncEvidenceReservation).where(
+                    ErpSyncEvidenceReservation.attempt_id == first.id
+                )
+            )
+            second_reservation = session.scalar(
+                select(ErpSyncEvidenceReservation).where(
+                    ErpSyncEvidenceReservation.attempt_id == second.id
+                )
+            )
+            manifest = session.get(ErpSyncEvidenceManifest, captured.manifest_id)
+        self.assertIsNotNone(first_reservation.released_at)
+        self.assertEqual(int(first_reservation.used_bytes), retained_used)
+        self.assertIsNotNone(second_reservation)
+        self.assertIsNone(second_reservation.released_at)
+        self.assertIsNotNone(manifest)
+        self.assertFalse(manifest.pinned)
+        self.assertIsNotNone(manifest.expires_at)
 
     def test_generation_takeover_releases_child_and_fences_all_stale_writes(self) -> None:
         project_a = "SQL643A-A"
@@ -554,7 +2728,7 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             (_sql_project(project_a, "Generation N committed"),)
         )
         first_tasks = SqlServerPortfolioTaskSource(
-            {project_a: _sql_snapshot(project_a, "100", "Task generation N")}
+            {project_a: _sql_snapshot(project_a, "SQL643-100", "Task generation N")}
         )
         orchestrator = ErpSyncOrchestrator(
             self.factory,
@@ -608,10 +2782,13 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             committed_a = session.scalar(
                 select(TaskCatalogEntry).where(
                     TaskCatalogEntry.project_number == project_a,
-                    TaskCatalogEntry.task_code == "100",
+                    TaskCatalogEntry.task_code == "SQL643-100",
                 )
             )
-            self.assertIsNotNone(committed_a)
+            self.assertIsNotNone(
+                committed_a,
+                self._task_run_diagnostic(first_child_id),
+            )
             committed_a_id = committed_a.id
             first_results = tuple(
                 session.scalars(
@@ -685,7 +2862,7 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             unchanged_task = session.scalar(
                 select(TaskCatalogEntry).where(
                     TaskCatalogEntry.project_number == project_a,
-                    TaskCatalogEntry.task_code == "100",
+                    TaskCatalogEntry.task_code == "SQL643-100",
                 )
             )
             self.assertIsNotNone(unchanged_project)
@@ -710,12 +2887,12 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             {
                 project_a: _sql_snapshot(
                     project_a,
-                    "100",
+                    "SQL643-100",
                     "Task generation N+1",
                 ),
                 project_b: _sql_snapshot(
                     project_b,
-                    "200",
+                    "SQL643-200",
                     "Replacement task",
                 ),
             }
@@ -752,7 +2929,7 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             )
             self.assertEqual(
                 [(row.project_number, row.task_code) for row in rows],
-                [(project_a, "100"), (project_b, "200")],
+                [(project_a, "SQL643-100"), (project_b, "SQL643-200")],
             )
             surviving_a = next(row for row in rows if row.project_number == project_a)
             self.assertEqual(surviving_a.id, committed_a_id)

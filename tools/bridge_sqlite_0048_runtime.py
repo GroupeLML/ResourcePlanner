@@ -28,43 +28,72 @@ from app.infrastructure.sql import Base, create_sql_engine  # noqa: E402
 SOURCE_REVISION = "0048_identity_admin_audit"
 BASELINE_REVISION = "v2_production_baseline"
 
-# Exact differences observed and approved for the frozen 0048 runtime shape.
-SOURCE_MISSING_TABLES = {
-    "auth_security_audit",
-    "break_glass_credentials",
-    "work_package_audit",
-    "work_package_weekly_loads",
-    "work_package_load_intervals",
-    "competency_resource_class_audit",
-    "asset_type_approval_scope_mappings",
-    "asset_approvers",
-    "acumatica_project_task_sync_project_results",
-    "acumatica_project_task_sync_runs",
-    "project_co_managers",
-    "project_manager_audit",
-    "task_catalog_preferred_resource_audit",
-    "availability_rule_resource_classes",
-    "planning_window_overrides",
-    "planning_resource_user_orders",
-    "verification_scopes",
-    "verification_requirements",
-    "verification_requirement_revisions",
-    "story_verification_decisions",
-    "story_verification_decision_requirements",
-    "verification_retest_requests",
-    "verification_change_history",
-    "verification_executor_assignments",
-    "verification_test_executions",
-    "verification_evidence_links",
-    "quick_shift_planning_exclusions",
-    "request_requirement_planning_intents",
-    "planning_work_queue_releases",
-    "planning_work_queue_restorations",
-    "request_completion_reductions",
-    "erp_sync_control",
-    "erp_sync_occurrences",
-    "erp_sync_attempts",
-}
+# Frozen, approved 0048 table profile. Do not derive this historical shape from
+# current Base.metadata: later forward migrations must not retroactively become
+# source requirements for a database that legitimately stopped at 0048.
+SOURCE_EXPECTED_TABLES = frozenset(
+    {
+        "approval_decisions",
+        "approval_requirement_approvers",
+        "approval_requirements",
+        "approval_scopes",
+        "approval_scope_approvers",
+        "resource_class_approval_scope_mappings",
+        "task_approval_scope_mappings",
+        "asset_types",
+        "asset_type_competencies",
+        "assets",
+        "asset_unavailability",
+        "asset_requirements",
+        "asset_allocations",
+        "app_users",
+        "erp_user_directory",
+        "identity_admin_audit",
+        "business_contacts",
+        "auth_login_transactions",
+        "auth_sessions",
+        "command_idempotency_receipts",
+        "communication_batches",
+        "communication_contacts",
+        "communication_messages",
+        "communication_snapshot_lines",
+        "communication_deliveries",
+        "competencies",
+        "delivery_plans",
+        "delivery_items",
+        "delivery_change_history",
+        "planning_change_history",
+        "planning_mutation_state",
+        "projects",
+        "request_approval_cycles",
+        "request_approval_references",
+        "request_approval_revisions",
+        "request_operational_states",
+        "request_lines",
+        "request_line_competencies",
+        "resource_requirement_competencies",
+        "resource_class_configs",
+        "project_task_class_overrides",
+        "resources",
+        "work_packages",
+        "workforce_requests",
+        "workforce_request_competencies",
+        "workforce_request_history",
+        "workforce_request_periods",
+        "workforce_request_period_selections",
+        "workforce_request_period_requirements",
+        "resource_availability_rules",
+        "resource_competencies",
+        "resource_requirements",
+        "smtp_configuration",
+        "smtp_configuration_audit",
+        "shifts",
+        "task_catalog_items",
+        "task_catalog_project_sync_state",
+        "task_class_standards",
+    }
+)
+
 SOURCE_MISSING_COLUMNS = {
     "projects": {
         "co_managers_version",
@@ -171,10 +200,9 @@ def _revision(engine) -> str | None:
 def _schema_errors(
     engine,
     *,
-    allowed_missing_tables: set[str] | None = None,
+    expected_tables: set[str] | frozenset[str] | None = None,
     allowed_missing_columns: dict[str, set[str]] | None = None,
 ) -> list[str]:
-    allowed_tables = set(allowed_missing_tables or ())
     allowed_columns = {
         table: set(columns)
         for table, columns in (allowed_missing_columns or {}).items()
@@ -185,10 +213,15 @@ def _schema_errors(
         inspector = inspect(connection)
         actual_tables = set(inspector.get_table_names())
         model_tables = set(Base.metadata.tables)
-        expected_tables = (model_tables - allowed_tables) | {"alembic_version"}
+        schema_tables = (
+            set(expected_tables)
+            if expected_tables is not None
+            else model_tables
+        )
+        expected_with_revision = schema_tables | {"alembic_version"}
 
-        missing = sorted(expected_tables - actual_tables)
-        extra = sorted(actual_tables - expected_tables)
+        missing = sorted(expected_with_revision - actual_tables)
+        extra = sorted(actual_tables - expected_with_revision)
         if missing:
             errors.append(f"tables manquantes inattendues: {missing}")
         if extra:
@@ -230,7 +263,7 @@ def inspect_source(path: Path) -> dict[str, object]:
             )
         errors = _schema_errors(
             engine,
-            allowed_missing_tables=SOURCE_MISSING_TABLES,
+            expected_tables=SOURCE_EXPECTED_TABLES,
             allowed_missing_columns=SOURCE_MISSING_COLUMNS,
         )
         if errors:

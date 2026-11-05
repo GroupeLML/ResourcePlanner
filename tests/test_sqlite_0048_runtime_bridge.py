@@ -123,6 +123,17 @@ def _reshape_as_0048(path: Path) -> None:
             DROP TABLE IF EXISTS planning_work_queue_restorations;
             DROP TABLE IF EXISTS planning_work_queue_releases;
             DROP TABLE IF EXISTS request_completion_reductions;
+            DROP TABLE IF EXISTS erp_sync_compensation_receipts;
+            DROP TABLE IF EXISTS erp_sync_plausibility_review_decisions;
+            DROP TABLE IF EXISTS erp_sync_plausibility_exceptions;
+            DROP TABLE IF EXISTS erp_sync_project_quality;
+            DROP TABLE IF EXISTS erp_sync_recovery_state;
+            DROP TABLE IF EXISTS erp_sync_mutation_evidence;
+            DROP TABLE IF EXISTS erp_sync_evidence_chunks;
+            DROP TABLE IF EXISTS erp_sync_evidence_manifests;
+            DROP TABLE IF EXISTS erp_sync_evidence_reservations;
+            DROP TABLE IF EXISTS erp_sync_baseline_approval_audit;
+            DROP TABLE IF EXISTS erp_sync_baselines;
             DROP TABLE IF EXISTS erp_sync_attempts;
             DROP TABLE IF EXISTS erp_sync_occurrences;
             DROP TABLE IF EXISTS erp_sync_control;
@@ -866,6 +877,7 @@ class Sqlite0048RuntimeBridgeTests(unittest.TestCase):
                             "availability_rule_resource_classes",
                             "planning_window_overrides",
                             "quick_shift_planning_exclusions",
+                            "erp_sync_plausibility_review_decisions",
                         }.issubset(tables)
                     )
                     auth_columns = {
@@ -939,6 +951,47 @@ class Sqlite0048RuntimeBridgeTests(unittest.TestCase):
             self.assertNotIn("residence_city", _resource_columns(source))
             self.assertEqual(_hash(backup), before)
             self.assertNotIn("residence_city", _resource_columns(backup))
+
+    def test_exact_0048_shape_rejects_missing_historical_table(self) -> None:
+        with TemporaryDirectory() as directory:
+            source = Path(directory) / "resourceplanner.db"
+            _create_current_database(source)
+            _reshape_as_0048(source)
+            raw = sqlite3.connect(source)
+            try:
+                raw.execute("DROP TABLE communication_contacts")
+                raw.commit()
+            finally:
+                raw.close()
+
+            with self.assertRaises(BridgeBlocked) as raised:
+                bridge_sqlite_0048(source)
+            self.assertIn(
+                "communication_contacts",
+                str(raised.exception),
+            )
+
+    def test_exact_0048_shape_rejects_unapproved_extra_table(self) -> None:
+        with TemporaryDirectory() as directory:
+            source = Path(directory) / "resourceplanner.db"
+            _create_current_database(source)
+            _reshape_as_0048(source)
+            raw = sqlite3.connect(source)
+            try:
+                raw.execute(
+                    "CREATE TABLE unexpected_after_0048 "
+                    "(id VARCHAR(36) PRIMARY KEY)"
+                )
+                raw.commit()
+            finally:
+                raw.close()
+
+            with self.assertRaises(BridgeBlocked) as raised:
+                bridge_sqlite_0048(source)
+            self.assertIn(
+                "unexpected_after_0048",
+                str(raised.exception),
+            )
 
     def test_apply_requires_explicit_live_runtime_confirmation(self) -> None:
         with TemporaryDirectory() as directory:
