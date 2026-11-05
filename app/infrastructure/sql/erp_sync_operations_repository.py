@@ -10,6 +10,9 @@ from ...application.erp_sync_operations import (
     ErpSyncProjectOperations,
     ErpSyncRecoveryOperations,
 )
+from .acumatica_project_task_sync_models import (
+    AcumaticaProjectTaskSyncProjectResult,
+)
 from .erp_sync_control_models import (
     ERP_SYNC_CONTROL_ROW_ID,
     ERP_OCCURRENCE_DAILY,
@@ -59,14 +62,32 @@ class SqlErpSyncOperationsRepository:
             if control is None:
                 raise RuntimeError("ERP sync control row is unavailable")
 
-            attempts = tuple(
-                self._attempt(row)
-                for row in session.scalars(
+            attempt_rows = tuple(
+                session.scalars(
                     select(ErpSyncAttempt)
                     .order_by(ErpSyncAttempt.created_at.desc(), ErpSyncAttempt.id.desc())
                     .limit(50)
                 )
             )
+            attempts = tuple(self._attempt(row) for row in attempt_rows)
+            latest_task_run_id = (
+                attempt_rows[0].task_sync_run_id
+                if attempt_rows
+                else None
+            )
+            latest_results = {
+                row.project_number: row
+                for row in (
+                    session.scalars(
+                        select(AcumaticaProjectTaskSyncProjectResult).where(
+                            AcumaticaProjectTaskSyncProjectResult.run_id
+                            == latest_task_run_id
+                        )
+                    )
+                    if latest_task_run_id
+                    else ()
+                )
+            }
             last_success = (
                 session.get(ErpSyncAttempt, control.last_success_attempt_id)
                 if control.last_success_attempt_id
@@ -91,10 +112,20 @@ class SqlErpSyncOperationsRepository:
             projects = tuple(
                 ErpSyncProjectOperations(
                     project_number=row.project_number,
+                    result_status=(
+                        latest_results[row.project_number].status
+                        if row.project_number in latest_results
+                        else None
+                    ),
                     quality_state=row.quality_state,
                     source_observed_at=row.source_observed_at,
                     validated_at=row.validated_at,
                     reason_code=row.reason_code,
+                    error_code=(
+                        latest_results[row.project_number].error_code
+                        if row.project_number in latest_results
+                        else None
+                    ),
                     producer_attempt_id=row.producer_attempt_id,
                     producer_generation=(
                         generations.get(row.producer_attempt_id)
@@ -180,6 +211,7 @@ class SqlErpSyncOperationsRepository:
                 lease_expires_at=control.lease_expires_at,
                 owner_deadline_at=control.owner_deadline_at,
                 control_heartbeat_at=control.heartbeat_at,
+                control_updated_at=control.updated_at,
                 last_evaluated_business_date=control.last_evaluated_business_date,
                 control_protocol_version=int(control.protocol_version),
                 control_config_fingerprint=control.config_fingerprint,
