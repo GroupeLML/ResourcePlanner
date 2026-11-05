@@ -53,6 +53,8 @@ class ErpSyncRecoveryOperations:
 class ErpSyncEvidenceOperations:
     status: str
     manifests_total: int
+    source_manifests: int
+    checkpoint_manifests: int
     manifests_ready: int
     manifests_expired: int
     manifests_pinned: int
