@@ -336,6 +336,9 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
     "erp_sync_plausibility_exceptions": _rebuild(
         "Exceptions de plausibilité auditées 643B; doivent être absentes au cutover."
     ),
+    "erp_sync_plausibility_review_decisions": _rebuild(
+        "Décisions auditées de revue de plausibilité 643B; toute présence bloque le cutover jusqu'à un transfert supporté."
+    ),
     "erp_sync_mutation_evidence": _rebuild(
         "Before/after recovery 643B; toute preuve durable bloque le cutover."
     ),
@@ -1254,6 +1257,7 @@ def _scheduler_state_anomalies(source_engine: Engine) -> list[dict[str, Any]]:
         "erp_sync_baselines",
         "erp_sync_baseline_approval_audit",
         "erp_sync_plausibility_exceptions",
+        "erp_sync_plausibility_review_decisions",
         "erp_sync_mutation_evidence",
         "erp_sync_project_quality",
         "erp_sync_recovery_state",
@@ -1273,6 +1277,7 @@ def _scheduler_state_anomalies(source_engine: Engine) -> list[dict[str, Any]]:
             "erp_sync_baselines",
             "erp_sync_baseline_approval_audit",
             "erp_sync_plausibility_exceptions",
+            "erp_sync_plausibility_review_decisions",
             "erp_sync_mutation_evidence",
             "erp_sync_project_quality",
             "erp_sync_recovery_state",
