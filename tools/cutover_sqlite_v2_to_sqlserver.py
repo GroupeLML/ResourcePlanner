@@ -82,6 +82,7 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
     "erp_sync_baselines",
     "erp_sync_baseline_approval_audit",
     "erp_sync_plausibility_exceptions",
+    "erp_sync_plausibility_review_decisions",
     "erp_sync_mutation_evidence",
     "erp_sync_project_quality",
     "erp_sync_recovery_state",
