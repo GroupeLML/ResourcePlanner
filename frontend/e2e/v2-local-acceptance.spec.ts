@@ -124,6 +124,32 @@ async function dragWithDataTransfer(page: Page, source: Locator, target: Locator
   await dataTransfer.dispose();
 }
 
+async function erpRunState(page: Page, runId: string) {
+  const response = await page.request.get(
+    `/api/v1/integrations/acumatica/erp-sync/runs/${encodeURIComponent(runId)}`,
+  );
+  expect(response.ok(), await response.text()).toBeTruthy();
+  return response.json() as Promise<{
+    run_id: string;
+    occurrence_id: string;
+    status: string;
+    phase: string;
+  }>;
+}
+
+async function waitForErpRun(
+  page: Page,
+  runId: string,
+  predicate: (run: { status: string; phase: string }) => boolean,
+) {
+  let current = await erpRunState(page, runId);
+  await expect.poll(async () => {
+    current = await erpRunState(page, runId);
+    return predicate(current);
+  }, { timeout: 15_000 }).toBeTruthy();
+  return current;
+}
+
 async function selectOptionContaining(select: Locator, text: string) {
   const option = select.locator("option", { hasText: text }).first();
   await expect(option).toBeAttached();
@@ -2578,6 +2604,153 @@ test("materialized demand cancellation is requested, reviewed, rejected or accep
 
   await closeContext(coordinator.context);
   await closeContext(requester.context);
+});
+
+test("ERP operations use authoritative RUN_NOW, review, RETRY and compensation controls", async ({ browser }) => {
+  test.setTimeout(120_000);
+
+  const unauthorized = await openAs(browser, "COORDINATOR");
+  await expect(
+    unauthorized.page.locator(".main-nav").getByRole("button", { name: "Opérations ERP" }),
+  ).toHaveCount(0);
+  const deniedRead = await unauthorized.page.request.get(
+    "/api/v1/integrations/acumatica/erp-sync/operations",
+  );
+  expect(deniedRead.status()).toBe(403);
+  await closeContext(unauthorized.context);
+
+  const { context, page } = await openAs(browser, "ADMIN");
+  await navigateMain(page, "Opérations ERP");
+  await expect(page.getByRole("heading", { name: "Opérations ERP", level: 2 })).toBeVisible();
+  await expect(page.getByText("Baseline approuvée · 1 lignes").first()).toBeVisible();
+  await expect(page.getByText("Configurée désactivée")).toBeVisible();
+
+  const setSourceMode = async (query: string) => {
+    const response = await page.request.post("/__e2e__/erp-sync/source-mode?" + query);
+    expect(response.ok(), await response.text()).toBeTruthy();
+  };
+
+  // Decline makes the reviewed attempt terminal; RETRY then creates a fresh attempt.
+  await setSourceMode("project_empty=true");
+  const declineLaunchPromise = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+    && new URL(response.url()).pathname === "/api/v1/integrations/acumatica/erp-sync/run-now"
+  ));
+  await page.getByRole("button", { name: "Lancer RUN_NOW" }).click();
+  const declineLaunch = await declineLaunchPromise;
+  expect(declineLaunch.status()).toBe(202);
+  const declineAccepted = await declineLaunch.json() as {
+    run_id: string;
+    occurrence_id: string;
+  };
+  await waitForErpRun(
+    page,
+    declineAccepted.run_id,
+    (run) => run.phase === "PLAUSIBILITY_REVIEW_REQUIRED",
+  );
+  await page.getByRole("button", { name: "Actualiser" }).click();
+  await expect(page.getByText("PLAUSIBILITY_REVIEW_REQUIRED", { exact: false })).toBeVisible();
+  await expect(page.getByText("erp_sync_source_below_floor", { exact: false })).toBeVisible();
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Refuser / abandonner la tentative" }).click();
+  const declined = await waitForErpRun(
+    page,
+    declineAccepted.run_id,
+    (run) => run.status === "FAILED",
+  );
+  expect(declined.run_id).toBe(declineAccepted.run_id);
+
+  await setSourceMode("project_empty=false");
+  await page.getByRole("button", { name: "Actualiser" }).click();
+  const retryPromise = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+    && new URL(response.url()).pathname.endsWith("/retry")
+  ));
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "RETRY explicite" }).click();
+  const retryResponse = await retryPromise;
+  expect(retryResponse.status()).toBe(202);
+  const retryAccepted = await retryResponse.json() as { run_id: string };
+  expect(retryAccepted.run_id).not.toBe(declineAccepted.run_id);
+  await waitForErpRun(
+    page,
+    retryAccepted.run_id,
+    (run) => run.status === "COMPLETED",
+  );
+
+  // Authorized exception approval resumes the same sealed attempt.
+  await setSourceMode("project_empty=true");
+  await page.getByRole("button", { name: "Actualiser" }).click();
+  const reviewLaunchPromise = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+    && new URL(response.url()).pathname === "/api/v1/integrations/acumatica/erp-sync/run-now"
+  ));
+  await page.getByRole("button", { name: "Lancer RUN_NOW" }).click();
+  const reviewLaunch = await reviewLaunchPromise;
+  const reviewAccepted = await reviewLaunch.json() as { run_id: string };
+  await waitForErpRun(
+    page,
+    reviewAccepted.run_id,
+    (run) => run.phase === "PLAUSIBILITY_REVIEW_REQUIRED",
+  );
+  await page.getByRole("button", { name: "Actualiser" }).click();
+  const exception = page.getByRole("button", { name: "Autoriser l’exception GLOBAL" }).first();
+  await expect(exception).toBeVisible();
+  page.once("dialog", (dialog) => dialog.accept());
+  await exception.click();
+  await expect(page.getByText("Exception GLOBAL approuvée", { exact: false })).toBeVisible();
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Continuer la même tentative" }).click();
+  const resumed = await waitForErpRun(
+    page,
+    reviewAccepted.run_id,
+    (run) => run.status === "COMPLETED",
+  );
+  expect(resumed.run_id).toBe(reviewAccepted.run_id);
+
+  // A project commit followed by a controlled task-source failure yields retained
+  // mutation evidence; preview and explicit confirmation compensate it once.
+  await setSourceMode("project_mutation=true&task_failure=true");
+  await page.getByRole("button", { name: "Actualiser" }).click();
+  const compensationLaunchPromise = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+    && new URL(response.url()).pathname === "/api/v1/integrations/acumatica/erp-sync/run-now"
+  ));
+  await page.getByRole("button", { name: "Lancer RUN_NOW" }).click();
+  const compensationLaunch = await compensationLaunchPromise;
+  const compensationAccepted = await compensationLaunch.json() as { run_id: string };
+  await waitForErpRun(
+    page,
+    compensationAccepted.run_id,
+    (run) => run.status === "FAILED",
+  );
+  await page.getByRole("button", { name: "Actualiser" }).click();
+
+  await page.getByRole("button", { name: "Prévisualiser la compensation" }).click();
+  await expect(page.getByText("Prévisualisation confirmable")).toBeVisible();
+  await expect(page.getByText(/1 enregistrement\(s\) admissible\(s\)/)).toBeVisible();
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Confirmer la compensation" }).click();
+  await expect(page.getByText("Compensation ERP confirmée.")).toBeVisible();
+
+  const afterCompensation = await page.request.get(
+    "/api/v1/integrations/acumatica/erp-sync/operations",
+  );
+  expect(afterCompensation.ok(), await afterCompensation.text()).toBeTruthy();
+  const compensatedState = await afterCompensation.json() as {
+    recovery_state: { state: string };
+  };
+  expect(compensatedState.recovery_state.state).toBe("RESOLVED");
+
+  await setSourceMode("project_mutation=false&project_empty=false&task_failure=false");
+  await page.reload();
+  await navigateMain(page, "Opérations ERP");
+  await expect(page.getByText("RESOLVED", { exact: true }).first()).toBeVisible();
+
+  await closeContext(context);
 });
 
 test("development identity selector switches real local users and technician schedules", async ({ browser }) => {
