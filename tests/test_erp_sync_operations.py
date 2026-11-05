@@ -11,7 +11,6 @@ from fastapi.testclient import TestClient
 
 from app.application.erp_sync_operations import (
     ErpSyncAttemptOperations,
-    ErpSyncCompatibilityOperations,
     ErpSyncEvidenceOperations,
     ErpSyncOperationsData,
     ErpSyncOperationsService,
@@ -322,6 +321,72 @@ class ErpSyncOperationsServiceTests(unittest.TestCase):
         self.assertEqual(snapshot.evidence.pressure_ratio, 0.9)
 
 
+    def test_explicit_missed_occurrence_preserves_bounded_catchup_classification(self) -> None:
+        settings = ErpSyncSchedulerSettings(enabled=True, catchup_hours=4)
+        now = datetime(2026, 11, 5, 15, tzinfo=timezone.utc)
+        snapshot = self.service(
+            settings,
+            data(
+                settings,
+                now=now,
+                current_daily_occurrence_status="MISSED",
+            ),
+        ).snapshot(evidence_budget_bytes=100)
+        self.assertEqual(snapshot.scheduler_status, "MISSED")
+        self.assertEqual(snapshot.scheduler_observation_status, "OBSERVED")
+        self.assertEqual(
+            snapshot.next_scheduled_run,
+            datetime(2026, 11, 6, 5, 0, tzinfo=timezone.utc),
+        )
+
+    def test_incompatible_control_profile_is_visible_and_blocks_operation(self) -> None:
+        settings = ErpSyncSchedulerSettings(enabled=True)
+        now = datetime(2026, 11, 5, 15, tzinfo=timezone.utc)
+        value = replace(
+            data(settings, now=now),
+            control_config_fingerprint="different-profile",
+        )
+        snapshot = self.service(settings, value).snapshot(
+            evidence_budget_bytes=100
+        )
+        self.assertEqual(snapshot.compatibility.status, "INCOMPATIBLE")
+        self.assertFalse(snapshot.compatibility.configuration_compatible)
+        self.assertIn(
+            "erp_sync_runtime_compatibility_incompatible",
+            snapshot.readiness_blockers,
+        )
+        self.assertFalse(snapshot.safe_to_operate)
+
+    def test_repeated_failure_signal_counts_terminal_failures_since_success(self) -> None:
+        settings = ErpSyncSchedulerSettings(enabled=True)
+        now = datetime(2026, 11, 5, 15, tzinfo=timezone.utc)
+        previous = attempt(
+            "PREVIOUS",
+            status="SUCCEEDED",
+            finished_at=now - timedelta(hours=5),
+        )
+        first = attempt(
+            "FAIL-1",
+            status="FAILED",
+            finished_at=now - timedelta(hours=2),
+        )
+        second = attempt(
+            "FAIL-2",
+            status="FAILED",
+            finished_at=now - timedelta(hours=1),
+        )
+        snapshot = self.service(
+            settings,
+            data(
+                settings,
+                now=now,
+                attempts=(second, first, previous),
+                success=previous,
+            ),
+        ).snapshot(evidence_budget_bytes=100)
+        self.assertEqual(snapshot.consecutive_failures, 2)
+        self.assertTrue(snapshot.repeated_failure)
+
 class ErpSyncOperationsSqlAndApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = TemporaryDirectory()
@@ -383,6 +448,8 @@ class ErpSyncOperationsSqlAndApiTests(unittest.TestCase):
                 phase="COMPLETE",
                 started_at=now - timedelta(hours=2),
                 finished_at=now - timedelta(hours=1),
+                created_at=now - timedelta(hours=2),
+                updated_at=now - timedelta(hours=1),
             )
             failed = ErpSyncAttempt(
                 occurrence_id=failed_occurrence.id,
@@ -396,6 +463,8 @@ class ErpSyncOperationsSqlAndApiTests(unittest.TestCase):
                 started_at=now - timedelta(minutes=30),
                 finished_at=now - timedelta(minutes=20),
                 error_code="test_failure",
+                created_at=now - timedelta(minutes=30),
+                updated_at=now - timedelta(minutes=20),
             )
             session.add_all((success, failed))
             session.flush()
@@ -468,6 +537,8 @@ class ErpSyncOperationsSqlAndApiTests(unittest.TestCase):
             erp_sync_settings=self.settings,
             erp_sync_automatic_safety=TestErpSyncAutomaticSafetyCapability(),
         )
+        with self.factory() as session:
+            before_attempts = tuple(session.scalars(select(ErpSyncAttempt)))
         with patch(
             "app.server.routes_integrations.SqlErpSyncOperationsRepository.read",
             side_effect=RuntimeError("private database failure"),
@@ -476,6 +547,12 @@ class ErpSyncOperationsSqlAndApiTests(unittest.TestCase):
                 response = client.get(
                     "/api/v1/integrations/acumatica/erp-sync/operations"
                 )
+        with self.factory() as session:
+            after_attempts = tuple(session.scalars(select(ErpSyncAttempt)))
+        self.assertEqual(
+            [row.id for row in after_attempts],
+            [row.id for row in before_attempts],
+        )
         self.assertEqual(response.status_code, 503, response.text)
         self.assertEqual(
             response.json()["error"]["code"],
