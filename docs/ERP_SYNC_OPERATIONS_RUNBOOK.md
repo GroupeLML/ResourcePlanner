@@ -160,8 +160,20 @@ restent alors l'autorité.
    `current_owner_attempt_id`, `current_attempt_id`, génération, lease, phase et recovery.
    Un owner valide peut terminer; ne pas voler sa lease, la raccourcir ni le marquer FAILED.
 
-3. Épingler explicitement l'image **courante** et désactiver l'automatisation pour le
-   processus qui va remplacer les writers actuels. Exemple :
+3. Arrêter explicitement les **writers actuellement en cours** avec la grâce complète,
+   même s'ils ont été créés avant que `stop_grace_period` soit présent dans Compose :
+
+   ```bash
+   docker compose stop -t 7500 backend
+   ```
+
+   Le signal d'arrêt ferme le lifespan FastAPI : le polling scheduler cesse d'admettre de
+   nouveaux travaux sur ces processus, puis l'exécuteur local attend le travail géré.
+   Ne poursuivre que lorsque la vérification SQL de l'étape 5 confirme la fin normale,
+   ou lorsque les sémantiques lease/recovery ont classifié une interruption forcée.
+
+4. Épingler explicitement l'image **courante** et démarrer les writers de remplacement
+   avec l'automatisation désactivée, sans migration ni build :
 
    ```bash
    export RESOURCEPLANNER_IMAGE_TAG=<TAG_BACKEND_ACTUEL>
@@ -176,19 +188,17 @@ restent alors l'autorité.
      --scale backend=<N> backend
    ```
 
-   Cette commande est le **current-process action** : Compose envoie le signal d'arrêt
-   aux writers actuels, le lifespan FastAPI annule le polling scheduler puis draine son
-   exécuteur local. Le backend de remplacement démarre avec la même version/protocole,
-   mais `RESOURCEPLANNER_ERP_SYNC_ENABLED=false`.
+   Le backend de remplacement utilise la même version/protocole, mais
+   `RESOURCEPLANNER_ERP_SYNC_ENABLED=false`.
 
-4. Vérifier que toutes les anciennes instances ont disparu et que tous les backends
+5. Vérifier que toutes les anciennes instances ont disparu et que tous les backends
    courants sont ceux recréés en mode désactivé :
 
    ```bash
    docker compose ps backend
    ```
 
-5. Revenir à **Opérations ERP**. La preuve de drain est SQL, pas le PID local :
+6. Revenir à **Opérations ERP**. La preuve de drain est SQL, pas le PID local :
    - aucun nouveau DAILY automatique ne doit apparaître après la recréation désactivée;
    - si un travail a fini pendant la grâce, l'owner doit être libéré normalement;
    - si le processus a dû être tué avant achèvement, attendre les règles existantes de
