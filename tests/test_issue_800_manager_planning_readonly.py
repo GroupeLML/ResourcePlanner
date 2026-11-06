@@ -97,15 +97,15 @@ class Issue800ManagerPlanningReadOnlyTests(unittest.TestCase):
     def test_manager_permission_contract_is_read_without_planning_mutation(self) -> None:
         permissions = set(permissions_for_roles((ROLE_MANAGER,)))
 
-        self.assertTrue(
+        self.assertEqual(
+            permissions,
             {
                 PERMISSION_READ,
                 PERMISSION_READ_DEMANDS,
                 PERMISSION_READ_PROJECTS,
                 PERMISSION_READ_WORK_PACKAGES,
                 PERMISSION_APPROVE_DEMANDS,
-            }
-            <= permissions
+            },
         )
         self.assertTrue(
             {
