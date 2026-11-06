@@ -2739,7 +2739,17 @@ test("ERP operations use authoritative RUN_NOW, review, RETRY and compensation c
     compensationAccepted.run_id,
     (run) => run.status === "FAILED",
   );
+  const requiredResponse = await page.request.post(
+    "/__e2e__/erp-sync/recovery-required?attempt_id="
+    + encodeURIComponent(compensationAccepted.run_id),
+  );
+  expect(requiredResponse.ok(), await requiredResponse.text()).toBeTruthy();
   await page.getByRole("button", { name: "Actualiser" }).click();
+  const recoveryCard = page.locator(".erp-sync-card").filter({
+    has: page.getByText("Recovery", { exact: true }),
+  });
+  await expect(recoveryCard.getByText("REQUIRED", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Lancer RUN_NOW" })).toBeDisabled();
 
   const previewResponsePromise = page.waitForResponse((response) => (
     response.request().method() === "POST"
