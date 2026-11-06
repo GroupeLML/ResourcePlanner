@@ -46,6 +46,9 @@ class ReactErpSyncOperationsContractTests(unittest.TestCase):
     def test_stale_compensation_refusal_invalidates_local_preview(self) -> None:
         page = (FRONTEND / "ErpSyncOperationsPage.tsx").read_text(encoding="utf-8")
         self.assertIn("STALE_COMPENSATION_CODES", page)
+        self.assertIn("erp_sync_recovery_owner_active", page)
+        self.assertIn("erp_sync_evidence_configuration_incompatible", page)
+        self.assertIn("erp_sync_evidence_protocol_incompatible", page)
         self.assertIn('label === "compensation-confirm"', page)
         self.assertIn("setPreview(null)", page)
         self.assertIn("setCommandError", page)
