@@ -13,8 +13,11 @@ from app.infrastructure.smtp import FernetSecretCipher
 from app.infrastructure.sql import (
     Base,
     ERP_SYNC_CONTROL_ROW_ID,
+    ErpSyncAttempt,
     ErpSyncBaseline,
     ErpSyncControl,
+    ErpSyncEvidenceReservation,
+    ErpSyncOccurrence,
     create_session_factory,
     create_sql_engine,
 )
@@ -103,6 +106,49 @@ class ErpActivationReadinessTests(unittest.TestCase):
                 settings or self.settings,
                 activation_mode=activation,
                 dedicated_account_confirmed=True,
+            )
+
+    def _add_released_evidence_usage(self, *, key: str, used_bytes: int) -> None:
+        now = datetime.now(timezone.utc)
+        with self.factory.begin() as session:
+            occurrence = ErpSyncOccurrence(
+                occurrence_key=f"MANUAL:readiness-{key}",
+                occurrence_type="MANUAL",
+                intent="PROJECTS_AND_ACTIVE_TASKS",
+                business_date=now.date(),
+                scheduled_at=None,
+                timezone_name="America/Toronto",
+                scheduled_local_time="00:00",
+                config_fingerprint=self.settings.erp_sync.config_fingerprint,
+                status="FAILED",
+            )
+            session.add(occurrence)
+            session.flush()
+            attempt = ErpSyncAttempt(
+                occurrence_id=occurrence.id,
+                attempt_number=1,
+                trigger_kind="MANUAL",
+                actor_name="readiness-test",
+                intent="PROJECTS_AND_ACTIVE_TASKS",
+                generation=1,
+                status="FAILED",
+                phase="FAILED",
+                started_at=now,
+                finished_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(attempt)
+            session.flush()
+            session.add(
+                ErpSyncEvidenceReservation(
+                    attempt_id=attempt.id,
+                    reserved_bytes=used_bytes,
+                    used_bytes=used_bytes,
+                    reserved_plaintext_bytes=used_bytes,
+                    used_plaintext_bytes=used_bytes,
+                    released_at=now,
+                )
             )
 
     def test_pre_activation_gate_is_ready_while_automatic_sync_remains_disabled(self) -> None:
@@ -250,6 +296,49 @@ class ErpActivationReadinessTests(unittest.TestCase):
                 baseline.encrypted_project_counts = writer._encrypt_bytes(
                     canonical_json_bytes({"ERP-1": 1})
                 )
+        result = self._check()
+        self.assertEqual(result["status"], "ready")
+
+    def test_insufficient_retained_headroom_blocks_readiness(self) -> None:
+        evidence = ErpSyncEvidenceService(
+            self.factory,
+            cipher=FernetSecretCipher(self.key),
+            settings=self.settings.erp_sync_evidence,
+            control_settings=self.settings.erp_sync,
+        )
+        retained = (
+            self.settings.erp_sync_evidence.evidence_budget_bytes
+            - evidence.required_attempt_storage_bytes
+            + 1
+        )
+        self._add_released_evidence_usage(
+            key="insufficient-headroom",
+            used_bytes=retained,
+        )
+        with self.assertRaises(ErpActivationReadinessError) as raised:
+            self._check()
+        self.assertEqual(
+            raised.exception.code,
+            "erp_sync_evidence_storage_budget_unavailable",
+        )
+
+    def test_sufficient_retained_headroom_remains_ready(self) -> None:
+        evidence = ErpSyncEvidenceService(
+            self.factory,
+            cipher=FernetSecretCipher(self.key),
+            settings=self.settings.erp_sync_evidence,
+            control_settings=self.settings.erp_sync,
+        )
+        retained = max(
+            0,
+            self.settings.erp_sync_evidence.evidence_budget_bytes
+            - evidence.required_attempt_storage_bytes
+            - 1,
+        )
+        self._add_released_evidence_usage(
+            key="sufficient-headroom",
+            used_bytes=retained,
+        )
         result = self._check()
         self.assertEqual(result["status"], "ready")
 
