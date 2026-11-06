@@ -740,6 +740,48 @@ def build_app(database_path: Path, frontend_dist: Path):
                     )
         return {"enabled": bool(enabled)}
 
+    @app.post(
+        "/__e2e__/erp-sync/hold-manual-owner",
+        include_in_schema=False,
+    )
+    def hold_erp_sync_manual_owner():
+        orchestrator = app.state.erp_sync_orchestrator
+        control = orchestrator._control
+        occurrence = control.accept_manual(
+            intent="PROJECTS_ONLY",
+            actor_name="e2e-owner",
+            idempotency_key="phase3-compensation-owner",
+            settings=orchestrator.settings,
+        )
+        attempt = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="e2e-owner",
+            settings=orchestrator.settings,
+        )
+        assert attempt is not None
+        return {
+            "attempt_id": attempt.id,
+            "generation": int(attempt.generation),
+        }
+
+    @app.post(
+        "/__e2e__/erp-sync/release-manual-owner",
+        include_in_schema=False,
+    )
+    def release_erp_sync_manual_owner(attempt_id: str, generation: int):
+        orchestrator = app.state.erp_sync_orchestrator
+        released = orchestrator._control.finish(
+            attempt_id=attempt_id,
+            generation=generation,
+            status="FAILED",
+            phase="E2E_OWNER_RELEASED",
+            error_code="e2e_owner_release",
+            diagnostic="controlled E2E owner release",
+            settings=orchestrator.settings,
+        )
+        return {"released": bool(released)}
+
     @app.get(
         "/__e2e__/erp-sync/compensation-receipts",
         include_in_schema=False,
