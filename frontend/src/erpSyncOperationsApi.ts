@@ -187,6 +187,21 @@ export type ErpSyncBaselines = {
   };
 };
 
+export type ErpSyncBootstrapBaselineSource = {
+  manifest_id: string;
+  attempt_id: string;
+  source_type: "PROJECTS" | "TASKS";
+  row_count: number;
+  observed_at: string;
+  state: string;
+  diagnostic: string;
+};
+
+export type ErpSyncBootstrapBaselineCandidates = {
+  attempt_id: string | null;
+  sources: ErpSyncBootstrapBaselineSource[];
+};
+
 export type ErpSyncReviewSource = {
   manifest_id: string;
   source_type: string;
@@ -228,6 +243,13 @@ export function getErpSyncOperations(signal?: AbortSignal) {
 
 export function getErpSyncBaselines(signal?: AbortSignal) {
   return request<ErpSyncBaselines>(`${ERP_BASE}/baselines`, { signal });
+}
+
+export function getErpSyncBootstrapBaselineCandidates(signal?: AbortSignal) {
+  return request<ErpSyncBootstrapBaselineCandidates>(
+    `${ERP_BASE}/bootstrap-baseline-candidates`,
+    { signal },
+  );
 }
 
 export function getErpSyncAttemptEvidence(attemptId: string, signal?: AbortSignal) {
