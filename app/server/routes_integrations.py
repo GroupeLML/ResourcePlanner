@@ -379,6 +379,21 @@ def build_integration_router(
             },
         }
 
+    @router.get("/erp-sync/bootstrap-baseline-candidates")
+    def erp_sync_bootstrap_baseline_candidates() -> dict[str, Any]:
+        if erp_sync_orchestrator is None:
+            raise ApplicationUnavailableError(
+                "L'orchestration ERP n'est pas configurée sur ce serveur.",
+                code="erp_sync_orchestrator_not_configured",
+            )
+        if erp_sync_evidence_service is None:
+            return {"attempt_id": None, "sources": []}
+        return erp_sync_evidence_service.list_bootstrap_baseline_candidates(
+            profile_fingerprint=(
+                erp_sync_orchestrator.settings.config_fingerprint
+            )
+        )
+
     @router.get("/erp-sync/runs/{attempt_id}/plausibility-review")
     def erp_sync_plausibility_review(attempt_id: str) -> dict[str, Any]:
         if erp_sync_evidence_service is None:
