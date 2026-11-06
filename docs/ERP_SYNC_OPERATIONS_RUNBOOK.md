@@ -133,18 +133,18 @@ Modifier `.env` ou exporter `RESOURCEPLANNER_ERP_SYNC_ENABLED=false` pour **le p
 conteneur ne reconfigure jamais un backend déjà en cours. Le drain exige donc une action
 sur chaque writer actuel avant migration.
 
-Dans la topologie Compose canonique, `backend` est le writer FastAPI. Le drain utilise
-la même image actuellement déployée, sans migration et sans nouvelle image, mais la
-recrée avec l'automatisation désactivée. Le `stop_grace_period: 2h5m` du service laisse
-le shutdown FastAPI attendre le travail géré pendant au plus la durée bornée de tentative
-(2 h) plus une marge de lease (5 min). Cette grâce ne garantit pas qu'un travail arbitraire
-finira : après expiration, Docker peut envoyer SIGKILL et les règles SQL de lease/recovery
-restent alors l'autorité.
+Dans la topologie Compose canonique, `backend` est le writer FastAPI. Tous les writers
+incompatibles doivent rester **arrêtés en continu** entre la vérification finale du drain
+et la migration. Ne jamais redémarrer l'ancienne image seulement pour inspecter SQL.
+
+Le `stop_grace_period: 2h5m` du service laisse le shutdown FastAPI attendre le travail
+géré pendant au plus la durée bornée de tentative (2 h) plus une marge de lease (5 min).
+Cette grâce aide l'arrêt ordonné mais ne prouve pas l'achèvement : après expiration,
+Docker peut envoyer SIGKILL et les règles SQL de lease/recovery restent l'autorité.
 
 ### 5.2 Procédure exécutable — writers courants
 
-1. **Avant de modifier le tag cible**, relever et conserver le tag/image backend réellement
-   en cours ainsi que le nombre d'instances writer :
+1. **Avant de modifier le tag cible**, relever les writers actuellement lancés :
 
    ```bash
    docker compose ps backend
@@ -153,15 +153,16 @@ restent alors l'autorité.
    ```
 
    Pour plusieurs backends, noter le nombre `N` et vérifier que toutes les instances
-   appartiennent à cette topologie. Un writer géré hors de ce Compose doit être drainé
+   appartiennent à cette topologie. Tout writer géré hors de ce Compose doit être drainé
    par son mécanisme d'exploitation avant de continuer.
 
-2. Lire l'autorité SQL via **Opérations ERP** et noter :
-   `current_owner_attempt_id`, `current_attempt_id`, génération, lease, phase et recovery.
-   Un owner valide peut terminer; ne pas voler sa lease, la raccourcir ni le marquer FAILED.
+2. Configurer les futurs backends pour rester désactivés, sans recréer encore de conteneur :
 
-3. Arrêter explicitement les **writers actuellement en cours** avec la grâce complète,
-   même s'ils ont été créés avant que `stop_grace_period` soit présent dans Compose :
+   ```bash
+   export RESOURCEPLANNER_ERP_SYNC_ENABLED=false
+   ```
+
+3. Arrêter explicitement les **writers actuellement en cours** avec la grâce complète :
 
    ```bash
    docker compose stop -t 7500 backend
@@ -169,43 +170,76 @@ restent alors l'autorité.
 
    Le signal d'arrêt ferme le lifespan FastAPI : le polling scheduler cesse d'admettre de
    nouveaux travaux sur ces processus, puis l'exécuteur local attend le travail géré.
-   Ne poursuivre que lorsque la vérification SQL de l'étape 5 confirme la fin normale,
-   ou lorsque les sémantiques lease/recovery ont classifié une interruption forcée.
+   Après cette commande, **ne pas redémarrer backend avant la migration**.
 
-4. Épingler explicitement l'image **courante** et démarrer les writers de remplacement
-   avec l'automatisation désactivée, sans migration ni build :
+4. Pendant que les writers restent arrêtés, inspecter l'autorité durable SQL en lecture
+   seule. Cette méthode fonctionne pour le **premier déploiement 643C**, car les tables
+   de contrôle 643A/643B existent déjà; elle ne dépend pas de la nouvelle page Opérations ERP.
 
-   ```bash
-   export RESOURCEPLANNER_IMAGE_TAG=<TAG_BACKEND_ACTUEL>
-   export RESOURCEPLANNER_ERP_SYNC_ENABLED=false
-   docker compose up -d --no-deps --no-build --force-recreate backend
+   Depuis SSMS ou `sqlcmd`, exécuter exactement :
+
+   ```sql
+   SELECT
+       c.id,
+       c.protocol_version,
+       c.config_fingerprint,
+       c.generation,
+       c.owner_attempt_id,
+       c.lease_expires_at,
+       c.owner_deadline_at,
+       c.heartbeat_at,
+       a.status AS owner_attempt_status,
+       a.phase AS owner_attempt_phase,
+       a.generation AS owner_attempt_generation
+   FROM erp_sync_control AS c
+   LEFT JOIN erp_sync_attempts AS a
+       ON a.id = c.owner_attempt_id
+   WHERE c.id = 'ERP_PROJECTS_TASKS';
+
+   SELECT
+       id,
+       occurrence_id,
+       generation,
+       status,
+       phase,
+       started_at,
+       heartbeat_at,
+       error_code
+   FROM erp_sync_attempts
+   WHERE status IN ('PENDING', 'RUNNING')
+   ORDER BY created_at, id;
+
+   SELECT
+       attempt_id,
+       state,
+       reason_code,
+       pinned
+   FROM erp_sync_recovery_state
+   WHERE state IN ('REQUIRED', 'AVAILABLE')
+   ORDER BY attempt_id;
    ```
 
-   Si `backend` est volontairement scalé, préserver le nombre d'instances :
+   Vérifier :
+   - `protocol_version` et `config_fingerprint` correspondent à l'autorité attendue;
+   - `generation` est relevée pour la preuve de cutover;
+   - aucun `owner_attempt_id` valide ne demeure actif;
+   - aucune tentative `PENDING`/`RUNNING` incompatible ne demeure;
+   - tout état recovery REQUIRED/AVAILABLE est compris et traité selon 643B avant migration.
 
-   ```bash
-   docker compose up -d --no-deps --no-build --force-recreate \
-     --scale backend=<N> backend
-   ```
+   Si un owner valide apparaît encore après l'arrêt gracieux, ne jamais voler la lease,
+   la raccourcir, la vider manuellement ni supprimer la tentative. Attendre son échéance
+   durable/owner deadline si l'arrêt a été forcé, puis appliquer la reconciliation/recovery
+   ADR-033 avec une version compatible. Tant que cette classification n'est pas résolue,
+   **ne pas migrer**.
 
-   Le backend de remplacement utilise la même version/protocole, mais
-   `RESOURCEPLANNER_ERP_SYNC_ENABLED=false`.
-
-5. Vérifier que toutes les anciennes instances ont disparu et que tous les backends
-   courants sont ceux recréés en mode désactivé :
+5. Vérifier au niveau processus que tous les writers incompatibles restent arrêtés :
 
    ```bash
    docker compose ps backend
    ```
 
-6. Revenir à **Opérations ERP**. La preuve de drain est SQL, pas le PID local :
-   - aucun nouveau DAILY automatique ne doit apparaître après la recréation désactivée;
-   - si un travail a fini pendant la grâce, l'owner doit être libéré normalement;
-   - si le processus a dû être tué avant achèvement, attendre les règles existantes de
-     lease/owner-deadline et la reconciliation; suivre l'état `INTERRUPTED`/recovery
-     avant toute migration;
-   - ne continuer que lorsque `current_owner_attempt_id` ne désigne plus un writer
-     incompatible actif et qu'aucun ancien conteneur writer n'existe.
+   La liste doit montrer zéro backend writer en cours. Les logs/PID locaux ne remplacent
+   jamais l'inspection SQL de l'étape 4.
 
 Un arrêt de conteneur ne prouve jamais qu'aucune transaction antérieure n'a été committée.
 SIGTERM/SIGKILL ne déclenche aucune compensation automatique. Une compensation ERP reste
@@ -215,37 +249,53 @@ une opération 643B distincte, explicite et auditée.
 
 Ordre obligatoire, à ne pas inverser :
 
-1. **drainer les writers courants** selon la section 5;
-2. vérifier l'autorité SQL durable et l'absence de writer ancien/incompatible actif;
-3. confirmer la sauvegarde/DR selon la procédure SQL existante;
-4. appliquer explicitement la migration avec l'image cible, sans redémarrer les anciens writers;
-5. déployer les images compatibles avec `RESOURCEPLANNER_ERP_SYNC_ENABLED=false`;
-6. exécuter `docker compose config`, puis les probes SQL/Web/schema/protocole;
-7. lire `GET /api/v1/integrations/acumatica/erp-sync/operations`;
+1. terminer le drain de la section 5, avec **tous les writers arrêtés**;
+2. confirmer par les requêtes SQL read-only de la section 5 qu'aucun owner/tentative
+   incompatible actif ne subsiste, puis confirmer la sauvegarde/DR;
+3. sélectionner le tag de l'image **cible compatible**, en gardant l'automatisation désactivée;
+4. pendant que les writers restent arrêtés, exécuter la migration one-shot canonique :
+
+   ```bash
+   export RESOURCEPLANNER_IMAGE_TAG=<TAG_CIBLE_COMPATIBLE>
+   export RESOURCEPLANNER_ERP_SYNC_ENABLED=false
+   docker compose run --rm --no-deps migrate
+   ```
+
+   Le service `migrate` est défini dans `docker-compose.yml` avec la commande
+   `["python", "-m", "alembic", "upgrade", "head"]`. Il ne lance ni
+   `python -m app.server`, ni FastAPI, ni scheduler ERP, et `--no-deps` interdit
+   tout démarrage implicite du backend. Aucun writer applicatif ne tourne pendant Alembic.
+
+5. seulement après succès de la migration, démarrer les images compatibles en mode désactivé :
+
+   ```bash
+   export RESOURCEPLANNER_ERP_SYNC_ENABLED=false
+   docker compose up -d --no-deps --no-build backend
+   docker compose up -d --no-deps --no-build frontend
+   ```
+
+   Si `backend` est volontairement scalé, rétablir le nombre validé `N` uniquement
+   à cette étape, avec la même image/protocole/configuration compatible.
+
+6. exécuter `docker compose config`, puis les probes SQL/Web/schema/protocole/timezone;
+7. vérifier SQL connectivity, crypto/evidence readiness et
+   `GET /api/v1/integrations/acumatica/erp-sync/operations`;
 8. exécuter le préflight 643C en mode désactivé;
-9. exercer RUN_NOW manuellement seulement si cette validation est autorisée;
+9. exercer RUN_NOW manuellement seulement si cette validation est explicitement autorisée;
 10. seulement après autorisation opérationnelle Product Owner : passer
     `RESOURCEPLANNER_ERP_SYNC_ENABLED=true`, recréer/redémarrer **tous** les backends,
     puis exécuter le gate final :
 
 ```bash
-docker compose exec -T backend   python tools/check_erp_activation_readiness.py   --activation   --dedicated-account-confirmed
+docker compose exec -T backend \
+  python tools/check_erp_activation_readiness.py \
+  --activation \
+  --dedicated-account-confirmed
 ```
 
 Si plusieurs backends existent, tous doivent partager protocole et fingerprint avant reprise
 des départs automatiques. Aucun backend de génération/protocole antérieur ne peut rester
 en parallèle lors de l'activation.
-
-Après migration explicite, le déploiement désactivé peut être effectué sans relancer
-implicitement `migrate`, par exemple en ciblant les services déjà migrés :
-
-```bash
-export RESOURCEPLANNER_ERP_SYNC_ENABLED=false
-docker compose up -d --no-deps --no-build backend
-docker compose up -d --no-deps --no-build frontend
-```
-
-Les tags d'images doivent alors être ceux explicitement validés pour la promotion.
 
 ## 7. Rollback
 
