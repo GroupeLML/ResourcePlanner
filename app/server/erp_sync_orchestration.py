@@ -228,6 +228,8 @@ class ErpSyncOrchestrator:
     def scheduler_tick(self) -> dict[str, Any] | None:
         if self._closed or not self._control.schema_available():
             return None
+        if self._evidence is not None:
+            self._evidence.run_retention_maintenance(batch_size=100)
         self._assert_recovery_clear()
 
         try:
