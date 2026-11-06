@@ -2655,7 +2655,14 @@ test("ERP operations use authoritative RUN_NOW, review, RETRY and compensation c
     (run) => run.phase === "PLAUSIBILITY_REVIEW_REQUIRED",
   );
   await page.getByRole("button", { name: "Actualiser" }).click();
-  await expect(page.getByText("PLAUSIBILITY_REVIEW_REQUIRED", { exact: false })).toBeVisible();
+  const manualCommands = page.locator(".erp-sync-card").filter({
+    has: page.getByRole("heading", { name: "RUN_NOW et RETRY" }),
+  });
+  await expect(
+    manualCommands.locator(".erp-sync-status").filter({
+      hasText: "PLAUSIBILITY_REVIEW_REQUIRED",
+    }),
+  ).toBeVisible();
   await expect(page.getByText("erp_sync_source_below_floor", { exact: false })).toBeVisible();
 
   page.once("dialog", (dialog) => dialog.accept());
