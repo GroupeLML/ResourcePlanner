@@ -4,6 +4,7 @@ import { ApiError } from "./api";
 import { useAuth } from "./AuthContext";
 import {
   ErpSyncBaselines,
+  ErpSyncBootstrapBaselineCandidates,
   ErpSyncCompensationPreview,
   ErpSyncOperationsSnapshot,
   ErpSyncPlausibilityReview,
@@ -13,6 +14,7 @@ import {
   continueErpPlausibilityReview,
   declineErpPlausibilityReview,
   getErpSyncBaselines,
+  getErpSyncBootstrapBaselineCandidates,
   getErpSyncOperations,
   getErpSyncPlausibilityReview,
   previewErpCompensation,
@@ -21,6 +23,13 @@ import {
 } from "./erpSyncOperationsApi";
 
 import "./erp-sync-operations.css";
+
+const STALE_COMPENSATION_CODES = new Set([
+  "erp_sync_compensation_preview_stale",
+  "erp_sync_compensation_current_state_changed",
+  "erp_sync_compensation_dependency_changed",
+  "erp_sync_compensation_evidence_expired",
+]);
 
 const ERROR_MESSAGES: Record<string, string> = {
   erp_sync_recovery_required: "Une récupération ERP est requise avant de lancer de nouveaux travaux.",
@@ -106,22 +115,28 @@ export default function ErpSyncOperationsPage() {
   const sensitive = can("sync_projects") && can("admin_settings");
   const [operations, setOperations] = useState<ErpSyncOperationsSnapshot | null>(null);
   const [baselines, setBaselines] = useState<ErpSyncBaselines | null>(null);
+  const [bootstrapCandidates, setBootstrapCandidates] =
+    useState<ErpSyncBootstrapBaselineCandidates | null>(null);
   const [review, setReview] = useState<ErpSyncPlausibilityReview | null>(null);
   const [preview, setPreview] = useState<ErpSyncCompensationPreview | null>(null);
   const [reason, setReason] = useState("Revue opérationnelle ERP");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [commandError, setCommandError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     try {
-      const [nextOperations, nextBaselines] = await Promise.all([
-        getErpSyncOperations(signal),
-        getErpSyncBaselines(signal),
-      ]);
+      const [nextOperations, nextBaselines, nextBootstrapCandidates] =
+        await Promise.all([
+          getErpSyncOperations(signal),
+          getErpSyncBaselines(signal),
+          getErpSyncBootstrapBaselineCandidates(signal),
+        ]);
       setOperations(nextOperations);
       setBaselines(nextBaselines);
+      setBootstrapCandidates(nextBootstrapCandidates);
       if (
         nextOperations.current_attempt_id
         && nextOperations.current_phase === "PLAUSIBILITY_REVIEW_REQUIRED"
@@ -135,10 +150,10 @@ export default function ErpSyncOperationsPage() {
       } else {
         setReview(null);
       }
-      setError(null);
+      setLoadError(null);
     } catch (reason: unknown) {
       if (reason instanceof DOMException && reason.name === "AbortError") return;
-      setError(messageFor(reason, "Impossible de charger l’état opérationnel ERP."));
+      setLoadError(messageFor(reason, "Impossible de charger l’état opérationnel ERP."));
     } finally {
       if (!signal?.aborted) setLoading(false);
     }
@@ -177,15 +192,23 @@ export default function ErpSyncOperationsPage() {
   async function command(label: string, action: () => Promise<unknown>, success: string) {
     if (busy) return;
     setBusy(label);
-    setError(null);
+    setCommandError(null);
     setNotice(null);
     try {
       await action();
+      setCommandError(null);
       setNotice(success);
       setPreview(null);
       await refresh();
     } catch (reason: unknown) {
-      setError(messageFor(reason, "La commande ERP a échoué."));
+      if (
+        label === "compensation-confirm"
+        && reason instanceof ApiError
+        && STALE_COMPENSATION_CODES.has(reason.code ?? "")
+      ) {
+        setPreview(null);
+      }
+      setCommandError(messageFor(reason, "La commande ERP a échoué."));
       await refresh();
     } finally {
       setBusy(null);
@@ -271,13 +294,14 @@ export default function ErpSyncOperationsPage() {
   async function buildPreview() {
     if (!compensationAttemptId || busy) return;
     setBusy("compensation-preview");
-    setError(null);
+    setCommandError(null);
     setNotice(null);
     try {
       setPreview(await previewErpCompensation(compensationAttemptId, reason));
+      setCommandError(null);
     } catch (reason: unknown) {
       setPreview(null);
-      setError(messageFor(reason, "La prévisualisation de compensation a échoué."));
+      setCommandError(messageFor(reason, "La prévisualisation de compensation a échoué."));
     } finally {
       setBusy(null);
     }
@@ -314,7 +338,7 @@ export default function ErpSyncOperationsPage() {
       <section className="erp-sync-page">
         <div className="error-panel">
           <strong>Opérations ERP indisponibles</strong>
-          <span>{error}</span>
+          <span>{loadError}</span>
         </div>
       </section>
     );
@@ -336,10 +360,16 @@ export default function ErpSyncOperationsPage() {
         </button>
       </header>
 
-      {error && (
+      {loadError && (
         <div className="error-panel" role="alert">
-          <strong>Action refusée ou indisponible</strong>
-          <span>{error}</span>
+          <strong>Lecture opérationnelle indisponible</strong>
+          <span>{loadError}</span>
+        </div>
+      )}
+      {commandError && (
+        <div className="error-panel erp-sync-command-error" role="alert">
+          <strong>Commande refusée ou indisponible</strong>
+          <span>{commandError}</span>
         </div>
       )}
       {notice && <div className="erp-sync-notice" role="status">{notice}</div>}
