@@ -3826,6 +3826,38 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             ]
         self.assertTrue(all(row.state == "PURGED" for row in manifests))
 
+    def test_retention_maintenance_prunes_old_project_detail_but_keeps_run_tombstone(self) -> None:
+        now = datetime.now(timezone.utc)
+        with transactional_session(self.factory) as session:
+            run = AcumaticaProjectTaskSyncRun(
+                status="COMPLETED",
+                active_key=None,
+                started_at=now - timedelta(days=self.service.settings.history_days + 2),
+                finished_at=now - timedelta(days=self.service.settings.history_days + 1),
+            )
+            session.add(run)
+            session.flush()
+            result = AcumaticaProjectTaskSyncProjectResult(
+                run_id=run.id,
+                project_id="RET-HISTORY-PROJECT",
+                project_number="RET-HISTORY",
+                status="synchronized",
+            )
+            session.add(result)
+            session.flush()
+            run_id = run.id
+            result_id = result.id
+
+        outcome = self.service.run_retention_maintenance(batch_size=1)
+        self.assertEqual(outcome["history_details_purged"], 1)
+        with self.factory() as session:
+            self.assertIsNotNone(
+                session.get(AcumaticaProjectTaskSyncRun, run_id)
+            )
+            self.assertIsNone(
+                session.get(AcumaticaProjectTaskSyncProjectResult, result_id)
+            )
+
     def test_exact_source_plausibility_exception_does_not_bypass_other_source(self) -> None:
         _control, _occurrence, baseline_attempt = self._attempt("baseline-large")
         baseline = self.service.capture_source(
