@@ -112,7 +112,7 @@ def check_activation_readiness(
                     "Le protocole ERP SQL est incompatible avec l'image courante."
                 )
             stored_fingerprint = str(control.config_fingerprint or "").strip()
-            if stored_fingerprint and stored_fingerprint != settings.erp_sync.config_fingerprint:
+            if stored_fingerprint != settings.erp_sync.config_fingerprint:
                 raise ErpActivationReadinessError(
                     "Le fingerprint ERP SQL ne correspond pas à la configuration de l'image."
                 )
