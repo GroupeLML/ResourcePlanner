@@ -7,6 +7,7 @@ import CoordinatorDashboardPage from "./CoordinatorDashboardPage";
 import ConfigurationPage from "./ConfigurationPage";
 import DevUserSwitcher from "./DevUserSwitcher";
 import DeliveryPage from "./DeliveryPage";
+import ErpSyncOperationsPage from "./ErpSyncOperationsPage";
 import DemandsWorkspace from "./DemandsWorkspace";
 import type { DemandCreateContext } from "./DemandsPage";
 import MediumTermPage from "./MediumTermPage";
@@ -18,7 +19,7 @@ import TechnicianSchedulePage from "./TechnicianSchedulePage";
 import UserAdminPage from "./UserAdminPage";
 import { useViewScope } from "./ViewScopeContext";
 
-type View = "my-schedule" | "coordinator-dashboard" | "planning" | "medium-term" | "demands" | "projects" | "delivery" | "resources" | "users" | "communications" | "configuration";
+type View = "my-schedule" | "coordinator-dashboard" | "planning" | "medium-term" | "demands" | "projects" | "delivery" | "erp-operations" | "resources" | "users" | "communications" | "configuration";
 
 type NavItem = { key: View; label: string; eyebrow: string; shortLabel: string; permission?: string; alsoRequires?: string; role?: string };
 
@@ -30,6 +31,7 @@ const navItems: NavItem[] = [
   { key: "demands", label: "Demandes", eyebrow: "Main-d’œuvre", shortLabel: "DE", permission: "read_demands" },
   { key: "projects", label: "Projets", eyebrow: "Portefeuille", shortLabel: "PR", permission: "read_projects" },
   { key: "delivery", label: "Delivery", eyebrow: "WorkPackages", shortLabel: "DL", permission: "read_work_packages" },
+  { key: "erp-operations", label: "Opérations ERP", eyebrow: "Acumatica", shortLabel: "ER", permission: "sync_projects" },
   { key: "communications", label: "Communications", eyebrow: "Révision", shortLabel: "CO", permission: "manage_communications" },
   { key: "resources", label: "Ressources", eyebrow: "Administration", shortLabel: "RE", permission: "manage_resources" },
   { key: "users", label: "Utilisateurs", eyebrow: "Sécurité", shortLabel: "UT", permission: "admin_users" },
@@ -340,6 +342,8 @@ export default function App() {
             <ProjectsPage />
           ) : view === "delivery" ? (
             <DeliveryPage />
+          ) : view === "erp-operations" && can("sync_projects") ? (
+            <ErpSyncOperationsPage />
           ) : view === "communications" && can("manage_communications") ? (
             <CommunicationsPage />
           ) : view === "resources" && can("manage_resources") ? (

@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, Header, Request
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ..application import (
@@ -20,6 +21,10 @@ from ..application import (
     TaskCatalogProjectSyncMetadata,
     TaskCatalogProjectSyncResult,
 )
+from ..application.erp_sync_operations import (
+    ErpSyncOperationsService,
+    ErpSyncOperationsSnapshot,
+)
 from ..application.errors import (
     ApplicationAuthorizationError,
     ApplicationNotFoundError,
@@ -34,6 +39,9 @@ from ..infrastructure.sql import (
     SqlErpUserDirectoryRepository,
     SqlSessionFactory,
     SqlTaskCatalogRepository,
+)
+from ..infrastructure.sql.erp_sync_operations_repository import (
+    SqlErpSyncOperationsRepository,
 )
 from .erp_sync_orchestration import ErpSyncOrchestrator
 from .performance import performance_phase, record_external_call, record_external_items
@@ -89,6 +97,17 @@ class ErpCompensationConfirmRequest(BaseModel):
 
 
 def _actor_name(request: Request) -> str:
+    forbidden_actor_inputs = {
+        key
+        for key in ("actor", "actor_name", "system_actor")
+        if key in request.query_params
+    }
+    if forbidden_actor_inputs:
+        raise ApplicationValidationError(
+            "L'acteur ERP est dérivé de l'identité authentifiée et ne peut pas être fourni par le client.",
+            code="erp_sync_client_actor_forbidden",
+            context={"fields": sorted(forbidden_actor_inputs)},
+        )
     principal = getattr(request.state, "auth_principal", None)
     if principal is None:
         return "api"
@@ -304,6 +323,87 @@ def build_integration_router(
                     project_task_source
                 ),
             )
+
+    @router.get("/erp-sync/operations")
+    def erp_sync_operations() -> ErpSyncOperationsSnapshot:
+        if erp_sync_orchestrator is None:
+            raise ApplicationUnavailableError(
+                "L'observabilité ERP n'est pas configurée sur ce serveur.",
+                code="erp_sync_operations_not_configured",
+            )
+        evidence_budget_bytes = (
+            erp_sync_evidence_service.settings.evidence_budget_bytes
+            if (
+                erp_sync_evidence_service is not None
+                and erp_sync_evidence_service.storage_available
+            )
+            else None
+        )
+        try:
+            return ErpSyncOperationsService(
+                SqlErpSyncOperationsRepository(
+                    session_factory,
+                    timezone_name=erp_sync_orchestrator.settings.timezone_name,
+                ),
+                settings=erp_sync_orchestrator.settings,
+                automatic_safety=erp_sync_orchestrator.automatic_safety,
+                freshness_sla_hours=erp_sync_orchestrator.settings.freshness_sla_hours,
+            ).snapshot(evidence_budget_bytes=evidence_budget_bytes)
+        except (SQLAlchemyError, RuntimeError) as exc:
+            raise ApplicationUnavailableError(
+                "L'état opérationnel ERP durable est indisponible.",
+                code="erp_sync_operations_database_unavailable",
+            ) from exc
+
+    @router.get("/erp-sync/baselines")
+    def erp_sync_baselines() -> dict[str, Any]:
+        if erp_sync_orchestrator is None:
+            raise ApplicationUnavailableError(
+                "L'orchestration ERP n'est pas configurée sur ce serveur.",
+                code="erp_sync_orchestrator_not_configured",
+            )
+        if erp_sync_evidence_service is None:
+            return {
+                "available": False,
+                "sources": {"PROJECTS": None, "TASKS": None},
+            }
+        profile = erp_sync_orchestrator.settings.config_fingerprint
+        return {
+            "available": True,
+            "sources": {
+                source_type: erp_sync_evidence_service.get_baseline_summary(
+                    source_type=source_type,
+                    profile_fingerprint=profile,
+                )
+                for source_type in ("PROJECTS", "TASKS")
+            },
+        }
+
+    @router.get("/erp-sync/bootstrap-baseline-candidates")
+    def erp_sync_bootstrap_baseline_candidates() -> dict[str, Any]:
+        if erp_sync_orchestrator is None:
+            raise ApplicationUnavailableError(
+                "L'orchestration ERP n'est pas configurée sur ce serveur.",
+                code="erp_sync_orchestrator_not_configured",
+            )
+        if erp_sync_evidence_service is None:
+            return {"attempt_id": None, "sources": []}
+        return erp_sync_evidence_service.list_bootstrap_baseline_candidates(
+            profile_fingerprint=(
+                erp_sync_orchestrator.settings.config_fingerprint
+            )
+        )
+
+    @router.get("/erp-sync/runs/{attempt_id}/plausibility-review")
+    def erp_sync_plausibility_review(attempt_id: str) -> dict[str, Any]:
+        if erp_sync_evidence_service is None:
+            raise ApplicationUnavailableError(
+                "Le stockage de preuve ERP n'est pas configuré.",
+                code="erp_sync_evidence_capability_unavailable",
+            )
+        return erp_sync_evidence_service.plausibility_review_summary(
+            attempt_id=attempt_id,
+        )
 
     @router.post("/erp-sync/projects/run-now", status_code=202)
     def run_projects_now(

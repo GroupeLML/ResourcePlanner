@@ -32,6 +32,8 @@ COPY --chown=resourceplanner:resourceplanner alembic.ini ./
 COPY --chown=resourceplanner:resourceplanner tools/seed_demo_data.py ./tools/seed_demo_data.py
 COPY --chown=resourceplanner:resourceplanner tools/bridge_sqlite_0048_runtime.py ./tools/bridge_sqlite_0048_runtime.py
 COPY --chown=resourceplanner:resourceplanner tools/repair_legacy_simple_resource_class.py ./tools/repair_legacy_simple_resource_class.py
+COPY --chown=resourceplanner:resourceplanner tools/check_erp_activation_readiness.py ./tools/check_erp_activation_readiness.py
+COPY --chown=resourceplanner:resourceplanner tools/check_server_runtime.py ./tools/check_server_runtime.py
 
 RUN mkdir -p /data /home/resourceplanner/.resourceplanner/logs \
     && chown -R resourceplanner:resourceplanner /data /home/resourceplanner/.resourceplanner

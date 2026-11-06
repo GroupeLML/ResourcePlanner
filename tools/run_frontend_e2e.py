@@ -10,8 +10,9 @@ from __future__ import annotations
 import argparse
 from decimal import Decimal
 from time import sleep
-from datetime import time
+from datetime import datetime, time, timezone
 from pathlib import Path
+from threading import Event
 import sys
 
 import uvicorn
@@ -58,6 +59,10 @@ from app.infrastructure.sql import (
     Base,
     Competency,
     ErpUserDirectoryEntry,
+    ERP_SYNC_CONTROL_ROW_ID,
+    ErpSyncBaseline,
+    ErpSyncCompensationReceipt,
+    ErpSyncControl,
     Project,
     Resource,
     ResourceAvailabilityRule,
@@ -68,6 +73,7 @@ from app.infrastructure.sql import (
     create_sql_engine,
 )
 from app.server import create_api_app
+from app.server.erp_sync_evidence import ErpSyncEvidenceSettings
 from app.server.dev_user_switcher import (
     DevUserSwitcherRuntime,
     dev_user_switcher_auth_resolver,
@@ -114,14 +120,29 @@ class FakePlaywrightProjectSource:
 
     def __init__(self, events: list[str]) -> None:
         self.events = events
+        self.mutate_name = False
+        self.empty = False
+        self.block = False
+        self.started = Event()
+        self.release = Event()
 
     def list_projects(self):
         self.events.append("projects")
+        if self.block:
+            self.started.set()
+            if not self.release.wait(timeout=15):
+                raise RuntimeError("controlled E2E project source block timeout")
+        if self.empty:
+            return ()
         return (
             ExternalProjectRecord(
                 external_id="251",
                 number="P-251",
-                name="Projet Playwright V2",
+                name=(
+                    "Projet Playwright V2 synchronisé"
+                    if self.mutate_name
+                    else "Projet Playwright V2"
+                ),
                 status="Actif",
             ),
         )
@@ -132,6 +153,7 @@ class FakePlaywrightProjectTaskSource:
 
     def __init__(self, events: list[str]) -> None:
         self.events = events
+        self.fail = False
 
     def fetch_project_snapshots(
         self,
@@ -141,6 +163,8 @@ class FakePlaywrightProjectTaskSource:
         if not self.events or self.events[-1] != "projects":
             raise AssertionError("project synchronization must precede task synchronization")
         self.events.append("tasks")
+        if self.fail:
+            raise RuntimeError("controlled E2E task source failure")
         sleep(2.0)
         snapshots = []
         for project_external_id, project_number in project_targets:
@@ -605,6 +629,8 @@ def build_app(database_path: Path, frontend_dist: Path):
     dev_runtime = DevUserSwitcherRuntime(bootstrap_principal=_bootstrap_principal())
     dev_resolver = dev_user_switcher_auth_resolver(dev_runtime)
     erp_sync_events: list[str] = []
+    project_source = FakePlaywrightProjectSource(erp_sync_events)
+    project_task_source = FakePlaywrightProjectTaskSource(erp_sync_events)
     app = create_api_app(
         database_url,
         auth_resolver=_combined_auth_resolver(dev_resolver),
@@ -612,12 +638,181 @@ def build_app(database_path: Path, frontend_dist: Path):
         communication_transport=transport,
         smtp_cipher=smtp_cipher,
         smtp_client=smtp_client,
-        project_source=FakePlaywrightProjectSource(erp_sync_events),
-        project_task_source=FakePlaywrightProjectTaskSource(erp_sync_events),
+        project_source=project_source,
+        project_task_source=project_task_source,
+        erp_sync_evidence_settings=ErpSyncEvidenceSettings(
+            max_evidence_mib=16,
+            evidence_budget_mib=64,
+        ),
     )
+
+    # Phase 2 browser acceptance needs one deterministic failure after the
+    # project transaction has committed. Full ERP source capture must remain
+    # complete-before-mutation, so this hook is installed only in the local
+    # Playwright fixture at the task-execution boundary.
+    erp_sync_post_project_failure = {"enabled": False}
+    original_execute_tasks = app.state.erp_sync_orchestrator._execute_tasks
+
+    def e2e_execute_tasks(*args, **kwargs):
+        if erp_sync_post_project_failure["enabled"]:
+            raise RuntimeError("controlled E2E post-project task failure")
+        return original_execute_tasks(*args, **kwargs)
+
+    app.state.erp_sync_orchestrator._execute_tasks = e2e_execute_tasks
+    assert app.state.erp_sync_evidence_service is not None
+    with app.state.session_factory.begin() as session:
+        policy_fingerprint = (
+            app.state.erp_sync_evidence_service.policy_fingerprint_in_session(
+                session
+            )
+        )
+        now = datetime.now(timezone.utc)
+        for source_type in ("PROJECTS", "TASKS"):
+            session.add(
+                ErpSyncBaseline(
+                    source_type=source_type,
+                    profile_fingerprint=policy_fingerprint,
+                    source_fingerprint=("a" if source_type == "PROJECTS" else "b") * 64,
+                    row_count=1,
+                    encrypted_project_counts=None,
+                    approved_by="Fixture E2E",
+                    approval_reason="Baseline contrôlé pour acceptance 643C",
+                    approved_at=now,
+                )
+            )
+
     @app.get("/__e2e__/erp-sync/events", include_in_schema=False)
     def erp_sync_event_order():
         return {"events": list(erp_sync_events)}
+
+    @app.post("/__e2e__/erp-sync/source-mode", include_in_schema=False)
+    def erp_sync_source_mode(
+        project_mutation: bool = False,
+        project_empty: bool = False,
+        project_block: bool = False,
+        task_failure: bool = False,
+        post_project_failure: bool = False,
+    ):
+        project_source.mutate_name = bool(project_mutation)
+        project_source.empty = bool(project_empty)
+        if project_block:
+            project_source.started.clear()
+            project_source.release.clear()
+        else:
+            project_source.release.set()
+        project_source.block = bool(project_block)
+        project_task_source.fail = bool(task_failure)
+        erp_sync_post_project_failure["enabled"] = bool(post_project_failure)
+        return {
+            "project_mutation": project_source.mutate_name,
+            "project_empty": project_source.empty,
+            "project_block": project_source.block,
+            "task_failure": project_task_source.fail,
+            "post_project_failure": erp_sync_post_project_failure["enabled"],
+        }
+
+    @app.post("/__e2e__/erp-sync/baselines", include_in_schema=False)
+    def erp_sync_baseline_mode(enabled: bool):
+        assert app.state.erp_sync_evidence_service is not None
+        with app.state.session_factory.begin() as session:
+            session.query(ErpSyncBaseline).delete(synchronize_session=False)
+            if enabled:
+                policy_fingerprint = (
+                    app.state.erp_sync_evidence_service
+                    .policy_fingerprint_in_session(session)
+                )
+                now = datetime.now(timezone.utc)
+                for source_type in ("PROJECTS", "TASKS"):
+                    session.add(
+                        ErpSyncBaseline(
+                            source_type=source_type,
+                            profile_fingerprint=policy_fingerprint,
+                            source_fingerprint=(
+                                ("a" if source_type == "PROJECTS" else "b")
+                                * 64
+                            ),
+                            row_count=1,
+                            encrypted_project_counts=None,
+                            approved_by="Fixture E2E",
+                            approval_reason="Baseline contrôlé pour acceptance 643C",
+                            approved_at=now,
+                        )
+                    )
+        return {"enabled": bool(enabled)}
+
+    @app.post(
+        "/__e2e__/erp-sync/hold-manual-owner",
+        include_in_schema=False,
+    )
+    def hold_erp_sync_manual_owner():
+        orchestrator = app.state.erp_sync_orchestrator
+        control = orchestrator._control
+        occurrence = control.accept_manual(
+            intent="PROJECTS_ONLY",
+            actor_name="e2e-owner",
+            idempotency_key="phase3-compensation-owner",
+            settings=orchestrator.settings,
+        )
+        attempt = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="e2e-owner",
+            settings=orchestrator.settings,
+        )
+        assert attempt is not None
+        return {
+            "attempt_id": attempt.id,
+            "generation": int(attempt.generation),
+        }
+
+    @app.post(
+        "/__e2e__/erp-sync/release-manual-owner",
+        include_in_schema=False,
+    )
+    def release_erp_sync_manual_owner(attempt_id: str, generation: int):
+        orchestrator = app.state.erp_sync_orchestrator
+        released = orchestrator._control.finish(
+            attempt_id=attempt_id,
+            generation=generation,
+            status="FAILED",
+            phase="E2E_OWNER_RELEASED",
+            error_code="e2e_owner_release",
+            diagnostic="controlled E2E owner release",
+            settings=orchestrator.settings,
+        )
+        return {"released": bool(released)}
+
+    @app.get(
+        "/__e2e__/erp-sync/compensation-receipts",
+        include_in_schema=False,
+    )
+    def erp_sync_compensation_receipts(attempt_id: str):
+        with app.state.session_factory() as session:
+            count = session.query(ErpSyncCompensationReceipt).filter(
+                ErpSyncCompensationReceipt.attempt_id == attempt_id
+            ).count()
+        return {"attempt_id": attempt_id, "count": int(count)}
+
+    @app.post(
+        "/__e2e__/erp-sync/invalidate-compensation-preview",
+        include_in_schema=False,
+    )
+    def invalidate_erp_sync_compensation_preview():
+        with app.state.session_factory.begin() as session:
+            control = session.get(ErpSyncControl, ERP_SYNC_CONTROL_ROW_ID)
+            assert control is not None
+            control.generation = int(control.generation) + 1
+            generation = int(control.generation)
+        return {"generation": generation}
+
+    @app.post("/__e2e__/erp-sync/recovery-required", include_in_schema=False)
+    def erp_sync_recovery_required(attempt_id: str):
+        assert app.state.erp_sync_evidence_service is not None
+        app.state.erp_sync_evidence_service.mark_recovery_required(
+            attempt_id=attempt_id,
+            reason_code="e2e_controlled_recovery_required",
+        )
+        return {"attempt_id": attempt_id, "state": "REQUIRED"}
 
     @app.get("/__e2e__/identity/link-pending", include_in_schema=False)
     def link_pending_oidc_identity():

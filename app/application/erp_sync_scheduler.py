@@ -30,12 +30,17 @@ class ErpSyncSchedulerSettings:
     lease_seconds: int = 300
     heartbeat_seconds: int = 60
     max_attempt_seconds: int = 7200
+    freshness_sla_hours: int = 30
     source_identity: str = ERP_SYNC_DEFAULT_SOURCE_IDENTITY
 
     def __post_init__(self) -> None:
         if not 1 <= int(self.catchup_hours) <= 12:
             raise ErpSyncScheduleConfigurationError(
                 "RESOURCEPLANNER_ERP_SYNC_CATCHUP_HOURS doit être compris entre 1 et 12."
+            )
+        if not 1 <= int(self.freshness_sla_hours) <= 168:
+            raise ErpSyncScheduleConfigurationError(
+                "RESOURCEPLANNER_ERP_SYNC_FRESHNESS_SLA_HOURS doit être compris entre 1 et 168."
             )
         if not str(self.source_identity or "").strip():
             raise ErpSyncScheduleConfigurationError(

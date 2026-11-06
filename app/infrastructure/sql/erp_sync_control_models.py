@@ -63,6 +63,9 @@ class ErpSyncControl(TimestampMixin, Base):
     heartbeat_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    scheduler_observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     last_evaluated_business_date: Mapped[date | None] = mapped_column(
         Date, nullable=True
     )

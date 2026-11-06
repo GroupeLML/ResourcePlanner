@@ -156,6 +156,10 @@ class ErpSyncOrchestrator:
         return self._settings
 
     @property
+    def automatic_safety(self) -> ErpSyncAutomaticSafetyCapability:
+        return self._automatic_safety
+
+    @property
     def automatic_activation_diagnostic(self) -> str | None:
         if not self._settings.enabled:
             return "erp_sync_scheduler_disabled"
@@ -224,6 +228,23 @@ class ErpSyncOrchestrator:
     def scheduler_tick(self) -> dict[str, Any] | None:
         if self._closed or not self._control.schema_available():
             return None
+        try:
+            if self._evidence is not None:
+                self._evidence.run_retention_maintenance(batch_size=100)
+        except ApplicationConflictError as exc:
+            if exc.code in {
+                "erp_sync_configuration_incompatible",
+                "erp_sync_protocol_incompatible",
+            }:
+                logger.warning(
+                    "ERP maintenance compatibility block code=%s",
+                    exc.code,
+                )
+                return {
+                    "status": "BLOCKED",
+                    "diagnostic": exc.code,
+                }
+            raise
         self._assert_recovery_clear()
 
         try:

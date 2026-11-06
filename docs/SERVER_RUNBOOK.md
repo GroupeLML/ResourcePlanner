@@ -254,6 +254,13 @@ Le NAS reste l'hôte de virtualisation et peut fournir les ressources de stockag
 
 Voir [`DEPLOYMENT_UBUNTU_VM.md`](DEPLOYMENT_UBUNTU_VM.md) pour la procédure détaillée.
 
+## 11.1 Synchronisation ERP automatique
+
+La préparation, le drain, l'activation et le rollback du scheduler ERP ADR-033 sont décrits
+dans [`ERP_SYNC_OPERATIONS_RUNBOOK.md`](ERP_SYNC_OPERATIONS_RUNBOOK.md). Le runtime
+canonique reste le backend FastAPI dans Docker Compose sur la VM Ubuntu; aucun cron DSM/Ubuntu
+ne doit être ajouté. Le dépôt conserve l'automatisation ERP désactivée par défaut.
+
 ## 12. Runtime V1 legacy
 
 Le runtime NiceGUI/Excel V1 et ses anciens launchers Windows ont été retirés en 336B. Les commandes supportées sont Compose et la CLI FastAPI/Vite documentées ci-dessus.

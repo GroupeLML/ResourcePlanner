@@ -108,6 +108,110 @@ class ErpSyncEvidenceApiTests(unittest.TestCase):
         )
         return attempt.id, manifest.manifest_id
 
+    def test_failed_bootstrap_candidates_reuse_exact_retained_manifest_identity(self) -> None:
+        app = self._app(TEST_ADMIN_AUTH_RESOLVER)
+        factory = app.state.erp_sync_orchestrator._session_factory
+        control = SqlErpSyncControlRepository(factory)
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="admin",
+            idempotency_key="bootstrap-candidates",
+            settings=self.settings,
+        )
+        attempt = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="admin",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(attempt)
+        service = app.state.erp_sync_evidence_service
+        profile = service.bind_attempt_policy(
+            attempt_id=attempt.id,
+            generation=attempt.generation,
+        )
+        projects = service.capture_source(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=profile,
+            payload={
+                "records": [
+                    {
+                        "external_id": "BOOT-1",
+                        "number": "BOOT-1",
+                        "name": "PRIVATE-BOOTSTRAP-PAYLOAD",
+                        "status": "Actif",
+                    }
+                ],
+                "page_evidence": {"complete": True, "pages": 1, "rows": 1},
+            },
+            row_count=1,
+            generation=attempt.generation,
+        )
+        tasks = service.capture_source(
+            attempt_id=attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=profile,
+            payload={
+                "portfolio": {
+                    "source_rows": 1,
+                    "source_pages": 1,
+                    "snapshots": [],
+                },
+                "page_evidence": {"complete": True, "pages": 1, "rows": 1},
+            },
+            row_count=1,
+            generation=attempt.generation,
+        )
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                error_code="erp_sync_source_plausibility_failed",
+                diagnostic="bootstrap requires baseline",
+                settings=self.settings,
+            )
+        )
+        service.finalize_attempt(attempt_id=attempt.id, successful=False)
+
+        with TestClient(app) as client:
+            candidates = client.get(
+                "/api/v1/integrations/acumatica/erp-sync/bootstrap-baseline-candidates"
+            )
+            self.assertEqual(candidates.status_code, 200, candidates.text)
+            payload = candidates.json()
+            self.assertEqual(payload["attempt_id"], attempt.id)
+            self.assertEqual(
+                {row["manifest_id"] for row in payload["sources"]},
+                {projects.manifest_id, tasks.manifest_id},
+            )
+            self.assertNotIn("PRIVATE-BOOTSTRAP-PAYLOAD", candidates.text)
+
+            approved = client.post(
+                "/api/v1/integrations/acumatica/erp-sync/evidence/"
+                + projects.manifest_id
+                + "/approve-baseline",
+                json={"reason": "Bootstrap PROJECTS vérifié"},
+            )
+            self.assertEqual(approved.status_code, 200, approved.text)
+            after = client.get(
+                "/api/v1/integrations/acumatica/erp-sync/bootstrap-baseline-candidates"
+            )
+
+        self.assertEqual(after.status_code, 200, after.text)
+        self.assertEqual(
+            [row["manifest_id"] for row in after.json()["sources"]],
+            [tasks.manifest_id],
+        )
+        terminal = control.get_attempt(attempt.id)
+        self.assertEqual(terminal.status, "FAILED")
+        self.assertEqual(
+            terminal.error_code,
+            "erp_sync_source_plausibility_failed",
+        )
+
     def test_sensitive_approval_requires_admin_settings_in_addition_to_sync_projects(self) -> None:
         app = self._app(SYNC_ONLY)
         attempt_id, manifest_id = self._sealed_manifest(app)
@@ -128,6 +232,46 @@ class ErpSyncEvidenceApiTests(unittest.TestCase):
         )
         self.assertEqual(evidence.status_code, 200, evidence.text)
         self.assertNotIn("PRIVATE-SOURCE-MARKER", evidence.text)
+
+    def test_sync_only_operator_cannot_approve_exception_or_compensate(self) -> None:
+        app = self._app(SYNC_ONLY)
+        attempt_id, manifest_id = self._sealed_manifest(app)
+        factory = app.state.erp_sync_orchestrator._session_factory
+        control = SqlErpSyncControlRepository(factory)
+        attempt = control.get_attempt(attempt_id)
+        self.assertTrue(
+            control.pause_for_review(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                settings=self.settings,
+            )
+        )
+
+        with TestClient(app) as client:
+            exception = client.post(
+                f"/api/v1/integrations/acumatica/erp-sync/runs/{attempt_id}/plausibility-exceptions",
+                json={
+                    "manifest_id": manifest_id,
+                    "threshold_scope": "GLOBAL",
+                    "reason": "unauthorized",
+                },
+            )
+            preview = client.post(
+                f"/api/v1/integrations/acumatica/erp-sync/runs/{attempt_id}/compensation/preview",
+                json={"reason": "unauthorized"},
+            )
+            confirm = client.post(
+                f"/api/v1/integrations/acumatica/erp-sync/runs/{attempt_id}/compensation/confirm",
+                headers={"Idempotency-Key": "unauthorized-confirm"},
+                json={"preview_hash": "0" * 64, "reason": "unauthorized"},
+            )
+
+        for response in (exception, preview, confirm):
+            self.assertEqual(response.status_code, 403, response.text)
+            self.assertEqual(
+                response.json()["error"]["code"],
+                "erp_sync_sensitive_authority_required",
+            )
 
     def test_plausibility_review_decline_requires_sensitive_authority_and_preserves_state(self) -> None:
         app = self._app(SYNC_ONLY)
@@ -203,6 +347,75 @@ class ErpSyncEvidenceApiTests(unittest.TestCase):
             decisions[0].actor_name,
             "Administrateur de test explicite",
         )
+
+    def test_phase2_read_projections_are_safe_for_sync_operator(self) -> None:
+        app = self._app(SYNC_ONLY)
+        attempt_id, _manifest_id = self._sealed_manifest(app)
+        factory = app.state.erp_sync_orchestrator._session_factory
+        control = SqlErpSyncControlRepository(factory)
+        attempt = control.get_attempt(attempt_id)
+        self.assertTrue(
+            control.pause_for_review(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                settings=self.settings,
+            )
+        )
+
+        with TestClient(app) as client:
+            baselines = client.get(
+                "/api/v1/integrations/acumatica/erp-sync/baselines"
+            )
+            review = client.get(
+                f"/api/v1/integrations/acumatica/erp-sync/runs/{attempt_id}/plausibility-review"
+            )
+
+        self.assertEqual(baselines.status_code, 200, baselines.text)
+        self.assertTrue(baselines.json()["available"])
+        self.assertIsNone(baselines.json()["sources"]["PROJECTS"])
+        self.assertIsNone(baselines.json()["sources"]["TASKS"])
+
+        self.assertEqual(review.status_code, 200, review.text)
+        payload = review.json()
+        self.assertEqual(payload["attempt_id"], attempt_id)
+        self.assertEqual(payload["phase"], "PLAUSIBILITY_REVIEW_REQUIRED")
+        self.assertEqual(payload["allowed_exception_scopes"], [])
+        self.assertEqual(payload["sources"][0]["source_type"], "PROJECTS")
+        self.assertIn(
+            "erp_sync_baseline_required",
+            payload["sources"][0]["diagnostics"],
+        )
+        self.assertNotIn("PRIVATE-SOURCE-MARKER", review.text)
+
+    def test_sensitive_payload_cannot_supply_authoritative_actor(self) -> None:
+        app = self._app(TEST_ADMIN_AUTH_RESOLVER)
+        attempt_id, manifest_id = self._sealed_manifest(app)
+        factory = app.state.erp_sync_orchestrator._session_factory
+        control = SqlErpSyncControlRepository(factory)
+        attempt = control.get_attempt(attempt_id)
+        self.assertTrue(
+            control.pause_for_review(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                settings=self.settings,
+            )
+        )
+
+        with TestClient(app) as client:
+            baseline = client.post(
+                f"/api/v1/integrations/acumatica/erp-sync/evidence/{manifest_id}/approve-baseline",
+                json={"reason": "reviewed", "actor_name": "SYSTEM"},
+            )
+            decline = client.post(
+                f"/api/v1/integrations/acumatica/erp-sync/runs/{attempt_id}/plausibility-decline",
+                json={"reason": "reviewed", "actor": "scheduler"},
+            )
+
+        self.assertEqual(baseline.status_code, 422, baseline.text)
+        self.assertEqual(decline.status_code, 422, decline.text)
+        unchanged = control.get_attempt(attempt_id)
+        self.assertEqual(unchanged.status, "PENDING")
+        self.assertEqual(unchanged.phase, "PLAUSIBILITY_REVIEW_REQUIRED")
 
     def test_admin_can_approve_sealed_baseline_and_actor_is_authenticated_identity(self) -> None:
         app = self._app(TEST_ADMIN_AUTH_RESOLVER)

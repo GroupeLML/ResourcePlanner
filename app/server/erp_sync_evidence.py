@@ -8,7 +8,11 @@ import hashlib
 import json
 from typing import Any, Mapping, Sequence
 
-from sqlalchemy import func, inspect, select
+from sqlalchemy import false, func, inspect, select
+
+from ..infrastructure.sql.erp_sync_evidence_accounting import (
+    read_erp_sync_evidence_storage_accounting,
+)
 from sqlalchemy.orm import Session
 
 from ..application.errors import (
@@ -216,6 +220,10 @@ class ErpSyncEvidenceService:
         self.settings = settings
         self._control_settings = control_settings
 
+    @property
+    def storage_available(self) -> bool:
+        return self._cipher is not None
+
     def policy_fingerprint_in_session(
         self,
         session: Session,
@@ -412,6 +420,16 @@ class ErpSyncEvidenceService:
             remaining -= chunk
         return total
 
+    @property
+    def required_attempt_storage_bytes(self) -> int:
+        return self._encrypted_storage_bound(self.settings.max_evidence_bytes)
+
+    def storage_accounting_in_session(self, session: Session):
+        return read_erp_sync_evidence_storage_accounting(
+            session,
+            budget_bytes=self.settings.evidence_budget_bytes,
+        )
+
     def reserve_attempt(self, *, attempt_id: str) -> None:
         from ..infrastructure.sql import ErpSyncAttempt, ErpSyncEvidenceReservation
         from ..infrastructure.sql.erp_sync_control_repository import (
@@ -465,26 +483,8 @@ class ErpSyncEvidenceService:
             )
             if existing is not None:
                 return
-            active_reserved = int(
-                session.scalar(
-                    select(func.coalesce(func.sum(ErpSyncEvidenceReservation.reserved_bytes), 0))
-                    .where(ErpSyncEvidenceReservation.released_at.is_(None))
-                )
-                or 0
-            )
-            # Released reservations retain the actual ciphertext/accounting used
-            # by source chunks and mutation evidence until their retention purge.
-            retained_used = int(
-                session.scalar(
-                    select(func.coalesce(func.sum(ErpSyncEvidenceReservation.used_bytes), 0))
-                    .where(ErpSyncEvidenceReservation.released_at.is_not(None))
-                )
-                or 0
-            )
-            if (
-                retained_used + active_reserved + requested_storage
-                > self.settings.evidence_budget_bytes
-            ):
+            accounting = self.storage_accounting_in_session(session)
+            if not accounting.can_admit(requested_storage):
                 raise ApplicationUnavailableError(
                     "Le budget de stockage des preuves ERP est insuffisant.",
                     code="erp_sync_evidence_storage_budget_unavailable",
@@ -1152,6 +1152,22 @@ class ErpSyncEvidenceService:
             ErpSyncRecoveryState,
         )
 
+        manifest_statement = select(ErpSyncEvidenceManifest).where(
+            ErpSyncEvidenceManifest.attempt_id == attempt_id
+        )
+        if session.get_bind().dialect.name == "mssql":
+            manifest_statement = manifest_statement.with_hint(
+                ErpSyncEvidenceManifest,
+                "WITH (UPDLOCK, HOLDLOCK)",
+                dialect_name="mssql",
+            )
+        manifests = tuple(session.scalars(manifest_statement))
+        if any(manifest.state == "PURGED" for manifest in manifests):
+            raise ApplicationConflictError(
+                "La preuve ERP requise a déjà dépassé sa rétention.",
+                code="erp_sync_recovery_evidence_expired",
+            )
+
         row = session.scalar(
             select(ErpSyncRecoveryState).where(
                 ErpSyncRecoveryState.attempt_id == attempt_id
@@ -1169,11 +1185,7 @@ class ErpSyncEvidenceService:
             row.state = RECOVERY_REQUIRED
             row.reason_code = str(reason_code or "erp_sync_recovery_required")
             row.pinned = True
-        for manifest in session.scalars(
-            select(ErpSyncEvidenceManifest).where(
-                ErpSyncEvidenceManifest.attempt_id == attempt_id
-            )
-        ):
+        for manifest in manifests:
             manifest.pinned = True
 
     def mark_recovery_required(
@@ -1227,6 +1239,143 @@ class ErpSyncEvidenceService:
                 }
                 for row in rows
             )
+
+    def list_bootstrap_baseline_candidates(
+        self,
+        *,
+        profile_fingerprint: str,
+    ) -> dict[str, Any]:
+        from ..infrastructure.sql import (
+            EVIDENCE_PROOF_SOURCE,
+            EVIDENCE_SOURCE_PROJECTS,
+            EVIDENCE_SOURCE_TASKS,
+            EVIDENCE_STATE_READY,
+            EVIDENCE_STATE_SEALED,
+            ErpSyncAttempt,
+            ErpSyncBaseline,
+            ErpSyncEvidenceManifest,
+        )
+
+        valid_sources = {
+            EVIDENCE_SOURCE_PROJECTS,
+            EVIDENCE_SOURCE_TASKS,
+        }
+        now = _utc_now()
+        with self._session_factory() as session:
+            lookup_fingerprint = profile_fingerprint
+            if (
+                self._control_settings is not None
+                and profile_fingerprint
+                == self._control_settings.config_fingerprint
+            ):
+                lookup_fingerprint = self.policy_fingerprint_in_session(session)
+
+            approved_sources = set(
+                session.scalars(
+                    select(ErpSyncBaseline.source_type).where(
+                        ErpSyncBaseline.profile_fingerprint
+                        == lookup_fingerprint
+                    )
+                )
+            )
+            if valid_sources.issubset(approved_sources):
+                return {"attempt_id": None, "sources": []}
+
+            attempts = tuple(
+                session.scalars(
+                    select(ErpSyncAttempt)
+                    .where(
+                        ErpSyncAttempt.status == "FAILED",
+                        ErpSyncAttempt.error_code
+                        == "erp_sync_source_plausibility_failed",
+                    )
+                    .order_by(
+                        ErpSyncAttempt.finished_at.desc(),
+                        ErpSyncAttempt.created_at.desc(),
+                        ErpSyncAttempt.id.desc(),
+                    )
+                    .limit(50)
+                )
+            )
+            for attempt in attempts:
+                try:
+                    self.assert_attempt_policy_in_session(
+                        session,
+                        attempt_id=str(attempt.id),
+                    )
+                except ApplicationConflictError:
+                    continue
+
+                rows = tuple(
+                    session.scalars(
+                        select(ErpSyncEvidenceManifest)
+                        .where(
+                            ErpSyncEvidenceManifest.attempt_id
+                            == attempt.id,
+                            ErpSyncEvidenceManifest.proof_type
+                            == EVIDENCE_PROOF_SOURCE,
+                            ErpSyncEvidenceManifest.profile_fingerprint
+                            == lookup_fingerprint,
+                            ErpSyncEvidenceManifest.source_type.in_(
+                                tuple(valid_sources)
+                            ),
+                            ErpSyncEvidenceManifest.state.in_(
+                                (
+                                    EVIDENCE_STATE_READY,
+                                    EVIDENCE_STATE_SEALED,
+                                )
+                            ),
+                        )
+                        .order_by(ErpSyncEvidenceManifest.source_type)
+                    )
+                )
+                candidates: list[dict[str, Any]] = []
+                for row in rows:
+                    if row.source_type in approved_sources:
+                        continue
+                    expires_at = row.expires_at
+                    if expires_at is not None:
+                        if expires_at.tzinfo is None:
+                            expires_at = expires_at.replace(
+                                tzinfo=timezone.utc
+                            )
+                        else:
+                            expires_at = expires_at.astimezone(
+                                timezone.utc
+                            )
+                        if expires_at <= now:
+                            continue
+                    try:
+                        # Reuse the canonical encrypted evidence integrity path.
+                        self.load_source_in_session(
+                            session,
+                            manifest_id=str(row.id),
+                        )
+                    except (
+                        ApplicationConflictError,
+                        ApplicationValidationError,
+                    ):
+                        continue
+                    candidates.append(
+                        {
+                            "manifest_id": str(row.id),
+                            "attempt_id": str(attempt.id),
+                            "source_type": str(row.source_type),
+                            "row_count": int(row.row_count),
+                            "observed_at": row.observed_at,
+                            "state": str(row.state),
+                            "diagnostic": (
+                                attempt.error_code
+                                or "erp_sync_baseline_required"
+                            ),
+                        }
+                    )
+                if candidates:
+                    return {
+                        "attempt_id": str(attempt.id),
+                        "sources": candidates,
+                    }
+            return {"attempt_id": None, "sources": []}
 
     def get_baseline_summary(self, *, source_type: str, profile_fingerprint: str) -> dict[str, Any] | None:
         from ..infrastructure.sql import ErpSyncBaseline
@@ -1498,6 +1647,123 @@ class ErpSyncEvidenceService:
             session.flush()
             return row.id
 
+    def plausibility_review_summary(
+        self,
+        *,
+        attempt_id: str,
+    ) -> dict[str, Any]:
+        from ..infrastructure.sql import (
+            EVIDENCE_PROOF_SOURCE,
+            EVIDENCE_STATE_READY,
+            EVIDENCE_STATE_SEALED,
+            ErpSyncAttempt,
+            ErpSyncEvidenceManifest,
+        )
+
+        with self._session_factory() as session:
+            attempt = session.get(ErpSyncAttempt, attempt_id)
+            if attempt is None:
+                raise ApplicationValidationError(
+                    "La tentative ERP est introuvable.",
+                    code="erp_sync_attempt_not_found",
+                )
+            if (
+                attempt.status != "PENDING"
+                or attempt.phase != "PLAUSIBILITY_REVIEW_REQUIRED"
+            ):
+                raise ApplicationConflictError(
+                    "La tentative ERP n'attend pas une revue de plausibilité.",
+                    code="erp_sync_plausibility_review_not_pending",
+                )
+            self.assert_attempt_policy_in_session(
+                session,
+                attempt_id=attempt_id,
+            )
+            rows = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceManifest)
+                    .where(
+                        ErpSyncEvidenceManifest.attempt_id == attempt_id,
+                        ErpSyncEvidenceManifest.proof_type == EVIDENCE_PROOF_SOURCE,
+                        ErpSyncEvidenceManifest.state.in_(
+                            (EVIDENCE_STATE_READY, EVIDENCE_STATE_SEALED)
+                        ),
+                    )
+                    .order_by(ErpSyncEvidenceManifest.source_type)
+                )
+            )
+            sources: list[dict[str, Any]] = []
+            allowed_scopes: list[dict[str, str]] = []
+            for row in rows:
+                payload = self.load_source_in_session(
+                    session,
+                    manifest_id=str(row.id),
+                )
+                project_counts = (
+                    self._project_counts_from_payload(payload)
+                    if row.source_type == "TASKS"
+                    else {}
+                )
+                captured = ErpSyncCapturedSource(
+                    source_type=str(row.source_type),
+                    manifest_id=str(row.id),
+                    source_fingerprint=str(row.source_fingerprint),
+                    row_count=int(row.row_count),
+                    project_counts=project_counts,
+                    payload=payload,
+                )
+                result = self.validate_plausibility(
+                    captured,
+                    active_task_targets=(
+                        len(project_counts)
+                        if row.source_type == "TASKS"
+                        else 0
+                    ),
+                    active_task_projects=(
+                        tuple(project_counts)
+                        if row.source_type == "TASKS"
+                        else None
+                    ),
+                )
+                scopes: list[str] = []
+                if result.reviewable:
+                    if any(
+                        not item.startswith("erp_sync_project_ratio_too_low:")
+                        for item in result.diagnostics
+                    ):
+                        scopes.append("GLOBAL")
+                    scopes.extend(
+                        scope
+                        for scope in result.rejected_projects
+                        if scope not in scopes
+                    )
+                for scope in scopes:
+                    allowed_scopes.append(
+                        {
+                            "manifest_id": str(row.id),
+                            "source_type": str(row.source_type),
+                            "threshold_scope": str(scope),
+                        }
+                    )
+                sources.append(
+                    {
+                        "manifest_id": str(row.id),
+                        "source_type": str(row.source_type),
+                        "source_fingerprint": str(row.source_fingerprint),
+                        "row_count": int(row.row_count),
+                        "state": str(row.state),
+                        "diagnostics": list(result.diagnostics),
+                        "rejected_projects": list(result.rejected_projects),
+                    }
+                )
+            return {
+                "attempt_id": attempt_id,
+                "status": attempt.status,
+                "phase": attempt.phase,
+                "sources": sources,
+                "allowed_exception_scopes": allowed_scopes,
+            }
+
     def advance_approved_baselines_in_session(
         self,
         session: Session,
@@ -1582,6 +1848,15 @@ class ErpSyncEvidenceService:
         if not isinstance(value, dict):
             return {}
         return {str(key): int(count) for key, count in value.items()}
+
+    def assert_baselines_readable_in_session(
+        self,
+        session: Session,
+        *,
+        baselines: Sequence[Any],
+    ) -> None:
+        for baseline in baselines:
+            self._baseline_project_counts(baseline)
 
     def validate_plausibility(
         self,
@@ -2764,30 +3039,100 @@ class ErpSyncEvidenceService:
             if row is not None and row.released_at is None:
                 row.released_at = _utc_now()
 
-    def purge_expired(self) -> int:
+    def run_retention_maintenance(
+        self,
+        *,
+        batch_size: int = 100,
+    ) -> dict[str, int]:
         from ..infrastructure.sql import (
             EVIDENCE_STATE_EXPIRED,
             EVIDENCE_STATE_PURGED,
+            ERP_ATTEMPT_TERMINAL,
+            RECOVERY_EXPIRED,
+            RECOVERY_REQUIRED,
+            RECOVERY_RESOLVED,
+            SYNC_RUN_TERMINAL_STATUSES,
+            AcumaticaProjectTaskSyncProjectResult,
+            AcumaticaProjectTaskSyncRun,
+            ErpSyncAttempt,
             ErpSyncEvidenceChunk,
             ErpSyncEvidenceManifest,
+            ErpSyncEvidenceReservation,
+            ErpSyncMutationEvidence,
+            ErpSyncRecoveryState,
+        )
+        from ..infrastructure.sql.erp_sync_control_repository import (
+            SqlErpSyncControlRepository,
         )
         from ..infrastructure.sql.session import transactional_session
 
-        now = _utc_now()
-        purged = 0
-        with transactional_session(self._session_factory) as session:
-            rows = tuple(
-                session.scalars(
-                    select(ErpSyncEvidenceManifest).where(
-                        ErpSyncEvidenceManifest.pinned.is_(False),
-                        ErpSyncEvidenceManifest.expires_at.is_not(None),
-                        ErpSyncEvidenceManifest.expires_at <= now,
-                        ErpSyncEvidenceManifest.state.not_in((EVIDENCE_STATE_PURGED,)),
-                    )
-                )
+        if self._control_settings is None:
+            raise ApplicationUnavailableError(
+                "Le profil de contrôle ERP requis pour la rétention est absent.",
+                code="erp_sync_maintenance_control_unavailable",
             )
+
+        limit = max(1, min(int(batch_size), 500))
+        payload_purged = 0
+        history_details_purged = 0
+
+        with transactional_session(self._session_factory) as session:
+            _control, now = SqlErpSyncControlRepository.guard_maintenance_session(
+                session,
+                settings=self._control_settings,
+            )
+            statement = (
+                select(ErpSyncEvidenceManifest)
+                .join(
+                    ErpSyncAttempt,
+                    ErpSyncAttempt.id == ErpSyncEvidenceManifest.attempt_id,
+                )
+                .where(
+                    ErpSyncEvidenceManifest.pinned == false(),
+                    ErpSyncEvidenceManifest.expires_at.is_not(None),
+                    ErpSyncEvidenceManifest.expires_at <= now,
+                    ErpSyncEvidenceManifest.state != EVIDENCE_STATE_PURGED,
+                    ErpSyncAttempt.status.in_(ERP_ATTEMPT_TERMINAL),
+                )
+                .order_by(
+                    ErpSyncEvidenceManifest.expires_at,
+                    ErpSyncEvidenceManifest.id,
+                )
+                .limit(limit)
+            )
+            if session.get_bind().dialect.name == "mssql":
+                statement = statement.with_hint(
+                    ErpSyncEvidenceManifest,
+                    "WITH (UPDLOCK, HOLDLOCK)",
+                    dialect_name="mssql",
+                )
+            rows = tuple(session.scalars(statement))
+
             affected_attempts: set[str] = set()
             for row in rows:
+                recovery = session.scalar(
+                    select(ErpSyncRecoveryState).where(
+                        ErpSyncRecoveryState.attempt_id == row.attempt_id
+                    )
+                )
+                reservation = session.scalar(
+                    select(ErpSyncEvidenceReservation).where(
+                        ErpSyncEvidenceReservation.attempt_id == row.attempt_id
+                    )
+                )
+                if (
+                    bool(row.pinned)
+                    or (
+                        recovery is not None
+                        and recovery.state == RECOVERY_REQUIRED
+                    )
+                    or (
+                        reservation is not None
+                        and reservation.released_at is None
+                    )
+                ):
+                    continue
+
                 row.state = EVIDENCE_STATE_EXPIRED
                 session.query(ErpSyncEvidenceChunk).filter(
                     ErpSyncEvidenceChunk.manifest_id == row.id
@@ -2795,64 +3140,109 @@ class ErpSyncEvidenceService:
                 row.state = EVIDENCE_STATE_PURGED
                 row.diagnostic = "erp_sync_evidence_retention_purged"
                 affected_attempts.add(str(row.attempt_id))
-                purged += 1
+                payload_purged += 1
 
-            if affected_attempts:
-                from ..infrastructure.sql import (
-                    RECOVERY_EXPIRED,
-                    RECOVERY_REQUIRED,
-                    RECOVERY_RESOLVED,
-                    ErpSyncEvidenceReservation,
-                    ErpSyncMutationEvidence,
-                    ErpSyncRecoveryState,
+            for attempt_id in affected_attempts:
+                remaining = int(
+                    session.scalar(
+                        select(func.count(ErpSyncEvidenceManifest.id)).where(
+                            ErpSyncEvidenceManifest.attempt_id == attempt_id,
+                            ErpSyncEvidenceManifest.state
+                            != EVIDENCE_STATE_PURGED,
+                        )
+                    )
+                    or 0
                 )
-                for attempt_id in affected_attempts:
-                    remaining = int(
-                        session.scalar(
-                            select(func.count(ErpSyncEvidenceManifest.id)).where(
-                                ErpSyncEvidenceManifest.attempt_id == attempt_id,
-                                ErpSyncEvidenceManifest.state != EVIDENCE_STATE_PURGED,
-                            )
-                        )
-                        or 0
+                recovery = session.scalar(
+                    select(ErpSyncRecoveryState).where(
+                        ErpSyncRecoveryState.attempt_id == attempt_id
                     )
-                    recovery = session.scalar(
-                        select(ErpSyncRecoveryState).where(
-                            ErpSyncRecoveryState.attempt_id == attempt_id
-                        )
-                    )
-                    if (
-                        remaining == 0
-                        and not (
-                            recovery is not None
-                            and recovery.state == RECOVERY_REQUIRED
+                )
+                if remaining == 0 and not (
+                    recovery is not None
+                    and recovery.state == RECOVERY_REQUIRED
+                ):
+                    for mutation in session.scalars(
+                        select(ErpSyncMutationEvidence).where(
+                            ErpSyncMutationEvidence.attempt_id == attempt_id
                         )
                     ):
-                        mutation_rows = tuple(
-                            session.scalars(
-                                select(ErpSyncMutationEvidence).where(
-                                    ErpSyncMutationEvidence.attempt_id == attempt_id
+                        mutation.encrypted_before = None
+                        mutation.encrypted_after = None
+
+                    reservation = session.scalar(
+                        select(ErpSyncEvidenceReservation).where(
+                            ErpSyncEvidenceReservation.attempt_id == attempt_id
+                        )
+                    )
+                    if reservation is not None:
+                        reservation.used_bytes = 0
+                        reservation.used_plaintext_bytes = 0
+
+                    if (
+                        recovery is not None
+                        and recovery.state not in {
+                            RECOVERY_REQUIRED,
+                            RECOVERY_RESOLVED,
+                        }
+                    ):
+                        recovery.state = RECOVERY_EXPIRED
+                        recovery.pinned = False
+
+            remaining_budget = max(0, limit - payload_purged)
+            if remaining_budget:
+                history_cutoff = now - timedelta(
+                    days=self.settings.history_days
+                )
+                detail_ids = tuple(
+                    session.scalars(
+                        select(AcumaticaProjectTaskSyncProjectResult.id)
+                        .join(
+                            AcumaticaProjectTaskSyncRun,
+                            AcumaticaProjectTaskSyncRun.id
+                            == AcumaticaProjectTaskSyncProjectResult.run_id,
+                        )
+                        .where(
+                            AcumaticaProjectTaskSyncRun.status.in_(
+                                SYNC_RUN_TERMINAL_STATUSES
+                            ),
+                            AcumaticaProjectTaskSyncRun.finished_at.is_not(None),
+                            AcumaticaProjectTaskSyncRun.finished_at
+                            <= history_cutoff,
+                            (
+                                AcumaticaProjectTaskSyncRun.parent_attempt_id.is_(None)
+                                | AcumaticaProjectTaskSyncRun.parent_attempt_id.not_in(
+                                    select(ErpSyncRecoveryState.attempt_id).where(
+                                        ErpSyncRecoveryState.state
+                                        == RECOVERY_REQUIRED
+                                    )
                                 )
+                            ),
+                        )
+                        .order_by(
+                            AcumaticaProjectTaskSyncRun.finished_at,
+                            AcumaticaProjectTaskSyncProjectResult.id,
+                        )
+                        .limit(remaining_budget)
+                    )
+                )
+                if detail_ids:
+                    history_details_purged = (
+                        session.query(AcumaticaProjectTaskSyncProjectResult)
+                        .filter(
+                            AcumaticaProjectTaskSyncProjectResult.id.in_(
+                                detail_ids
                             )
                         )
-                        for mutation in mutation_rows:
-                            mutation.encrypted_before = None
-                            mutation.encrypted_after = None
-                        reservation = session.scalar(
-                            select(ErpSyncEvidenceReservation).where(
-                                ErpSyncEvidenceReservation.attempt_id == attempt_id
-                            )
-                        )
-                        if reservation is not None:
-                            reservation.used_bytes = 0
-                            reservation.used_plaintext_bytes = 0
-                        if (
-                            recovery is not None
-                            and recovery.state not in {
-                                RECOVERY_REQUIRED,
-                                RECOVERY_RESOLVED,
-                            }
-                        ):
-                            recovery.state = RECOVERY_EXPIRED
-                            recovery.pinned = False
-        return purged
+                        .delete(synchronize_session=False)
+                    )
+
+        return {
+            "payloads_purged": int(payload_purged),
+            "history_details_purged": int(history_details_purged),
+        }
+
+    def purge_expired(self, *, batch_size: int = 100) -> int:
+        return self.run_retention_maintenance(
+            batch_size=batch_size,
+        )["payloads_purged"]

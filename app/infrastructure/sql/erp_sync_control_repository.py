@@ -206,6 +206,33 @@ class SqlErpSyncControlRepository:
         self._session_factory = session_factory
 
     @staticmethod
+    def guard_maintenance_session(
+        session: Session,
+        *,
+        settings: ErpSyncSchedulerSettings,
+    ) -> tuple[ErpSyncControl, datetime]:
+        """Authorize retention mutation under the canonical durable control lock.
+
+        This deliberately shares protocol/configuration authority with normal ERP
+        admission and keeps any permitted boundary adoption in the same transaction
+        as the maintenance writes it authorizes.
+        """
+        control = _lock_control(session)
+        now = _sql_now(session)
+        business_date = now.astimezone(settings.timezone()).date()
+        latest_materialized_business_date = session.scalar(
+            select(func.max(ErpSyncOccurrence.business_date))
+        )
+        _ensure_config_compatible_locked(
+            control,
+            settings,
+            allow_boundary_adoption=True,
+            business_date=business_date,
+            latest_materialized_business_date=latest_materialized_business_date,
+        )
+        return control, now
+
+    @staticmethod
     def guard_recovery_session(
         session: Session,
         *,
@@ -545,6 +572,9 @@ class SqlErpSyncControlRepository:
         with transactional_session(self._session_factory) as session:
             control = _lock_control(session)
             now = _sql_now(session)
+            # Scheduler liveness is independent from the business-date watermark
+            # and from any active owner's worker heartbeat.
+            control.scheduler_observed_at = now
             self._interrupt_expired_locked(session, control, now=now)
             decision = scheduler_decision(now, settings)
             watermark = control.last_evaluated_business_date
