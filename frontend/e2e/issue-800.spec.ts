@@ -121,7 +121,11 @@ test("800 Gestionnaire consulte Planning en lecture seule et le backend refuse u
       `/api/v1/planning/snapshot?start=${start}&end=${end}&scope=global`,
     );
     expect(before.status(), await before.text()).toBe(200);
-    const beforeBody = await before.json();
+    const beforeBody = await before.json() as {
+      shifts: Array<{ allocation_id: string }>;
+    };
+    expect(beforeBody.shifts.map((shift) => shift.allocation_id))
+      .toContain(setup.allocation_id);
 
     const denied = await page.request.post("/api/v1/quick-shifts", {
       headers: { "Idempotency-Key": "issue-800-browser-denied" },
