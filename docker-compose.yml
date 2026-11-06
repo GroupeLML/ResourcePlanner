@@ -133,6 +133,9 @@ services:
       - resourceplanner-logs:/home/resourceplanner/.resourceplanner/logs
     expose:
       - "8000"
+    # ERP attempts are bounded to 2h; keep a 5m lease margin so FastAPI
+    # lifespan shutdown can drain managed work before Docker escalates to SIGKILL.
+    stop_grace_period: 2h5m
     restart: unless-stopped
 
   frontend:
