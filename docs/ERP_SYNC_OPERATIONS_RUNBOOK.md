@@ -188,6 +188,7 @@ Docker peut envoyer SIGKILL et les règles SQL de lease/recovery restent l'autor
        c.lease_expires_at,
        c.owner_deadline_at,
        c.heartbeat_at,
+       SYSUTCDATETIME() AS sql_now,
        a.status AS owner_attempt_status,
        a.phase AS owner_attempt_phase,
        a.generation AS owner_attempt_generation
@@ -226,11 +227,17 @@ Docker peut envoyer SIGKILL et les règles SQL de lease/recovery restent l'autor
    - aucune tentative `PENDING`/`RUNNING` incompatible ne demeure;
    - tout état recovery REQUIRED/AVAILABLE est compris et traité selon 643B avant migration.
 
-   Si un owner valide apparaît encore après l'arrêt gracieux, ne jamais voler la lease,
-   la raccourcir, la vider manuellement ni supprimer la tentative. Attendre son échéance
-   durable/owner deadline si l'arrêt a été forcé, puis appliquer la reconciliation/recovery
-   ADR-033 avec une version compatible. Tant que cette classification n'est pas résolue,
-   **ne pas migrer**.
+   Si l'arrêt gracieux a fini normalement, l'owner doit déjà être libéré. Si Docker a dû
+   tuer le processus, ne jamais voler la lease, la raccourcir, la vider manuellement ni
+   supprimer la tentative. Garder tous les writers arrêtés et relancer uniquement les
+   requêtes SQL read-only ci-dessus jusqu'à ce que `lease_expires_at <= sql_now` **et**
+   `owner_deadline_at <= sql_now`. Ne modifier aucune ligne pour accélérer ce délai.
+
+   Une fois ces échéances durablement expirées et zéro processus writer confirmé, la
+   migration peut se faire avec le service one-shot. Au premier démarrage de l'image
+   compatible **après** migration, `reconcile_startup` applique alors les sémantiques
+   ADR-033 existantes (INTERRUPTED/recovery) avant toute nouvelle admission. Vérifier cet
+   état durable avant RUN_NOW/RETRY ou activation.
 
 5. Vérifier au niveau processus que tous les writers incompatibles restent arrêtés :
 
