@@ -2245,6 +2245,39 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             backend_a.shutdown()
             backend_b.shutdown()
 
+    def test_scheduler_observation_preserves_healthy_peer_owner_on_sqlserver(self) -> None:
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = repository.accept_manual(
+            intent="PROJECTS_ONLY",
+            actor_name="peer-owner",
+            idempotency_key="peer-owner-observation",
+            settings=self.settings,
+        )
+        attempt = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="peer-owner",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(attempt)
+        with self.factory() as session:
+            before = session.get(ErpSyncControl, ERP_SYNC_CONTROL_ROW_ID)
+            owner_before = before.owner_attempt_id
+            generation_before = int(before.generation)
+            lease_before = before.lease_expires_at
+
+        repository.record_daily_decision(
+            self.settings,
+            UnavailableErpSyncAutomaticSafetyCapability(),
+        )
+
+        with self.factory() as session:
+            after = session.get(ErpSyncControl, ERP_SYNC_CONTROL_ROW_ID)
+            self.assertEqual(after.owner_attempt_id, owner_before)
+            self.assertEqual(int(after.generation), generation_before)
+            self.assertEqual(after.lease_expires_at, lease_before)
+            self.assertIsNotNone(after.scheduler_observed_at)
+
     def test_manual_owner_is_only_observed_by_automatic_scheduler(self) -> None:
         unavailable = UnavailableErpSyncAutomaticSafetyCapability()
         repository = SqlErpSyncControlRepository(self.factory)
