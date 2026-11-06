@@ -2748,6 +2748,96 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
         self.assertEqual(repository.get_attempt(second.id).status, ERP_ATTEMPT_PENDING)
         stale_orchestrator.shutdown()
 
+    def test_concurrent_recovery_pin_and_retention_never_leave_required_purged_evidence(self) -> None:
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = repository.accept_manual(
+            intent="PROJECTS_ONLY",
+            actor_name="retention-race",
+            idempotency_key="retention-race",
+            settings=self.settings,
+        )
+        attempt = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="retention-race",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(attempt)
+        captured = self.evidence.capture_source(
+            attempt_id=attempt.id,
+            generation=attempt.generation,
+            source_type="PROJECTS",
+            profile_fingerprint=self.settings.config_fingerprint,
+            payload={"records": [{"number": "SQL643-RETENTION-RACE"}]},
+            row_count=1,
+        )
+        self.assertTrue(
+            repository.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.settings,
+            )
+        )
+        self.evidence.finalize_attempt(
+            attempt_id=attempt.id,
+            successful=False,
+        )
+        with transactional_session(self.factory) as session:
+            session.get(
+                ErpSyncEvidenceManifest,
+                captured.manifest_id,
+            ).expires_at = (
+                SqlErpSyncControlRepository(self.factory).current_sql_time()
+                - timedelta(seconds=1)
+            )
+
+        barrier = Barrier(2)
+
+        def pin():
+            barrier.wait(timeout=5)
+            try:
+                self.evidence.mark_recovery_required(
+                    attempt_id=attempt.id,
+                    reason_code="concurrent-retention-race",
+                )
+                return "PINNED"
+            except Exception as exc:
+                return getattr(exc, "code", type(exc).__name__)
+
+        def purge():
+            barrier.wait(timeout=5)
+            return self.evidence.purge_expired(batch_size=1)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            pin_future = pool.submit(pin)
+            purge_future = pool.submit(purge)
+            pin_result = pin_future.result(timeout=10)
+            purge_future.result(timeout=10)
+
+        with self.factory() as session:
+            manifest = session.get(
+                ErpSyncEvidenceManifest,
+                captured.manifest_id,
+            )
+            recovery = session.scalar(
+                select(ErpSyncRecoveryState).where(
+                    ErpSyncRecoveryState.attempt_id == attempt.id
+                )
+            )
+
+        if recovery is not None and recovery.state == "REQUIRED":
+            self.assertTrue(manifest.pinned)
+            self.assertNotEqual(manifest.state, "PURGED")
+            self.assertEqual(pin_result, "PINNED")
+        else:
+            self.assertEqual(manifest.state, "PURGED")
+            self.assertEqual(
+                pin_result,
+                "erp_sync_recovery_evidence_expired",
+            )
+
     def test_expired_owner_releases_reservation_and_replacement_can_reserve(self) -> None:
         repository = SqlErpSyncControlRepository(self.factory)
         occurrence = self._daily_occurrence()
