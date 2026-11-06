@@ -2961,6 +2961,19 @@ test("ERP operations use authoritative RUN_NOW, review, RETRY and compensation c
   await expect(page.getByText("Prévisualisation confirmable")).toBeVisible();
   await expect(page.getByText(/1 enregistrement\(s\) admissible\(s\)/)).toBeVisible();
 
+  const preOwnerStateResponse = await page.request.get(
+    "/api/v1/integrations/acumatica/erp-sync/operations",
+  );
+  expect(
+    preOwnerStateResponse.ok(),
+    await preOwnerStateResponse.text(),
+  ).toBeTruthy();
+  const preOwnerRecovery = (
+    await preOwnerStateResponse.json() as {
+      recovery_state: { state: string; attempt_id: string | null };
+    }
+  ).recovery_state;
+
   // Hold a second durable manual owner through the canonical SQL control
   // repository. The E2E hook does not fake the compensation response; it only
   // establishes the owner barrier that the real confirm endpoint must observe.
@@ -3011,6 +3024,15 @@ test("ERP operations use authoritative RUN_NOW, review, RETRY and compensation c
   );
   expect(receiptResponse.ok(), await receiptResponse.text()).toBeTruthy();
   expect((await receiptResponse.json() as { count: number }).count).toBe(0);
+  const ownerRefusalState = await page.request.get(
+    "/api/v1/integrations/acumatica/erp-sync/operations",
+  );
+  const ownerRefusalRecovery = (
+    await ownerRefusalState.json() as {
+      recovery_state: { state: string; attempt_id: string | null };
+    }
+  ).recovery_state;
+  expect(ownerRefusalRecovery).toEqual(preOwnerRecovery);
 
   const releaseOwner = await page.request.post(
     "/__e2e__/erp-sync/release-manual-owner"
