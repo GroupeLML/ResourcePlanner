@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import timezone
 
-from sqlalchemy import case, func, select, true
+from sqlalchemy import case, false, func, select, true
 from zoneinfo import ZoneInfo
 
 from ...application.erp_sync_operations import (
@@ -31,6 +31,7 @@ from .erp_sync_evidence_models import (
     EVIDENCE_PROOF_CHECKPOINT,
     EVIDENCE_PROOF_SOURCE,
     EVIDENCE_STATE_EXPIRED,
+    EVIDENCE_STATE_PURGED,
     EVIDENCE_STATE_READY,
     EVIDENCE_STATE_SEALED,
     RECOVERY_NONE,
@@ -319,7 +320,7 @@ class SqlErpSyncOperationsRepository:
             expired = int(
                 session.scalar(
                     select(func.count(ErpSyncEvidenceManifest.id)).where(
-                        ErpSyncEvidenceManifest.pinned.is_(False),
+                        ErpSyncEvidenceManifest.pinned == false(),
                         ErpSyncEvidenceManifest.expires_at.is_not(None),
                         ErpSyncEvidenceManifest.expires_at <= now,
                         ErpSyncEvidenceManifest.state != EVIDENCE_STATE_PURGED,
