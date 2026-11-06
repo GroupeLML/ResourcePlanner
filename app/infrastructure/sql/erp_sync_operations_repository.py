@@ -319,7 +319,10 @@ class SqlErpSyncOperationsRepository:
             expired = int(
                 session.scalar(
                     select(func.count(ErpSyncEvidenceManifest.id)).where(
-                        ErpSyncEvidenceManifest.state == EVIDENCE_STATE_EXPIRED
+                        ErpSyncEvidenceManifest.pinned.is_(False),
+                        ErpSyncEvidenceManifest.expires_at.is_not(None),
+                        ErpSyncEvidenceManifest.expires_at <= now,
+                        ErpSyncEvidenceManifest.state != EVIDENCE_STATE_PURGED,
                     )
                 )
                 or 0
@@ -357,6 +360,8 @@ class SqlErpSyncOperationsRepository:
                 evidence_status = "UNAVAILABLE"
             elif pressure is not None and pressure >= 0.80:
                 evidence_status = "PRESSURE"
+            elif expired:
+                evidence_status = "EXPIRED"
             elif pinned:
                 evidence_status = "PINNED"
             elif manifests_total:
@@ -386,6 +391,7 @@ class SqlErpSyncOperationsRepository:
                 lease_expires_at=control.lease_expires_at,
                 owner_deadline_at=control.owner_deadline_at,
                 control_heartbeat_at=control.heartbeat_at,
+                scheduler_observed_at=control.scheduler_observed_at,
                 control_updated_at=control.updated_at,
                 last_evaluated_business_date=control.last_evaluated_business_date,
                 control_protocol_version=int(control.protocol_version),
