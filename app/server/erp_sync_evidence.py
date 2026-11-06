@@ -3060,6 +3060,15 @@ class ErpSyncEvidenceService:
                             AcumaticaProjectTaskSyncRun.finished_at.is_not(None),
                             AcumaticaProjectTaskSyncRun.finished_at
                             <= history_cutoff,
+                            (
+                                AcumaticaProjectTaskSyncRun.parent_attempt_id.is_(None)
+                                | AcumaticaProjectTaskSyncRun.parent_attempt_id.not_in(
+                                    select(ErpSyncRecoveryState.attempt_id).where(
+                                        ErpSyncRecoveryState.state
+                                        == RECOVERY_REQUIRED
+                                    )
+                                )
+                            ),
                         )
                         .order_by(
                             AcumaticaProjectTaskSyncRun.finished_at,
