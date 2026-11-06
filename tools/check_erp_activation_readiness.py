@@ -17,8 +17,8 @@ from app.infrastructure.smtp import FernetSecretCipher
 from app.infrastructure.sql import (
     ERP_SYNC_CONTROL_ROW_ID,
     ErpSyncBaseline,
+    ErpSyncAttempt,
     ErpSyncControl,
-    ErpSyncOccurrence,
     ErpSyncRecoveryState,
     create_session_factory,
     create_sql_engine,
@@ -148,8 +148,9 @@ def check_activation_readiness(
                 )
 
             unresolved_review = session.scalar(
-                select(ErpSyncOccurrence).where(
-                    ErpSyncOccurrence.status == "PENDING_REVIEW"
+                select(ErpSyncAttempt).where(
+                    ErpSyncAttempt.status == "PENDING",
+                    ErpSyncAttempt.phase == "PLAUSIBILITY_REVIEW_REQUIRED",
                 ).limit(1)
             )
             if unresolved_review is not None:
