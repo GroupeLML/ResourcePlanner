@@ -1365,8 +1365,7 @@ class ErpSyncEvidenceService:
                             "observed_at": row.observed_at,
                             "state": str(row.state),
                             "diagnostic": (
-                                row.diagnostic
-                                or attempt.error_code
+                                attempt.error_code
                                 or "erp_sync_baseline_required"
                             ),
                         }
