@@ -119,6 +119,45 @@ class ErpSyncControlTests(unittest.TestCase):
     def fixed_now() -> datetime:
         return datetime(2026, 1, 15, 5, 37, tzinfo=timezone.utc)
 
+    def test_idle_scheduler_ticks_refresh_observation_without_rewriting_watermark(self) -> None:
+        first_now = datetime(2026, 1, 15, 5, 37, tzinfo=timezone.utc)
+        second_now = datetime(2026, 1, 15, 6, 37, tzinfo=timezone.utc)
+        with patch(
+            "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+            side_effect=(first_now, second_now),
+        ):
+            self.repository.record_daily_decision(
+                self.settings,
+                TestErpSyncAutomaticSafetyCapability(),
+            )
+            self.repository.record_daily_decision(
+                self.settings,
+                TestErpSyncAutomaticSafetyCapability(),
+            )
+
+        with self.factory() as session:
+            control = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+        self.assertEqual(
+            control.last_evaluated_business_date,
+            date(2026, 1, 15),
+        )
+        self.assertEqual(control.scheduler_observed_at, second_now)
+
+    def test_disabled_scheduler_records_observation_without_occurrence(self) -> None:
+        disabled = ErpSyncSchedulerSettings(enabled=False)
+        with patch(
+            "app.infrastructure.sql.erp_sync_control_repository._sql_now",
+            return_value=self.fixed_now(),
+        ):
+            occurrence = self.repository.record_daily_decision(
+                disabled,
+                TestErpSyncAutomaticSafetyCapability(),
+            )
+        self.assertIsNone(occurrence)
+        with self.factory() as session:
+            control = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+        self.assertEqual(control.scheduler_observed_at, self.fixed_now())
+
     def test_daily_occurrence_is_unique_when_clock_moves_backward(self) -> None:
         capability = TestErpSyncAutomaticSafetyCapability()
         with patch(
