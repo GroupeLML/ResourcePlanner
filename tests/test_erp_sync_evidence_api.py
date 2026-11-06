@@ -108,6 +108,110 @@ class ErpSyncEvidenceApiTests(unittest.TestCase):
         )
         return attempt.id, manifest.manifest_id
 
+    def test_failed_bootstrap_candidates_reuse_exact_retained_manifest_identity(self) -> None:
+        app = self._app(TEST_ADMIN_AUTH_RESOLVER)
+        factory = app.state.erp_sync_orchestrator._session_factory
+        control = SqlErpSyncControlRepository(factory)
+        occurrence = control.accept_manual(
+            intent="PROJECTS_AND_ACTIVE_TASKS",
+            actor_name="admin",
+            idempotency_key="bootstrap-candidates",
+            settings=self.settings,
+        )
+        attempt = control.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="admin",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(attempt)
+        service = app.state.erp_sync_evidence_service
+        profile = service.bind_attempt_policy(
+            attempt_id=attempt.id,
+            generation=attempt.generation,
+        )
+        projects = service.capture_source(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=profile,
+            payload={
+                "records": [
+                    {
+                        "external_id": "BOOT-1",
+                        "number": "BOOT-1",
+                        "name": "PRIVATE-BOOTSTRAP-PAYLOAD",
+                        "status": "Actif",
+                    }
+                ],
+                "page_evidence": {"complete": True, "pages": 1, "rows": 1},
+            },
+            row_count=1,
+            generation=attempt.generation,
+        )
+        tasks = service.capture_source(
+            attempt_id=attempt.id,
+            source_type="TASKS",
+            profile_fingerprint=profile,
+            payload={
+                "portfolio": {
+                    "source_rows": 1,
+                    "source_pages": 1,
+                    "snapshots": [],
+                },
+                "page_evidence": {"complete": True, "pages": 1, "rows": 1},
+            },
+            row_count=1,
+            generation=attempt.generation,
+        )
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                error_code="erp_sync_source_plausibility_failed",
+                diagnostic="bootstrap requires baseline",
+                settings=self.settings,
+            )
+        )
+        service.finalize_attempt(attempt_id=attempt.id, successful=False)
+
+        with TestClient(app) as client:
+            candidates = client.get(
+                "/api/v1/integrations/acumatica/erp-sync/bootstrap-baseline-candidates"
+            )
+            self.assertEqual(candidates.status_code, 200, candidates.text)
+            payload = candidates.json()
+            self.assertEqual(payload["attempt_id"], attempt.id)
+            self.assertEqual(
+                {row["manifest_id"] for row in payload["sources"]},
+                {projects.manifest_id, tasks.manifest_id},
+            )
+            self.assertNotIn("PRIVATE-BOOTSTRAP-PAYLOAD", candidates.text)
+
+            approved = client.post(
+                "/api/v1/integrations/acumatica/erp-sync/evidence/"
+                + projects.manifest_id
+                + "/approve-baseline",
+                json={"reason": "Bootstrap PROJECTS vérifié"},
+            )
+            self.assertEqual(approved.status_code, 200, approved.text)
+            after = client.get(
+                "/api/v1/integrations/acumatica/erp-sync/bootstrap-baseline-candidates"
+            )
+
+        self.assertEqual(after.status_code, 200, after.text)
+        self.assertEqual(
+            [row["manifest_id"] for row in after.json()["sources"]],
+            [tasks.manifest_id],
+        )
+        terminal = control.get_attempt(attempt.id)
+        self.assertEqual(terminal.status, "FAILED")
+        self.assertEqual(
+            terminal.error_code,
+            "erp_sync_source_plausibility_failed",
+        )
+
     def test_sensitive_approval_requires_admin_settings_in_addition_to_sync_projects(self) -> None:
         app = self._app(SYNC_ONLY)
         attempt_id, manifest_id = self._sealed_manifest(app)
