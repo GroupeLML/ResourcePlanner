@@ -2606,6 +2606,142 @@ test("materialized demand cancellation is requested, reviewed, rejected or accep
   await closeContext(requester.context);
 });
 
+test("ERP first-baseline bootstrap uses retained failed manifests then explicit RETRY", async ({ browser }) => {
+  test.setTimeout(120_000);
+  const { context, page } = await openAs(browser, "ADMIN");
+
+  const baselineOff = await page.request.post(
+    "/__e2e__/erp-sync/baselines?enabled=false",
+  );
+  expect(baselineOff.ok(), await baselineOff.text()).toBeTruthy();
+
+  try {
+    await navigateMain(page, "Opérations ERP");
+    await expect(
+      page.getByText("Aucune baseline approuvée", { exact: true }).first(),
+    ).toBeVisible();
+
+    const beforeEvents = await page.request.get("/__e2e__/erp-sync/events");
+    expect(beforeEvents.ok(), await beforeEvents.text()).toBeTruthy();
+    const beforeCount = ((await beforeEvents.json()) as { events: string[] }).events.length;
+
+    const launchPromise = page.waitForResponse((response) => (
+      response.request().method() === "POST"
+      && new URL(response.url()).pathname
+        === "/api/v1/integrations/acumatica/erp-sync/run-now"
+    ));
+    await page.getByRole("button", { name: "Lancer RUN_NOW" }).click();
+    const launchResponse = await launchPromise;
+    expect(launchResponse.status()).toBe(202);
+    const launched = await launchResponse.json() as {
+      run_id: string;
+      occurrence_id: string;
+    };
+    const failed = await waitForErpRun(
+      page,
+      launched.run_id,
+      (run) => run.status === "FAILED",
+    );
+    expect(failed.run_id).toBe(launched.run_id);
+
+    await page.getByRole("button", { name: "Actualiser" }).click();
+    await expect(
+      page.getByText(
+        "Source échouée retenue disponible pour baseline",
+        { exact: true },
+      ),
+    ).toBeVisible();
+
+    const candidatesResponse = await page.request.get(
+      "/api/v1/integrations/acumatica/erp-sync/bootstrap-baseline-candidates",
+    );
+    expect(candidatesResponse.ok(), await candidatesResponse.text()).toBeTruthy();
+    const candidates = await candidatesResponse.json() as {
+      attempt_id: string;
+      sources: Array<{
+        manifest_id: string;
+        attempt_id: string;
+        source_type: "PROJECTS" | "TASKS";
+        row_count: number;
+      }>;
+    };
+    expect(candidates.attempt_id).toBe(launched.run_id);
+    expect(candidates.sources.map((row) => row.source_type).sort()).toEqual([
+      "PROJECTS",
+      "TASKS",
+    ]);
+    expect(candidates.sources.every((row) => row.attempt_id === launched.run_id)).toBe(true);
+
+    const unauthorized = await openAs(browser, "COORDINATOR");
+    const deniedApproval = await unauthorized.page.request.post(
+      "/api/v1/integrations/acumatica/erp-sync/evidence/"
+        + encodeURIComponent(candidates.sources[0].manifest_id)
+        + "/approve-baseline",
+      { data: { reason: "unauthorized bootstrap approval" } },
+    );
+    expect(deniedApproval.status()).toBe(403);
+    await closeContext(unauthorized.context);
+
+    for (const sourceType of ["PROJECTS", "TASKS"] as const) {
+      const source = candidates.sources.find((row) => row.source_type === sourceType);
+      expect(source).toBeTruthy();
+      const sourceCard = page
+        .locator(".erp-sync-bootstrap-candidates .erp-sync-review-source")
+        .filter({ hasText: sourceType });
+      await expect(sourceCard).toContainText(source!.manifest_id);
+      page.once("dialog", (dialog) => dialog.accept());
+      await sourceCard
+        .getByRole("button", { name: "Approuver cette source comme baseline" })
+        .click();
+      await expect(
+        page.getByText("Baseline " + sourceType + " approuvée.", { exact: true }),
+      ).toBeVisible();
+    }
+
+    await expect(
+      page.getByText("Baseline approuvée · 1 lignes", { exact: true }),
+    ).toHaveCount(2);
+
+    const oldAttempt = await erpRunState(page, launched.run_id);
+    expect(oldAttempt.status).toBe("FAILED");
+
+    const retryPromise = page.waitForResponse((response) => (
+      response.request().method() === "POST"
+      && new URL(response.url()).pathname.endsWith("/retry")
+    ));
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.getByRole("button", { name: "RETRY explicite" }).click();
+    const retryResponse = await retryPromise;
+    expect(retryResponse.status()).toBe(202);
+    const retried = await retryResponse.json() as { run_id: string };
+    expect(retried.run_id).not.toBe(launched.run_id);
+    await waitForErpRun(
+      page,
+      retried.run_id,
+      (run) => run.status === "COMPLETED",
+    );
+
+    const afterEvents = await page.request.get("/__e2e__/erp-sync/events");
+    expect(afterEvents.ok(), await afterEvents.text()).toBeTruthy();
+    const eventRows = ((await afterEvents.json()) as { events: string[] }).events;
+    expect(eventRows.slice(beforeCount)).toEqual([
+      "projects",
+      "tasks",
+      "projects",
+      "tasks",
+    ]);
+
+    await page.reload();
+    await navigateMain(page, "Opérations ERP");
+    await expect(
+      page.getByText("Baseline approuvée · 1 lignes", { exact: true }),
+    ).toHaveCount(2);
+  } finally {
+    await page.request.post("/__e2e__/erp-sync/baselines?enabled=true").catch(() => undefined);
+    await closeContext(context);
+  }
+});
+
 test("ERP operations use authoritative RUN_NOW, review, RETRY and compensation controls", async ({ browser }) => {
   test.setTimeout(120_000);
 
