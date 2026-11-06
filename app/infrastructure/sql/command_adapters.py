@@ -188,7 +188,7 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
         temporary_inputs = tuple(
             PreservedAllocationInput(
                 segment_id=_text(requirement.legacy_segment_id) or requirement.id,
-                resource_id=resource.name,
+                resource_id=resource.id,
                 day=shift.work_date,
                 hours=float(shift.hours),
                 locked=bool(shift.locked),
@@ -285,7 +285,7 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
             for requirement in requirements
         }
         resources = self._session.scalars(select(Resource)).all()
-        resource_by_name = {resource.name: resource for resource in resources}
+        resource_by_id = {resource.id: resource for resource in resources}
 
         for allocation in result.allocations:
             if allocation.preserved:
@@ -295,10 +295,11 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
                 raise RuntimeError(
                     f"Segment {allocation.segment_id} introuvable pendant la persistance du plan."
                 )
-            resource = resource_by_name.get(allocation.resource_id)
+            resource = resource_by_id.get(allocation.resource_id)
             if resource is None:
                 raise RuntimeError(
-                    f"Ressource {allocation.resource_id} introuvable pendant la persistance du plan."
+                    "Identité ressource Planning inconnue pendant la persistance du plan: "
+                    f"{allocation.resource_id}."
                 )
 
             missing = not allocation.counts_as_allocated
