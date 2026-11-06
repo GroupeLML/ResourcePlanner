@@ -692,6 +692,15 @@ def build_app(database_path: Path, frontend_dist: Path):
             "post_project_failure": erp_sync_post_project_failure["enabled"],
         }
 
+    @app.post("/__e2e__/erp-sync/recovery-required", include_in_schema=False)
+    def erp_sync_recovery_required(attempt_id: str):
+        assert app.state.erp_sync_evidence_service is not None
+        app.state.erp_sync_evidence_service.mark_recovery_required(
+            attempt_id=attempt_id,
+            reason_code="e2e_controlled_recovery_required",
+        )
+        return {"attempt_id": attempt_id, "state": "REQUIRED"}
+
     @app.get("/__e2e__/identity/link-pending", include_in_schema=False)
     def link_pending_oidc_identity():
         with app.state.session_factory.begin() as session:
