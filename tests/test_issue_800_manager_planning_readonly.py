@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import time
 from tempfile import TemporaryDirectory
 import unittest
 
@@ -22,6 +23,7 @@ from app.application.security import (
     permissions_for_roles,
 )
 from app.infrastructure.sql import (
+    ResourceAvailabilityRule,
     ResourceRequirement,
     Shift,
     create_session_factory,
@@ -38,12 +40,30 @@ from tests.test_planning_visibility_security_acceptance import (
 
 
 class Issue800ManagerPlanningReadOnlyTests(unittest.TestCase):
+    @staticmethod
+    def _seed_database(session) -> None:
+        PlanningVisibilitySecurityAcceptanceTests._seed_database(session)
+        session.add(
+            ResourceAvailabilityRule(
+                id="AVAIL-800-PM-VISIBLE-DAY1",
+                resource_id="R-PM-VISIBLE",
+                availability_type="Horaire standard",
+                start_date=DAY_1,
+                end_date=DAY_1,
+                weekdays="Lun",
+                start_time=time(8, 0),
+                end_time=time(16, 0),
+                note="Fixture #800 pour Quick Shift canonique du Gestionnaire",
+                active=True,
+            )
+        )
+
     @classmethod
     def setUpClass(cls) -> None:
         super().setUpClass()
         cls._database_template = SqliteDatabaseTemplate(
             filename="issue-800-manager-planning-readonly.db",
-            seed=PlanningVisibilitySecurityAcceptanceTests._seed_database,
+            seed=cls._seed_database,
         )
 
     @classmethod
