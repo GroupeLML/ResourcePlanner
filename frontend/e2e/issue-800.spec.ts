@@ -18,6 +18,33 @@ function startOfWeek(value: Date) {
   return addDays(value, -(day === 0 ? 6 : day - 1));
 }
 
+async function createKnownShift(browser: Browser, day: string) {
+  const context = await browser.newContext({
+    baseURL: BASE_URL,
+    locale: "fr-CA",
+    extraHTTPHeaders: { "X-E2E-Role": "COORDINATOR" },
+  });
+  const response = await context.request.post("/api/v1/quick-shifts", {
+    headers: { "Idempotency-Key": "issue-800-browser-visible-shift" },
+    data: {
+      project_number: "P-251",
+      project_name: "Projet Playwright V2",
+      technician: "Alice",
+      day,
+      hours: 2,
+      outside_standard_hours: true,
+      note: "Issue 800 Manager visible Shift",
+    },
+  });
+  expect(response.status(), await response.text()).toBe(201);
+  const created = await response.json() as {
+    allocation_id: string;
+    segment_id: string;
+  };
+  expect(created.allocation_id).toBeTruthy();
+  return { context, ...created };
+}
+
 async function openManager(browser: Browser) {
   const context = await browser.newContext({
     baseURL: BASE_URL,
@@ -50,10 +77,11 @@ async function assertReadOnlyPlanning(page: Page) {
 }
 
 test("800 Gestionnaire consulte Planning en lecture seule et le backend refuse un Quick Shift direct", async ({ browser }) => {
-  const { context, page } = await openManager(browser);
   const weekStart = startOfWeek(new Date());
   const start = localIso(weekStart);
   const end = localIso(addDays(weekStart, 6));
+  const setup = await createKnownShift(browser, start);
+  const { context, page } = await openManager(browser);
 
   try {
     const principal = await page.request.get("/api/v1/auth/me");
@@ -76,7 +104,15 @@ test("800 Gestionnaire consulte Planning en lecture seule et le backend refuse u
     await openPlanning(page);
 
     await expect(page.locator(".resource-row").first()).toBeVisible();
-    await expect(page.locator(".shift-card").first()).toBeVisible();
+    const knownShift = page.locator(
+      `.shift-card[data-allocation-id="${setup.allocation_id}"]`,
+    );
+    await expect(knownShift).toBeVisible();
+    await expect(knownShift).toContainText("P-251");
+    await expect(knownShift.locator(".shift-card-main")).toHaveAttribute(
+      "title",
+      /Issue 800 Manager visible Shift/,
+    );
     await expect(page.locator(".planning-work-queue")).toBeVisible();
     await expect(page.getByRole("button", { name: "Vue globale" })).toHaveClass(/active/);
     await assertReadOnlyPlanning(page);
@@ -105,6 +141,9 @@ test("800 Gestionnaire consulte Planning en lecture seule et le backend refuse u
     await expect(page.locator(".sidebar-footer")).toContainText("Gestionnaire E2E");
     await openPlanning(page);
     await assertReadOnlyPlanning(page);
+    await expect(
+      page.locator(`.shift-card[data-allocation-id="${setup.allocation_id}"]`),
+    ).toBeVisible();
 
     const after = await page.request.get(
       `/api/v1/planning/snapshot?start=${start}&end=${end}&scope=global`,
@@ -120,9 +159,18 @@ test("800 Gestionnaire consulte Planning en lecture seule et le backend refuse u
     await expect(detached).toHaveTitle("Ressources et quarts — ResourcePlanner");
     await expect(detached.locator(".planning-board-panel")).toBeVisible();
     await expect(detached.locator(".resource-row").first()).toBeVisible();
+    await expect(
+      detached.locator(`.shift-card[data-allocation-id="${setup.allocation_id}"]`),
+    ).toBeVisible();
     await assertReadOnlyPlanning(detached);
     await detached.close();
   } finally {
+    const cleanup = await setup.context.request.delete(
+      `/api/v1/allocations/${encodeURIComponent(setup.allocation_id)}`,
+      { headers: { "Idempotency-Key": "issue-800-browser-cleanup" } },
+    );
+    expect(cleanup.ok(), await cleanup.text()).toBeTruthy();
     await context.close();
+    await setup.context.close();
   }
 });
