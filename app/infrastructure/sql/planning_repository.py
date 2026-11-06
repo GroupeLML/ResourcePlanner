@@ -88,6 +88,7 @@ class SqlPlanningReadRepository(PlanningReadRepositoryPort):
                 ),
                 "NumeroProjet": project.number,
                 "NomProjet": project.name,
+                "ResourceID": resource.id if resource is not None else None,
                 "Technicien": resource.name if resource is not None else None,
                 "DateDebut": requirement.start_date,
                 "DateFin": requirement.end_date,
@@ -176,6 +177,7 @@ class SqlPlanningReadRepository(PlanningReadRepositoryPort):
                     requirement.legacy_segment_id,
                     requirement.id,
                 ),
+                "ResourceID": resource.id,
                 "Technicien": resource.name,
                 "Date": shift.work_date,
                 "Heures": float(shift.hours),
@@ -204,6 +206,7 @@ class SqlPlanningReadRepository(PlanningReadRepositoryPort):
         return [
             {
                 "ID": _identifier(rule.legacy_id, rule.id),
+                "ResourceID": resource.id if resource is not None else "",
                 "Technicien": resource.name if resource is not None else "",
                 "ClasseRessource": resource.resource_class if resource is not None else None,
                 "ClassesRessources": class_codes.get(rule.id, ()),
@@ -230,6 +233,7 @@ class SqlPlanningReadRepository(PlanningReadRepositoryPort):
         ).all()
         return [
             {
+                "resource_id": resource.id,
                 "name": resource.name,
                 "description": "",
                 "team": resource.resource_class or "",
