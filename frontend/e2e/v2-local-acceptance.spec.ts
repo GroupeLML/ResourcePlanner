@@ -2723,8 +2723,8 @@ test("ERP operations use authoritative RUN_NOW, review, RETRY and compensation c
   );
   expect(resumed.run_id).toBe(reviewAccepted.run_id);
 
-  // A project commit followed by a controlled task-source failure yields retained
-  // mutation evidence; preview and explicit confirmation compensate it once.
+  // A project commit followed by a controlled post-project execution failure
+  // yields retained mutation evidence; preview and explicit confirmation compensate it once.
   await setSourceMode("project_mutation=true&post_project_failure=true");
   await page.getByRole("button", { name: "Actualiser" }).click();
   const compensationLaunchPromise = page.waitForResponse((response) => (
