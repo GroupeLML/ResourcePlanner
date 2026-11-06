@@ -3061,14 +3061,26 @@ class ErpSyncEvidenceService:
             ErpSyncMutationEvidence,
             ErpSyncRecoveryState,
         )
+        from ..infrastructure.sql.erp_sync_control_repository import (
+            SqlErpSyncControlRepository,
+        )
         from ..infrastructure.sql.session import transactional_session
 
+        if self._control_settings is None:
+            raise ApplicationUnavailableError(
+                "Le profil de contrôle ERP requis pour la rétention est absent.",
+                code="erp_sync_maintenance_control_unavailable",
+            )
+
         limit = max(1, min(int(batch_size), 500))
-        now = _utc_now()
         payload_purged = 0
         history_details_purged = 0
 
         with transactional_session(self._session_factory) as session:
+            _control, now = SqlErpSyncControlRepository.guard_maintenance_session(
+                session,
+                settings=self._control_settings,
+            )
             statement = (
                 select(ErpSyncEvidenceManifest)
                 .join(
