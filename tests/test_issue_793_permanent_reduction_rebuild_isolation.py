@@ -382,7 +382,16 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
         test.assertEqual(set(state["slots"]), set(state["requirement_ids"]))
 
     @staticmethod
+    def _weekly_tuple(state: dict) -> tuple[Decimal, Decimal, Decimal]:
+        return (
+            state["weekly"].get(ALICE_ID, Decimal("0.00")),
+            state["weekly"].get(BOB_ID, Decimal("0.00")),
+            state["weekly"].get(CHARLIE_ID, Decimal("0.00")),
+        )
+
+    @classmethod
     def _assert_weekly(
+        cls,
         test: TestCase,
         state: dict,
         *,
@@ -391,16 +400,8 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
         charlie: str,
     ) -> None:
         test.assertEqual(
-            state["weekly"].get(ALICE_ID, Decimal("0.00")),
-            Decimal(alice),
-        )
-        test.assertEqual(
-            state["weekly"].get(BOB_ID, Decimal("0.00")),
-            Decimal(bob),
-        )
-        test.assertEqual(
-            state["weekly"].get(CHARLIE_ID, Decimal("0.00")),
-            Decimal(charlie),
+            cls._weekly_tuple(state),
+            (Decimal(alice), Decimal(bob), Decimal(charlie)),
         )
 
     @staticmethod
@@ -856,19 +857,10 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                 self.assertEqual(b_after["target_mode"], "EXPLICIT_RESOURCE")
                 self.assertEqual(b_after["target_resource_id"], BOB_ID)
 
-                # Correct ownership expectation. Current main is expected to fail here:
-                # Resource.name collision can retarget regenerated AUTO work to Charlie.
-                self._assert_weekly(
-                    self,
-                    after,
-                    alice="32.00",
-                    bob="40.00",
-                    charlie="0.00",
-                )
-                self.assertEqual(
-                    {row["resource_id"] for row in b_after["shifts"]},
-                    {BOB_ID},
-                )
+                post_reduction_resources = {
+                    row["resource_id"] for row in b_after["shifts"]
+                }
+                post_reduction_weekly = self._weekly_tuple(after)
 
                 with factory.begin() as session:
                     SqlPeriodAwareApprovedDemandSyncAdapter(
@@ -880,13 +872,32 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                     after_resync = self._capture(session, number)
                 b_resync = after_resync["slots"][b_before["requirement_id"]]
                 self.assertEqual(b_resync["effective_need"], Decimal("40.00"))
+                self.assertEqual(b_resync["planned_hours"], Decimal("40.00"))
                 self.assertEqual(b_resync["target_resource_id"], BOB_ID)
-                self._assert_weekly(
-                    self,
-                    after_resync,
-                    alice="32.00",
-                    bob="40.00",
-                    charlie="0.00",
+                post_resync_resources = {
+                    row["resource_id"] for row in b_resync["shifts"]
+                }
+                post_resync_weekly = self._weekly_tuple(after_resync)
+
+                # Correct ownership expectation. Current main is expected to fail here.
+                # Both states are included in one assertion so the red regression records
+                # whether the Bob -> Charlie corruption persists or recurs after resync.
+                expected_weekly = (
+                    Decimal("32.00"),
+                    Decimal("40.00"),
+                    Decimal("0.00"),
+                )
+                self.assertEqual(
+                    (post_reduction_weekly, post_resync_weekly),
+                    (expected_weekly, expected_weekly),
+                    msg=(
+                        "duplicate Resource.name must never move B coverage from "
+                        "canonical Bob id to Charlie id"
+                    ),
+                )
+                self.assertEqual(
+                    (post_reduction_resources, post_resync_resources),
+                    ({BOB_ID}, {BOB_ID}),
                 )
 
                 return {
