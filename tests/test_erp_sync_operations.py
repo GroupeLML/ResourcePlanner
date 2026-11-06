@@ -467,6 +467,18 @@ class ErpSyncOperationsServiceTests(unittest.TestCase):
             status="FAILED",
             finished_at=now - timedelta(hours=1),
         )
+        one = self.service(
+            settings,
+            data(
+                settings,
+                now=now,
+                attempts=(first, previous),
+                success=previous,
+            ),
+        ).snapshot(evidence_budget_bytes=100)
+        self.assertEqual(one.consecutive_failures, 1)
+        self.assertFalse(one.repeated_failure)
+
         snapshot = self.service(
             settings,
             data(
@@ -495,6 +507,23 @@ class ErpSyncOperationsServiceTests(unittest.TestCase):
         ).snapshot(evidence_budget_bytes=100)
         self.assertEqual(three.consecutive_failures, 3)
         self.assertTrue(three.repeated_failure)
+
+        reset_success = attempt(
+            "RESET",
+            status="SUCCEEDED",
+            finished_at=now - timedelta(minutes=10),
+        )
+        reset = self.service(
+            settings,
+            data(
+                settings,
+                now=now,
+                attempts=(reset_success, third, second, first),
+                success=reset_success,
+            ),
+        ).snapshot(evidence_budget_bytes=100)
+        self.assertEqual(reset.consecutive_failures, 0)
+        self.assertFalse(reset.repeated_failure)
 
 class ErpSyncOperationsSqlAndApiTests(unittest.TestCase):
     def setUp(self) -> None:
