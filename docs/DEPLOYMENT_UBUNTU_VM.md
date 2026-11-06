@@ -157,6 +157,20 @@ L'image backend installe elle-même le paquet Debian `msodbcsql18` depuis le dé
 
 La sous-version système du paquet ODBC 18 n'est pas figée dans Git : le build suit le paquet `msodbcsql18` compatible avec la version Debian de l'image `python:3.12-slim`. Le secret SQL et les paramètres de connexion restent injectés à l'exécution via `RESOURCEPLANNER_DATABASE_URL`.
 
+## Synchronisation ERP 643C
+
+La VM Ubuntu utilise le scheduler FastAPI intégré au backend. Ne pas créer de cron Ubuntu
+ou DSM pour l'import ERP.
+
+Avant toute activation automatique, suivre le runbook dédié :
+[`ERP_SYNC_OPERATIONS_RUNBOOK.md`](ERP_SYNC_OPERATIONS_RUNBOOK.md).
+
+Le dépôt conserve `RESOURCEPLANNER_ERP_SYNC_ENABLED=false` par défaut. Le runbook couvre
+le préflight, le compte ERP dédié, les baselines, la crypto/evidence, le drain multi-backend,
+la promotion, le rollback et le gate final d'activation. La présence du NAS Synology comme
+hôte de virtualisation ne change pas cette autorité : Docker/Compose dans la VM Ubuntu est
+le runtime canonique.
+
 ## Mise à jour et rollback
 
 Avant une promotion, noter :
