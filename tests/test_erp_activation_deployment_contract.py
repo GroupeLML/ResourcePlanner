@@ -60,6 +60,10 @@ class ErpActivationDeploymentContractTests(unittest.TestCase):
             "--force-recreate backend",
             runbook[stop:migration],
         )
+        self.assertNotIn(
+            "docker compose up",
+            runbook[stop:migration],
+        )
         self.assertIn("erp_sync_control", runbook[readonly_sql:migration])
         self.assertIn("erp_sync_attempts", runbook[readonly_sql:migration])
         self.assertIn("erp_sync_recovery_state", runbook[readonly_sql:migration])
@@ -67,7 +71,7 @@ class ErpActivationDeploymentContractTests(unittest.TestCase):
         self.assertIn("config_fingerprint", runbook[readonly_sql:migration])
         self.assertIn("generation", runbook[readonly_sql:migration])
         self.assertIn("owner_attempt_id", runbook[readonly_sql:migration])
-        self.assertIn("first deployment 643C", runbook.lower())
+        self.assertIn("premier déploiement 643c", runbook.lower())
         self.assertIn("RESOURCEPLANNER_ERP_SYNC_ENABLED=false", runbook)
         self.assertIn("stop_grace_period: 2h5m", runbook)
 
