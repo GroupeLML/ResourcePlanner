@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from cryptography.fernet import Fernet
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, event, func, select, text
 from sqlalchemy.exc import IntegrityError
 
 from app.application import (
@@ -24,6 +24,7 @@ from app.server.erp_sync_evidence import (
     ErpSyncEvidenceService,
     ErpSyncEvidenceSettings,
 )
+from app.application.errors import ApplicationConflictError
 from app.application.erp_sync_scheduler import (
     ErpSyncSchedulerSettings,
     TestErpSyncAutomaticSafetyCapability,
@@ -292,6 +293,7 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
                 )
                 session.add(control)
             control.generation = 0
+            control.protocol_version = 1
             control.owner_attempt_id = None
             control.lease_expires_at = None
             control.owner_deadline_at = None
@@ -2747,6 +2749,164 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
         self.assertEqual(control.owner_attempt_id, second.id)
         self.assertEqual(repository.get_attempt(second.id).status, ERP_ATTEMPT_PENDING)
         stale_orchestrator.shutdown()
+
+    def test_retention_waits_for_control_authority_change_and_rejects_before_mutation(self) -> None:
+        repository = SqlErpSyncControlRepository(self.factory)
+        occurrence = repository.accept_manual(
+            intent="PROJECTS_ONLY",
+            actor_name="retention-authority-race",
+            idempotency_key="retention-authority-race",
+            settings=self.settings,
+        )
+        attempt = repository.claim(
+            occurrence_id=occurrence.id,
+            trigger="MANUAL",
+            actor_name="retention-authority-race",
+            settings=self.settings,
+        )
+        self.assertIsNotNone(attempt)
+        captured = self.evidence.capture_source(
+            attempt_id=attempt.id,
+            generation=attempt.generation,
+            source_type="PROJECTS",
+            profile_fingerprint=self.settings.config_fingerprint,
+            payload={"records": [{"number": "SQL643-RETENTION-AUTHORITY"}]},
+            row_count=1,
+        )
+        self.assertTrue(
+            repository.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.settings,
+            )
+        )
+        self.evidence.finalize_attempt(
+            attempt_id=attempt.id,
+            successful=False,
+        )
+        with transactional_session(self.factory) as session:
+            manifest = session.get(
+                ErpSyncEvidenceManifest,
+                captured.manifest_id,
+            )
+            manifest.expires_at = (
+                repository.current_sql_time() - timedelta(seconds=1)
+            )
+        with self.factory() as session:
+            reservation = session.scalar(
+                select(ErpSyncEvidenceReservation).where(
+                    ErpSyncEvidenceReservation.attempt_id == attempt.id
+                )
+            )
+            before_used = int(reservation.used_bytes)
+            before_chunks = len(
+                tuple(
+                    session.scalars(
+                        select(ErpSyncEvidenceChunk).where(
+                            ErpSyncEvidenceChunk.manifest_id
+                            == captured.manifest_id
+                        )
+                    )
+                )
+            )
+
+        authority_locked = Event()
+        release_authority = Event()
+        maintenance_lock_attempted = Event()
+
+        def change_authority() -> None:
+            with transactional_session(self.factory) as session:
+                session.execute(
+                    text(
+                        "SELECT id FROM erp_sync_control WITH (UPDLOCK, HOLDLOCK) "
+                        "WHERE id = :id"
+                    ),
+                    {"id": ERP_SYNC_CONTROL_ROW_ID},
+                ).one()
+                control = session.get(
+                    ErpSyncControl,
+                    ERP_SYNC_CONTROL_ROW_ID,
+                )
+                control.protocol_version = 999
+                session.flush()
+                authority_locked.set()
+                self.assertTrue(release_authority.wait(timeout=10))
+
+        change_thread = Thread(target=change_authority)
+        change_thread.start()
+        self.assertTrue(authority_locked.wait(timeout=10))
+
+        def observe_control_lock(
+            _conn,
+            _cursor,
+            statement,
+            _parameters,
+            _context,
+            _executemany,
+        ) -> None:
+            if (
+                "erp_sync_control" in statement
+                and "UPDLOCK" in statement
+                and "HOLDLOCK" in statement
+            ):
+                maintenance_lock_attempted.set()
+
+        event.listen(self.engine, "before_cursor_execute", observe_control_lock)
+        try:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(
+                    self.evidence.run_retention_maintenance,
+                    batch_size=1,
+                )
+                self.assertTrue(
+                    maintenance_lock_attempted.wait(timeout=10),
+                    "maintenance did not attempt the durable control lock",
+                )
+                self.assertFalse(
+                    future.done(),
+                    "maintenance crossed the authority lock before it was released",
+                )
+                release_authority.set()
+                change_thread.join(timeout=10)
+                self.assertFalse(change_thread.is_alive())
+                with self.assertRaises(ApplicationConflictError) as raised:
+                    future.result(timeout=10)
+                self.assertEqual(
+                    raised.exception.code,
+                    "erp_sync_protocol_incompatible",
+                )
+        finally:
+            release_authority.set()
+            change_thread.join(timeout=10)
+            event.remove(
+                self.engine,
+                "before_cursor_execute",
+                observe_control_lock,
+            )
+
+        with self.factory() as session:
+            manifest = session.get(
+                ErpSyncEvidenceManifest,
+                captured.manifest_id,
+            )
+            reservation = session.scalar(
+                select(ErpSyncEvidenceReservation).where(
+                    ErpSyncEvidenceReservation.attempt_id == attempt.id
+                )
+            )
+            chunks = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceChunk).where(
+                        ErpSyncEvidenceChunk.manifest_id
+                        == captured.manifest_id
+                    )
+                )
+            )
+        self.assertNotEqual(manifest.state, "PURGED")
+        self.assertEqual(int(reservation.used_bytes), before_used)
+        self.assertEqual(len(chunks), before_chunks)
 
     def test_concurrent_recovery_pin_and_retention_never_leave_required_purged_evidence(self) -> None:
         repository = SqlErpSyncControlRepository(self.factory)
