@@ -48,8 +48,9 @@ class ErpActivationDeploymentContractTests(unittest.TestCase):
         drain = runbook.index("## 5. Drain avant déploiement")
         migration = runbook.index("appliquer explicitement la migration")
         self.assertLess(drain, migration)
+        self.assertIn("Modifier `.env` ou exporter", runbook)
         self.assertIn(
-            "une simple modification de `.env` ne désactive pas les processus déjà lancés",
+            "ne reconfigure jamais un backend déjà en cours",
             runbook,
         )
         self.assertIn(
