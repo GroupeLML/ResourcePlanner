@@ -1334,6 +1334,16 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                     )
                     self.assertEqual(eric_after_first["intent_mode"], "AUTO")
                     self.assertEqual(eric_after_first["placement_not_before_date"], START)
+                    eric_reductions = [
+                        row
+                        for row in after_eric["reductions"]
+                        if row["planning_intent_id"] == eric_initial["planning_intent_id"]
+                    ]
+                    self.assertEqual(len(eric_reductions), 1)
+                    self.assertEqual(eric_reductions[0]["original_shift_id"], eric_wed["id"])
+                    self.assertEqual(eric_reductions[0]["reduction_hours"], Decimal("8.00"))
+                    self.assertEqual(eric_reductions[0]["effective_need_before"], Decimal("24.00"))
+                    self.assertEqual(eric_reductions[0]["effective_need_after"], Decimal("16.00"))
                     self.assertEqual(eric_release_count, 0)
                     self.assertEqual(len(first_preserve_calls), 1)
                     self.assertEqual(set(first_preserve_calls[0]), eric_survivor_ids)
@@ -1410,6 +1420,16 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                     )
                     self.assertEqual(eric_after_second["effective_need"], Decimal("16.00"))
                     self.assertEqual(timmy_after_second["effective_need"], Decimal("16.00"))
+                    timmy_reductions = [
+                        row
+                        for row in after_timmy["reductions"]
+                        if row["planning_intent_id"] == timmy_initial["planning_intent_id"]
+                    ]
+                    self.assertEqual(len(timmy_reductions), 1)
+                    self.assertEqual(timmy_reductions[0]["original_shift_id"], timmy_wed["id"])
+                    self.assertEqual(timmy_reductions[0]["reduction_hours"], Decimal("8.00"))
+                    self.assertEqual(timmy_reductions[0]["effective_need_before"], Decimal("24.00"))
+                    self.assertEqual(timmy_reductions[0]["effective_need_after"], Decimal("16.00"))
                     self.assertEqual(eric_after_second["target_resource_id"], ERIC_ID)
                     self.assertEqual(
                         {row["resource_id"] for row in eric_after_second["shifts"]},
