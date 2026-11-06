@@ -34,6 +34,7 @@ from app.infrastructure.sql import (
 from app.infrastructure.sql.erp_sync_control_repository import (
     ErpSyncFenceLost,
     SqlErpSyncControlRepository,
+    _utc_aware,
 )
 
 
@@ -141,7 +142,7 @@ class ErpSyncControlTests(unittest.TestCase):
             control.last_evaluated_business_date,
             date(2026, 1, 15),
         )
-        self.assertEqual(control.scheduler_observed_at, second_now)
+        self.assertEqual(_utc_aware(control.scheduler_observed_at), second_now)
 
     def test_disabled_scheduler_records_observation_without_occurrence(self) -> None:
         disabled = ErpSyncSchedulerSettings(enabled=False)
@@ -156,7 +157,7 @@ class ErpSyncControlTests(unittest.TestCase):
         self.assertIsNone(occurrence)
         with self.factory() as session:
             control = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
-        self.assertEqual(control.scheduler_observed_at, self.fixed_now())
+        self.assertEqual(_utc_aware(control.scheduler_observed_at), self.fixed_now())
 
     def test_daily_occurrence_is_unique_when_clock_moves_backward(self) -> None:
         capability = TestErpSyncAutomaticSafetyCapability()
