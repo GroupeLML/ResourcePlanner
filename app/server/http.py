@@ -658,11 +658,13 @@ def create_api_app(
 
         if erp_sync_orchestrator is not None:
             erp_sync_orchestrator.reconcile_startup()
-            if resolved_erp_sync_settings.enabled:
-                scheduler_task = asyncio.create_task(
-                    scheduler_loop(),
-                    name="erp-sync-scheduler",
-                )
+            # The existing lifecycle loop also owns bounded retention
+            # maintenance. Automatic scheduling itself remains governed by the
+            # scheduler settings and creates no occurrence while disabled.
+            scheduler_task = asyncio.create_task(
+                scheduler_loop(),
+                name="erp-sync-scheduler",
+            )
         try:
             yield
         finally:
