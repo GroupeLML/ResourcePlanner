@@ -495,16 +495,64 @@ export default function ErpSyncOperationsPage() {
           })}
         </div>
 
+        {(review || (bootstrapCandidates?.sources.length ?? 0) > 0) && (
+          <label className="erp-sync-reason">
+            Raison auditée
+            <textarea
+              value={reason}
+              onChange={(event) => setReason(event.target.value)}
+              maxLength={1000}
+            />
+          </label>
+        )}
+
+        {bootstrapCandidates && bootstrapCandidates.sources.length > 0 ? (
+          <div className="erp-sync-bootstrap-candidates">
+            <strong>Source échouée retenue disponible pour baseline</strong>
+            <p>
+              La tentative {bootstrapCandidates.attempt_id} est terminale. L’approbation
+              d’une baseline ne la reprend pas; utilisez ensuite RETRY pour créer une
+              nouvelle tentative et relire les sources.
+            </p>
+            <div className="erp-sync-review-sources">
+              {bootstrapCandidates.sources.map((source) => (
+                <div key={source.manifest_id} className="erp-sync-review-source">
+                  <strong>{source.source_type} · {source.row_count} lignes</strong>
+                  <small>Tentative {source.attempt_id}</small>
+                  <small>Manifest {source.manifest_id}</small>
+                  <small>Observée {formatDateTime(source.observed_at)}</small>
+                  <code>{source.diagnostic}</code>
+                  {sensitive ? (
+                    <button
+                      type="button"
+                      disabled={Boolean(busy) || !reason.trim()}
+                      onClick={() => void approveBaseline(
+                        source.manifest_id,
+                        source.source_type,
+                      )}
+                    >
+                      Approuver cette source comme baseline
+                    </button>
+                  ) : (
+                    <small>
+                      L’approbation exige <code>sync_projects</code> et
+                      <code>admin_settings</code>.
+                    </small>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          (["PROJECTS", "TASKS"] as const).some(
+            (sourceType) => !(baselines?.sources[sourceType] ?? null),
+          ) && (
+            <p>Aucune source échouée retenue admissible n’est disponible pour établir la baseline manquante.</p>
+          )
+        )}
+
         {review ? (
           <>
-            <label className="erp-sync-reason">
-              Raison auditée
-              <textarea
-                value={reason}
-                onChange={(event) => setReason(event.target.value)}
-                maxLength={1000}
-              />
-            </label>
             <div className="erp-sync-review-sources">
               {review.sources.map((source) => {
                 const sourceKey = source.source_type as "PROJECTS" | "TASKS";
