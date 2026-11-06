@@ -2643,6 +2643,14 @@ test("ERP first-baseline bootstrap uses retained failed manifests then explicit 
       (run) => run.status === "FAILED",
     );
     expect(failed.run_id).toBe(launched.run_id);
+    const failedResponse = await page.request.get(
+      "/api/v1/integrations/acumatica/erp-sync/runs/"
+        + encodeURIComponent(launched.run_id),
+    );
+    expect(failedResponse.ok(), await failedResponse.text()).toBeTruthy();
+    expect(
+      (await failedResponse.json() as { error_code: string | null }).error_code,
+    ).toBe("erp_sync_source_plausibility_failed");
 
     await page.getByRole("button", { name: "Actualiser" }).click();
     await expect(
