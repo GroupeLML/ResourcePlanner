@@ -41,30 +41,49 @@ class ErpActivationDeploymentContractTests(unittest.TestCase):
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
         self.assertIn("stop_grace_period: 2h5m", compose)
 
-    def test_runbook_drains_current_writers_before_migration_or_generic_up(self) -> None:
+    def test_runbook_keeps_writers_stopped_through_readonly_sql_and_migration(self) -> None:
         runbook = (
             ROOT / "docs" / "ERP_SYNC_OPERATIONS_RUNBOOK.md"
         ).read_text(encoding="utf-8")
-        drain = runbook.index("## 5. Drain avant déploiement")
-        migration = runbook.index("appliquer explicitement la migration")
-        self.assertLess(drain, migration)
-        self.assertIn("Modifier `.env` ou exporter", runbook)
-        self.assertIn(
-            "ne reconfigure jamais un backend déjà en cours",
-            runbook,
+
+        stop = runbook.index("docker compose stop -t 7500 backend")
+        readonly_sql = runbook.index("SELECT\n       c.id,")
+        migration = runbook.index("docker compose run --rm --no-deps migrate")
+        disabled_start = runbook.index(
+            "docker compose up -d --no-deps --no-build backend"
         )
-        self.assertIn("docker compose stop -t 7500 backend", runbook)
-        self.assertIn(
-            "docker compose up -d --no-deps --no-build --force-recreate backend",
-            runbook,
-        )
-        self.assertIn("current_owner_attempt_id", runbook)
-        self.assertIn("stop_grace_period: 2h5m", runbook)
-        self.assertIn("RESOURCEPLANNER_ERP_SYNC_ENABLED=false", runbook)
+
+        self.assertLess(stop, readonly_sql)
+        self.assertLess(readonly_sql, migration)
+        self.assertLess(migration, disabled_start)
         self.assertNotIn(
-            "export RESOURCEPLANNER_ERP_SYNC_ENABLED=false\ndocker compose up -d\n",
-            runbook,
+            "--force-recreate backend",
+            runbook[stop:migration],
         )
+        self.assertIn("erp_sync_control", runbook[readonly_sql:migration])
+        self.assertIn("erp_sync_attempts", runbook[readonly_sql:migration])
+        self.assertIn("erp_sync_recovery_state", runbook[readonly_sql:migration])
+        self.assertIn("protocol_version", runbook[readonly_sql:migration])
+        self.assertIn("config_fingerprint", runbook[readonly_sql:migration])
+        self.assertIn("generation", runbook[readonly_sql:migration])
+        self.assertIn("owner_attempt_id", runbook[readonly_sql:migration])
+        self.assertIn("first deployment 643C", runbook.lower())
+        self.assertIn("RESOURCEPLANNER_ERP_SYNC_ENABLED=false", runbook)
+        self.assertIn("stop_grace_period: 2h5m", runbook)
+
+    def test_migrate_service_is_one_shot_and_does_not_launch_application_runtime(self) -> None:
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        migrate_start = compose.index("  migrate:")
+        import_projects = compose.index("  import-projects:")
+        migrate = compose[migrate_start:import_projects]
+
+        self.assertIn(
+            'command: ["python", "-m", "alembic", "upgrade", "head"]',
+            migrate,
+        )
+        self.assertIn('restart: "no"', migrate)
+        self.assertNotIn("app.server", migrate)
+        self.assertNotIn("erp-sync-scheduler", migrate)
 
     def test_backend_image_packages_timezone_and_activation_preflight(self) -> None:
         dockerfile = (ROOT / "Dockerfile.backend").read_text(encoding="utf-8")
