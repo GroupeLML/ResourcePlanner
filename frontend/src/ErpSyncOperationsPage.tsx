@@ -29,6 +29,12 @@ const STALE_COMPENSATION_CODES = new Set([
   "erp_sync_compensation_current_state_changed",
   "erp_sync_compensation_dependency_changed",
   "erp_sync_compensation_evidence_expired",
+  "erp_sync_compensation_evidence_missing",
+  "erp_sync_recovery_owner_active",
+  "erp_sync_protocol_incompatible",
+  "erp_sync_configuration_incompatible",
+  "erp_sync_evidence_protocol_incompatible",
+  "erp_sync_evidence_configuration_incompatible",
 ]);
 
 const ERROR_MESSAGES: Record<string, string> = {
@@ -44,6 +50,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   erp_sync_compensation_current_state_changed: "L’état local a changé depuis la prévisualisation; la compensation est refusée.",
   erp_sync_compensation_dependency_changed: "Une dépendance locale interdit maintenant cette compensation.",
   erp_sync_compensation_evidence_expired: "La preuve nécessaire à la compensation a expiré.",
+  erp_sync_recovery_owner_active: "Une synchronisation ERP active interdit la compensation; générez une nouvelle prévisualisation après sa fin.",
   erp_sync_evidence_capability_unavailable: "Le stockage de preuve ERP est indisponible.",
   erp_sync_evidence_storage_budget_unavailable: "Le budget de stockage des preuves ERP est indisponible.",
   erp_sync_evidence_storage_reservation_exceeded: "La réservation de stockage des preuves ERP est dépassée.",
