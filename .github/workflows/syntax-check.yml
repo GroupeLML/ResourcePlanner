@@ -238,6 +238,25 @@ jobs:
           PY
       - name: Validate packaged ERP activation readiness entrypoint
         run: docker compose exec -T backend python tools/check_erp_activation_readiness.py --help >/dev/null
+      - name: Validate Compose ERP safety defaults inside backend
+        run: |
+          docker compose exec -T backend python - <<'PY'
+          from app.server.runtime import ServerSettings
+
+          settings = ServerSettings.from_environment()
+          assert settings.erp_sync.enabled is False
+          assert settings.erp_sync.timezone_name == "America/Toronto"
+          assert settings.erp_sync.catchup_hours == 4
+          assert settings.erp_sync.freshness_sla_hours == 30
+          assert settings.erp_sync_evidence.min_source_ratio == 0.50
+          assert settings.erp_sync_evidence.min_projects == 1
+          assert settings.erp_sync_evidence.min_task_rows == 1
+          assert settings.erp_sync_evidence.max_evidence_mib == 256
+          assert settings.erp_sync_evidence.evidence_budget_mib == 2048
+          assert settings.erp_sync_evidence.failure_retention_days == 14
+          assert settings.erp_sync_evidence.history_days == 90
+          print("ERP Compose defaults parsed; automatic sync remains disabled.")
+          PY
       - name: Assert opt-in services stay out of normal startup
         run: |
           ! docker compose ps --all --services | grep -qx 'dev-cockpit'
