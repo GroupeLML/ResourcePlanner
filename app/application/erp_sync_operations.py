@@ -211,6 +211,18 @@ class ErpSyncOperationsService:
             else None
         )
 
+        owner_heartbeat_stale = False
+        if data.owner_attempt_id:
+            owner_heartbeat = _utc(data.control_heartbeat_at)
+            owner_lease = _utc(data.lease_expires_at)
+            owner_heartbeat_stale = (
+                owner_heartbeat is None
+                or (current_now - owner_heartbeat).total_seconds()
+                > max(self._settings.heartbeat_seconds * 2, 1)
+                or owner_lease is None
+                or owner_lease <= current_now
+            )
+
         attempts = data.attempts
         last_attempt = attempts[0] if attempts else None
         last_partial_or_failed = next(
@@ -305,7 +317,7 @@ class ErpSyncOperationsService:
             scheduler_status = "DISABLED"
         elif has_required_recovery or has_quarantine:
             scheduler_status = "QUARANTINED"
-        elif observation_status == "STALE":
+        elif observation_status == "STALE" or owner_heartbeat_stale:
             scheduler_status = "STALE"
         elif current is not None and current.status in {"RUNNING", "PENDING"}:
             scheduler_status = "IN_PROGRESS"
