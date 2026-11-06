@@ -28,6 +28,7 @@ from app.server.erp_sync_evidence import (
     decode_canonical_json_bytes,
 )
 from app.application.erp_sync_scheduler import ErpSyncSchedulerSettings
+from app.application.errors import ApplicationConflictError
 from app.infrastructure.smtp import FernetSecretCipher
 from app.infrastructure.sql import (
     AcumaticaProjectTaskSyncProjectResult,
@@ -38,6 +39,7 @@ from app.infrastructure.sql import (
     ErpSyncEvidenceManifest,
     ErpSyncEvidenceReservation,
     ErpSyncMutationEvidence,
+    ErpSyncOccurrence,
     ErpSyncPlausibilityException,
     ErpSyncPlausibilityReviewDecision,
     ErpSyncBaselineApprovalAudit,
@@ -176,6 +178,106 @@ class ErpSyncEvidenceTests(unittest.TestCase):
             )
         )
         return control, occurrence, attempt
+
+    def _retention_victim(self, key: str):
+        control, _occurrence, attempt = self._attempt(key)
+        captured = self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"records": [{"number": "RET-COMPAT"}]},
+            row_count=1,
+        )
+        self.assertTrue(
+            control.finish(
+                attempt_id=attempt.id,
+                generation=attempt.generation,
+                status="FAILED",
+                phase="FAILED",
+                settings=self.control_settings,
+            )
+        )
+        self.service.finalize_attempt(
+            attempt_id=attempt.id,
+            successful=False,
+        )
+        now = datetime.now(timezone.utc)
+        with transactional_session(self.factory) as session:
+            manifest = session.get(
+                ErpSyncEvidenceManifest,
+                captured.manifest_id,
+            )
+            manifest.expires_at = now - timedelta(seconds=1)
+            run = AcumaticaProjectTaskSyncRun(
+                status="COMPLETED",
+                active_key=None,
+                started_at=now - timedelta(
+                    days=self.service.settings.history_days + 2
+                ),
+                finished_at=now - timedelta(
+                    days=self.service.settings.history_days + 1
+                ),
+            )
+            session.add(run)
+            session.flush()
+            detail = AcumaticaProjectTaskSyncProjectResult(
+                run_id=run.id,
+                project_id="RET-COMPAT-PROJECT",
+                project_number="RET-COMPAT",
+                status="synchronized",
+            )
+            session.add(detail)
+            session.flush()
+            detail_id = detail.id
+        with self.factory() as session:
+            reservation = session.scalar(
+                select(ErpSyncEvidenceReservation).where(
+                    ErpSyncEvidenceReservation.attempt_id == attempt.id
+                )
+            )
+            chunks = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceChunk).where(
+                        ErpSyncEvidenceChunk.manifest_id
+                        == captured.manifest_id
+                    )
+                )
+            )
+            used_bytes = int(reservation.used_bytes)
+            chunk_count = len(chunks)
+        return attempt.id, captured.manifest_id, detail_id, used_bytes, chunk_count
+
+    def _assert_retention_victim_unchanged(
+        self,
+        *,
+        attempt_id: str,
+        manifest_id: str,
+        detail_id: str,
+        used_bytes: int,
+        chunk_count: int,
+    ) -> None:
+        with self.factory() as session:
+            manifest = session.get(ErpSyncEvidenceManifest, manifest_id)
+            reservation = session.scalar(
+                select(ErpSyncEvidenceReservation).where(
+                    ErpSyncEvidenceReservation.attempt_id == attempt_id
+                )
+            )
+            chunks = tuple(
+                session.scalars(
+                    select(ErpSyncEvidenceChunk).where(
+                        ErpSyncEvidenceChunk.manifest_id == manifest_id
+                    )
+                )
+            )
+            detail = session.get(
+                AcumaticaProjectTaskSyncProjectResult,
+                detail_id,
+            )
+        self.assertNotEqual(manifest.state, "PURGED")
+        self.assertEqual(int(reservation.used_bytes), used_bytes)
+        self.assertEqual(len(chunks), chunk_count)
+        self.assertIsNotNone(detail)
 
     def _approve_bootstrap_baselines(
         self,
@@ -3806,6 +3908,106 @@ class ErpSyncEvidenceTests(unittest.TestCase):
         self.assertEqual(reservation.used_bytes, 0)
         self.assertEqual(reservation.used_plaintext_bytes, 0)
         self.assertEqual(recovery.state, "EXPIRED")
+
+    def test_retention_rejects_unsupported_control_protocol_before_any_mutation(self) -> None:
+        (
+            attempt_id,
+            manifest_id,
+            detail_id,
+            used_bytes,
+            chunk_count,
+        ) = self._retention_victim("retention-protocol-block")
+        with transactional_session(self.factory) as session:
+            control = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+            control.protocol_version = 999
+
+        with self.assertRaises(ApplicationConflictError) as raised:
+            self.service.run_retention_maintenance(batch_size=10)
+        self.assertEqual(
+            raised.exception.code,
+            "erp_sync_protocol_incompatible",
+        )
+        self._assert_retention_victim_unchanged(
+            attempt_id=attempt_id,
+            manifest_id=manifest_id,
+            detail_id=detail_id,
+            used_bytes=used_bytes,
+            chunk_count=chunk_count,
+        )
+
+    def test_retention_rejects_frozen_configuration_before_any_mutation(self) -> None:
+        (
+            attempt_id,
+            manifest_id,
+            detail_id,
+            used_bytes,
+            chunk_count,
+        ) = self._retention_victim("retention-config-block")
+        business_date = datetime.now(timezone.utc).astimezone(
+            self.control_settings.timezone()
+        ).date()
+        with transactional_session(self.factory) as session:
+            control = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+            control.config_fingerprint = "f" * 64
+            control.last_evaluated_business_date = business_date
+
+        with self.assertRaises(ApplicationConflictError) as raised:
+            self.service.run_retention_maintenance(batch_size=10)
+        self.assertEqual(
+            raised.exception.code,
+            "erp_sync_configuration_incompatible",
+        )
+        self._assert_retention_victim_unchanged(
+            attempt_id=attempt_id,
+            manifest_id=manifest_id,
+            detail_id=detail_id,
+            used_bytes=used_bytes,
+            chunk_count=chunk_count,
+        )
+
+    def test_retention_permits_canonical_later_boundary_configuration_adoption(self) -> None:
+        business_date = datetime.now(timezone.utc).astimezone(
+            self.control_settings.timezone()
+        ).date()
+        with transactional_session(self.factory) as session:
+            control = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+            control.config_fingerprint = "e" * 64
+            control.last_evaluated_business_date = business_date - timedelta(
+                days=1
+            )
+
+        result = self.service.run_retention_maintenance(batch_size=10)
+        self.assertEqual(result["payloads_purged"], 0)
+        with self.factory() as session:
+            control = session.get(ErpSyncControl, "ERP_PROJECTS_TASKS")
+        self.assertEqual(
+            control.config_fingerprint,
+            self.control_settings.config_fingerprint,
+        )
+
+    def test_disabled_scheduler_mode_still_allows_compatible_retention_only(self) -> None:
+        (
+            _attempt_id,
+            manifest_id,
+            _detail_id,
+            _used_bytes,
+            _chunk_count,
+        ) = self._retention_victim("retention-disabled-compatible")
+        self.assertFalse(self.control_settings.enabled)
+
+        result = self.service.run_retention_maintenance(batch_size=1)
+        self.assertEqual(result["payloads_purged"], 1)
+        with self.factory() as session:
+            manifest = session.get(ErpSyncEvidenceManifest, manifest_id)
+            daily = tuple(
+                session.scalars(
+                    select(ErpSyncOccurrence).where(
+                        ErpSyncOccurrence.occurrence_type == "DAILY"
+                    )
+                )
+            )
+        self.assertEqual(manifest.state, "PURGED")
+        self.assertEqual(daily, ())
 
     def test_retention_maintenance_is_bounded_and_restart_idempotent(self) -> None:
         manifest_ids: list[str] = []
