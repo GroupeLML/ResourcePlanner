@@ -1240,6 +1240,144 @@ class ErpSyncEvidenceService:
                 for row in rows
             )
 
+    def list_bootstrap_baseline_candidates(
+        self,
+        *,
+        profile_fingerprint: str,
+    ) -> dict[str, Any]:
+        from ..infrastructure.sql import (
+            EVIDENCE_PROOF_SOURCE,
+            EVIDENCE_SOURCE_PROJECTS,
+            EVIDENCE_SOURCE_TASKS,
+            EVIDENCE_STATE_READY,
+            EVIDENCE_STATE_SEALED,
+            ErpSyncAttempt,
+            ErpSyncBaseline,
+            ErpSyncEvidenceManifest,
+        )
+
+        valid_sources = {
+            EVIDENCE_SOURCE_PROJECTS,
+            EVIDENCE_SOURCE_TASKS,
+        }
+        now = _utc_now()
+        with self._session_factory() as session:
+            lookup_fingerprint = profile_fingerprint
+            if (
+                self._control_settings is not None
+                and profile_fingerprint
+                == self._control_settings.config_fingerprint
+            ):
+                lookup_fingerprint = self.policy_fingerprint_in_session(session)
+
+            approved_sources = set(
+                session.scalars(
+                    select(ErpSyncBaseline.source_type).where(
+                        ErpSyncBaseline.profile_fingerprint
+                        == lookup_fingerprint
+                    )
+                )
+            )
+            if valid_sources.issubset(approved_sources):
+                return {"attempt_id": None, "sources": []}
+
+            attempts = tuple(
+                session.scalars(
+                    select(ErpSyncAttempt)
+                    .where(
+                        ErpSyncAttempt.status == "FAILED",
+                        ErpSyncAttempt.error_code
+                        == "erp_sync_source_plausibility_failed",
+                    )
+                    .order_by(
+                        ErpSyncAttempt.finished_at.desc(),
+                        ErpSyncAttempt.created_at.desc(),
+                        ErpSyncAttempt.id.desc(),
+                    )
+                    .limit(50)
+                )
+            )
+            for attempt in attempts:
+                try:
+                    self.assert_attempt_policy_in_session(
+                        session,
+                        attempt_id=str(attempt.id),
+                    )
+                except ApplicationConflictError:
+                    continue
+
+                rows = tuple(
+                    session.scalars(
+                        select(ErpSyncEvidenceManifest)
+                        .where(
+                            ErpSyncEvidenceManifest.attempt_id
+                            == attempt.id,
+                            ErpSyncEvidenceManifest.proof_type
+                            == EVIDENCE_PROOF_SOURCE,
+                            ErpSyncEvidenceManifest.profile_fingerprint
+                            == lookup_fingerprint,
+                            ErpSyncEvidenceManifest.source_type.in_(
+                                tuple(valid_sources)
+                            ),
+                            ErpSyncEvidenceManifest.state.in_(
+                                (
+                                    EVIDENCE_STATE_READY,
+                                    EVIDENCE_STATE_SEALED,
+                                )
+                            ),
+                        )
+                        .order_by(ErpSyncEvidenceManifest.source_type)
+                    )
+                )
+                candidates: list[dict[str, Any]] = []
+                for row in rows:
+                    if row.source_type in approved_sources:
+                        continue
+                    expires_at = row.expires_at
+                    if expires_at is not None:
+                        if expires_at.tzinfo is None:
+                            expires_at = expires_at.replace(
+                                tzinfo=timezone.utc
+                            )
+                        else:
+                            expires_at = expires_at.astimezone(
+                                timezone.utc
+                            )
+                        if expires_at <= now:
+                            continue
+                    try:
+                        # Reuse the canonical encrypted evidence integrity path.
+                        self.load_source_in_session(
+                            session,
+                            manifest_id=str(row.id),
+                        )
+                    except (
+                        ApplicationConflictError,
+                        ApplicationValidationError,
+                    ):
+                        continue
+                    candidates.append(
+                        {
+                            "manifest_id": str(row.id),
+                            "attempt_id": str(attempt.id),
+                            "source_type": str(row.source_type),
+                            "row_count": int(row.row_count),
+                            "observed_at": row.observed_at,
+                            "state": str(row.state),
+                            "diagnostic": (
+                                row.diagnostic
+                                or attempt.error_code
+                                or "erp_sync_baseline_required"
+                            ),
+                        }
+                    )
+                if candidates:
+                    return {
+                        "attempt_id": str(attempt.id),
+                        "sources": candidates,
+                    }
+            return {"attempt_id": None, "sources": []}
+
     def get_baseline_summary(self, *, source_type: str, profile_fingerprint: str) -> dict[str, Any] | None:
         from ..infrastructure.sql import ErpSyncBaseline
 
