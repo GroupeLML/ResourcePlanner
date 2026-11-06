@@ -202,6 +202,39 @@ class ErpSyncOrchestrationTests(unittest.TestCase):
         self.assertIsNotNone(attempt)
         return control, attempt
 
+    def test_scheduler_tick_runs_bounded_retention_while_automatic_sync_disabled(self) -> None:
+        class EvidenceMaintenanceProbe:
+            def __init__(self) -> None:
+                self.batch_sizes: list[int] = []
+
+            def run_retention_maintenance(self, *, batch_size: int = 100):
+                self.batch_sizes.append(batch_size)
+                return {
+                    "payloads_purged": 0,
+                    "history_details_purged": 0,
+                }
+
+            def assert_no_required_recovery(self) -> None:
+                return None
+
+        evidence = EvidenceMaintenanceProbe()
+        orchestrator = ErpSyncOrchestrator(
+            self.factory,
+            project_source=None,
+            project_task_source=None,
+            settings=self.settings,
+            evidence_service=evidence,
+        )
+        result = orchestrator.scheduler_tick()
+        self.assertIsNone(result)
+        self.assertEqual(evidence.batch_sizes, [100])
+        with self.factory() as session:
+            occurrences = tuple(session.scalars(select(ErpSyncOccurrence)))
+            control = session.get(ErpSyncControl, ERP_SYNC_CONTROL_ROW_ID)
+        self.assertEqual(occurrences, ())
+        self.assertIsNotNone(control.scheduler_observed_at)
+        orchestrator.shutdown()
+
     def test_terminal_run_now_success_replay_observes_same_attempt(self) -> None:
         projects = ToggleProjectSource((project("A"),))
         tasks = PortfolioTaskSource({"A": snapshot("A", (task("A", "1"),))})
