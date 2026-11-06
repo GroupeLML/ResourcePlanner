@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from cryptography.fernet import Fernet
+from sqlalchemy import delete
 
 from app.infrastructure.smtp import FernetSecretCipher
 from app.infrastructure.sql import (
@@ -146,6 +147,35 @@ class ErpActivationReadinessTests(unittest.TestCase):
                     activation_mode=False,
                     dedicated_account_confirmed=False,
                 )
+
+    def test_missing_baseline_fails_closed(self) -> None:
+        with self.factory.begin() as session:
+            session.execute(
+                delete(ErpSyncBaseline).where(
+                    ErpSyncBaseline.source_type == "TASKS"
+                )
+            )
+        with self.assertRaisesRegex(
+            ErpActivationReadinessError,
+            "Baseline ERP approuvée absente",
+        ):
+            self._check()
+
+    def test_missing_crypto_key_fails_closed_without_exposing_secret_material(self) -> None:
+        no_crypto = ServerSettings.from_environment(
+            {
+                "RESOURCEPLANNER_DATABASE_URL": self.database_url,
+                "RESOURCEPLANNER_ACUMATICA_BASE_URL": "https://erp.example.test",
+                "RESOURCEPLANNER_ACUMATICA_USERNAME": "dedicated-service",
+                "RESOURCEPLANNER_ACUMATICA_PASSWORD": "not-a-real-secret",
+                "RESOURCEPLANNER_ERP_SYNC_ENABLED": "false",
+            }
+        )
+        with self.assertRaisesRegex(
+            ErpActivationReadinessError,
+            "RESOURCEPLANNER_CONFIG_ENCRYPTION_KEY",
+        ):
+            self._check(no_crypto)
 
     def test_protocol_mismatch_fails_closed(self) -> None:
         with self.factory.begin() as session:
