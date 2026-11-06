@@ -373,7 +373,7 @@ class SqlPlannerQueryRepositoryWithPlanDelta(SqlPlannerQueryRepositoryWeb):
             while cursor <= end:
                 capacity = availability_hours_for_day(
                     snapshot.availability,
-                    proposed_resource.name,
+                    proposed_resource.id,
                     cursor,
                 )
                 if capacity > 0:
