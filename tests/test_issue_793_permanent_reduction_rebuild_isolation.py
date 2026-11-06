@@ -12,6 +12,7 @@ from sqlalchemy import select
 from app.application.employee_sync import EmployeeSyncService, ExternalEmployeeRecord
 from app.domain.planning_engine import MISSING_ALLOCATION_TYPE
 from app.infrastructure.sql import (
+    PlanningWorkQueueRelease,
     RequestCompletionReduction,
     RequestRequirementPlanningIntent,
     Resource,
@@ -37,6 +38,7 @@ from tests.sqlite_test_template import SqliteDatabaseTemplate
 
 START = "2026-11-02"
 END = "2026-11-06"
+WEDNESDAY = "2026-11-04"
 THURSDAY = "2026-11-05"
 EXPECTED_DAYS = {
     "2026-11-02",
@@ -48,6 +50,8 @@ EXPECTED_DAYS = {
 ALICE_ID = "R-778-A"
 BOB_ID = "R-778-B"
 CHARLIE_ID = "R-793-C"
+ERIC_ID = "R-793-ERIC"
+TIMMY_ID = "R-793-TIMMY"
 BOB_NAME = "Bob 778 API"
 
 
@@ -68,29 +72,52 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
         assert alice is not None and bob is not None
         alice.external_id = "EMP-793-ALICE"
         bob.external_id = "EMP-793-BOB"
-        session.add(
-            Resource(
-                id=CHARLIE_ID,
-                external_id="EMP-793-CHARLIE",
-                name="Charlie 793",
-                active=True,
-                erp_active=True,
-                erp_status="Active",
-                sort_order=3,
-            )
+        session.add_all(
+            [
+                Resource(
+                    id=CHARLIE_ID,
+                    external_id="EMP-793-CHARLIE",
+                    name="Charlie 793",
+                    active=True,
+                    erp_active=True,
+                    erp_status="Active",
+                    sort_order=3,
+                ),
+                Resource(
+                    id=ERIC_ID,
+                    external_id="EMP-793-ERIC",
+                    name="ERIC FONTAINE",
+                    resource_class="ELECTRICAL",
+                    active=True,
+                    erp_active=True,
+                    erp_status="Active",
+                    sort_order=4,
+                ),
+                Resource(
+                    id=TIMMY_ID,
+                    external_id="EMP-793-TIMMY",
+                    name="TIMMY CURIE",
+                    resource_class="ELECTRICAL",
+                    active=True,
+                    erp_active=True,
+                    erp_status="Active",
+                    sort_order=5,
+                ),
+            ]
         )
         session.flush()
-        session.add(
-            ResourceAvailabilityRule(
-                id="SCH-R-793-C",
-                resource_id=CHARLIE_ID,
-                availability_type="Horaire standard",
-                weekdays="Lun,Mar,Mer,Jeu,Ven",
-                start_time=work_queue_api.time(8, 0),
-                end_time=work_queue_api.time(16, 0),
-                active=True,
+        for resource_id in (CHARLIE_ID, ERIC_ID, TIMMY_ID):
+            session.add(
+                ResourceAvailabilityRule(
+                    id=f"SCH-{resource_id}",
+                    resource_id=resource_id,
+                    availability_type="Horaire standard",
+                    weekdays="Lun,Mar,Mer,Jeu,Ven",
+                    start_time=work_queue_api.time(8, 0),
+                    end_time=work_queue_api.time(16, 0),
+                    active=True,
+                )
             )
-        )
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -130,6 +157,34 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
         approved = client.post(
             f"/api/v1/demands/{number}/approve",
             json={"comment": "#793 characterize two stable sibling slots"},
+        )
+        assert approved.status_code == 200, approved.text
+        return number
+
+    @staticmethod
+    def _approve_sequential_24_request(client: TestClient) -> str:
+        created = client.post(
+            "/api/v1/demands",
+            json=routed_demand_payload(
+                {
+                    "project_number": "P-778-API",
+                    "submit": True,
+                    "desired_start": START,
+                    "desired_end": WEDNESDAY,
+                    "resource_count": 2,
+                    "estimated_hours": 48,
+                    "desired_active_days": 3,
+                    "required_resource_class": "ELECTRICAL",
+                    "confirmation": "Confirmée",
+                    "description": "#793 dated-drop sequential reduction characterization",
+                }
+            ),
+        )
+        assert created.status_code == 201, created.text
+        number = created.json()["demand_number"]
+        approved = client.post(
+            f"/api/v1/demands/{number}/approve",
+            json={"comment": "#793 characterize ERIC/TIMMY sequential reduction"},
         )
         assert approved.status_code == 200, approved.text
         return number
@@ -197,11 +252,50 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
         assert response.status_code == 200, response.text
 
     @staticmethod
+    def _place_from_drop(
+        client: TestClient,
+        *,
+        segment_id: str,
+        resource_id: str,
+        dropped_date: str,
+        key: str,
+    ) -> dict:
+        preview = client.post(
+            f"/api/v1/segments/{segment_id}/place-from-drop/preview",
+            json={
+                "resource_id": resource_id,
+                "dropped_date": dropped_date,
+            },
+        )
+        assert preview.status_code == 200, preview.text
+        preview_payload = preview.json()
+        assert preview_payload["allowed"], preview_payload
+        response = client.post(
+            f"/api/v1/segments/{segment_id}/place-from-drop",
+            headers={"Idempotency-Key": key},
+            json={
+                "resource_id": resource_id,
+                "dropped_date": dropped_date,
+                "expected_planning_version": preview_payload["planning_version"],
+                "expected_approval_revision_id": preview_payload["approval_revision_id"],
+                "expected_operational_version": preview_payload["operational_version"],
+            },
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    @staticmethod
     def _counts_as_coverage(shift) -> bool:
         return str(shift.allocation_type or "").strip() != MISSING_ALLOCATION_TYPE
 
     @classmethod
-    def _capture(cls, session, number: str) -> dict:
+    def _capture(
+        cls,
+        session,
+        number: str,
+        *,
+        nominal_slot_hours: Decimal = Decimal("40.00"),
+    ) -> dict:
         request = session.scalar(
             select(WorkforceRequest).where(
                 WorkforceRequest.legacy_demand_number == number
@@ -259,7 +353,7 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
             )
             effective_need = intent_repo.effective_need(
                 planning_intent_id=intent.id,
-                nominal_slot_hours=Decimal("40.00"),
+                nominal_slot_hours=nominal_slot_hours,
             )
             slots[requirement.id] = {
                 "requirement_id": requirement.id,
@@ -268,12 +362,18 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                 "effective_need": effective_need,
                 "assigned_resource_id": requirement.assigned_resource_id,
                 "planning_intent_id": intent.id,
+                "slot_identity_key": intent.slot_identity_key,
                 "approved_entry_key": intent.approved_entry_key,
                 "slot_index": int(intent.slot_index),
                 "source_request_line_id": intent.source_request_line_id,
                 "intent_mode": intent.intent_mode,
                 "target_mode": intent.target_mode,
                 "target_resource_id": intent.target_resource_id,
+                "placement_not_before_date": (
+                    intent.placement_not_before_date.isoformat()
+                    if intent.placement_not_before_date
+                    else None
+                ),
                 "covered_hours": covered,
                 "residual": max(effective_need - covered, Decimal("0.00")),
                 "shifts": tuple(
@@ -1086,6 +1186,310 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                         self.assertEqual(slot["target_mode"], "EXPLICIT_NONE")
                         self.assertIsNone(slot["target_resource_id"])
                         self.assertEqual(slot["shifts"], ())
+            finally:
+                engine.dispose()
+
+    def test_dated_drop_sequential_reductions_characterize_survivor_regeneration(self) -> None:
+        """Phase 2C: capture the exact current sequential-reduction defect, no correction."""
+
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-793-sequential",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_sequential_24_request(client)
+                    actions = self._assignment_actions(client, number)
+                    self.assertEqual(len(actions), 2)
+
+                    self._place_from_drop(
+                        client,
+                        segment_id=actions[0]["segment_id"],
+                        resource_id=ERIC_ID,
+                        dropped_date=START,
+                        key="issue-793-sequential-drop-eric",
+                    )
+                    actions = self._assignment_actions(client, number)
+                    self.assertEqual(len(actions), 1)
+                    self._place_from_drop(
+                        client,
+                        segment_id=actions[0]["segment_id"],
+                        resource_id=TIMMY_ID,
+                        dropped_date=START,
+                        key="issue-793-sequential-drop-timmy",
+                    )
+
+                    with factory() as session:
+                        initial = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("24.00"),
+                        )
+                    eric_initial = self._by_target(initial, ERIC_ID)
+                    timmy_initial = self._by_target(initial, TIMMY_ID)
+                    for slot, resource_id in (
+                        (eric_initial, ERIC_ID),
+                        (timmy_initial, TIMMY_ID),
+                    ):
+                        self.assertEqual(slot["effective_need"], Decimal("24.00"))
+                        self.assertEqual(slot["planned_hours"], Decimal("24.00"))
+                        self.assertEqual(slot["covered_hours"], Decimal("24.00"))
+                        self.assertEqual(slot["intent_mode"], "AUTO")
+                        self.assertEqual(slot["target_mode"], "EXPLICIT_RESOURCE")
+                        self.assertEqual(slot["target_resource_id"], resource_id)
+                        self.assertEqual(slot["placement_not_before_date"], START)
+                        self.assertEqual(
+                            tuple(
+                                (row["work_date"], row["hours"])
+                                for row in slot["shifts"]
+                                if row["counted"]
+                            ),
+                            (
+                                (START, Decimal("8.00")),
+                                ("2026-11-03", Decimal("8.00")),
+                                (WEDNESDAY, Decimal("8.00")),
+                            ),
+                        )
+
+                    eric_wed = next(
+                        row
+                        for row in eric_initial["shifts"]
+                        if row["work_date"] == WEDNESDAY and row["counted"]
+                    )
+                    first_preview = self._preview(client, eric_wed["allocation_id"])
+                    first_preserve_calls: list[tuple[str, ...]] = []
+                    original_rebuild = SqlPlanningCommandAdapter.rebuild
+
+                    def trace_first(
+                        adapter,
+                        *,
+                        preserve_shift_ids=(),
+                        temporary_excluded_dates_by_segment=None,
+                    ):
+                        first_preserve_calls.append(tuple(preserve_shift_ids))
+                        return original_rebuild(
+                            adapter,
+                            preserve_shift_ids=preserve_shift_ids,
+                            temporary_excluded_dates_by_segment=(
+                                temporary_excluded_dates_by_segment
+                            ),
+                        )
+
+                    with patch.object(
+                        SqlPlanningCommandAdapter,
+                        "rebuild",
+                        new=trace_first,
+                    ):
+                        reduced_eric = self._reduce(
+                            client,
+                            eric_wed["allocation_id"],
+                            first_preview,
+                            "issue-793-sequential-reduce-eric",
+                        )
+                    self.assertEqual(reduced_eric.status_code, 200, reduced_eric.text)
+
+                    with factory() as session:
+                        after_eric = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("24.00"),
+                        )
+                        eric_release_count = len(
+                            tuple(
+                                session.scalars(
+                                    select(PlanningWorkQueueRelease).where(
+                                        PlanningWorkQueueRelease.planning_intent_id
+                                        == eric_initial["planning_intent_id"]
+                                    )
+                                )
+                            )
+                        )
+                    eric_after_first = after_eric["slots"][
+                        eric_initial["requirement_id"]
+                    ]
+                    timmy_after_first = after_eric["slots"][
+                        timmy_initial["requirement_id"]
+                    ]
+                    eric_survivor_ids = {
+                        row["id"] for row in eric_after_first["shifts"] if row["counted"]
+                    }
+                    self.assertEqual(eric_after_first["effective_need"], Decimal("16.00"))
+                    self.assertEqual(eric_after_first["planned_hours"], Decimal("16.00"))
+                    self.assertEqual(eric_after_first["covered_hours"], Decimal("16.00"))
+                    self.assertEqual(
+                        tuple(
+                            (row["work_date"], row["hours"])
+                            for row in eric_after_first["shifts"]
+                            if row["counted"]
+                        ),
+                        (
+                            (START, Decimal("8.00")),
+                            ("2026-11-03", Decimal("8.00")),
+                        ),
+                    )
+                    self.assertEqual(eric_after_first["intent_mode"], "AUTO")
+                    self.assertEqual(eric_after_first["placement_not_before_date"], START)
+                    self.assertEqual(eric_release_count, 0)
+                    self.assertEqual(len(first_preserve_calls), 1)
+                    self.assertEqual(set(first_preserve_calls[0]), eric_survivor_ids)
+                    self.assertEqual(timmy_after_first["effective_need"], Decimal("24.00"))
+                    self.assertEqual(timmy_after_first["covered_hours"], Decimal("24.00"))
+
+                    timmy_wed = next(
+                        row
+                        for row in timmy_after_first["shifts"]
+                        if row["work_date"] == WEDNESDAY and row["counted"]
+                    )
+                    second_preview = self._preview(client, timmy_wed["allocation_id"])
+                    second_preserve_calls: list[tuple[str, ...]] = []
+
+                    def trace_second(
+                        adapter,
+                        *,
+                        preserve_shift_ids=(),
+                        temporary_excluded_dates_by_segment=None,
+                    ):
+                        second_preserve_calls.append(tuple(preserve_shift_ids))
+                        return original_rebuild(
+                            adapter,
+                            preserve_shift_ids=preserve_shift_ids,
+                            temporary_excluded_dates_by_segment=(
+                                temporary_excluded_dates_by_segment
+                            ),
+                        )
+
+                    with patch.object(
+                        SqlPlanningCommandAdapter,
+                        "rebuild",
+                        new=trace_second,
+                    ):
+                        reduced_timmy = self._reduce(
+                            client,
+                            timmy_wed["allocation_id"],
+                            second_preview,
+                            "issue-793-sequential-reduce-timmy",
+                        )
+                    self.assertEqual(reduced_timmy.status_code, 200, reduced_timmy.text)
+                    self.assertEqual(len(second_preserve_calls), 1)
+                    timmy_expected_survivors = {
+                        row["id"]
+                        for row in timmy_after_first["shifts"]
+                        if row["id"] != timmy_wed["id"] and row["counted"]
+                    }
+                    self.assertEqual(
+                        set(second_preserve_calls[0]),
+                        timmy_expected_survivors,
+                    )
+                    self.assertTrue(
+                        eric_survivor_ids.isdisjoint(second_preserve_calls[0])
+                    )
+
+                    with factory() as session:
+                        after_timmy = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("24.00"),
+                        )
+                    eric_after_second = after_timmy["slots"][
+                        eric_initial["requirement_id"]
+                    ]
+                    timmy_after_second = after_timmy["slots"][
+                        timmy_initial["requirement_id"]
+                    ]
+
+                    # Current defect: the prior ERIC survivors are disposable AUTO rows.
+                    self.assertTrue(
+                        eric_survivor_ids.isdisjoint(
+                            {row["id"] for row in eric_after_second["shifts"]}
+                        )
+                    )
+                    self.assertEqual(eric_after_second["effective_need"], Decimal("16.00"))
+                    self.assertEqual(timmy_after_second["effective_need"], Decimal("16.00"))
+                    self.assertEqual(eric_after_second["target_resource_id"], ERIC_ID)
+                    self.assertEqual(
+                        {row["resource_id"] for row in eric_after_second["shifts"]},
+                        {ERIC_ID},
+                    )
+                    self.assertEqual(
+                        tuple(
+                            (row["work_date"], row["hours"])
+                            for row in eric_after_second["shifts"]
+                            if row["counted"]
+                        ),
+                        (
+                            (START, Decimal("5.33")),
+                            ("2026-11-03", Decimal("5.33")),
+                            (WEDNESDAY, Decimal("5.33")),
+                        ),
+                    )
+                    self.assertEqual(eric_after_second["covered_hours"], Decimal("15.99"))
+
+                    regenerated = next(
+                        row
+                        for row in eric_after_second["shifts"]
+                        if row["work_date"] == WEDNESDAY and row["counted"]
+                    )
+                    third_preview = self._preview(client, regenerated["allocation_id"])
+                    self.assertTrue(third_preview["permanent_reduction_allowed"])
+                    self.assertEqual(
+                        Decimal(str(third_preview["effective_need"])).quantize(Decimal("0.01")),
+                        Decimal("16.00"),
+                    )
+                    self.assertEqual(regenerated["hours"], Decimal("5.33"))
+                    self.assertEqual(
+                        Decimal(str(third_preview["effective_need_after_reduction"])).quantize(
+                            Decimal("0.01")
+                        ),
+                        Decimal("10.67"),
+                    )
+                    survivor_hours = sum(
+                        (
+                            row["hours"]
+                            for row in eric_after_second["shifts"]
+                            if row["id"] != regenerated["id"] and row["counted"]
+                        ),
+                        Decimal("0.00"),
+                    )
+                    self.assertEqual(survivor_hours, Decimal("10.66"))
+                    self.assertEqual(
+                        Decimal(str(third_preview["remaining_after_reduction"])).quantize(
+                            Decimal("0.01")
+                        ),
+                        Decimal("0.01"),
+                    )
+
+                    # A subsequent ordinary rebuild has no survivor-id protection.
+                    with factory.begin() as session:
+                        SqlPeriodAwareApprovedDemandSyncAdapter(
+                            session
+                        ).sync_operational_choices(number)
+                    rebuilt = client.post("/api/v1/planning/rebuild")
+                    self.assertEqual(rebuilt.status_code, 200, rebuilt.text)
+                    with factory() as session:
+                        reloaded = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("24.00"),
+                        )
+                    eric_reloaded = reloaded["slots"][eric_initial["requirement_id"]]
+                    self.assertEqual(eric_reloaded["effective_need"], Decimal("16.00"))
+                    self.assertEqual(
+                        tuple(
+                            (row["work_date"], row["hours"])
+                            for row in eric_reloaded["shifts"]
+                            if row["counted"]
+                        ),
+                        (
+                            (START, Decimal("5.33")),
+                            ("2026-11-03", Decimal("5.33")),
+                            (WEDNESDAY, Decimal("5.33")),
+                        ),
+                    )
             finally:
                 engine.dispose()
 
