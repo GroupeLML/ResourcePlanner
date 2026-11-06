@@ -1152,6 +1152,22 @@ class ErpSyncEvidenceService:
             ErpSyncRecoveryState,
         )
 
+        manifest_statement = select(ErpSyncEvidenceManifest).where(
+            ErpSyncEvidenceManifest.attempt_id == attempt_id
+        )
+        if session.get_bind().dialect.name == "mssql":
+            manifest_statement = manifest_statement.with_hint(
+                ErpSyncEvidenceManifest,
+                "WITH (UPDLOCK, HOLDLOCK)",
+                dialect_name="mssql",
+            )
+        manifests = tuple(session.scalars(manifest_statement))
+        if any(manifest.state == "PURGED" for manifest in manifests):
+            raise ApplicationConflictError(
+                "La preuve ERP requise a déjà dépassé sa rétention.",
+                code="erp_sync_recovery_evidence_expired",
+            )
+
         row = session.scalar(
             select(ErpSyncRecoveryState).where(
                 ErpSyncRecoveryState.attempt_id == attempt_id
@@ -1169,11 +1185,7 @@ class ErpSyncEvidenceService:
             row.state = RECOVERY_REQUIRED
             row.reason_code = str(reason_code or "erp_sync_recovery_required")
             row.pinned = True
-        for manifest in session.scalars(
-            select(ErpSyncEvidenceManifest).where(
-                ErpSyncEvidenceManifest.attempt_id == attempt_id
-            )
-        ):
+        for manifest in manifests:
             manifest.pinned = True
 
     def mark_recovery_required(
@@ -2890,30 +2902,88 @@ class ErpSyncEvidenceService:
             if row is not None and row.released_at is None:
                 row.released_at = _utc_now()
 
-    def purge_expired(self) -> int:
+    def run_retention_maintenance(
+        self,
+        *,
+        batch_size: int = 100,
+    ) -> dict[str, int]:
         from ..infrastructure.sql import (
             EVIDENCE_STATE_EXPIRED,
             EVIDENCE_STATE_PURGED,
+            ERP_ATTEMPT_TERMINAL,
+            RECOVERY_EXPIRED,
+            RECOVERY_REQUIRED,
+            RECOVERY_RESOLVED,
+            SYNC_RUN_TERMINAL_STATUSES,
+            AcumaticaProjectTaskSyncProjectResult,
+            AcumaticaProjectTaskSyncRun,
+            ErpSyncAttempt,
             ErpSyncEvidenceChunk,
             ErpSyncEvidenceManifest,
+            ErpSyncEvidenceReservation,
+            ErpSyncMutationEvidence,
+            ErpSyncRecoveryState,
         )
         from ..infrastructure.sql.session import transactional_session
 
+        limit = max(1, min(int(batch_size), 500))
         now = _utc_now()
-        purged = 0
+        payload_purged = 0
+        history_details_purged = 0
+
         with transactional_session(self._session_factory) as session:
-            rows = tuple(
-                session.scalars(
-                    select(ErpSyncEvidenceManifest).where(
-                        ErpSyncEvidenceManifest.pinned.is_(False),
-                        ErpSyncEvidenceManifest.expires_at.is_not(None),
-                        ErpSyncEvidenceManifest.expires_at <= now,
-                        ErpSyncEvidenceManifest.state.not_in((EVIDENCE_STATE_PURGED,)),
-                    )
+            statement = (
+                select(ErpSyncEvidenceManifest)
+                .join(
+                    ErpSyncAttempt,
+                    ErpSyncAttempt.id == ErpSyncEvidenceManifest.attempt_id,
                 )
+                .where(
+                    ErpSyncEvidenceManifest.pinned.is_(False),
+                    ErpSyncEvidenceManifest.expires_at.is_not(None),
+                    ErpSyncEvidenceManifest.expires_at <= now,
+                    ErpSyncEvidenceManifest.state != EVIDENCE_STATE_PURGED,
+                    ErpSyncAttempt.status.in_(ERP_ATTEMPT_TERMINAL),
+                )
+                .order_by(
+                    ErpSyncEvidenceManifest.expires_at,
+                    ErpSyncEvidenceManifest.id,
+                )
+                .limit(limit)
             )
+            if session.get_bind().dialect.name == "mssql":
+                statement = statement.with_hint(
+                    ErpSyncEvidenceManifest,
+                    "WITH (UPDLOCK, HOLDLOCK)",
+                    dialect_name="mssql",
+                )
+            rows = tuple(session.scalars(statement))
+
             affected_attempts: set[str] = set()
             for row in rows:
+                recovery = session.scalar(
+                    select(ErpSyncRecoveryState).where(
+                        ErpSyncRecoveryState.attempt_id == row.attempt_id
+                    )
+                )
+                reservation = session.scalar(
+                    select(ErpSyncEvidenceReservation).where(
+                        ErpSyncEvidenceReservation.attempt_id == row.attempt_id
+                    )
+                )
+                if (
+                    bool(row.pinned)
+                    or (
+                        recovery is not None
+                        and recovery.state == RECOVERY_REQUIRED
+                    )
+                    or (
+                        reservation is not None
+                        and reservation.released_at is None
+                    )
+                ):
+                    continue
+
                 row.state = EVIDENCE_STATE_EXPIRED
                 session.query(ErpSyncEvidenceChunk).filter(
                     ErpSyncEvidenceChunk.manifest_id == row.id
@@ -2921,64 +2991,100 @@ class ErpSyncEvidenceService:
                 row.state = EVIDENCE_STATE_PURGED
                 row.diagnostic = "erp_sync_evidence_retention_purged"
                 affected_attempts.add(str(row.attempt_id))
-                purged += 1
+                payload_purged += 1
 
-            if affected_attempts:
-                from ..infrastructure.sql import (
-                    RECOVERY_EXPIRED,
-                    RECOVERY_REQUIRED,
-                    RECOVERY_RESOLVED,
-                    ErpSyncEvidenceReservation,
-                    ErpSyncMutationEvidence,
-                    ErpSyncRecoveryState,
+            for attempt_id in affected_attempts:
+                remaining = int(
+                    session.scalar(
+                        select(func.count(ErpSyncEvidenceManifest.id)).where(
+                            ErpSyncEvidenceManifest.attempt_id == attempt_id,
+                            ErpSyncEvidenceManifest.state
+                            != EVIDENCE_STATE_PURGED,
+                        )
+                    )
+                    or 0
                 )
-                for attempt_id in affected_attempts:
-                    remaining = int(
-                        session.scalar(
-                            select(func.count(ErpSyncEvidenceManifest.id)).where(
-                                ErpSyncEvidenceManifest.attempt_id == attempt_id,
-                                ErpSyncEvidenceManifest.state != EVIDENCE_STATE_PURGED,
-                            )
-                        )
-                        or 0
+                recovery = session.scalar(
+                    select(ErpSyncRecoveryState).where(
+                        ErpSyncRecoveryState.attempt_id == attempt_id
                     )
-                    recovery = session.scalar(
-                        select(ErpSyncRecoveryState).where(
-                            ErpSyncRecoveryState.attempt_id == attempt_id
-                        )
-                    )
-                    if (
-                        remaining == 0
-                        and not (
-                            recovery is not None
-                            and recovery.state == RECOVERY_REQUIRED
+                )
+                if remaining == 0 and not (
+                    recovery is not None
+                    and recovery.state == RECOVERY_REQUIRED
+                ):
+                    for mutation in session.scalars(
+                        select(ErpSyncMutationEvidence).where(
+                            ErpSyncMutationEvidence.attempt_id == attempt_id
                         )
                     ):
-                        mutation_rows = tuple(
-                            session.scalars(
-                                select(ErpSyncMutationEvidence).where(
-                                    ErpSyncMutationEvidence.attempt_id == attempt_id
-                                )
+                        mutation.encrypted_before = None
+                        mutation.encrypted_after = None
+
+                    reservation = session.scalar(
+                        select(ErpSyncEvidenceReservation).where(
+                            ErpSyncEvidenceReservation.attempt_id == attempt_id
+                        )
+                    )
+                    if reservation is not None:
+                        reservation.used_bytes = 0
+                        reservation.used_plaintext_bytes = 0
+
+                    if (
+                        recovery is not None
+                        and recovery.state not in {
+                            RECOVERY_REQUIRED,
+                            RECOVERY_RESOLVED,
+                        }
+                    ):
+                        recovery.state = RECOVERY_EXPIRED
+                        recovery.pinned = False
+
+            remaining_budget = max(0, limit - payload_purged)
+            if remaining_budget:
+                history_cutoff = now - timedelta(
+                    days=self.settings.history_days
+                )
+                detail_ids = tuple(
+                    session.scalars(
+                        select(AcumaticaProjectTaskSyncProjectResult.id)
+                        .join(
+                            AcumaticaProjectTaskSyncRun,
+                            AcumaticaProjectTaskSyncRun.id
+                            == AcumaticaProjectTaskSyncProjectResult.run_id,
+                        )
+                        .where(
+                            AcumaticaProjectTaskSyncRun.status.in_(
+                                SYNC_RUN_TERMINAL_STATUSES
+                            ),
+                            AcumaticaProjectTaskSyncRun.finished_at.is_not(None),
+                            AcumaticaProjectTaskSyncRun.finished_at
+                            <= history_cutoff,
+                        )
+                        .order_by(
+                            AcumaticaProjectTaskSyncRun.finished_at,
+                            AcumaticaProjectTaskSyncProjectResult.id,
+                        )
+                        .limit(remaining_budget)
+                    )
+                )
+                if detail_ids:
+                    history_details_purged = (
+                        session.query(AcumaticaProjectTaskSyncProjectResult)
+                        .filter(
+                            AcumaticaProjectTaskSyncProjectResult.id.in_(
+                                detail_ids
                             )
                         )
-                        for mutation in mutation_rows:
-                            mutation.encrypted_before = None
-                            mutation.encrypted_after = None
-                        reservation = session.scalar(
-                            select(ErpSyncEvidenceReservation).where(
-                                ErpSyncEvidenceReservation.attempt_id == attempt_id
-                            )
-                        )
-                        if reservation is not None:
-                            reservation.used_bytes = 0
-                            reservation.used_plaintext_bytes = 0
-                        if (
-                            recovery is not None
-                            and recovery.state not in {
-                                RECOVERY_REQUIRED,
-                                RECOVERY_RESOLVED,
-                            }
-                        ):
-                            recovery.state = RECOVERY_EXPIRED
-                            recovery.pinned = False
-        return purged
+                        .delete(synchronize_session=False)
+                    )
+
+        return {
+            "payloads_purged": int(payload_purged),
+            "history_details_purged": int(history_details_purged),
+        }
+
+    def purge_expired(self, *, batch_size: int = 100) -> int:
+        return self.run_retention_maintenance(
+            batch_size=batch_size,
+        )["payloads_purged"]
