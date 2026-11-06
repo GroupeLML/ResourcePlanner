@@ -299,12 +299,11 @@ class ErpSyncOperationsServiceTests(unittest.TestCase):
             owner_attempt_id=running.id,
             lease_expires_at=now + timedelta(minutes=2),
             control_heartbeat_at=now - timedelta(minutes=3),
-            scheduler_observed_at=now - timedelta(minutes=3),
         )
         snapshot = self.service(settings, value).snapshot(
             evidence_budget_bytes=100
         )
-        self.assertEqual(snapshot.scheduler_observation_status, "STALE")
+        self.assertEqual(snapshot.scheduler_observation_status, "OBSERVED")
         self.assertEqual(snapshot.scheduler_status, "STALE")
         self.assertEqual(snapshot.current_attempt_id, running.id)
         self.assertEqual(snapshot.scheduler_observation_age_seconds, 180)
