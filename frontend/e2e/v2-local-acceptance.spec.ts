@@ -2725,7 +2725,7 @@ test("ERP operations use authoritative RUN_NOW, review, RETRY and compensation c
 
   // A project commit followed by a controlled task-source failure yields retained
   // mutation evidence; preview and explicit confirmation compensate it once.
-  await setSourceMode("project_mutation=true&task_failure=true");
+  await setSourceMode("project_mutation=true&post_project_failure=true");
   await page.getByRole("button", { name: "Actualiser" }).click();
   const compensationLaunchPromise = page.waitForResponse((response) => (
     response.request().method() === "POST"
@@ -2741,7 +2741,23 @@ test("ERP operations use authoritative RUN_NOW, review, RETRY and compensation c
   );
   await page.getByRole("button", { name: "Actualiser" }).click();
 
+  const previewResponsePromise = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+    && new URL(response.url()).pathname.endsWith("/compensation/preview")
+  ));
   await page.getByRole("button", { name: "Prévisualiser la compensation" }).click();
+  const previewResponse = await previewResponsePromise;
+  expect(previewResponse.status()).toBe(200);
+  const previewPayload = await previewResponse.json() as {
+    attempt_id: string;
+    eligible_records: number;
+    can_confirm: boolean;
+    conflict_count: number;
+  };
+  expect(previewPayload.attempt_id).toBe(compensationAccepted.run_id);
+  expect(previewPayload.eligible_records).toBe(1);
+  expect(previewPayload.conflict_count).toBe(0);
+  expect(previewPayload.can_confirm).toBe(true);
   await expect(page.getByText("Prévisualisation confirmable")).toBeVisible();
   await expect(page.getByText(/1 enregistrement\(s\) admissible\(s\)/)).toBeVisible();
 
@@ -2758,12 +2774,12 @@ test("ERP operations use authoritative RUN_NOW, review, RETRY and compensation c
   };
   expect(compensatedState.recovery_state.state).toBe("RESOLVED");
 
-    await setSourceMode("project_mutation=false&project_empty=false&task_failure=false");
+    await setSourceMode("project_mutation=false&project_empty=false&task_failure=false&post_project_failure=false");
     await page.reload();
     await navigateMain(page, "Opérations ERP");
     await expect(page.getByText("RESOLVED", { exact: true }).first()).toBeVisible();
   } finally {
-    await setSourceMode("project_mutation=false&project_empty=false&task_failure=false").catch(() => undefined);
+    await setSourceMode("project_mutation=false&project_empty=false&task_failure=false&post_project_failure=false").catch(() => undefined);
     await closeContext(context);
   }
 });
