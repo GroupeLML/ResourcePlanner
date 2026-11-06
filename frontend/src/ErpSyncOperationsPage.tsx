@@ -35,6 +35,9 @@ const STALE_COMPENSATION_CODES = new Set([
   "erp_sync_configuration_incompatible",
   "erp_sync_evidence_protocol_incompatible",
   "erp_sync_evidence_configuration_incompatible",
+  "erp_sync_evidence_decrypt_failed",
+  "erp_sync_checkpoint_before_integrity_invalid",
+  "erp_sync_checkpoint_after_integrity_invalid",
 ]);
 
 const ERROR_MESSAGES: Record<string, string> = {
