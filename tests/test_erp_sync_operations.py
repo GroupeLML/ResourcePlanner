@@ -32,6 +32,7 @@ from app.infrastructure.sql import (
     ERP_SYNC_CONTROL_ROW_ID,
     ErpSyncAttempt,
     ErpSyncControl,
+    ErpSyncEvidenceReservation,
     ErpSyncOccurrence,
     create_session_factory,
     create_sql_engine,
@@ -552,6 +553,94 @@ class ErpSyncOperationsSqlAndApiTests(unittest.TestCase):
         ).read(evidence_budget_bytes=1024)
         self.assertEqual(value.attempts[0].status, "FAILED")
         self.assertEqual(value.last_complete_success.status, "SUCCEEDED")
+
+    def _add_evidence_reservation(
+        self,
+        *,
+        key: str,
+        reserved_bytes: int,
+        used_bytes: int,
+        released_at: datetime | None,
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        with transactional_session(self.factory) as session:
+            occurrence = ErpSyncOccurrence(
+                occurrence_key=f"MANUAL:evidence-{key}",
+                occurrence_type="MANUAL",
+                intent="PROJECTS_AND_ACTIVE_TASKS",
+                business_date=now.date(),
+                scheduled_at=None,
+                timezone_name="America/Toronto",
+                scheduled_local_time="00:00",
+                config_fingerprint=self.settings.config_fingerprint,
+                status="FAILED",
+            )
+            session.add(occurrence)
+            session.flush()
+            attempt_row = ErpSyncAttempt(
+                occurrence_id=occurrence.id,
+                attempt_number=1,
+                trigger_kind="MANUAL",
+                actor_name="operator",
+                intent="PROJECTS_AND_ACTIVE_TASKS",
+                generation=1,
+                status="FAILED",
+                phase="FAILED",
+                started_at=now,
+                finished_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(attempt_row)
+            session.flush()
+            session.add(
+                ErpSyncEvidenceReservation(
+                    attempt_id=attempt_row.id,
+                    reserved_bytes=reserved_bytes,
+                    used_bytes=used_bytes,
+                    reserved_plaintext_bytes=reserved_bytes,
+                    used_plaintext_bytes=used_bytes,
+                    released_at=released_at,
+                )
+            )
+
+    def test_released_retained_evidence_remains_charged_in_operations_projection(self) -> None:
+        now = datetime.now(timezone.utc)
+        self._add_evidence_reservation(
+            key="retained",
+            reserved_bytes=500,
+            used_bytes=400,
+            released_at=now,
+        )
+        value = SqlErpSyncOperationsRepository(
+            self.factory,
+            timezone_name="America/Toronto",
+        ).read(evidence_budget_bytes=1000)
+        self.assertEqual(value.evidence.reserved_bytes, 0)
+        self.assertEqual(value.evidence.used_bytes, 400)
+        self.assertEqual(value.evidence.pressure_ratio, 0.4)
+
+    def test_mixed_active_and_retained_evidence_uses_canonical_charged_usage(self) -> None:
+        now = datetime.now(timezone.utc)
+        self._add_evidence_reservation(
+            key="retained-mixed",
+            reserved_bytes=500,
+            used_bytes=400,
+            released_at=now,
+        )
+        self._add_evidence_reservation(
+            key="active-mixed",
+            reserved_bytes=300,
+            used_bytes=100,
+            released_at=None,
+        )
+        value = SqlErpSyncOperationsRepository(
+            self.factory,
+            timezone_name="America/Toronto",
+        ).read(evidence_budget_bytes=1000)
+        self.assertEqual(value.evidence.reserved_bytes, 300)
+        self.assertEqual(value.evidence.used_bytes, 500)
+        self.assertEqual(value.evidence.pressure_ratio, 0.7)
 
     def _principal(self, permissions: tuple[str, ...]) -> AuthPrincipal:
         return AuthPrincipal(

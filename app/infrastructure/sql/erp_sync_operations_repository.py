@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import timezone
 
-from sqlalchemy import func, select, true
+from sqlalchemy import case, func, select, true
 from zoneinfo import ZoneInfo
 
 from ...application.erp_sync_operations import (
@@ -24,6 +24,9 @@ from .erp_sync_control_models import (
     ErpSyncOccurrence,
 )
 from .erp_sync_control_repository import SqlErpSyncControlRepository
+from .erp_sync_evidence_accounting import (
+    read_erp_sync_evidence_storage_accounting,
+)
 from .erp_sync_evidence_models import (
     EVIDENCE_PROOF_CHECKPOINT,
     EVIDENCE_PROOF_SOURCE,
@@ -268,7 +271,10 @@ class SqlErpSyncOperationsRepository:
             recovery_row = session.scalar(
                 select(ErpSyncRecoveryState)
                 .order_by(
-                    (ErpSyncRecoveryState.state == "REQUIRED").desc(),
+                    case(
+                        (ErpSyncRecoveryState.state == "REQUIRED", 1),
+                        else_=0,
+                    ).desc(),
                     ErpSyncRecoveryState.updated_at.desc(),
                 )
                 .limit(1)
@@ -334,24 +340,16 @@ class SqlErpSyncOperationsRepository:
                 )
                 or 0
             )
-            reserved_bytes = int(
-                session.scalar(
-                    select(func.coalesce(func.sum(ErpSyncEvidenceReservation.reserved_bytes), 0)).where(
-                        ErpSyncEvidenceReservation.released_at.is_(None)
-                    )
-                )
-                or 0
+            accounting = read_erp_sync_evidence_storage_accounting(
+                session,
+                budget_bytes=evidence_budget_bytes,
             )
-            used_bytes = int(
-                session.scalar(
-                    select(func.coalesce(func.sum(ErpSyncEvidenceReservation.used_bytes), 0)).where(
-                        ErpSyncEvidenceReservation.released_at.is_(None)
-                    )
-                )
-                or 0
+            reserved_bytes = accounting.active_reserved_bytes
+            used_bytes = (
+                accounting.active_used_bytes + accounting.retained_used_bytes
             )
             pressure = (
-                reserved_bytes / evidence_budget_bytes
+                accounting.charged_bytes / evidence_budget_bytes
                 if evidence_budget_bytes and evidence_budget_bytes > 0
                 else None
             )

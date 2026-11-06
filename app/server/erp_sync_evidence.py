@@ -9,6 +9,10 @@ import json
 from typing import Any, Mapping, Sequence
 
 from sqlalchemy import func, inspect, select
+
+from ..infrastructure.sql.erp_sync_evidence_accounting import (
+    read_erp_sync_evidence_storage_accounting,
+)
 from sqlalchemy.orm import Session
 
 from ..application.errors import (
@@ -416,6 +420,16 @@ class ErpSyncEvidenceService:
             remaining -= chunk
         return total
 
+    @property
+    def required_attempt_storage_bytes(self) -> int:
+        return self._encrypted_storage_bound(self.settings.max_evidence_bytes)
+
+    def storage_accounting_in_session(self, session: Session):
+        return read_erp_sync_evidence_storage_accounting(
+            session,
+            budget_bytes=self.settings.evidence_budget_bytes,
+        )
+
     def reserve_attempt(self, *, attempt_id: str) -> None:
         from ..infrastructure.sql import ErpSyncAttempt, ErpSyncEvidenceReservation
         from ..infrastructure.sql.erp_sync_control_repository import (
@@ -469,26 +483,8 @@ class ErpSyncEvidenceService:
             )
             if existing is not None:
                 return
-            active_reserved = int(
-                session.scalar(
-                    select(func.coalesce(func.sum(ErpSyncEvidenceReservation.reserved_bytes), 0))
-                    .where(ErpSyncEvidenceReservation.released_at.is_(None))
-                )
-                or 0
-            )
-            # Released reservations retain the actual ciphertext/accounting used
-            # by source chunks and mutation evidence until their retention purge.
-            retained_used = int(
-                session.scalar(
-                    select(func.coalesce(func.sum(ErpSyncEvidenceReservation.used_bytes), 0))
-                    .where(ErpSyncEvidenceReservation.released_at.is_not(None))
-                )
-                or 0
-            )
-            if (
-                retained_used + active_reserved + requested_storage
-                > self.settings.evidence_budget_bytes
-            ):
+            accounting = self.storage_accounting_in_session(session)
+            if not accounting.can_admit(requested_storage):
                 raise ApplicationUnavailableError(
                     "Le budget de stockage des preuves ERP est insuffisant.",
                     code="erp_sync_evidence_storage_budget_unavailable",
@@ -1703,6 +1699,15 @@ class ErpSyncEvidenceService:
         if not isinstance(value, dict):
             return {}
         return {str(key): int(count) for key, count in value.items()}
+
+    def assert_baselines_readable_in_session(
+        self,
+        session: Session,
+        *,
+        baselines: Sequence[Any],
+    ) -> None:
+        for baseline in baselines:
+            self._baseline_project_counts(baseline)
 
     def validate_plausibility(
         self,

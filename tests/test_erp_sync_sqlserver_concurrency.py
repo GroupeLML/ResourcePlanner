@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import os
 from threading import Barrier, Event, Thread
@@ -70,6 +70,11 @@ from app.infrastructure.sql.erp_sync_control_repository import (
     ErpSyncFenceLost,
     SqlErpSyncControlRepository,
 )
+from app.infrastructure.sql.erp_sync_operations_repository import (
+    SqlErpSyncOperationsRepository,
+)
+from tools.check_erp_activation_readiness import _check_activation_database
+from tools.check_server_runtime import check_database_preflight
 
 
 class SqlServerProjectSource:
@@ -451,6 +456,77 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             session.flush()
             session.expunge(row)
             return row
+
+    def test_operations_repository_reads_empty_recovery_history_on_sqlserver(self) -> None:
+        value = SqlErpSyncOperationsRepository(
+            self.factory,
+            timezone_name=self.settings.timezone_name,
+        ).read(evidence_budget_bytes=32 * 1024 * 1024)
+        self.assertEqual(value.recovery.state, "NONE")
+        self.assertIsNone(value.recovery.attempt_id)
+
+    def test_operations_repository_prioritizes_required_over_newer_resolved_on_sqlserver(self) -> None:
+        now = SqlErpSyncControlRepository(self.factory).current_sql_time()
+        occurrence = self._daily_occurrence()
+        with transactional_session(self.factory) as session:
+            required_attempt = ErpSyncAttempt(
+                occurrence_id=occurrence.id,
+                attempt_number=1,
+                trigger_kind="MANUAL",
+                actor_name="operator",
+                intent="PROJECTS_AND_ACTIVE_TASKS",
+                generation=1,
+                status="FAILED",
+                phase="FAILED",
+                started_at=now - timedelta(minutes=20),
+                finished_at=now - timedelta(minutes=19),
+                created_at=now - timedelta(minutes=20),
+                updated_at=now - timedelta(minutes=19),
+            )
+            resolved_attempt = ErpSyncAttempt(
+                occurrence_id=occurrence.id,
+                attempt_number=2,
+                trigger_kind="RETRY",
+                actor_name="operator",
+                intent="PROJECTS_AND_ACTIVE_TASKS",
+                generation=2,
+                status="FAILED",
+                phase="FAILED",
+                started_at=now - timedelta(minutes=10),
+                finished_at=now - timedelta(minutes=9),
+                created_at=now - timedelta(minutes=10),
+                updated_at=now - timedelta(minutes=9),
+            )
+            session.add_all((required_attempt, resolved_attempt))
+            session.flush()
+            required = ErpSyncRecoveryState(
+                attempt_id=required_attempt.id,
+                state="REQUIRED",
+                reason_code="sqlserver-required-priority",
+                pinned=True,
+            )
+            resolved = ErpSyncRecoveryState(
+                attempt_id=resolved_attempt.id,
+                state="RESOLVED",
+                reason_code="sqlserver-newer-resolved",
+                pinned=False,
+            )
+            session.add_all((required, resolved))
+            session.flush()
+            required.updated_at = now - timedelta(minutes=15)
+            resolved.updated_at = now - timedelta(minutes=5)
+
+        value = SqlErpSyncOperationsRepository(
+            self.factory,
+            timezone_name=self.settings.timezone_name,
+        ).read(evidence_budget_bytes=32 * 1024 * 1024)
+        self.assertEqual(value.recovery.state, "REQUIRED")
+        self.assertEqual(value.recovery.attempt_id, required_attempt.id)
+
+    def test_real_sqlserver_satisfies_production_activation_engine_check(self) -> None:
+        database = check_database_preflight(DATABASE_URL)
+        self.assertEqual(database["database"], "mssql")
+        _check_activation_database(database, activation_mode=True)
 
     def test_same_daily_occurrence_two_connections_converge_on_one_owner(self) -> None:
         occurrence = self._daily_occurrence()

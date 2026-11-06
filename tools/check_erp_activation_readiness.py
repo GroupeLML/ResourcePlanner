@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from app.application.errors import ApplicationConflictError
 from app.application.erp_sync_scheduler import ERP_SYNC_PROTOCOL_VERSION
 from app.infrastructure.smtp import FernetSecretCipher
 from app.infrastructure.sql import (
@@ -34,7 +35,26 @@ from tools.check_server_runtime import (
 
 
 class ErpActivationReadinessError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "erp_sync_activation_readiness_blocked",
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def _check_activation_database(
+    database: dict[str, object],
+    *,
+    activation_mode: bool,
+) -> None:
+    if activation_mode and database.get("database") != "mssql":
+        raise ErpActivationReadinessError(
+            "L'activation ERP de production exige SQL Server.",
+            code="erp_sync_activation_requires_sqlserver",
+        )
 
 
 def _check_timezone(settings: ServerSettings) -> dict[str, object]:
@@ -71,6 +91,7 @@ def check_activation_readiness(
     dedicated_account_confirmed: bool,
 ) -> dict[str, object]:
     database = check_database_preflight(settings.database_url)
+    _check_activation_database(database, activation_mode=activation_mode)
     timezone = _check_timezone(settings)
 
     if settings.acumatica is None:
@@ -118,13 +139,16 @@ def check_activation_readiness(
                 )
 
             policy = evidence.policy_fingerprint_in_session(session)
-            baseline_sources = {
-                str(row.source_type)
-                for row in session.scalars(
+            baseline_rows = tuple(
+                session.scalars(
                     select(ErpSyncBaseline).where(
                         ErpSyncBaseline.profile_fingerprint == policy
                     )
                 )
+            )
+            baseline_sources = {
+                str(row.source_type)
+                for row in baseline_rows
             }
             missing_baselines = [
                 source_type
@@ -135,6 +159,27 @@ def check_activation_readiness(
                 raise ErpActivationReadinessError(
                     "Baseline ERP approuvée absente pour: "
                     + ", ".join(missing_baselines)
+                )
+            try:
+                evidence.assert_baselines_readable_in_session(
+                    session,
+                    baselines=baseline_rows,
+                )
+            except ApplicationConflictError as exc:
+                raise ErpActivationReadinessError(
+                    "Une baseline ERP requise ne peut pas être vérifiée.",
+                    code=getattr(
+                        exc,
+                        "code",
+                        "erp_sync_baseline_integrity_invalid",
+                    ),
+                ) from exc
+
+            accounting = evidence.storage_accounting_in_session(session)
+            if not accounting.can_admit(evidence.required_attempt_storage_bytes):
+                raise ErpActivationReadinessError(
+                    "Le budget de stockage des preuves ERP est insuffisant pour une nouvelle tentative.",
+                    code="erp_sync_evidence_storage_budget_unavailable",
                 )
 
             recovery_required = session.scalar(
@@ -217,7 +262,16 @@ def main() -> int:
         print(json.dumps({"status": "database_error", "message": str(exc)}, ensure_ascii=False))
         return 3
     except ErpActivationReadinessError as exc:
-        print(json.dumps({"status": "blocked", "message": str(exc)}, ensure_ascii=False))
+        print(
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "code": exc.code,
+                    "message": str(exc),
+                },
+                ensure_ascii=False,
+            )
+        )
         return 4
     except Exception as exc:
         print(

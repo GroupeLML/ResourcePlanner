@@ -18,7 +18,10 @@ from app.infrastructure.sql import (
     create_session_factory,
     create_sql_engine,
 )
-from app.server.erp_sync_evidence import ErpSyncEvidenceService
+from app.server.erp_sync_evidence import (
+    ErpSyncEvidenceService,
+    canonical_json_bytes,
+)
 from app.server.runtime import ServerSettings
 from tools.check_erp_activation_readiness import (
     ErpActivationReadinessError,
@@ -81,11 +84,17 @@ class ErpActivationReadinessTests(unittest.TestCase):
         self.engine.dispose()
         self.tmp.cleanup()
 
-    def _check(self, settings: ServerSettings | None = None, *, activation: bool = False):
+    def _check(
+        self,
+        settings: ServerSettings | None = None,
+        *,
+        activation: bool = False,
+        database_name: str = "sqlite",
+    ):
         with patch(
             "tools.check_erp_activation_readiness.check_database_preflight",
             return_value={
-                "database": "sqlite",
+                "database": database_name,
                 "alembic_revision": "test-head",
                 "connectivity": "ok",
             },
@@ -110,7 +119,28 @@ class ErpActivationReadinessTests(unittest.TestCase):
         ):
             self._check(activation=True)
 
-    def test_activation_gate_accepts_explicit_enabled_configuration_after_same_preflight(self) -> None:
+    def test_activation_gate_rejects_sqlite_even_when_enabled(self) -> None:
+        enabled = ServerSettings.from_environment(
+            {
+                "RESOURCEPLANNER_DATABASE_URL": self.database_url,
+                "RESOURCEPLANNER_ACUMATICA_BASE_URL": "https://erp.example.test",
+                "RESOURCEPLANNER_ACUMATICA_USERNAME": "dedicated-service",
+                "RESOURCEPLANNER_ACUMATICA_PASSWORD": "not-a-real-secret",
+                "RESOURCEPLANNER_CONFIG_ENCRYPTION_KEY": self.key,
+                "RESOURCEPLANNER_ERP_SYNC_ENABLED": "true",
+            }
+        )
+        with self.assertRaisesRegex(
+            ErpActivationReadinessError,
+            "exige SQL Server",
+        ) as raised:
+            self._check(enabled, activation=True)
+        self.assertEqual(
+            raised.exception.code,
+            "erp_sync_activation_requires_sqlserver",
+        )
+
+    def test_activation_gate_accepts_enabled_configuration_after_mssql_preflight(self) -> None:
         enabled = ServerSettings.from_environment(
             {
                 "RESOURCEPLANNER_DATABASE_URL": self.database_url,
@@ -125,7 +155,7 @@ class ErpActivationReadinessTests(unittest.TestCase):
             enabled.erp_sync.config_fingerprint,
             self.settings.erp_sync.config_fingerprint,
         )
-        result = self._check(enabled, activation=True)
+        result = self._check(enabled, activation=True, database_name="mssql")
         self.assertEqual(result["mode"], "activation")
         self.assertTrue(result["automatic_enabled"])
 
@@ -176,6 +206,52 @@ class ErpActivationReadinessTests(unittest.TestCase):
             "RESOURCEPLANNER_CONFIG_ENCRYPTION_KEY",
         ):
             self._check(no_crypto)
+
+    def test_wrong_key_blocks_when_existing_baseline_counts_are_unreadable(self) -> None:
+        writer = ErpSyncEvidenceService(
+            self.factory,
+            cipher=FernetSecretCipher(self.key),
+            settings=self.settings.erp_sync_evidence,
+            control_settings=self.settings.erp_sync,
+        )
+        with self.factory.begin() as session:
+            for baseline in session.query(ErpSyncBaseline).all():
+                baseline.encrypted_project_counts = writer._encrypt_bytes(
+                    canonical_json_bytes({"ERP-1": 1})
+                )
+
+        wrong_key = Fernet.generate_key().decode("ascii")
+        incompatible = ServerSettings.from_environment(
+            {
+                "RESOURCEPLANNER_DATABASE_URL": self.database_url,
+                "RESOURCEPLANNER_ACUMATICA_BASE_URL": "https://erp.example.test",
+                "RESOURCEPLANNER_ACUMATICA_USERNAME": "dedicated-service",
+                "RESOURCEPLANNER_ACUMATICA_PASSWORD": "not-a-real-secret",
+                "RESOURCEPLANNER_CONFIG_ENCRYPTION_KEY": wrong_key,
+                "RESOURCEPLANNER_ERP_SYNC_ENABLED": "false",
+            }
+        )
+        with self.assertRaises(ErpActivationReadinessError) as raised:
+            self._check(incompatible)
+        self.assertEqual(
+            raised.exception.code,
+            "erp_sync_baseline_integrity_invalid",
+        )
+
+    def test_valid_key_validates_existing_baseline_counts(self) -> None:
+        writer = ErpSyncEvidenceService(
+            self.factory,
+            cipher=FernetSecretCipher(self.key),
+            settings=self.settings.erp_sync_evidence,
+            control_settings=self.settings.erp_sync,
+        )
+        with self.factory.begin() as session:
+            for baseline in session.query(ErpSyncBaseline).all():
+                baseline.encrypted_project_counts = writer._encrypt_bytes(
+                    canonical_json_bytes({"ERP-1": 1})
+                )
+        result = self._check()
+        self.assertEqual(result["status"], "ready")
 
     def test_protocol_mismatch_fails_closed(self) -> None:
         with self.factory.begin() as session:
