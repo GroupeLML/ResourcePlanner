@@ -5,7 +5,7 @@ from pathlib import Path
 from types import MappingProxyType
 import unittest
 
-from app.domain.planning_engine import MISSING_ALLOCATION_TYPE, LockedAllocationInput, SegmentInput
+from app.domain.planning_engine import MISSING_ALLOCATION_TYPE, LockedAllocationInput, SegmentInput, build_allocation_plan
 from app.domain.planning_projection import (
     PlanningCalculationSnapshot,
     project_planning_snapshot,
@@ -291,6 +291,19 @@ class PlanningProjectionTests(unittest.TestCase):
             {
                 row.resource_id for row in calculation.persisted_allocations
             },
+            {"R-A", "R-B"},
+        )
+
+        result = build_allocation_plan(
+            calculation.segments,
+            calculation.locked_allocations,
+            calculation.capacity_by_resource_day,
+            outside_schedule_eligible_by_resource_day=(
+                calculation.outside_schedule_eligible_by_resource_day
+            ),
+        )
+        self.assertEqual(
+            {row.resource_id for row in result.allocations},
             {"R-A", "R-B"},
         )
 
