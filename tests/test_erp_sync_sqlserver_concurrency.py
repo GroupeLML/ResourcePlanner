@@ -296,6 +296,7 @@ class ErpSyncSqlServerConcurrencyTests(unittest.TestCase):
             control.lease_expires_at = None
             control.owner_deadline_at = None
             control.heartbeat_at = None
+            control.scheduler_observed_at = None
             control.last_evaluated_business_date = None
             control.last_success_attempt_id = None
             control.config_fingerprint = None
