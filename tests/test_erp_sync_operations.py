@@ -263,15 +263,28 @@ class ErpSyncOperationsServiceTests(unittest.TestCase):
     def test_enabled_scheduler_missing_observation_is_not_disabled(self) -> None:
         settings = ErpSyncSchedulerSettings(enabled=True)
         now = datetime(2026, 11, 5, 15, tzinfo=timezone.utc)
-        value = data(
-            settings,
-            now=now,
-            current_daily_occurrence_status=None,
-            last_evaluated_business_date=date(2026, 11, 4),
+        value = replace(
+            data(
+                settings,
+                now=now,
+                current_daily_occurrence_status=None,
+                last_evaluated_business_date=date(2026, 11, 4),
+            ),
+            scheduler_observed_at=None,
         )
         snapshot = self.service(settings, value).snapshot(evidence_budget_bytes=100)
         self.assertEqual(snapshot.scheduler_observation_status, "MISSING")
         self.assertEqual(snapshot.scheduler_status, "MISSED")
+
+    def test_healthy_idle_scheduler_observation_is_fresh(self) -> None:
+        settings = ErpSyncSchedulerSettings(enabled=True, heartbeat_seconds=60)
+        now = datetime(2026, 11, 5, 15, tzinfo=timezone.utc)
+        snapshot = self.service(
+            settings,
+            data(settings, now=now),
+        ).snapshot(evidence_budget_bytes=100)
+        self.assertEqual(snapshot.scheduler_observation_status, "OBSERVED")
+        self.assertEqual(snapshot.scheduler_status, "HEALTHY")
 
     def test_stopped_idle_scheduler_observation_is_stale(self) -> None:
         settings = ErpSyncSchedulerSettings(enabled=True, heartbeat_seconds=60)
@@ -306,7 +319,7 @@ class ErpSyncOperationsServiceTests(unittest.TestCase):
         self.assertEqual(snapshot.scheduler_observation_status, "OBSERVED")
         self.assertEqual(snapshot.scheduler_status, "STALE")
         self.assertEqual(snapshot.current_attempt_id, running.id)
-        self.assertEqual(snapshot.scheduler_observation_age_seconds, 180)
+        self.assertEqual(snapshot.scheduler_observation_age_seconds, 30)
 
     def test_pending_review_remains_current_without_being_lease_owner(self) -> None:
         settings = ErpSyncSchedulerSettings(enabled=True)
