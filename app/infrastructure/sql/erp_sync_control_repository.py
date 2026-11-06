@@ -545,6 +545,9 @@ class SqlErpSyncControlRepository:
         with transactional_session(self._session_factory) as session:
             control = _lock_control(session)
             now = _sql_now(session)
+            # Scheduler liveness is independent from the business-date watermark
+            # and from any active owner's worker heartbeat.
+            control.scheduler_observed_at = now
             self._interrupt_expired_locked(session, control, now=now)
             decision = scheduler_decision(now, settings)
             watermark = control.last_evaluated_business_date
