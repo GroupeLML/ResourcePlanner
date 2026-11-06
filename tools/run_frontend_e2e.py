@@ -61,6 +61,7 @@ from app.infrastructure.sql import (
     ErpUserDirectoryEntry,
     ERP_SYNC_CONTROL_ROW_ID,
     ErpSyncBaseline,
+    ErpSyncCompensationReceipt,
     ErpSyncControl,
     Project,
     Resource,
@@ -738,6 +739,17 @@ def build_app(database_path: Path, frontend_dist: Path):
                         )
                     )
         return {"enabled": bool(enabled)}
+
+    @app.get(
+        "/__e2e__/erp-sync/compensation-receipts",
+        include_in_schema=False,
+    )
+    def erp_sync_compensation_receipts(attempt_id: str):
+        with app.state.session_factory() as session:
+            count = session.query(ErpSyncCompensationReceipt).filter(
+                ErpSyncCompensationReceipt.attempt_id == attempt_id
+            ).count()
+        return {"attempt_id": attempt_id, "count": int(count)}
 
     @app.post(
         "/__e2e__/erp-sync/invalidate-compensation-preview",
