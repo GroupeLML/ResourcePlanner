@@ -32,6 +32,7 @@ from app.infrastructure.sql import (
     ERP_SYNC_CONTROL_ROW_ID,
     ErpSyncAttempt,
     ErpSyncControl,
+    ErpSyncEvidenceManifest,
     ErpSyncEvidenceReservation,
     ErpSyncOccurrence,
     create_session_factory,
@@ -593,7 +594,7 @@ class ErpSyncOperationsSqlAndApiTests(unittest.TestCase):
         reserved_bytes: int,
         used_bytes: int,
         released_at: datetime | None,
-    ) -> None:
+    ) -> str:
         now = datetime.now(timezone.utc)
         with transactional_session(self.factory) as session:
             occurrence = ErpSyncOccurrence(
@@ -635,6 +636,44 @@ class ErpSyncOperationsSqlAndApiTests(unittest.TestCase):
                     released_at=released_at,
                 )
             )
+            attempt_id = attempt_row.id
+        return attempt_id
+
+    def test_elapsed_expiry_is_projected_before_physical_cleanup(self) -> None:
+        now = datetime.now(timezone.utc)
+        attempt_id = self._add_evidence_reservation(
+            key="elapsed-expiry",
+            reserved_bytes=500,
+            used_bytes=400,
+            released_at=now,
+        )
+        with transactional_session(self.factory) as session:
+            session.add(
+                ErpSyncEvidenceManifest(
+                    attempt_id=attempt_id,
+                    protocol_version=1,
+                    source_type="PROJECTS",
+                    proof_type="SOURCE",
+                    profile_fingerprint="f" * 64,
+                    source_fingerprint="s" * 64,
+                    observed_at=now - timedelta(days=20),
+                    row_count=1,
+                    chunk_count=1,
+                    plaintext_bytes=100,
+                    ciphertext_bytes=400,
+                    content_sha256="c" * 64,
+                    state="READY",
+                    pinned=False,
+                    expires_at=now - timedelta(seconds=1),
+                )
+            )
+        value = SqlErpSyncOperationsRepository(
+            self.factory,
+            timezone_name="America/Toronto",
+        ).read(evidence_budget_bytes=1000)
+        self.assertEqual(value.evidence.manifests_expired, 1)
+        self.assertEqual(value.evidence.status, "EXPIRED")
+        self.assertEqual(value.evidence.used_bytes, 400)
 
     def test_released_retained_evidence_remains_charged_in_operations_projection(self) -> None:
         now = datetime.now(timezone.utc)
