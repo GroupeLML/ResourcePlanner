@@ -38,6 +38,13 @@ from tests.sqlite_test_template import SqliteDatabaseTemplate
 START = "2026-11-02"
 END = "2026-11-06"
 THURSDAY = "2026-11-05"
+EXPECTED_DAYS = {
+    "2026-11-02",
+    "2026-11-03",
+    "2026-11-04",
+    "2026-11-05",
+    "2026-11-06",
+}
 ALICE_ID = "R-778-A"
 BOB_ID = "R-778-B"
 CHARLIE_ID = "R-793-C"
@@ -531,10 +538,32 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                 self.assertEqual(b_before["target_resource_id"], BOB_ID)
                 self.assertEqual(len(a_before["shifts"]), 5)
                 self.assertEqual(len(b_before["shifts"]), 5)
+                self.assertEqual(
+                    before["requirement_ids"],
+                    frozenset(
+                        {
+                            a_before["requirement_id"],
+                            b_before["requirement_id"],
+                        }
+                    ),
+                )
+                self.assertEqual(
+                    before["intent_ids"],
+                    frozenset(
+                        {
+                            a_before["planning_intent_id"],
+                            b_before["planning_intent_id"],
+                        }
+                    ),
+                )
                 for slot, resource_id in (
                     (a_before, ALICE_ID),
                     (b_before, BOB_ID),
                 ):
+                    self.assertEqual(
+                        {row["work_date"] for row in slot["shifts"]},
+                        EXPECTED_DAYS,
+                    )
                     self.assertEqual(
                         tuple(row["hours"] for row in slot["shifts"]),
                         (Decimal("8.00"),) * 5,
