@@ -3628,6 +3628,40 @@ class ErpSyncEvidenceTests(unittest.TestCase):
         self.assertEqual(released_used, sum(retained_used))
         self.assertEqual(len(terminal_ids), 4)
 
+    def test_retention_preserves_active_attempt_and_active_reservation(self) -> None:
+        _control, _occurrence, attempt = self._attempt("retention-active")
+        captured = self.service.capture_source(
+            attempt_id=attempt.id,
+            source_type="PROJECTS",
+            profile_fingerprint=self.control_settings.config_fingerprint,
+            payload={"records": [{"number": "P-ACTIVE"}]},
+            row_count=1,
+        )
+        with transactional_session(self.factory) as session:
+            manifest = session.get(
+                ErpSyncEvidenceManifest,
+                captured.manifest_id,
+            )
+            manifest.expires_at = datetime.now(timezone.utc) - timedelta(
+                seconds=1
+            )
+
+        outcome = self.service.run_retention_maintenance(batch_size=10)
+        self.assertEqual(outcome["payloads_purged"], 0)
+        with self.factory() as session:
+            manifest = session.get(
+                ErpSyncEvidenceManifest,
+                captured.manifest_id,
+            )
+            reservation = session.scalar(
+                select(ErpSyncEvidenceReservation).where(
+                    ErpSyncEvidenceReservation.attempt_id == attempt.id
+                )
+            )
+        self.assertNotEqual(manifest.state, "PURGED")
+        self.assertIsNone(reservation.released_at)
+        self.assertGreater(reservation.used_bytes, 0)
+
     def test_success_finalization_purges_payload_immediately_but_keeps_compact_proof(self) -> None:
         control, _occurrence, attempt = self._attempt("success-payload-purge")
         captured = self.service.capture_source(
