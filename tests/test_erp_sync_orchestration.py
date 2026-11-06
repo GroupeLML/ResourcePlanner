@@ -32,6 +32,7 @@ from app.infrastructure.sql import (
     SYNC_RUN_RUNNING,
     ErpSyncControl,
     ErpSyncAttempt,
+    ErpSyncOccurrence,
     TaskCatalogEntry,
     create_session_factory,
     create_sql_engine,
