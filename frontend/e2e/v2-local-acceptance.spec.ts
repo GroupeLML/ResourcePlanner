@@ -2967,6 +2967,48 @@ test("ERP operations use authoritative RUN_NOW, review, RETRY and compensation c
   await expect(page.getByText("Prévisualisation confirmable")).toBeVisible();
   await expect(page.getByText(/1 enregistrement\(s\) admissible\(s\)/)).toBeVisible();
 
+  const invalidatePreview = await page.request.post(
+    "/__e2e__/erp-sync/invalidate-compensation-preview",
+  );
+  expect(invalidatePreview.ok(), await invalidatePreview.text()).toBeTruthy();
+
+  const staleConfirmPromise = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+    && new URL(response.url()).pathname.endsWith("/compensation/confirm")
+  ));
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Confirmer la compensation" }).click();
+  const staleConfirm = await staleConfirmPromise;
+  expect(staleConfirm.status()).toBe(409);
+  expect((await staleConfirm.json() as { error: { code: string } }).error.code)
+    .toBe("erp_sync_compensation_preview_stale");
+
+  await expect(page.locator(".erp-sync-command-error")).toContainText(
+    "prévisualisation de compensation est périmée",
+  );
+  await expect(page.getByText("Prévisualisation confirmable")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Confirmer la compensation" }),
+  ).toBeDisabled();
+
+  await page.getByRole("button", { name: "Actualiser" }).click();
+  await expect(page.locator(".erp-sync-command-error")).toContainText(
+    "prévisualisation de compensation est périmée",
+  );
+  const staleState = await page.request.get(
+    "/api/v1/integrations/acumatica/erp-sync/operations",
+  );
+  expect((await staleState.json() as { recovery_state: { state: string } })
+    .recovery_state.state).toBe("REQUIRED");
+
+  const refreshedPreviewPromise = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+    && new URL(response.url()).pathname.endsWith("/compensation/preview")
+  ));
+  await page.getByRole("button", { name: "Prévisualiser la compensation" }).click();
+  expect((await refreshedPreviewPromise).status()).toBe(200);
+  await expect(page.getByText("Prévisualisation confirmable")).toBeVisible();
+
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Confirmer la compensation" }).click();
   await expect(page.getByText("Compensation ERP confirmée.")).toBeVisible();
