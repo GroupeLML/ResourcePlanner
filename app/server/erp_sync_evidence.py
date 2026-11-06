@@ -8,7 +8,7 @@ import hashlib
 import json
 from typing import Any, Mapping, Sequence
 
-from sqlalchemy import func, inspect, select
+from sqlalchemy import false, func, inspect, select
 
 from ..infrastructure.sql.erp_sync_evidence_accounting import (
     read_erp_sync_evidence_storage_accounting,
@@ -2939,7 +2939,7 @@ class ErpSyncEvidenceService:
                     ErpSyncAttempt.id == ErpSyncEvidenceManifest.attempt_id,
                 )
                 .where(
-                    ErpSyncEvidenceManifest.pinned.is_(False),
+                    ErpSyncEvidenceManifest.pinned == false(),
                     ErpSyncEvidenceManifest.expires_at.is_not(None),
                     ErpSyncEvidenceManifest.expires_at <= now,
                     ErpSyncEvidenceManifest.state != EVIDENCE_STATE_PURGED,
