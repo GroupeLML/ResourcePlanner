@@ -53,6 +53,7 @@ class ErpActivationDeploymentContractTests(unittest.TestCase):
             "ne reconfigure jamais un backend déjà en cours",
             runbook,
         )
+        self.assertIn("docker compose stop -t 7500 backend", runbook)
         self.assertIn(
             "docker compose up -d --no-deps --no-build --force-recreate backend",
             runbook,
