@@ -12,6 +12,7 @@ from decimal import Decimal
 from time import sleep
 from datetime import datetime, time, timezone
 from pathlib import Path
+from threading import Event
 import sys
 
 import uvicorn
@@ -58,7 +59,9 @@ from app.infrastructure.sql import (
     Base,
     Competency,
     ErpUserDirectoryEntry,
+    ERP_SYNC_CONTROL_ROW_ID,
     ErpSyncBaseline,
+    ErpSyncControl,
     Project,
     Resource,
     ResourceAvailabilityRule,
@@ -118,9 +121,16 @@ class FakePlaywrightProjectSource:
         self.events = events
         self.mutate_name = False
         self.empty = False
+        self.block = False
+        self.started = Event()
+        self.release = Event()
 
     def list_projects(self):
         self.events.append("projects")
+        if self.block:
+            self.started.set()
+            if not self.release.wait(timeout=15):
+                raise RuntimeError("controlled E2E project source block timeout")
         if self.empty:
             return ()
         return (
@@ -678,19 +688,68 @@ def build_app(database_path: Path, frontend_dist: Path):
     def erp_sync_source_mode(
         project_mutation: bool = False,
         project_empty: bool = False,
+        project_block: bool = False,
         task_failure: bool = False,
         post_project_failure: bool = False,
     ):
         project_source.mutate_name = bool(project_mutation)
         project_source.empty = bool(project_empty)
+        if project_block:
+            project_source.started.clear()
+            project_source.release.clear()
+        else:
+            project_source.release.set()
+        project_source.block = bool(project_block)
         project_task_source.fail = bool(task_failure)
         erp_sync_post_project_failure["enabled"] = bool(post_project_failure)
         return {
             "project_mutation": project_source.mutate_name,
             "project_empty": project_source.empty,
+            "project_block": project_source.block,
             "task_failure": project_task_source.fail,
             "post_project_failure": erp_sync_post_project_failure["enabled"],
         }
+
+    @app.post("/__e2e__/erp-sync/baselines", include_in_schema=False)
+    def erp_sync_baseline_mode(enabled: bool):
+        assert app.state.erp_sync_evidence_service is not None
+        with app.state.session_factory.begin() as session:
+            session.query(ErpSyncBaseline).delete(synchronize_session=False)
+            if enabled:
+                policy_fingerprint = (
+                    app.state.erp_sync_evidence_service
+                    .policy_fingerprint_in_session(session)
+                )
+                now = datetime.now(timezone.utc)
+                for source_type in ("PROJECTS", "TASKS"):
+                    session.add(
+                        ErpSyncBaseline(
+                            source_type=source_type,
+                            profile_fingerprint=policy_fingerprint,
+                            source_fingerprint=(
+                                ("a" if source_type == "PROJECTS" else "b")
+                                * 64
+                            ),
+                            row_count=1,
+                            encrypted_project_counts=None,
+                            approved_by="Fixture E2E",
+                            approval_reason="Baseline contrôlé pour acceptance 643C",
+                            approved_at=now,
+                        )
+                    )
+        return {"enabled": bool(enabled)}
+
+    @app.post(
+        "/__e2e__/erp-sync/invalidate-compensation-preview",
+        include_in_schema=False,
+    )
+    def invalidate_erp_sync_compensation_preview():
+        with app.state.session_factory.begin() as session:
+            control = session.get(ErpSyncControl, ERP_SYNC_CONTROL_ROW_ID)
+            assert control is not None
+            control.generation = int(control.generation) + 1
+            generation = int(control.generation)
+        return {"generation": generation}
 
     @app.post("/__e2e__/erp-sync/recovery-required", include_in_schema=False)
     def erp_sync_recovery_required(attempt_id: str):
