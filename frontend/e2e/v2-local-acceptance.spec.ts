@@ -2939,21 +2939,7 @@ test("ERP operations use authoritative RUN_NOW, review, RETRY and compensation c
     compensationAccepted.run_id,
     (run) => run.status === "FAILED",
   );
-  const requiredResponse = await page.request.post(
-    "/__e2e__/erp-sync/recovery-required?attempt_id="
-    + encodeURIComponent(compensationAccepted.run_id),
-  );
-  expect(requiredResponse.ok(), await requiredResponse.text()).toBeTruthy();
   await page.getByRole("button", { name: "Actualiser" }).click();
-  const recoveryStatusCard = page
-    .locator(".erp-sync-status-grid .erp-sync-card")
-    .filter({
-      has: page.getByText("Recovery", { exact: true }),
-    });
-  await expect(
-    recoveryStatusCard.locator("strong").getByText("REQUIRED", { exact: true }),
-  ).toBeVisible();
-  await expect(page.getByRole("button", { name: "Lancer RUN_NOW" })).toBeDisabled();
 
   const previewResponsePromise = page.waitForResponse((response) => (
     response.request().method() === "POST"
@@ -2974,6 +2960,92 @@ test("ERP operations use authoritative RUN_NOW, review, RETRY and compensation c
   expect(previewPayload.can_confirm).toBe(true);
   await expect(page.getByText("Prévisualisation confirmable")).toBeVisible();
   await expect(page.getByText(/1 enregistrement\(s\) admissible\(s\)/)).toBeVisible();
+
+  // Hold a second real manual owner in the project source so confirmation
+  // deterministically hits the canonical recovery-owner guard.
+  await setSourceMode(
+    "project_mutation=false&project_empty=false&project_block=true"
+    + "&task_failure=false&post_project_failure=false",
+  );
+  const activeOwnerResponse = await page.request.post(
+    "/api/v1/integrations/acumatica/erp-sync/run-now",
+    { headers: { "Idempotency-Key": "phase3-compensation-owner" } },
+  );
+  expect(activeOwnerResponse.status()).toBe(202);
+  const activeOwner = await activeOwnerResponse.json() as { run_id: string };
+  await expect.poll(async () => {
+    const response = await page.request.get(
+      "/api/v1/integrations/acumatica/erp-sync/operations",
+    );
+    const payload = await response.json() as {
+      current_attempt_id: string | null;
+    };
+    return payload.current_attempt_id;
+  }).toBe(activeOwner.run_id);
+
+  const ownerConfirmPromise = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+    && new URL(response.url()).pathname.endsWith("/compensation/confirm")
+  ));
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Confirmer la compensation" }).click();
+  const ownerConfirm = await ownerConfirmPromise;
+  expect(ownerConfirm.status()).toBe(409);
+  expect((await ownerConfirm.json() as { error: { code: string } }).error.code)
+    .toBe("erp_sync_recovery_owner_active");
+
+  await expect(page.locator(".erp-sync-command-error")).toContainText(
+    "synchronisation ERP active interdit la compensation",
+  );
+  await expect(page.getByText("Prévisualisation confirmable")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Confirmer la compensation" }),
+  ).toBeDisabled();
+
+  await page.getByRole("button", { name: "Actualiser" }).click();
+  await expect(page.locator(".erp-sync-command-error")).toContainText(
+    "synchronisation ERP active interdit la compensation",
+  );
+  const receiptResponse = await page.request.get(
+    "/__e2e__/erp-sync/compensation-receipts?attempt_id="
+      + encodeURIComponent(compensationAccepted.run_id),
+  );
+  expect(receiptResponse.ok(), await receiptResponse.text()).toBeTruthy();
+  expect((await receiptResponse.json() as { count: number }).count).toBe(0);
+
+  await setSourceMode(
+    "project_mutation=false&project_empty=false&project_block=false"
+    + "&task_failure=false&post_project_failure=false",
+  );
+  await waitForErpRun(
+    page,
+    activeOwner.run_id,
+    (run) => run.status === "COMPLETED",
+  );
+
+  const requiredResponse = await page.request.post(
+    "/__e2e__/erp-sync/recovery-required?attempt_id="
+    + encodeURIComponent(compensationAccepted.run_id),
+  );
+  expect(requiredResponse.ok(), await requiredResponse.text()).toBeTruthy();
+  await page.getByRole("button", { name: "Actualiser" }).click();
+  const recoveryStatusCard = page
+    .locator(".erp-sync-status-grid .erp-sync-card")
+    .filter({
+      has: page.getByText("Recovery", { exact: true }),
+    });
+  await expect(
+    recoveryStatusCard.locator("strong").getByText("REQUIRED", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Lancer RUN_NOW" })).toBeDisabled();
+
+  const freshRequiredPreviewPromise = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+    && new URL(response.url()).pathname.endsWith("/compensation/preview")
+  ));
+  await page.getByRole("button", { name: "Prévisualiser la compensation" }).click();
+  expect((await freshRequiredPreviewPromise).status()).toBe(200);
+  await expect(page.getByText("Prévisualisation confirmable")).toBeVisible();
 
   const invalidatePreview = await page.request.post(
     "/__e2e__/erp-sync/invalidate-compensation-preview",
