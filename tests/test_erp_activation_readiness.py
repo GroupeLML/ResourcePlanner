@@ -109,6 +109,25 @@ class ErpActivationReadinessTests(unittest.TestCase):
         ):
             self._check(activation=True)
 
+    def test_activation_gate_accepts_explicit_enabled_configuration_after_same_preflight(self) -> None:
+        enabled = ServerSettings.from_environment(
+            {
+                "RESOURCEPLANNER_DATABASE_URL": self.database_url,
+                "RESOURCEPLANNER_ACUMATICA_BASE_URL": "https://erp.example.test",
+                "RESOURCEPLANNER_ACUMATICA_USERNAME": "dedicated-service",
+                "RESOURCEPLANNER_ACUMATICA_PASSWORD": "not-a-real-secret",
+                "RESOURCEPLANNER_CONFIG_ENCRYPTION_KEY": self.key,
+                "RESOURCEPLANNER_ERP_SYNC_ENABLED": "true",
+            }
+        )
+        self.assertEqual(
+            enabled.erp_sync.config_fingerprint,
+            self.settings.erp_sync.config_fingerprint,
+        )
+        result = self._check(enabled, activation=True)
+        self.assertEqual(result["mode"], "activation")
+        self.assertTrue(result["automatic_enabled"])
+
     def test_dedicated_account_confirmation_is_never_inferred_from_credentials(self) -> None:
         with patch(
             "tools.check_erp_activation_readiness.check_database_preflight",
