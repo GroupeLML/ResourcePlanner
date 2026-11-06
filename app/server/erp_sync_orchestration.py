@@ -228,8 +228,23 @@ class ErpSyncOrchestrator:
     def scheduler_tick(self) -> dict[str, Any] | None:
         if self._closed or not self._control.schema_available():
             return None
-        if self._evidence is not None:
-            self._evidence.run_retention_maintenance(batch_size=100)
+        try:
+            if self._evidence is not None:
+                self._evidence.run_retention_maintenance(batch_size=100)
+        except ApplicationConflictError as exc:
+            if exc.code in {
+                "erp_sync_configuration_incompatible",
+                "erp_sync_protocol_incompatible",
+            }:
+                logger.warning(
+                    "ERP maintenance compatibility block code=%s",
+                    exc.code,
+                )
+                return {
+                    "status": "BLOCKED",
+                    "diagnostic": exc.code,
+                }
+            raise
         self._assert_recovery_clear()
 
         try:
