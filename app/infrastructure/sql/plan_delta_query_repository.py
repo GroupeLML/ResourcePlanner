@@ -89,21 +89,25 @@ def _item_from_difference(
     difference: AllocationDifference,
     *,
     change: str,
-    resource_id_by_name: dict[str, str] | None = None,
+    resource_name_by_id: dict[str, str] | None = None,
 ) -> DemandPlanDeltaItemReadModel:
     current = difference.legacy_hours > 0
     proposed = difference.shadow_hours > 0
     return DemandPlanDeltaItemReadModel(
         change=change,
         segment_id=difference.segment_id,
-        current_resource_name=difference.resource_id if current else None,
-        proposed_resource_name=difference.resource_id if proposed else None,
-        current_resource_id=(
-            (resource_id_by_name or {}).get(difference.resource_id) if current else None
+        current_resource_name=(
+            (resource_name_by_id or {}).get(difference.resource_id, difference.resource_id)
+            if current
+            else None
         ),
-        proposed_resource_id=(
-            (resource_id_by_name or {}).get(difference.resource_id) if proposed else None
+        proposed_resource_name=(
+            (resource_name_by_id or {}).get(difference.resource_id, difference.resource_id)
+            if proposed
+            else None
         ),
+        current_resource_id=difference.resource_id if current else None,
+        proposed_resource_id=difference.resource_id if proposed else None,
         current_date=difference.day if current else None,
         proposed_date=difference.day if proposed else None,
         current_hours=float(difference.legacy_hours),
@@ -123,7 +127,7 @@ def _item_from_difference(
 def _delta_items(
     differences: tuple[AllocationDifference, ...],
     *,
-    resource_id_by_name: dict[str, str] | None = None,
+    resource_name_by_id: dict[str, str] | None = None,
 ) -> tuple[DemandPlanDeltaItemReadModel, ...]:
     """Turn semantic-key differences into coordinator-friendly add/move/change/cancel rows."""
 
@@ -136,7 +140,7 @@ def _delta_items(
             direct.append(_item_from_difference(
                 difference,
                 change="MODIFY",
-                resource_id_by_name=resource_id_by_name,
+                resource_name_by_id=resource_name_by_id,
             ))
         elif difference.legacy_hours > 0:
             old_only[difference.segment_id].append(difference)
@@ -162,7 +166,7 @@ def _delta_items(
                 direct.append(_item_from_difference(
                     old,
                     change="CANCEL",
-                    resource_id_by_name=resource_id_by_name,
+                    resource_name_by_id=resource_name_by_id,
                 ))
                 continue
             new = new_rows[pair_index]
@@ -171,10 +175,16 @@ def _delta_items(
                 DemandPlanDeltaItemReadModel(
                     change="MOVE",
                     segment_id=segment_id,
-                    current_resource_name=old.resource_id,
-                    proposed_resource_name=new.resource_id,
-                    current_resource_id=(resource_id_by_name or {}).get(old.resource_id),
-                    proposed_resource_id=(resource_id_by_name or {}).get(new.resource_id),
+                    current_resource_name=(resource_name_by_id or {}).get(
+                        old.resource_id,
+                        old.resource_id,
+                    ),
+                    proposed_resource_name=(resource_name_by_id or {}).get(
+                        new.resource_id,
+                        new.resource_id,
+                    ),
+                    current_resource_id=old.resource_id,
+                    proposed_resource_id=new.resource_id,
                     current_date=old.day,
                     proposed_date=new.day,
                     current_hours=float(old.legacy_hours),
@@ -192,7 +202,7 @@ def _delta_items(
                 direct.append(_item_from_difference(
                     new,
                     change="ADD",
-                    resource_id_by_name=resource_id_by_name,
+                    resource_name_by_id=resource_name_by_id,
                 ))
 
     order = {"CANCEL": 0, "MOVE": 1, "MODIFY": 2, "ADD": 3}
@@ -399,6 +409,7 @@ class SqlPlannerQueryRepositoryWithPlanDelta(SqlPlannerQueryRepositoryWeb):
             "NoDemande": _text(request.legacy_demand_number) or request.id,
             "NumeroProjet": project.number,
             "NomProjet": project.name,
+            "ResourceID": resource.id if resource is not None else None,
             "Technicien": resource.name if resource is not None else None,
             "DateDebut": start_date,
             "DateFin": end_date,
@@ -1304,13 +1315,13 @@ class SqlPlannerQueryRepositoryWithPlanDelta(SqlPlannerQueryRepositoryWeb):
             current_calculation.persisted_allocations,
             _allocation_projection(proposed_result),
         )
-        resource_id_by_name = {
-            resource.name: resource.id
+        resource_name_by_id = {
+            resource.id: resource.name
             for resource in self._delta_session.scalars(select(Resource)).all()
         }
         items = _delta_items(
             comparison.differences,
-            resource_id_by_name=resource_id_by_name,
+            resource_name_by_id=resource_name_by_id,
         )
         counts = {
             name: sum(1 for item in items if item.change == name)
