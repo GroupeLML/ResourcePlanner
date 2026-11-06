@@ -2772,6 +2772,62 @@ test("ERP operations use authoritative RUN_NOW, review, RETRY and compensation c
   };
 
   try {
+  // A real backend owner can appear after the page load. The stale UI command
+  // must surface the backend conflict and polling/refresh must not erase it.
+  await setSourceMode("project_block=true");
+  const activeLaunch = await page.request.post(
+    "/api/v1/integrations/acumatica/erp-sync/run-now",
+    { headers: { "Idempotency-Key": "phase3-active-owner" } },
+  );
+  expect(activeLaunch.status()).toBe(202);
+  const activeAttempt = await activeLaunch.json() as { run_id: string };
+
+  await expect.poll(async () => {
+    const response = await page.request.get(
+      "/api/v1/integrations/acumatica/erp-sync/operations",
+    );
+    const payload = await response.json() as {
+      current_attempt_id: string | null;
+    };
+    return payload.current_attempt_id;
+  }).toBe(activeAttempt.run_id);
+
+  const conflictPromise = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+    && new URL(response.url()).pathname
+      === "/api/v1/integrations/acumatica/erp-sync/run-now"
+  ));
+  await page.getByRole("button", { name: "Lancer RUN_NOW" }).click();
+  const conflictResponse = await conflictPromise;
+  expect(conflictResponse.status()).toBe(409);
+  await expect(
+    page.locator(".erp-sync-command-error"),
+  ).toContainText(/autre tentative ERP|contrôle d’exécution/);
+
+  await page.getByRole("button", { name: "Actualiser" }).click();
+  await expect(
+    page.locator(".erp-sync-command-error"),
+  ).toContainText(/autre tentative ERP|contrôle d’exécution/);
+
+  const conflictState = await page.request.get(
+    "/api/v1/integrations/acumatica/erp-sync/operations",
+  );
+  const conflictPayload = await conflictState.json() as {
+    current_attempt_id: string | null;
+    last_attempt: { id: string } | null;
+  };
+  expect(conflictPayload.current_attempt_id).toBe(activeAttempt.run_id);
+  expect(conflictPayload.last_attempt?.id).toBe(activeAttempt.run_id);
+
+  await setSourceMode("project_block=false");
+  await waitForErpRun(
+    page,
+    activeAttempt.run_id,
+    (run) => run.status === "COMPLETED",
+  );
+  await page.getByRole("button", { name: "Actualiser" }).click();
+  await expect(page.locator(".erp-sync-command-error")).toBeVisible();
+
   // Decline makes the reviewed attempt terminal; RETRY then creates a fresh attempt.
   await setSourceMode("project_empty=true");
   const declineLaunchPromise = page.waitForResponse((response) => (
