@@ -634,6 +634,20 @@ def build_app(database_path: Path, frontend_dist: Path):
             evidence_budget_mib=64,
         ),
     )
+
+    # Phase 2 browser acceptance needs one deterministic failure after the
+    # project transaction has committed. Full ERP source capture must remain
+    # complete-before-mutation, so this hook is installed only in the local
+    # Playwright fixture at the task-execution boundary.
+    erp_sync_post_project_failure = {"enabled": False}
+    original_execute_tasks = app.state.erp_sync_orchestrator._execute_tasks
+
+    def e2e_execute_tasks(*args, **kwargs):
+        if erp_sync_post_project_failure["enabled"]:
+            raise RuntimeError("controlled E2E post-project task failure")
+        return original_execute_tasks(*args, **kwargs)
+
+    app.state.erp_sync_orchestrator._execute_tasks = e2e_execute_tasks
     assert app.state.erp_sync_evidence_service is not None
     with app.state.session_factory.begin() as session:
         policy_fingerprint = (
@@ -665,14 +679,17 @@ def build_app(database_path: Path, frontend_dist: Path):
         project_mutation: bool = False,
         project_empty: bool = False,
         task_failure: bool = False,
+        post_project_failure: bool = False,
     ):
         project_source.mutate_name = bool(project_mutation)
         project_source.empty = bool(project_empty)
         project_task_source.fail = bool(task_failure)
+        erp_sync_post_project_failure["enabled"] = bool(post_project_failure)
         return {
             "project_mutation": project_source.mutate_name,
             "project_empty": project_source.empty,
             "task_failure": project_task_source.fail,
+            "post_project_failure": erp_sync_post_project_failure["enabled"],
         }
 
     @app.get("/__e2e__/identity/link-pending", include_in_schema=False)
