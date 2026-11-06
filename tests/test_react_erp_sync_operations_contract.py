@@ -31,6 +31,25 @@ class ReactErpSyncOperationsContractTests(unittest.TestCase):
         self.assertNotIn("scheduler_decision", page)
         self.assertNotIn("freshness_sla", page)
 
+    def test_bootstrap_candidates_and_command_errors_use_distinct_authorities(self) -> None:
+        page = (FRONTEND / "ErpSyncOperationsPage.tsx").read_text(encoding="utf-8")
+        api = (FRONTEND / "erpSyncOperationsApi.ts").read_text(encoding="utf-8")
+
+        self.assertIn("getErpSyncBootstrapBaselineCandidates", page)
+        self.assertIn("/bootstrap-baseline-candidates", api)
+        self.assertIn("bootstrapCandidates.sources", page)
+        self.assertIn("source.manifest_id", page)
+        self.assertIn("loadError", page)
+        self.assertIn("commandError", page)
+        self.assertNotIn("setError(null)", page)
+
+    def test_stale_compensation_refusal_invalidates_local_preview(self) -> None:
+        page = (FRONTEND / "ErpSyncOperationsPage.tsx").read_text(encoding="utf-8")
+        self.assertIn("STALE_COMPENSATION_CODES", page)
+        self.assertIn('label === "compensation-confirm"', page)
+        self.assertIn("setPreview(null)", page)
+        self.assertIn("setCommandError", page)
+
     def test_commands_use_server_actor_and_client_idempotency_only(self) -> None:
         api = (FRONTEND / "erpSyncOperationsApi.ts").read_text(encoding="utf-8")
 
