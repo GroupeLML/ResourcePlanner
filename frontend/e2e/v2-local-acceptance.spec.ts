@@ -2961,18 +2961,17 @@ test("ERP operations use authoritative RUN_NOW, review, RETRY and compensation c
   await expect(page.getByText("Prévisualisation confirmable")).toBeVisible();
   await expect(page.getByText(/1 enregistrement\(s\) admissible\(s\)/)).toBeVisible();
 
-  // Hold a second real manual owner in the project source so confirmation
-  // deterministically hits the canonical recovery-owner guard.
-  await setSourceMode(
-    "project_mutation=false&project_empty=false&project_block=true"
-    + "&task_failure=false&post_project_failure=false",
-  );
+  // Hold a second durable manual owner through the canonical SQL control
+  // repository. The E2E hook does not fake the compensation response; it only
+  // establishes the owner barrier that the real confirm endpoint must observe.
   const activeOwnerResponse = await page.request.post(
-    "/api/v1/integrations/acumatica/erp-sync/run-now",
-    { headers: { "Idempotency-Key": "phase3-compensation-owner" } },
+    "/__e2e__/erp-sync/hold-manual-owner",
   );
-  expect(activeOwnerResponse.status()).toBe(202);
-  const activeOwner = await activeOwnerResponse.json() as { run_id: string };
+  expect(activeOwnerResponse.ok(), await activeOwnerResponse.text()).toBeTruthy();
+  const activeOwner = await activeOwnerResponse.json() as {
+    attempt_id: string;
+    generation: number;
+  };
   await expect.poll(async () => {
     const response = await page.request.get(
       "/api/v1/integrations/acumatica/erp-sync/operations",
@@ -2981,7 +2980,7 @@ test("ERP operations use authoritative RUN_NOW, review, RETRY and compensation c
       current_attempt_id: string | null;
     };
     return payload.current_attempt_id;
-  }).toBe(activeOwner.run_id);
+  }).toBe(activeOwner.attempt_id);
 
   const ownerConfirmPromise = page.waitForResponse((response) => (
     response.request().method() === "POST"
@@ -3013,15 +3012,13 @@ test("ERP operations use authoritative RUN_NOW, review, RETRY and compensation c
   expect(receiptResponse.ok(), await receiptResponse.text()).toBeTruthy();
   expect((await receiptResponse.json() as { count: number }).count).toBe(0);
 
-  await setSourceMode(
-    "project_mutation=false&project_empty=false&project_block=false"
-    + "&task_failure=false&post_project_failure=false",
+  const releaseOwner = await page.request.post(
+    "/__e2e__/erp-sync/release-manual-owner"
+      + "?attempt_id=" + encodeURIComponent(activeOwner.attempt_id)
+      + "&generation=" + encodeURIComponent(String(activeOwner.generation)),
   );
-  await waitForErpRun(
-    page,
-    activeOwner.run_id,
-    (run) => run.status === "COMPLETED",
-  );
+  expect(releaseOwner.ok(), await releaseOwner.text()).toBeTruthy();
+  expect((await releaseOwner.json() as { released: boolean }).released).toBe(true);
 
   const requiredResponse = await page.request.post(
     "/__e2e__/erp-sync/recovery-required?attempt_id="
