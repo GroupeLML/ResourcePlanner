@@ -79,6 +79,26 @@ class Issue800ManagerPlanningReadOnlyTests(unittest.TestCase):
             raise_server_exceptions=False,
         )
 
+    def _create_known_shift(self, *, key: str) -> str:
+        with self._client(ROLE_COORDINATOR) as client:
+            created = client.post(
+                "/api/v1/quick-shifts",
+                headers={"Idempotency-Key": key},
+                json={
+                    "project_number": "P-100",
+                    "project_name": "Projet visible du chargé",
+                    "technician": "Ressource visible PM",
+                    "day": DAY_1.isoformat(),
+                    "hours": 2,
+                    "outside_standard_hours": True,
+                    "note": "Issue 800 canonical Manager visibility fixture",
+                },
+            )
+        self.assertEqual(created.status_code, 201, created.text)
+        allocation_id = created.json()["allocation_id"]
+        self.assertTrue(allocation_id)
+        return str(allocation_id)
+
     def _durable_counts(self) -> tuple[int, int]:
         engine = create_sql_engine(self.database_url)
         try:
@@ -117,9 +137,13 @@ class Issue800ManagerPlanningReadOnlyTests(unittest.TestCase):
         )
 
     def test_manager_policy_and_real_planning_reads_are_global_and_nonempty(self) -> None:
+        known_allocation_id = self._create_known_shift(
+            key="issue-800-manager-visible",
+        )
         params = {
             "start": DAY_1.isoformat(),
             "end": DAY_2.isoformat(),
+            "scope": "global",
         }
         with self._client(ROLE_MANAGER) as client:
             policy = client.get("/api/v1/me/planning-policy")
@@ -134,15 +158,26 @@ class Issue800ManagerPlanningReadOnlyTests(unittest.TestCase):
         self.assertEqual(snapshot.status_code, 200, snapshot.text)
         payload = snapshot.json()
         self.assertGreater(len(payload["resources"]), 0)
-        self.assertGreater(len(payload["shifts"]), 0)
-        self.assertIn("SHIFT-PM-VISIBLE", {row["allocation_id"] for row in payload["shifts"]})
-        self.assertIn("SHIFT-PM-HIDDEN", {row["allocation_id"] for row in payload["shifts"]})
+        known_shift = next(
+            (
+                row
+                for row in payload["shifts"]
+                if row["allocation_id"] == known_allocation_id
+            ),
+            None,
+        )
+        self.assertIsNotNone(known_shift, snapshot.text)
+        self.assertEqual(known_shift["project_number"], "P-100")
+        self.assertEqual(known_shift["work_date"], DAY_1.isoformat())
 
         self.assertEqual(actions.status_code, 200, actions.text)
         self.assertIsInstance(actions.json(), list)
         self.assertEqual(capacity.status_code, 200, capacity.text)
 
     def test_manager_direct_quick_shift_is_403_and_durable_state_is_unchanged(self) -> None:
+        known_allocation_id = self._create_known_shift(
+            key="issue-800-manager-denial-baseline",
+        )
         params = {
             "start": DAY_1.isoformat(),
             "end": DAY_2.isoformat(),
@@ -152,6 +187,10 @@ class Issue800ManagerPlanningReadOnlyTests(unittest.TestCase):
 
         with self._client(ROLE_MANAGER) as client:
             before = client.get("/api/v1/planning/snapshot", params=params)
+            self.assertIn(
+                known_allocation_id,
+                {row["allocation_id"] for row in before.json()["shifts"]},
+            )
             denied = client.post(
                 "/api/v1/quick-shifts",
                 headers={"Idempotency-Key": "issue-800-manager-denied"},
@@ -161,6 +200,7 @@ class Issue800ManagerPlanningReadOnlyTests(unittest.TestCase):
                     "technician": "Ressource visible PM",
                     "day": DAY_1.isoformat(),
                     "hours": 1,
+                    "outside_standard_hours": True,
                     "note": "must never persist",
                 },
             )
