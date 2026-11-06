@@ -95,6 +95,7 @@ class ErpSyncOperationsData:
     lease_expires_at: datetime | None
     owner_deadline_at: datetime | None
     control_heartbeat_at: datetime | None
+    scheduler_observed_at: datetime | None
     control_updated_at: datetime | None
     last_evaluated_business_date: date | None
     control_protocol_version: int
@@ -194,26 +195,16 @@ class ErpSyncOperationsService:
         observed_at: datetime | None = None
         if not self._settings.enabled:
             observation_status = "DISABLED"
-        elif data.owner_attempt_id:
-            heartbeat = _utc(data.control_heartbeat_at)
-            lease = _utc(data.lease_expires_at)
-            observed_at = heartbeat
-            heartbeat_stale = (
-                heartbeat is None
-                or (current_now - heartbeat).total_seconds()
-                > max(self._settings.heartbeat_seconds * 2, 1)
-            )
-            lease_stale = lease is None or lease <= current_now
-            observation_status = (
-                "STALE" if heartbeat_stale or lease_stale else "ACTIVE"
-            )
-        elif data.last_evaluated_business_date == business_date:
-            observation_status = "OBSERVED"
-            observed_at = _utc(data.control_updated_at)
-        elif decision.state == "NOT_DUE":
-            observation_status = "PENDING"
         else:
-            observation_status = "MISSING"
+            observed_at = _utc(data.scheduler_observed_at)
+            if observed_at is None:
+                observation_status = "MISSING"
+            elif (
+                current_now - observed_at
+            ).total_seconds() > max(self._settings.heartbeat_seconds * 2, 1):
+                observation_status = "STALE"
+            else:
+                observation_status = "OBSERVED"
         observation_age_seconds = (
             max(0, int((current_now - observed_at).total_seconds()))
             if observed_at is not None
@@ -367,7 +358,7 @@ class ErpSyncOperationsService:
             freshness_status=freshness_status,
             freshness_age_seconds=freshness_age_seconds,
             consecutive_failures=failures,
-            repeated_failure=failures >= 2,
+            repeated_failure=failures >= 3,
             projects=data.projects,
             evidence=data.evidence,
             compatibility=compatibility,
