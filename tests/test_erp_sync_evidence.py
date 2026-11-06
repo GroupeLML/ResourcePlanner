@@ -3773,6 +3773,59 @@ class ErpSyncEvidenceTests(unittest.TestCase):
         self.assertEqual(reservation.used_plaintext_bytes, 0)
         self.assertEqual(recovery.state, "EXPIRED")
 
+    def test_retention_maintenance_is_bounded_and_restart_idempotent(self) -> None:
+        manifest_ids: list[str] = []
+        for index in range(3):
+            control, _occurrence, attempt = self._attempt(
+                f"retention-batch-{index}"
+            )
+            captured = self.service.capture_source(
+                attempt_id=attempt.id,
+                source_type="PROJECTS",
+                profile_fingerprint=self.control_settings.config_fingerprint,
+                payload={"records": [{"number": f"P-RET-{index}"}]},
+                row_count=1,
+            )
+            self.assertTrue(
+                control.finish(
+                    attempt_id=attempt.id,
+                    generation=attempt.generation,
+                    status="FAILED",
+                    phase="FAILED",
+                    settings=self.control_settings,
+                )
+            )
+            self.service.finalize_attempt(
+                attempt_id=attempt.id,
+                successful=False,
+            )
+            with transactional_session(self.factory) as session:
+                session.get(
+                    ErpSyncEvidenceManifest,
+                    captured.manifest_id,
+                ).expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+            manifest_ids.append(captured.manifest_id)
+
+        first = self.service.run_retention_maintenance(batch_size=2)
+        restarted = ErpSyncEvidenceService(
+            self.factory,
+            cipher=self.service._cipher,
+            settings=self.service.settings,
+            control_settings=self.control_settings,
+        )
+        second = restarted.run_retention_maintenance(batch_size=2)
+        third = restarted.run_retention_maintenance(batch_size=2)
+
+        self.assertEqual(first["payloads_purged"], 2)
+        self.assertEqual(second["payloads_purged"], 1)
+        self.assertEqual(third["payloads_purged"], 0)
+        with self.factory() as session:
+            manifests = [
+                session.get(ErpSyncEvidenceManifest, manifest_id)
+                for manifest_id in manifest_ids
+            ]
+        self.assertTrue(all(row.state == "PURGED" for row in manifests))
+
     def test_exact_source_plausibility_exception_does_not_bypass_other_source(self) -> None:
         _control, _occurrence, baseline_attempt = self._attempt("baseline-large")
         baseline = self.service.capture_source(
