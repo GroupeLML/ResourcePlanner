@@ -169,14 +169,28 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                 {
                     "project_number": "P-778-API",
                     "submit": True,
-                    "desired_start": START,
-                    "desired_end": WEDNESDAY,
-                    "resource_count": 2,
-                    "estimated_hours": 48,
-                    "desired_active_days": 3,
-                    "required_resource_class": "ELECTRICAL",
-                    "confirmation": "Confirmée",
-                    "description": "#793 dated-drop sequential reduction characterization",
+                    "lines": [
+                        {
+                            "position": 0,
+                            "desired_start": START,
+                            "desired_end": WEDNESDAY,
+                            "desired_active_days": 3,
+                            "estimated_hours": 24,
+                            "required_resource_class": "ELECTRICAL",
+                            "confirmation": "Confirmée",
+                            "description": "#793 sequential reduction segment A",
+                        },
+                        {
+                            "position": 1,
+                            "desired_start": START,
+                            "desired_end": WEDNESDAY,
+                            "desired_active_days": 3,
+                            "estimated_hours": 24,
+                            "required_resource_class": "ELECTRICAL",
+                            "confirmation": "Confirmée",
+                            "description": "#793 sequential reduction segment B",
+                        },
+                    ],
                 }
             ),
         )
