@@ -36,7 +36,7 @@ class PlanDeltaGroupingTests(unittest.TestCase):
         rows = (
             AllocationDifference(
                 segment_id="SEG-1",
-                resource_id="Alice",
+                resource_id="R1",
                 day=D1,
                 allocation_type="Auto",
                 locked=False,
@@ -46,7 +46,7 @@ class PlanDeltaGroupingTests(unittest.TestCase):
             ),
             AllocationDifference(
                 segment_id="SEG-1",
-                resource_id="Alice",
+                resource_id="R1",
                 day=D2,
                 allocation_type="Auto",
                 locked=False,
@@ -56,7 +56,7 @@ class PlanDeltaGroupingTests(unittest.TestCase):
             ),
         )
 
-        items = _delta_items(rows, resource_id_by_name={"Alice": "R1"})
+        items = _delta_items(rows, resource_name_by_id={"R1": "Alice"})
 
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0].change, "MOVE")
@@ -66,6 +66,8 @@ class PlanDeltaGroupingTests(unittest.TestCase):
         self.assertEqual(items[0].proposed_hours, 8.0)
         self.assertEqual(items[0].current_resource_id, "R1")
         self.assertEqual(items[0].proposed_resource_id, "R1")
+        self.assertEqual(items[0].current_resource_name, "Alice")
+        self.assertEqual(items[0].proposed_resource_name, "Alice")
 
 
 class SqlPlanDeltaPreviewTests(unittest.TestCase):
