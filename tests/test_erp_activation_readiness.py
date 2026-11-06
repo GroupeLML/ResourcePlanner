@@ -163,7 +163,7 @@ class ErpActivationReadinessTests(unittest.TestCase):
             ErpActivationReadinessError,
             "RESOURCEPLANNER_ERP_SYNC_ENABLED=true",
         ):
-            self._check(activation=True)
+            self._check(activation=True, database_name="mssql")
 
     def test_activation_gate_rejects_sqlite_even_when_enabled(self) -> None:
         enabled = ServerSettings.from_environment(
