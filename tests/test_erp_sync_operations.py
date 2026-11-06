@@ -164,6 +164,7 @@ def data(
         lease_expires_at=None,
         owner_deadline_at=None,
         control_heartbeat_at=None,
+        scheduler_observed_at=now - timedelta(seconds=30),
         control_updated_at=now - timedelta(minutes=1),
         last_evaluated_business_date=(
             business_date
@@ -271,6 +272,19 @@ class ErpSyncOperationsServiceTests(unittest.TestCase):
         self.assertEqual(snapshot.scheduler_observation_status, "MISSING")
         self.assertEqual(snapshot.scheduler_status, "MISSED")
 
+    def test_stopped_idle_scheduler_observation_is_stale(self) -> None:
+        settings = ErpSyncSchedulerSettings(enabled=True, heartbeat_seconds=60)
+        now = datetime(2026, 11, 5, 15, tzinfo=timezone.utc)
+        value = replace(
+            data(settings, now=now),
+            scheduler_observed_at=now - timedelta(minutes=3),
+        )
+        snapshot = self.service(settings, value).snapshot(
+            evidence_budget_bytes=100
+        )
+        self.assertEqual(snapshot.scheduler_observation_status, "STALE")
+        self.assertEqual(snapshot.scheduler_status, "STALE")
+
     def test_active_owner_with_stale_heartbeat_is_not_reported_healthy(self) -> None:
         settings = ErpSyncSchedulerSettings(enabled=True, heartbeat_seconds=60)
         now = datetime(2026, 11, 5, 15, tzinfo=timezone.utc)
@@ -284,6 +298,7 @@ class ErpSyncOperationsServiceTests(unittest.TestCase):
             owner_attempt_id=running.id,
             lease_expires_at=now + timedelta(minutes=2),
             control_heartbeat_at=now - timedelta(minutes=3),
+            scheduler_observed_at=now - timedelta(minutes=3),
         )
         snapshot = self.service(settings, value).snapshot(
             evidence_budget_bytes=100
@@ -462,7 +477,24 @@ class ErpSyncOperationsServiceTests(unittest.TestCase):
             ),
         ).snapshot(evidence_budget_bytes=100)
         self.assertEqual(snapshot.consecutive_failures, 2)
-        self.assertTrue(snapshot.repeated_failure)
+        self.assertFalse(snapshot.repeated_failure)
+
+        third = attempt(
+            "FAIL-3",
+            status="FAILED",
+            finished_at=now - timedelta(minutes=30),
+        )
+        three = self.service(
+            settings,
+            data(
+                settings,
+                now=now,
+                attempts=(third, second, first, previous),
+                success=previous,
+            ),
+        ).snapshot(evidence_budget_bytes=100)
+        self.assertEqual(three.consecutive_failures, 3)
+        self.assertTrue(three.repeated_failure)
 
 class ErpSyncOperationsSqlAndApiTests(unittest.TestCase):
     def setUp(self) -> None:
