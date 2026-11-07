@@ -1266,8 +1266,8 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
             finally:
                 engine.dispose()
 
-    def test_dated_drop_sequential_reductions_characterize_survivor_regeneration(self) -> None:
-        """Phase 2C: capture the exact current sequential-reduction defect, no correction."""
+    def test_dated_drop_sequential_reductions_preserve_original_survivor_ids(self) -> None:
+        """Phase 3B1: durable authority preserves valid AUTO survivors across rebuilds."""
 
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
@@ -1314,12 +1314,9 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                         (timmy_initial, TIMMY_ID),
                     ):
                         self.assertEqual(slot["effective_need"], Decimal("24.00"))
-                        self.assertEqual(slot["planned_hours"], Decimal("24.00"))
                         self.assertEqual(slot["covered_hours"], Decimal("24.00"))
                         self.assertEqual(slot["intent_mode"], "AUTO")
-                        self.assertEqual(slot["target_mode"], "EXPLICIT_RESOURCE")
                         self.assertEqual(slot["target_resource_id"], resource_id)
-                        self.assertEqual(slot["placement_not_before_date"], START)
                         self.assertEqual(
                             tuple(
                                 (row["work_date"], row["hours"])
@@ -1333,13 +1330,18 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                             ),
                         )
 
+                    eric_original_survivors = {
+                        row["work_date"]: row["id"]
+                        for row in eric_initial["shifts"]
+                        if row["counted"] and row["work_date"] != WEDNESDAY
+                    }
                     eric_wed = next(
                         row
                         for row in eric_initial["shifts"]
                         if row["work_date"] == WEDNESDAY and row["counted"]
                     )
                     first_preview = self._preview(client, eric_wed["allocation_id"])
-                    first_preserve_calls: list[tuple[str, ...]] = []
+                    first_rebuild_calls: list[tuple[str, ...]] = []
                     original_rebuild = SqlPlanningCommandAdapter.rebuild
 
                     def trace_first(
@@ -1348,7 +1350,7 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                         preserve_shift_ids=(),
                         temporary_excluded_dates_by_segment=None,
                     ):
-                        first_preserve_calls.append(tuple(preserve_shift_ids))
+                        first_rebuild_calls.append(tuple(preserve_shift_ids))
                         return original_rebuild(
                             adapter,
                             preserve_shift_ids=preserve_shift_ids,
@@ -1357,6 +1359,7 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                             ),
                         )
 
+                    first_key = "issue-793-sequential-reduce-eric"
                     with patch.object(
                         SqlPlanningCommandAdapter,
                         "rebuild",
@@ -1366,9 +1369,11 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                             client,
                             eric_wed["allocation_id"],
                             first_preview,
-                            "issue-793-sequential-reduce-eric",
+                            first_key,
                         )
                     self.assertEqual(reduced_eric.status_code, 200, reduced_eric.text)
+                    first_payload = reduced_eric.json()
+                    self.assertEqual(first_rebuild_calls, [()])
 
                     with factory() as session:
                         after_eric = self._capture(
@@ -1376,28 +1381,22 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                             number,
                             nominal_slot_hours=Decimal("24.00"),
                         )
-                        eric_release_count = len(
-                            tuple(
-                                session.scalars(
-                                    select(PlanningWorkQueueRelease).where(
-                                        PlanningWorkQueueRelease.planning_intent_id
-                                        == eric_initial["planning_intent_id"]
-                                    )
-                                )
-                            )
-                        )
                     eric_after_first = after_eric["slots"][
                         eric_initial["requirement_id"]
                     ]
                     timmy_after_first = after_eric["slots"][
                         timmy_initial["requirement_id"]
                     ]
-                    eric_survivor_ids = {
-                        row["id"] for row in eric_after_first["shifts"] if row["counted"]
-                    }
                     self.assertEqual(eric_after_first["effective_need"], Decimal("16.00"))
-                    self.assertEqual(eric_after_first["planned_hours"], Decimal("16.00"))
                     self.assertEqual(eric_after_first["covered_hours"], Decimal("16.00"))
+                    self.assertEqual(
+                        {
+                            row["work_date"]: row["id"]
+                            for row in eric_after_first["shifts"]
+                            if row["counted"]
+                        },
+                        eric_original_survivors,
+                    )
                     self.assertEqual(
                         tuple(
                             (row["work_date"], row["hours"])
@@ -1409,31 +1408,154 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                             ("2026-11-03", Decimal("8.00")),
                         ),
                     )
+                    self.assertFalse(
+                        any(row["work_date"] == WEDNESDAY for row in eric_after_first["shifts"])
+                    )
                     self.assertEqual(eric_after_first["intent_mode"], "AUTO")
-                    self.assertEqual(eric_after_first["placement_not_before_date"], START)
+                    self.assertEqual(timmy_after_first["covered_hours"], Decimal("24.00"))
+
                     eric_reductions = [
                         row
                         for row in after_eric["reductions"]
                         if row["planning_intent_id"] == eric_initial["planning_intent_id"]
                     ]
                     self.assertEqual(len(eric_reductions), 1)
-                    self.assertEqual(eric_reductions[0]["original_shift_id"], eric_wed["id"])
-                    self.assertEqual(eric_reductions[0]["reduction_hours"], Decimal("8.00"))
-                    self.assertEqual(eric_reductions[0]["effective_need_before"], Decimal("24.00"))
-                    self.assertEqual(eric_reductions[0]["effective_need_after"], Decimal("16.00"))
-                    self.assertEqual(eric_release_count, 0)
-                    self.assertEqual(len(first_preserve_calls), 1)
-                    self.assertEqual(set(first_preserve_calls[0]), eric_survivor_ids)
-                    self.assertEqual(timmy_after_first["effective_need"], Decimal("24.00"))
-                    self.assertEqual(timmy_after_first["covered_hours"], Decimal("24.00"))
+                    first_reduction_id = eric_reductions[0]["id"]
+                    eric_active_protections = [
+                        row
+                        for row in after_eric["protections"]
+                        if row["planning_intent_id"] == eric_initial["planning_intent_id"]
+                        and row["active"]
+                    ]
+                    self.assertEqual(len(eric_active_protections), 2)
+                    self.assertEqual(
+                        {row["shift_id"] for row in eric_active_protections},
+                        set(eric_original_survivors.values()),
+                    )
+                    self.assertEqual(
+                        {row["originating_reduction_id"] for row in eric_active_protections},
+                        {first_reduction_id},
+                    )
+                    self.assertEqual(
+                        {row["original_shift_id"] for row in eric_active_protections},
+                        set(eric_original_survivors.values()),
+                    )
 
+                    # Same-slot validation must reject a sibling Shift even if both
+                    # belong to the same request and share the same Resource class.
+                    with self.assertRaisesRegex(RuntimeError, "slot_mismatch"):
+                        with factory.begin() as session:
+                            intent = session.get(
+                                RequestRequirementPlanningIntent,
+                                eric_initial["planning_intent_id"],
+                            )
+                            reduction = session.get(
+                                RequestCompletionReduction,
+                                first_reduction_id,
+                            )
+                            sibling = session.get(
+                                Shift,
+                                next(
+                                    row["id"]
+                                    for row in timmy_after_first["shifts"]
+                                    if row["work_date"] == START and row["counted"]
+                                ),
+                            )
+                            assert intent is not None
+                            assert reduction is not None
+                            assert sibling is not None
+                            SqlRequestShiftSurvivorProtectionRepository(
+                                session
+                            ).protect_survivors(
+                                intent=intent,
+                                reduction=reduction,
+                                survivors=(sibling,),
+                            )
+
+                    # A completely separate rebuild with no transient preserve IDs
+                    # must recover survivor authority from persistence alone.
+                    with factory.begin() as session:
+                        SqlPlanningCommandAdapter(session).rebuild()
+                    with factory() as session:
+                        after_unrelated_rebuild = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("24.00"),
+                        )
+                    eric_after_unrelated = after_unrelated_rebuild["slots"][
+                        eric_initial["requirement_id"]
+                    ]
+                    self.assertEqual(
+                        {
+                            row["work_date"]: row["id"]
+                            for row in eric_after_unrelated["shifts"]
+                            if row["counted"]
+                        },
+                        eric_original_survivors,
+                    )
+                    self.assertEqual(eric_after_unrelated["covered_hours"], Decimal("16.00"))
+                    self.assertEqual(eric_after_unrelated["residual"], Decimal("0.00"))
+
+                    # Idempotent replay returns the exact receipt and cannot rewrite
+                    # survivor provenance or create additional rows.
+                    replay = self._reduce(
+                        client,
+                        eric_wed["allocation_id"],
+                        first_preview,
+                        first_key,
+                    )
+                    self.assertEqual(replay.status_code, 200, replay.text)
+                    self.assertEqual(replay.json(), first_payload)
+                    with factory() as session:
+                        after_replay = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("24.00"),
+                        )
+                        replay_receipts = tuple(
+                            session.scalars(
+                                select(CommandIdempotencyReceipt).where(
+                                    CommandIdempotencyReceipt.command_scope
+                                    == "request_work_queue.permanent_reduction",
+                                    CommandIdempotencyReceipt.idempotency_key == first_key,
+                                )
+                            ).all()
+                        )
+                    replay_protections = [
+                        row
+                        for row in after_replay["protections"]
+                        if row["planning_intent_id"] == eric_initial["planning_intent_id"]
+                        and row["active"]
+                    ]
+                    self.assertEqual(len(replay_receipts), 1)
+                    self.assertEqual(len(replay_protections), 2)
+                    self.assertEqual(
+                        {row["id"] for row in replay_protections},
+                        {row["id"] for row in eric_active_protections},
+                    )
+                    self.assertEqual(
+                        {row["originating_reduction_id"] for row in replay_protections},
+                        {first_reduction_id},
+                    )
+
+                    # TIMMY may have been regenerated by the unrelated rebuild, so
+                    # always target the fresh current Wednesday Shift.
+                    with factory() as session:
+                        before_timmy = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("24.00"),
+                        )
+                    timmy_current = before_timmy["slots"][
+                        timmy_initial["requirement_id"]
+                    ]
                     timmy_wed = next(
                         row
-                        for row in timmy_after_first["shifts"]
+                        for row in timmy_current["shifts"]
                         if row["work_date"] == WEDNESDAY and row["counted"]
                     )
                     second_preview = self._preview(client, timmy_wed["allocation_id"])
-                    second_preserve_calls: list[tuple[str, ...]] = []
+                    second_rebuild_calls: list[tuple[str, ...]] = []
 
                     def trace_second(
                         adapter,
@@ -1441,7 +1563,7 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                         preserve_shift_ids=(),
                         temporary_excluded_dates_by_segment=None,
                     ):
-                        second_preserve_calls.append(tuple(preserve_shift_ids))
+                        second_rebuild_calls.append(tuple(preserve_shift_ids))
                         return original_rebuild(
                             adapter,
                             preserve_shift_ids=preserve_shift_ids,
@@ -1462,19 +1584,7 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                             "issue-793-sequential-reduce-timmy",
                         )
                     self.assertEqual(reduced_timmy.status_code, 200, reduced_timmy.text)
-                    self.assertEqual(len(second_preserve_calls), 1)
-                    timmy_expected_survivors = {
-                        row["id"]
-                        for row in timmy_after_first["shifts"]
-                        if row["id"] != timmy_wed["id"] and row["counted"]
-                    }
-                    self.assertEqual(
-                        set(second_preserve_calls[0]),
-                        timmy_expected_survivors,
-                    )
-                    self.assertTrue(
-                        eric_survivor_ids.isdisjoint(second_preserve_calls[0])
-                    )
+                    self.assertEqual(second_rebuild_calls, [()])
 
                     with factory() as session:
                         after_timmy = self._capture(
@@ -1488,328 +1598,271 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                     timmy_after_second = after_timmy["slots"][
                         timmy_initial["requirement_id"]
                     ]
-
-                    # Current defect: the prior ERIC survivors are disposable AUTO rows.
-                    self.assertTrue(
-                        eric_survivor_ids.isdisjoint(
-                            {row["id"] for row in eric_after_second["shifts"]}
-                        )
-                    )
                     self.assertEqual(eric_after_second["effective_need"], Decimal("16.00"))
                     self.assertEqual(timmy_after_second["effective_need"], Decimal("16.00"))
-                    timmy_reductions = [
-                        row
-                        for row in after_timmy["reductions"]
-                        if row["planning_intent_id"] == timmy_initial["planning_intent_id"]
-                    ]
-                    self.assertEqual(len(timmy_reductions), 1)
-                    self.assertEqual(timmy_reductions[0]["original_shift_id"], timmy_wed["id"])
-                    self.assertEqual(timmy_reductions[0]["reduction_hours"], Decimal("8.00"))
-                    self.assertEqual(timmy_reductions[0]["effective_need_before"], Decimal("24.00"))
-                    self.assertEqual(timmy_reductions[0]["effective_need_after"], Decimal("16.00"))
-                    self.assertEqual(eric_after_second["target_resource_id"], ERIC_ID)
                     self.assertEqual(
-                        {row["resource_id"] for row in eric_after_second["shifts"]},
-                        {ERIC_ID},
+                        {
+                            row["work_date"]: row["id"]
+                            for row in eric_after_second["shifts"]
+                            if row["counted"]
+                        },
+                        eric_original_survivors,
                     )
                     self.assertEqual(
                         tuple(
-                            (row["work_date"], row["hours"])
+                            (row["work_date"], row["hours"], row["resource_id"])
                             for row in eric_after_second["shifts"]
                             if row["counted"]
                         ),
                         (
-                            (START, Decimal("5.33")),
-                            ("2026-11-03", Decimal("5.33")),
-                            (WEDNESDAY, Decimal("5.34")),
+                            (START, Decimal("8.00"), ERIC_ID),
+                            ("2026-11-03", Decimal("8.00"), ERIC_ID),
                         ),
+                    )
+                    self.assertFalse(
+                        any(row["work_date"] == WEDNESDAY for row in eric_after_second["shifts"])
                     )
                     self.assertEqual(eric_after_second["covered_hours"], Decimal("16.00"))
-                    with factory() as session:
-                        raw_sqlite_after_second = tuple(
-                            Decimal(str(row[0]))
-                            for row in session.connection().exec_driver_sql(
-                                "SELECT hours FROM shifts "
-                                "WHERE resource_requirement_id = ? "
-                                "ORDER BY work_date, id",
-                                (eric_initial["requirement_id"],),
-                            ).all()
-                        )
+                    self.assertEqual(eric_after_second["residual"], Decimal("0.00"))
+
+                    eric_protections_after_sibling = [
+                        row
+                        for row in after_timmy["protections"]
+                        if row["planning_intent_id"] == eric_initial["planning_intent_id"]
+                        and row["active"]
+                    ]
+                    timmy_protections_after_sibling = [
+                        row
+                        for row in after_timmy["protections"]
+                        if row["planning_intent_id"] == timmy_initial["planning_intent_id"]
+                        and row["active"]
+                    ]
                     self.assertEqual(
-                        raw_sqlite_after_second,
+                        {row["id"] for row in eric_protections_after_sibling},
+                        {row["id"] for row in eric_active_protections},
+                    )
+                    self.assertEqual(
+                        {row["shift_id"] for row in eric_protections_after_sibling},
+                        set(eric_original_survivors.values()),
+                    )
+                    self.assertEqual(len(timmy_protections_after_sibling), 2)
+                    self.assertTrue(
+                        {row["shift_id"] for row in eric_protections_after_sibling}.isdisjoint(
+                            {row["shift_id"] for row in timmy_protections_after_sibling}
+                        )
+                    )
+            finally:
+                engine.dispose()
+
+    def test_partial_auto_residual_generates_only_uncovered_four_hours(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-793-partial",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_partial_residual_request(client)
+                    actions = self._assignment_actions(client, number)
+                    self.assertEqual(len(actions), 1)
+                    self._place_from_drop(
+                        client,
+                        segment_id=actions[0]["segment_id"],
+                        resource_id=ERIC_ID,
+                        dropped_date=START,
+                        key="issue-793-partial-drop-eric",
+                    )
+                    with factory() as session:
+                        initial = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("28.00"),
+                        )
+                    eric_initial = self._by_target(initial, ERIC_ID)
+                    counted_initial = [
+                        row for row in eric_initial["shifts"] if row["counted"]
+                    ]
+                    self.assertEqual(
+                        tuple((row["work_date"], row["hours"]) for row in counted_initial),
                         (
-                            Decimal("5.33"),
-                            Decimal("5.33"),
-                            Decimal("5.34"),
+                            (START, Decimal("8.00")),
+                            ("2026-11-03", Decimal("8.00")),
+                            (WEDNESDAY, Decimal("8.00")),
                         ),
                     )
-                    self.assertTrue(
-                        all(
-                            value == value.quantize(Decimal("0.01"))
-                            and value >= Decimal("0.01")
-                            for value in raw_sqlite_after_second
-                        )
+                    original_survivors = {
+                        row["work_date"]: row["id"]
+                        for row in counted_initial
+                        if row["work_date"] != WEDNESDAY
+                    }
+                    target = next(
+                        row for row in counted_initial if row["work_date"] == WEDNESDAY
                     )
+                    preview = self._preview(client, target["allocation_id"])
+                    response = self._reduce(
+                        client,
+                        target["allocation_id"],
+                        preview,
+                        "issue-793-partial-reduce-eric",
+                    )
+                    self.assertEqual(response.status_code, 200, response.text)
 
-                    regenerated = next(
+                    with factory() as session:
+                        after = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("28.00"),
+                        )
+                    eric_after = self._by_target(after, ERIC_ID)
+                    self.assertEqual(eric_after["effective_need"], Decimal("20.00"))
+                    self.assertEqual(eric_after["covered_hours"], Decimal("20.00"))
+                    self.assertEqual(eric_after["residual"], Decimal("0.00"))
+                    counted_after = [
+                        row for row in eric_after["shifts"] if row["counted"]
+                    ]
+                    self.assertEqual(
+                        tuple((row["work_date"], row["hours"]) for row in counted_after),
+                        (
+                            (START, Decimal("8.00")),
+                            ("2026-11-03", Decimal("8.00")),
+                            (WEDNESDAY, Decimal("4.00")),
+                        ),
+                    )
+                    self.assertEqual(
+                        {
+                            row["work_date"]: row["id"]
+                            for row in counted_after
+                            if row["work_date"] != WEDNESDAY
+                        },
+                        original_survivors,
+                    )
+                    generated = next(
+                        row for row in counted_after if row["work_date"] == WEDNESDAY
+                    )
+                    self.assertEqual(generated["hours"], Decimal("4.00"))
+                    self.assertNotIn(generated["id"], set(original_survivors.values()))
+                    active = [
                         row
-                        for row in eric_after_second["shifts"]
+                        for row in after["protections"]
+                        if row["planning_intent_id"] == eric_after["planning_intent_id"]
+                        and row["active"]
+                    ]
+                    self.assertEqual(
+                        {row["shift_id"] for row in active},
+                        set(original_survivors.values()),
+                    )
+                    self.assertNotIn(generated["id"], {row["shift_id"] for row in active})
+            finally:
+                engine.dispose()
+
+    def test_rebuild_failure_rolls_back_reduction_protections_and_shift_delete(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-793-rollback",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_sequential_24_request(client)
+                    actions = self._assignment_actions(client, number)
+                    self._place_from_drop(
+                        client,
+                        segment_id=actions[0]["segment_id"],
+                        resource_id=ERIC_ID,
+                        dropped_date=START,
+                        key="issue-793-rollback-drop-eric",
+                    )
+                    with factory() as session:
+                        before = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("24.00"),
+                        )
+                        planning_before = SqlPlanningMutationVersionRepository(
+                            session
+                        ).current_version()
+                    eric_before = self._by_target(before, ERIC_ID)
+                    target = next(
+                        row
+                        for row in eric_before["shifts"]
                         if row["work_date"] == WEDNESDAY and row["counted"]
                     )
-                    third_preview = self._preview(client, regenerated["allocation_id"])
-                    self.assertTrue(third_preview["permanent_reduction_allowed"])
-                    self.assertEqual(
-                        Decimal(str(third_preview["effective_need"])).quantize(Decimal("0.01")),
-                        Decimal("16.00"),
-                    )
-                    self.assertEqual(
-                        Decimal(str(third_preview["covered_hours"])).quantize(Decimal("0.01")),
-                        Decimal("16.00"),
-                    )
-                    self.assertEqual(regenerated["hours"], Decimal("5.34"))
-                    self.assertEqual(
-                        Decimal(str(third_preview["effective_need_after_reduction"])).quantize(
-                            Decimal("0.01")
-                        ),
-                        Decimal("10.66"),
-                    )
-                    survivor_hours = sum(
-                        (
-                            row["hours"]
-                            for row in eric_after_second["shifts"]
-                            if row["id"] != regenerated["id"] and row["counted"]
-                        ),
-                        Decimal("0.00"),
-                    )
-                    self.assertEqual(survivor_hours, Decimal("10.66"))
-                    self.assertEqual(
-                        Decimal(str(third_preview["remaining_after_reduction"])).quantize(
-                            Decimal("0.01")
-                        ),
-                        Decimal("0.00"),
-                    )
-
-                    third_key = "issue-793-sequential-reduce-regenerated-eric"
-                    with factory() as session:
-                        request_before_third = session.scalar(
-                            select(WorkforceRequest).where(
-                                WorkforceRequest.legacy_demand_number == number
-                            )
-                        )
-                        self.assertIsNotNone(request_before_third)
-                        request_version_before_third = int(
-                            request_before_third.aggregate_version or 1
-                        )
-                        planning_version_before_third = (
-                            SqlPlanningMutationVersionRepository(session).current_version()
-                        )
-
-                    rebuild_exceptions: list[dict[str, str]] = []
-                    original_third_rebuild = SqlPlanningCommandAdapter.rebuild
-
-                    def trace_third_rebuild(
-                        adapter,
-                        *,
-                        preserve_shift_ids=(),
-                        temporary_excluded_dates_by_segment=None,
-                    ):
-                        try:
-                            return original_third_rebuild(
-                                adapter,
-                                preserve_shift_ids=preserve_shift_ids,
-                                temporary_excluded_dates_by_segment=(
-                                    temporary_excluded_dates_by_segment
-                                ),
-                            )
-                        except Exception as exc:
-                            rebuild_exceptions.append(
-                                {
-                                    "type": type(exc).__name__,
-                                    "message": str(exc),
-                                    "repr": repr(exc),
-                                }
-                            )
-                            raise
+                    preview = self._preview(client, target["allocation_id"])
+                    key = "issue-793-controlled-rebuild-failure"
 
                     with patch.object(
                         SqlPlanningCommandAdapter,
                         "rebuild",
-                        new=trace_third_rebuild,
+                        side_effect=RuntimeError("issue793 controlled rebuild failure"),
                     ):
-                        third_response = self._reduce(
+                        response = self._reduce(
                             client,
-                            regenerated["allocation_id"],
-                            third_preview,
-                            third_key,
+                            target["allocation_id"],
+                            preview,
+                            key,
                         )
-
-                    self.assertEqual(third_response.status_code, 200, third_response.text)
-                    third_payload = third_response.json()
-                    self.assertEqual(rebuild_exceptions, [])
+                    self.assertEqual(response.status_code, 500, response.text)
                     self.assertEqual(
-                        Decimal(str(third_payload["effective_need_after"])).quantize(
-                            Decimal("0.01")
-                        ),
-                        Decimal("10.66"),
-                    )
-                    self.assertEqual(
-                        Decimal(str(third_payload["covered_hours_after"])).quantize(
-                            Decimal("0.01")
-                        ),
-                        Decimal("10.66"),
-                    )
-                    self.assertEqual(
-                        Decimal(str(third_payload["remaining_hours_after"])).quantize(
-                            Decimal("0.01")
-                        ),
-                        Decimal("0.00"),
+                        response.json().get("error", {}).get("code"),
+                        "internal_error",
                     )
 
                     with factory() as session:
-                        post_third = self._capture(
+                        after = self._capture(
                             session,
                             number,
                             nominal_slot_hours=Decimal("24.00"),
                         )
-                        request_after_third = session.scalar(
-                            select(WorkforceRequest).where(
-                                WorkforceRequest.legacy_demand_number == number
+                        planning_after = SqlPlanningMutationVersionRepository(
+                            session
+                        ).current_version()
+                        receipt = session.scalar(
+                            select(CommandIdempotencyReceipt).where(
+                                CommandIdempotencyReceipt.command_scope
+                                == "request_work_queue.permanent_reduction",
+                                CommandIdempotencyReceipt.idempotency_key == key,
                             )
                         )
-                        self.assertIsNotNone(request_after_third)
-                        request_version_after_third = int(
-                            request_after_third.aggregate_version or 1
-                        )
-                        planning_version_after_third = (
-                            SqlPlanningMutationVersionRepository(session).current_version()
-                        )
-                        raw_shifts_after_third = tuple(
-                            session.execute(
-                                select(
-                                    Shift.id,
-                                    Shift.work_date,
-                                    Shift.hours,
-                                    Shift.resource_id,
-                                )
-                                .where(
-                                    Shift.resource_requirement_id
-                                    == eric_initial["requirement_id"]
-                                )
-                                .order_by(Shift.work_date, Shift.id)
-                            ).all()
-                        )
-                        raw_sqlite_after_third = tuple(
-                            Decimal(str(row[0]))
-                            for row in session.connection().exec_driver_sql(
-                                "SELECT hours FROM shifts "
-                                "WHERE resource_requirement_id = ? "
-                                "ORDER BY work_date, id",
-                                (eric_initial["requirement_id"],),
-                            ).all()
-                        )
-                        receipts = tuple(
-                            session.scalars(
-                                select(CommandIdempotencyReceipt).where(
-                                    CommandIdempotencyReceipt.command_scope
-                                    == "request_work_queue.permanent_reduction",
-                                    CommandIdempotencyReceipt.idempotency_key == third_key,
-                                )
-                            ).all()
-                        )
-
-                    eric_post_third = post_third["slots"][
-                        eric_initial["requirement_id"]
-                    ]
-                    eric_reductions_after_third = [
-                        row
-                        for row in post_third["reductions"]
-                        if row["planning_intent_id"]
-                        == eric_initial["planning_intent_id"]
-                    ]
-                    self.assertEqual(
-                        eric_post_third["effective_need"],
-                        Decimal("10.66"),
-                    )
-                    self.assertEqual(
-                        eric_post_third["planned_hours"],
-                        Decimal("10.66"),
-                    )
-                    self.assertEqual(
-                        eric_post_third["covered_hours"],
-                        Decimal("10.66"),
-                    )
+                    eric_after = self._by_target(after, ERIC_ID)
                     self.assertEqual(
                         tuple(
-                            (row["work_date"], row["hours"])
-                            for row in eric_post_third["shifts"]
+                            (row["id"], row["work_date"], row["hours"])
+                            for row in eric_after["shifts"]
                             if row["counted"]
                         ),
-                        (
-                            (START, Decimal("5.33")),
-                            ("2026-11-03", Decimal("5.33")),
+                        tuple(
+                            (row["id"], row["work_date"], row["hours"])
+                            for row in eric_before["shifts"]
+                            if row["counted"]
                         ),
                     )
+                    self.assertEqual(eric_after["effective_need"], Decimal("24.00"))
                     self.assertEqual(
-                        raw_sqlite_after_third,
-                        (Decimal("5.33"), Decimal("5.33")),
-                    )
-                    self.assertEqual(len(eric_reductions_after_third), 2)
-                    self.assertEqual(len(receipts), 1)
-                    self.assertEqual(
-                        request_version_after_third,
-                        request_version_before_third + 1,
-                    )
-                    self.assertGreater(
-                        planning_version_after_third,
-                        planning_version_before_third,
-                    )
-
-                    replay = self._reduce(
-                        client,
-                        regenerated["allocation_id"],
-                        third_preview,
-                        third_key,
-                    )
-                    self.assertEqual(replay.status_code, 200, replay.text)
-                    self.assertEqual(replay.json(), third_payload)
-                    with factory() as session:
-                        replay_state = self._capture(
-                            session,
-                            number,
-                            nominal_slot_hours=Decimal("24.00"),
-                        )
-                        replay_rows = tuple(
-                            session.execute(
-                                select(
-                                    Shift.id,
-                                    Shift.work_date,
-                                    Shift.hours,
-                                    Shift.resource_id,
-                                )
-                                .where(
-                                    Shift.resource_requirement_id
-                                    == eric_initial["requirement_id"]
-                                )
-                                .order_by(Shift.work_date, Shift.id)
-                            ).all()
-                        )
-                        replay_receipts = tuple(
-                            session.scalars(
-                                select(CommandIdempotencyReceipt).where(
-                                    CommandIdempotencyReceipt.command_scope
-                                    == "request_work_queue.permanent_reduction",
-                                    CommandIdempotencyReceipt.idempotency_key == third_key,
-                                )
-                            ).all()
-                        )
-                    self.assertEqual(
-                        replay_state["slots"][eric_initial["requirement_id"]][
-                            "effective_need"
+                        [
+                            row
+                            for row in after["reductions"]
+                            if row["planning_intent_id"] == eric_before["planning_intent_id"]
                         ],
-                        Decimal("10.66"),
+                        [],
                     )
-                    self.assertEqual(replay_rows, raw_shifts_after_third)
-                    self.assertEqual(len(replay_receipts), 1)
+                    self.assertEqual(
+                        [
+                            row
+                            for row in after["protections"]
+                            if row["planning_intent_id"] == eric_before["planning_intent_id"]
+                        ],
+                        [],
+                    )
+                    self.assertEqual(planning_after, planning_before)
+                    self.assertIsNone(receipt)
             finally:
                 engine.dispose()
 
