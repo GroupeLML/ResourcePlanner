@@ -59,6 +59,7 @@ from app.infrastructure.sql.operational_choice_models import (
     RequestCompletionReduction,
     RequestOperationalState,
     RequestRequirementPlanningIntent,
+    RequestShiftSurvivorProtection,
 )
 from app.infrastructure.sql.planning_audit import SqlPlanningAuditJournal
 from app.infrastructure.sql.planning_version import (
@@ -445,7 +446,29 @@ class RequestWorkQueueCommandTests(unittest.TestCase):
                 session.get(RequestApprovalRevision, "REV1").payload_text,
                 self.approved_payload,
             )
-            self.assertEqual(set(planning.calls[-1]), {"S1", "S2", "S3", "S5"})
+            self.assertEqual(planning.calls[-1], ())
+            protections = session.scalars(
+                select(RequestShiftSurvivorProtection).where(
+                    RequestShiftSurvivorProtection.active.is_(True)
+                )
+            ).all()
+            self.assertEqual(len(protections), 4)
+            self.assertEqual(
+                {row.shift_id for row in protections},
+                {"S1", "S2", "S3", "S5"},
+            )
+            self.assertEqual(
+                {row.original_shift_id for row in protections},
+                {"S1", "S2", "S3", "S5"},
+            )
+            self.assertEqual(
+                {row.planning_intent_id for row in protections},
+                {reduction.planning_intent_id},
+            )
+            self.assertEqual(
+                {row.originating_reduction_id for row in protections},
+                {reduction.id},
+            )
             self.assertEqual(result["request_version"], 2)
             self.assertEqual(result["effective_need_after"], 32.0)
             self.assertEqual(result["covered_hours_after"], 32.0)
