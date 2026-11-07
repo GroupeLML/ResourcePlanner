@@ -408,14 +408,18 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
         *,
         excluding_shift_id: str | None = None,
     ) -> Decimal:
-        statement = select(func.coalesce(func.sum(Shift.hours), 0)).where(
+        """Sum canonical physical Shift rows, never hidden raw sub-cent storage."""
+        statement = select(Shift.hours).where(
             Shift.resource_requirement_id == requirement_id,
             (Shift.allocation_type.is_(None))
             | (Shift.allocation_type != MISSING_ALLOCATION_TYPE),
         )
         if excluding_shift_id:
             statement = statement.where(Shift.id != excluding_shift_id)
-        return _decimal(self._session.scalar(statement) or 0)
+        return sum(
+            (_decimal(value) for value in self._session.scalars(statement).all()),
+            Decimal("0.00"),
+        ).quantize(CENT)
 
     @staticmethod
     def _assert_counted_shift(shift: Shift) -> None:
