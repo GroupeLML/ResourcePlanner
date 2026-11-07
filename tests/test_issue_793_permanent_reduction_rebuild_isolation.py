@@ -210,6 +210,38 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
         return number
 
     @staticmethod
+    def _approve_partial_residual_request(client: TestClient) -> str:
+        created = client.post(
+            "/api/v1/demands",
+            json=routed_demand_payload(
+                {
+                    "project_number": "P-778-API",
+                    "submit": True,
+                    "lines": [
+                        {
+                            "position": 0,
+                            "desired_start": START,
+                            "desired_end": WEDNESDAY,
+                            "desired_active_days": 3,
+                            "estimated_hours": 28,
+                            "required_resource_class": "ELECTRICAL",
+                            "confirmation": "Confirmée",
+                            "description": "#793 partial residual H20 protected16",
+                        }
+                    ],
+                }
+            ),
+        )
+        assert created.status_code == 201, created.text
+        number = created.json()["demand_number"]
+        approved = client.post(
+            f"/api/v1/demands/{number}/approve",
+            json={"comment": "#793 partial residual survivor regression"},
+        )
+        assert approved.status_code == 200, approved.text
+        return number
+
+    @staticmethod
     def _approve_two_line_request(client: TestClient) -> str:
         created = client.post(
             "/api/v1/demands",
