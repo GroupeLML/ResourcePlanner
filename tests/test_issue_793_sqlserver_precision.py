@@ -176,6 +176,16 @@ class Issue793SqlServerPrecisionTests(unittest.TestCase):
                     )
                 ).all()
             )
+            stored_hours = tuple(
+                Decimal(str(row[0])).quantize(Decimal("0.01"))
+                for row in session.connection().exec_driver_sql(
+                    "SELECT hours FROM shifts "
+                    "WHERE resource_requirement_id = ? "
+                    "AND (allocation_type IS NULL OR allocation_type <> ?) "
+                    "ORDER BY work_date, id",
+                    (requirement.id, MISSING_ALLOCATION_TYPE),
+                ).all()
+            )
             return {
                 "request_id": request.id,
                 "request_version": int(request.aggregate_version or 1),
@@ -196,6 +206,7 @@ class Issue793SqlServerPrecisionTests(unittest.TestCase):
                     for row in shifts
                 ),
                 "reductions": reductions,
+                "stored_hours": stored_hours,
             }
 
     def test_real_sqlserver_sequential_and_fractional_reduction_use_exact_cents(self) -> None:
@@ -388,6 +399,14 @@ class Issue793SqlServerPrecisionTests(unittest.TestCase):
                     sum((row[3] for row in eric_after_second["shifts"]), Decimal("0.00")),
                     Decimal("16.00"),
                 )
+                self.assertEqual(
+                    eric_after_second["stored_hours"],
+                    (
+                        Decimal("5.33"),
+                        Decimal("5.33"),
+                        Decimal("5.34"),
+                    ),
+                )
                 self.assertTrue(
                     all(row[3] >= Decimal("0.01") for row in eric_after_second["shifts"])
                 )
@@ -458,6 +477,10 @@ class Issue793SqlServerPrecisionTests(unittest.TestCase):
                 self.assertEqual(
                     sum((row[3] for row in eric_after_third["shifts"]), Decimal("0.00")),
                     Decimal("10.66"),
+                )
+                self.assertEqual(
+                    eric_after_third["stored_hours"],
+                    (Decimal("5.33"), Decimal("5.33")),
                 )
 
                 replay = self._reduce(
