@@ -65,12 +65,17 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
       .filter({ hasText: demandNumber })
       .first();
     await expect(card).toBeVisible();
+    const segmentId = await card.getAttribute("data-segment-id");
+    expect(segmentId).toBeTruthy();
+    const currentCard = page.locator(
+      `.planning-work-queue .planning-action-card.action-assignment[data-segment-id="${segmentId}"]`,
+    );
     const target = page.locator(
       `.planning-drop-day[data-resource-id="${resourceId}"][data-day="${day}"]`,
     );
     await expect(target).toBeVisible();
     await card.dragTo(target);
-    await expect(card).toHaveCount(0);
+    await expect(currentCard).toHaveCount(0);
   }
 
   async function reduceRenderedShift(
