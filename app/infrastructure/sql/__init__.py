@@ -219,9 +219,14 @@ from .operational_choice_models import (
     RequestCompletionReduction,
     RequestOperationalState,
     RequestRequirementPlanningIntent,
+    RequestShiftSurvivorProtection,
 )
 from .operational_choice_repository import SqlRequestOperationalChoiceRepository
 from .request_work_queue_commands import SqlRequestWorkQueueCommandAdapter
+from .survivor_protection_repository import (
+    DurableSurvivorRow,
+    SqlRequestShiftSurvivorProtectionRepository,
+)
 from .planning_intent_repository import (
     SqlRequestRequirementPlanningIntentRepository,
     stable_planning_slot_key,
