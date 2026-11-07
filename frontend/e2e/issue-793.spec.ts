@@ -119,6 +119,12 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
     const backendActionExistsBefore = backendActionsBefore.some(
       (row) => String(row.segment_id) === segmentId,
     );
+
+    if (backendActionExistsBefore) {
+      await card.waitFor({ state: "visible", timeout: 10_000 }).catch(() => {});
+    }
+    await target.waitFor({ state: "visible", timeout: 10_000 }).catch(() => {});
+
     const cardCountBefore = await card.count();
     const cardVisibleBefore = cardCountBefore > 0
       ? await card.isVisible()
