@@ -8,7 +8,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
 from app.domain.planning_engine import MISSING_ALLOCATION_TYPE
@@ -171,7 +171,44 @@ class Issue793SqlServerPrecisionTests(unittest.TestCase):
                     )
                 )
             session.flush()
-            seed_test_approval_routing(session)
+            # These #793 fixtures route explicitly by resource class. Avoid the
+            # shared TEST-APPROVAL-TASK-N namespace entirely so parallel/live SQL
+            # scenarios cannot collide on a synthetic TaskCatalog primary key.
+            seed_test_approval_routing(
+                session,
+                include_default_task=False,
+            )
+
+    @staticmethod
+    def _cleanup_survivor_protections(factory, project_id: str) -> None:
+        """Remove only marker-owned #793 durable authority before shared migrations."""
+        with factory.begin() as session:
+            request_ids = tuple(
+                session.scalars(
+                    select(WorkforceRequest.id).where(
+                        WorkforceRequest.project_id == project_id
+                    )
+                ).all()
+            )
+            if not request_ids:
+                return
+            intent_ids = tuple(
+                session.scalars(
+                    select(RequestRequirementPlanningIntent.id).where(
+                        RequestRequirementPlanningIntent.workforce_request_id.in_(
+                            request_ids
+                        )
+                    )
+                ).all()
+            )
+            if intent_ids:
+                session.execute(
+                    delete(RequestShiftSurvivorProtection).where(
+                        RequestShiftSurvivorProtection.planning_intent_id.in_(
+                            intent_ids
+                        )
+                    )
+                )
 
     @staticmethod
     def _slot_state(
@@ -447,6 +484,7 @@ class Issue793SqlServerPrecisionTests(unittest.TestCase):
                     {row.id for row in active},
                 )
         finally:
+            self._cleanup_survivor_protections(factory, project_id)
             engine.dispose()
 
     def test_real_sqlserver_durable_survivors_survive_sibling_and_fresh_rebuild(self) -> None:
@@ -763,6 +801,7 @@ class Issue793SqlServerPrecisionTests(unittest.TestCase):
                     )
                 self.assertIsNone(failed_receipt)
         finally:
+            self._cleanup_survivor_protections(factory, project_id)
             engine.dispose()
 
     def test_real_sqlserver_partial_auto_residual_generates_exact_four_hours(self) -> None:
@@ -874,6 +913,7 @@ class Issue793SqlServerPrecisionTests(unittest.TestCase):
                 generated = next(row for row in after["shifts"] if row[2] == WEDNESDAY)
                 self.assertNotIn(generated[0], {row.shift_id for row in active})
         finally:
+            self._cleanup_survivor_protections(factory, project_id)
             engine.dispose()
 
 
