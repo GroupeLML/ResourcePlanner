@@ -120,6 +120,7 @@ def _reshape_as_0048(path: Path) -> None:
             DROP TABLE IF EXISTS project_co_managers;
             DROP TABLE IF EXISTS task_catalog_preferred_resource_audit;
             DROP TABLE IF EXISTS quick_shift_planning_exclusions;
+            DROP TABLE IF EXISTS request_shift_survivor_protections;
             DROP TABLE IF EXISTS planning_work_queue_restorations;
             DROP TABLE IF EXISTS planning_work_queue_releases;
             DROP TABLE IF EXISTS request_completion_reductions;
@@ -877,6 +878,7 @@ class Sqlite0048RuntimeBridgeTests(unittest.TestCase):
                             "availability_rule_resource_classes",
                             "planning_window_overrides",
                             "quick_shift_planning_exclusions",
+                            "request_shift_survivor_protections",
                             "erp_sync_plausibility_review_decisions",
                         }.issubset(tables)
                     )
