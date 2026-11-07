@@ -1103,9 +1103,9 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
     let confirmationVisible = await third.confirmation.isVisible();
     let renderedOldCard = await third.card.count() > 0;
 
-    let classification: "U1" | "U2" | "U3" | "U4";
+    let classification: "U1" | "U2" | "U3" | "U4" | null = null;
     if (third.classification !== "REDOPEN4") {
-      classification = "U3";
+      classification = null;
     } else if ((thirdMutation?.status ?? 500) >= 400) {
       const staleCodes = new Set([
         "request_shift_not_found",
@@ -1134,6 +1134,31 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
       confirmationVisible = await third.confirmation.isVisible();
       renderedOldCard = await third.card.count() > 0;
       const persistedChanged = !allocationStillPersisted;
+      const ericRowsAfterThird = afterThird
+        .filter((row) => row.resource_id === ericId)
+        .sort((a, b) => String(a.work_date).localeCompare(String(b.work_date)));
+      expect(
+        ericRowsAfterThird.map((row) => [row.work_date, Number(row.hours)]),
+      ).toEqual([
+        [d1, 5.33],
+        [d2, 5.33],
+      ]);
+      expect(
+        ericRowsAfterThird.reduce(
+          (sum, row) => sum + Number(row.hours),
+          0,
+        ),
+      ).toBe(10.66);
+      expect(
+        Number(thirdMutation?.payload?.effective_need_after),
+      ).toBe(10.66);
+      expect(
+        Number(thirdMutation?.payload?.covered_hours_after),
+      ).toBe(10.66);
+      expect(
+        Number(thirdMutation?.payload?.remaining_hours_after),
+      ).toBe(0);
+
       classification =
         persistedChanged
         && !modalVisible
@@ -1182,6 +1207,7 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
     expect(third.preview.status).toBe(200);
     expect(versionsMatchPreview).toBeTruthy();
     expect(thirdMutation?.idempotencyKey).toBeTruthy();
+    expect(classification).not.toBeNull();
     expect(["U1", "U2", "U3", "U4"]).toContain(classification);
   } finally {
     for (const ruleId of availabilityIds) {
