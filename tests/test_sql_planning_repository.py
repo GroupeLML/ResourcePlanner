@@ -177,6 +177,7 @@ class SqlPlanningReadRepositoryTests(unittest.TestCase):
         self.assertEqual(len(snapshot.segments), 1)
         self.assertEqual(snapshot.segments[0]["IDSegment"], "SEG-2026-0001")
         self.assertEqual(snapshot.segments[0]["NoDemande"], "DMO-2026-0001")
+        self.assertEqual(snapshot.segments[0]["ResourceID"], "R1")
         self.assertEqual(snapshot.segments[0]["Technicien"], "Alice")
         self.assertEqual(snapshot.segments[0]["HorsHoraireAutorise"], True)
 
@@ -187,11 +188,14 @@ class SqlPlanningReadRepositoryTests(unittest.TestCase):
         self.assertEqual(len(snapshot.allocations), 2)
         locked = next(row for row in snapshot.allocations if row["IDAllocation"] == "A-LOCK")
         self.assertTrue(locked["Verrouillee"])
+        self.assertEqual(locked["ResourceID"], "R1")
+        self.assertEqual(locked["Technicien"], "Alice")
         self.assertEqual(locked["Heures"], 2.0)
 
         global_holiday = next(
             row for row in snapshot.availability if row["ID"] == "HOLIDAY-1"
         )
+        self.assertEqual(global_holiday["ResourceID"], "")
         self.assertEqual(global_holiday["Technicien"], "")
         self.assertEqual(global_holiday["Type"], "Jour férié")
         class_holiday = next(
@@ -200,6 +204,7 @@ class SqlPlanningReadRepositoryTests(unittest.TestCase):
         self.assertEqual(class_holiday["ClassesRessources"], ("Installation",))
 
         self.assertEqual(snapshot.technicians, ({
+            "resource_id": "R1",
             "name": "Alice",
             "description": "",
             "team": "Programmation",
@@ -214,11 +219,11 @@ class SqlPlanningReadRepositoryTests(unittest.TestCase):
 
         self.assertEqual(len(calculation.segments), 1)
         self.assertEqual(calculation.segments[0].segment_id, "SEG-2026-0001")
-        self.assertEqual(calculation.segments[0].resource_id, "Alice")
+        self.assertEqual(calculation.segments[0].resource_id, "R1")
         self.assertEqual(calculation.segments[0].priority_rank, 0)
         self.assertTrue(calculation.segments[0].overtime_allowed)
-        self.assertEqual(calculation.capacity_by_resource_day[("Alice", D1)], 8.0)
-        self.assertEqual(calculation.capacity_by_resource_day[("Alice", D2)], 0.0)
+        self.assertEqual(calculation.capacity_by_resource_day[("R1", D1)], 8.0)
+        self.assertEqual(calculation.capacity_by_resource_day[("R1", D2)], 0.0)
         self.assertEqual(len(calculation.locked_allocations), 1)
         self.assertEqual(calculation.locked_allocations[0].hours, 2.0)
         self.assertEqual(len(calculation.persisted_allocations), 2)

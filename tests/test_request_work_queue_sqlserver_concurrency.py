@@ -1338,5 +1338,157 @@ class RequestWorkQueueSqlServerConcurrencyTests(unittest.TestCase):
             engine.dispose()
 
 
+    def test_duplicate_resource_names_keep_distinct_ids_through_sqlserver_rebuild(self) -> None:
+        marker = uuid4().hex[:10]
+        project_id = f"P793I-{marker}"
+        alice_id = f"R793IA-{marker}"
+        bob_id = f"R793IB-{marker}"
+        requirement_a = f"REQ793IA-{marker}"
+        requirement_b = f"REQ793IB-{marker}"
+        segment_a = f"SEG793IA-{marker}"
+        segment_b = f"SEG793IB-{marker}"
+        schedule_a = f"SCH793IA-{marker}"
+        schedule_b = f"SCH793IB-{marker}"
+        shared_name = f"Duplicate 793 {marker}"
+
+        engine = create_sql_engine(DATABASE_URL)
+        factory = create_session_factory(engine)
+        try:
+            with factory.begin() as session:
+                session.add(
+                    Project(
+                        id=project_id,
+                        number=f"P-793I-{marker}",
+                        name="793 SQL identity",
+                    )
+                )
+                session.add_all(
+                    [
+                        Resource(
+                            id=alice_id,
+                            external_id=f"EMP-793IA-{marker}",
+                            name=shared_name,
+                            active=True,
+                            erp_active=True,
+                        ),
+                        Resource(
+                            id=bob_id,
+                            external_id=f"EMP-793IB-{marker}",
+                            name=shared_name,
+                            active=True,
+                            erp_active=True,
+                        ),
+                    ]
+                )
+                session.flush()
+                session.add_all(
+                    [
+                        ResourceAvailabilityRule(
+                            id=schedule_a,
+                            resource_id=alice_id,
+                            availability_type="Horaire standard",
+                            weekdays="Jeu",
+                            start_time=time(8, 0),
+                            end_time=time(16, 0),
+                            active=True,
+                        ),
+                        ResourceAvailabilityRule(
+                            id=schedule_b,
+                            resource_id=bob_id,
+                            availability_type="Horaire standard",
+                            weekdays="Jeu",
+                            start_time=time(8, 0),
+                            end_time=time(16, 0),
+                            active=True,
+                        ),
+                    ]
+                )
+                session.add_all(
+                    [
+                        ResourceRequirement(
+                            id=requirement_a,
+                            legacy_segment_id=segment_a,
+                            project_id=project_id,
+                            start_date=DAY,
+                            end_date=DAY,
+                            planned_hours=Decimal("8.00"),
+                            status="Planifié",
+                            planning_type="Flexible",
+                            confirmation="Confirmée",
+                            origin="AD_HOC",
+                            assigned_resource_id=alice_id,
+                        ),
+                        ResourceRequirement(
+                            id=requirement_b,
+                            legacy_segment_id=segment_b,
+                            project_id=project_id,
+                            start_date=DAY,
+                            end_date=DAY,
+                            planned_hours=Decimal("8.00"),
+                            status="Planifié",
+                            planning_type="Flexible",
+                            confirmation="Confirmée",
+                            origin="AD_HOC",
+                            assigned_resource_id=bob_id,
+                        ),
+                    ]
+                )
+
+            with factory.begin() as session:
+                SqlPlanningCommandAdapter(session).rebuild()
+
+            with factory() as session:
+                shifts_a = tuple(
+                    session.scalars(
+                        select(Shift).where(
+                            Shift.resource_requirement_id == requirement_a
+                        )
+                    )
+                )
+                shifts_b = tuple(
+                    session.scalars(
+                        select(Shift).where(
+                            Shift.resource_requirement_id == requirement_b
+                        )
+                    )
+                )
+                self.assertEqual(len(shifts_a), 1)
+                self.assertEqual(len(shifts_b), 1)
+                self.assertEqual(shifts_a[0].resource_id, alice_id)
+                self.assertEqual(shifts_b[0].resource_id, bob_id)
+        finally:
+            with factory.begin() as session:
+                session.execute(
+                    delete(Shift).where(
+                        Shift.resource_requirement_id.in_(
+                            (requirement_a, requirement_b)
+                        )
+                    )
+                )
+                session.execute(
+                    delete(ResourceRequirement).where(
+                        ResourceRequirement.id.in_(
+                            (requirement_a, requirement_b)
+                        )
+                    )
+                )
+                session.execute(
+                    delete(ResourceAvailabilityRule).where(
+                        ResourceAvailabilityRule.id.in_(
+                            (schedule_a, schedule_b)
+                        )
+                    )
+                )
+                session.execute(
+                    delete(Resource).where(
+                        Resource.id.in_((alice_id, bob_id))
+                    )
+                )
+                session.execute(
+                    delete(Project).where(Project.id == project_id)
+                )
+            engine.dispose()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -182,6 +182,104 @@ class PlanningEngineTests(unittest.TestCase):
         self.assertEqual(result.locked_allocation_count, 0)
         self.assertEqual(result.allocated_hours, 8)
 
+    def test_equal_three_day_distribution_preserves_exact_canonical_total(self) -> None:
+        result = build_allocation_plan(
+            [
+                SegmentInput(
+                    "S-CENTS",
+                    "R1",
+                    D1,
+                    date(2026, 8, 19),
+                    16,
+                    "Flexible",
+                    desired_active_days=3,
+                )
+            ],
+            [],
+            {
+                ("R1", D1): 8,
+                ("R1", D2): 8,
+                ("R1", date(2026, 8, 19)): 8,
+            },
+        )
+        rows = [
+            row
+            for row in result.allocations
+            if row.segment_id == "S-CENTS" and row.counts_as_allocated
+        ]
+        self.assertEqual(
+            [(row.day, row.hours) for row in rows],
+            [
+                (D1, 5.33),
+                (D2, 5.33),
+                (date(2026, 8, 19), 5.34),
+            ],
+        )
+        self.assertEqual(sum(row.hours for row in rows), 16.0)
+        self.assertTrue(all(row.hours >= 0.01 for row in rows))
+
+    def test_one_cent_residual_creates_one_physical_cent_not_zero_rows(self) -> None:
+        result = build_allocation_plan(
+            [
+                SegmentInput(
+                    "S-ONE-CENT",
+                    "R1",
+                    D1,
+                    date(2026, 8, 19),
+                    0.01,
+                    "Flexible",
+                    desired_active_days=3,
+                )
+            ],
+            [],
+            {
+                ("R1", D1): 8,
+                ("R1", D2): 8,
+                ("R1", date(2026, 8, 19)): 8,
+            },
+        )
+        rows = [
+            row
+            for row in result.allocations
+            if row.segment_id == "S-ONE-CENT" and row.counts_as_allocated
+        ]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].hours, 0.01)
+        self.assertEqual(result.allocated_hours, 0.01)
+        self.assertEqual(result.unallocated_hours, 0.0)
+
+    def test_cent_remainder_never_exceeds_canonical_daily_capacity(self) -> None:
+        third = date(2026, 8, 19)
+        capacities = {
+            ("R1", D1): 5.335,
+            ("R1", D2): 5.335,
+            ("R1", third): 5.34,
+        }
+        result = build_allocation_plan(
+            [
+                SegmentInput(
+                    "S-CAP-CENTS",
+                    "R1",
+                    D1,
+                    third,
+                    16,
+                    "Flexible",
+                    desired_active_days=3,
+                )
+            ],
+            [],
+            capacities,
+        )
+        rows = [
+            row
+            for row in result.allocations
+            if row.segment_id == "S-CAP-CENTS" and row.counts_as_allocated
+        ]
+        self.assertEqual(sum(row.hours for row in rows), 16.0)
+        canonical_capacity = {D1: 5.33, D2: 5.33, third: 5.34}
+        for row in rows:
+            self.assertLessEqual(row.hours, canonical_capacity[row.day])
+
     def test_multi_day_flexible_work_spreads_across_window(self) -> None:
         result = build_allocation_plan(
             [SegmentInput("S1", "R1", D1, D2, 8, "Flexible")],

@@ -15,6 +15,7 @@ from ...application.command_ports import (
     PlanningCommandPort,
 )
 from ...application.repository_ports import PlanningMutationVersionPort
+from ...domain.allocation_rules import canonical_hours
 from ...domain.availability_rules import (
     OutsideStandardHoursDecision,
     outside_standard_hours_decision_for_day,
@@ -188,7 +189,7 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
         temporary_inputs = tuple(
             PreservedAllocationInput(
                 segment_id=_text(requirement.legacy_segment_id) or requirement.id,
-                resource_id=resource.name,
+                resource_id=resource.id,
                 day=shift.work_date,
                 hours=float(shift.hours),
                 locked=bool(shift.locked),
@@ -285,7 +286,7 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
             for requirement in requirements
         }
         resources = self._session.scalars(select(Resource)).all()
-        resource_by_name = {resource.name: resource for resource in resources}
+        resource_by_id = {resource.id: resource for resource in resources}
 
         for allocation in result.allocations:
             if allocation.preserved:
@@ -295,19 +296,29 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
                 raise RuntimeError(
                     f"Segment {allocation.segment_id} introuvable pendant la persistance du plan."
                 )
-            resource = resource_by_name.get(allocation.resource_id)
+            resource = resource_by_id.get(allocation.resource_id)
             if resource is None:
                 raise RuntimeError(
-                    f"Ressource {allocation.resource_id} introuvable pendant la persistance du plan."
+                    "Identité ressource Planning inconnue pendant la persistance du plan: "
+                    f"{allocation.resource_id}."
                 )
 
             missing = not allocation.counts_as_allocated
+            canonical_allocation_hours = _decimal(canonical_hours(allocation.hours))
+            if canonical_allocation_hours < Decimal("0.01"):
+                raise RuntimeError(
+                    "Le moteur Planning a produit un quart physique inférieur au cent canonique."
+                )
+            if _decimal(allocation.hours) != canonical_allocation_hours:
+                raise RuntimeError(
+                    "Le moteur Planning a produit une quantité physique hors précision canonique."
+                )
             self._session.add(
                 Shift(
                     resource_requirement_id=requirement.id,
                     resource_id=resource.id,
                     work_date=allocation.day,
-                    hours=_decimal(allocation.hours),
+                    hours=canonical_allocation_hours,
                     allocation_type=allocation.allocation_type,
                     source="AUTO",
                     locked=False,
