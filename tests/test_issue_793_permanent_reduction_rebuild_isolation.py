@@ -880,11 +880,47 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                     for row in a_before["shifts"]
                     if row["id"] != target["id"]
                 }
-                self.assertEqual(len(preserve_calls), 1)
-                self.assertEqual(set(preserve_calls[0]), expected_preserved)
+                # Phase 3B1: no transient survivor transport. The rebuild must
+                # recover survivor authority from durable SQL references.
+                self.assertEqual(preserve_calls, [()])
+                self.assertEqual(
+                    {
+                        row["id"]
+                        for row in a_after["shifts"]
+                        if row["counted"]
+                    },
+                    expected_preserved,
+                )
+                active_a_protections = [
+                    row
+                    for row in after["protections"]
+                    if row["planning_intent_id"]
+                    == a_before["planning_intent_id"]
+                    and row["active"]
+                ]
+                self.assertEqual(
+                    {row["shift_id"] for row in active_a_protections},
+                    expected_preserved,
+                )
+                self.assertEqual(
+                    {row["original_shift_id"] for row in active_a_protections},
+                    expected_preserved,
+                )
+                self.assertEqual(
+                    {row["originating_reduction_id"] for row in active_a_protections},
+                    {reduction[0]["id"]},
+                )
+                self.assertEqual(
+                    [
+                        row
+                        for row in after["protections"]
+                        if row["planning_intent_id"]
+                        == b_before["planning_intent_id"]
+                    ],
+                    [],
+                )
                 old_b_ids = {row["id"] for row in b_before["shifts"]}
                 new_b_ids = {row["id"] for row in b_after["shifts"]}
-                self.assertTrue(old_b_ids.isdisjoint(preserve_calls[0]))
                 self.assertTrue(old_b_ids.isdisjoint(new_b_ids))
 
                 with factory.begin() as session:
