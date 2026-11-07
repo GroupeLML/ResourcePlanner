@@ -25,6 +25,7 @@ from app.infrastructure.sql import (
     create_session_factory,
     create_sql_engine,
 )
+from app.infrastructure.sql.base import utc_now
 from app.infrastructure.sql.command_adapters import SqlPlanningCommandAdapter
 from app.infrastructure.sql.idempotency import CommandIdempotencyReceipt
 from app.infrastructure.sql.planning_intent_repository import (
@@ -666,6 +667,28 @@ class Issue793SqlServerPrecisionTests(unittest.TestCase):
                         {row.shift_id for row in active_timmy_after}
                     )
                 )
+
+                # The composite FK also rejects provenance from a reduction
+                # belonging to another durable PlanningIntent.
+                with self.assertRaises(IntegrityError):
+                    with factory.begin() as session:
+                        timmy_reduction = session.get(
+                            RequestCompletionReduction,
+                            timmy_after_second["reductions"][0].id,
+                        )
+                        assert timmy_reduction is not None
+                        session.add(
+                            RequestShiftSurvivorProtection(
+                                planning_intent_id=eric_after_second["intent_id"],
+                                shift_id=None,
+                                original_shift_id=f"MISMATCH-{marker}",
+                                originating_reduction_id=timmy_reduction.id,
+                                active=False,
+                                retired_at=utc_now(),
+                                retired_reason="TEST_CONSTRAINT",
+                            )
+                        )
+                        session.flush()
 
                 # SQL Server filtered uniqueness rejects a second active owner for
                 # the same live Shift.
