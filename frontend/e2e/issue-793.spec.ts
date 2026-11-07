@@ -56,6 +56,7 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
   }
 
   async function dragExactAssignment(
+    demandNumber: string,
     segmentId: string,
     resourceId: string,
     day: string,
@@ -410,7 +411,12 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
       .getByRole("button", { name: /Planning opérationnel/i })
       .click();
 
-    const ericDrag = await dragExactAssignment(segmentAId, ericId, d1);
+    const ericDrag = await dragExactAssignment(
+      demandNumber,
+      segmentAId,
+      ericId,
+      d1,
+    );
     const ericDragShifts = ericDrag.freshShifts
       .filter((row) => row.resource_id === ericId)
       .sort((a, b) => String(a.work_date).localeCompare(String(b.work_date)));
@@ -437,7 +443,12 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
       [d3, 8],
     ]);
 
-    const timmyDrag = await dragExactAssignment(segmentBId, timmyId, d1);
+    const timmyDrag = await dragExactAssignment(
+      demandNumber,
+      segmentBId,
+      timmyId,
+      d1,
+    );
     const timmyDragShifts = timmyDrag.freshShifts
       .filter((row) => row.resource_id === timmyId)
       .sort((a, b) => String(a.work_date).localeCompare(String(b.work_date)));
