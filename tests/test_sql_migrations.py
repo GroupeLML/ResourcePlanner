@@ -21,7 +21,7 @@ MIGRATIONS = ROOT / "migrations"
 VERSIONS = MIGRATIONS / "versions"
 BASELINE_FILE = VERSIONS / "0001_v2_production_baseline.py"
 BASELINE_REVISION = "v2_production_baseline"
-HEAD_REVISION = "0033_erp_sync_scheduler_observation"
+HEAD_REVISION = "0034_request_shift_survivor_protections"
 
 
 def alembic_config(database_path: Path) -> Config:
@@ -102,6 +102,7 @@ class SqlMigrationTests(unittest.TestCase):
                 "0031_erp_sync_evidence_checkpoint.py",
                 "0032_erp_sync_plausibility_review_decisions.py",
                 "0033_erp_sync_scheduler_observation.py",
+                "0034_request_shift_survivor_protections.py",
             ],
         )
 
@@ -120,6 +121,7 @@ class SqlMigrationTests(unittest.TestCase):
             [revision.revision for revision in script.walk_revisions()],
             [
                 HEAD_REVISION,
+                "0033_erp_sync_scheduler_observation",
                 "0032_erp_sync_plausibility_review_decisions",
                 "0031_erp_sync_evidence_checkpoint",
                 "0030_erp_sync_retry_identity",
@@ -154,6 +156,101 @@ class SqlMigrationTests(unittest.TestCase):
                 BASELINE_REVISION,
             ],
         )
+
+    def test_0034_survivor_protection_migration_is_additive_empty_and_constrained(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_path = Path(directory) / "request-survivor-protection.db"
+            config = alembic_config(database_path)
+            command.upgrade(config, "0033_erp_sync_scheduler_observation")
+
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            self.assertNotIn(
+                "request_shift_survivor_protections",
+                inspect(engine).get_table_names(),
+            )
+            engine.dispose()
+
+            command.upgrade(config, "head")
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            try:
+                inspector = inspect(engine)
+                self.assertIn(
+                    "request_shift_survivor_protections",
+                    inspector.get_table_names(),
+                )
+                columns = {
+                    column["name"]: column
+                    for column in inspector.get_columns(
+                        "request_shift_survivor_protections"
+                    )
+                }
+                self.assertEqual(
+                    set(columns),
+                    {
+                        "id",
+                        "planning_intent_id",
+                        "shift_id",
+                        "original_shift_id",
+                        "originating_reduction_id",
+                        "active",
+                        "retired_at",
+                        "retired_reason",
+                        "created_at",
+                        "updated_at",
+                    },
+                )
+                self.assertTrue(columns["shift_id"]["nullable"])
+                indexes = {
+                    item["name"]: item
+                    for item in inspector.get_indexes(
+                        "request_shift_survivor_protections"
+                    )
+                }
+                self.assertIn(
+                    "ix_request_shift_survivor_protection_intent_active",
+                    indexes,
+                )
+                self.assertTrue(
+                    indexes[
+                        "uq_request_shift_survivor_protection_active_shift"
+                    ]["unique"]
+                )
+                foreign_keys = _database_foreign_keys(
+                    inspector,
+                    "request_shift_survivor_protections",
+                )
+                self.assertIn(
+                    (
+                        ("planning_intent_id",),
+                        "request_requirement_planning_intents",
+                        ("id",),
+                    ),
+                    foreign_keys,
+                )
+                self.assertIn(
+                    (("shift_id",), "shifts", ("id",)),
+                    foreign_keys,
+                )
+                self.assertIn(
+                    (
+                        ("originating_reduction_id", "planning_intent_id"),
+                        "request_completion_reductions",
+                        ("id", "planning_intent_id"),
+                    ),
+                    foreign_keys,
+                )
+                with engine.connect() as connection:
+                    self.assertEqual(
+                        connection.execute(
+                            text(
+                                "SELECT COUNT(*) "
+                                "FROM request_shift_survivor_protections"
+                            )
+                        ).scalar_one(),
+                        0,
+                    )
+            finally:
+                engine.dispose()
 
     def test_erp_scheduler_control_migrations_are_additive_and_seed_singleton(self) -> None:
         with TemporaryDirectory() as directory:
@@ -1387,6 +1484,22 @@ class SqlMigrationTests(unittest.TestCase):
             output.getvalue().upper(),
         )
 
+    def test_0034_offline_downgrade_refuses_survivor_authority_drop(self) -> None:
+        output = StringIO()
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "refuses offline downgrade",
+        ):
+            command.downgrade(
+                offline_config("mssql+pyodbc://", output),
+                "0034_request_shift_survivor_protections:0033_erp_sync_scheduler_observation",
+                sql=True,
+            )
+        self.assertNotIn(
+            "DROP TABLE REQUEST_SHIFT_SURVIVOR_PROTECTIONS",
+            output.getvalue().upper(),
+        )
+
     def test_head_compiles_offline_for_mssql(self) -> None:
         output = StringIO()
         command.upgrade(
@@ -1433,6 +1546,7 @@ class SqlMigrationTests(unittest.TestCase):
             "UX_ASSET_REQUIREMENTS_SHIFT_AD_HOC",
             "CREATE TABLE COMPETENCY_RESOURCE_CLASS_AUDIT",
             "CREATE TABLE PLANNING_WORK_QUEUE_RESTORATIONS",
+            "CREATE TABLE REQUEST_SHIFT_SURVIVOR_PROTECTIONS",
             "RESOURCE_CLASS_VERSION",
             "FK_COMPETENCIES_RESOURCE_CLASS_CODE_RESOURCE_CLASS_CONFIGS",
             "RESIDENCE_CITY",
