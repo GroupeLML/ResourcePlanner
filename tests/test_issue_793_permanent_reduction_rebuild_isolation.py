@@ -15,6 +15,7 @@ from app.infrastructure.sql import (
     PlanningWorkQueueRelease,
     RequestCompletionReduction,
     RequestRequirementPlanningIntent,
+    RequestShiftSurvivorProtection,
     Resource,
     ResourceAvailabilityRule,
     ResourceRequirement,
@@ -30,6 +31,9 @@ from app.infrastructure.sql.idempotency import CommandIdempotencyReceipt
 from app.infrastructure.sql.planning_version import SqlPlanningMutationVersionRepository
 from app.infrastructure.sql.planning_intent_repository import (
     SqlRequestRequirementPlanningIntentRepository,
+)
+from app.infrastructure.sql.survivor_protection_repository import (
+    SqlRequestShiftSurvivorProtectionRepository,
 )
 from app.server import create_api_app
 from tests import test_request_work_queue_api_integration as work_queue_api
@@ -437,6 +441,30 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
             )
         )
 
+        protections = tuple(
+            {
+                "id": row.id,
+                "planning_intent_id": row.planning_intent_id,
+                "shift_id": row.shift_id,
+                "original_shift_id": row.original_shift_id,
+                "originating_reduction_id": row.originating_reduction_id,
+                "active": bool(row.active),
+                "retired_reason": row.retired_reason,
+            }
+            for row in session.scalars(
+                select(RequestShiftSurvivorProtection)
+                .where(
+                    RequestShiftSurvivorProtection.planning_intent_id.in_(
+                        tuple(row.id for row in intents)
+                    )
+                )
+                .order_by(
+                    RequestShiftSurvivorProtection.created_at,
+                    RequestShiftSurvivorProtection.id,
+                )
+            )
+        )
+
         weekly = defaultdict(lambda: Decimal("0.00"))
         for values in slots.values():
             for shift in values["shifts"]:
@@ -454,6 +482,7 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
             ),
             "slots": slots,
             "reductions": reductions,
+            "protections": protections,
             "weekly": {
                 key: value.quantize(Decimal("0.01"))
                 for key, value in weekly.items()
