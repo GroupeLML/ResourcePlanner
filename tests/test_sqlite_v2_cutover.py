@@ -355,6 +355,7 @@ def _reshape_source_as_0048(path: Path) -> None:
             DROP TABLE IF EXISTS availability_rule_resource_classes;
             DROP TABLE IF EXISTS planning_window_overrides;
             DROP TABLE IF EXISTS planning_resource_user_orders;
+            DROP TABLE IF EXISTS request_shift_survivor_protections;
             DROP TABLE IF EXISTS request_completion_reductions;
             DROP TABLE IF EXISTS erp_sync_compensation_receipts;
             DROP TABLE IF EXISTS erp_sync_plausibility_review_decisions;
@@ -717,6 +718,10 @@ class SqliteV2CutoverTests(unittest.TestCase):
             {policy.classification for policy in TABLE_POLICIES.values()},
             {KEEP, REBUILD, DROP},
         )
+        self.assertEqual(
+            TABLE_POLICIES["request_shift_survivor_protections"].classification,
+            KEEP,
+        )
 
     def test_source_engine_is_really_read_only(self) -> None:
         with TemporaryDirectory() as directory:
@@ -763,7 +768,24 @@ class SqliteV2CutoverTests(unittest.TestCase):
             self.assertEqual(by_table["auth_sessions"]["classification"], DROP)
             self.assertEqual(by_table["auth_sessions"]["eligible_rows"], 0)
             self.assertEqual(by_table["planning_mutation_state"]["classification"], REBUILD)
+            self.assertEqual(
+                by_table["request_shift_survivor_protections"]["classification"],
+                KEEP,
+            )
             self.assertIn("projects", report["transfer_order"])
+            survivor_index = report["transfer_order"].index(
+                "request_shift_survivor_protections"
+            )
+            for parent in (
+                "request_requirement_planning_intents",
+                "request_completion_reductions",
+                "shifts",
+            ):
+                self.assertLess(
+                    report["transfer_order"].index(parent),
+                    survivor_index,
+                    parent,
+                )
             self.assertNotIn("auth_sessions", report["transfer_order"])
             self.assertNotIn("planning_mutation_state", report["transfer_order"])
 
