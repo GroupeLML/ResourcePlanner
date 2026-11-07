@@ -663,13 +663,16 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
           `.planning-work-queue .planning-action-card.action-assignment[data-segment-id="${segmentBId}"]`,
         ).count();
 
-      if (!timmyDrag.preview.emitted || !timmyDrag.mutation.emitted) {
-        dragClassification = "DRA3";
-      } else if (
-        (timmyDrag.preview.status ?? 500) >= 400
-        || (timmyDrag.mutation.status ?? 500) >= 400
+      if (
+        (timmyDrag.preview.emitted && (timmyDrag.preview.status ?? 500) >= 400)
+        || (
+          timmyDrag.mutation.emitted
+          && (timmyDrag.mutation.status ?? 500) >= 400
+        )
       ) {
         dragClassification = "DRA1";
+      } else if (!timmyDrag.preview.emitted || !timmyDrag.mutation.emitted) {
+        dragClassification = "DRA3";
       } else if (!mutationTargetMatches) {
         dragClassification = "DRA4";
       } else {
