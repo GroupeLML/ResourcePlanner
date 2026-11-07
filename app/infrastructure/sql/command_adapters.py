@@ -15,6 +15,7 @@ from ...application.command_ports import (
     PlanningCommandPort,
 )
 from ...application.repository_ports import PlanningMutationVersionPort
+from ...domain.allocation_rules import canonical_hours
 from ...domain.availability_rules import (
     OutsideStandardHoursDecision,
     outside_standard_hours_decision_for_day,
@@ -303,12 +304,21 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
                 )
 
             missing = not allocation.counts_as_allocated
+            canonical_allocation_hours = _decimal(canonical_hours(allocation.hours))
+            if canonical_allocation_hours < Decimal("0.01"):
+                raise RuntimeError(
+                    "Le moteur Planning a produit un quart physique inférieur au cent canonique."
+                )
+            if _decimal(allocation.hours) != canonical_allocation_hours:
+                raise RuntimeError(
+                    "Le moteur Planning a produit une quantité physique hors précision canonique."
+                )
             self._session.add(
                 Shift(
                     resource_requirement_id=requirement.id,
                     resource_id=resource.id,
                     work_date=allocation.day,
-                    hours=_decimal(allocation.hours),
+                    hours=canonical_allocation_hours,
                     allocation_type=allocation.allocation_type,
                     source="AUTO",
                     locked=False,
