@@ -4,10 +4,10 @@ Status: Accepted
 Date: 2026-10-28
 Accepted: 2026-10-28
 WorkItem: ASTRA-778
-Amendment #793: Proposed — pending Product Owner acceptance
-Amendment proposed: 2026-11-07
+Amendment #793: Accepted
+Amendment accepted: 2026-11-07
 
-Le contrat initial reste accepté depuis le 2026-10-28. Le présent texte intègre une **proposition d'amendement #793**, en attente d'acceptation explicite par le Product Owner. Les nouvelles règles de protection durable des survivants ne sont pas déclarées acceptées ni implémentées par cette proposition. Cet amendement ne change ni le statut de livraison de #793 ni celui de PR #803.
+Le contrat initial reste accepté depuis le 2026-10-28. L'amendement #793 a été **accepté explicitement par le Product Owner le 2026-11-07**. Les règles de protection durable des survivants sont désormais autoritaires; leur implémentation reste à livrer dans #793 / PR #803. Cet amendement ne déclare pas #793 livré.
 
 Le Product Owner accepte la décision d'architecture ASTRA-778 issue de la révision produit du 2026-10-28. Cette ADR formalise trois commandes métier distinctes pour les `Shift` issus d'un besoin `REQUEST` : retourner un quart à la File de Travail, retourner tout le segment à la File de Travail, et supprimer définitivement les heures d'un quart lorsque le travail n'est plus requis.
 
