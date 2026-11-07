@@ -346,14 +346,15 @@ def build_allocation_plan(
         outside_schedule: bool,
         counts_as_allocated: bool = True,
     ) -> None:
-        if segment_id not in preservable_segment_ids or hours <= 0:
+        canonical = canonical_hours(hours)
+        if segment_id not in preservable_segment_ids or canonical < 0.01:
             return
         preserved.append(
             PlannedAllocation(
                 segment_id=segment_id,
                 resource_id=resource_id,
                 day=day,
-                hours=canonical_hours(hours),
+                hours=canonical,
                 allocation_type="Locked" if locked else "Preserved",
                 locked=locked,
                 outside_schedule=outside_schedule,
@@ -362,12 +363,12 @@ def build_allocation_plan(
             )
         )
         consumed_by_segment[segment_id] = canonical_hours(
-            consumed_by_segment.get(segment_id, 0.0) + hours
+            consumed_by_segment.get(segment_id, 0.0) + canonical
         )
         preserved_days_by_segment.setdefault(segment_id, set()).add(day)
         if counts_as_allocated:
             key = (resource_id, day)
-            normal_used[key] = canonical_hours(normal_used.get(key, 0.0) + hours)
+            normal_used[key] = canonical_hours(normal_used.get(key, 0.0) + canonical)
 
     for allocation in locked_allocations:
         register_preserved(
@@ -486,7 +487,7 @@ def build_allocation_plan(
                         segment_id=segment.segment_id,
                         resource_id=segment.resource_id,
                         day=day,
-                        hours=round(hours, 4),
+                        hours=canonical_hours(hours),
                         allocation_type=missing_allocation_type,
                         counts_as_allocated=False,
                     )
