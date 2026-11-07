@@ -55,27 +55,111 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
       );
   }
 
-  async function dragCurrentAssignment(
-    demandNumber: string,
+  async function dragExactAssignment(
+    segmentId: string,
     resourceId: string,
     day: string,
   ) {
-    const card = page
-      .locator(".planning-work-queue .planning-action-card.action-assignment")
-      .filter({ hasText: demandNumber })
-      .first();
-    await expect(card).toBeVisible();
-    const segmentId = await card.getAttribute("data-segment-id");
-    expect(segmentId).toBeTruthy();
-    const currentCard = page.locator(
+    const card = page.locator(
       `.planning-work-queue .planning-action-card.action-assignment[data-segment-id="${segmentId}"]`,
     );
+    await expect(card).toBeVisible();
+    await expect(card).toHaveAttribute("data-segment-id", segmentId);
+
     const target = page.locator(
       `.planning-drop-day[data-resource-id="${resourceId}"][data-day="${day}"]`,
     );
     await expect(target).toBeVisible();
+
+    const previewPath =
+      `/api/v1/segments/${encodeURIComponent(segmentId)}/place-from-drop/preview`;
+    const mutationPath =
+      `/api/v1/segments/${encodeURIComponent(segmentId)}/place-from-drop`;
+    const previewRequestPromise = page.waitForRequest(
+      (request) =>
+        request.method() === "POST"
+        && new URL(request.url()).pathname === previewPath,
+    );
+    const previewResponsePromise = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST"
+        && new URL(response.url()).pathname === previewPath,
+    );
+    const mutationRequestPromise = page.waitForRequest(
+      (request) =>
+        request.method() === "POST"
+        && new URL(request.url()).pathname === mutationPath,
+    );
+    const mutationResponsePromise = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST"
+        && new URL(response.url()).pathname === mutationPath,
+    );
+
     await card.dragTo(target);
-    await expect(currentCard).toHaveCount(0);
+
+    const previewRequest = await previewRequestPromise;
+    const previewResponse = await previewResponsePromise;
+    const previewRequestPayload =
+      previewRequest.postDataJSON() as Record<string, any>;
+    let previewPayload: Record<string, any> = {};
+    try {
+      previewPayload = await previewResponse.json() as Record<string, any>;
+    } catch {
+      previewPayload = { raw: await previewResponse.text() };
+    }
+
+    const mutationRequest = await mutationRequestPromise;
+    const mutationResponse = await mutationResponsePromise;
+    const mutationRequestPayload =
+      mutationRequest.postDataJSON() as Record<string, any>;
+    let mutationPayload: Record<string, any> = {};
+    try {
+      mutationPayload = await mutationResponse.json() as Record<string, any>;
+    } catch {
+      mutationPayload = { raw: await mutationResponse.text() };
+    }
+
+    const idempotencyKey =
+      mutationRequest.headers()["idempotency-key"] || null;
+    const freshShifts = await demandShifts(demandNumber);
+    const freshActionsResponse = await page.request.get(
+      `/api/v1/planning/actions?start=${d1}&end=${d3}&scope=global`,
+    );
+    expect(
+      freshActionsResponse.ok(),
+      await freshActionsResponse.text(),
+    ).toBeTruthy();
+    const freshActions = (await freshActionsResponse.json() as Array<any>)
+      .filter(
+        (row) =>
+          row.demand_number === demandNumber
+          && row.kind === "ASSIGNMENT",
+      );
+    const backendActionStillPresent = freshActions.some(
+      (row) => String(row.segment_id) === segmentId,
+    );
+    const renderedCardCount = await card.count();
+
+    return {
+      segmentId,
+      resourceId,
+      day,
+      preview: {
+        status: previewResponse.status(),
+        request: previewRequestPayload,
+        payload: previewPayload,
+      },
+      mutation: {
+        status: mutationResponse.status(),
+        request: mutationRequestPayload,
+        payload: mutationPayload,
+        idempotencyKey,
+      },
+      freshShifts,
+      backendActionStillPresent,
+      renderedCardCount,
+    };
   }
 
   async function reduceRenderedShift(
@@ -285,14 +369,143 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
     );
     expect(approved.status(), await approved.text()).toBe(200);
 
+    const detailResponse = await page.request.get(
+      `/api/v1/demands/${encodeURIComponent(demandNumber)}/detail`,
+    );
+    expect(detailResponse.ok(), await detailResponse.text()).toBeTruthy();
+    const detail = await detailResponse.json() as Record<string, any>;
+    const detailLines = detail.lines as Array<any>;
+    const lineA = detailLines.find(
+      (row) => row.line?.description === "#793 browser segment A",
+    );
+    const lineB = detailLines.find(
+      (row) => row.line?.description === "#793 browser segment B",
+    );
+    expect(lineA).toBeTruthy();
+    expect(lineB).toBeTruthy();
+
+    const materialized = detail.materialized_plan?.requirements as Array<any>;
+    const requirementA = materialized.find(
+      (row) =>
+        String(row.source_request_line_id)
+        === String(lineA.line.line_id),
+    );
+    const requirementB = materialized.find(
+      (row) =>
+        String(row.source_request_line_id)
+        === String(lineB.line.line_id),
+    );
+    expect(requirementA).toBeTruthy();
+    expect(requirementB).toBeTruthy();
+
+    const segmentAId = String(requirementA.segment_id);
+    const segmentBId = String(requirementB.segment_id);
+    expect(segmentAId).toBeTruthy();
+    expect(segmentBId).toBeTruthy();
+    expect(segmentAId).not.toBe(segmentBId);
+
     await page.goto("/");
     await page
       .locator(".main-nav")
       .getByRole("button", { name: /Planning opérationnel/i })
       .click();
 
-    await dragCurrentAssignment(demandNumber, ericId, d1);
-    await dragCurrentAssignment(demandNumber, timmyId, d1);
+    const ericDrag = await dragExactAssignment(segmentAId, ericId, d1);
+    const ericDragShifts = ericDrag.freshShifts
+      .filter((row) => row.resource_id === ericId)
+      .sort((a, b) => String(a.work_date).localeCompare(String(b.work_date)));
+    expect(ericDrag.preview.status, JSON.stringify(ericDrag.preview.payload)).toBe(200);
+    expect(ericDrag.preview.request).toMatchObject({
+      resource_id: ericId,
+      dropped_date: d1,
+    });
+    expect(ericDrag.preview.payload.allowed).toBe(true);
+    expect(String(ericDrag.preview.payload.segment_id)).toBe(segmentAId);
+    expect(String(ericDrag.preview.payload.resource_id)).toBe(ericId);
+    expect(ericDrag.mutation.status, JSON.stringify(ericDrag.mutation.payload)).toBe(200);
+    expect(ericDrag.mutation.request).toEqual({
+      resource_id: ericId,
+      dropped_date: d1,
+      expected_planning_version: ericDrag.preview.payload.planning_version,
+      expected_approval_revision_id: ericDrag.preview.payload.approval_revision_id,
+      expected_operational_version: ericDrag.preview.payload.operational_version,
+    });
+    expect(ericDrag.mutation.idempotencyKey).toBeTruthy();
+    expect(ericDragShifts.map((row) => [row.work_date, Number(row.hours)])).toEqual([
+      [d1, 8],
+      [d2, 8],
+      [d3, 8],
+    ]);
+
+    const timmyDrag = await dragExactAssignment(segmentBId, timmyId, d1);
+    const timmyDragShifts = timmyDrag.freshShifts
+      .filter((row) => row.resource_id === timmyId)
+      .sort((a, b) => String(a.work_date).localeCompare(String(b.work_date)));
+    expect(timmyDrag.preview.status, JSON.stringify(timmyDrag.preview.payload)).toBe(200);
+    expect(timmyDrag.preview.request).toMatchObject({
+      resource_id: timmyId,
+      dropped_date: d1,
+    });
+    expect(timmyDrag.preview.payload.allowed).toBe(true);
+    expect(String(timmyDrag.preview.payload.segment_id)).toBe(segmentBId);
+    expect(String(timmyDrag.preview.payload.resource_id)).toBe(timmyId);
+
+    let dragClassification: "DRA1" | "DRA2" | "DRA3" | "DRA4";
+    const mutationTargetMatches =
+      String(timmyDrag.mutation.request.resource_id) === timmyId
+      && String(timmyDrag.mutation.request.dropped_date) === d1;
+    const exactSegmentRendered =
+      await page.locator(
+        `.planning-work-queue .planning-action-card.action-assignment[data-segment-id="${segmentBId}"]`,
+      ).count();
+
+    if (!mutationTargetMatches) {
+      dragClassification = "DRA4";
+    } else if (timmyDrag.mutation.status >= 400) {
+      dragClassification = "DRA1";
+    } else {
+      expect(
+        timmyDrag.mutation.status,
+        JSON.stringify(timmyDrag.mutation.payload),
+      ).toBe(200);
+      expect(timmyDrag.mutation.request).toEqual({
+        resource_id: timmyId,
+        dropped_date: d1,
+        expected_planning_version: timmyDrag.preview.payload.planning_version,
+        expected_approval_revision_id: timmyDrag.preview.payload.approval_revision_id,
+        expected_operational_version: timmyDrag.preview.payload.operational_version,
+      });
+      expect(timmyDrag.mutation.idempotencyKey).toBeTruthy();
+      expect(
+        timmyDragShifts.map((row) => [row.work_date, Number(row.hours)]),
+      ).toEqual([
+        [d1, 8],
+        [d2, 8],
+        [d3, 8],
+      ]);
+      dragClassification = timmyDrag.backendActionStillPresent
+        ? "DRA2"
+        : exactSegmentRendered > 0
+          ? "DRA3"
+          : "DRA2";
+    }
+
+    console.log(
+      "ISSUE793_DATED_DROP_RUNTIME",
+      JSON.stringify({
+        demandNumber,
+        segmentAId,
+        segmentBId,
+        eric: ericDrag,
+        timmy: timmyDrag,
+        exactSegmentBRenderedCount: exactSegmentRendered,
+        classification: dragClassification,
+      }),
+    );
+
+    expect(["DRA1", "DRA2", "DRA3", "DRA4"]).toContain(dragClassification);
+    expect(dragClassification).not.toBe("DRA1");
+    expect(dragClassification).not.toBe("DRA4");
 
     let shifts = await demandShifts(demandNumber);
     const initialEric = shifts
@@ -311,6 +524,12 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
       [d2, 8],
       [d3, 8],
     ]);
+    expect(
+      initialEric.reduce((sum, row) => sum + Number(row.hours), 0),
+    ).toBe(24);
+    expect(
+      initialTimmy.reduce((sum, row) => sum + Number(row.hours), 0),
+    ).toBe(24);
 
     const ericWednesday = initialEric.find((row) => row.work_date === d3);
     expect(ericWednesday).toBeTruthy();
