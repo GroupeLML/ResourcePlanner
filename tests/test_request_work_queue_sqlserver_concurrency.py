@@ -1345,6 +1345,8 @@ class RequestWorkQueueSqlServerConcurrencyTests(unittest.TestCase):
         bob_id = f"R793IB-{marker}"
         requirement_a = f"REQ793IA-{marker}"
         requirement_b = f"REQ793IB-{marker}"
+        segment_a = f"SEG793IA-{marker}"
+        segment_b = f"SEG793IB-{marker}"
         schedule_a = f"SCH793IA-{marker}"
         schedule_b = f"SCH793IB-{marker}"
         shared_name = f"Duplicate 793 {marker}"
@@ -1405,6 +1407,7 @@ class RequestWorkQueueSqlServerConcurrencyTests(unittest.TestCase):
                     [
                         ResourceRequirement(
                             id=requirement_a,
+                            legacy_segment_id=segment_a,
                             project_id=project_id,
                             start_date=DAY,
                             end_date=DAY,
@@ -1417,6 +1420,7 @@ class RequestWorkQueueSqlServerConcurrencyTests(unittest.TestCase):
                         ),
                         ResourceRequirement(
                             id=requirement_b,
+                            legacy_segment_id=segment_b,
                             project_id=project_id,
                             start_date=DAY,
                             end_date=DAY,
