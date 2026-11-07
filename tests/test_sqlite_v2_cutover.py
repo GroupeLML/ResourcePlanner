@@ -50,6 +50,7 @@ from tools.cutover_sqlite_v2_to_sqlserver import (
     DROP,
     KEEP,
     REBUILD,
+    RELATIONSHIP_CONTROLS,
     TABLE_POLICIES,
     _code_alembic_head,
     create_readonly_sqlite_engine,
