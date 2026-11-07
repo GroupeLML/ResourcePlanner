@@ -722,6 +722,19 @@ class SqliteV2CutoverTests(unittest.TestCase):
             TABLE_POLICIES["request_shift_survivor_protections"].classification,
             KEEP,
         )
+        self.assertEqual(
+            RELATIONSHIP_CONTROLS["request_shift_survivor_protections"],
+            (
+                "id",
+                "planning_intent_id",
+                "shift_id",
+                "original_shift_id",
+                "originating_reduction_id",
+                "active",
+                "retired_at",
+                "retired_reason",
+            ),
+        )
 
     def test_source_engine_is_really_read_only(self) -> None:
         with TemporaryDirectory() as directory:
