@@ -322,40 +322,168 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
     };
   }
 
-  async function reduceRenderedShift(
-    allocationId: string,
-    options: { capture: boolean },
+  async function reduceCurrentShift(
+    demandNumber: string,
+    resourceId: string,
+    workDate: string,
+    options: { capture: boolean; label: string },
   ) {
-    const { capture } = options;
+    const { capture, label } = options;
+    const freshRows = await demandShifts(demandNumber);
+    const backendRow = freshRows.find(
+      (row) =>
+        row.resource_id === resourceId
+        && row.work_date === workDate,
+    ) ?? null;
+    expect(
+      backendRow,
+      `${label}: current backend Shift missing for ${resourceId} on ${workDate}`,
+    ).toBeTruthy();
+
+    const allocationId = String(backendRow.allocation_id);
+    const planningPosition = await positionPlanningOnFixtureWeek({
+      reload: true,
+    });
+    const fixtureDayVisible = await page.locator(
+      `.planning-drop-day[data-day="${d1}"]`,
+    ).first().isVisible();
+
     const card = page.locator(
       `.shift-card[data-allocation-id="${allocationId}"]`,
     );
-    await expect(card).toBeVisible();
+    await card.waitFor({ state: "visible", timeout: 10_000 }).catch(() => {});
+    const renderedCardCount = await card.count();
+    const renderedCardVisible = renderedCardCount > 0
+      ? await card.isVisible()
+      : false;
+    const cardBoundingBox = renderedCardCount > 0
+      ? await card.boundingBox()
+      : null;
+
+    const preOpen = {
+      label,
+      allocationId,
+      resourceId,
+      workDate,
+      hours: Number(backendRow.hours),
+      backendRowExists: Boolean(backendRow),
+      renderedCardCount,
+      renderedCardVisible,
+      cardBoundingBox,
+      fixtureDayVisible,
+      planningPosition,
+    };
+    console.log("ISSUE793_REDUCTION_PREOPEN", JSON.stringify(preOpen));
+
+    let clickExecuted = false;
+    let editorOpened = false;
+    const editor = page.getByRole("dialog", { name: "Modifier le quart" });
+
+    if (renderedCardCount === 1 && renderedCardVisible) {
+      await card.locator(".shift-card-main").click();
+      clickExecuted = true;
+      editorOpened = await editor
+        .waitFor({ state: "visible", timeout: 5_000 })
+        .then(() => true)
+        .catch(() => false);
+    }
 
     const previewPath =
       `/api/v1/allocations/${encodeURIComponent(allocationId)}/work-queue-preview`;
-    const previewResponsePromise = page.waitForResponse(
-      (response) =>
-        response.request().method() === "GET"
-        && new URL(response.url()).pathname === previewPath,
-    );
-    await card.locator(".shift-card-main").click();
-    const previewResponse = await previewResponsePromise;
-    const previewStatus = previewResponse.status();
-    let previewPayload: Record<string, any> = {};
-    try {
-      previewPayload = await previewResponse.json() as Record<string, any>;
-    } catch {
-      previewPayload = { raw: await previewResponse.text() };
-    }
-    expect(previewStatus, JSON.stringify(previewPayload)).toBe(200);
+    let previewRequestEmitted = false;
+    let previewResponseEmitted = false;
+    let previewStatus: number | null = null;
+    let previewPayload: Record<string, any> | null = null;
+    let previewRequestError: string | null = null;
+    let previewResponseError: string | null = null;
 
-    const editor = page.getByRole("dialog", { name: "Modifier le quart" });
-    await expect(editor).toBeVisible();
-    await editor
-      .getByTestId("request-work-queue-actions")
-      .getByRole("button", { name: "Supprimer définitivement ce quart" })
-      .click();
+    if (editorOpened) {
+      const networkTimeout = 10_000;
+      const previewRequestPromise = page.waitForRequest(
+        (request) =>
+          request.method() === "GET"
+          && new URL(request.url()).pathname === previewPath,
+        { timeout: networkTimeout },
+      ).then((request) => ({ ok: true as const, request }))
+        .catch((error) => ({ ok: false as const, error: String(error) }));
+      const previewResponsePromise = page.waitForResponse(
+        (response) =>
+          response.request().method() === "GET"
+          && new URL(response.url()).pathname === previewPath,
+        { timeout: networkTimeout },
+      ).then((response) => ({ ok: true as const, response }))
+        .catch((error) => ({ ok: false as const, error: String(error) }));
+
+      const actionButton = editor
+        .getByTestId("request-work-queue-actions")
+        .getByRole("button", { name: "Supprimer définitivement ce quart" });
+      await expect(actionButton).toBeVisible();
+      await actionButton.click();
+
+      const [requestOutcome, responseOutcome] = await Promise.all([
+        previewRequestPromise,
+        previewResponsePromise,
+      ]);
+      previewRequestEmitted = requestOutcome.ok;
+      previewResponseEmitted = responseOutcome.ok;
+      previewRequestError = requestOutcome.ok ? null : requestOutcome.error;
+      previewResponseError = responseOutcome.ok ? null : responseOutcome.error;
+      if (responseOutcome.ok) {
+        previewStatus = responseOutcome.response.status();
+        try {
+          previewPayload =
+            await responseOutcome.response.json() as Record<string, any>;
+        } catch {
+          previewPayload = { raw: await responseOutcome.response.text() };
+        }
+      }
+    }
+
+    let redopenClassification:
+      | "REDOPEN1"
+      | "REDOPEN2"
+      | "REDOPEN3"
+      | "REDOPEN4";
+    if (!editorOpened) {
+      redopenClassification = "REDOPEN1";
+    } else if (!previewRequestEmitted || !previewResponseEmitted) {
+      redopenClassification = "REDOPEN2";
+    } else if ((previewStatus ?? 500) >= 400) {
+      redopenClassification = "REDOPEN3";
+    } else {
+      redopenClassification = "REDOPEN4";
+    }
+
+    const openEvidence = {
+      ...preOpen,
+      clickExecuted,
+      editorOpened,
+      preview: {
+        requestEmitted: previewRequestEmitted,
+        responseEmitted: previewResponseEmitted,
+        status: previewStatus,
+        payload: previewPayload,
+        requestError: previewRequestError,
+        responseError: previewResponseError,
+      },
+      classification: redopenClassification,
+    };
+    console.log("ISSUE793_REDUCTION_OPEN_RUNTIME", JSON.stringify(openEvidence));
+
+    if (redopenClassification !== "REDOPEN4") {
+      return {
+        ...openEvidence,
+        mutation: null,
+        persisted: null,
+        editor,
+        confirmation: page.getByTestId(
+          "permanent-reduction-confirmation-dialog",
+        ),
+        card,
+      };
+    }
+
+    expect(previewStatus, JSON.stringify(previewPayload)).toBe(200);
     const confirmation = page.getByTestId(
       "permanent-reduction-confirmation-dialog",
     );
@@ -363,48 +491,109 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
 
     const mutationPath =
       `/api/v1/allocations/${encodeURIComponent(allocationId)}/permanent-reduction`;
-    const requestPromise = page.waitForRequest(
+    const networkTimeout = 10_000;
+    const mutationRequestPromise = page.waitForRequest(
       (request) =>
         request.method() === "POST"
         && new URL(request.url()).pathname === mutationPath,
-    );
-    const responsePromise = page.waitForResponse(
+      { timeout: networkTimeout },
+    ).then((request) => ({ ok: true as const, request }))
+      .catch((error) => ({ ok: false as const, error: String(error) }));
+    const mutationResponsePromise = page.waitForResponse(
       (response) =>
         response.request().method() === "POST"
         && new URL(response.url()).pathname === mutationPath,
-    );
+      { timeout: networkTimeout },
+    ).then((response) => ({ ok: true as const, response }))
+      .catch((error) => ({ ok: false as const, error: String(error) }));
 
     await confirmation
       .getByRole("button", { name: "Supprimer définitivement" })
       .click();
 
-    const mutationRequest = await requestPromise;
-    const mutationResponse = await responsePromise;
-    const mutationStatus = mutationResponse.status();
-    let mutationPayload: Record<string, any> = {};
-    try {
-      mutationPayload = await mutationResponse.json() as Record<string, any>;
-    } catch {
-      mutationPayload = { raw: await mutationResponse.text() };
+    const [mutationRequestOutcome, mutationResponseOutcome] = await Promise.all([
+      mutationRequestPromise,
+      mutationResponsePromise,
+    ]);
+
+    const mutationRequestEmitted = mutationRequestOutcome.ok;
+    const mutationResponseEmitted = mutationResponseOutcome.ok;
+    const mutationBody = mutationRequestOutcome.ok
+      ? mutationRequestOutcome.request.postDataJSON() as Record<string, any>
+      : null;
+    const idempotencyKey = mutationRequestOutcome.ok
+      ? mutationRequestOutcome.request.headers()["idempotency-key"] || null
+      : null;
+    const mutationStatus = mutationResponseOutcome.ok
+      ? mutationResponseOutcome.response.status()
+      : null;
+    let mutationPayload: Record<string, any> | null = null;
+    if (mutationResponseOutcome.ok) {
+      try {
+        mutationPayload =
+          await mutationResponseOutcome.response.json() as Record<string, any>;
+      } catch {
+        mutationPayload = {
+          raw: await mutationResponseOutcome.response.text(),
+        };
+      }
     }
-    const mutationBody = mutationRequest.postDataJSON() as Record<string, any>;
-    const idempotencyKey = mutationRequest.headers()["idempotency-key"] || null;
+
+    const afterMutationRows = await demandShifts(demandNumber);
+    const allocationStillPersisted = afterMutationRows.some(
+      (row) => String(row.allocation_id) === allocationId,
+    );
+    const resourceRowsAfter = afterMutationRows
+      .filter((row) => row.resource_id === resourceId)
+      .sort((a, b) => String(a.work_date).localeCompare(String(b.work_date)))
+      .map((row) => ({
+        allocationId: String(row.allocation_id),
+        date: String(row.work_date),
+        hours: Number(row.hours),
+      }));
 
     if (!capture) {
-      expect(mutationStatus, JSON.stringify(mutationPayload)).toBe(200);
-      await expect(editor).toBeHidden();
+      expect(
+        mutationStatus,
+        JSON.stringify({ mutationPayload, openEvidence }),
+      ).toBe(200);
+      await editor.waitFor({ state: "hidden", timeout: 5_000 });
     }
 
-    return {
-      allocationId,
-      previewPath,
-      previewStatus,
-      previewPayload,
-      mutationPath,
-      mutationStatus,
-      mutationPayload,
-      mutationBody,
+    const persisted = {
+      allocationStillPersisted,
+      resourceRows: resourceRowsAfter,
+    };
+    const mutation = {
+      requestEmitted: mutationRequestEmitted,
+      responseEmitted: mutationResponseEmitted,
+      status: mutationStatus,
+      payload: mutationPayload,
+      body: mutationBody,
       idempotencyKey,
+      requestError: mutationRequestOutcome.ok
+        ? null
+        : mutationRequestOutcome.error,
+      responseError: mutationResponseOutcome.ok
+        ? null
+        : mutationResponseOutcome.error,
+    };
+
+    console.log(
+      "ISSUE793_REDUCTION_MUTATION_RUNTIME",
+      JSON.stringify({
+        label,
+        allocationId,
+        preview: previewPayload,
+        mutation,
+        persisted,
+      }),
+    );
+
+    return {
+      ...openEvidence,
+      mutation,
+      persisted,
       editor,
       confirmation,
       card,
@@ -826,19 +1015,45 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
       initialTimmy.reduce((sum, row) => sum + Number(row.hours), 0),
     ).toBe(24);
 
-    const ericWednesday = initialEric.find((row) => row.work_date === d3);
-    expect(ericWednesday).toBeTruthy();
-    await reduceRenderedShift(String(ericWednesday.allocation_id), {
-      capture: false,
-    });
+    const ericInitialIds = initialEric.map((row) => String(row.allocation_id));
+    const ericFirst = await reduceCurrentShift(
+      demandNumber,
+      ericId,
+      d3,
+      { capture: false, label: "ERIC_FIRST" },
+    );
+    expect(ericFirst.classification).toBe("REDOPEN4");
+    expect(ericFirst.mutation?.status).toBe(200);
 
     shifts = await demandShifts(demandNumber);
-    const timmyAfterEric = shifts.filter((row) => row.resource_id === timmyId);
-    const timmyWednesday = timmyAfterEric.find((row) => row.work_date === d3);
-    expect(timmyWednesday).toBeTruthy();
-    await reduceRenderedShift(String(timmyWednesday.allocation_id), {
-      capture: false,
-    });
+    const ericAfterFirst = shifts
+      .filter((row) => row.resource_id === ericId)
+      .sort((a, b) => String(a.work_date).localeCompare(String(b.work_date)));
+    const timmyAfterEric = shifts
+      .filter((row) => row.resource_id === timmyId)
+      .sort((a, b) => String(a.work_date).localeCompare(String(b.work_date)));
+    expect(ericAfterFirst.map((row) => [row.work_date, Number(row.hours)])).toEqual([
+      [d1, 8],
+      [d2, 8],
+    ]);
+    expect(timmyAfterEric.map((row) => [row.work_date, Number(row.hours)])).toEqual([
+      [d1, 8],
+      [d2, 8],
+      [d3, 8],
+    ]);
+
+    const timmyCurrentWednesday = timmyAfterEric.find(
+      (row) => row.work_date === d3,
+    );
+    expect(timmyCurrentWednesday).toBeTruthy();
+    const timmySecond = await reduceCurrentShift(
+      demandNumber,
+      timmyId,
+      d3,
+      { capture: false, label: "TIMMY_SECOND" },
+    );
+    expect(timmySecond.classification).toBe("REDOPEN4");
+    expect(timmySecond.mutation?.status).toBe(200);
 
     shifts = await demandShifts(demandNumber);
     const ericAfterSecond = shifts
@@ -849,34 +1064,39 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
       [d2, 5.33],
       [d3, 5.34],
     ]);
+    expect(
+      ericAfterSecond.reduce((sum, row) => sum + Number(row.hours), 0),
+    ).toBe(16);
+
     const regenerated = ericAfterSecond.find((row) => row.work_date === d3);
     expect(regenerated).toBeTruthy();
-    const currentAllocationId = String(regenerated.allocation_id);
+    const regeneratedAllocationId = String(regenerated.allocation_id);
 
-    const currentCard = page.locator(
-      `.shift-card[data-allocation-id="${currentAllocationId}"]`,
+    const third = await reduceCurrentShift(
+      demandNumber,
+      ericId,
+      d3,
+      { capture: true, label: "ERIC_THIRD" },
     );
-    await expect(currentCard).toBeVisible();
 
-    const third = await reduceRenderedShift(currentAllocationId, {
-      capture: true,
-    });
-    const previewError = third.previewPayload?.error?.code ?? null;
-    const mutationError = third.mutationPayload?.error?.code ?? null;
-
-    const versionsMatchPreview =
-      Number(third.mutationBody.expected_planning_version)
-        === Number(third.previewPayload.planning_version)
-      && Number(third.mutationBody.expected_request_version)
-        === Number(third.previewPayload.request_version)
-      && String(third.mutationBody.expected_approval_revision_id)
-        === String(third.previewPayload.approval_revision_id)
-      && Number(third.mutationBody.expected_operational_version)
-        === Number(third.previewPayload.operational_version);
+    const thirdPreview = third.preview.payload ?? {};
+    const thirdMutation = third.mutation;
+    const mutationError = thirdMutation?.payload?.error?.code ?? null;
+    const versionsMatchPreview = Boolean(
+      thirdMutation?.body
+      && Number(thirdMutation.body.expected_planning_version)
+        === Number(thirdPreview.planning_version)
+      && Number(thirdMutation.body.expected_request_version)
+        === Number(thirdPreview.request_version)
+      && String(thirdMutation.body.expected_approval_revision_id)
+        === String(thirdPreview.approval_revision_id)
+      && Number(thirdMutation.body.expected_operational_version)
+        === Number(thirdPreview.operational_version)
+    );
 
     const afterThird = await demandShifts(demandNumber);
     const allocationStillPersisted = afterThird.some(
-      (row) => String(row.allocation_id) === currentAllocationId,
+      (row) => String(row.allocation_id) === regeneratedAllocationId,
     );
 
     let modalVisible = await third.editor.isVisible();
@@ -884,7 +1104,9 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
     let renderedOldCard = await third.card.count() > 0;
 
     let classification: "U1" | "U2" | "U3" | "U4";
-    if (third.mutationStatus >= 400) {
+    if (third.classification !== "REDOPEN4") {
+      classification = "U3";
+    } else if ((thirdMutation?.status ?? 500) >= 400) {
       const staleCodes = new Set([
         "request_shift_not_found",
         "planning_version_conflict",
@@ -894,11 +1116,14 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
       ]);
       classification = staleCodes.has(String(mutationError)) ? "U2" : "U1";
     } else {
-      expect(third.mutationStatus, JSON.stringify(third.mutationPayload)).toBe(200);
+      expect(
+        thirdMutation?.status,
+        JSON.stringify(thirdMutation?.payload),
+      ).toBe(200);
       try {
         await third.editor.waitFor({ state: "hidden", timeout: 2_000 });
       } catch {
-        // Characterization: a successful backend mutation may leave the editor open.
+        // Characterization: successful backend mutation may leave editor open.
       }
       try {
         await third.card.waitFor({ state: "detached", timeout: 2_000 });
@@ -910,7 +1135,10 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
       renderedOldCard = await third.card.count() > 0;
       const persistedChanged = !allocationStillPersisted;
       classification =
-        persistedChanged && !modalVisible && !confirmationVisible && !renderedOldCard
+        persistedChanged
+        && !modalVisible
+        && !confirmationVisible
+        && !renderedOldCard
           ? "U4"
           : "U3";
     }
@@ -922,23 +1150,13 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
         timmyId,
         window: [d1, d3],
       },
-      allocationId: currentAllocationId,
-      preview: {
-        url: third.previewPath,
-        status: third.previewStatus,
-        errorCode: previewError,
-        planningVersion: third.previewPayload.planning_version,
-        requestVersion: third.previewPayload.request_version,
-        operationalVersion: third.previewPayload.operational_version,
-        approvalRevisionId: third.previewPayload.approval_revision_id,
-      },
+      initialEricAllocationIds: ericInitialIds,
+      firstReduction: ericFirst,
+      secondReduction: timmySecond,
+      regeneratedAllocationId,
+      thirdReduction: third,
       mutation: {
-        url: third.mutationPath,
-        status: third.mutationStatus,
         errorCode: mutationError,
-        payload: third.mutationPayload,
-        body: third.mutationBody,
-        idempotencyKey: third.idempotencyKey,
         versionsMatchPreview,
       },
       persisted: {
@@ -960,9 +1178,10 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
     };
     console.log("ISSUE793_BROWSER_RUNTIME", JSON.stringify(evidence));
 
-    expect(third.previewStatus).toBe(200);
+    expect(third.classification).toBe("REDOPEN4");
+    expect(third.preview.status).toBe(200);
     expect(versionsMatchPreview).toBeTruthy();
-    expect(third.idempotencyKey).toBeTruthy();
+    expect(thirdMutation?.idempotencyKey).toBeTruthy();
     expect(["U1", "U2", "U3", "U4"]).toContain(classification);
   } finally {
     for (const ruleId of availabilityIds) {
