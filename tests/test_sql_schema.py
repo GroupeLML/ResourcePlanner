@@ -95,6 +95,7 @@ EXPECTED_TABLES = {
     "planning_work_queue_releases",
     "planning_work_queue_restorations",
     "request_completion_reductions",
+    "request_shift_survivor_protections",
     "request_lines",
     "request_line_competencies",
     "resource_requirement_competencies",
@@ -300,11 +301,32 @@ class SqlSchemaTests(unittest.TestCase):
         approval_revisions = Base.metadata.tables["request_approval_revisions"].c
         approval_references = Base.metadata.tables["request_approval_references"].c
         operational_states = Base.metadata.tables["request_operational_states"].c
+        survivor_protections = Base.metadata.tables[
+            "request_shift_survivor_protections"
+        ].c
         resource_classes = Base.metadata.tables["resource_class_configs"].c
         task_class_standards = Base.metadata.tables["task_class_standards"].c
         project_task_overrides = Base.metadata.tables["project_task_class_overrides"].c
 
         self.assertFalse(operational_states.budget_overrides_text.nullable)
+        self.assertFalse(survivor_protections.planning_intent_id.nullable)
+        self.assertTrue(survivor_protections.shift_id.nullable)
+        self.assertFalse(survivor_protections.original_shift_id.nullable)
+        self.assertFalse(survivor_protections.originating_reduction_id.nullable)
+        self.assertFalse(survivor_protections.active.nullable)
+        self.assertTrue(survivor_protections.retired_at.nullable)
+        self.assertTrue(survivor_protections.retired_reason.nullable)
+        self.assertEqual(
+            {fk.column.table.name for fk in survivor_protections.shift_id.foreign_keys},
+            {"shifts"},
+        )
+        self.assertEqual(
+            {
+                fk.column.table.name
+                for fk in survivor_protections.planning_intent_id.foreign_keys
+            },
+            {"request_requirement_planning_intents"},
+        )
         self.assertTrue(work_packages.task_catalog_item_id.nullable)
         self.assertTrue(work_packages.resource_class_code.nullable)
         self.assertEqual(
