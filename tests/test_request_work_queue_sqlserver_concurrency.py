@@ -21,6 +21,7 @@ from app.infrastructure.sql import (
     PlanningChangeHistory,
     PlanningWorkQueueRelease,
     RequestCompletionReduction,
+    RequestShiftSurvivorProtection,
     SqlPeriodAwareApprovedDemandSyncAdapter,
     SqlPlannerQueryRepositoryWithLoadProfiles,
     Project,
@@ -756,6 +757,11 @@ class RequestWorkQueueSqlServerConcurrencyTests(unittest.TestCase):
                     )
                 )
                 session.execute(
+                    delete(RequestShiftSurvivorProtection).where(
+                        RequestShiftSurvivorProtection.planning_intent_id == intent_id
+                    )
+                )
+                session.execute(
                     delete(RequestCompletionReduction).where(
                         RequestCompletionReduction.planning_intent_id == intent_id
                     )
@@ -1234,6 +1240,22 @@ class RequestWorkQueueSqlServerConcurrencyTests(unittest.TestCase):
                         )
                     )
                 )
+                cleanup_intent_ids = tuple(
+                    session.scalars(
+                        select(RequestRequirementPlanningIntent.id).where(
+                            RequestRequirementPlanningIntent.workforce_request_id
+                            == request_id
+                        )
+                    ).all()
+                )
+                if cleanup_intent_ids:
+                    session.execute(
+                        delete(RequestShiftSurvivorProtection).where(
+                            RequestShiftSurvivorProtection.planning_intent_id.in_(
+                                cleanup_intent_ids
+                            )
+                        )
+                    )
                 session.execute(
                     delete(RequestCompletionReduction).where(
                         RequestCompletionReduction.workforce_request_id == request_id
