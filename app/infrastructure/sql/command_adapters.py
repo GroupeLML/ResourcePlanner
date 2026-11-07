@@ -55,6 +55,9 @@ from .segment_asset_guard import assert_segment_asset_mutation_compatible
 from .planning_version import SqlPlanningMutationVersionRepository
 from .segment_repository import SqlSegmentRepository
 from .same_resource_periods import SqlSameResourcePeriodCoordinator
+from .survivor_protection_repository import (
+    SqlRequestShiftSurvivorProtectionRepository,
+)
 
 
 INACTIVE_REQUIREMENT_STATUSES = {"Annulé", "Terminé"}
@@ -154,7 +157,15 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
                 + ", ".join(calculation.unsupported_segment_ids)
             )
 
+        # preserve_shift_ids remains a transient transport for legacy command
+        # paths only. #793 durable survivor authority is always reread from SQL on
+        # every rebuild, including fresh-session/unrelated rebuilds.
         preserve_ids = {str(value) for value in preserve_shift_ids if str(value)}
+        durable_survivors = SqlRequestShiftSurvivorProtectionRepository(
+            self._session
+        ).active_rows()
+        preserve_ids.update(row.shift.id for row in durable_survivors)
+
         terminal_survivor_ids = set(
             self._session.scalars(
                 select(Shift.id)
@@ -271,9 +282,11 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
             | terminal_survivor_ids
         )
 
-        # Keep active locked user decisions plus the narrowly scoped survivor rows
-        # explicitly preserved for this one mutation. Other automatic rows remain
-        # disposable engine output.
+        # Keep active locked user decisions plus all rows selected through
+        # transient preservation or durable #793 survivor authority. Other automatic
+        # rows remain disposable engine output. Durable AUTO survivors stay AUTO;
+        # their preserved coverage is passed to the pure engine, which generates only
+        # the residual need not already covered by those physical rows.
         existing = self._session.scalars(select(Shift)).all()
         for shift in existing:
             if shift.id not in protected_ids:
