@@ -16,6 +16,7 @@ from app.infrastructure.sql import (
     RequestRequirementPlanningIntent,
     Resource,
     ResourceAvailabilityRule,
+    ResourceRequirement,
     Shift,
     WorkforceRequest,
     create_session_factory,
@@ -141,10 +142,7 @@ class Issue793SqlServerPrecisionTests(unittest.TestCase):
             )
             assert intent is not None
             requirement = session.get(
-                __import__(
-                    "app.infrastructure.sql",
-                    fromlist=["ResourceRequirement"],
-                ).ResourceRequirement,
+                ResourceRequirement,
                 intent.current_resource_requirement_id,
             )
             assert requirement is not None
