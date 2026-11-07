@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
-    Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, Numeric, String,
+    Boolean, CheckConstraint, Date, DateTime, ForeignKey, ForeignKeyConstraint, Index, Integer, Numeric, String,
     Text, UniqueConstraint, text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -226,6 +226,11 @@ class RequestCompletionReduction(TimestampMixin, Base):
     __table_args__ = (
         CheckConstraint("reduction_hours > 0", name="request_completion_reduction_hours_positive"),
         UniqueConstraint("actor_user_id", "command_id", name="uq_request_completion_reduction_actor_command"),
+        UniqueConstraint(
+            "id",
+            "planning_intent_id",
+            name="uq_request_completion_reduction_id_intent",
+        ),
         CheckConstraint(
             "effective_need_before >= effective_need_after AND effective_need_after >= 0",
             name="request_completion_reduction_need_order",
@@ -276,4 +281,67 @@ class RequestCompletionReduction(TimestampMixin, Base):
     )
     reconciled_approval_revision_id: Mapped[str | None] = mapped_column(
         String(ID_LENGTH), ForeignKey("request_approval_revisions.id"), nullable=True
+    )
+
+
+class RequestShiftSurvivorProtection(TimestampMixin, Base):
+    """Durable #793 authority protecting one currently surviving physical Shift."""
+
+    __tablename__ = "request_shift_survivor_protections"
+    __table_args__ = (
+        CheckConstraint(
+            "(active = 1 AND shift_id IS NOT NULL AND retired_at IS NULL) OR "
+            "(active = 0 AND retired_at IS NOT NULL)",
+            name="request_shift_survivor_protection_lifecycle",
+        ),
+        ForeignKeyConstraint(
+            ["originating_reduction_id", "planning_intent_id"],
+            [
+                "request_completion_reductions.id",
+                "request_completion_reductions.planning_intent_id",
+            ],
+            name="fk_request_shift_survivor_protection_reduction_intent",
+        ),
+        Index(
+            "ix_request_shift_survivor_protection_intent_active",
+            "planning_intent_id",
+            "active",
+        ),
+        Index(
+            "uq_request_shift_survivor_protection_active_shift",
+            "shift_id",
+            unique=True,
+            sqlite_where=text("active = 1 AND shift_id IS NOT NULL"),
+            mssql_where=text("active = 1 AND shift_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True, default=new_id)
+    planning_intent_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("request_requirement_planning_intents.id"),
+        nullable=False,
+    )
+    shift_id: Mapped[str | None] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("shifts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    original_shift_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    originating_reduction_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        nullable=False,
+    )
+    active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("1"),
+    )
+    retired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    retired_reason: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
     )
