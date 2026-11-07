@@ -1460,10 +1460,35 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                         (
                             (START, Decimal("5.33")),
                             ("2026-11-03", Decimal("5.33")),
-                            (WEDNESDAY, Decimal("5.33")),
+                            (WEDNESDAY, Decimal("5.34")),
                         ),
                     )
-                    self.assertEqual(eric_after_second["covered_hours"], Decimal("15.99"))
+                    self.assertEqual(eric_after_second["covered_hours"], Decimal("16.00"))
+                    with factory() as session:
+                        raw_sqlite_after_second = tuple(
+                            Decimal(str(row[0]))
+                            for row in session.connection().exec_driver_sql(
+                                "SELECT hours FROM shifts "
+                                "WHERE resource_requirement_id = ? "
+                                "ORDER BY work_date, id",
+                                (eric_initial["requirement_id"],),
+                            ).all()
+                        )
+                    self.assertEqual(
+                        raw_sqlite_after_second,
+                        (
+                            Decimal("5.33"),
+                            Decimal("5.33"),
+                            Decimal("5.34"),
+                        ),
+                    )
+                    self.assertTrue(
+                        all(
+                            value == value.quantize(Decimal("0.01"))
+                            and value >= Decimal("0.01")
+                            for value in raw_sqlite_after_second
+                        )
+                    )
 
                     regenerated = next(
                         row
@@ -1476,12 +1501,16 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                         Decimal(str(third_preview["effective_need"])).quantize(Decimal("0.01")),
                         Decimal("16.00"),
                     )
-                    self.assertEqual(regenerated["hours"], Decimal("5.33"))
+                    self.assertEqual(
+                        Decimal(str(third_preview["covered_hours"])).quantize(Decimal("0.01")),
+                        Decimal("16.00"),
+                    )
+                    self.assertEqual(regenerated["hours"], Decimal("5.34"))
                     self.assertEqual(
                         Decimal(str(third_preview["effective_need_after_reduction"])).quantize(
                             Decimal("0.01")
                         ),
-                        Decimal("10.67"),
+                        Decimal("10.66"),
                     )
                     survivor_hours = sum(
                         (
@@ -1492,10 +1521,6 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                         Decimal("0.00"),
                     )
                     self.assertEqual(survivor_hours, Decimal("10.66"))
-                    # Canonical preview coverage sums the raw persisted values first
-                    # and only then quantizes to cents. The two displayed 5.33 survivors
-                    # are backed by fractional AUTO values whose aggregate rounds to
-                    # 10.67, so preview residual is intentionally 0.00.
                     self.assertEqual(
                         Decimal(str(third_preview["remaining_after_reduction"])).quantize(
                             Decimal("0.01")
@@ -1516,29 +1541,6 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                         )
                         planning_version_before_third = (
                             SqlPlanningMutationVersionRepository(session).current_version()
-                        )
-                        raw_shifts_before_third = tuple(
-                            session.execute(
-                                select(
-                                    Shift.id,
-                                    Shift.work_date,
-                                    Shift.hours,
-                                    Shift.resource_id,
-                                )
-                                .where(
-                                    Shift.resource_requirement_id
-                                    == eric_initial["requirement_id"]
-                                )
-                                .order_by(Shift.work_date, Shift.id)
-                            ).all()
-                        )
-                        eric_reduction_count_before_third = len(
-                            [
-                                row
-                                for row in after_timmy["reductions"]
-                                if row["planning_intent_id"]
-                                == eric_initial["planning_intent_id"]
-                            ]
                         )
 
                     rebuild_exceptions: list[dict[str, str]] = []
@@ -1580,18 +1582,26 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                             third_key,
                         )
 
-                    try:
-                        third_payload = third_response.json()
-                    except ValueError:
-                        third_payload = {"raw": third_response.text}
-                    print(
-                        "ISSUE793_THIRD_REDUCTION_RUNTIME",
-                        {
-                            "preview": third_preview,
-                            "status": third_response.status_code,
-                            "payload": third_payload,
-                            "rebuild_exceptions": rebuild_exceptions,
-                        },
+                    self.assertEqual(third_response.status_code, 200, third_response.text)
+                    third_payload = third_response.json()
+                    self.assertEqual(rebuild_exceptions, [])
+                    self.assertEqual(
+                        Decimal(str(third_payload["effective_need_after"])).quantize(
+                            Decimal("0.01")
+                        ),
+                        Decimal("10.66"),
+                    )
+                    self.assertEqual(
+                        Decimal(str(third_payload["covered_hours_after"])).quantize(
+                            Decimal("0.01")
+                        ),
+                        Decimal("10.66"),
+                    )
+                    self.assertEqual(
+                        Decimal(str(third_payload["remaining_hours_after"])).quantize(
+                            Decimal("0.01")
+                        ),
+                        Decimal("0.00"),
                     )
 
                     with factory() as session:
@@ -1627,12 +1637,23 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                                 .order_by(Shift.work_date, Shift.id)
                             ).all()
                         )
-                        receipt = session.scalar(
-                            select(CommandIdempotencyReceipt).where(
-                                CommandIdempotencyReceipt.command_scope
-                                == "request_work_queue.permanent_reduction",
-                                CommandIdempotencyReceipt.idempotency_key == third_key,
-                            )
+                        raw_sqlite_after_third = tuple(
+                            Decimal(str(row[0]))
+                            for row in session.connection().exec_driver_sql(
+                                "SELECT hours FROM shifts "
+                                "WHERE resource_requirement_id = ? "
+                                "ORDER BY work_date, id",
+                                (eric_initial["requirement_id"],),
+                            ).all()
+                        )
+                        receipts = tuple(
+                            session.scalars(
+                                select(CommandIdempotencyReceipt).where(
+                                    CommandIdempotencyReceipt.command_scope
+                                    == "request_work_queue.permanent_reduction",
+                                    CommandIdempotencyReceipt.idempotency_key == third_key,
+                                )
+                            ).all()
                         )
 
                     eric_post_third = post_third["slots"][
@@ -1644,75 +1665,90 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                         if row["planning_intent_id"]
                         == eric_initial["planning_intent_id"]
                     ]
-                    print(
-                        "ISSUE793_THIRD_REDUCTION_POST_STATE",
-                        {
-                            "effective_need": str(eric_post_third["effective_need"]),
-                            "planned_hours": str(eric_post_third["planned_hours"]),
-                            "covered_hours": str(eric_post_third["covered_hours"]),
-                            "shifts": [
-                                (row[0], row[1].isoformat(), str(row[2]), row[3])
-                                for row in raw_shifts_after_third
-                            ],
-                            "reduction_count": len(eric_reductions_after_third),
-                            "request_version": request_version_after_third,
-                            "planning_version": planning_version_after_third,
-                            "idempotency_receipt": receipt is not None,
-                        },
+                    self.assertEqual(
+                        eric_post_third["effective_need"],
+                        Decimal("10.66"),
+                    )
+                    self.assertEqual(
+                        eric_post_third["planned_hours"],
+                        Decimal("10.66"),
+                    )
+                    self.assertEqual(
+                        eric_post_third["covered_hours"],
+                        Decimal("10.66"),
+                    )
+                    self.assertEqual(
+                        tuple(
+                            (row["work_date"], row["hours"])
+                            for row in eric_post_third["shifts"]
+                            if row["counted"]
+                        ),
+                        (
+                            (START, Decimal("5.33")),
+                            ("2026-11-03", Decimal("5.33")),
+                        ),
+                    )
+                    self.assertEqual(
+                        raw_sqlite_after_third,
+                        (Decimal("5.33"), Decimal("5.33")),
+                    )
+                    self.assertEqual(len(eric_reductions_after_third), 2)
+                    self.assertEqual(len(receipts), 1)
+                    self.assertEqual(
+                        request_version_after_third,
+                        request_version_before_third + 1,
+                    )
+                    self.assertGreater(
+                        planning_version_after_third,
+                        planning_version_before_third,
                     )
 
-                    if third_response.status_code == 200:
-                        self.assertEqual(
-                            eric_post_third["effective_need"],
-                            Decimal("10.67"),
+                    replay = self._reduce(
+                        client,
+                        regenerated["allocation_id"],
+                        third_preview,
+                        third_key,
+                    )
+                    self.assertEqual(replay.status_code, 200, replay.text)
+                    self.assertEqual(replay.json(), third_payload)
+                    with factory() as session:
+                        replay_state = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("24.00"),
                         )
-                        self.assertEqual(
-                            eric_post_third["planned_hours"],
-                            Decimal("10.67"),
+                        replay_rows = tuple(
+                            session.execute(
+                                select(
+                                    Shift.id,
+                                    Shift.work_date,
+                                    Shift.hours,
+                                    Shift.resource_id,
+                                )
+                                .where(
+                                    Shift.resource_requirement_id
+                                    == eric_initial["requirement_id"]
+                                )
+                                .order_by(Shift.work_date, Shift.id)
+                            ).all()
                         )
-                        self.assertEqual(len(eric_reductions_after_third), 2)
-                        self.assertIsNotNone(receipt)
-                        self.assertEqual(
-                            request_version_after_third,
-                            request_version_before_third + 1,
+                        replay_receipts = tuple(
+                            session.scalars(
+                                select(CommandIdempotencyReceipt).where(
+                                    CommandIdempotencyReceipt.command_scope
+                                    == "request_work_queue.permanent_reduction",
+                                    CommandIdempotencyReceipt.idempotency_key == third_key,
+                                )
+                            ).all()
                         )
-                        self.assertGreater(
-                            planning_version_after_third,
-                            planning_version_before_third,
-                        )
-                    else:
-                        self.assertIn(third_response.status_code, (409, 500))
-                        self.assertEqual(
-                            eric_post_third["effective_need"],
-                            Decimal("16.00"),
-                        )
-                        self.assertEqual(
-                            len(eric_reductions_after_third),
-                            eric_reduction_count_before_third,
-                        )
-                        self.assertEqual(
-                            raw_shifts_after_third,
-                            raw_shifts_before_third,
-                        )
-                        self.assertEqual(
-                            request_version_after_third,
-                            request_version_before_third,
-                        )
-                        self.assertEqual(
-                            planning_version_after_third,
-                            planning_version_before_third,
-                        )
-                        self.assertIsNone(receipt)
-                        if third_response.status_code == 500:
-                            self.assertEqual(
-                                third_payload.get("error", {}).get("code"),
-                                "internal_error",
-                            )
-                            self.assertTrue(rebuild_exceptions)
-                        else:
-                            self.assertTrue(
-                                third_payload.get("error", {}).get("code")
-                            )
+                    self.assertEqual(
+                        replay_state["slots"][eric_initial["requirement_id"]][
+                            "effective_need"
+                        ],
+                        Decimal("10.66"),
+                    )
+                    self.assertEqual(replay_rows, raw_shifts_after_third)
+                    self.assertEqual(len(replay_receipts), 1)
             finally:
                 engine.dispose()
 
