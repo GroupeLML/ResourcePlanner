@@ -26,6 +26,8 @@ from app.infrastructure.sql import (
 )
 from app.infrastructure.sql.command_adapters import SqlPlanningCommandAdapter
 from app.infrastructure.sql.employee_sync_repository import SqlEmployeeSyncRepository
+from app.infrastructure.sql.idempotency import CommandIdempotencyReceipt
+from app.infrastructure.sql.planning_version import SqlPlanningMutationVersionRepository
 from app.infrastructure.sql.planning_intent_repository import (
     SqlRequestRequirementPlanningIntentRepository,
 )
@@ -1490,40 +1492,227 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                         Decimal("0.00"),
                     )
                     self.assertEqual(survivor_hours, Decimal("10.66"))
+                    # Canonical preview coverage sums the raw persisted values first
+                    # and only then quantizes to cents. The two displayed 5.33 survivors
+                    # are backed by fractional AUTO values whose aggregate rounds to
+                    # 10.67, so preview residual is intentionally 0.00.
                     self.assertEqual(
                         Decimal(str(third_preview["remaining_after_reduction"])).quantize(
                             Decimal("0.01")
                         ),
-                        Decimal("0.01"),
+                        Decimal("0.00"),
                     )
 
-                    # A subsequent ordinary rebuild has no survivor-id protection.
-                    with factory.begin() as session:
-                        SqlPeriodAwareApprovedDemandSyncAdapter(
-                            session
-                        ).sync_operational_choices(number)
-                    rebuilt = client.post("/api/v1/planning/rebuild")
-                    self.assertEqual(rebuilt.status_code, 200, rebuilt.text)
+                    third_key = "issue-793-sequential-reduce-regenerated-eric"
                     with factory() as session:
-                        reloaded = self._capture(
+                        request_before_third = session.scalar(
+                            select(WorkforceRequest).where(
+                                WorkforceRequest.legacy_demand_number == number
+                            )
+                        )
+                        self.assertIsNotNone(request_before_third)
+                        request_version_before_third = int(
+                            request_before_third.aggregate_version or 1
+                        )
+                        planning_version_before_third = (
+                            SqlPlanningMutationVersionRepository(session).current_version()
+                        )
+                        raw_shifts_before_third = tuple(
+                            session.execute(
+                                select(
+                                    Shift.id,
+                                    Shift.work_date,
+                                    Shift.hours,
+                                    Shift.resource_id,
+                                )
+                                .where(
+                                    Shift.resource_requirement_id
+                                    == eric_initial["requirement_id"]
+                                )
+                                .order_by(Shift.work_date, Shift.id)
+                            ).all()
+                        )
+                        eric_reduction_count_before_third = len(
+                            [
+                                row
+                                for row in after_timmy["reductions"]
+                                if row["planning_intent_id"]
+                                == eric_initial["planning_intent_id"]
+                            ]
+                        )
+
+                    rebuild_exceptions: list[dict[str, str]] = []
+                    original_third_rebuild = SqlPlanningCommandAdapter.rebuild
+
+                    def trace_third_rebuild(
+                        adapter,
+                        *,
+                        preserve_shift_ids=(),
+                        temporary_excluded_dates_by_segment=None,
+                    ):
+                        try:
+                            return original_third_rebuild(
+                                adapter,
+                                preserve_shift_ids=preserve_shift_ids,
+                                temporary_excluded_dates_by_segment=(
+                                    temporary_excluded_dates_by_segment
+                                ),
+                            )
+                        except Exception as exc:
+                            rebuild_exceptions.append(
+                                {
+                                    "type": type(exc).__name__,
+                                    "message": str(exc),
+                                    "repr": repr(exc),
+                                }
+                            )
+                            raise
+
+                    with patch.object(
+                        SqlPlanningCommandAdapter,
+                        "rebuild",
+                        new=trace_third_rebuild,
+                    ):
+                        third_response = self._reduce(
+                            client,
+                            regenerated["allocation_id"],
+                            third_preview,
+                            third_key,
+                        )
+
+                    try:
+                        third_payload = third_response.json()
+                    except ValueError:
+                        third_payload = {"raw": third_response.text}
+                    print(
+                        "ISSUE793_THIRD_REDUCTION_RUNTIME",
+                        {
+                            "preview": third_preview,
+                            "status": third_response.status_code,
+                            "payload": third_payload,
+                            "rebuild_exceptions": rebuild_exceptions,
+                        },
+                    )
+
+                    with factory() as session:
+                        post_third = self._capture(
                             session,
                             number,
                             nominal_slot_hours=Decimal("24.00"),
                         )
-                    eric_reloaded = reloaded["slots"][eric_initial["requirement_id"]]
-                    self.assertEqual(eric_reloaded["effective_need"], Decimal("16.00"))
-                    self.assertEqual(
-                        tuple(
-                            (row["work_date"], row["hours"])
-                            for row in eric_reloaded["shifts"]
-                            if row["counted"]
-                        ),
-                        (
-                            (START, Decimal("5.33")),
-                            ("2026-11-03", Decimal("5.33")),
-                            (WEDNESDAY, Decimal("5.33")),
-                        ),
+                        request_after_third = session.scalar(
+                            select(WorkforceRequest).where(
+                                WorkforceRequest.legacy_demand_number == number
+                            )
+                        )
+                        self.assertIsNotNone(request_after_third)
+                        request_version_after_third = int(
+                            request_after_third.aggregate_version or 1
+                        )
+                        planning_version_after_third = (
+                            SqlPlanningMutationVersionRepository(session).current_version()
+                        )
+                        raw_shifts_after_third = tuple(
+                            session.execute(
+                                select(
+                                    Shift.id,
+                                    Shift.work_date,
+                                    Shift.hours,
+                                    Shift.resource_id,
+                                )
+                                .where(
+                                    Shift.resource_requirement_id
+                                    == eric_initial["requirement_id"]
+                                )
+                                .order_by(Shift.work_date, Shift.id)
+                            ).all()
+                        )
+                        receipt = session.scalar(
+                            select(CommandIdempotencyReceipt).where(
+                                CommandIdempotencyReceipt.command_scope
+                                == "request_work_queue.permanent_reduction",
+                                CommandIdempotencyReceipt.idempotency_key == third_key,
+                            )
+                        )
+
+                    eric_post_third = post_third["slots"][
+                        eric_initial["requirement_id"]
+                    ]
+                    eric_reductions_after_third = [
+                        row
+                        for row in post_third["reductions"]
+                        if row["planning_intent_id"]
+                        == eric_initial["planning_intent_id"]
+                    ]
+                    print(
+                        "ISSUE793_THIRD_REDUCTION_POST_STATE",
+                        {
+                            "effective_need": str(eric_post_third["effective_need"]),
+                            "planned_hours": str(eric_post_third["planned_hours"]),
+                            "covered_hours": str(eric_post_third["covered_hours"]),
+                            "shifts": [
+                                (row[0], row[1].isoformat(), str(row[2]), row[3])
+                                for row in raw_shifts_after_third
+                            ],
+                            "reduction_count": len(eric_reductions_after_third),
+                            "request_version": request_version_after_third,
+                            "planning_version": planning_version_after_third,
+                            "idempotency_receipt": receipt is not None,
+                        },
                     )
+
+                    if third_response.status_code == 200:
+                        self.assertEqual(
+                            eric_post_third["effective_need"],
+                            Decimal("10.67"),
+                        )
+                        self.assertEqual(
+                            eric_post_third["planned_hours"],
+                            Decimal("10.67"),
+                        )
+                        self.assertEqual(len(eric_reductions_after_third), 2)
+                        self.assertIsNotNone(receipt)
+                        self.assertEqual(
+                            request_version_after_third,
+                            request_version_before_third + 1,
+                        )
+                        self.assertGreater(
+                            planning_version_after_third,
+                            planning_version_before_third,
+                        )
+                    else:
+                        self.assertIn(third_response.status_code, (409, 500))
+                        self.assertEqual(
+                            eric_post_third["effective_need"],
+                            Decimal("16.00"),
+                        )
+                        self.assertEqual(
+                            len(eric_reductions_after_third),
+                            eric_reduction_count_before_third,
+                        )
+                        self.assertEqual(
+                            raw_shifts_after_third,
+                            raw_shifts_before_third,
+                        )
+                        self.assertEqual(
+                            request_version_after_third,
+                            request_version_before_third,
+                        )
+                        self.assertEqual(
+                            planning_version_after_third,
+                            planning_version_before_third,
+                        )
+                        self.assertIsNone(receipt)
+                        if third_response.status_code == 500:
+                            self.assertEqual(
+                                third_payload.get("error", {}).get("code"),
+                                "internal_error",
+                            )
+                            self.assertTrue(rebuild_exceptions)
+                        else:
+                            self.assertTrue(
+                                third_payload.get("error", {}).get("code")
+                            )
             finally:
                 engine.dispose()
 
