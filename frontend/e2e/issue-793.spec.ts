@@ -80,9 +80,9 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
 
   async function reduceRenderedShift(
     allocationId: string,
-    *,
-    capture: boolean,
+    options: { capture: boolean },
   ) {
+    const { capture } = options;
     const card = page.locator(
       `.shift-card[data-allocation-id="${allocationId}"]`,
     );
