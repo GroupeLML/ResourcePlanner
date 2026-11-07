@@ -1756,6 +1756,137 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                         set(original_survivors.values()),
                     )
                     self.assertNotIn(generated["id"], {row["shift_id"] for row in active})
+                    first_reduction_id = next(
+                        row["id"]
+                        for row in after["reductions"]
+                        if row["planning_intent_id"] == eric_after["planning_intent_id"]
+                    )
+                    self.assertEqual(
+                        {row["originating_reduction_id"] for row in active},
+                        {first_reduction_id},
+                    )
+
+                    # Repeated reduction on the same slot: target one already-protected
+                    # survivor. The other old survivor keeps its first provenance,
+                    # while the generated 4h row becomes newly protected by this
+                    # second reduction. The targeted old link is retired, not rewritten.
+                    protected_target = next(
+                        row
+                        for row in counted_after
+                        if row["work_date"] == START
+                    )
+                    second_preview = self._preview(
+                        client,
+                        protected_target["allocation_id"],
+                    )
+                    second_response = self._reduce(
+                        client,
+                        protected_target["allocation_id"],
+                        second_preview,
+                        "issue-793-partial-second-reduction",
+                    )
+                    self.assertEqual(
+                        second_response.status_code,
+                        200,
+                        second_response.text,
+                    )
+
+                    with factory() as session:
+                        repeated = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("28.00"),
+                        )
+                    eric_repeated = self._by_target(repeated, ERIC_ID)
+                    self.assertEqual(
+                        eric_repeated["effective_need"],
+                        Decimal("12.00"),
+                    )
+                    self.assertEqual(
+                        eric_repeated["covered_hours"],
+                        Decimal("12.00"),
+                    )
+                    self.assertEqual(
+                        tuple(
+                            (row["id"], row["work_date"], row["hours"])
+                            for row in eric_repeated["shifts"]
+                            if row["counted"]
+                        ),
+                        (
+                            (
+                                original_survivors["2026-11-03"],
+                                "2026-11-03",
+                                Decimal("8.00"),
+                            ),
+                            (
+                                generated["id"],
+                                WEDNESDAY,
+                                Decimal("4.00"),
+                            ),
+                        ),
+                    )
+                    repeated_reductions = [
+                        row
+                        for row in repeated["reductions"]
+                        if row["planning_intent_id"]
+                        == eric_repeated["planning_intent_id"]
+                    ]
+                    self.assertEqual(len(repeated_reductions), 2)
+                    second_reduction_id = next(
+                        row["id"]
+                        for row in repeated_reductions
+                        if row["id"] != first_reduction_id
+                    )
+                    all_protections = [
+                        row
+                        for row in repeated["protections"]
+                        if row["planning_intent_id"]
+                        == eric_repeated["planning_intent_id"]
+                    ]
+                    active_repeated = [row for row in all_protections if row["active"]]
+                    retired_repeated = [
+                        row for row in all_protections if not row["active"]
+                    ]
+                    self.assertEqual(
+                        {row["shift_id"] for row in active_repeated},
+                        {
+                            original_survivors["2026-11-03"],
+                            generated["id"],
+                        },
+                    )
+                    preserved_old = next(
+                        row
+                        for row in active_repeated
+                        if row["shift_id"]
+                        == original_survivors["2026-11-03"]
+                    )
+                    newly_protected = next(
+                        row
+                        for row in active_repeated
+                        if row["shift_id"] == generated["id"]
+                    )
+                    self.assertEqual(
+                        preserved_old["originating_reduction_id"],
+                        first_reduction_id,
+                    )
+                    self.assertEqual(
+                        newly_protected["originating_reduction_id"],
+                        second_reduction_id,
+                    )
+                    retired_target = next(
+                        row
+                        for row in retired_repeated
+                        if row["original_shift_id"] == protected_target["id"]
+                    )
+                    self.assertIsNone(retired_target["shift_id"])
+                    self.assertEqual(
+                        retired_target["originating_reduction_id"],
+                        first_reduction_id,
+                    )
+                    self.assertEqual(
+                        retired_target["retired_reason"],
+                        "PERMANENT_REDUCTION_TARGET",
+                    )
             finally:
                 engine.dispose()
 
