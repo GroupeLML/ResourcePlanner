@@ -28,7 +28,10 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
   });
   const page = await context.newPage();
   const fixtureKey = randomUUID();
-  const monday = startOfWeek(new Date());
+  // Match the established #777 real-browser convention: build the fixture in
+  // next week, then explicitly navigate Planning to that week before locating
+  // work-queue cards. This avoids depending on persisted/default Planning week.
+  const monday = addDays(startOfWeek(new Date()), 7);
   const d1 = localIso(monday);
   const d2 = localIso(addDays(monday, 1));
   const d3 = localIso(addDays(monday, 2));
@@ -66,6 +69,37 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
           row.demand_number === demandNumber
           && row.kind === "ASSIGNMENT",
       );
+  }
+
+  async function positionPlanningOnFixtureWeek(options: { reload: boolean }) {
+    if (options.reload) {
+      await page.reload({ waitUntil: "domcontentloaded" });
+    } else {
+      await page.goto("/");
+    }
+    await page
+      .locator(".main-nav")
+      .getByRole("button", { name: /Planning opérationnel/i })
+      .click();
+
+    // Same product navigation used by the canonical #777 browser acceptance:
+    // fixture week is exactly one week after "Aujourd’hui".
+    await page.getByRole("button", { name: "Aujourd’hui", exact: true }).click();
+    await page.getByRole("button", { name: "Suivante →" }).click();
+
+    // Prove the displayed Planning board is the fixture week before any card
+    // assertion. Resource rows may load asynchronously after week navigation.
+    const fixtureDay = page.locator(
+      `.planning-drop-day[data-day="${d1}"]`,
+    ).first();
+    await expect(fixtureDay).toBeVisible();
+
+    return {
+      day: d1,
+      fixtureDayCount: await page.locator(
+        `.planning-drop-day[data-day="${d1}"]`,
+      ).count(),
+    };
   }
 
   async function dragExactAssignment(
@@ -524,11 +558,13 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
     expect(segmentBId).toBeTruthy();
     expect(segmentAId).not.toBe(segmentBId);
 
-    await page.goto("/");
-    await page
-      .locator(".main-nav")
-      .getByRole("button", { name: /Planning opérationnel/i })
-      .click();
+    const firstPeriodPosition = await positionPlanningOnFixtureWeek({
+      reload: false,
+    });
+    console.log(
+      "ISSUE793_FIRST_PERIOD_POSITION",
+      JSON.stringify(firstPeriodPosition),
+    );
 
     const ericDrag = await dragExactAssignment(
       demandNumber,
@@ -586,13 +622,16 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
       [d3, 8],
     ]);
 
-    // Treat the second assignment as a separate real user interaction. Reload the
-    // authoritative Planning UI and reacquire Segment B by stable segment identity.
-    await page.reload({ waitUntil: "domcontentloaded" });
-    await page
-      .locator(".main-nav")
-      .getByRole("button", { name: /Planning opérationnel/i })
-      .click();
+    // Treat the second assignment as a separate real user interaction. Reload,
+    // reopen Planning, explicitly reposition to the fixture week, then reacquire
+    // Segment B by stable segment identity.
+    const secondPeriodPosition = await positionPlanningOnFixtureWeek({
+      reload: true,
+    });
+    console.log(
+      "ISSUE793_SECOND_PERIOD_POSITION",
+      JSON.stringify(secondPeriodPosition),
+    );
 
     const segmentBActionsBefore = await assignmentActions(demandNumber);
     const segmentBBackendActionExistsBefore = segmentBActionsBefore.some(
