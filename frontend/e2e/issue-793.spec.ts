@@ -381,8 +381,16 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
       classification = staleCodes.has(String(mutationError)) ? "U2" : "U1";
     } else {
       expect(third.mutationStatus, JSON.stringify(third.mutationPayload)).toBe(200);
-      await expect(third.editor).toBeHidden();
-      await expect(third.card).toHaveCount(0);
+      try {
+        await third.editor.waitFor({ state: "hidden", timeout: 2_000 });
+      } catch {
+        // Characterization: a successful backend mutation may leave the editor open.
+      }
+      try {
+        await third.card.waitFor({ state: "detached", timeout: 2_000 });
+      } catch {
+        // Characterization: retain stale rendered-card evidence for U3.
+      }
       modalVisible = await third.editor.isVisible();
       confirmationVisible = await third.confirmation.isVisible();
       renderedOldCard = await third.card.count() > 0;
