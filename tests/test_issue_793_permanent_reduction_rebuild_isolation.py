@@ -3783,6 +3783,326 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
             finally:
                 engine.dispose()
 
+    def test_plan_delta_refuses_incompatible_operational_base_carry_forward(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            admin_app = create_api_app(
+                database_url,
+                actor_name="admin-793-delta-base-refusal",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(admin_app, raise_server_exceptions=False) as client:
+                    created = client.post(
+                        "/api/v1/demands",
+                        json=routed_demand_payload(
+                            {
+                                "project_number": "P-778-API",
+                                "submit": True,
+                                "lines": [
+                                    {
+                                        "position": 0,
+                                        "desired_start": START,
+                                        "desired_end": WEDNESDAY,
+                                        "desired_active_days": 3,
+                                        "estimated_hours": 28,
+                                        "required_resource_class": "ELECTRICAL",
+                                        "confirmation": "Confirmée",
+                                        "description": "#793 reduced authority A",
+                                    },
+                                    {
+                                        "position": 1,
+                                        "desired_start": START,
+                                        "desired_end": WEDNESDAY,
+                                        "desired_active_days": 3,
+                                        "estimated_hours": 24,
+                                        "required_resource_class": "ELECTRICAL",
+                                        "confirmation": "Confirmée",
+                                        "description": "#793 reduced authority B",
+                                    },
+                                ],
+                            }
+                        ),
+                    )
+                    self.assertEqual(created.status_code, 201, created.text)
+                    number = created.json()["demand_number"]
+                    approved = client.post(
+                        f"/api/v1/demands/{number}/approve",
+                        json={"comment": "#793 reduced authority initial"},
+                    )
+                    self.assertEqual(approved.status_code, 200, approved.text)
+                    actions = self._assignment_actions(client, number)
+                    self._assign(client, actions[0]["segment_id"], ERIC_ID)
+                    self._assign(client, actions[1]["segment_id"], TIMMY_ID)
+
+                    with factory() as session:
+                        initial = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("28.00"),
+                        )
+                    eric_initial = self._by_target(initial, ERIC_ID)
+                    target = next(
+                        row
+                        for row in eric_initial["shifts"]
+                        if row["work_date"] == WEDNESDAY
+                        and row["counted"]
+                        and row["hours"] == Decimal("8.00")
+                    )
+                    reduced = self._reduce(
+                        client,
+                        target["allocation_id"],
+                        self._preview(client, target["allocation_id"]),
+                        "793-delta-base-refusal-reduce",
+                    )
+                    self.assertEqual(reduced.status_code, 200, reduced.text)
+
+                    with factory() as session:
+                        reduced_state = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("28.00"),
+                        )
+                    eric_reduced = self._by_target(reduced_state, ERIC_ID)
+                    patched = client.patch(
+                        f"/api/v1/segments/{eric_reduced['segment_id']}",
+                        json={"planned_hours": 26},
+                    )
+                    self.assertEqual(patched.status_code, 200, patched.text)
+
+                with factory() as session:
+                    request = session.scalar(
+                        select(WorkforceRequest).where(
+                            WorkforceRequest.legacy_demand_number == number
+                        )
+                    )
+                    assert request is not None
+                    requirement = session.get(
+                        ResourceRequirement,
+                        eric_reduced["requirement_id"],
+                    )
+                    assert requirement is not None
+                    self.assertEqual(
+                        Decimal(str(requirement.planned_hours)).quantize(Decimal("0.01")),
+                        Decimal("18.00"),
+                    )
+                    active_before = self._capture(
+                        session,
+                        number,
+                        nominal_slot_hours=Decimal("28.00"),
+                    )
+                    state = session.get(RequestOperationalState, request.id)
+                    assert state is not None
+                    operational_before = (
+                        state.approval_revision_id,
+                        int(state.version),
+                        state.budget_overrides_text,
+                    )
+                    reference = session.get(RequestApprovalReference, request.id)
+                    assert reference is not None
+                    revision_before = reference.active_revision_id
+                    planning_before = SqlPlanningMutationVersionRepository(
+                        session
+                    ).current_version()
+                    real_need_before = SqlRequestRequirementPlanningIntentRepository(
+                        session
+                    ).current_effective_need_for_requirement(
+                        requirement.id,
+                        fallback_hours=requirement.planned_hours,
+                    )
+                    self.assertEqual(real_need_before, Decimal("18.00"))
+                eric_before = self._by_target(active_before, ERIC_ID)
+                self.assertEqual(eric_before["planned_hours"], Decimal("18.00"))
+                self.assertEqual(eric_before["covered_hours"], Decimal("18.00"))
+                survivor_ids = {
+                    row["id"] for row in eric_before["shifts"] if row["counted"]
+                }
+
+                def line_payload(row: dict[str, object]) -> dict[str, object]:
+                    keys = (
+                        "line_id",
+                        "position",
+                        "kind",
+                        "required_resource_class",
+                        "required_competency_ids",
+                        "desired_start",
+                        "desired_end",
+                        "desired_active_days",
+                        "estimated_hours",
+                        "work_package_ref",
+                        "task_code",
+                        "proposed_resource_id",
+                        "confirmation",
+                        "description",
+                    )
+                    return {
+                        ("id" if key == "line_id" else key): row.get(key)
+                        for key in keys
+                        if row.get(key) is not None
+                    }
+
+                pm_app = create_api_app(
+                    database_url,
+                    actor_name="pm-793-delta-base-refusal",
+                    auth_resolver=TEST_PROJECT_MANAGER_AUTH_RESOLVER,
+                )
+                with TestClient(pm_app, raise_server_exceptions=False) as pm:
+                    current = pm.get(f"/api/v1/demands/{number}")
+                    self.assertEqual(current.status_code, 200, current.text)
+                    current_body = current.json()
+                    lines = [row for row in current_body["lines"] if row["active"]]
+                    line_a = next(
+                        row
+                        for row in lines
+                        if row["line_id"] == eric_before["source_request_line_id"]
+                    )
+                    line_b = next(
+                        row for row in lines if row["line_id"] != line_a["line_id"]
+                    )
+                    reduced_authority_a = line_payload(line_a)
+                    reduced_authority_a["estimated_hours"] = 8
+                    submitted = pm.patch(
+                        f"/api/v1/demands/{number}",
+                        json={
+                            "expected_version": current_body["version"],
+                            "lines": [reduced_authority_a, line_payload(line_b)],
+                            "comment": "#793 reduce approved authority below operational base",
+                        },
+                    )
+                    self.assertEqual(submitted.status_code, 200, submitted.text)
+                    self.assertTrue(submitted.json()["reapproval_required"])
+
+                    first = pm.get(f"/api/v1/demands/{number}/plan-delta")
+                    second = pm.get(f"/api/v1/demands/{number}/plan-delta")
+                    self.assertEqual(first.status_code, 200, first.text)
+                    self.assertEqual(second.status_code, 200, second.text)
+                    self.assertEqual(first.json(), second.json())
+                    self.assertFalse(first.json()["available"])
+                    self.assertEqual(
+                        first.json()["reason"],
+                        "operational_budget_reconciliation_required",
+                    )
+                    self.assertFalse(first.json()["has_changes"])
+                    self.assertEqual(
+                        [row["code"] for row in first.json()["diagnostics"]],
+                        ["operational_budget_reconciliation_required"],
+                    )
+
+                with factory() as session:
+                    request_after_preview = session.scalar(
+                        select(WorkforceRequest).where(
+                            WorkforceRequest.legacy_demand_number == number
+                        )
+                    )
+                    assert request_after_preview is not None
+                    state_after_preview = session.get(
+                        RequestOperationalState,
+                        request_after_preview.id,
+                    )
+                    assert state_after_preview is not None
+                    reference_after_preview = session.get(
+                        RequestApprovalReference,
+                        request_after_preview.id,
+                    )
+                    assert reference_after_preview is not None
+                    requirement_after_preview = session.get(
+                        ResourceRequirement,
+                        eric_reduced["requirement_id"],
+                    )
+                    assert requirement_after_preview is not None
+                    self.assertEqual(
+                        (
+                            state_after_preview.approval_revision_id,
+                            int(state_after_preview.version),
+                            state_after_preview.budget_overrides_text,
+                        ),
+                        operational_before,
+                    )
+                    self.assertEqual(
+                        reference_after_preview.active_revision_id,
+                        revision_before,
+                    )
+                    self.assertEqual(
+                        SqlPlanningMutationVersionRepository(session).current_version(),
+                        planning_before,
+                    )
+                    self.assertEqual(
+                        Decimal(str(requirement_after_preview.planned_hours)).quantize(
+                            Decimal("0.01")
+                        ),
+                        Decimal("18.00"),
+                    )
+
+                with TestClient(admin_app, raise_server_exceptions=False) as client:
+                    rejected = client.post(
+                        f"/api/v1/demands/{number}/approve",
+                        json={"comment": "#793 reduced authority must reconcile"},
+                    )
+                    self.assertEqual(rejected.status_code, 422, rejected.text)
+                    self.assertEqual(
+                        rejected.json()["error"]["code"],
+                        "segment_overallocation_choice_required",
+                    )
+
+                with factory() as session:
+                    request_after = session.scalar(
+                        select(WorkforceRequest).where(
+                            WorkforceRequest.legacy_demand_number == number
+                        )
+                    )
+                    assert request_after is not None
+                    state_after = session.get(RequestOperationalState, request_after.id)
+                    assert state_after is not None
+                    reference_after = session.get(
+                        RequestApprovalReference,
+                        request_after.id,
+                    )
+                    assert reference_after is not None
+                    requirement_after = session.get(
+                        ResourceRequirement,
+                        eric_reduced["requirement_id"],
+                    )
+                    assert requirement_after is not None
+                    final_state = self._capture(
+                        session,
+                        number,
+                        nominal_slot_hours=Decimal("28.00"),
+                    )
+                    self.assertEqual(
+                        (
+                            state_after.approval_revision_id,
+                            int(state_after.version),
+                            state_after.budget_overrides_text,
+                        ),
+                        operational_before,
+                    )
+                    self.assertEqual(reference_after.active_revision_id, revision_before)
+                    self.assertEqual(
+                        Decimal(str(requirement_after.planned_hours)).quantize(
+                            Decimal("0.01")
+                        ),
+                        Decimal("18.00"),
+                    )
+                    self.assertEqual(
+                        SqlRequestRequirementPlanningIntentRepository(
+                            session
+                        ).current_effective_need_for_requirement(
+                            requirement_after.id,
+                            fallback_hours=requirement_after.planned_hours,
+                        ),
+                        Decimal("18.00"),
+                    )
+                eric_after = self._by_target(final_state, ERIC_ID)
+                self.assertEqual(eric_after["covered_hours"], Decimal("18.00"))
+                self.assertEqual(
+                    {row["id"] for row in eric_after["shifts"] if row["counted"]},
+                    survivor_ids,
+                )
+            finally:
+                engine.dispose()
+
     def test_rebuild_failure_rolls_back_reduction_protections_and_shift_delete(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
