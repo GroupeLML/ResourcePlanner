@@ -43,6 +43,18 @@ class ReactErpSyncOperationsContractTests(unittest.TestCase):
         self.assertIn("commandError", page)
         self.assertNotIn("setError(null)", page)
 
+    def test_compensation_target_falls_back_to_latest_failed_attempt_without_recovery_authority(self) -> None:
+        page = (FRONTEND / "ErpSyncOperationsPage.tsx").read_text(encoding="utf-8")
+        recovery_authority = "operations?.recovery_state.attempt_id"
+        failed_fallback = "operations?.last_partial_or_failed_attempt?.id"
+
+        self.assertIn(recovery_authority, page)
+        self.assertIn(failed_fallback, page)
+        self.assertLess(
+            page.index(recovery_authority),
+            page.index(failed_fallback),
+        )
+
     def test_stale_compensation_refusal_invalidates_local_preview(self) -> None:
         page = (FRONTEND / "ErpSyncOperationsPage.tsx").read_text(encoding="utf-8")
         self.assertIn("STALE_COMPENSATION_CODES", page)
