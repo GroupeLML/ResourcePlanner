@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from decimal import Decimal
 
 from sqlalchemy import exists, or_, select, true
 from sqlalchemy.orm import Session
 
-from ...domain.planning_engine import MISSING_ALLOCATION_TYPE
+from ...domain.planning_engine import (
+    LockedAllocationInput,
+    MISSING_ALLOCATION_TYPE,
+    PreservedAllocationInput,
+)
 from .models import Shift
 from .operational_choice_models import (
     PLANNING_INTENT_PRESERVE_EXISTING,
@@ -86,3 +90,37 @@ def retained_coverage_hours(
     return sum((Decimal(str(row.hours)) for row in shifts), Decimal("0.00")).quantize(
         Decimal("0.01")
     )
+
+
+def dedupe_locked_allocations(
+    locked_allocations: Sequence[LockedAllocationInput],
+    preserved_allocations: Sequence[PreservedAllocationInput],
+) -> tuple[LockedAllocationInput, ...]:
+    """Remove locked engine inputs already represented by the same preserved placement."""
+
+    preserved_counts: dict[tuple[str, str, object, float], int] = {}
+    for item in preserved_allocations:
+        if not item.locked:
+            continue
+        key = (
+            item.segment_id,
+            item.resource_id,
+            item.day,
+            round(float(item.hours), 4),
+        )
+        preserved_counts[key] = preserved_counts.get(key, 0) + 1
+
+    result: list[LockedAllocationInput] = []
+    for allocation in locked_allocations:
+        key = (
+            allocation.segment_id,
+            allocation.resource_id,
+            allocation.day,
+            round(float(allocation.hours), 4),
+        )
+        duplicate_count = preserved_counts.get(key, 0)
+        if duplicate_count:
+            preserved_counts[key] = duplicate_count - 1
+            continue
+        result.append(allocation)
+    return tuple(result)
