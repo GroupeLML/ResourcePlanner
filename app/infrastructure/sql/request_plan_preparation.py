@@ -78,6 +78,7 @@ class PreparedRequirementSpec:
     required_competency: str | None
     competency_ids: tuple[str, ...]
     slot_index: int = 0
+    placement_not_before_date: date | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -602,6 +603,103 @@ class SqlRequestPlanPreparer:
             )
         return self._prepare_legacy_simple(request, current)
 
+    def _durable_slot_authority(
+        self,
+        request_id: str,
+    ) -> tuple[
+        dict[tuple[str, int], RequestRequirementPlanningIntent],
+        dict[str, tuple[Decimal, ...]],
+    ]:
+        intents = {
+            (intent.approved_entry_key, int(intent.slot_index)): intent
+            for intent in self._session.scalars(
+                select(RequestRequirementPlanningIntent).where(
+                    RequestRequirementPlanningIntent.workforce_request_id == request_id,
+                )
+            ).all()
+        }
+        reductions: dict[str, list[Decimal]] = defaultdict(list)
+        for intent_id, hours in self._session.execute(
+            select(
+                RequestCompletionReduction.planning_intent_id,
+                RequestCompletionReduction.reduction_hours,
+            )
+            .join(
+                RequestRequirementPlanningIntent,
+                RequestCompletionReduction.planning_intent_id
+                == RequestRequirementPlanningIntent.id,
+            )
+            .where(
+                RequestRequirementPlanningIntent.workforce_request_id == request_id,
+                RequestCompletionReduction.reconciliation_state == "ACTIVE",
+            )
+        ).all():
+            reductions[intent_id].append(
+                Decimal(str(hours)).quantize(Decimal("0.01"))
+            )
+        return intents, {
+            intent_id: tuple(values) for intent_id, values in reductions.items()
+        }
+
+    def _apply_durable_slot_authority(
+        self,
+        request_id: str,
+        specs: Sequence[PreparedRequirementSpec],
+    ) -> tuple[PreparedRequirementSpec, ...]:
+        """Apply durable reduction/cutoff authority to one stable candidate slot set."""
+
+        intents, reductions_by_intent = self._durable_slot_authority(request_id)
+        spec_slots_by_entry: dict[str, set[int]] = defaultdict(set)
+        for spec in specs:
+            spec_slots_by_entry[spec.approved_entry_key].add(int(spec.slot_index))
+
+        for (entry_key, slot_index), intent in intents.items():
+            if (
+                entry_key in spec_slots_by_entry
+                and reductions_by_intent.get(intent.id)
+                and slot_index not in spec_slots_by_entry[entry_key]
+            ):
+                raise ValueError(
+                    "reduction_rebase_required: la topologie approuvée ne correspond plus aux réductions actives."
+                )
+
+        effective: list[PreparedRequirementSpec] = []
+        for spec in specs:
+            intent = intents.get((spec.approved_entry_key, int(spec.slot_index)))
+            hours = spec.planned_hours
+            cutoff = None
+            if intent is not None:
+                hours = resolve_effective_slot_need(
+                    hours,
+                    reductions_by_intent.get(intent.id, ()),
+                )
+                cutoff = intent.placement_not_before_date
+            canonical = Decimal(str(hours)).quantize(Decimal("0.01"))
+            if canonical <= 0:
+                continue
+            effective.append(
+                replace(
+                    spec,
+                    planned_hours=canonical,
+                    placement_not_before_date=cutoff,
+                )
+            )
+        return tuple(effective)
+
+    def prepare_candidate_authoritative(
+        self,
+        request: WorkforceRequest,
+        *,
+        current: Sequence[ResourceRequirement] = (),
+    ) -> PreparedRequestPlan:
+        """Prepare a submitted candidate with the same durable slot authority as activation."""
+
+        prepared = self.prepare(request, current=current)
+        return replace(
+            prepared,
+            specs=self._apply_durable_slot_authority(request.id, prepared.specs),
+        )
+
     def prepare_active(
         self,
         request: WorkforceRequest,
@@ -652,33 +750,6 @@ class SqlRequestPlanPreparer:
                 current_by_entry[_text(requirement.approved_entry_key)].append(requirement)
         for rows in current_by_entry.values():
             rows.sort(key=lambda row: (row.created_at, row.id))
-
-        intents_by_entry: dict[str, dict[int, RequestRequirementPlanningIntent]] = defaultdict(dict)
-        for intent in self._session.scalars(
-            select(RequestRequirementPlanningIntent).where(
-                RequestRequirementPlanningIntent.workforce_request_id == request.id,
-            )
-        ).all():
-            intents_by_entry[intent.approved_entry_key][int(intent.slot_index)] = intent
-        reductions_by_intent: dict[str, list[Decimal]] = defaultdict(list)
-        for intent_id, hours in self._session.execute(
-            select(
-                RequestCompletionReduction.planning_intent_id,
-                RequestCompletionReduction.reduction_hours,
-            )
-            .join(
-                RequestRequirementPlanningIntent,
-                RequestCompletionReduction.planning_intent_id
-                == RequestRequirementPlanningIntent.id,
-            )
-            .where(
-                RequestRequirementPlanningIntent.workforce_request_id == request.id,
-                RequestCompletionReduction.reconciliation_state == "ACTIVE",
-            )
-        ).all():
-            reductions_by_intent[intent_id].append(
-                Decimal(str(hours)).quantize(Decimal("0.01"))
-            )
 
         specs: list[PreparedRequirementSpec] = []
         unresolved_groups = 0
@@ -765,23 +836,6 @@ class SqlRequestPlanPreparer:
                 else (1 if line_mode else max(int(row.get("slot_count") or 1), 1))
             )
             split_hours = split_total_workforce_hours(total_hours, slot_count)
-            persisted_intents = intents_by_entry.get(identity_key, {})
-            active_reductions_by_slot: dict[int, tuple[Decimal, ...]] = {}
-            for slot_index, intent in persisted_intents.items():
-                reductions = tuple(reductions_by_intent.get(intent.id, ()))
-                if reductions:
-                    active_reductions_by_slot[slot_index] = reductions
-            if active_reductions_by_slot and any(index >= slot_count for index in active_reductions_by_slot):
-                raise ValueError(
-                    "reduction_rebase_required: la topologie approuvée ne correspond plus aux réductions actives."
-                )
-            split_hours = tuple(
-                resolve_effective_slot_need(
-                    hours,
-                    active_reductions_by_slot.get(index, ()),
-                )
-                for index, hours in enumerate(split_hours)
-            )
             base_key = (
                 ("PERIOD", line_id, period_key)
                 if period_key is not None
@@ -857,7 +911,7 @@ class SqlRequestPlanPreparer:
                 )
 
         unresolved_groups = len(groups_seen - groups_selected)
-        effective_specs = tuple(specs)
+        effective_specs = self._apply_durable_slot_authority(request.id, tuple(specs))
         if current and effective_specs:
             matches, _obsolete = self.match_current(request, current, effective_specs)
             applicable_matches = tuple(
