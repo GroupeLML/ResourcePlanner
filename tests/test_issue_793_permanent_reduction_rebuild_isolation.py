@@ -2894,7 +2894,7 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                         assert request_before_reads is not None
                         candidate_state_before = (
                             request_before_reads.status,
-                            int(request_before_reads.version),
+                            int(request_before_reads.aggregate_version),
                         )
                         operational_before = tuple(
                             (
@@ -2949,7 +2949,7 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                     assert request_after_reads is not None
                     candidate_state_after = (
                         request_after_reads.status,
-                        int(request_after_reads.version),
+                        int(request_after_reads.aggregate_version),
                     )
                     operational_after = tuple(
                         (
@@ -3076,20 +3076,11 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                         200,
                     )
                     actions = self._assignment_actions(client, number)
-                    self._place_from_drop(
-                        client,
-                        segment_id=actions[0]["segment_id"],
-                        resource_id=ERIC_ID,
-                        dropped_date=START,
-                        key="793-delta-residual-a",
-                    )
-                    self._place_from_drop(
-                        client,
-                        segment_id=actions[1]["segment_id"],
-                        resource_id=TIMMY_ID,
-                        dropped_date=START,
-                        key="793-delta-residual-b",
-                    )
+                    # This scenario tests residual preview/materialization parity,
+                    # not ADR-035 cutoff rebasing. Use ordinary assignment so neither
+                    # sibling acquires an unrelated placement_not_before_date.
+                    self._assign(client, actions[0]["segment_id"], ERIC_ID)
+                    self._assign(client, actions[1]["segment_id"], TIMMY_ID)
                     with factory() as session:
                         initial = self._capture(
                             session,
