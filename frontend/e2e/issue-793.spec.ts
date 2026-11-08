@@ -1015,7 +1015,9 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
       initialTimmy.reduce((sum, row) => sum + Number(row.hours), 0),
     ).toBe(24);
 
-    const ericInitialIds = initialEric.map((row) => String(row.allocation_id));
+    const ericOriginalByDate = new Map(
+      initialEric.map((row) => [row.work_date, String(row.allocation_id)]),
+    );
     const ericFirst = await reduceCurrentShift(
       demandNumber,
       ericId,
@@ -1032,9 +1034,15 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
     const timmyAfterEric = shifts
       .filter((row) => row.resource_id === timmyId)
       .sort((a, b) => String(a.work_date).localeCompare(String(b.work_date)));
-    expect(ericAfterFirst.map((row) => [row.work_date, Number(row.hours)])).toEqual([
-      [d1, 8],
-      [d2, 8],
+    expect(
+      ericAfterFirst.map((row) => [
+        row.work_date,
+        Number(row.hours),
+        String(row.allocation_id),
+      ]),
+    ).toEqual([
+      [d1, 8, ericOriginalByDate.get(d1)],
+      [d2, 8, ericOriginalByDate.get(d2)],
     ]);
     expect(timmyAfterEric.map((row) => [row.work_date, Number(row.hours)])).toEqual([
       [d1, 8],
@@ -1042,10 +1050,6 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
       [d3, 8],
     ]);
 
-    const timmyCurrentWednesday = timmyAfterEric.find(
-      (row) => row.work_date === d3,
-    );
-    expect(timmyCurrentWednesday).toBeTruthy();
     const timmySecond = await reduceCurrentShift(
       demandNumber,
       timmyId,
@@ -1059,156 +1063,57 @@ test("793 real backend characterizes regenerated-shift permanent reduction UI", 
     const ericAfterSecond = shifts
       .filter((row) => row.resource_id === ericId)
       .sort((a, b) => String(a.work_date).localeCompare(String(b.work_date)));
-    expect(ericAfterSecond.map((row) => [row.work_date, Number(row.hours)])).toEqual([
-      [d1, 5.33],
-      [d2, 5.33],
-      [d3, 5.34],
+    expect(
+      ericAfterSecond.map((row) => [
+        row.work_date,
+        Number(row.hours),
+        String(row.allocation_id),
+      ]),
+    ).toEqual([
+      [d1, 8, ericOriginalByDate.get(d1)],
+      [d2, 8, ericOriginalByDate.get(d2)],
     ]);
     expect(
       ericAfterSecond.reduce((sum, row) => sum + Number(row.hours), 0),
     ).toBe(16);
+    expect(ericAfterSecond.some((row) => row.work_date === d3)).toBeFalsy();
 
-    const regenerated = ericAfterSecond.find((row) => row.work_date === d3);
-    expect(regenerated).toBeTruthy();
-    const regeneratedAllocationId = String(regenerated.allocation_id);
-
-    const third = await reduceCurrentShift(
-      demandNumber,
-      ericId,
-      d3,
-      { capture: true, label: "ERIC_THIRD" },
-    );
-
-    const thirdPreview = third.preview.payload ?? {};
-    const thirdMutation = third.mutation;
-    const mutationError = thirdMutation?.payload?.error?.code ?? null;
-    const versionsMatchPreview = Boolean(
-      thirdMutation?.body
-      && Number(thirdMutation.body.expected_planning_version)
-        === Number(thirdPreview.planning_version)
-      && Number(thirdMutation.body.expected_request_version)
-        === Number(thirdPreview.request_version)
-      && String(thirdMutation.body.expected_approval_revision_id)
-        === String(thirdPreview.approval_revision_id)
-      && Number(thirdMutation.body.expected_operational_version)
-        === Number(thirdPreview.operational_version)
-    );
-
-    const afterThird = await demandShifts(demandNumber);
-    const allocationStillPersisted = afterThird.some(
-      (row) => String(row.allocation_id) === regeneratedAllocationId,
-    );
-
-    let modalVisible = await third.editor.isVisible();
-    let confirmationVisible = await third.confirmation.isVisible();
-    let renderedOldCard = await third.card.count() > 0;
-
-    let classification: "U1" | "U2" | "U3" | "U4" | null = null;
-    if (third.classification !== "REDOPEN4") {
-      classification = null;
-    } else if ((thirdMutation?.status ?? 500) >= 400) {
-      const staleCodes = new Set([
-        "request_shift_not_found",
-        "planning_version_conflict",
-        "request_version_conflict",
-        "operational_choice_version_conflict",
-        "planning_authorization_revision_conflict",
-      ]);
-      classification = staleCodes.has(String(mutationError)) ? "U2" : "U1";
-    } else {
-      expect(
-        thirdMutation?.status,
-        JSON.stringify(thirdMutation?.payload),
-      ).toBe(200);
-      try {
-        await third.editor.waitFor({ state: "hidden", timeout: 2_000 });
-      } catch {
-        // Characterization: successful backend mutation may leave editor open.
-      }
-      try {
-        await third.card.waitFor({ state: "detached", timeout: 2_000 });
-      } catch {
-        // Characterization: retain stale rendered-card evidence for U3.
-      }
-      modalVisible = await third.editor.isVisible();
-      confirmationVisible = await third.confirmation.isVisible();
-      renderedOldCard = await third.card.count() > 0;
-      const persistedChanged = !allocationStillPersisted;
-      const ericRowsAfterThird = afterThird
-        .filter((row) => row.resource_id === ericId)
-        .sort((a, b) => String(a.work_date).localeCompare(String(b.work_date)));
-      expect(
-        ericRowsAfterThird.map((row) => [row.work_date, Number(row.hours)]),
-      ).toEqual([
-        [d1, 5.33],
-        [d2, 5.33],
-      ]);
-      expect(
-        ericRowsAfterThird.reduce(
-          (sum, row) => sum + Number(row.hours),
-          0,
-        ),
-      ).toBe(10.66);
-      expect(
-        Number(thirdMutation?.payload?.effective_need_after),
-      ).toBe(10.66);
-      expect(
-        Number(thirdMutation?.payload?.covered_hours_after),
-      ).toBe(10.66);
-      expect(
-        Number(thirdMutation?.payload?.remaining_hours_after),
-      ).toBe(0);
-
-      classification =
-        persistedChanged
-        && !modalVisible
-        && !confirmationVisible
-        && !renderedOldCard
-          ? "U4"
-          : "U3";
-    }
-
-    const evidence = {
-      fixture: {
+    console.log(
+      "ISSUE793_PHASE3B2_SURVIVOR_RUNTIME",
+      JSON.stringify({
         demandNumber,
         ericId,
         timmyId,
-        window: [d1, d3],
-      },
-      initialEricAllocationIds: ericInitialIds,
-      firstReduction: ericFirst,
-      secondReduction: timmySecond,
-      regeneratedAllocationId,
-      thirdReduction: third,
-      mutation: {
-        errorCode: mutationError,
-        versionsMatchPreview,
-      },
-      persisted: {
-        allocationStillPersisted,
-        ericRows: afterThird
-          .filter((row) => row.resource_id === ericId)
-          .map((row) => ({
-            allocationId: row.allocation_id,
-            date: row.work_date,
-            hours: Number(row.hours),
-          })),
-      },
-      ui: {
-        modalVisible,
-        confirmationVisible,
-        renderedOldCard,
-      },
-      classification,
-    };
-    console.log("ISSUE793_BROWSER_RUNTIME", JSON.stringify(evidence));
+        originalEric: initialEric.map((row) => ({
+          allocationId: row.allocation_id,
+          date: row.work_date,
+          hours: Number(row.hours),
+        })),
+        ericAfterFirst: ericAfterFirst.map((row) => ({
+          allocationId: row.allocation_id,
+          date: row.work_date,
+          hours: Number(row.hours),
+        })),
+        ericAfterSecond: ericAfterSecond.map((row) => ({
+          allocationId: row.allocation_id,
+          date: row.work_date,
+          hours: Number(row.hours),
+        })),
+        firstReduction: {
+          status: ericFirst.mutation?.status,
+          allocationId: ericFirst.allocationId,
+        },
+        secondReduction: {
+          status: timmySecond.mutation?.status,
+          allocationId: timmySecond.allocationId,
+        },
+      }),
+    );
 
-    expect(third.classification).toBe("REDOPEN4");
-    expect(third.preview.status).toBe(200);
-    expect(versionsMatchPreview).toBeTruthy();
-    expect(thirdMutation?.idempotencyKey).toBeTruthy();
-    expect(classification).not.toBeNull();
-    expect(["U1", "U2", "U3", "U4"]).toContain(classification);
+    // Phase 3A's regenerated-Wednesday/third-delete U4 characterization is
+    // historical evidence. Durable #793 protection now intentionally prevents
+    // that regenerated ERIC Wednesday Shift. Broad post-3B browser acceptance
+    // remains Phase 3B3.
   } finally {
     for (const ruleId of availabilityIds) {
       try {
