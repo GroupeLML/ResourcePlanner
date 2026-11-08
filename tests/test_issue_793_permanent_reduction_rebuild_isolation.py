@@ -28,6 +28,7 @@ from app.infrastructure.sql import (
 from app.infrastructure.sql.command_adapters import SqlPlanningCommandAdapter
 from app.infrastructure.sql.employee_sync_repository import SqlEmployeeSyncRepository
 from app.infrastructure.sql.idempotency import CommandIdempotencyReceipt
+from app.infrastructure.sql.planning_audit import PlanningChangeHistory
 from app.infrastructure.sql.planning_version import SqlPlanningMutationVersionRepository
 from app.infrastructure.sql.planning_intent_repository import (
     SqlRequestRequirementPlanningIntentRepository,
@@ -2156,7 +2157,7 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
             finally:
                 engine.dispose()
 
-    def test_explicit_shift_update_and_move_retire_only_targeted_protection(self) -> None:
+    def test_explicit_same_id_update_and_move_preserve_protection_until_return(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
             app = create_api_app(
@@ -2211,6 +2212,26 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                         row for row in eric["shifts"]
                         if row["work_date"] == "2026-11-03" and row["counted"]
                     )
+                    initial_protections = [
+                        row
+                        for row in protected_state["protections"]
+                        if row["planning_intent_id"] == eric["planning_intent_id"]
+                        and row["active"]
+                    ]
+                    self.assertEqual(
+                        {row["shift_id"] for row in initial_protections},
+                        {monday["id"], tuesday["id"]},
+                    )
+                    monday_protection = next(
+                        row
+                        for row in initial_protections
+                        if row["original_shift_id"] == monday["id"]
+                    )
+                    tuesday_protection = next(
+                        row
+                        for row in initial_protections
+                        if row["original_shift_id"] == tuesday["id"]
+                    )
 
                     updated = client.put(
                         f"/api/v1/allocations/{monday['allocation_id']}",
@@ -2224,34 +2245,69 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                         },
                     )
                     self.assertEqual(updated.status_code, 200, updated.text)
+
                     with factory() as session:
                         after_update = self._capture(
                             session,
                             number,
                             nominal_slot_hours=Decimal("28.00"),
                         )
+                        update_audits = session.scalars(
+                            select(PlanningChangeHistory).where(
+                                PlanningChangeHistory.entity_id == monday["id"],
+                                PlanningChangeHistory.action == "Modification quart manuel",
+                            )
+                        ).all()
+                    updated_slot = after_update["slots"][eric["requirement_id"]]
+                    updated_monday = next(
+                        row for row in updated_slot["shifts"] if row["id"] == monday["id"]
+                    )
+                    self.assertEqual(updated_monday["resource_id"], TIMMY_ID)
+                    self.assertEqual(updated_monday["work_date"], START)
+                    self.assertEqual(updated_monday["source"], "MANUAL")
+                    self.assertTrue(updated_monday["locked"])
+                    self.assertGreaterEqual(len(update_audits), 1)
+
                     update_protections = [
                         row
                         for row in after_update["protections"]
                         if row["planning_intent_id"] == eric["planning_intent_id"]
                     ]
-                    retired_monday = next(
+                    self.assertEqual(len(update_protections), 2)
+                    self.assertTrue(all(row["active"] for row in update_protections))
+                    updated_monday_protection = next(
                         row
                         for row in update_protections
                         if row["original_shift_id"] == monday["id"]
                     )
-                    self.assertFalse(retired_monday["active"])
-                    self.assertEqual(retired_monday["shift_id"], monday["id"])
-                    self.assertEqual(
-                        retired_monday["retired_reason"],
-                        "EXPLICIT_SHIFT_UPDATE",
+                    updated_tuesday_protection = next(
+                        row
+                        for row in update_protections
+                        if row["original_shift_id"] == tuesday["id"]
                     )
-                    active_after_update = [
-                        row for row in update_protections if row["active"]
-                    ]
                     self.assertEqual(
-                        {row["shift_id"] for row in active_after_update},
-                        {tuesday["id"]},
+                        updated_monday_protection["id"],
+                        monday_protection["id"],
+                    )
+                    self.assertEqual(
+                        updated_monday_protection["shift_id"],
+                        monday["id"],
+                    )
+                    self.assertEqual(
+                        updated_monday_protection["original_shift_id"],
+                        monday_protection["original_shift_id"],
+                    )
+                    self.assertEqual(
+                        updated_monday_protection["originating_reduction_id"],
+                        monday_protection["originating_reduction_id"],
+                    )
+                    self.assertEqual(
+                        updated_monday_protection["planning_intent_id"],
+                        monday_protection["planning_intent_id"],
+                    )
+                    self.assertEqual(
+                        updated_tuesday_protection,
+                        tuesday_protection,
                     )
 
                     snapshot = client.get(
@@ -2260,38 +2316,190 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                     )
                     self.assertEqual(snapshot.status_code, 200, snapshot.text)
                     planning_version = snapshot.json()["planning_version"]
+                    move_body = {
+                        "resource_id": ERIC_ID,
+                        "day": WEDNESDAY,
+                        "outside_standard_hours": False,
+                        "expected_planning_version": planning_version,
+                    }
                     moved = client.post(
                         f"/api/v1/allocations/{tuesday['allocation_id']}/move",
                         headers={"Idempotency-Key": "issue-793-explicit-protected-move"},
-                        json={
-                            "resource_id": ERIC_ID,
-                            "day": START,
-                            "outside_standard_hours": False,
-                            "expected_planning_version": planning_version,
-                        },
+                        json=move_body,
                     )
                     self.assertEqual(moved.status_code, 200, moved.text)
+
+                    replay = client.post(
+                        f"/api/v1/allocations/{tuesday['allocation_id']}/move",
+                        headers={"Idempotency-Key": "issue-793-explicit-protected-move"},
+                        json=move_body,
+                    )
+                    self.assertEqual(replay.status_code, 200, replay.text)
+
                     with factory() as session:
                         after_move = self._capture(
                             session,
                             number,
                             nominal_slot_hours=Decimal("28.00"),
                         )
+                        move_audits = session.scalars(
+                            select(PlanningChangeHistory).where(
+                                PlanningChangeHistory.entity_id == tuesday["id"],
+                                PlanningChangeHistory.action == "Déplacement quart",
+                            )
+                        ).all()
+                    moved_slot = after_move["slots"][eric["requirement_id"]]
+                    moved_tuesday = next(
+                        row for row in moved_slot["shifts"] if row["id"] == tuesday["id"]
+                    )
+                    self.assertEqual(moved_tuesday["work_date"], WEDNESDAY)
+                    self.assertEqual(moved_tuesday["resource_id"], ERIC_ID)
+                    self.assertEqual(moved_tuesday["source"], "MANUAL")
+                    self.assertTrue(moved_tuesday["locked"])
+                    self.assertGreaterEqual(len(move_audits), 1)
+
                     protections = [
                         row
                         for row in after_move["protections"]
                         if row["planning_intent_id"] == eric["planning_intent_id"]
                     ]
-                    self.assertFalse(any(row["active"] for row in protections))
-                    retired_tuesday = next(
+                    self.assertEqual(len(protections), 2)
+                    self.assertTrue(all(row["active"] for row in protections))
+                    moved_protection = next(
                         row
                         for row in protections
                         if row["original_shift_id"] == tuesday["id"]
                     )
-                    self.assertEqual(retired_tuesday["shift_id"], tuesday["id"])
+                    sibling_protection = next(
+                        row
+                        for row in protections
+                        if row["original_shift_id"] == monday["id"]
+                    )
+                    self.assertEqual(moved_protection["id"], tuesday_protection["id"])
+                    self.assertEqual(moved_protection["shift_id"], tuesday["id"])
                     self.assertEqual(
-                        retired_tuesday["retired_reason"],
-                        "EXPLICIT_SHIFT_MOVE",
+                        moved_protection["original_shift_id"],
+                        tuesday_protection["original_shift_id"],
+                    )
+                    self.assertEqual(
+                        moved_protection["originating_reduction_id"],
+                        tuesday_protection["originating_reduction_id"],
+                    )
+                    self.assertEqual(
+                        moved_protection["planning_intent_id"],
+                        tuesday_protection["planning_intent_id"],
+                    )
+                    self.assertEqual(
+                        sibling_protection["id"],
+                        monday_protection["id"],
+                    )
+                    self.assertEqual(sibling_protection["shift_id"], monday["id"])
+                    self.assertEqual(
+                        sibling_protection["originating_reduction_id"],
+                        monday_protection["originating_reduction_id"],
+                    )
+
+                    with factory.begin() as session:
+                        SqlPeriodAwareApprovedDemandSyncAdapter(
+                            session
+                        ).sync_operational_choices(number)
+                    rebuilt = client.post("/api/v1/planning/rebuild")
+                    self.assertEqual(rebuilt.status_code, 200, rebuilt.text)
+
+                    with factory() as session:
+                        after_rebuild = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("28.00"),
+                        )
+                    rebuilt_slot = after_rebuild["slots"][eric["requirement_id"]]
+                    rebuilt_monday = next(
+                        row for row in rebuilt_slot["shifts"] if row["id"] == monday["id"]
+                    )
+                    rebuilt_tuesday = next(
+                        row for row in rebuilt_slot["shifts"] if row["id"] == tuesday["id"]
+                    )
+                    self.assertEqual(rebuilt_monday["work_date"], START)
+                    self.assertEqual(rebuilt_monday["resource_id"], TIMMY_ID)
+                    self.assertEqual(rebuilt_tuesday["work_date"], WEDNESDAY)
+                    self.assertEqual(rebuilt_tuesday["resource_id"], ERIC_ID)
+                    self.assertEqual(
+                        {row["id"] for row in rebuilt_slot["shifts"]},
+                        {monday["id"], tuesday["id"]},
+                    )
+                    self.assertFalse(
+                        any(
+                            row["id"] == tuesday["id"]
+                            and row["work_date"] == "2026-11-03"
+                            for row in rebuilt_slot["shifts"]
+                        )
+                    )
+                    rebuilt_protections = [
+                        row
+                        for row in after_rebuild["protections"]
+                        if row["planning_intent_id"] == eric["planning_intent_id"]
+                    ]
+                    self.assertEqual(len(rebuilt_protections), 2)
+                    self.assertTrue(all(row["active"] for row in rebuilt_protections))
+                    self.assertEqual(
+                        {row["id"] for row in rebuilt_protections},
+                        {monday_protection["id"], tuesday_protection["id"]},
+                    )
+
+                    preview = self._preview(client, tuesday["allocation_id"])
+                    returned = client.post(
+                        f"/api/v1/allocations/{tuesday['allocation_id']}/return-to-work-queue",
+                        headers={"Idempotency-Key": "issue-793-return-after-protected-move"},
+                        json={
+                            "expected_planning_version": preview["planning_version"],
+                            "expected_approval_revision_id": preview["approval_revision_id"],
+                            "expected_operational_version": preview["operational_version"],
+                        },
+                    )
+                    self.assertEqual(returned.status_code, 200, returned.text)
+
+                    with factory() as session:
+                        after_return = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("28.00"),
+                        )
+                        removed = session.get(Shift, tuesday["id"])
+                    self.assertIsNone(removed)
+                    return_protections = [
+                        row
+                        for row in after_return["protections"]
+                        if row["planning_intent_id"] == eric["planning_intent_id"]
+                    ]
+                    returned_protection = next(
+                        row
+                        for row in return_protections
+                        if row["original_shift_id"] == tuesday["id"]
+                    )
+                    surviving_sibling = next(
+                        row
+                        for row in return_protections
+                        if row["original_shift_id"] == monday["id"]
+                    )
+                    self.assertFalse(returned_protection["active"])
+                    self.assertIsNone(returned_protection["shift_id"])
+                    self.assertEqual(
+                        returned_protection["retired_reason"],
+                        "RETURN_SHIFT_TO_WORK_QUEUE",
+                    )
+                    self.assertEqual(
+                        returned_protection["originating_reduction_id"],
+                        tuesday_protection["originating_reduction_id"],
+                    )
+                    self.assertTrue(surviving_sibling["active"])
+                    self.assertEqual(surviving_sibling["shift_id"], monday["id"])
+                    self.assertEqual(
+                        surviving_sibling["originating_reduction_id"],
+                        monday_protection["originating_reduction_id"],
+                    )
+                    final_slot = after_return["slots"][eric["requirement_id"]]
+                    self.assertFalse(
+                        any(row["id"] == tuesday["id"] for row in final_slot["shifts"])
                     )
             finally:
                 engine.dispose()
