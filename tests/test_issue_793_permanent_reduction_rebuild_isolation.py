@@ -13,6 +13,8 @@ from app.application.employee_sync import EmployeeSyncService, ExternalEmployeeR
 from app.domain.planning_engine import MISSING_ALLOCATION_TYPE
 from app.infrastructure.sql import (
     PlanningWorkQueueRelease,
+    RequestApprovalReference,
+    RequestApprovalRevision,
     RequestCompletionReduction,
     RequestRequirementPlanningIntent,
     RequestShiftSurvivorProtection,
@@ -3330,6 +3332,353 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                         sum((row["hours"] for row in generated), Decimal("0.00")),
                         Decimal("4.00"),
                     )
+            finally:
+                engine.dispose()
+
+    def test_plan_delta_carries_compatible_operational_base_hours_before_reduction(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            admin_app = create_api_app(
+                database_url,
+                actor_name="admin-793-delta-base-hours",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(admin_app, raise_server_exceptions=False) as client:
+                    created = client.post(
+                        "/api/v1/demands",
+                        json=routed_demand_payload(
+                            {
+                                "project_number": "P-778-API",
+                                "submit": True,
+                                "lines": [
+                                    {
+                                        "position": 0,
+                                        "desired_start": START,
+                                        "desired_end": WEDNESDAY,
+                                        "desired_active_days": 3,
+                                        "estimated_hours": 28,
+                                        "required_resource_class": "ELECTRICAL",
+                                        "confirmation": "Confirmée",
+                                        "description": "#793 delta operational base A",
+                                    },
+                                    {
+                                        "position": 1,
+                                        "desired_start": START,
+                                        "desired_end": WEDNESDAY,
+                                        "desired_active_days": 3,
+                                        "estimated_hours": 24,
+                                        "required_resource_class": "ELECTRICAL",
+                                        "confirmation": "Confirmée",
+                                        "description": "#793 delta operational base B",
+                                    },
+                                ],
+                            }
+                        ),
+                    )
+                    self.assertEqual(created.status_code, 201, created.text)
+                    number = created.json()["demand_number"]
+                    approved = client.post(
+                        f"/api/v1/demands/{number}/approve",
+                        json={"comment": "#793 operational base initial"},
+                    )
+                    self.assertEqual(approved.status_code, 200, approved.text)
+
+                    actions = self._assignment_actions(client, number)
+                    self._assign(client, actions[0]["segment_id"], ERIC_ID)
+                    self._assign(client, actions[1]["segment_id"], TIMMY_ID)
+
+                    with factory() as session:
+                        initial = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("28.00"),
+                        )
+                    eric_initial = self._by_target(initial, ERIC_ID)
+                    target = next(
+                        row
+                        for row in eric_initial["shifts"]
+                        if row["work_date"] == WEDNESDAY
+                        and row["counted"]
+                        and row["hours"] == Decimal("8.00")
+                    )
+                    reduced = self._reduce(
+                        client,
+                        target["allocation_id"],
+                        self._preview(client, target["allocation_id"]),
+                        "793-delta-base-reduce",
+                    )
+                    self.assertEqual(reduced.status_code, 200, reduced.text)
+
+                    with factory() as session:
+                        reduced_state = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("28.00"),
+                        )
+                    eric_reduced = self._by_target(reduced_state, ERIC_ID)
+                    timmy = self._by_target(reduced_state, TIMMY_ID)
+                    self.assertEqual(eric_reduced["effective_need"], Decimal("20.00"))
+                    self.assertEqual(eric_reduced["covered_hours"], Decimal("20.00"))
+
+                    patched = client.patch(
+                        f"/api/v1/segments/{eric_reduced['segment_id']}",
+                        json={"planned_hours": 26},
+                    )
+                    self.assertEqual(patched.status_code, 200, patched.text)
+
+                    with factory() as session:
+                        operational = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("28.00"),
+                        )
+                        request = session.scalar(
+                            select(WorkforceRequest).where(
+                                WorkforceRequest.legacy_demand_number == number
+                            )
+                        )
+                        assert request is not None
+                        state = session.get(RequestOperationalState, request.id)
+                        self.assertIsNotNone(state)
+                        assert state is not None
+                        override_values = {
+                            key: Decimal(str(value)).quantize(Decimal("0.01"))
+                            for key, value in __import__("json").loads(
+                                state.budget_overrides_text
+                            ).items()
+                        }
+                    eric_operational = self._by_target(operational, ERIC_ID)
+                    self.assertEqual(eric_operational["effective_need"], Decimal("18.00"))
+                    self.assertEqual(eric_operational["covered_hours"], Decimal("18.00"))
+                    self.assertEqual(eric_operational["residual"], Decimal("0.00"))
+                    self.assertIn(Decimal("26.00"), set(override_values.values()))
+                    self.assertEqual(
+                        tuple(
+                            (row["work_date"], row["hours"])
+                            for row in eric_operational["shifts"]
+                            if row["counted"]
+                        ),
+                        (
+                            (START, Decimal("8.00")),
+                            ("2026-11-03", Decimal("8.00")),
+                            (WEDNESDAY, Decimal("2.00")),
+                        ),
+                    )
+                    survivor_ids = {
+                        row["id"]
+                        for row in eric_operational["shifts"]
+                        if row["counted"] and row["hours"] == Decimal("8.00")
+                    }
+                    self.assertEqual(len(survivor_ids), 2)
+                    line_a_segment_id = eric_operational["segment_id"]
+                    line_a_identity = (
+                        eric_operational["approved_entry_key"],
+                        eric_operational["slot_index"],
+                    )
+                    line_b_id = timmy["source_request_line_id"]
+                    self.assertIsNotNone(line_b_id)
+
+                pm_app = create_api_app(
+                    database_url,
+                    actor_name="pm-793-delta-base-hours",
+                    auth_resolver=TEST_PROJECT_MANAGER_AUTH_RESOLVER,
+                )
+                with TestClient(pm_app, raise_server_exceptions=False) as pm:
+                    demand = pm.get(f"/api/v1/demands/{number}")
+                    self.assertEqual(demand.status_code, 200, demand.text)
+                    changed = pm.put(
+                        f"/api/v1/demands/{number}/lines/{line_b_id}/periods",
+                        json={
+                            "expected_request_version": demand.json()["version"],
+                            "periods": [
+                                {
+                                    "period_id": "793-DELTA-BASE-B",
+                                    "start_date": START,
+                                    "end_date": WEDNESDAY,
+                                    "hours": 16,
+                                    "kind": "CUMULATIVE",
+                                    "desired_active_days": 2,
+                                }
+                            ],
+                        },
+                    )
+                    self.assertEqual(changed.status_code, 200, changed.text)
+                    self.assertTrue(changed.json()["reapproval_required"])
+                    self.assertEqual(changed.json()["status"], "Soumise")
+
+                    with factory() as session:
+                        request_candidate = session.scalar(
+                            select(WorkforceRequest).where(
+                                WorkforceRequest.legacy_demand_number == number
+                            )
+                        )
+                        assert request_candidate is not None
+                        current_candidate = tuple(
+                            session.scalars(
+                                select(ResourceRequirement).where(
+                                    ResourceRequirement.workforce_request_id
+                                    == request_candidate.id,
+                                    ResourceRequirement.status != "Annulé",
+                                )
+                            )
+                        )
+                        preparer = SqlRequestPlanPreparer(session)
+                        nominal = preparer.prepare(
+                            request_candidate,
+                            current=current_candidate,
+                        )
+                        authoritative = preparer.prepare_candidate_authoritative(
+                            request_candidate,
+                            current=current_candidate,
+                        )
+                        nominal_a = next(
+                            spec
+                            for spec in nominal.specs
+                            if spec.approved_entry_key == line_a_identity[0]
+                            and int(spec.slot_index) == int(line_a_identity[1])
+                        )
+                        authoritative_a = next(
+                            spec
+                            for spec in authoritative.specs
+                            if spec.approved_entry_key == line_a_identity[0]
+                            and int(spec.slot_index) == int(line_a_identity[1])
+                        )
+                        self.assertEqual(nominal_a.planned_hours, Decimal("28.00"))
+                        self.assertEqual(
+                            authoritative_a.planned_hours,
+                            Decimal("18.00"),
+                        )
+                        before_reads = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("28.00"),
+                        )
+                        state_before = session.get(
+                            RequestOperationalState,
+                            request_candidate.id,
+                        )
+                        self.assertIsNotNone(state_before)
+                        assert state_before is not None
+                        operational_state_before = (
+                            int(state_before.version),
+                            state_before.approval_revision_id,
+                            state_before.budget_overrides_text,
+                        )
+                        planning_version_before = SqlPlanningMutationVersionRepository(
+                            session
+                        ).current_version()
+
+                    first = pm.get(f"/api/v1/demands/{number}/plan-delta")
+                    second = pm.get(f"/api/v1/demands/{number}/plan-delta")
+                    self.assertEqual(first.status_code, 200, first.text)
+                    self.assertEqual(second.status_code, 200, second.text)
+                    self.assertEqual(first.json(), second.json())
+                    self.assertTrue(first.json()["available"], first.json())
+                    self.assertEqual(
+                        [
+                            row
+                            for row in first.json()["items"]
+                            if row["segment_id"] == line_a_segment_id
+                        ],
+                        [],
+                    )
+
+                with factory() as session:
+                    after_reads = self._capture(
+                        session,
+                        number,
+                        nominal_slot_hours=Decimal("28.00"),
+                    )
+                    request_after_reads = session.scalar(
+                        select(WorkforceRequest).where(
+                            WorkforceRequest.legacy_demand_number == number
+                        )
+                    )
+                    assert request_after_reads is not None
+                    state_after = session.get(
+                        RequestOperationalState,
+                        request_after_reads.id,
+                    )
+                    self.assertIsNotNone(state_after)
+                    assert state_after is not None
+                    operational_state_after = (
+                        int(state_after.version),
+                        state_after.approval_revision_id,
+                        state_after.budget_overrides_text,
+                    )
+                    planning_version_after = SqlPlanningMutationVersionRepository(
+                        session
+                    ).current_version()
+                self.assertEqual(after_reads, before_reads)
+                self.assertEqual(operational_state_after, operational_state_before)
+                self.assertEqual(planning_version_after, planning_version_before)
+
+                with TestClient(admin_app, raise_server_exceptions=False) as client:
+                    reapproved = client.post(
+                        f"/api/v1/demands/{number}/approve",
+                        json={"comment": "#793 operational base successor"},
+                    )
+                    self.assertEqual(reapproved.status_code, 200, reapproved.text)
+
+                with factory() as session:
+                    final_state = self._capture(
+                        session,
+                        number,
+                        nominal_slot_hours=Decimal("28.00"),
+                    )
+                    request_final = session.scalar(
+                        select(WorkforceRequest).where(
+                            WorkforceRequest.legacy_demand_number == number
+                        )
+                    )
+                    assert request_final is not None
+                    reference = session.get(RequestApprovalReference, request_final.id)
+                    self.assertIsNotNone(reference)
+                    assert reference is not None
+                    revision = session.get(
+                        RequestApprovalRevision,
+                        reference.active_revision_id,
+                    )
+                    self.assertIsNotNone(revision)
+                    assert revision is not None
+                    payload = __import__("json").loads(revision.payload_text)
+                    line_a_entry = next(
+                        row
+                        for row in payload["authorization"]["entries"]
+                        if row["identity"] == line_a_identity[0]
+                    )
+                    self.assertEqual(
+                        Decimal(str(line_a_entry["hours"])).quantize(Decimal("0.01")),
+                        Decimal("28.00"),
+                    )
+
+                eric_final = self._by_target(final_state, ERIC_ID)
+                self.assertEqual(eric_final["effective_need"], Decimal("18.00"))
+                self.assertEqual(eric_final["covered_hours"], Decimal("18.00"))
+                self.assertEqual(eric_final["residual"], Decimal("0.00"))
+                self.assertEqual(
+                    {
+                        row["id"]
+                        for row in eric_final["shifts"]
+                        if row["id"] in survivor_ids
+                    },
+                    survivor_ids,
+                )
+                self.assertEqual(
+                    tuple(
+                        (row["work_date"], row["hours"])
+                        for row in eric_final["shifts"]
+                        if row["counted"]
+                    ),
+                    (
+                        (START, Decimal("8.00")),
+                        ("2026-11-03", Decimal("8.00")),
+                        (WEDNESDAY, Decimal("2.00")),
+                    ),
+                )
             finally:
                 engine.dispose()
 
