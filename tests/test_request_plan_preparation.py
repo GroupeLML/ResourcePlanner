@@ -182,6 +182,18 @@ class SharedRequestPlanPreparationTests(unittest.TestCase):
                 status="Planifié",
                 origin="REQUEST",
             )
+            from datetime import datetime, timezone
+
+            revision = RequestApprovalRevision(
+                id="REV-PROT",
+                workforce_request_id="D-PROT",
+                request_version=1,
+                approved_at=datetime.now(timezone.utc),
+                authorization_fingerprint="b" * 64,
+                payload_text='{"request": {}, "authorization": {"entries": []}}',
+            )
+            session.add(revision)
+            session.flush()
             intent = RequestRequirementPlanningIntent(
                 id="INT-PROT",
                 workforce_request_id="D-PROT",
