@@ -39,7 +39,10 @@ from app.infrastructure.sql.survivor_protection_repository import (
 from app.server import create_api_app
 from tests import test_request_work_queue_api_integration as work_queue_api
 from tests.approval_test_support import routed_demand_payload
-from tests.http_test_auth import TEST_ADMIN_AUTH_RESOLVER
+from tests.http_test_auth import (
+    TEST_ADMIN_AUTH_RESOLVER,
+    TEST_PROJECT_MANAGER_AUTH_RESOLVER,
+)
 from tests.sqlite_test_template import SqliteDatabaseTemplate
 
 
@@ -2724,6 +2727,419 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                             Decimal("0.00"),
                         ),
                         Decimal("0.00"),
+                    )
+            finally:
+                engine.dispose()
+
+    def test_plan_delta_preserves_reduced_survivors_cutoff_and_is_read_only(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            admin_app = create_api_app(
+                database_url,
+                actor_name="admin-793-delta",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(admin_app, raise_server_exceptions=False) as client:
+                    created = client.post(
+                        "/api/v1/demands",
+                        json=routed_demand_payload(
+                            {
+                                "project_number": "P-778-API",
+                                "submit": True,
+                                "lines": [
+                                    {
+                                        "position": 0,
+                                        "desired_start": START,
+                                        "desired_end": THURSDAY,
+                                        "desired_active_days": 3,
+                                        "estimated_hours": 24,
+                                        "required_resource_class": "ELECTRICAL",
+                                        "confirmation": "Confirmée",
+                                        "description": "#793 delta stable reduced A",
+                                    },
+                                    {
+                                        "position": 1,
+                                        "desired_start": START,
+                                        "desired_end": THURSDAY,
+                                        "desired_active_days": 3,
+                                        "estimated_hours": 24,
+                                        "required_resource_class": "ELECTRICAL",
+                                        "confirmation": "Confirmée",
+                                        "description": "#793 delta sibling B",
+                                    },
+                                ],
+                            }
+                        ),
+                    )
+                    self.assertEqual(created.status_code, 201, created.text)
+                    number = created.json()["demand_number"]
+                    approved = client.post(
+                        f"/api/v1/demands/{number}/approve",
+                        json={"comment": "#793 delta initial approval"},
+                    )
+                    self.assertEqual(approved.status_code, 200, approved.text)
+                    actions = self._assignment_actions(client, number)
+                    self.assertEqual(len(actions), 2)
+                    self._place_from_drop(
+                        client,
+                        segment_id=actions[0]["segment_id"],
+                        resource_id=ERIC_ID,
+                        dropped_date="2026-11-03",
+                        key="793-delta-a-drop",
+                    )
+                    self._place_from_drop(
+                        client,
+                        segment_id=actions[1]["segment_id"],
+                        resource_id=TIMMY_ID,
+                        dropped_date=START,
+                        key="793-delta-b-drop",
+                    )
+                    with factory() as session:
+                        initial = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("24.00"),
+                        )
+                    eric_initial = self._by_target(initial, ERIC_ID)
+                    target = next(
+                        row
+                        for row in eric_initial["shifts"]
+                        if row["work_date"] == THURSDAY and row["counted"]
+                    )
+                    reduced = self._reduce(
+                        client,
+                        target["allocation_id"],
+                        self._preview(client, target["allocation_id"]),
+                        "793-delta-reduce-a",
+                    )
+                    self.assertEqual(reduced.status_code, 200, reduced.text)
+
+                with factory() as session:
+                    before_candidate = self._capture(
+                        session,
+                        number,
+                        nominal_slot_hours=Decimal("24.00"),
+                    )
+                    request = session.scalar(
+                        select(WorkforceRequest).where(
+                            WorkforceRequest.legacy_demand_number == number
+                        )
+                    )
+                    assert request is not None
+                    planning_version_before = SqlPlanningMutationVersionRepository(
+                        session
+                    ).current_version()
+                    audit_count_before = len(
+                        session.scalars(select(PlanningChangeHistory)).all()
+                    )
+                eric_before = self._by_target(before_candidate, ERIC_ID)
+                timmy_before = self._by_target(before_candidate, TIMMY_ID)
+                self.assertEqual(eric_before["effective_need"], Decimal("16.00"))
+                self.assertEqual(eric_before["covered_hours"], Decimal("16.00"))
+                self.assertEqual(eric_before["residual"], Decimal("0.00"))
+                survivor_ids = {
+                    row["id"] for row in eric_before["shifts"] if row["counted"]
+                }
+                self.assertEqual(
+                    {row["work_date"] for row in eric_before["shifts"] if row["counted"]},
+                    {"2026-11-03", WEDNESDAY},
+                )
+                line_a_segment_id = eric_before["segment_id"]
+                line_b_id = timmy_before["source_request_line_id"]
+                self.assertIsNotNone(line_b_id)
+
+                pm_app = create_api_app(
+                    database_url,
+                    actor_name="pm-793-delta",
+                    auth_resolver=TEST_PROJECT_MANAGER_AUTH_RESOLVER,
+                )
+                with TestClient(pm_app, raise_server_exceptions=False) as pm:
+                    demand = pm.get(f"/api/v1/demands/{number}")
+                    self.assertEqual(demand.status_code, 200, demand.text)
+                    changed = pm.put(
+                        f"/api/v1/demands/{number}/lines/{line_b_id}/periods",
+                        json={
+                            "expected_request_version": demand.json()["version"],
+                            "periods": [
+                                {
+                                    "period_id": "793-DELTA-B-CUM",
+                                    "start_date": START,
+                                    "end_date": THURSDAY,
+                                    "hours": 16,
+                                    "kind": "CUMULATIVE",
+                                    "desired_active_days": 2,
+                                }
+                            ],
+                        },
+                    )
+                    self.assertEqual(changed.status_code, 200, changed.text)
+                    self.assertTrue(changed.json()["reapproval_required"])
+                    self.assertEqual(changed.json()["status"], "Soumise")
+
+                    first = pm.get(f"/api/v1/demands/{number}/plan-delta")
+                    second = pm.get(f"/api/v1/demands/{number}/plan-delta")
+                    self.assertEqual(first.status_code, 200, first.text)
+                    self.assertEqual(second.status_code, 200, second.text)
+                    self.assertEqual(first.json(), second.json())
+                    preview = first.json()
+                    self.assertTrue(preview["available"])
+                    a_items = [
+                        row
+                        for row in preview["items"]
+                        if row["segment_id"] == line_a_segment_id
+                    ]
+                    self.assertEqual(a_items, [])
+                    self.assertTrue(
+                        any(row["segment_id"] != line_a_segment_id for row in preview["items"])
+                    )
+
+                with factory() as session:
+                    after_reads = self._capture(
+                        session,
+                        number,
+                        nominal_slot_hours=Decimal("24.00"),
+                    )
+                    planning_version_after = SqlPlanningMutationVersionRepository(
+                        session
+                    ).current_version()
+                    audit_count_after = len(
+                        session.scalars(select(PlanningChangeHistory)).all()
+                    )
+                self.assertEqual(after_reads, before_candidate)
+                self.assertEqual(planning_version_after, planning_version_before)
+                self.assertEqual(audit_count_after, audit_count_before)
+
+                with TestClient(admin_app, raise_server_exceptions=False) as client:
+                    reapproved = client.post(
+                        f"/api/v1/demands/{number}/approve",
+                        json={"comment": "#793 delta successor approval"},
+                    )
+                    self.assertEqual(reapproved.status_code, 200, reapproved.text)
+
+                with factory() as session:
+                    after_approval = self._capture(
+                        session,
+                        number,
+                        nominal_slot_hours=Decimal("24.00"),
+                    )
+                    b_requirements = session.scalars(
+                        select(ResourceRequirement).where(
+                            ResourceRequirement.workforce_request_id
+                            == next(
+                                row
+                                for row in session.scalars(select(WorkforceRequest)).all()
+                                if row.legacy_demand_number == number
+                            ).id,
+                            ResourceRequirement.source_request_line_id == line_b_id,
+                            ResourceRequirement.status != "Annulé",
+                        )
+                    ).all()
+                eric_after = self._by_target(after_approval, ERIC_ID)
+                self.assertEqual(eric_after["effective_need"], Decimal("16.00"))
+                self.assertEqual(eric_after["covered_hours"], Decimal("16.00"))
+                self.assertEqual(eric_after["residual"], Decimal("0.00"))
+                self.assertEqual(
+                    {row["id"] for row in eric_after["shifts"] if row["counted"]},
+                    survivor_ids,
+                )
+                self.assertEqual(
+                    {row["work_date"] for row in eric_after["shifts"] if row["counted"]},
+                    {"2026-11-03", WEDNESDAY},
+                )
+                self.assertFalse(
+                    any(
+                        row["work_date"] == START
+                        for row in eric_after["shifts"]
+                        if row["counted"]
+                    )
+                )
+                self.assertEqual(
+                    sum((Decimal(str(row.planned_hours)) for row in b_requirements), Decimal("0.00")),
+                    Decimal("16.00"),
+                )
+            finally:
+                engine.dispose()
+
+    def test_plan_delta_partial_residual_matches_successor_materialization(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-793-delta-residual",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    created = client.post(
+                        "/api/v1/demands",
+                        json=routed_demand_payload(
+                            {
+                                "project_number": "P-778-API",
+                                "submit": True,
+                                "lines": [
+                                    {
+                                        "position": 0,
+                                        "desired_start": START,
+                                        "desired_end": WEDNESDAY,
+                                        "desired_active_days": 3,
+                                        "estimated_hours": 28,
+                                        "required_resource_class": "ELECTRICAL",
+                                        "confirmation": "Confirmée",
+                                        "description": "#793 delta residual A",
+                                    },
+                                    {
+                                        "position": 1,
+                                        "desired_start": START,
+                                        "desired_end": WEDNESDAY,
+                                        "desired_active_days": 3,
+                                        "estimated_hours": 24,
+                                        "required_resource_class": "ELECTRICAL",
+                                        "confirmation": "Confirmée",
+                                        "description": "#793 delta residual B",
+                                    },
+                                ],
+                            }
+                        ),
+                    )
+                    self.assertEqual(created.status_code, 201, created.text)
+                    number = created.json()["demand_number"]
+                    self.assertEqual(
+                        client.post(
+                            f"/api/v1/demands/{number}/approve",
+                            json={"comment": "#793 delta residual initial"},
+                        ).status_code,
+                        200,
+                    )
+                    actions = self._assignment_actions(client, number)
+                    self._place_from_drop(
+                        client,
+                        segment_id=actions[0]["segment_id"],
+                        resource_id=ERIC_ID,
+                        dropped_date=START,
+                        key="793-delta-residual-a",
+                    )
+                    self._place_from_drop(
+                        client,
+                        segment_id=actions[1]["segment_id"],
+                        resource_id=TIMMY_ID,
+                        dropped_date=START,
+                        key="793-delta-residual-b",
+                    )
+                    with factory() as session:
+                        initial = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("28.00"),
+                        )
+                    eric_initial = self._by_target(initial, ERIC_ID)
+                    target = next(
+                        row
+                        for row in eric_initial["shifts"]
+                        if row["work_date"] == WEDNESDAY and row["counted"]
+                    )
+                    self.assertEqual(
+                        self._reduce(
+                            client,
+                            target["allocation_id"],
+                            self._preview(client, target["allocation_id"]),
+                            "793-delta-residual-reduce",
+                        ).status_code,
+                        200,
+                    )
+
+                    with factory() as session:
+                        reduced_state = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("28.00"),
+                        )
+                    eric = self._by_target(reduced_state, ERIC_ID)
+                    timmy = self._by_target(reduced_state, TIMMY_ID)
+                    self.assertEqual(eric["effective_need"], Decimal("20.00"))
+                    self.assertEqual(eric["covered_hours"], Decimal("20.00"))
+                    survivors = {
+                        row["id"]
+                        for row in eric["shifts"]
+                        if row["counted"] and row["hours"] == Decimal("8.00")
+                    }
+                    self.assertEqual(len(survivors), 2)
+                    residual_rows = [
+                        row for row in eric["shifts"]
+                        if row["counted"] and row["id"] not in survivors
+                    ]
+                    self.assertEqual(
+                        sum((row["hours"] for row in residual_rows), Decimal("0.00")),
+                        Decimal("4.00"),
+                    )
+
+                    demand = client.get(f"/api/v1/demands/{number}").json()
+                    changed = client.put(
+                        f"/api/v1/demands/{number}/lines/{timmy['source_request_line_id']}/periods",
+                        json={
+                            "expected_request_version": demand["version"],
+                            "periods": [
+                                {
+                                    "period_id": "793-DELTA-R-B",
+                                    "start_date": START,
+                                    "end_date": WEDNESDAY,
+                                    "hours": 16,
+                                    "kind": "CUMULATIVE",
+                                    "desired_active_days": 2,
+                                }
+                            ],
+                        },
+                    )
+                    self.assertEqual(changed.status_code, 200, changed.text)
+
+                    delta = client.get(f"/api/v1/demands/{number}/plan-delta")
+                    self.assertEqual(delta.status_code, 200, delta.text)
+                    self.assertTrue(delta.json()["available"])
+                    self.assertEqual(
+                        [
+                            row
+                            for row in delta.json()["items"]
+                            if row["segment_id"] == eric["segment_id"]
+                        ],
+                        [],
+                    )
+
+                    reapproved = client.post(
+                        f"/api/v1/demands/{number}/approve",
+                        json={"comment": "#793 delta residual successor"},
+                    )
+                    self.assertEqual(reapproved.status_code, 200, reapproved.text)
+
+                    with factory() as session:
+                        final_state = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("28.00"),
+                        )
+                    eric_final = self._by_target(final_state, ERIC_ID)
+                    self.assertEqual(eric_final["effective_need"], Decimal("20.00"))
+                    self.assertEqual(eric_final["covered_hours"], Decimal("20.00"))
+                    self.assertEqual(eric_final["residual"], Decimal("0.00"))
+                    self.assertEqual(
+                        {
+                            row["id"]
+                            for row in eric_final["shifts"]
+                            if row["id"] in survivors
+                        },
+                        survivors,
+                    )
+                    generated = [
+                        row
+                        for row in eric_final["shifts"]
+                        if row["counted"] and row["id"] not in survivors
+                    ]
+                    self.assertEqual(
+                        sum((row["hours"] for row in generated), Decimal("0.00")),
+                        Decimal("4.00"),
                     )
             finally:
                 engine.dispose()
