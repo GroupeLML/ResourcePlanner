@@ -6,6 +6,7 @@ from datetime import date
 from app.domain.planning_engine import (
     MISSING_ALLOCATION_TYPE,
     LockedAllocationInput,
+    PreservedAllocationInput,
     SegmentInput,
     build_allocation_plan,
 )
@@ -143,6 +144,65 @@ class PlanningEngineTests(unittest.TestCase):
         self.assertEqual(actual_hours["FIX"], 6)
         self.assertEqual(actual_hours["FLEX"], 2)
         self.assertEqual(result.unallocated_hours, 4)
+
+    def test_exact_cent_capacity_after_competing_preserved_coverage(self) -> None:
+        cases = (
+            (7.90, 0.10),
+            (7.95, 0.05),
+            (7.99, 0.01),
+        )
+        for protected_hours, competing_need in cases:
+            with self.subTest(
+                protected_hours=protected_hours,
+                competing_need=competing_need,
+            ):
+                result = build_allocation_plan(
+                    [
+                        SegmentInput(
+                            "PROTECTED",
+                            "R1",
+                            D1,
+                            D1,
+                            protected_hours,
+                            "Flexible",
+                        ),
+                        SegmentInput(
+                            "COMPETING",
+                            "R1",
+                            D1,
+                            D1,
+                            competing_need,
+                            "Flexible",
+                        ),
+                    ],
+                    [],
+                    {("R1", D1): 8.00},
+                    preserved_allocations=(
+                        PreservedAllocationInput(
+                            segment_id="PROTECTED",
+                            resource_id="R1",
+                            day=D1,
+                            hours=protected_hours,
+                            locked=False,
+                            counts_as_allocated=True,
+                        ),
+                    ),
+                    preserve_locked_segment_ids={"PROTECTED", "COMPETING"},
+                )
+                competing = [
+                    row
+                    for row in result.allocations
+                    if row.segment_id == "COMPETING" and row.counts_as_allocated
+                ]
+                self.assertEqual(len(competing), 1)
+                self.assertEqual(competing[0].hours, competing_need)
+                self.assertEqual(result.unallocated_hours, 0.0)
+                self.assertFalse(
+                    any(
+                        row.segment_id == "COMPETING" and not row.counts_as_allocated
+                        for row in result.allocations
+                    )
+                )
 
     def test_priority_orders_competing_flexible_segments(self) -> None:
         result = build_allocation_plan(
