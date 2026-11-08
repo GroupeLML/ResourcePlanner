@@ -19,6 +19,7 @@ from app.infrastructure.sql import (
     RequestCompletionReduction,
     RequestOperationalState,
     RequestRequirementPlanningIntent,
+    RequestShiftSurvivorProtection,
     Project,
     Resource,
     ResourceAvailabilityRule,
@@ -2973,187 +2974,397 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
-    def test_public_segment_patch_materializes_base_minus_active_reduction(self) -> None:
+    def test_public_segment_patch_rejects_new_excess_below_protected_coverage_atomically(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
             app = create_api_app(
                 database_url,
-                actor_name="admin-778-api-patch-effective",
+                actor_name="admin-793-api-patch-protected-reject",
                 auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
             )
-            with TestClient(app, raise_server_exceptions=False) as client:
-                number = self._approve_40(client)
-                before = self._snapshot(client, number)
-                target = next(
-                    row for row in before["demand_shifts"]
-                    if row["work_date"] == THURSDAY
-                )
-                segment_id = target["requirement_id"] or target["segment_id"]
-                preview = client.get(
-                    f"/api/v1/allocations/{target['allocation_id']}/work-queue-preview"
-                ).json()
-                reduced = client.post(
-                    f"/api/v1/allocations/{target['allocation_id']}/permanent-reduction",
-                    headers={"Idempotency-Key": "api-patch-reduce-778"},
-                    json={
-                        "expected_planning_version": preview["planning_version"],
-                        "expected_request_version": preview["request_version"],
-                        "expected_approval_revision_id": preview["approval_revision_id"],
-                        "expected_operational_version": preview["operational_version"],
-                    },
-                )
-                self.assertEqual(reduced.status_code, 200, reduced.text)
-
-                current_before_edit = client.get(f"/api/v1/segments/{segment_id}")
-                self.assertEqual(
-                    current_before_edit.status_code,
-                    200,
-                    current_before_edit.text,
-                )
-                self.assertEqual(current_before_edit.json()["planned_hours"], 32.0)
-                self.assertEqual(
-                    current_before_edit.json()["operational_base_hours"],
-                    40.0,
-                )
-
-                description_only = client.patch(
-                    f"/api/v1/segments/{segment_id}",
-                    json={
-                        "planned_hours": 40,
-                        "description": "Description seulement après réduction",
-                    },
-                )
-                self.assertEqual(
-                    description_only.status_code,
-                    200,
-                    description_only.text,
-                )
-                after_description = client.get(f"/api/v1/segments/{segment_id}")
-                self.assertEqual(after_description.status_code, 200, after_description.text)
-                self.assertEqual(after_description.json()["planned_hours"], 32.0)
-                self.assertEqual(
-                    after_description.json()["operational_base_hours"],
-                    40.0,
-                )
-                self.assertEqual(
-                    after_description.json()["description"],
-                    "Description seulement après réduction",
-                )
-
-                patched = client.patch(
-                    f"/api/v1/segments/{segment_id}",
-                    json={"planned_hours": 36},
-                )
-                self.assertEqual(patched.status_code, 200, patched.text)
-
-                current = client.get(f"/api/v1/segments/{segment_id}")
-                self.assertEqual(current.status_code, 200, current.text)
-                self.assertEqual(current.json()["planned_hours"], 28.0)
-                self.assertEqual(current.json()["operational_base_hours"], 36.0)
-                snapshot = self._snapshot(client, number)
-                segment = snapshot["demand_segments"][0]
-                self.assertEqual(segment["planned_hours"], 28.0)
-                self.assertEqual(segment["covered_hours"], 28.0)
-                self.assertEqual(segment["remaining_hours"], 0.0)
-                self.assertEqual(self._actions(client, number), [])
-                detail = client.get(f"/api/v1/demands/{number}/detail")
-                self.assertEqual(detail.status_code, 200, detail.text)
-                self.assertEqual(
-                    float(detail.json()["materialized_plan"]["planned_hours"]),
-                    28.0,
-                )
-                self.assertEqual(
-                    float(detail.json()["materialized_plan"]["covered_hours"]),
-                    28.0,
-                )
-
-                rebuilt = client.post("/api/v1/planning/rebuild")
-                self.assertEqual(rebuilt.status_code, 200, rebuilt.text)
-
             engine = create_sql_engine(database_url)
             factory = create_session_factory(engine)
             try:
-                with factory() as session:
-                    request = session.scalar(
-                        select(WorkforceRequest).where(
-                            WorkforceRequest.legacy_demand_number == number
-                        )
-                    )
-                    self.assertIsNotNone(request)
-                    revision = session.scalar(
-                        select(RequestApprovalRevision)
-                        .where(
-                            RequestApprovalRevision.workforce_request_id == request.id
-                        )
-                        .order_by(RequestApprovalRevision.created_at)
-                    )
-                    payload = json.loads(revision.payload_text)
-                    self.assertEqual(
-                        sum(
-                            Decimal(str(row["hours"]))
-                            for row in payload["authorization"]["entries"]
-                            if row.get("hours") is not None
-                        ),
-                        Decimal("40.00"),
-                    )
-                    reductions = session.scalars(
-                        select(RequestCompletionReduction).where(
-                            RequestCompletionReduction.workforce_request_id
-                            == request.id
-                        )
-                    ).all()
-                    self.assertEqual(len(reductions), 1)
-                    self.assertEqual(reductions[0].reconciliation_state, "ACTIVE")
-                    state = session.get(
-                        RequestOperationalState,
-                        request.id,
-                    )
-                    self.assertIsNotNone(state)
-                    overrides = json.loads(state.budget_overrides_text)
-                    self.assertEqual(
-                        float(overrides[reductions[0].approved_entry_key]),
-                        36.0,
-                    )
-
-                with factory.begin() as session:
-                    SqlPeriodAwareApprovedDemandSyncAdapter(
-                        session
-                    ).sync_operational_choices(number)
-                with factory.begin() as session:
-                    request = session.scalar(
-                        select(WorkforceRequest).where(
-                            WorkforceRequest.legacy_demand_number == number
-                        )
-                    )
-                    self.assertIsNotNone(request)
-                    SqlPeriodAwareApprovedDemandSyncAdapter(session).sync_approved(
-                        number,
-                        approved_request_version=int(request.aggregate_version or 1),
-                    )
-
                 with TestClient(app, raise_server_exceptions=False) as client:
-                    rebuilt_after_reapproval = client.post("/api/v1/planning/rebuild")
+                    number = self._approve_40(client)
+                    before = self._snapshot(client, number)
+                    target = next(
+                        row for row in before["demand_shifts"]
+                        if row["work_date"] == THURSDAY
+                    )
+                    segment_id = target["requirement_id"] or target["segment_id"]
+                    preview = client.get(
+                        f"/api/v1/allocations/{target['allocation_id']}/work-queue-preview"
+                    ).json()
+                    reduced = client.post(
+                        f"/api/v1/allocations/{target['allocation_id']}/permanent-reduction",
+                        headers={"Idempotency-Key": "api-patch-protected-reject-reduce"},
+                        json={
+                            "expected_planning_version": preview["planning_version"],
+                            "expected_request_version": preview["request_version"],
+                            "expected_approval_revision_id": preview["approval_revision_id"],
+                            "expected_operational_version": preview["operational_version"],
+                        },
+                    )
+                    self.assertEqual(reduced.status_code, 200, reduced.text)
+
+                    reduced_snapshot = self._snapshot(client, number)
+                    reduced_segment = reduced_snapshot["demand_segments"][0]
+                    self.assertEqual(reduced_segment["planned_hours"], 32.0)
+                    self.assertEqual(reduced_segment["covered_hours"], 32.0)
+                    original_shift_ids = tuple(
+                        sorted(row["allocation_id"] for row in reduced_snapshot["demand_shifts"])
+                    )
+
+                    with factory() as session:
+                        request = session.scalar(
+                            select(WorkforceRequest).where(
+                                WorkforceRequest.legacy_demand_number == number
+                            )
+                        )
+                        self.assertIsNotNone(request)
+                        state = session.get(RequestOperationalState, request.id)
+                        self.assertIsNotNone(state)
+                        before_request_version = int(request.aggregate_version or 1)
+                        before_operational_version = int(state.version or 1)
+                        before_protections = tuple(
+                            (
+                                row.id,
+                                row.shift_id,
+                                row.original_shift_id,
+                                row.originating_reduction_id,
+                                bool(row.active),
+                            )
+                            for row in session.scalars(
+                                select(RequestShiftSurvivorProtection)
+                                .join(
+                                    RequestRequirementPlanningIntent,
+                                    RequestShiftSurvivorProtection.planning_intent_id
+                                    == RequestRequirementPlanningIntent.id,
+                                )
+                                .where(
+                                    RequestRequirementPlanningIntent.workforce_request_id
+                                    == request.id
+                                )
+                                .order_by(RequestShiftSurvivorProtection.id)
+                            ).all()
+                        )
+                        before_exception_audits = session.scalar(
+                            select(func.count(PlanningChangeHistory.id)).where(
+                                PlanningChangeHistory.action
+                                == "Dérogation surallocation manuelle"
+                            )
+                        )
+
+                    before_planning_version = reduced_snapshot["planning_version"]
+                    rejected = client.patch(
+                        f"/api/v1/segments/{segment_id}",
+                        json={"planned_hours": 36},
+                    )
+                    self.assertEqual(rejected.status_code, 422, rejected.text)
+                    error = rejected.json()["error"]
                     self.assertEqual(
-                        rebuilt_after_reapproval.status_code,
-                        200,
-                        rebuilt_after_reapproval.text,
+                        error["code"],
+                        "segment_overallocation_choice_required",
                     )
-                    current_after_reapproval = client.get(
-                        f"/api/v1/segments/{segment_id}"
+                    context = error["context"]
+                    self.assertEqual(context["planned_hours"], 28.0)
+                    self.assertEqual(context["current_planned_hours"], 32.0)
+                    self.assertEqual(context["current_excess_hours"], 0.0)
+                    self.assertEqual(context["excess_hours"], 4.0)
+                    self.assertEqual(context["safe_operational_base_hours"], 40.0)
+
+                    unchanged_read = client.get(f"/api/v1/segments/{segment_id}")
+                    self.assertEqual(unchanged_read.status_code, 200, unchanged_read.text)
+                    self.assertEqual(unchanged_read.json()["planned_hours"], 32.0)
+                    self.assertEqual(
+                        unchanged_read.json()["operational_base_hours"],
+                        40.0,
+                    )
+                    unchanged_snapshot = self._snapshot(client, number)
+                    self.assertEqual(
+                        unchanged_snapshot["demand_segments"][0]["covered_hours"],
+                        32.0,
                     )
                     self.assertEqual(
-                        current_after_reapproval.status_code,
-                        200,
-                        current_after_reapproval.text,
+                        tuple(
+                            sorted(
+                                row["allocation_id"]
+                                for row in unchanged_snapshot["demand_shifts"]
+                            )
+                        ),
+                        original_shift_ids,
                     )
                     self.assertEqual(
-                        current_after_reapproval.json()["operational_base_hours"],
-                        36.0,
+                        unchanged_snapshot["planning_version"],
+                        before_planning_version,
+                    )
+
+                    with factory() as session:
+                        request = session.scalar(
+                            select(WorkforceRequest).where(
+                                WorkforceRequest.legacy_demand_number == number
+                            )
+                        )
+                        self.assertIsNotNone(request)
+                        state = session.get(RequestOperationalState, request.id)
+                        self.assertIsNotNone(state)
+                        after_protections = tuple(
+                            (
+                                row.id,
+                                row.shift_id,
+                                row.original_shift_id,
+                                row.originating_reduction_id,
+                                bool(row.active),
+                            )
+                            for row in session.scalars(
+                                select(RequestShiftSurvivorProtection)
+                                .join(
+                                    RequestRequirementPlanningIntent,
+                                    RequestShiftSurvivorProtection.planning_intent_id
+                                    == RequestRequirementPlanningIntent.id,
+                                )
+                                .where(
+                                    RequestRequirementPlanningIntent.workforce_request_id
+                                    == request.id
+                                )
+                                .order_by(RequestShiftSurvivorProtection.id)
+                            ).all()
+                        )
+                        after_exception_audits = session.scalar(
+                            select(func.count(PlanningChangeHistory.id)).where(
+                                PlanningChangeHistory.action
+                                == "Dérogation surallocation manuelle"
+                            )
+                        )
+                        self.assertEqual(
+                            int(request.aggregate_version or 1),
+                            before_request_version,
+                        )
+                        self.assertEqual(
+                            int(state.version or 1),
+                            before_operational_version,
+                        )
+                        self.assertEqual(after_protections, before_protections)
+                        self.assertEqual(
+                            after_exception_audits,
+                            before_exception_audits,
+                        )
+
+                    # Supplying the acknowledgment cannot bypass ordinary endpoint
+                    # authorization. PROJECT_MANAGER lacks manage_planning.
+                    pm_app = create_api_app(
+                        database_url,
+                        actor_name="pm-793-protected-overallocation",
+                        auth_resolver=TEST_PROJECT_MANAGER_AUTH_RESOLVER,
+                    )
+                    with TestClient(pm_app, raise_server_exceptions=False) as pm_client:
+                        unauthorized = pm_client.patch(
+                            f"/api/v1/segments/{segment_id}",
+                            json={
+                                "planned_hours": 36,
+                                "allow_locked_overallocation": True,
+                            },
+                        )
+                        self.assertEqual(unauthorized.status_code, 403, unauthorized.text)
+
+                    final_snapshot = self._snapshot(client, number)
+                    self.assertEqual(final_snapshot["demand_segments"][0]["planned_hours"], 32.0)
+                    self.assertEqual(final_snapshot["demand_segments"][0]["covered_hours"], 32.0)
+            finally:
+                engine.dispose()
+
+    def test_public_segment_patch_acknowledged_protected_overcoverage_preserves_survivors(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-793-api-patch-protected-exception",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_40(client)
+                    before = self._snapshot(client, number)
+                    target = next(
+                        row for row in before["demand_shifts"]
+                        if row["work_date"] == THURSDAY
+                    )
+                    segment_id = target["requirement_id"] or target["segment_id"]
+                    preview = client.get(
+                        f"/api/v1/allocations/{target['allocation_id']}/work-queue-preview"
+                    ).json()
+                    reduced = client.post(
+                        f"/api/v1/allocations/{target['allocation_id']}/permanent-reduction",
+                        headers={"Idempotency-Key": "api-patch-protected-exception-reduce"},
+                        json={
+                            "expected_planning_version": preview["planning_version"],
+                            "expected_request_version": preview["request_version"],
+                            "expected_approval_revision_id": preview["approval_revision_id"],
+                            "expected_operational_version": preview["operational_version"],
+                        },
+                    )
+                    self.assertEqual(reduced.status_code, 200, reduced.text)
+
+                    reduced_snapshot = self._snapshot(client, number)
+                    original_shift_ids = tuple(
+                        sorted(row["allocation_id"] for row in reduced_snapshot["demand_shifts"])
+                    )
+                    with factory() as session:
+                        request = session.scalar(
+                            select(WorkforceRequest).where(
+                                WorkforceRequest.legacy_demand_number == number
+                            )
+                        )
+                        self.assertIsNotNone(request)
+                        protections_before = tuple(
+                            (
+                                row.id,
+                                row.shift_id,
+                                row.original_shift_id,
+                                row.originating_reduction_id,
+                                bool(row.active),
+                            )
+                            for row in session.scalars(
+                                select(RequestShiftSurvivorProtection)
+                                .join(
+                                    RequestRequirementPlanningIntent,
+                                    RequestShiftSurvivorProtection.planning_intent_id
+                                    == RequestRequirementPlanningIntent.id,
+                                )
+                                .where(
+                                    RequestRequirementPlanningIntent.workforce_request_id
+                                    == request.id
+                                )
+                                .order_by(RequestShiftSurvivorProtection.id)
+                            ).all()
+                        )
+                        reduction_count_before = session.scalar(
+                            select(func.count(RequestCompletionReduction.id)).where(
+                                RequestCompletionReduction.workforce_request_id == request.id
+                            )
+                        )
+                        audit_count_before = session.scalar(
+                            select(func.count(PlanningChangeHistory.id)).where(
+                                PlanningChangeHistory.action
+                                == "Dérogation surallocation manuelle"
+                            )
+                        )
+
+                    acknowledged = client.patch(
+                        f"/api/v1/segments/{segment_id}",
+                        json={
+                            "planned_hours": 36,
+                            "allow_locked_overallocation": True,
+                        },
+                    )
+                    self.assertEqual(acknowledged.status_code, 200, acknowledged.text)
+                    accepted = self._snapshot(client, number)
+                    accepted_segment = accepted["demand_segments"][0]
+                    self.assertEqual(accepted_segment["planned_hours"], 28.0)
+                    self.assertEqual(accepted_segment["covered_hours"], 32.0)
+                    self.assertEqual(accepted_segment["remaining_hours"], 0.0)
+                    self.assertEqual(accepted_segment["excess_hours"], 4.0)
+                    self.assertEqual(
+                        tuple(
+                            sorted(row["allocation_id"] for row in accepted["demand_shifts"])
+                        ),
+                        original_shift_ids,
+                    )
+
+                    with factory() as session:
+                        request = session.scalar(
+                            select(WorkforceRequest).where(
+                                WorkforceRequest.legacy_demand_number == number
+                            )
+                        )
+                        self.assertIsNotNone(request)
+                        protections_after = tuple(
+                            (
+                                row.id,
+                                row.shift_id,
+                                row.original_shift_id,
+                                row.originating_reduction_id,
+                                bool(row.active),
+                            )
+                            for row in session.scalars(
+                                select(RequestShiftSurvivorProtection)
+                                .join(
+                                    RequestRequirementPlanningIntent,
+                                    RequestShiftSurvivorProtection.planning_intent_id
+                                    == RequestRequirementPlanningIntent.id,
+                                )
+                                .where(
+                                    RequestRequirementPlanningIntent.workforce_request_id
+                                    == request.id
+                                )
+                                .order_by(RequestShiftSurvivorProtection.id)
+                            ).all()
+                        )
+                        reduction_count_after = session.scalar(
+                            select(func.count(RequestCompletionReduction.id)).where(
+                                RequestCompletionReduction.workforce_request_id == request.id
+                            )
+                        )
+                        audit_count_after = session.scalar(
+                            select(func.count(PlanningChangeHistory.id)).where(
+                                PlanningChangeHistory.action
+                                == "Dérogation surallocation manuelle"
+                            )
+                        )
+                        self.assertEqual(protections_after, protections_before)
+                        self.assertEqual(reduction_count_after, reduction_count_before)
+                        self.assertEqual(audit_count_after, audit_count_before + 1)
+
+                    # Existing accepted excess E=4 does not require repeated acknowledgment.
+                    same = client.patch(
+                        f"/api/v1/segments/{segment_id}",
+                        json={"planned_hours": 36},
+                    )
+                    self.assertEqual(same.status_code, 200, same.text)
+
+                    # Decreasing the accepted excess E=4 -> E=2 is also admissible.
+                    decreased = client.patch(
+                        f"/api/v1/segments/{segment_id}",
+                        json={"planned_hours": 38},
+                    )
+                    self.assertEqual(decreased.status_code, 200, decreased.text)
+                    decreased_snapshot = self._snapshot(client, number)
+                    self.assertEqual(decreased_snapshot["demand_segments"][0]["planned_hours"], 30.0)
+                    self.assertEqual(decreased_snapshot["demand_segments"][0]["covered_hours"], 32.0)
+                    self.assertEqual(decreased_snapshot["demand_segments"][0]["excess_hours"], 2.0)
+
+                    # Increasing the accepted exception now requires a fresh acknowledgment.
+                    increased = client.patch(
+                        f"/api/v1/segments/{segment_id}",
+                        json={"planned_hours": 34},
+                    )
+                    self.assertEqual(increased.status_code, 422, increased.text)
+                    self.assertEqual(
+                        increased.json()["error"]["code"],
+                        "segment_overallocation_choice_required",
                     )
                     self.assertEqual(
-                        current_after_reapproval.json()["planned_hours"],
-                        28.0,
+                        increased.json()["error"]["context"]["current_excess_hours"],
+                        2.0,
                     )
+                    self.assertEqual(
+                        increased.json()["error"]["context"]["excess_hours"],
+                        6.0,
+                    )
+
+                    # Exact retained boundary H=C succeeds with no exception.
+                    exact = client.patch(
+                        f"/api/v1/segments/{segment_id}",
+                        json={"planned_hours": 40},
+                    )
+                    self.assertEqual(exact.status_code, 200, exact.text)
+                    exact_snapshot = self._snapshot(client, number)
+                    self.assertEqual(exact_snapshot["demand_segments"][0]["planned_hours"], 32.0)
+                    self.assertEqual(exact_snapshot["demand_segments"][0]["covered_hours"], 32.0)
+                    self.assertEqual(exact_snapshot["demand_segments"][0]["excess_hours"], 0.0)
             finally:
                 engine.dispose()
 
