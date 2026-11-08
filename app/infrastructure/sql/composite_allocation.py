@@ -67,6 +67,7 @@ from .overallocation import (
 from .planning_audit import ENTITY_SHIFT, SqlPlanningAuditJournal
 from .planning_version import SqlPlanningMutationVersionRepository
 from .planning_window_override_repository import SqlPlanningWindowOverrideRepository
+from .retained_placement import retained_counted_shifts
 from .segment_asset_guard import assert_segment_asset_mutation_compatible
 
 
@@ -1698,12 +1699,33 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
                 "Les métriques de couverture du segment sont introuvables avant la duplication."
             )
         effective_need = _hours(coverage_metrics["planned_hours"])
-        current_coverage = _hours(coverage_metrics["covered_hours"])
+
+        # #793: duplication must project only physical coverage that will survive
+        # authoritative rebuild. Ordinary unlocked AUTO rows are disposable and must
+        # not inflate the KEEP_EXCEPTION guard. Reuse the same retained-placement
+        # authority used by rebuild/preview so overlapping locked/protected authority
+        # still counts one physical Shift exactly once.
+        retained_before_rows = retained_counted_shifts(
+            self._session,
+            (requirement.id,),
+        )
+        retained_before_ids = {row.id for row in retained_before_rows}
+        current_coverage = sum(
+            (_hours(row.hours) for row in retained_before_rows),
+            Decimal("0.00"),
+        ).quantize(_HOUR)
         current_coverage_excess = max(
             current_coverage - effective_need,
             Decimal("0"),
         )
-        projected_coverage = current_coverage + source_hours
+        # The duplicate target is always retained (MANUAL/locked). An ordinary AUTO
+        # source is also stabilized to MANUAL/locked by this command; a protected or
+        # already-locked source is already present in retained_before_rows.
+        projected_coverage = (
+            current_coverage
+            + (Decimal("0") if source.id in retained_before_ids else source_hours)
+            + source_hours
+        )
         projected_coverage_excess = max(
             projected_coverage - effective_need,
             Decimal("0"),
