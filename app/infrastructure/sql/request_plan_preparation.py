@@ -24,12 +24,13 @@ from .demand_period_models import (
 from .operational_choice_repository import SqlRequestOperationalChoiceRepository
 from .operational_choice_models import (
     RequestCompletionReduction,
+    RequestOperationalState,
     RequestRequirementPlanningIntent,
 )
 from .planning_intent_repository import stable_planning_slot_key
 from .retained_placement import retained_counted_shifts
 from .segment_asset_guard import segment_asset_dependencies
-from .approval_revision_models import RequestApprovalRevision
+from .approval_revision_models import RequestApprovalReference, RequestApprovalRevision
 from .approval_revision_repository import SqlRequestApprovalRevisionRepository
 from .planning_window_override_repository import SqlPlanningWindowOverrideRepository
 from .models import (
