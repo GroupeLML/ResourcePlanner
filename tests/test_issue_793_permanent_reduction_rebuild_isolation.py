@@ -2792,13 +2792,11 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                         dropped_date="2026-11-03",
                         key="793-delta-a-drop",
                     )
-                    self._place_from_drop(
-                        client,
-                        segment_id=actions[1]["segment_id"],
-                        resource_id=TIMMY_ID,
-                        dropped_date=START,
-                        key="793-delta-b-drop",
-                    )
+                    # Only Line A owns the ADR-035 cutoff under test. Keep the
+                    # sibling as an ordinary assignment so converting Line B from a
+                    # LINE approval entry to a PERIOD entry does not intentionally
+                    # invalidate a separate durable cutoff identity.
+                    self._assign(client, actions[1]["segment_id"], TIMMY_ID)
                     with factory() as session:
                         initial = self._capture(
                             session,
@@ -2836,6 +2834,11 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                 self.assertEqual(eric_before["effective_need"], Decimal("16.00"))
                 self.assertEqual(eric_before["covered_hours"], Decimal("16.00"))
                 self.assertEqual(eric_before["residual"], Decimal("0.00"))
+                self.assertEqual(
+                    eric_before["placement_not_before_date"],
+                    "2026-11-03",
+                )
+                self.assertIsNone(timmy_before["placement_not_before_date"])
                 survivor_ids = {
                     row["id"] for row in eric_before["shifts"] if row["counted"]
                 }
@@ -2896,11 +2899,28 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                                 )
                             )
                         )
-                        candidate_plan = SqlRequestPlanPreparer(
-                            session
-                        ).prepare_candidate_authoritative(
+                        preparer = SqlRequestPlanPreparer(session)
+                        nominal_plan = preparer.prepare(
                             request_candidate,
                             current=current_candidate,
+                        )
+                        candidate_plan = preparer.prepare_candidate_authoritative(
+                            request_candidate,
+                            current=current_candidate,
+                        )
+                        nominal_line_a = [
+                            spec
+                            for spec in nominal_plan.specs
+                            if spec.approved_entry_key == line_a_identity[0]
+                            and int(spec.slot_index) == int(line_a_identity[1])
+                        ]
+                        self.assertEqual(len(nominal_line_a), 1)
+                        self.assertEqual(
+                            nominal_line_a[0].planned_hours,
+                            Decimal("24.00"),
+                        )
+                        self.assertIsNone(
+                            nominal_line_a[0].placement_not_before_date
                         )
                         candidate_line_a = [
                             spec
@@ -2919,6 +2939,20 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                         self.assertEqual(
                             candidate_line_a[0].placement_not_before_date.isoformat(),
                             "2026-11-03",
+                        )
+                        self.assertEqual(
+                            candidate_line_a[0].planned_hours,
+                            Decimal("16.00"),
+                        )
+                        self.assertEqual(
+                            (
+                                nominal_line_a[0].approved_entry_key,
+                                int(nominal_line_a[0].slot_index),
+                            ),
+                            (
+                                candidate_line_a[0].approved_entry_key,
+                                int(candidate_line_a[0].slot_index),
+                            ),
                         )
 
                     with factory() as session:
