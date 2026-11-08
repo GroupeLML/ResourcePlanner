@@ -2207,6 +2207,301 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
         self.assertEqual(snapshot["demand_segments"][0]["covered_hours"], 24.0)
         return number, segment_id, snapshot["demand_shifts"]
 
+    def test_duplicate_protected_auto_survivor_requires_and_persists_keep_exception(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-793-dup",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_40(client)
+
+                    # Reduce 40 -> 16 while keeping Monday/Tuesday as durable AUTO survivors.
+                    for index, work_date in enumerate(
+                        ("2026-11-06", "2026-11-05", "2026-11-04"),
+                        start=1,
+                    ):
+                        snapshot = self._snapshot(client, number)
+                        target = next(
+                            row
+                            for row in snapshot["demand_shifts"]
+                            if row["work_date"] == work_date
+                        )
+                        preview = client.get(
+                            f"/api/v1/allocations/{target['allocation_id']}/work-queue-preview"
+                        )
+                        self.assertEqual(preview.status_code, 200, preview.text)
+                        reduced = client.post(
+                            f"/api/v1/allocations/{target['allocation_id']}/permanent-reduction",
+                            headers={"Idempotency-Key": f"793-dup-reduce-{index}"},
+                            json={
+                                "expected_planning_version": preview.json()["planning_version"],
+                                "expected_request_version": preview.json()["request_version"],
+                                "expected_approval_revision_id": preview.json()["approval_revision_id"],
+                                "expected_operational_version": preview.json()["operational_version"],
+                            },
+                        )
+                        self.assertEqual(reduced.status_code, 200, reduced.text)
+
+                    before = self._snapshot(client, number)
+                    segment = before["demand_segments"][0]
+                    self.assertEqual(segment["planned_hours"], 16.0)
+                    self.assertEqual(segment["covered_hours"], 16.0)
+                    self.assertEqual(segment["excess_hours"], 0.0)
+                    self.assertEqual(len(before["demand_shifts"]), 2)
+                    self.assertEqual(
+                        {row["work_date"] for row in before["demand_shifts"]},
+                        {"2026-11-02", "2026-11-03"},
+                    )
+                    self.assertTrue(
+                        all(
+                            row["source"] == "AUTO" and not row["locked"]
+                            for row in before["demand_shifts"]
+                        )
+                    )
+                    source = next(
+                        row
+                        for row in before["demand_shifts"]
+                        if row["work_date"] == "2026-11-02"
+                    )
+                    survivor_shift_ids = {
+                        row["shift_id"] for row in before["demand_shifts"]
+                    }
+
+                    with factory() as session:
+                        active_protections = session.scalars(
+                            select(RequestShiftSurvivorProtection).where(
+                                RequestShiftSurvivorProtection.active.is_(True)
+                            )
+                        ).all()
+                        self.assertEqual(
+                            {row.shift_id for row in active_protections},
+                            survivor_shift_ids,
+                        )
+                        protection_ids = {row.id for row in active_protections}
+                        self.assertEqual(
+                            int(
+                                session.scalar(
+                                    select(func.count(PlanningChangeHistory.id)).where(
+                                        PlanningChangeHistory.action
+                                        == "Dérogation surallocation manuelle"
+                                    )
+                                )
+                                or 0
+                            ),
+                            0,
+                        )
+
+                    source_preview = client.get(
+                        f"/api/v1/allocations/{source['allocation_id']}/work-queue-preview"
+                    )
+                    self.assertEqual(source_preview.status_code, 200, source_preview.text)
+                    duplicate_body = {
+                        "resource_id": "R-778-A",
+                        "day": "2026-11-04",
+                        "expected_planning_version": source_preview.json()["planning_version"],
+                        "expected_approval_revision_id": source_preview.json()["approval_revision_id"],
+                        "expected_operational_version": source_preview.json()["operational_version"],
+                    }
+
+                    blocked = client.post(
+                        f"/api/v1/allocations/{source['allocation_id']}/duplicate",
+                        headers={"Idempotency-Key": "793-dup-blocked"},
+                        json=duplicate_body,
+                    )
+                    self.assertEqual(blocked.status_code, 422, blocked.text)
+                    self.assertEqual(
+                        blocked.json()["error"]["code"],
+                        "allocation_overallocation_choice_required",
+                    )
+                    self.assertEqual(
+                        blocked.json()["error"]["context"]["current_excess_hours"],
+                        0.0,
+                    )
+                    self.assertEqual(
+                        blocked.json()["error"]["context"]["excess_hours"],
+                        8.0,
+                    )
+
+                    after_blocked = self._snapshot(client, number)
+                    blocked_segment = after_blocked["demand_segments"][0]
+                    self.assertEqual(blocked_segment["planned_hours"], 16.0)
+                    self.assertEqual(blocked_segment["covered_hours"], 16.0)
+                    self.assertEqual(blocked_segment["excess_hours"], 0.0)
+                    self.assertEqual(
+                        {row["shift_id"] for row in after_blocked["demand_shifts"]},
+                        survivor_shift_ids,
+                    )
+                    self.assertFalse(
+                        any(
+                            row["work_date"] == "2026-11-04"
+                            for row in after_blocked["demand_shifts"]
+                        )
+                    )
+                    with factory() as session:
+                        active = session.scalars(
+                            select(RequestShiftSurvivorProtection).where(
+                                RequestShiftSurvivorProtection.active.is_(True)
+                            )
+                        ).all()
+                        self.assertEqual({row.id for row in active}, protection_ids)
+                        self.assertEqual(
+                            int(
+                                session.scalar(
+                                    select(func.count(PlanningChangeHistory.id)).where(
+                                        PlanningChangeHistory.action
+                                        == "Dérogation surallocation manuelle"
+                                    )
+                                )
+                                or 0
+                            ),
+                            0,
+                        )
+
+                    acknowledged_body = {
+                        **duplicate_body,
+                        "overallocation_policy": "KEEP_EXCEPTION",
+                    }
+                    acknowledged = client.post(
+                        f"/api/v1/allocations/{source['allocation_id']}/duplicate",
+                        headers={"Idempotency-Key": "793-dup-keep"},
+                        json=acknowledged_body,
+                    )
+                    self.assertEqual(acknowledged.status_code, 201, acknowledged.text)
+                    payload = acknowledged.json()
+                    self.assertEqual(payload["locked_hours"], 8.0)
+                    self.assertEqual(payload["excess_hours"], 8.0)
+                    self.assertFalse(payload["auto_source_converted"])
+                    duplicate_shift_id = payload["target_shift_id"]
+
+                    after_ack = self._snapshot(client, number)
+                    ack_segment = after_ack["demand_segments"][0]
+                    self.assertEqual(ack_segment["planned_hours"], 16.0)
+                    self.assertEqual(ack_segment["covered_hours"], 24.0)
+                    self.assertEqual(ack_segment["excess_hours"], 8.0)
+                    self.assertEqual(len(after_ack["demand_shifts"]), 3)
+                    self.assertEqual(
+                        sum(row["hours"] for row in after_ack["demand_shifts"]),
+                        24.0,
+                    )
+                    protected_source = next(
+                        row
+                        for row in after_ack["demand_shifts"]
+                        if row["shift_id"] == source["shift_id"]
+                    )
+                    self.assertEqual(protected_source["source"], "AUTO")
+                    self.assertFalse(protected_source["locked"])
+
+                    with factory() as session:
+                        duplicate_row = session.get(Shift, duplicate_shift_id)
+                        self.assertIsNotNone(duplicate_row)
+                        self.assertEqual(duplicate_row.source, "MANUAL")
+                        self.assertTrue(duplicate_row.locked)
+                        active = session.scalars(
+                            select(RequestShiftSurvivorProtection).where(
+                                RequestShiftSurvivorProtection.active.is_(True)
+                            )
+                        ).all()
+                        self.assertEqual({row.id for row in active}, protection_ids)
+                        exception_events = session.scalars(
+                            select(PlanningChangeHistory).where(
+                                PlanningChangeHistory.action
+                                == "Dérogation surallocation manuelle"
+                            )
+                        ).all()
+                        self.assertEqual(len(exception_events), 1)
+                        self.assertEqual(exception_events[0].actor_name, "admin-793-dup")
+
+                    replay = client.post(
+                        f"/api/v1/allocations/{source['allocation_id']}/duplicate",
+                        headers={"Idempotency-Key": "793-dup-keep"},
+                        json=acknowledged_body,
+                    )
+                    self.assertEqual(replay.status_code, 201, replay.text)
+                    self.assertEqual(replay.json()["target_shift_id"], duplicate_shift_id)
+                    replay_snapshot = self._snapshot(client, number)
+                    self.assertEqual(len(replay_snapshot["demand_shifts"]), 3)
+                    self.assertEqual(
+                        replay_snapshot["demand_segments"][0]["covered_hours"],
+                        24.0,
+                    )
+                    self.assertEqual(
+                        replay_snapshot["demand_segments"][0]["excess_hours"],
+                        8.0,
+                    )
+                    with factory() as session:
+                        self.assertEqual(
+                            int(
+                                session.scalar(
+                                    select(func.count(PlanningChangeHistory.id)).where(
+                                        PlanningChangeHistory.action
+                                        == "Dérogation surallocation manuelle"
+                                    )
+                                )
+                                or 0
+                            ),
+                            1,
+                        )
+
+                    # Rebuild/resync must keep the exact physical survivors + duplicate.
+                    before_rebuild_ids = {
+                        row["shift_id"] for row in replay_snapshot["demand_shifts"]
+                    }
+                    with factory.begin() as session:
+                        SqlPeriodAwareApprovedDemandSyncAdapter(
+                            session
+                        ).sync_operational_choices(number)
+                    rebuilt = client.post("/api/v1/planning/rebuild")
+                    self.assertEqual(rebuilt.status_code, 200, rebuilt.text)
+                    persisted = self._snapshot(client, number)
+                    self.assertEqual(
+                        {row["shift_id"] for row in persisted["demand_shifts"]},
+                        before_rebuild_ids,
+                    )
+                    self.assertEqual(persisted["demand_segments"][0]["planned_hours"], 16.0)
+                    self.assertEqual(persisted["demand_segments"][0]["covered_hours"], 24.0)
+                    self.assertEqual(persisted["demand_segments"][0]["excess_hours"], 8.0)
+                    persisted_source = next(
+                        row
+                        for row in persisted["demand_shifts"]
+                        if row["shift_id"] == source["shift_id"]
+                    )
+                    self.assertEqual(persisted_source["source"], "AUTO")
+                    self.assertFalse(persisted_source["locked"])
+
+                    # One physical survivor may be reachable from both protection and
+                    # locked/manual authority; physical identity still counts it once.
+                    overlap_shift_id = next(
+                        row["shift_id"]
+                        for row in persisted["demand_shifts"]
+                        if row["shift_id"] in survivor_shift_ids
+                        and row["shift_id"] != source["shift_id"]
+                    )
+                    with factory.begin() as session:
+                        overlap = session.get(Shift, overlap_shift_id)
+                        self.assertIsNotNone(overlap)
+                        overlap.source = "MANUAL"
+                        overlap.locked = True
+                    overlap_snapshot = self._snapshot(client, number)
+                    overlap_segment = overlap_snapshot["demand_segments"][0]
+                    self.assertEqual(overlap_segment["covered_hours"], 24.0)
+                    self.assertEqual(overlap_segment["excess_hours"], 8.0)
+                    self.assertEqual(
+                        sum(row["hours"] for row in overlap_snapshot["demand_shifts"]),
+                        24.0,
+                    )
+                    self.assertEqual(
+                        sorted(row["hours"] for row in overlap_snapshot["demand_shifts"]),
+                        [8.0, 8.0, 8.0],
+                    )
+            finally:
+                engine.dispose()
+
     def test_a_return_shift_preserves_40_exposes_8_and_allows_controlled_bob_placement(self) -> None:
         with TemporaryDirectory() as directory:
             app = create_api_app(
