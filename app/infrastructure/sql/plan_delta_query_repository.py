@@ -1331,6 +1331,7 @@ class SqlPlannerQueryRepositoryWithPlanDelta(SqlPlannerQueryRepositoryWeb):
                 counts_as_allocated=(
                     shift.allocation_type != MISSING_ALLOCATION_TYPE
                 ),
+                allocation_type=shift.allocation_type,
             )
             for shift in retained_rows
             if shift.resource_requirement_id in requirement_by_id
