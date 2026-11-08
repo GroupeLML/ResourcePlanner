@@ -158,14 +158,19 @@ def residual_capacity(
     fixed_hours: float = 0.0,
     flexible_hours: float = 0.0,
 ) -> float:
-    """Return standard capacity still available to automatic planning."""
-    return max(
-        float(raw_capacity)
-        - float(locked_hours)
-        - float(fixed_hours)
-        - float(flexible_hours),
-        0.0,
+    """Return allocatable standard room at canonical whole-cent precision.
+
+    Subtract in Decimal before flooring the final physical room. This preserves valid
+    cents such as 8.00 - 7.99 = 0.01 without ever rounding sub-cent room upward.
+    """
+    room = max(
+        _decimal(raw_capacity)
+        - _decimal(locked_hours)
+        - _decimal(fixed_hours)
+        - _decimal(flexible_hours),
+        Decimal("0"),
     )
+    return float(Decimal(_capacity_cents(room)) * CENT)
 
 
 def spread_hours(hours: float, capacities: CapacityWindow) -> dict[date, float]:
