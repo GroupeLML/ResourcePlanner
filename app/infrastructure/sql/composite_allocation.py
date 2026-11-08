@@ -56,6 +56,7 @@ from .models import (
 from .operational_choice_models import (
     RequestOperationalState,
     RequestRequirementPlanningIntent,
+    RequestShiftSurvivorProtection,
 )
 from .overallocation import (
     _segment_metrics,
@@ -510,6 +511,12 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
     ) -> Mapping[str, Any]:
         locked = self._locked_hours(requirement.id)
         planned = _hours(requirement.planned_hours)
+        coverage_metrics = _segment_metrics(self._session, requirement.id)
+        excess = (
+            float(coverage_metrics["excess_hours"])
+            if coverage_metrics is not None
+            else max(float(locked - planned), 0.0)
+        )
         return {
             "operation": operation,
             "source_allocation_id": self._reference(source),
@@ -522,7 +529,7 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
             "target_hours": float(target.hours),
             "planned_hours": float(planned),
             "locked_hours": float(locked),
-            "excess_hours": round(max(float(locked - planned), 0.0), 2),
+            "excess_hours": round(excess, 2),
             "planning_version": self._versioning.current_version(),
             "approval_revision_id": approval_revision_id,
             "operational_version": self._current_operational_version(requirement),
@@ -1601,9 +1608,21 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
         if (
             persisted_source.resource_requirement_id != requirement.id
             or persisted_target.resource_requirement_id != requirement.id
-            or not persisted_source.locked
+            or (
+                source_is_protected_auto
+                and (
+                    persisted_source.locked
+                    or _text(persisted_source.source).upper() != "AUTO"
+                )
+            )
+            or (
+                not source_is_protected_auto
+                and (
+                    not persisted_source.locked
+                    or _text(persisted_source.source).upper() != "MANUAL"
+                )
+            )
             or not persisted_target.locked
-            or _text(persisted_source.source).upper() != "MANUAL"
             or _text(persisted_target.source).upper() != "MANUAL"
             or persisted_target.operational_responsible_override_contact_id
             != persisted_source.operational_responsible_override_contact_id
@@ -1663,13 +1682,70 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
         source_hours = _hours(source.hours)
         before_planned = _hours(requirement.planned_hours)
         before_locked = self._locked_hours(requirement.id)
+        source_is_protected_auto = (
+            _text(source.source).upper() == "AUTO"
+            and not bool(source.locked)
+            and self._session.scalar(
+                select(RequestShiftSurvivorProtection.id).where(
+                    RequestShiftSurvivorProtection.shift_id == source.id,
+                    RequestShiftSurvivorProtection.active == true(),
+                )
+            )
+            is not None
+        )
         projected_locked = (
             before_locked
             - (source_hours if source.locked else Decimal("0"))
-            + source_hours
+            + (Decimal("0") if source_is_protected_auto else source_hours)
             + source_hours
         )
         policy = normalize_overallocation_policy(command.overallocation_policy)
+
+        coverage_metrics = requirement_before_metrics or _segment_metrics(
+            self._session,
+            requirement.id,
+        )
+        if coverage_metrics is None:
+            raise RuntimeError(
+                "Les métriques de couverture du segment sont introuvables avant la duplication."
+            )
+        effective_need = _hours(coverage_metrics["planned_hours"])
+        current_coverage = _hours(coverage_metrics["covered_hours"])
+        current_coverage_excess = max(
+            current_coverage - effective_need,
+            Decimal("0"),
+        )
+        projected_coverage = current_coverage + source_hours
+        projected_coverage_excess = max(
+            projected_coverage - effective_need,
+            Decimal("0"),
+        )
+        projected_locked_excess = max(
+            projected_locked - effective_need,
+            Decimal("0"),
+        )
+        retained_only_excess_increase = (
+            projected_coverage_excess
+            > current_coverage_excess + _hours(TOLERANCE_HOURS)
+            and projected_coverage_excess
+            > projected_locked_excess + _hours(TOLERANCE_HOURS)
+        )
+        if retained_only_excess_increase and policy != KEEP_EXCEPTION:
+            raise ApplicationValidationError(
+                "Ce quart ferait dépasser le besoin effectif déjà couvert par des quarts conservés. "
+                "KEEP_EXCEPTION doit être confirmé explicitement.",
+                code="allocation_overallocation_choice_required",
+                context={
+                    "segment_id": self._segment_reference(requirement),
+                    "planned_hours": float(effective_need),
+                    "current_locked_hours": float(before_locked),
+                    "projected_locked_hours": float(projected_locked),
+                    "current_covered_hours": float(current_coverage),
+                    "projected_covered_hours": float(projected_coverage),
+                    "current_excess_hours": float(current_coverage_excess),
+                    "excess_hours": float(projected_coverage_excess),
+                },
+            )
         approval_revision_id, _ = self._authorization_context(
             requirement,
             expected_approval_revision_id=command.expected_approval_revision_id,
@@ -1695,9 +1771,13 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
             expected_operational_version=command.expected_operational_version,
         )
 
-        auto_source_converted = _text(source.source).upper() == "AUTO"
-        source.source = "MANUAL"
-        source.locked = True
+        auto_source_converted = (
+            _text(source.source).upper() == "AUTO"
+            and not source_is_protected_auto
+        )
+        if not source_is_protected_auto:
+            source.source = "MANUAL"
+            source.locked = True
         target = Shift(
             legacy_allocation_id=f"MAN-{new_id()}",
             resource_requirement_id=requirement.id,
