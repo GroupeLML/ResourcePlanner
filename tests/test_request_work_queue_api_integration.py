@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from app.infrastructure.sql import (
     Asset,
     AssetAllocation,
+    AssetRequirement,
     AssetType,
     PlanningWorkQueueRelease,
     PlanningWorkQueueRestoration,
