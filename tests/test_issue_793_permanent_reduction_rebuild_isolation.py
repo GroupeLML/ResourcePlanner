@@ -1961,6 +1961,39 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                             nominal_slot_hours=Decimal("28.00"),
                         )
                     eric_initial = self._by_target(initial, ERIC_ID)
+                    self.assertEqual(eric_initial["effective_need"], Decimal("28.00"))
+                    self.assertEqual(eric_initial["covered_hours"], Decimal("24.00"))
+                    self.assertEqual(eric_initial["residual"], Decimal("4.00"))
+                    self.assertEqual(
+                        max(
+                            eric_initial["covered_hours"] - eric_initial["effective_need"],
+                            Decimal("0.00"),
+                        ),
+                        Decimal("0.00"),
+                    )
+                    initial_counted = [
+                        row for row in eric_initial["shifts"] if row["counted"]
+                    ]
+                    initial_non_counted = [
+                        row for row in eric_initial["shifts"] if not row["counted"]
+                    ]
+                    self.assertEqual(
+                        tuple(
+                            (row["work_date"], row["hours"], row["resource_id"], row["source"], row["locked"])
+                            for row in initial_counted
+                        ),
+                        (
+                            (START, Decimal("8.00"), ERIC_ID, "AUTO", False),
+                            ("2026-11-03", Decimal("8.00"), ERIC_ID, "AUTO", False),
+                            (WEDNESDAY, Decimal("8.00"), ERIC_ID, "AUTO", False),
+                        ),
+                    )
+                    self.assertEqual(len(initial_non_counted), 1)
+                    self.assertEqual(initial_non_counted[0]["hours"], Decimal("4.00"))
+                    self.assertEqual(initial_non_counted[0]["resource_id"], ERIC_ID)
+                    self.assertEqual(initial_non_counted[0]["source"], "AUTO")
+                    self.assertFalse(initial_non_counted[0]["locked"])
+
                     target = next(
                         row for row in eric_initial["shifts"]
                         if row["work_date"] == WEDNESDAY and row["counted"]
@@ -2212,6 +2245,35 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                         row for row in eric["shifts"]
                         if row["work_date"] == "2026-11-03" and row["counted"]
                     )
+                    self.assertEqual(eric["effective_need"], Decimal("20.00"))
+                    self.assertEqual(eric["covered_hours"], Decimal("20.00"))
+                    self.assertEqual(eric["residual"], Decimal("0.00"))
+                    self.assertEqual(
+                        max(eric["covered_hours"] - eric["effective_need"], Decimal("0.00")),
+                        Decimal("0.00"),
+                    )
+                    post_reduction_counted = [
+                        row for row in eric["shifts"] if row["counted"]
+                    ]
+                    self.assertEqual(
+                        tuple(
+                            (row["work_date"], row["hours"], row["resource_id"], row["source"], row["locked"])
+                            for row in post_reduction_counted
+                        ),
+                        (
+                            (START, Decimal("8.00"), ERIC_ID, "AUTO", False),
+                            ("2026-11-03", Decimal("8.00"), ERIC_ID, "AUTO", False),
+                            (WEDNESDAY, Decimal("4.00"), ERIC_ID, "AUTO", False),
+                        ),
+                    )
+                    post_reduction_residual = next(
+                        row
+                        for row in post_reduction_counted
+                        if row["id"] not in {monday["id"], tuesday["id"]}
+                    )
+                    self.assertEqual(post_reduction_residual["hours"], Decimal("4.00"))
+                    self.assertEqual(post_reduction_residual["work_date"], WEDNESDAY)
+
                     initial_protections = [
                         row
                         for row in protected_state["protections"]
@@ -2267,6 +2329,36 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                     self.assertEqual(updated_monday["source"], "MANUAL")
                     self.assertTrue(updated_monday["locked"])
                     self.assertGreaterEqual(len(update_audits), 1)
+                    self.assertEqual(updated_slot["effective_need"], Decimal("20.00"))
+                    self.assertEqual(updated_slot["covered_hours"], Decimal("20.00"))
+                    self.assertEqual(updated_slot["residual"], Decimal("0.00"))
+                    self.assertEqual(
+                        max(
+                            updated_slot["covered_hours"] - updated_slot["effective_need"],
+                            Decimal("0.00"),
+                        ),
+                        Decimal("0.00"),
+                    )
+                    update_residuals = [
+                        row
+                        for row in updated_slot["shifts"]
+                        if row["counted"]
+                        and row["id"] not in {monday["id"], tuesday["id"]}
+                    ]
+                    self.assertEqual(
+                        tuple(
+                            (row["work_date"], row["hours"], row["resource_id"], row["source"], row["locked"])
+                            for row in update_residuals
+                        ),
+                        (
+                            (START, Decimal("2.00"), ERIC_ID, "AUTO", False),
+                            (WEDNESDAY, Decimal("2.00"), ERIC_ID, "AUTO", False),
+                        ),
+                    )
+                    self.assertEqual(
+                        sum((row["hours"] for row in update_residuals), Decimal("0.00")),
+                        Decimal("4.00"),
+                    )
 
                     update_protections = [
                         row
@@ -2357,6 +2449,37 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                     self.assertEqual(moved_tuesday["source"], "MANUAL")
                     self.assertTrue(moved_tuesday["locked"])
                     self.assertGreaterEqual(len(move_audits), 1)
+                    self.assertEqual(moved_slot["effective_need"], Decimal("20.00"))
+                    self.assertEqual(moved_slot["covered_hours"], Decimal("20.00"))
+                    self.assertEqual(moved_slot["residual"], Decimal("0.00"))
+                    self.assertEqual(
+                        max(
+                            moved_slot["covered_hours"] - moved_slot["effective_need"],
+                            Decimal("0.00"),
+                        ),
+                        Decimal("0.00"),
+                    )
+                    move_residuals = [
+                        row
+                        for row in moved_slot["shifts"]
+                        if row["counted"]
+                        and row["id"] not in {monday["id"], tuesday["id"]}
+                    ]
+                    self.assertEqual(
+                        tuple(
+                            (row["work_date"], row["hours"], row["resource_id"], row["source"], row["locked"])
+                            for row in move_residuals
+                        ),
+                        (
+                            (START, Decimal("2.00"), ERIC_ID, "AUTO", False),
+                            ("2026-11-03", Decimal("2.00"), ERIC_ID, "AUTO", False),
+                        ),
+                    )
+                    self.assertEqual(
+                        sum((row["hours"] for row in move_residuals), Decimal("0.00")),
+                        Decimal("4.00"),
+                    )
+                    move_residual_ids = {row["id"] for row in move_residuals}
 
                     protections = [
                         row
@@ -2399,10 +2522,48 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                         monday_protection["originating_reduction_id"],
                     )
 
+                    before_sync_inventory = tuple(
+                        (
+                            row["id"],
+                            row["work_date"],
+                            row["hours"],
+                            row["resource_id"],
+                            row["source"],
+                            row["locked"],
+                            row["counted"],
+                        )
+                        for row in moved_slot["shifts"]
+                    )
                     with factory.begin() as session:
                         SqlPeriodAwareApprovedDemandSyncAdapter(
                             session
                         ).sync_operational_choices(number)
+                    with factory() as session:
+                        after_sync = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("28.00"),
+                        )
+                    synced_slot = after_sync["slots"][eric["requirement_id"]]
+                    self.assertEqual(synced_slot["effective_need"], Decimal("20.00"))
+                    self.assertEqual(synced_slot["covered_hours"], Decimal("20.00"))
+                    self.assertEqual(synced_slot["residual"], Decimal("0.00"))
+                    self.assertEqual(
+                        tuple(
+                            (
+                                row["id"],
+                                row["work_date"],
+                                row["hours"],
+                                row["resource_id"],
+                                row["source"],
+                                row["locked"],
+                                row["counted"],
+                            )
+                            for row in synced_slot["shifts"]
+                        ),
+                        before_sync_inventory,
+                    )
+
                     rebuilt = client.post("/api/v1/planning/rebuild")
                     self.assertEqual(rebuilt.status_code, 200, rebuilt.text)
 
@@ -2421,11 +2582,57 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                     )
                     self.assertEqual(rebuilt_monday["work_date"], START)
                     self.assertEqual(rebuilt_monday["resource_id"], TIMMY_ID)
+                    self.assertEqual(rebuilt_monday["hours"], Decimal("8.00"))
+                    self.assertEqual(rebuilt_monday["source"], "MANUAL")
+                    self.assertTrue(rebuilt_monday["locked"])
                     self.assertEqual(rebuilt_tuesday["work_date"], WEDNESDAY)
                     self.assertEqual(rebuilt_tuesday["resource_id"], ERIC_ID)
+                    self.assertEqual(rebuilt_tuesday["hours"], Decimal("8.00"))
+                    self.assertEqual(rebuilt_tuesday["source"], "MANUAL")
+                    self.assertTrue(rebuilt_tuesday["locked"])
+                    self.assertEqual(rebuilt_slot["effective_need"], Decimal("20.00"))
+                    self.assertEqual(rebuilt_slot["covered_hours"], Decimal("20.00"))
+                    self.assertEqual(rebuilt_slot["residual"], Decimal("0.00"))
                     self.assertEqual(
-                        {row["id"] for row in rebuilt_slot["shifts"]},
-                        {monday["id"], tuesday["id"]},
+                        max(
+                            rebuilt_slot["covered_hours"] - rebuilt_slot["effective_need"],
+                            Decimal("0.00"),
+                        ),
+                        Decimal("0.00"),
+                    )
+                    rebuilt_residuals = [
+                        row
+                        for row in rebuilt_slot["shifts"]
+                        if row["counted"]
+                        and row["id"] not in {monday["id"], tuesday["id"]}
+                    ]
+                    self.assertEqual(
+                        tuple(
+                            (row["work_date"], row["hours"], row["resource_id"], row["source"], row["locked"])
+                            for row in rebuilt_residuals
+                        ),
+                        (
+                            (START, Decimal("2.00"), ERIC_ID, "AUTO", False),
+                            ("2026-11-03", Decimal("2.00"), ERIC_ID, "AUTO", False),
+                        ),
+                    )
+                    self.assertEqual(
+                        sum((row["hours"] for row in rebuilt_residuals), Decimal("0.00")),
+                        Decimal("4.00"),
+                    )
+                    rebuilt_residual_ids = {row["id"] for row in rebuilt_residuals}
+                    self.assertEqual(len(rebuilt_residual_ids), 2)
+                    self.assertTrue(move_residual_ids.isdisjoint(rebuilt_residual_ids))
+                    self.assertEqual(
+                        sum(
+                            (
+                                row["hours"]
+                                for row in rebuilt_slot["shifts"]
+                                if row["counted"]
+                            ),
+                            Decimal("0.00"),
+                        ),
+                        Decimal("20.00"),
                     )
                     self.assertFalse(
                         any(
@@ -2500,6 +2707,23 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                     final_slot = after_return["slots"][eric["requirement_id"]]
                     self.assertFalse(
                         any(row["id"] == tuesday["id"] for row in final_slot["shifts"])
+                    )
+                    self.assertFalse(
+                        any(
+                            row["work_date"] == "2026-11-03"
+                            and row["id"] == tuesday["id"]
+                            for row in final_slot["shifts"]
+                        )
+                    )
+                    self.assertEqual(final_slot["effective_need"], Decimal("20.00"))
+                    self.assertEqual(final_slot["covered_hours"], Decimal("12.00"))
+                    self.assertEqual(final_slot["residual"], Decimal("8.00"))
+                    self.assertEqual(
+                        max(
+                            final_slot["covered_hours"] - final_slot["effective_need"],
+                            Decimal("0.00"),
+                        ),
+                        Decimal("0.00"),
                     )
             finally:
                 engine.dispose()
