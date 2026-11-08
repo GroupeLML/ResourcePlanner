@@ -1926,6 +1926,370 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
             finally:
                 engine.dispose()
 
+    def test_return_shift_retires_only_the_targeted_survivor_protection(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-793-return-shift",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_partial_residual_request(client)
+                    actions = self._assignment_actions(client, number)
+                    self._place_from_drop(
+                        client,
+                        segment_id=actions[0]["segment_id"],
+                        resource_id=ERIC_ID,
+                        dropped_date=START,
+                        key="issue-793-return-shift-drop",
+                    )
+                    with factory() as session:
+                        initial = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("28.00"),
+                        )
+                    eric_initial = self._by_target(initial, ERIC_ID)
+                    target = next(
+                        row for row in eric_initial["shifts"]
+                        if row["work_date"] == WEDNESDAY and row["counted"]
+                    )
+                    reduced = self._reduce(
+                        client,
+                        target["allocation_id"],
+                        self._preview(client, target["allocation_id"]),
+                        "issue-793-return-shift-reduction",
+                    )
+                    self.assertEqual(reduced.status_code, 200, reduced.text)
+
+                    with factory() as session:
+                        after_reduction = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("28.00"),
+                        )
+                    eric = self._by_target(after_reduction, ERIC_ID)
+                    protected = [
+                        row
+                        for row in after_reduction["protections"]
+                        if row["planning_intent_id"] == eric["planning_intent_id"]
+                        and row["active"]
+                    ]
+                    self.assertEqual(len(protected), 2)
+                    returned_shift = next(
+                        row
+                        for row in eric["shifts"]
+                        if row["work_date"] == START and row["counted"]
+                    )
+                    sibling_shift = next(
+                        row
+                        for row in eric["shifts"]
+                        if row["work_date"] == "2026-11-03" and row["counted"]
+                    )
+                    preview = self._preview(client, returned_shift["allocation_id"])
+                    response = client.post(
+                        f"/api/v1/allocations/{returned_shift['allocation_id']}/return-to-work-queue",
+                        headers={"Idempotency-Key": "issue-793-return-protected-shift"},
+                        json={
+                            "expected_planning_version": preview["planning_version"],
+                            "expected_approval_revision_id": preview["approval_revision_id"],
+                            "expected_operational_version": preview["operational_version"],
+                        },
+                    )
+                    self.assertEqual(response.status_code, 200, response.text)
+
+                    with factory() as session:
+                        after = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("28.00"),
+                        )
+                    eric_after = self._by_target(after, ERIC_ID)
+                    active = [
+                        row
+                        for row in after["protections"]
+                        if row["planning_intent_id"] == eric_after["planning_intent_id"]
+                        and row["active"]
+                    ]
+                    retired = [
+                        row
+                        for row in after["protections"]
+                        if row["planning_intent_id"] == eric_after["planning_intent_id"]
+                        and not row["active"]
+                    ]
+                    self.assertEqual({row["shift_id"] for row in active}, {sibling_shift["id"]})
+                    retired_target = next(
+                        row
+                        for row in retired
+                        if row["original_shift_id"] == returned_shift["id"]
+                    )
+                    self.assertIsNone(retired_target["shift_id"])
+                    self.assertEqual(
+                        retired_target["retired_reason"],
+                        "RETURN_SHIFT_TO_WORK_QUEUE",
+                    )
+                    self.assertEqual(
+                        len(
+                            [
+                                row
+                                for row in after["reductions"]
+                                if row["planning_intent_id"]
+                                == eric_after["planning_intent_id"]
+                            ]
+                        ),
+                        1,
+                    )
+            finally:
+                engine.dispose()
+
+    def test_return_segment_retires_all_active_survivor_protections(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-793-return-segment",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_partial_residual_request(client)
+                    actions = self._assignment_actions(client, number)
+                    segment_id = actions[0]["segment_id"]
+                    self._place_from_drop(
+                        client,
+                        segment_id=segment_id,
+                        resource_id=ERIC_ID,
+                        dropped_date=START,
+                        key="issue-793-return-segment-drop",
+                    )
+                    with factory() as session:
+                        initial = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("28.00"),
+                        )
+                    eric_initial = self._by_target(initial, ERIC_ID)
+                    target = next(
+                        row for row in eric_initial["shifts"]
+                        if row["work_date"] == WEDNESDAY and row["counted"]
+                    )
+                    reduced = self._reduce(
+                        client,
+                        target["allocation_id"],
+                        self._preview(client, target["allocation_id"]),
+                        "issue-793-return-segment-reduction",
+                    )
+                    self.assertEqual(reduced.status_code, 200, reduced.text)
+
+                    with factory() as session:
+                        protected_state = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("28.00"),
+                        )
+                    eric = self._by_target(protected_state, ERIC_ID)
+                    original_active = {
+                        row["original_shift_id"]
+                        for row in protected_state["protections"]
+                        if row["planning_intent_id"] == eric["planning_intent_id"]
+                        and row["active"]
+                    }
+                    self.assertEqual(len(original_active), 2)
+                    any_shift = next(row for row in eric["shifts"] if row["counted"])
+                    preview = self._preview(client, any_shift["allocation_id"])
+                    response = client.post(
+                        f"/api/v1/segments/{segment_id}/return-to-work-queue",
+                        headers={"Idempotency-Key": "issue-793-return-protected-segment"},
+                        json={
+                            "expected_planning_version": preview["planning_version"],
+                            "expected_approval_revision_id": preview["approval_revision_id"],
+                            "expected_operational_version": preview["operational_version"],
+                        },
+                    )
+                    self.assertEqual(response.status_code, 200, response.text)
+
+                    with factory() as session:
+                        after = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("28.00"),
+                        )
+                    retired = [
+                        row
+                        for row in after["protections"]
+                        if row["planning_intent_id"] == eric["planning_intent_id"]
+                    ]
+                    self.assertFalse(any(row["active"] for row in retired))
+                    self.assertEqual(
+                        {row["original_shift_id"] for row in retired},
+                        original_active,
+                    )
+                    self.assertTrue(
+                        all(
+                            row["retired_reason"] == "RETURN_SEGMENT_TO_WORK_QUEUE"
+                            for row in retired
+                        )
+                    )
+                    self.assertEqual(
+                        len(
+                            [
+                                row
+                                for row in after["reductions"]
+                                if row["planning_intent_id"]
+                                == eric["planning_intent_id"]
+                            ]
+                        ),
+                        1,
+                    )
+            finally:
+                engine.dispose()
+
+    def test_explicit_shift_update_and_move_retire_only_targeted_protection(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-793-explicit-shift-change",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    number = self._approve_partial_residual_request(client)
+                    actions = self._assignment_actions(client, number)
+                    self._place_from_drop(
+                        client,
+                        segment_id=actions[0]["segment_id"],
+                        resource_id=ERIC_ID,
+                        dropped_date=START,
+                        key="issue-793-explicit-change-drop",
+                    )
+                    with factory() as session:
+                        initial = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("28.00"),
+                        )
+                    eric_initial = self._by_target(initial, ERIC_ID)
+                    target = next(
+                        row for row in eric_initial["shifts"]
+                        if row["work_date"] == WEDNESDAY and row["counted"]
+                    )
+                    reduced = self._reduce(
+                        client,
+                        target["allocation_id"],
+                        self._preview(client, target["allocation_id"]),
+                        "issue-793-explicit-change-reduction",
+                    )
+                    self.assertEqual(reduced.status_code, 200, reduced.text)
+
+                    with factory() as session:
+                        protected_state = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("28.00"),
+                        )
+                    eric = self._by_target(protected_state, ERIC_ID)
+                    monday = next(
+                        row for row in eric["shifts"]
+                        if row["work_date"] == START and row["counted"]
+                    )
+                    tuesday = next(
+                        row for row in eric["shifts"]
+                        if row["work_date"] == "2026-11-03" and row["counted"]
+                    )
+
+                    updated = client.put(
+                        f"/api/v1/allocations/{monday['allocation_id']}",
+                        json={
+                            "resource_id": TIMMY_ID,
+                            "day": START,
+                            "hours": 8,
+                            "outside_standard_hours": False,
+                            "note": "#793 explicit protected update",
+                            "confirmation": None,
+                        },
+                    )
+                    self.assertEqual(updated.status_code, 200, updated.text)
+                    with factory() as session:
+                        after_update = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("28.00"),
+                        )
+                    update_protections = [
+                        row
+                        for row in after_update["protections"]
+                        if row["planning_intent_id"] == eric["planning_intent_id"]
+                    ]
+                    retired_monday = next(
+                        row
+                        for row in update_protections
+                        if row["original_shift_id"] == monday["id"]
+                    )
+                    self.assertFalse(retired_monday["active"])
+                    self.assertEqual(retired_monday["shift_id"], monday["id"])
+                    self.assertEqual(
+                        retired_monday["retired_reason"],
+                        "EXPLICIT_SHIFT_UPDATE",
+                    )
+                    active_after_update = [
+                        row for row in update_protections if row["active"]
+                    ]
+                    self.assertEqual(
+                        {row["shift_id"] for row in active_after_update},
+                        {tuesday["id"]},
+                    )
+
+                    snapshot = client.get(
+                        "/api/v1/planning/snapshot",
+                        params={"start": START, "end": END},
+                    )
+                    self.assertEqual(snapshot.status_code, 200, snapshot.text)
+                    planning_version = snapshot.json()["planning_version"]
+                    moved = client.post(
+                        f"/api/v1/allocations/{tuesday['allocation_id']}/move",
+                        headers={"Idempotency-Key": "issue-793-explicit-protected-move"},
+                        json={
+                            "resource_id": ERIC_ID,
+                            "day": START,
+                            "outside_standard_hours": False,
+                            "expected_planning_version": planning_version,
+                        },
+                    )
+                    self.assertEqual(moved.status_code, 200, moved.text)
+                    with factory() as session:
+                        after_move = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("28.00"),
+                        )
+                    protections = [
+                        row
+                        for row in after_move["protections"]
+                        if row["planning_intent_id"] == eric["planning_intent_id"]
+                    ]
+                    self.assertFalse(any(row["active"] for row in protections))
+                    retired_tuesday = next(
+                        row
+                        for row in protections
+                        if row["original_shift_id"] == tuesday["id"]
+                    )
+                    self.assertEqual(retired_tuesday["shift_id"], tuesday["id"])
+                    self.assertEqual(
+                        retired_tuesday["retired_reason"],
+                        "EXPLICIT_SHIFT_MOVE",
+                    )
+            finally:
+                engine.dispose()
+
     def test_rebuild_failure_rolls_back_reduction_protections_and_shift_delete(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
