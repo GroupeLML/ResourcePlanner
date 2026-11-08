@@ -28,6 +28,7 @@ from app.infrastructure.sql import (
 from app.infrastructure.sql.command_adapters import SqlPlanningCommandAdapter
 from app.infrastructure.sql.employee_sync_repository import SqlEmployeeSyncRepository
 from app.infrastructure.sql.idempotency import CommandIdempotencyReceipt
+from app.infrastructure.sql.operational_choice_models import RequestOperationalState
 from app.infrastructure.sql.planning_audit import PlanningChangeHistory
 from app.infrastructure.sql.planning_version import SqlPlanningMutationVersionRepository
 from app.infrastructure.sql.planning_intent_repository import (
@@ -2885,6 +2886,31 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                         audit_count_before = len(
                             session.scalars(select(PlanningChangeHistory)).all()
                         )
+                        request_before_reads = session.scalar(
+                            select(WorkforceRequest).where(
+                                WorkforceRequest.legacy_demand_number == number
+                            )
+                        )
+                        assert request_before_reads is not None
+                        candidate_state_before = (
+                            request_before_reads.status,
+                            int(request_before_reads.version),
+                        )
+                        operational_before = tuple(
+                            (
+                                row.approval_revision_id,
+                                int(row.version),
+                                row.selections_text,
+                                row.confirmations_text,
+                                row.budget_overrides_text,
+                            )
+                            for row in session.scalars(
+                                select(RequestOperationalState).where(
+                                    RequestOperationalState.workforce_request_id
+                                    == request_before_reads.id
+                                )
+                            ).all()
+                        )
 
                     first = pm.get(f"/api/v1/demands/{number}/plan-delta")
                     second = pm.get(f"/api/v1/demands/{number}/plan-delta")
@@ -2915,9 +2941,36 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                     audit_count_after = len(
                         session.scalars(select(PlanningChangeHistory)).all()
                     )
+                    request_after_reads = session.scalar(
+                        select(WorkforceRequest).where(
+                            WorkforceRequest.legacy_demand_number == number
+                        )
+                    )
+                    assert request_after_reads is not None
+                    candidate_state_after = (
+                        request_after_reads.status,
+                        int(request_after_reads.version),
+                    )
+                    operational_after = tuple(
+                        (
+                            row.approval_revision_id,
+                            int(row.version),
+                            row.selections_text,
+                            row.confirmations_text,
+                            row.budget_overrides_text,
+                        )
+                        for row in session.scalars(
+                            select(RequestOperationalState).where(
+                                RequestOperationalState.workforce_request_id
+                                == request_after_reads.id
+                            )
+                        ).all()
+                    )
                 self.assertEqual(after_reads, before_reads)
                 self.assertEqual(planning_version_after, planning_version_before)
                 self.assertEqual(audit_count_after, audit_count_before)
+                self.assertEqual(candidate_state_after, candidate_state_before)
+                self.assertEqual(operational_after, operational_before)
 
                 with TestClient(admin_app, raise_server_exceptions=False) as client:
                     reapproved = client.post(
