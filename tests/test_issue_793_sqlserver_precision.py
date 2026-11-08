@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, time
 from decimal import Decimal
 import os
@@ -825,6 +826,161 @@ class Issue793SqlServerPrecisionTests(unittest.TestCase):
                         )
                     )
                 self.assertIsNone(failed_receipt)
+        finally:
+            self._cleanup_survivor_protections(factory, project_id)
+            engine.dispose()
+
+    def test_real_sqlserver_need_edit_vs_protected_return_never_admits_stale_coverage(self) -> None:
+        marker = uuid4().hex[:10]
+        project_id = f"P793-N-{marker}"
+        project_number = f"P-793-N-{marker}"
+        eric_id = f"R793-N-{marker}"
+
+        engine = create_sql_engine(DATABASE_URL)
+        factory = create_session_factory(engine)
+        try:
+            self._seed_resources(
+                factory,
+                project_id=project_id,
+                project_number=project_number,
+                resources=((eric_id, f"ERIC NEED RACE {marker}"),),
+            )
+            setup_app = create_api_app(
+                DATABASE_URL,
+                actor_name=f"admin-793-need-race-{marker}",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(setup_app, raise_server_exceptions=False) as client:
+                number = self._create_request(
+                    client,
+                    project_number=project_number,
+                    lines=[
+                        {
+                            "position": 0,
+                            "desired_start": MONDAY.isoformat(),
+                            "desired_end": WEDNESDAY.isoformat(),
+                            "desired_active_days": 3,
+                            "estimated_hours": 24,
+                            "required_resource_class": "ELECTRICAL",
+                            "confirmation": "Confirmée",
+                            "description": "#793 SQL concurrent need edit",
+                        }
+                    ],
+                    comment="#793 SQL need-edit concurrency",
+                )
+                actions = self._assignment_actions(client, number)
+                self.assertEqual(len(actions), 1)
+                segment_id = str(actions[0]["segment_id"])
+                self._place_from_drop(
+                    client,
+                    segment_id=segment_id,
+                    resource_id=eric_id,
+                    key=f"793-need-race-drop-{marker}",
+                )
+                initial = self._slot_state(
+                    factory,
+                    number,
+                    eric_id,
+                    nominal_slot_hours=Decimal("24.00"),
+                )
+                target = next(
+                    row for row in initial["shifts"] if row[2] == WEDNESDAY
+                )
+                reduced = self._reduce(
+                    client,
+                    allocation_id=target[1],
+                    preview=self._preview(client, target[1]),
+                    key=f"793-need-race-reduce-{marker}",
+                )
+                self.assertEqual(reduced.status_code, 200, reduced.text)
+
+                protected = self._slot_state(
+                    factory,
+                    number,
+                    eric_id,
+                    nominal_slot_hours=Decimal("24.00"),
+                )
+                self.assertEqual(protected["effective_need"], Decimal("16.00"))
+                self.assertEqual(
+                    sum((row[3] for row in protected["shifts"]), Decimal("0.00")),
+                    Decimal("16.00"),
+                )
+                return_target = next(
+                    row for row in protected["shifts"] if row[2] == MONDAY
+                )
+                return_preview = self._preview(client, return_target[1])
+
+            def patch_need() -> tuple[int, dict]:
+                app = create_api_app(
+                    DATABASE_URL,
+                    actor_name=f"admin-793-need-race-patch-{marker}",
+                    auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+                )
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    response = client.patch(
+                        f"/api/v1/segments/{segment_id}",
+                        json={"planned_hours": 20},
+                    )
+                    return response.status_code, response.json()
+
+            def return_shift() -> tuple[int, dict]:
+                app = create_api_app(
+                    DATABASE_URL,
+                    actor_name=f"admin-793-need-race-return-{marker}",
+                    auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+                )
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    response = client.post(
+                        f"/api/v1/allocations/{return_target[1]}/return-to-work-queue",
+                        headers={"Idempotency-Key": f"793-need-race-return-{marker}"},
+                        json={
+                            "expected_planning_version": return_preview["planning_version"],
+                            "expected_approval_revision_id": return_preview["approval_revision_id"],
+                            "expected_operational_version": return_preview["operational_version"],
+                        },
+                    )
+                    return response.status_code, response.json()
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                patch_future = executor.submit(patch_need)
+                return_future = executor.submit(return_shift)
+                patch_status, patch_payload = patch_future.result(timeout=30)
+                return_status, return_payload = return_future.result(timeout=30)
+
+            self.assertIn(patch_status, (200, 409, 422), patch_payload)
+            self.assertIn(return_status, (200, 409), return_payload)
+            self.assertIn(200, (patch_status, return_status))
+
+            final = self._slot_state(
+                factory,
+                number,
+                eric_id,
+                nominal_slot_hours=Decimal("24.00"),
+            )
+            final_coverage = sum(
+                (row[3] for row in final["shifts"]),
+                Decimal("0.00"),
+            )
+            # Bare need reduction to base20 means H=12 after the active 8h
+            # permanent reduction. It may commit only after serialization has made
+            # retained coverage safe; H12/C16 is never an admissible final state.
+            if patch_status == 200:
+                self.assertEqual(final["effective_need"], Decimal("12.00"))
+                self.assertLessEqual(final_coverage, Decimal("12.00"))
+            else:
+                self.assertEqual(final["effective_need"], Decimal("16.00"))
+                self.assertLessEqual(final_coverage, Decimal("16.00"))
+
+            if patch_status == 422:
+                self.assertEqual(
+                    patch_payload.get("error", {}).get("code"),
+                    "segment_overallocation_choice_required",
+                )
+            if return_status == 409:
+                self.assertEqual(
+                    return_payload.get("error", {}).get("code"),
+                    "planning_version_conflict",
+                )
         finally:
             self._cleanup_survivor_protections(factory, project_id)
             engine.dispose()
