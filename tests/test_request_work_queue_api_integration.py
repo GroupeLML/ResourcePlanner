@@ -3409,7 +3409,7 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                         audit_changes = audit_details.get("changes", {})
                         self.assertEqual(
                             exception_event.actor_name,
-                            "admin-793-api-patch-protected-exception",
+                            "Administrateur de test explicite",
                         )
                         self.assertEqual(
                             audit_changes["planned_hours"],
