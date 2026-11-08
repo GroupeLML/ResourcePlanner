@@ -31,6 +31,38 @@ def _text(value: object) -> str:
     return str(value or "").strip()
 
 
+def _budget_override_carry_forward_decision(
+    *,
+    operational_hours: Decimal,
+    previous_approved_hours: Decimal | None,
+    approved_hours: Decimal,
+    compatible_authorization_subject: bool,
+    authorized_exception_lineage: bool,
+) -> tuple[bool, bool]:
+    """Return (preserve_override, reconciliation_required) for one entry.
+
+    This is the canonical pure carry-forward rule shared by approval activation and
+    read-only candidate preview. An override above the candidate-approved quantity
+    survives only when the existing delegated exception remains valid.
+    """
+
+    existing_exception_remains_valid = bool(
+        operational_hours > approved_hours
+        and previous_approved_hours is not None
+        and approved_hours >= previous_approved_hours
+        and authorized_exception_lineage
+        and compatible_authorization_subject
+    )
+    reconciliation_required = bool(
+        operational_hours > approved_hours
+        and not existing_exception_remains_valid
+    )
+    return (
+        bool(not reconciliation_required and operational_hours != approved_hours),
+        reconciliation_required,
+    )
+
+
 class SqlRequestOperationalChoiceRepository(DemandOperationalChoiceRepositoryPort):
     """Persist active choices independently from the editable request candidate."""
 
@@ -186,17 +218,16 @@ class SqlRequestOperationalChoiceRepository(DemandOperationalChoiceRepositoryPor
                 revision_ids.append(revision_id)
         return tuple(revision_ids)
 
-    def _delegated_budget_lineage_is_valid(
+    def _delegated_budget_lineage_is_valid_for_candidate_entry(
         self,
         *,
         request_id: str,
         previous_revision: RequestApprovalRevision,
-        new_revision: RequestApprovalRevision,
+        candidate_entry: object,
         entry_key: str,
         operational_hours: Decimal,
     ) -> bool:
-        if new_revision.previous_revision_id != previous_revision.id:
-            return False
+        """Validate delegated-exception lineage against an unpersisted candidate entry."""
 
         authorization_revision_ids = set(
             self._budget_override_authorization_revision_ids(
@@ -233,8 +264,8 @@ class SqlRequestOperationalChoiceRepository(DemandOperationalChoiceRepositoryPor
             if candidate.id in authorization_revision_ids
         ]
         for source_index in reversed(source_indexes):
-            relevant = [*lineage[source_index:], new_revision]
-            if all(
+            relevant = lineage[source_index:]
+            if not all(
                 self._revision_pair_preserves_delegated_subject(
                     reference_revision,
                     proposed_revision,
@@ -245,8 +276,43 @@ class SqlRequestOperationalChoiceRepository(DemandOperationalChoiceRepositoryPor
                     relevant[1:],
                 )
             ):
+                continue
+            previous_entry = self._revision_entries_by_identity(
+                previous_revision
+            ).get(entry_key)
+            if (
+                previous_entry is not None
+                and delegated_effort_authorization_subject_compatible(
+                    previous_entry,
+                    candidate_entry,
+                )
+            ):
                 return True
         return False
+
+    def _delegated_budget_lineage_is_valid(
+        self,
+        *,
+        request_id: str,
+        previous_revision: RequestApprovalRevision,
+        new_revision: RequestApprovalRevision,
+        entry_key: str,
+        operational_hours: Decimal,
+    ) -> bool:
+        if new_revision.previous_revision_id != previous_revision.id:
+            return False
+        proposed_entry = self._revision_entries_by_identity(
+            new_revision
+        ).get(entry_key)
+        if proposed_entry is None:
+            return False
+        return self._delegated_budget_lineage_is_valid_for_candidate_entry(
+            request_id=request_id,
+            previous_revision=previous_revision,
+            candidate_entry=proposed_entry,
+            entry_key=entry_key,
+            operational_hours=operational_hours,
+        )
 
     def _revision_pair_preserves_delegated_subject(
         self,
@@ -269,6 +335,107 @@ class SqlRequestOperationalChoiceRepository(DemandOperationalChoiceRepositoryPor
                 proposed_entry,
             )
         )
+
+    def candidate_budget_overrides(
+        self,
+        request_id: str,
+        candidate_envelope: object,
+    ) -> dict[str, Decimal]:
+        """Return read-only operational overrides valid for the current candidate.
+
+        Raises the same reconciliation conflict as approval initialization when an
+        active override may not carry forward.
+        """
+
+        current = self._session.get(RequestOperationalState, request_id)
+        if current is None:
+            return {}
+        previous_revision = self._session.get(
+            RequestApprovalRevision,
+            current.approval_revision_id,
+        )
+        if previous_revision is None:
+            return {}
+
+        previous_budget_overrides = self._decode_mapping(
+            current.budget_overrides_text
+        )
+        if not previous_budget_overrides:
+            return {}
+
+        previous_entries_by_identity = self._revision_entries_by_identity(
+            previous_revision
+        )
+        previous_approved_hours_by_entry = {
+            key: Decimal(str(entry.hours)).quantize(Decimal("0.01"))
+            for key, entry in previous_entries_by_identity.items()
+            if getattr(entry, "hours", None) is not None
+        }
+        candidate_entries_by_identity = {
+            entry.identity.stable_key: entry
+            for entry in getattr(candidate_envelope, "entries", ())
+        }
+
+        preserved: dict[str, Decimal] = {}
+        for entry_key, value in previous_budget_overrides.items():
+            candidate_entry = candidate_entries_by_identity.get(entry_key)
+            if candidate_entry is None or getattr(candidate_entry, "hours", None) is None:
+                continue
+            approved_hours = Decimal(str(candidate_entry.hours)).quantize(
+                Decimal("0.01")
+            )
+            operational_hours = Decimal(value).quantize(Decimal("0.01"))
+            previous_approved_hours = previous_approved_hours_by_entry.get(entry_key)
+            previous_entry = previous_entries_by_identity.get(entry_key)
+            compatible_authorization_subject = bool(
+                previous_entry is not None
+                and delegated_effort_authorization_subject_compatible(
+                    previous_entry,
+                    candidate_entry,
+                )
+            )
+            authorized_exception_lineage = bool(
+                previous_approved_hours is not None
+                and operational_hours > previous_approved_hours
+                and self._delegated_budget_lineage_is_valid_for_candidate_entry(
+                    request_id=request_id,
+                    previous_revision=previous_revision,
+                    candidate_entry=candidate_entry,
+                    entry_key=entry_key,
+                    operational_hours=operational_hours,
+                )
+            )
+            preserve_override, reconciliation_required = (
+                _budget_override_carry_forward_decision(
+                    operational_hours=operational_hours,
+                    previous_approved_hours=previous_approved_hours,
+                    approved_hours=approved_hours,
+                    compatible_authorization_subject=compatible_authorization_subject,
+                    authorized_exception_lineage=authorized_exception_lineage,
+                )
+            )
+            if reconciliation_required:
+                raise ApplicationConflictError(
+                    "Le budget opérationnel conservé dépasse l'autorisation "
+                    "de la nouvelle révision approuvée.",
+                    code="operational_budget_reconciliation_required",
+                    context={
+                        "request_id": request_id,
+                        "previous_approval_revision_id": current.approval_revision_id,
+                        "new_approval_revision_id": None,
+                        "approved_entry_key": entry_key,
+                        "previous_approved_hours": (
+                            float(previous_approved_hours)
+                            if previous_approved_hours is not None
+                            else None
+                        ),
+                        "approved_hours": float(approved_hours),
+                        "operational_hours": float(operational_hours),
+                    },
+                )
+            if preserve_override:
+                preserved[entry_key] = operational_hours
+        return preserved
 
     @staticmethod
     def _read_model(
@@ -384,17 +551,16 @@ class SqlRequestOperationalChoiceRepository(DemandOperationalChoiceRepositoryPor
                         operational_hours=operational_hours,
                     )
                 )
-                existing_exception_remains_valid = bool(
-                    operational_hours > approved_hours
-                    and previous_approved_hours is not None
-                    and approved_hours >= previous_approved_hours
-                    and authorized_exception_lineage
-                    and compatible_authorization_subject
+                preserve_override, reconciliation_required = (
+                    _budget_override_carry_forward_decision(
+                        operational_hours=operational_hours,
+                        previous_approved_hours=previous_approved_hours,
+                        approved_hours=approved_hours,
+                        compatible_authorization_subject=compatible_authorization_subject,
+                        authorized_exception_lineage=authorized_exception_lineage,
+                    )
                 )
-                if (
-                    operational_hours > approved_hours
-                    and not existing_exception_remains_valid
-                ):
+                if reconciliation_required:
                     raise ApplicationConflictError(
                         "Le budget opérationnel conservé dépasse l'autorisation "
                         "de la nouvelle révision approuvée.",
@@ -413,7 +579,7 @@ class SqlRequestOperationalChoiceRepository(DemandOperationalChoiceRepositoryPor
                             "operational_hours": float(operational_hours),
                         },
                     )
-                if operational_hours != approved_hours:
+                if preserve_override:
                     preserved_budget_overrides[entry_key] = format(
                         operational_hours,
                         "f",
