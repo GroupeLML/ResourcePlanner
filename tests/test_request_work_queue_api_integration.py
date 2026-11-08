@@ -3212,6 +3212,57 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                     original_shift_ids = tuple(
                         sorted(row["allocation_id"] for row in reduced_snapshot["demand_shifts"])
                     )
+                    asset_survivor = reduced_snapshot["demand_shifts"][0]
+                    asset_version = client.get(
+                        "/api/v1/assets/requirements"
+                    ).json()["planning_version"]
+                    assigned_asset = client.put(
+                        f"/api/v1/assets/shifts/{asset_survivor['allocation_id']}/assignment",
+                        headers={
+                            "Idempotency-Key": "api-patch-protected-exception-asset"
+                        },
+                        json={
+                            "asset_id": "ASSET-778-A",
+                            "expected_planning_version": asset_version,
+                        },
+                    )
+                    self.assertEqual(
+                        assigned_asset.status_code,
+                        200,
+                        assigned_asset.text,
+                    )
+                    with factory() as session:
+                        physical_asset_shift = session.scalar(
+                            select(Shift).where(
+                                (Shift.id == asset_survivor["allocation_id"])
+                                | (
+                                    Shift.legacy_allocation_id
+                                    == asset_survivor["allocation_id"]
+                                )
+                            )
+                        )
+                        self.assertIsNotNone(physical_asset_shift)
+                        asset_state_before = tuple(
+                            session.execute(
+                                select(
+                                    AssetAllocation.id,
+                                    AssetAllocation.asset_id,
+                                    AssetRequirement.shift_id,
+                                    AssetAllocation.operator_resource_id,
+                                )
+                                .join(
+                                    AssetRequirement,
+                                    AssetAllocation.asset_requirement_id
+                                    == AssetRequirement.id,
+                                )
+                                .where(
+                                    AssetRequirement.shift_id
+                                    == physical_asset_shift.id
+                                )
+                                .order_by(AssetAllocation.id)
+                            ).all()
+                        )
+                        self.assertEqual(len(asset_state_before), 1)
                     with factory() as session:
                         request = session.scalar(
                             select(WorkforceRequest).where(
@@ -3314,9 +3365,30 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                                 == "Dérogation surallocation manuelle"
                             )
                         )
+                        asset_state_after = tuple(
+                            session.execute(
+                                select(
+                                    AssetAllocation.id,
+                                    AssetAllocation.asset_id,
+                                    AssetRequirement.shift_id,
+                                    AssetAllocation.operator_resource_id,
+                                )
+                                .join(
+                                    AssetRequirement,
+                                    AssetAllocation.asset_requirement_id
+                                    == AssetRequirement.id,
+                                )
+                                .where(
+                                    AssetRequirement.shift_id
+                                    == physical_asset_shift.id
+                                )
+                                .order_by(AssetAllocation.id)
+                            ).all()
+                        )
                         self.assertEqual(protections_after, protections_before)
                         self.assertEqual(reduction_count_after, reduction_count_before)
                         self.assertEqual(audit_count_after, audit_count_before + 1)
+                        self.assertEqual(asset_state_after, asset_state_before)
 
                     # Existing accepted excess E=4 does not require repeated acknowledgment.
                     same = client.patch(
