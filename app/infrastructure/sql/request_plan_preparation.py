@@ -12,11 +12,7 @@ from sqlalchemy.orm import Session
 
 from ...application.errors import ApplicationValidationError
 from ...domain.active_days import normalize_active_day_target, split_total_workforce_hours
-from ...domain.approval_envelope import (
-    EnvelopeEntryIdentity,
-    approval_envelope_from_snapshot_payload,
-    delegated_effort_authorization_subject_compatible,
-)
+from ...domain.approval_envelope import EnvelopeEntryIdentity
 from ...domain.confirmation import CONFIRMATION_CONFIRMED, normalize_confirmation
 from ...domain.effective_need import resolve_effective_slot_need
 from ...domain.demand_periods import PERIOD_KIND_CUMULATIVE, resolve_period_authority
@@ -28,13 +24,12 @@ from .demand_period_models import (
 from .operational_choice_repository import SqlRequestOperationalChoiceRepository
 from .operational_choice_models import (
     RequestCompletionReduction,
-    RequestOperationalState,
     RequestRequirementPlanningIntent,
 )
 from .planning_intent_repository import stable_planning_slot_key
 from .retained_placement import retained_counted_shifts
 from .segment_asset_guard import segment_asset_dependencies
-from .approval_revision_models import RequestApprovalReference, RequestApprovalRevision
+from .approval_revision_models import RequestApprovalRevision
 from .approval_revision_repository import SqlRequestApprovalRevisionRepository
 from .planning_window_override_repository import SqlPlanningWindowOverrideRepository
 from .models import (
@@ -673,44 +668,29 @@ class SqlRequestPlanPreparer:
         if revision is None:
             return tuple(specs)
 
-        try:
-            overrides_raw = json.loads(state.budget_overrides_text or "{}")
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise ValueError("L'état opérationnel des heures est invalide.") from exc
-        if not isinstance(overrides_raw, Mapping) or not overrides_raw:
-            return tuple(specs)
-
-        payload = json.loads(revision.payload_text)
-        authorization = payload.get("authorization")
-        if not isinstance(authorization, Mapping):
-            raise ValueError("Le snapshot approuvé actif est invalide.")
-        active_envelope = approval_envelope_from_snapshot_payload(authorization)
         candidate_envelope = SqlRequestApprovalRevisionRepository(
             self._session
         ).candidate_envelope(request)
-        active_by_key = {
-            entry.identity.stable_key: entry for entry in active_envelope.entries
-        }
+        overrides = SqlRequestOperationalChoiceRepository(
+            self._session
+        ).candidate_budget_overrides(
+            request.id,
+            candidate_envelope,
+        )
+        if not overrides:
+            return tuple(specs)
         candidate_by_key = {
             entry.identity.stable_key: entry for entry in candidate_envelope.entries
         }
 
         effective: list[PreparedRequirementSpec] = []
         for spec in specs:
-            raw_override = overrides_raw.get(spec.approved_entry_key)
+            raw_override = overrides.get(spec.approved_entry_key)
             if raw_override is None:
                 effective.append(spec)
                 continue
-            active_entry = active_by_key.get(spec.approved_entry_key)
             candidate_entry = candidate_by_key.get(spec.approved_entry_key)
-            if (
-                active_entry is None
-                or candidate_entry is None
-                or not delegated_effort_authorization_subject_compatible(
-                    active_entry,
-                    candidate_entry,
-                )
-            ):
+            if candidate_entry is None:
                 effective.append(spec)
                 continue
 
