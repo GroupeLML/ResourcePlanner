@@ -845,6 +845,15 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             day=day,
             hours=hours,
         )
+        if intent is not None:
+            SqlRequestShiftSurvivorProtectionRepository(
+                self._session
+            ).retire_shift_protection(
+                intent=intent,
+                shift=shift,
+                reason="EXPLICIT_SHIFT_UPDATE",
+                release_live_reference=False,
+            )
 
         shift.resource_id = resource.id
         shift.work_date = day
@@ -901,6 +910,15 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             day=day,
             hours=_decimal(shift.hours),
         )
+        if intent is not None:
+            SqlRequestShiftSurvivorProtectionRepository(
+                self._session
+            ).retire_shift_protection(
+                intent=intent,
+                shift=shift,
+                reason="EXPLICIT_SHIFT_MOVE",
+                release_live_reference=False,
+            )
 
         shift.resource_id = resource.id
         shift.work_date = day
