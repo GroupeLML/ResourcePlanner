@@ -1636,6 +1636,12 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                     ]
                     self.assertEqual(eric_after_second["effective_need"], Decimal("16.00"))
                     self.assertEqual(timmy_after_second["effective_need"], Decimal("16.00"))
+                    # ADR-035 cutoff continues to govern only new placement; sibling
+                    # reduction/rebuild does not retire or move valid protected work.
+                    self.assertEqual(
+                        eric_after_second["placement_not_before_date"],
+                        START,
+                    )
                     self.assertEqual(
                         {
                             row["work_date"]: row["id"]
