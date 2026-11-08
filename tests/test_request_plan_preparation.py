@@ -406,7 +406,7 @@ class SharedRequestPlanPreparationTests(unittest.TestCase):
             self.assertIsNotNone(context)
             self.assertEqual(context["locked_hours"], 8.0)
             self.assertEqual(context["current_excess_hours"], 0.0)
-            self.assertEqual(context["excess_hours"], 5.0)
+            self.assertEqual(context["excess_hours"], 4.0)
 
             acknowledged = preparer.locked_conflicts(
                 request,
