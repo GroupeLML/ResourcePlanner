@@ -8,6 +8,7 @@ from .allocation_rules import (
     canonical_hours,
     fill_canonical_hours,
     remaining_segment_hours,
+    residual_capacity,
     spread_hours,
 )
 from .load_profiles import (
@@ -423,9 +424,9 @@ def build_allocation_plan(
         window = _capacity_window(segment, capacity_by_resource_day)
         residual: list[tuple[date, float]] = []
         for day, raw_capacity in window:
-            room = max(
-                raw_capacity - normal_used.get((segment.resource_id, day), 0.0),
-                0.0,
+            room = residual_capacity(
+                raw_capacity,
+                flexible_hours=normal_used.get((segment.resource_id, day), 0.0),
             )
             if room >= 0.01:
                 residual.append((day, room))
