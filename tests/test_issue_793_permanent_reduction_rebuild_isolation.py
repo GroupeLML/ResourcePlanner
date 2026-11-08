@@ -3182,24 +3182,32 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                         Decimal("4.00"),
                     )
 
-                    demand = client.get(f"/api/v1/demands/{number}").json()
-                    changed = client.put(
-                        f"/api/v1/demands/{number}/lines/{timmy['source_request_line_id']}/periods",
-                        json={
-                            "expected_request_version": demand["version"],
-                            "periods": [
-                                {
-                                    "period_id": "793-DELTA-R-B",
-                                    "start_date": START,
-                                    "end_date": WEDNESDAY,
-                                    "hours": 16,
-                                    "kind": "CUMULATIVE",
-                                    "desired_active_days": 2,
-                                }
-                            ],
-                        },
+                    pm_app = create_api_app(
+                        database_url,
+                        actor_name="pm-793-delta-residual",
+                        auth_resolver=TEST_PROJECT_MANAGER_AUTH_RESOLVER,
                     )
-                    self.assertEqual(changed.status_code, 200, changed.text)
+                    with TestClient(pm_app, raise_server_exceptions=False) as pm:
+                        demand = pm.get(f"/api/v1/demands/{number}").json()
+                        changed = pm.put(
+                            f"/api/v1/demands/{number}/lines/{timmy['source_request_line_id']}/periods",
+                            json={
+                                "expected_request_version": demand["version"],
+                                "periods": [
+                                    {
+                                        "period_id": "793-DELTA-R-B",
+                                        "start_date": START,
+                                        "end_date": WEDNESDAY,
+                                        "hours": 16,
+                                        "kind": "CUMULATIVE",
+                                        "desired_active_days": 2,
+                                    }
+                                ],
+                            },
+                        )
+                        self.assertEqual(changed.status_code, 200, changed.text)
+                        self.assertTrue(changed.json()["reapproval_required"])
+                        self.assertEqual(changed.json()["status"], "Soumise")
 
                     with factory() as session:
                         request_candidate = session.scalar(
@@ -3242,9 +3250,10 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                             candidate_line_a[0].placement_not_before_date
                         )
 
-                    delta = client.get(f"/api/v1/demands/{number}/plan-delta")
+                    with TestClient(pm_app, raise_server_exceptions=False) as pm:
+                        delta = pm.get(f"/api/v1/demands/{number}/plan-delta")
                     self.assertEqual(delta.status_code, 200, delta.text)
-                    self.assertTrue(delta.json()["available"])
+                    self.assertTrue(delta.json()["available"], delta.json())
                     self.assertEqual(
                         [
                             row
