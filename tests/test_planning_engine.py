@@ -204,6 +204,27 @@ class PlanningEngineTests(unittest.TestCase):
                     )
                 )
 
+    def test_preserved_input_keeps_authoritative_business_allocation_type(self) -> None:
+        result = build_allocation_plan(
+            [SegmentInput("S-PRES", "R1", D1, D1, 8, "Flexible")],
+            [],
+            {("R1", D1): 8},
+            preserved_allocations=(
+                PreservedAllocationInput(
+                    segment_id="S-PRES",
+                    resource_id="R1",
+                    day=D1,
+                    hours=8,
+                    locked=False,
+                    allocation_type="Flexible",
+                ),
+            ),
+            preserve_locked_segment_ids={"S-PRES"},
+        )
+        self.assertEqual(len(result.allocations), 1)
+        self.assertTrue(result.allocations[0].preserved)
+        self.assertEqual(result.allocations[0].allocation_type, "Flexible")
+
     def test_priority_orders_competing_flexible_segments(self) -> None:
         result = build_allocation_plan(
             [
