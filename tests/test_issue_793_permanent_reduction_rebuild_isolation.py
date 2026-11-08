@@ -2829,12 +2829,6 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                         )
                     )
                     assert request is not None
-                    planning_version_before = SqlPlanningMutationVersionRepository(
-                        session
-                    ).current_version()
-                    audit_count_before = len(
-                        session.scalars(select(PlanningChangeHistory)).all()
-                    )
                 eric_before = self._by_target(before_candidate, ERIC_ID)
                 timmy_before = self._by_target(before_candidate, TIMMY_ID)
                 self.assertEqual(eric_before["effective_need"], Decimal("16.00"))
@@ -2879,6 +2873,19 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                     self.assertTrue(changed.json()["reapproval_required"])
                     self.assertEqual(changed.json()["status"], "Soumise")
 
+                    with factory() as session:
+                        before_reads = self._capture(
+                            session,
+                            number,
+                            nominal_slot_hours=Decimal("24.00"),
+                        )
+                        planning_version_before = SqlPlanningMutationVersionRepository(
+                            session
+                        ).current_version()
+                        audit_count_before = len(
+                            session.scalars(select(PlanningChangeHistory)).all()
+                        )
+
                     first = pm.get(f"/api/v1/demands/{number}/plan-delta")
                     second = pm.get(f"/api/v1/demands/{number}/plan-delta")
                     self.assertEqual(first.status_code, 200, first.text)
@@ -2908,7 +2915,7 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                     audit_count_after = len(
                         session.scalars(select(PlanningChangeHistory)).all()
                     )
-                self.assertEqual(after_reads, before_candidate)
+                self.assertEqual(after_reads, before_reads)
                 self.assertEqual(planning_version_after, planning_version_before)
                 self.assertEqual(audit_count_after, audit_count_before)
 
