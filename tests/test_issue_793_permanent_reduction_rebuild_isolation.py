@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from decimal import Decimal
+import json
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
@@ -3428,6 +3429,13 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                         json={"planned_hours": 26},
                     )
                     self.assertEqual(patched.status_code, 200, patched.text)
+                    patch_payload = patched.json()
+                    self.assertEqual(
+                        patch_payload["segment_id"],
+                        eric_reduced["segment_id"],
+                    )
+                    self.assertEqual(patch_payload["action"], "updated")
+                    self.assertIsInstance(patch_payload.get("planning"), dict)
 
                     with factory() as session:
                         operational = self._capture(
@@ -3444,17 +3452,87 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                         state = session.get(RequestOperationalState, request.id)
                         self.assertIsNotNone(state)
                         assert state is not None
-                        override_values = {
-                            key: Decimal(str(value)).quantize(Decimal("0.01"))
-                            for key, value in __import__("json").loads(
-                                state.budget_overrides_text
-                            ).items()
-                        }
+                        requirement = session.get(
+                            ResourceRequirement,
+                            eric_reduced["requirement_id"],
+                        )
+                        self.assertIsNotNone(requirement)
+                        assert requirement is not None
+                        intent = session.scalar(
+                            select(RequestRequirementPlanningIntent).where(
+                                RequestRequirementPlanningIntent.current_resource_requirement_id
+                                == requirement.id
+                            )
+                        )
+                        self.assertIsNotNone(intent)
+                        assert intent is not None
+                        reductions = tuple(
+                            session.scalars(
+                                select(RequestCompletionReduction).where(
+                                    RequestCompletionReduction.planning_intent_id
+                                    == intent.id,
+                                    RequestCompletionReduction.reconciliation_state
+                                    == "ACTIVE",
+                                )
+                            )
+                        )
+                        self.assertEqual(len(reductions), 1)
+                        reduction = reductions[0]
+                        overrides = json.loads(state.budget_overrides_text or "{}")
+                        self.assertEqual(
+                            overrides,
+                            {intent.approved_entry_key: "26.00"},
+                        )
+                        self.assertEqual(
+                            intent.approved_entry_key,
+                            eric_reduced["approved_entry_key"],
+                        )
+                        self.assertEqual(
+                            int(intent.slot_index),
+                            int(eric_reduced["slot_index"]),
+                        )
+                        self.assertEqual(
+                            Decimal(str(reduction.reduction_hours)).quantize(
+                                Decimal("0.01")
+                            ),
+                            Decimal("8.00"),
+                        )
+                        self.assertTrue(reduction.historical_approval_revision_id)
+                        self.assertTrue(reduction.reconciled_approval_revision_id)
+                        self.assertEqual(
+                            Decimal(str(requirement.planned_hours)).quantize(
+                                Decimal("0.01")
+                            ),
+                            Decimal("18.00"),
+                        )
+                        operational_effective_need = (
+                            SqlRequestRequirementPlanningIntentRepository(
+                                session
+                            ).current_effective_need_for_requirement(
+                                requirement.id,
+                                fallback_hours=requirement.planned_hours,
+                            )
+                        )
+                        self.assertEqual(
+                            operational_effective_need,
+                            Decimal("18.00"),
+                        )
                     eric_operational = self._by_target(operational, ERIC_ID)
-                    self.assertEqual(eric_operational["effective_need"], Decimal("18.00"))
+                    # _capture(... nominal_slot_hours=28) deliberately characterizes
+                    # durable reduction authority as 28 - 8 = 20. The real active
+                    # operational path above uses the materialized 18 h requirement
+                    # after the compatible 26 h base override has been synchronized.
+                    self.assertEqual(eric_operational["effective_need"], Decimal("20.00"))
+                    self.assertEqual(eric_operational["planned_hours"], Decimal("18.00"))
                     self.assertEqual(eric_operational["covered_hours"], Decimal("18.00"))
-                    self.assertEqual(eric_operational["residual"], Decimal("0.00"))
-                    self.assertIn(Decimal("26.00"), set(override_values.values()))
+                    self.assertEqual(
+                        max(
+                            operational_effective_need
+                            - eric_operational["covered_hours"],
+                            Decimal("0.00"),
+                        ),
+                        Decimal("0.00"),
+                    )
                     self.assertEqual(
                         tuple(
                             (row["work_date"], row["hours"])
@@ -3644,7 +3722,7 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                     )
                     self.assertIsNotNone(revision)
                     assert revision is not None
-                    payload = __import__("json").loads(revision.payload_text)
+                    payload = json.loads(revision.payload_text)
                     line_a_entry = next(
                         row
                         for row in payload["authorization"]["entries"]
@@ -3656,9 +3734,32 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                     )
 
                 eric_final = self._by_target(final_state, ERIC_ID)
-                self.assertEqual(eric_final["effective_need"], Decimal("18.00"))
+                self.assertEqual(eric_final["effective_need"], Decimal("20.00"))
+                self.assertEqual(eric_final["planned_hours"], Decimal("18.00"))
                 self.assertEqual(eric_final["covered_hours"], Decimal("18.00"))
-                self.assertEqual(eric_final["residual"], Decimal("0.00"))
+                with factory() as session:
+                    final_requirement = session.get(
+                        ResourceRequirement,
+                        eric_final["requirement_id"],
+                    )
+                    self.assertIsNotNone(final_requirement)
+                    assert final_requirement is not None
+                    final_effective_need = (
+                        SqlRequestRequirementPlanningIntentRepository(
+                            session
+                        ).current_effective_need_for_requirement(
+                            final_requirement.id,
+                            fallback_hours=final_requirement.planned_hours,
+                        )
+                    )
+                self.assertEqual(final_effective_need, Decimal("18.00"))
+                self.assertEqual(
+                    max(
+                        final_effective_need - eric_final["covered_hours"],
+                        Decimal("0.00"),
+                    ),
+                    Decimal("0.00"),
+                )
                 self.assertEqual(
                     {
                         row["id"]
