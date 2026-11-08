@@ -5,6 +5,8 @@ from datetime import date, time
 from decimal import Decimal
 from pathlib import Path
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from sqlalchemy import func, select
 
@@ -199,6 +201,73 @@ class SqlCommandAdapterTests(unittest.TestCase):
             self.assertEqual(summary["locked_allocations"], 1)
             self.assertEqual(summary["allocated_hours"], 0.0)
             self.assertEqual(summary["unallocated_hours"], 8.0)
+
+    def test_rebuild_persists_last_cent_when_locked_shift_is_also_survivor_preserved(self) -> None:
+        with transactional_session(self.factory) as session:
+            locked_requirement = self._add_requirement(
+                session,
+                identifier="SEG-CENT-PROTECTED",
+                hours=Decimal("7.99"),
+                resource_id=None,
+            )
+            target_requirement = self._add_requirement(
+                session,
+                identifier="SEG-CENT-TARGET",
+                hours=Decimal("0.01"),
+                resource_id="R1",
+            )
+            target_requirement.end_date = D1
+            locked = Shift(
+                id="LOCK-CENT-OVERLAP",
+                legacy_allocation_id="MAN-CENT-OVERLAP",
+                resource_requirement_id=locked_requirement.id,
+                resource_id="R1",
+                work_date=D1,
+                hours=Decimal("7.99"),
+                allocation_type="Flexible",
+                source="MANUAL",
+                locked=True,
+            )
+            session.add(locked)
+            session.flush()
+
+            # The same physical row is visible through ordinary locked authority and
+            # durable survivor-preservation authority. The adapter must preserve it once.
+            with patch(
+                "app.infrastructure.sql.command_adapters."
+                "SqlRequestShiftSurvivorProtectionRepository.active_rows",
+                return_value=(SimpleNamespace(shift=locked),),
+            ):
+                summary = SqlPlanningCommandAdapter(session).rebuild()
+
+            persisted_locked = session.get(Shift, locked.id)
+            self.assertIsNotNone(persisted_locked)
+            assert persisted_locked is not None
+            self.assertEqual(persisted_locked.hours, Decimal("7.99"))
+
+            target_rows = session.scalars(
+                select(Shift).where(
+                    Shift.resource_requirement_id == target_requirement.id,
+                    Shift.allocation_type != MISSING_ALLOCATION_TYPE,
+                )
+            ).all()
+            self.assertEqual(len(target_rows), 1)
+            self.assertEqual(target_rows[0].hours, Decimal("0.01"))
+            self.assertEqual(target_rows[0].source, "AUTO")
+            self.assertFalse(target_rows[0].locked)
+
+            all_counted = session.scalars(
+                select(Shift).where(
+                    Shift.resource_id == "R1",
+                    Shift.work_date == D1,
+                    Shift.allocation_type != MISSING_ALLOCATION_TYPE,
+                )
+            ).all()
+            self.assertEqual(
+                sum((row.hours for row in all_counted), Decimal("0.00")),
+                Decimal("8.00"),
+            )
+            self.assertEqual(summary["unallocated_hours"], 0.0)
 
     def test_manual_shift_mutations_keep_automatic_target_and_accept_resource_ids(self) -> None:
         with transactional_session(self.factory) as session:
