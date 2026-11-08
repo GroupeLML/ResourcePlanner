@@ -207,6 +207,7 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
                 locked=bool(shift.locked),
                 outside_schedule=bool(shift.outside_standard_hours),
                 counts_as_allocated=shift.allocation_type != MISSING_ALLOCATION_TYPE,
+                allocation_type=shift.allocation_type,
             )
             for shift, requirement, resource in preserved_rows
         )
