@@ -24,7 +24,11 @@ from ...domain.plan_comparison import (
     AllocationProjection,
     compare_allocation_plans,
 )
-from ...domain.planning_engine import build_allocation_plan
+from ...domain.planning_engine import (
+    MISSING_ALLOCATION_TYPE,
+    PreservedAllocationInput,
+    build_allocation_plan,
+)
 from ...domain.planning_projection import project_planning_snapshot
 from ...domain.planning_snapshot import PlanningSnapshot
 from .approval_revision_models import (
@@ -54,6 +58,7 @@ from .models import (
 from .operational_choice_models import RequestOperationalState
 from .planning_repository import SqlPlanningReadRepository
 from .request_plan_preparation import SqlRequestPlanPreparer
+from .retained_placement import dedupe_locked_allocations, retained_counted_shifts
 from .web_query_repository import SqlPlannerQueryRepositoryWeb
 
 
@@ -637,7 +642,7 @@ class SqlPlannerQueryRepositoryWithPlanDelta(SqlPlannerQueryRepositoryWeb):
             return None
 
         try:
-            prepared = self._plan_preparer.prepare(
+            prepared = self._plan_preparer.prepare_candidate_authoritative(
                 request,
                 current=current,
             )
@@ -685,6 +690,7 @@ class SqlPlannerQueryRepositoryWithPlanDelta(SqlPlannerQueryRepositoryWeb):
                     "ClasseRessourceRequise": spec.required_resource_class,
                     "CompetenceRequise": spec.required_competency,
                     "JoursActifsCibles": spec.desired_active_days,
+                    "PlacementNotBeforeDate": spec.placement_not_before_date,
                 }
             )
         return proposed
@@ -1217,7 +1223,7 @@ class SqlPlannerQueryRepositoryWithPlanDelta(SqlPlannerQueryRepositoryWeb):
             )
 
         try:
-            prepared = self._plan_preparer.prepare(
+            prepared = self._plan_preparer.prepare_candidate_authoritative(
                 request,
                 current=current_requirements,
             )
@@ -1302,11 +1308,48 @@ class SqlPlannerQueryRepositoryWithPlanDelta(SqlPlannerQueryRepositoryWeb):
                 has_changes=False,
             )
 
+        requirement_by_id = {
+            requirement.id: requirement for requirement in current_requirements
+        }
+        retained_rows = retained_counted_shifts(
+            self._delta_session,
+            tuple(requirement_by_id),
+            completed_requirement_ids=(
+                requirement.id
+                for requirement in current_requirements
+                if requirement.status == "Terminé"
+            ),
+        )
+        retained_inputs = tuple(
+            PreservedAllocationInput(
+                segment_id=_identifier(requirement_by_id[shift.resource_requirement_id]),
+                resource_id=shift.resource_id,
+                day=shift.work_date,
+                hours=float(shift.hours),
+                locked=bool(shift.locked),
+                outside_schedule=bool(shift.outside_standard_hours),
+                counts_as_allocated=(
+                    shift.allocation_type != MISSING_ALLOCATION_TYPE
+                ),
+            )
+            for shift in retained_rows
+            if shift.resource_requirement_id in requirement_by_id
+        )
+        retained_segment_ids = {
+            item.segment_id for item in retained_inputs
+        }
         proposed_result = build_allocation_plan(
             proposed_calculation.segments,
-            proposed_calculation.locked_allocations,
+            dedupe_locked_allocations(
+                proposed_calculation.locked_allocations,
+                retained_inputs,
+            ),
             proposed_calculation.capacity_by_resource_day,
-            preserve_locked_segment_ids=proposed_calculation.preserved_segment_ids,
+            preserved_allocations=retained_inputs,
+            preserve_locked_segment_ids=(
+                set(proposed_calculation.preserved_segment_ids)
+                | retained_segment_ids
+            ),
             outside_schedule_eligible_by_resource_day=(
                 proposed_calculation.outside_schedule_eligible_by_resource_day
             ),
