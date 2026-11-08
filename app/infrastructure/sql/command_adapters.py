@@ -845,15 +845,9 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             day=day,
             hours=hours,
         )
-        if intent is not None:
-            SqlRequestShiftSurvivorProtectionRepository(
-                self._session
-            ).retire_shift_protection(
-                intent=intent,
-                shift=shift,
-                reason="EXPLICIT_SHIFT_UPDATE",
-                release_live_reference=False,
-            )
+        # ADR-034/#793: this command mutates the existing physical Shift in place.
+        # Its durable survivor protection follows the same Shift.id; only commands
+        # that delete/replace that physical identity retire the protection.
 
         shift.resource_id = resource.id
         shift.work_date = day
@@ -910,15 +904,8 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             day=day,
             hours=_decimal(shift.hours),
         )
-        if intent is not None:
-            SqlRequestShiftSurvivorProtectionRepository(
-                self._session
-            ).retire_shift_protection(
-                intent=intent,
-                shift=shift,
-                reason="EXPLICIT_SHIFT_MOVE",
-                release_live_reference=False,
-            )
+        # ADR-034/#793: moving an allocation preserves the physical Shift.id.
+        # Keep any active survivor protection attached to that authoritative row.
 
         shift.resource_id = resource.id
         shift.work_date = day
