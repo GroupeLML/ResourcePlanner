@@ -7,7 +7,7 @@ from sqlalchemy import exists, or_, select, true
 from sqlalchemy.orm import Session
 
 from ...domain.planning_engine import MISSING_ALLOCATION_TYPE
-from .models import ResourceRequirement, Shift
+from .models import Shift
 from .operational_choice_models import (
     PLANNING_INTENT_PRESERVE_EXISTING,
     RequestRequirementPlanningIntent,
