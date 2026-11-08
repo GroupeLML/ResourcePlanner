@@ -5,7 +5,7 @@ from datetime import date
 from pathlib import Path
 import unittest
 
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import ForeignKeyConstraint, create_engine, inspect
 from sqlalchemy.dialects import mssql, postgresql, sqlite
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.schema import CreateIndex, CreateTable
@@ -322,10 +322,48 @@ class SqlSchemaTests(unittest.TestCase):
         )
         self.assertEqual(
             {
-                fk.column.table.name
+                fk.target_fullname
                 for fk in survivor_protections.planning_intent_id.foreign_keys
             },
-            {"request_requirement_planning_intents"},
+            {
+                "request_requirement_planning_intents.id",
+                "request_completion_reductions.planning_intent_id",
+            },
+        )
+        survivor_table = Base.metadata.tables["request_shift_survivor_protections"]
+        direct_intent_fk = next(
+            fk
+            for fk in survivor_protections.planning_intent_id.foreign_keys
+            if fk.target_fullname == "request_requirement_planning_intents.id"
+        )
+        self.assertEqual(
+            [column.name for column in direct_intent_fk.constraint.columns],
+            ["planning_intent_id"],
+        )
+        reduction_provenance_fk = next(
+            constraint
+            for constraint in survivor_table.constraints
+            if isinstance(constraint, ForeignKeyConstraint)
+            and constraint.name
+            == "fk_request_shift_survivor_protection_reduction_intent"
+        )
+        self.assertEqual(
+            [column.name for column in reduction_provenance_fk.columns],
+            ["originating_reduction_id", "planning_intent_id"],
+        )
+        self.assertEqual(
+            [element.target_fullname for element in reduction_provenance_fk.elements],
+            [
+                "request_completion_reductions.id",
+                "request_completion_reductions.planning_intent_id",
+            ],
+        )
+        self.assertEqual(
+            {
+                fk.target_fullname
+                for fk in survivor_protections.originating_reduction_id.foreign_keys
+            },
+            {"request_completion_reductions.id"},
         )
         self.assertTrue(work_packages.task_catalog_item_id.nullable)
         self.assertTrue(work_packages.resource_class_code.nullable)
