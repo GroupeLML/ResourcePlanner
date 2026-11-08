@@ -7,7 +7,7 @@ import json
 from decimal import Decimal
 from typing import Mapping, Sequence
 
-from sqlalchemy import func, or_, select, true
+from sqlalchemy import func, select, true
 from sqlalchemy.orm import Session
 
 from ...application.errors import ApplicationValidationError
@@ -15,7 +15,6 @@ from ...domain.active_days import normalize_active_day_target, split_total_workf
 from ...domain.approval_envelope import EnvelopeEntryIdentity
 from ...domain.confirmation import CONFIRMATION_CONFIRMED, normalize_confirmation
 from ...domain.effective_need import resolve_effective_slot_need
-from ...domain.planning_engine import MISSING_ALLOCATION_TYPE
 from ...domain.demand_periods import PERIOD_KIND_CUMULATIVE, resolve_period_authority
 from .demand_period_models import (
     WorkforceRequestPeriod,
@@ -24,7 +23,6 @@ from .demand_period_models import (
 )
 from .operational_choice_repository import SqlRequestOperationalChoiceRepository
 from .operational_choice_models import (
-    PLANNING_INTENT_PRESERVE_EXISTING,
     RequestCompletionReduction,
     RequestRequirementPlanningIntent,
 )
