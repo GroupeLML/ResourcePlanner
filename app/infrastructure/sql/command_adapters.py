@@ -226,34 +226,14 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
             for segment in calculation.segments
             if segment.segment_id not in suppressed_segment_ids
         )
-        preserved_locked_counts: dict[tuple[str, str, date, float], int] = {}
-        for item in temporary_inputs:
-            if not item.locked:
-                continue
-            key = (
-                item.segment_id,
-                item.resource_id,
-                item.day,
-                round(float(item.hours), 4),
-            )
-            preserved_locked_counts[key] = preserved_locked_counts.get(key, 0) + 1
-
-        engine_locked_rows = []
-        for allocation in calculation.locked_allocations:
-            if allocation.segment_id in suppressed_segment_ids:
-                continue
-            key = (
-                allocation.segment_id,
-                allocation.resource_id,
-                allocation.day,
-                round(float(allocation.hours), 4),
-            )
-            duplicate_count = preserved_locked_counts.get(key, 0)
-            if duplicate_count:
-                preserved_locked_counts[key] = duplicate_count - 1
-                continue
-            engine_locked_rows.append(allocation)
-        engine_locked = tuple(engine_locked_rows)
+        engine_locked = dedupe_locked_allocations(
+            tuple(
+                allocation
+                for allocation in calculation.locked_allocations
+                if allocation.segment_id not in suppressed_segment_ids
+            ),
+            temporary_inputs,
+        )
         preserved_capacity_segment_ids = {
             item.segment_id for item in temporary_inputs
         }
