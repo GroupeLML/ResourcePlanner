@@ -1961,39 +1961,6 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                             nominal_slot_hours=Decimal("28.00"),
                         )
                     eric_initial = self._by_target(initial, ERIC_ID)
-                    self.assertEqual(eric_initial["effective_need"], Decimal("28.00"))
-                    self.assertEqual(eric_initial["covered_hours"], Decimal("24.00"))
-                    self.assertEqual(eric_initial["residual"], Decimal("4.00"))
-                    self.assertEqual(
-                        max(
-                            eric_initial["covered_hours"] - eric_initial["effective_need"],
-                            Decimal("0.00"),
-                        ),
-                        Decimal("0.00"),
-                    )
-                    initial_counted = [
-                        row for row in eric_initial["shifts"] if row["counted"]
-                    ]
-                    initial_non_counted = [
-                        row for row in eric_initial["shifts"] if not row["counted"]
-                    ]
-                    self.assertEqual(
-                        tuple(
-                            (row["work_date"], row["hours"], row["resource_id"], row["source"], row["locked"])
-                            for row in initial_counted
-                        ),
-                        (
-                            (START, Decimal("8.00"), ERIC_ID, "AUTO", False),
-                            ("2026-11-03", Decimal("8.00"), ERIC_ID, "AUTO", False),
-                            (WEDNESDAY, Decimal("8.00"), ERIC_ID, "AUTO", False),
-                        ),
-                    )
-                    self.assertEqual(len(initial_non_counted), 1)
-                    self.assertEqual(initial_non_counted[0]["hours"], Decimal("4.00"))
-                    self.assertEqual(initial_non_counted[0]["resource_id"], ERIC_ID)
-                    self.assertEqual(initial_non_counted[0]["source"], "AUTO")
-                    self.assertFalse(initial_non_counted[0]["locked"])
-
                     target = next(
                         row for row in eric_initial["shifts"]
                         if row["work_date"] == WEDNESDAY and row["counted"]
@@ -2218,6 +2185,39 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                             nominal_slot_hours=Decimal("28.00"),
                         )
                     eric_initial = self._by_target(initial, ERIC_ID)
+                    self.assertEqual(eric_initial["effective_need"], Decimal("28.00"))
+                    self.assertEqual(eric_initial["covered_hours"], Decimal("24.00"))
+                    self.assertEqual(eric_initial["residual"], Decimal("4.00"))
+                    self.assertEqual(
+                        max(
+                            eric_initial["covered_hours"] - eric_initial["effective_need"],
+                            Decimal("0.00"),
+                        ),
+                        Decimal("0.00"),
+                    )
+                    initial_counted = [
+                        row for row in eric_initial["shifts"] if row["counted"]
+                    ]
+                    initial_non_counted = [
+                        row for row in eric_initial["shifts"] if not row["counted"]
+                    ]
+                    self.assertEqual(
+                        tuple(
+                            (row["work_date"], row["hours"], row["resource_id"], row["source"], row["locked"])
+                            for row in initial_counted
+                        ),
+                        (
+                            (START, Decimal("8.00"), ERIC_ID, "AUTO", False),
+                            ("2026-11-03", Decimal("8.00"), ERIC_ID, "AUTO", False),
+                            (WEDNESDAY, Decimal("8.00"), ERIC_ID, "AUTO", False),
+                        ),
+                    )
+                    self.assertEqual(len(initial_non_counted), 1)
+                    self.assertEqual(initial_non_counted[0]["hours"], Decimal("4.00"))
+                    self.assertEqual(initial_non_counted[0]["resource_id"], ERIC_ID)
+                    self.assertEqual(initial_non_counted[0]["source"], "AUTO")
+                    self.assertFalse(initial_non_counted[0]["locked"])
+
                     target = next(
                         row for row in eric_initial["shifts"]
                         if row["work_date"] == WEDNESDAY and row["counted"]
