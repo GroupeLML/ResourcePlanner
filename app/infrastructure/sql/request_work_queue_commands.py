@@ -1336,8 +1336,8 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
         self._session.add(release)
 
         previous = self._journal.shift_snapshot(shift.id)
-        # Phase 3B2 owns full Return Shift lifecycle semantics. This narrow retirement
-        # is required now only so the new live FK can never leave an active orphan.
+        # Explicit Return Shift identifies the physical placement being removed:
+        # retire exactly its survivor protection before canonical asset cleanup/delete.
         SqlRequestShiftSurvivorProtectionRepository(
             self._session
         ).retire_deleted_shift(
@@ -1430,8 +1430,8 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
             self._session
         )
         for shift in shifts:
-            # Integrity-only Phase 3B1 dependency; full Return Segment protection
-            # lifecycle remains explicitly deferred to Phase 3B2.
+            # Explicit Return Segment retires each protected physical placement in
+            # the returned scope before canonical asset cleanup/delete.
             protection_repository.retire_deleted_shift(
                 intent=intent,
                 shift=shift,
