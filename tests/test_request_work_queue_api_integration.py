@@ -2415,7 +2415,7 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                             )
                         ).all()
                         self.assertEqual(len(exception_events), 1)
-                        self.assertEqual(exception_events[0].actor_name, "admin-793-dup")
+                        self.assertEqual(exception_events[0].actor_name, "Administrateur de test explicite")
 
                     replay = client.post(
                         f"/api/v1/allocations/{source['allocation_id']}/duplicate",
