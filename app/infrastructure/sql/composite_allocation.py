@@ -1712,11 +1712,10 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
             projected_locked - effective_need,
             Decimal("0"),
         )
+        tolerance = Decimal(str(TOLERANCE_HOURS))
         retained_only_excess_increase = (
-            projected_coverage_excess
-            > current_coverage_excess + _hours(TOLERANCE_HOURS)
-            and projected_coverage_excess
-            > projected_locked_excess + _hours(TOLERANCE_HOURS)
+            projected_coverage_excess > current_coverage_excess + tolerance
+            and projected_coverage_excess > projected_locked_excess + tolerance
         )
         if retained_only_excess_increase and policy != KEEP_EXCEPTION:
             raise ApplicationValidationError(
