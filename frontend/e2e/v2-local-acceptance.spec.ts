@@ -2939,7 +2939,33 @@ test("ERP operations use authoritative RUN_NOW, review, RETRY and compensation c
     compensationAccepted.run_id,
     (run) => run.status === "FAILED",
   );
+
+  // A terminal FAILED attempt is not yet compensation authority. Wait for the
+  // backend recovery projection to publish the compensatable attempt explicitly;
+  // do not fall back to last_partial_or_failed_attempt during this gap.
+  await expect.poll(async () => {
+    const response = await page.request.get(
+      "/api/v1/integrations/acumatica/erp-sync/operations",
+    );
+    expect(response.ok(), await response.text()).toBeTruthy();
+    const payload = await response.json() as {
+      recovery_state: { state: string; attempt_id: string | null };
+      last_partial_or_failed_attempt: { id: string } | null;
+    };
+    expect(payload.last_partial_or_failed_attempt?.id).toBe(
+      compensationAccepted.run_id,
+    );
+    return payload.recovery_state;
+  }).toEqual({
+    state: "AVAILABLE",
+    attempt_id: compensationAccepted.run_id,
+    reason_code: null,
+    pinned: false,
+  });
   await page.getByRole("button", { name: "Actualiser" }).click();
+  await expect(
+    page.getByRole("button", { name: "Prévisualiser la compensation" }),
+  ).toBeEnabled();
 
   const previewResponsePromise = page.waitForResponse((response) => (
     response.request().method() === "POST"

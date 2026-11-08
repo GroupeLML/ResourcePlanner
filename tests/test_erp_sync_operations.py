@@ -35,6 +35,7 @@ from app.infrastructure.sql import (
     ErpSyncEvidenceManifest,
     ErpSyncEvidenceReservation,
     ErpSyncOccurrence,
+    ErpSyncRecoveryState,
     create_session_factory,
     create_sql_engine,
     transactional_session,
@@ -627,6 +628,158 @@ class ErpSyncOperationsSqlAndApiTests(unittest.TestCase):
         ).read(evidence_budget_bytes=1024)
         self.assertEqual(value.attempts[0].status, "FAILED")
         self.assertEqual(value.last_complete_success.status, "SUCCEEDED")
+
+    def _seed_recovery_projection_pair(
+        self,
+        *,
+        recovery_state: str,
+        recovery_on_failed_attempt: bool,
+    ) -> tuple[str, str]:
+        now = datetime.now(timezone.utc)
+        with transactional_session(self.factory) as session:
+            success_occurrence = ErpSyncOccurrence(
+                occurrence_key=f"MANUAL:recovery-success-{recovery_state}",
+                occurrence_type="MANUAL",
+                intent="PROJECTS_AND_ACTIVE_TASKS",
+                business_date=now.date(),
+                scheduled_at=None,
+                timezone_name="America/Toronto",
+                scheduled_local_time="00:00",
+                config_fingerprint=self.settings.config_fingerprint,
+                status="SUCCEEDED",
+            )
+            failed_occurrence = ErpSyncOccurrence(
+                occurrence_key=f"MANUAL:recovery-failed-{recovery_state}",
+                occurrence_type="MANUAL",
+                intent="PROJECTS_AND_ACTIVE_TASKS",
+                business_date=now.date(),
+                scheduled_at=None,
+                timezone_name="America/Toronto",
+                scheduled_local_time="00:00",
+                config_fingerprint=self.settings.config_fingerprint,
+                status="FAILED",
+            )
+            session.add_all((success_occurrence, failed_occurrence))
+            session.flush()
+            success = ErpSyncAttempt(
+                occurrence_id=success_occurrence.id,
+                attempt_number=1,
+                trigger_kind="MANUAL",
+                actor_name="operator",
+                intent="PROJECTS_AND_ACTIVE_TASKS",
+                generation=8,
+                status="SUCCEEDED",
+                phase="PUBLICATION_COMMITTED",
+                started_at=now - timedelta(minutes=10),
+                finished_at=now - timedelta(minutes=9),
+                created_at=now - timedelta(minutes=10),
+                updated_at=now - timedelta(minutes=9),
+            )
+            failed = ErpSyncAttempt(
+                occurrence_id=failed_occurrence.id,
+                attempt_number=1,
+                trigger_kind="MANUAL",
+                actor_name="operator",
+                intent="PROJECTS_AND_ACTIVE_TASKS",
+                generation=9,
+                status="FAILED",
+                phase="FAILED",
+                started_at=now - timedelta(minutes=2),
+                finished_at=now - timedelta(minutes=1),
+                error_code="erp_sync_failed",
+                created_at=now - timedelta(minutes=2),
+                updated_at=now - timedelta(minutes=1),
+            )
+            session.add_all((success, failed))
+            session.flush()
+            session.add(
+                ErpSyncRecoveryState(
+                    attempt_id=(
+                        failed.id if recovery_on_failed_attempt else success.id
+                    ),
+                    state=recovery_state,
+                    pinned=False,
+                )
+            )
+            control = session.get(ErpSyncControl, ERP_SYNC_CONTROL_ROW_ID)
+            assert control is not None
+            control.generation = 9
+            control.last_success_attempt_id = success.id
+            success_id = success.id
+            failed_id = failed.id
+        return success_id, failed_id
+
+    def test_none_recovery_does_not_expose_stale_compensation_attempt_during_failure_finalization_gap(
+        self,
+    ) -> None:
+        old_success_id, new_failed_id = self._seed_recovery_projection_pair(
+            recovery_state="NONE",
+            recovery_on_failed_attempt=False,
+        )
+
+        value = SqlErpSyncOperationsRepository(
+            self.factory,
+            timezone_name="America/Toronto",
+        ).read(evidence_budget_bytes=1024)
+        snapshot = ErpSyncOperationsService(
+            Reader(value),
+            settings=self.settings,
+            automatic_safety=TestErpSyncAutomaticSafetyCapability(),
+        ).snapshot(evidence_budget_bytes=1024)
+
+        self.assertEqual(snapshot.recovery_state.state, "NONE")
+        self.assertIsNone(snapshot.recovery_state.attempt_id)
+        self.assertEqual(
+            snapshot.last_partial_or_failed_attempt.id,
+            new_failed_id,
+        )
+        self.assertNotEqual(
+            snapshot.last_partial_or_failed_attempt.id,
+            old_success_id,
+        )
+
+        app = create_api_app(
+            self.database_url,
+            auth_resolver=static_auth_resolver(
+                self._principal((PERMISSION_SYNC_PROJECTS,))
+            ),
+            erp_sync_settings=self.settings,
+            erp_sync_automatic_safety=TestErpSyncAutomaticSafetyCapability(),
+        )
+        with TestClient(app) as client:
+            response = client.get(
+                "/api/v1/integrations/acumatica/erp-sync/operations"
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["recovery_state"]["state"], "NONE")
+        self.assertIsNone(payload["recovery_state"]["attempt_id"])
+        self.assertEqual(
+            payload["last_partial_or_failed_attempt"]["id"],
+            new_failed_id,
+        )
+
+    def test_available_recovery_keeps_authoritative_failed_attempt_id(self) -> None:
+        _old_success_id, failed_id = self._seed_recovery_projection_pair(
+            recovery_state="AVAILABLE",
+            recovery_on_failed_attempt=True,
+        )
+        value = SqlErpSyncOperationsRepository(
+            self.factory,
+            timezone_name="America/Toronto",
+        ).read(evidence_budget_bytes=1024)
+        snapshot = ErpSyncOperationsService(
+            Reader(value),
+            settings=self.settings,
+            automatic_safety=TestErpSyncAutomaticSafetyCapability(),
+        ).snapshot(evidence_budget_bytes=1024)
+
+        self.assertEqual(snapshot.recovery_state.state, "AVAILABLE")
+        self.assertEqual(snapshot.recovery_state.attempt_id, failed_id)
+        self.assertEqual(
+            snapshot.last_partial_or_failed_attempt.id,
+            failed_id,
+        )
 
     def _add_evidence_reservation(
         self,

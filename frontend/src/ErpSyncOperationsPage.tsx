@@ -182,11 +182,7 @@ export default function ErpSyncOperationsPage() {
   }, [operations?.current_attempt_id, refresh]);
 
   const retryAttempt = operations?.last_partial_or_failed_attempt ?? null;
-  const compensationAttemptId = (
-    operations?.recovery_state.attempt_id
-    ?? operations?.last_partial_or_failed_attempt?.id
-    ?? null
-  );
+  const compensationAttemptId = operations?.recovery_state.attempt_id ?? null;
   const newWorkBlocked = operations?.recovery_state.state === "REQUIRED";
   const currentActive = Boolean(operations?.current_attempt_id);
 

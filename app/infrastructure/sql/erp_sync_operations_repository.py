@@ -282,7 +282,11 @@ class SqlErpSyncOperationsRepository:
             )
             recovery = ErpSyncRecoveryOperations(
                 state=recovery_row.state if recovery_row is not None else RECOVERY_NONE,
-                attempt_id=recovery_row.attempt_id if recovery_row is not None else None,
+                attempt_id=(
+                    recovery_row.attempt_id
+                    if recovery_row is not None and recovery_row.state != RECOVERY_NONE
+                    else None
+                ),
                 reason_code=recovery_row.reason_code if recovery_row is not None else None,
                 pinned=bool(recovery_row.pinned) if recovery_row is not None else False,
             )
