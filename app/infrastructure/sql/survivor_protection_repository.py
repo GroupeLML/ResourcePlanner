@@ -88,12 +88,13 @@ class SqlRequestShiftSurvivorProtectionRepository:
         self.session.flush()
         return tuple(protected)
 
-    def retire_deleted_shift(
+    def retire_shift_protection(
         self,
         *,
         intent: RequestRequirementPlanningIntent,
         shift: Shift,
         reason: str,
+        release_live_reference: bool,
     ) -> RequestShiftSurvivorProtection | None:
         row = self.session.scalar(
             select(RequestShiftSurvivorProtection)
@@ -113,12 +114,27 @@ class SqlRequestShiftSurvivorProtectionRepository:
         self._assert_same_slot(intent, shift)
         row.active = False
         row.retired_at = utc_now()
-        row.retired_reason = str(reason or "SHIFT_DELETED")[:64]
-        # Preserve immutable historical identity while releasing the live FK before
-        # canonical Shift deletion.
-        row.shift_id = None
+        row.retired_reason = str(reason or "SHIFT_CHANGED")[:64]
+        if release_live_reference:
+            # Preserve immutable historical identity while releasing the live FK
+            # before canonical Shift deletion.
+            row.shift_id = None
         self.session.flush()
         return row
+
+    def retire_deleted_shift(
+        self,
+        *,
+        intent: RequestRequirementPlanningIntent,
+        shift: Shift,
+        reason: str,
+    ) -> RequestShiftSurvivorProtection | None:
+        return self.retire_shift_protection(
+            intent=intent,
+            shift=shift,
+            reason=reason,
+            release_live_reference=True,
+        )
 
     def active_rows(self) -> tuple[DurableSurvivorRow, ...]:
         rows = self.session.execute(
