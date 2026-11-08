@@ -184,6 +184,10 @@ class SharedRequestPlanPreparationTests(unittest.TestCase):
             )
             from datetime import datetime, timezone
 
+            session.add(request)
+            session.flush()
+            session.add(requirement)
+            session.flush()
             revision = RequestApprovalRevision(
                 id="REV-PROT",
                 workforce_request_id="D-PROT",
@@ -216,7 +220,7 @@ class SharedRequestPlanPreparationTests(unittest.TestCase):
                 source="AUTO",
                 locked=True,
             )
-            session.add_all((request, requirement, intent, shift))
+            session.add_all((intent, shift))
             session.flush()
             reduction = RequestCompletionReduction(
                 id="RED-PROT",
@@ -315,7 +319,11 @@ class SharedRequestPlanPreparationTests(unittest.TestCase):
                 origin="REQUEST",
                 approved_entry_key="ENTRY-PROT-CAND",
             )
-            session.add_all((request, line, requirement))
+            session.add(request)
+            session.flush()
+            session.add(line)
+            session.flush()
+            session.add(requirement)
             session.flush()
             revision = RequestApprovalRevision(
                 id="REV-PROT-CAND",
