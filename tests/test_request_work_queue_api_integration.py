@@ -3386,6 +3386,54 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                                 .order_by(AssetAllocation.id)
                             ).all()
                         )
+                        exception_event = session.scalar(
+                            select(PlanningChangeHistory)
+                            .where(
+                                PlanningChangeHistory.action
+                                == "Dérogation surallocation manuelle",
+                                PlanningChangeHistory.entity_reference
+                                == segment_id,
+                            )
+                            .order_by(
+                                PlanningChangeHistory.occurred_at.desc(),
+                                PlanningChangeHistory.id.desc(),
+                            )
+                        )
+                        self.assertIsNotNone(exception_event)
+                        audit_details = json.loads(exception_event.details or "{}")
+                        audit_changes = audit_details.get("changes", {})
+                        self.assertEqual(
+                            exception_event.actor_name,
+                            "admin-793-api-patch-protected-exception",
+                        )
+                        self.assertEqual(
+                            audit_changes["planned_hours"],
+                            {"before": 32.0, "after": 28.0},
+                        )
+                        self.assertEqual(
+                            audit_changes["operational_base_hours"],
+                            {"before": 40.0, "after": None},
+                        )
+                        self.assertEqual(
+                            audit_changes["base_planned_hours"],
+                            {"before": None, "after": 36.0},
+                        )
+                        self.assertEqual(
+                            audit_changes["current_excess_hours"],
+                            {"before": 0.0, "after": None},
+                        )
+                        self.assertEqual(
+                            audit_changes["covered_hours"],
+                            {"before": None, "after": 32.0},
+                        )
+                        self.assertEqual(
+                            audit_changes["excess_hours"],
+                            {"before": None, "after": 4.0},
+                        )
+                        self.assertEqual(
+                            audit_changes["overallocation_policy"],
+                            {"before": None, "after": "KEEP_EXCEPTION"},
+                        )
                         self.assertEqual(protections_after, protections_before)
                         self.assertEqual(reduction_count_after, reduction_count_before)
                         self.assertEqual(audit_count_after, audit_count_before + 1)
