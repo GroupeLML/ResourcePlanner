@@ -2270,7 +2270,7 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                         if row["work_date"] == "2026-11-02"
                     )
                     survivor_shift_ids = {
-                        row["shift_id"] for row in before["demand_shifts"]
+                        row["allocation_id"] for row in before["demand_shifts"]
                     }
 
                     with factory() as session:
@@ -2334,7 +2334,7 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                     self.assertEqual(blocked_segment["covered_hours"], 16.0)
                     self.assertEqual(blocked_segment["excess_hours"], 0.0)
                     self.assertEqual(
-                        {row["shift_id"] for row in after_blocked["demand_shifts"]},
+                        {row["allocation_id"] for row in after_blocked["demand_shifts"]},
                         survivor_shift_ids,
                     )
                     self.assertFalse(
@@ -2392,7 +2392,7 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                     protected_source = next(
                         row
                         for row in after_ack["demand_shifts"]
-                        if row["shift_id"] == source["shift_id"]
+                        if row["allocation_id"] == source["allocation_id"]
                     )
                     self.assertEqual(protected_source["source"], "AUTO")
                     self.assertFalse(protected_source["locked"])
@@ -2450,7 +2450,7 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
 
                     # Rebuild/resync must keep the exact physical survivors + duplicate.
                     before_rebuild_ids = {
-                        row["shift_id"] for row in replay_snapshot["demand_shifts"]
+                        row["allocation_id"] for row in replay_snapshot["demand_shifts"]
                     }
                     with factory.begin() as session:
                         SqlPeriodAwareApprovedDemandSyncAdapter(
@@ -2460,7 +2460,7 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                     self.assertEqual(rebuilt.status_code, 200, rebuilt.text)
                     persisted = self._snapshot(client, number)
                     self.assertEqual(
-                        {row["shift_id"] for row in persisted["demand_shifts"]},
+                        {row["allocation_id"] for row in persisted["demand_shifts"]},
                         before_rebuild_ids,
                     )
                     self.assertEqual(persisted["demand_segments"][0]["planned_hours"], 16.0)
@@ -2469,7 +2469,7 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                     persisted_source = next(
                         row
                         for row in persisted["demand_shifts"]
-                        if row["shift_id"] == source["shift_id"]
+                        if row["allocation_id"] == source["allocation_id"]
                     )
                     self.assertEqual(persisted_source["source"], "AUTO")
                     self.assertFalse(persisted_source["locked"])
@@ -2477,10 +2477,10 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
                     # One physical survivor may be reachable from both protection and
                     # locked/manual authority; physical identity still counts it once.
                     overlap_shift_id = next(
-                        row["shift_id"]
+                        row["allocation_id"]
                         for row in persisted["demand_shifts"]
-                        if row["shift_id"] in survivor_shift_ids
-                        and row["shift_id"] != source["shift_id"]
+                        if row["allocation_id"] in survivor_shift_ids
+                        and row["allocation_id"] != source["allocation_id"]
                     )
                     with factory.begin() as session:
                         overlap = session.get(Shift, overlap_shift_id)
