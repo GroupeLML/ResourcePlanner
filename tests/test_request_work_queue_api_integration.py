@@ -2207,6 +2207,217 @@ class RequestWorkQueueApiIntegrationTests(unittest.TestCase):
         self.assertEqual(snapshot["demand_segments"][0]["covered_hours"], 24.0)
         return number, segment_id, snapshot["demand_shifts"]
 
+    def test_duplicate_ordinary_auto_uses_retained_projection_not_disposable_coverage(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-793-dup-ordinary",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            engine = create_sql_engine(database_url)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    created = client.post(
+                        "/api/v1/demands",
+                        json=routed_demand_payload(
+                            {
+                                "project_number": "P-778-API",
+                                "submit": True,
+                                "lines": [
+                                    {
+                                        "desired_start": START,
+                                        "desired_end": "2026-11-04",
+                                        "desired_active_days": 3,
+                                        "estimated_hours": 24,
+                                        "confirmation": "Confirmée",
+                                        "description": "#793 ordinary AUTO duplicate",
+                                    }
+                                ],
+                            }
+                        ),
+                    )
+                    self.assertEqual(created.status_code, 201, created.text)
+                    number = created.json()["demand_number"]
+                    approved = client.post(
+                        f"/api/v1/demands/{number}/approve",
+                        json={"comment": "#793 ordinary duplicate approval"},
+                    )
+                    self.assertEqual(approved.status_code, 200, approved.text)
+                    action = self._actions(client, number)[0]
+                    assigned = client.post(
+                        f"/api/v1/segments/{action['segment_id']}/assign",
+                        json={"resource_id": "R-778-A"},
+                    )
+                    self.assertEqual(assigned.status_code, 200, assigned.text)
+
+                    before = self._snapshot(client, number)
+                    self.assertEqual(before["demand_segments"][0]["planned_hours"], 24.0)
+                    self.assertEqual(before["demand_segments"][0]["covered_hours"], 24.0)
+                    self.assertEqual(before["demand_segments"][0]["excess_hours"], 0.0)
+                    source = next(
+                        row
+                        for row in before["demand_shifts"]
+                        if row["source"] == "AUTO"
+                        and not row["locked"]
+                        and row["hours"] == 8.0
+                    )
+                    preview = client.get(
+                        f"/api/v1/allocations/{source['allocation_id']}/work-queue-preview"
+                    )
+                    self.assertEqual(preview.status_code, 200, preview.text)
+                    duplicated = client.post(
+                        f"/api/v1/allocations/{source['allocation_id']}/duplicate",
+                        headers={"Idempotency-Key": "793-dup-ordinary-auto"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "day": source["work_date"],
+                            "expected_planning_version": preview.json()["planning_version"],
+                            "expected_approval_revision_id": preview.json()["approval_revision_id"],
+                            "expected_operational_version": preview.json()["operational_version"],
+                        },
+                    )
+                    self.assertEqual(duplicated.status_code, 201, duplicated.text)
+                    self.assertTrue(duplicated.json()["auto_source_converted"])
+
+                    after = self._snapshot(client, number)
+                    segment = after["demand_segments"][0]
+                    self.assertEqual(segment["planned_hours"], 24.0)
+                    self.assertEqual(segment["covered_hours"], 24.0)
+                    self.assertEqual(segment["excess_hours"], 0.0)
+                    self.assertEqual(
+                        sum(row["hours"] for row in after["demand_shifts"]),
+                        24.0,
+                    )
+            finally:
+                engine.dispose()
+
+    def test_duplicate_mixed_retained_and_disposable_projects_only_genuine_excess(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                actor_name="admin-793-dup-mixed",
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            engine = create_sql_engine(database_url)
+            try:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    created = client.post(
+                        "/api/v1/demands",
+                        json=routed_demand_payload(
+                            {
+                                "project_number": "P-778-API",
+                                "submit": True,
+                                "lines": [
+                                    {
+                                        "desired_start": START,
+                                        "desired_end": "2026-11-04",
+                                        "desired_active_days": 3,
+                                        "estimated_hours": 28,
+                                        "confirmation": "Confirmée",
+                                        "description": "#793 mixed retained duplicate",
+                                    }
+                                ],
+                            }
+                        ),
+                    )
+                    self.assertEqual(created.status_code, 201, created.text)
+                    number = created.json()["demand_number"]
+                    approved = client.post(
+                        f"/api/v1/demands/{number}/approve",
+                        json={"comment": "#793 mixed duplicate approval"},
+                    )
+                    self.assertEqual(approved.status_code, 200, approved.text)
+                    action = self._actions(client, number)[0]
+                    assigned = client.post(
+                        f"/api/v1/segments/{action['segment_id']}/assign",
+                        json={"resource_id": "R-778-A"},
+                    )
+                    self.assertEqual(assigned.status_code, 200, assigned.text)
+
+                    initial = self._snapshot(client, number)
+                    reduce_target = next(
+                        row
+                        for row in initial["demand_shifts"]
+                        if row["work_date"] == "2026-11-04"
+                        and row["hours"] == 8.0
+                    )
+                    reduction_preview = client.get(
+                        f"/api/v1/allocations/{reduce_target['allocation_id']}/work-queue-preview"
+                    )
+                    self.assertEqual(
+                        reduction_preview.status_code,
+                        200,
+                        reduction_preview.text,
+                    )
+                    reduced = client.post(
+                        f"/api/v1/allocations/{reduce_target['allocation_id']}/permanent-reduction",
+                        headers={"Idempotency-Key": "793-dup-mixed-reduce"},
+                        json={
+                            "expected_planning_version": reduction_preview.json()["planning_version"],
+                            "expected_request_version": reduction_preview.json()["request_version"],
+                            "expected_approval_revision_id": reduction_preview.json()["approval_revision_id"],
+                            "expected_operational_version": reduction_preview.json()["operational_version"],
+                        },
+                    )
+                    self.assertEqual(reduced.status_code, 200, reduced.text)
+
+                    mixed = self._snapshot(client, number)
+                    segment = mixed["demand_segments"][0]
+                    self.assertEqual(segment["planned_hours"], 20.0)
+                    self.assertEqual(segment["covered_hours"], 20.0)
+                    protected_source = next(
+                        row
+                        for row in mixed["demand_shifts"]
+                        if row["hours"] == 8.0
+                        and row["source"] == "AUTO"
+                        and not row["locked"]
+                    )
+                    preview = client.get(
+                        f"/api/v1/allocations/{protected_source['allocation_id']}/work-queue-preview"
+                    )
+                    self.assertEqual(preview.status_code, 200, preview.text)
+                    blocked = client.post(
+                        f"/api/v1/allocations/{protected_source['allocation_id']}/duplicate",
+                        headers={"Idempotency-Key": "793-dup-mixed-blocked"},
+                        json={
+                            "resource_id": "R-778-B",
+                            "day": "2026-11-04",
+                            "expected_planning_version": preview.json()["planning_version"],
+                            "expected_approval_revision_id": preview.json()["approval_revision_id"],
+                            "expected_operational_version": preview.json()["operational_version"],
+                        },
+                    )
+                    self.assertEqual(blocked.status_code, 422, blocked.text)
+                    self.assertEqual(
+                        blocked.json()["error"]["code"],
+                        "allocation_overallocation_choice_required",
+                    )
+                    self.assertEqual(
+                        blocked.json()["error"]["context"]["current_covered_hours"],
+                        16.0,
+                    )
+                    self.assertEqual(
+                        blocked.json()["error"]["context"]["projected_covered_hours"],
+                        24.0,
+                    )
+                    self.assertEqual(
+                        blocked.json()["error"]["context"]["excess_hours"],
+                        4.0,
+                    )
+                    unchanged = self._snapshot(client, number)
+                    self.assertEqual(
+                        unchanged["demand_segments"][0]["covered_hours"],
+                        20.0,
+                    )
+                    self.assertEqual(
+                        unchanged["demand_segments"][0]["excess_hours"],
+                        0.0,
+                    )
+            finally:
+                engine.dispose()
+
     def test_duplicate_protected_auto_survivor_requires_and_persists_keep_exception(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
