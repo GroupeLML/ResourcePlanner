@@ -965,10 +965,10 @@ class Issue793SqlServerPrecisionTests(unittest.TestCase):
             # permanent reduction. It may commit only after serialization has made
             # retained coverage safe; H12/C16 is never an admissible final state.
             if patch_status == 200:
-                self.assertEqual(final["effective_need"], Decimal("12.00"))
+                self.assertEqual(final["planned_hours"], Decimal("12.00"))
                 self.assertLessEqual(final_coverage, Decimal("12.00"))
             else:
-                self.assertEqual(final["effective_need"], Decimal("16.00"))
+                self.assertEqual(final["planned_hours"], Decimal("16.00"))
                 self.assertLessEqual(final_coverage, Decimal("16.00"))
 
             if patch_status == 422:
