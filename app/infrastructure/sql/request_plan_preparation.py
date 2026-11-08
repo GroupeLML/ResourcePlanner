@@ -29,6 +29,7 @@ from .operational_choice_models import (
     RequestRequirementPlanningIntent,
 )
 from .planning_intent_repository import stable_planning_slot_key
+from .retained_placement import retained_counted_shifts
 from .segment_asset_guard import segment_asset_dependencies
 from .approval_revision_models import RequestApprovalRevision
 from .planning_window_override_repository import SqlPlanningWindowOverrideRepository
@@ -1088,33 +1089,16 @@ class SqlRequestPlanPreparer:
     ) -> tuple[LockedPlanningConflict, ...]:
         matches, obsolete = self.match_current(request, current, specs)
         requirement_ids = {row.id for row in current}
-        # PRESERVE_EXISTING/completed history is protected even when physically
-        # unlocked. Select each counted Shift once; intent is an existence filter.
-        preserved_requirement_ids = select(
-            RequestRequirementPlanningIntent.current_resource_requirement_id
-        ).where(
-            RequestRequirementPlanningIntent.workforce_request_id == request.id,
-            RequestRequirementPlanningIntent.intent_mode == PLANNING_INTENT_PRESERVE_EXISTING,
-        )
-        locked_rows = (
-            self._session.scalars(
-                select(Shift)
-                .where(
-                    Shift.resource_requirement_id.in_(requirement_ids),
-                    or_(
-                        Shift.locked == true(),
-                        Shift.resource_requirement_id.in_(preserved_requirement_ids),
-                        Shift.resource_requirement_id.in_(
-                            row.id for row in current if row.status == "Terminé"
-                        ),
-                    ),
-                    (Shift.allocation_type.is_(None))
-                    | (Shift.allocation_type != MISSING_ALLOCATION_TYPE),
-                )
-                .order_by(Shift.resource_requirement_id, Shift.work_date, Shift.id)
-            ).all()
-            if requirement_ids
-            else []
+        # Shared retained-placement authority includes locked work,
+        # PRESERVE_EXISTING/completed history, and active #793 survivor protection.
+        # EXISTS-based protection membership ensures one physical Shift counts once
+        # even when several retention rules overlap.
+        locked_rows = retained_counted_shifts(
+            self._session,
+            requirement_ids,
+            completed_requirement_ids=(
+                row.id for row in current if row.status == "Terminé"
+            ),
         )
         locked_by_requirement: dict[str, list[Shift]] = defaultdict(list)
         for shift in locked_rows:
