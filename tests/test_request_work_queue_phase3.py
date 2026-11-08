@@ -1113,6 +1113,36 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                         intent,
                         Decimal("2.00"),
                     )
+                    reduction = session.scalar(
+                        select(RequestCompletionReduction).where(
+                            RequestCompletionReduction.planning_intent_id == intent.id
+                        )
+                    )
+                    self.assertIsNotNone(reduction)
+                    requirement.assigned_resource_id = "R-778-P3"
+                    requirement.status = "Planifié"
+                    survivor = Shift(
+                        id="SHIFT-INCOMPAT-PROTECTED-778",
+                        legacy_allocation_id="ALLOC-INCOMPAT-PROTECTED-778",
+                        resource_requirement_id=requirement.id,
+                        resource_id="R-778-P3",
+                        work_date=requirement.start_date,
+                        hours=Decimal("6.00"),
+                        source="AUTO",
+                        locked=False,
+                    )
+                    session.add(survivor)
+                    session.flush()
+                    protection = RequestShiftSurvivorProtection(
+                        id="SP-INCOMPAT-PROTECTED-778",
+                        planning_intent_id=intent.id,
+                        shift_id=survivor.id,
+                        original_shift_id=survivor.id,
+                        originating_reduction_id=reduction.id,
+                        active=True,
+                    )
+                    session.add(protection)
+                    session.flush()
                     SqlPeriodAwareApprovedDemandSyncAdapter(
                         session
                     ).sync_operational_choices(number)
@@ -1131,6 +1161,21 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                         "reduction_rebase_required",
                     )
                     self.assertEqual(requirement.planned_hours, Decimal("6.00"))
+                    unchanged_survivor = session.get(
+                        Shift,
+                        "SHIFT-INCOMPAT-PROTECTED-778",
+                    )
+                    unchanged_protection = session.get(
+                        RequestShiftSurvivorProtection,
+                        "SP-INCOMPAT-PROTECTED-778",
+                    )
+                    self.assertIsNotNone(unchanged_survivor)
+                    self.assertIsNotNone(unchanged_protection)
+                    self.assertTrue(unchanged_protection.active)
+                    self.assertEqual(
+                        unchanged_protection.shift_id,
+                        "SHIFT-INCOMPAT-PROTECTED-778",
+                    )
             finally:
                 engine.dispose()
 
