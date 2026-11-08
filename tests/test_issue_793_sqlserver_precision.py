@@ -21,6 +21,7 @@ from app.infrastructure.sql import (
     ResourceAvailabilityRule,
     ResourceRequirement,
     Shift,
+    TaskCatalogEntry,
     WorkforceRequest,
     create_session_factory,
     create_sql_engine,
@@ -131,7 +132,12 @@ class Issue793SqlServerPrecisionTests(unittest.TestCase):
         )
 
     @staticmethod
+    def _approval_task_code(project_number: str) -> str:
+        return f"APPROVAL-{project_number[-12:]}"
+
+    @classmethod
     def _seed_resources(
+        cls,
         factory,
         *,
         project_id: str,
@@ -146,6 +152,17 @@ class Issue793SqlServerPrecisionTests(unittest.TestCase):
                     name=f"Projet #793 {project_number}",
                 )
             )
+            approval_task = TaskCatalogEntry(
+                id=f"TASK-{project_id}",
+                project_number=project_number,
+                task_code=cls._approval_task_code(project_number),
+                label=f"Approbation #793 {project_number}",
+                status="Actif",
+                active=True,
+                time_entry_enabled=True,
+                expenses_enabled=False,
+            )
+            session.add(approval_task)
             for index, (resource_id, name) in enumerate(resources, start=1):
                 session.add(
                     Resource(
@@ -171,11 +188,11 @@ class Issue793SqlServerPrecisionTests(unittest.TestCase):
                     )
                 )
             session.flush()
-            # These #793 fixtures route explicitly by resource class. Avoid the
-            # shared TEST-APPROVAL-TASK-N namespace entirely so parallel/live SQL
-            # scenarios cannot collide on a synthetic TaskCatalog primary key.
+            # Route through a marker-scoped ERP task plus resource class. Never
+            # reuse TEST-APPROVAL-TASK-N in the shared live SQL Server database.
             seed_test_approval_routing(
                 session,
+                task_ids=(approval_task.id,),
                 include_default_task=False,
             )
 
@@ -321,13 +338,21 @@ class Issue793SqlServerPrecisionTests(unittest.TestCase):
         lines: list[dict],
         comment: str,
     ) -> str:
+        task_code = self._approval_task_code(project_number)
+        routed_lines = [
+            {
+                **dict(line),
+                "task_code": str(dict(line).get("task_code") or task_code),
+            }
+            for line in lines
+        ]
         created = client.post(
             "/api/v1/demands",
             json=routed_demand_payload(
                 {
                     "project_number": project_number,
                     "submit": True,
-                    "lines": lines,
+                    "lines": routed_lines,
                 }
             ),
         )
