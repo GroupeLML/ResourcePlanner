@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, time, timedelta
+from decimal import Decimal
 from tempfile import TemporaryDirectory
 import json
 import unittest
@@ -22,6 +23,9 @@ from app.infrastructure.sql import (
     WorkforceRequestHistory,
     create_session_factory,
     create_sql_engine,
+)
+from app.infrastructure.sql.operational_choice_repository import (
+    SqlRequestOperationalChoiceRepository,
 )
 from app.server import create_api_app
 from tests.approval_test_support import routed_demand_payload, seed_test_approval_routing
@@ -587,6 +591,24 @@ class PlanningAuthorizationGuardTests(unittest.TestCase):
                         )
                         self.assertEqual(patched.status_code, 200, patched.text)
                         self.assertTrue(patched.json()["reapproval_required"])
+
+                    with factory() as session:
+                        candidate_request = session.get(WorkforceRequest, request_id)
+                        self.assertIsNotNone(candidate_request)
+                        assert candidate_request is not None
+                        candidate_envelope = SqlRequestApprovalRevisionRepository(
+                            session
+                        ).candidate_envelope(candidate_request)
+                        preview_overrides = SqlRequestOperationalChoiceRepository(
+                            session
+                        ).candidate_budget_overrides(
+                            request_id,
+                            candidate_envelope,
+                        )
+                        self.assertEqual(
+                            list(preview_overrides.values()),
+                            [Decimal("12.00")],
+                        )
 
                     with TestClient(admin_app, raise_server_exceptions=False) as client:
                         reapproved = client.post(
