@@ -12,7 +12,11 @@ from sqlalchemy.orm import Session
 
 from ...application.errors import ApplicationValidationError
 from ...domain.active_days import normalize_active_day_target, split_total_workforce_hours
-from ...domain.approval_envelope import EnvelopeEntryIdentity
+from ...domain.approval_envelope import (
+    EnvelopeEntryIdentity,
+    approval_envelope_from_snapshot_payload,
+    delegated_effort_authorization_subject_compatible,
+)
 from ...domain.confirmation import CONFIRMATION_CONFIRMED, normalize_confirmation
 from ...domain.effective_need import resolve_effective_slot_need
 from ...domain.demand_periods import PERIOD_KIND_CUMULATIVE, resolve_period_authority
@@ -24,12 +28,14 @@ from .demand_period_models import (
 from .operational_choice_repository import SqlRequestOperationalChoiceRepository
 from .operational_choice_models import (
     RequestCompletionReduction,
+    RequestOperationalState,
     RequestRequirementPlanningIntent,
 )
 from .planning_intent_repository import stable_planning_slot_key
 from .retained_placement import retained_counted_shifts
 from .segment_asset_guard import segment_asset_dependencies
-from .approval_revision_models import RequestApprovalRevision
+from .approval_revision_models import RequestApprovalReference, RequestApprovalRevision
+from .approval_revision_repository import SqlRequestApprovalRevisionRepository
 from .planning_window_override_repository import SqlPlanningWindowOverrideRepository
 from .models import (
     Competency,
@@ -641,6 +647,89 @@ class SqlRequestPlanPreparer:
             intent_id: tuple(values) for intent_id, values in reductions.items()
         }
 
+    def _apply_compatible_operational_base_hours(
+        self,
+        request: WorkforceRequest,
+        specs: Sequence[PreparedRequirementSpec],
+    ) -> tuple[PreparedRequirementSpec, ...]:
+        """Carry compatible active operational base hours into candidate preview.
+
+        The editable candidate remains nominal approval authority. This read-only layer
+        mirrors the active operational choice that actual activation carries forward
+        for the same compatible authorization subject; permanent reductions are applied
+        afterwards by _apply_durable_slot_authority().
+        """
+
+        state = self._session.get(RequestOperationalState, request.id)
+        reference = self._session.get(RequestApprovalReference, request.id)
+        if (
+            state is None
+            or reference is None
+            or not reference.active_revision_id
+            or state.approval_revision_id != reference.active_revision_id
+        ):
+            return tuple(specs)
+        revision = self._session.get(RequestApprovalRevision, reference.active_revision_id)
+        if revision is None:
+            return tuple(specs)
+
+        try:
+            overrides_raw = json.loads(state.budget_overrides_text or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("L'état opérationnel des heures est invalide.") from exc
+        if not isinstance(overrides_raw, Mapping) or not overrides_raw:
+            return tuple(specs)
+
+        payload = json.loads(revision.payload_text)
+        authorization = payload.get("authorization")
+        if not isinstance(authorization, Mapping):
+            raise ValueError("Le snapshot approuvé actif est invalide.")
+        active_envelope = approval_envelope_from_snapshot_payload(authorization)
+        candidate_envelope = SqlRequestApprovalRevisionRepository(
+            self._session
+        ).candidate_envelope(request)
+        active_by_key = {
+            entry.identity.stable_key: entry for entry in active_envelope.entries
+        }
+        candidate_by_key = {
+            entry.identity.stable_key: entry for entry in candidate_envelope.entries
+        }
+
+        effective: list[PreparedRequirementSpec] = []
+        for spec in specs:
+            raw_override = overrides_raw.get(spec.approved_entry_key)
+            if raw_override is None:
+                effective.append(spec)
+                continue
+            active_entry = active_by_key.get(spec.approved_entry_key)
+            candidate_entry = candidate_by_key.get(spec.approved_entry_key)
+            if (
+                active_entry is None
+                or candidate_entry is None
+                or not delegated_effort_authorization_subject_compatible(
+                    active_entry,
+                    candidate_entry,
+                )
+            ):
+                effective.append(spec)
+                continue
+
+            slot_count = max(int(candidate_entry.slot_count or 1), 1)
+            if spec.slot_index < 0 or spec.slot_index >= slot_count:
+                effective.append(spec)
+                continue
+            total = Decimal(str(raw_override)).quantize(Decimal("0.01"))
+            split_hours = split_total_workforce_hours(total, slot_count)
+            effective.append(
+                replace(
+                    spec,
+                    planned_hours=Decimal(
+                        str(split_hours[int(spec.slot_index)])
+                    ).quantize(Decimal("0.01")),
+                )
+            )
+        return tuple(effective)
+
     def _apply_durable_slot_authority(
         self,
         request_id: str,
@@ -695,9 +784,13 @@ class SqlRequestPlanPreparer:
         """Prepare a submitted candidate with the same durable slot authority as activation."""
 
         prepared = self.prepare(request, current=current)
+        base_specs = self._apply_compatible_operational_base_hours(
+            request,
+            prepared.specs,
+        )
         return replace(
             prepared,
-            specs=self._apply_durable_slot_authority(request.id, prepared.specs),
+            specs=self._apply_durable_slot_authority(request.id, base_specs),
         )
 
     def prepare_active(
