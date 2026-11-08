@@ -1608,21 +1608,9 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
         if (
             persisted_source.resource_requirement_id != requirement.id
             or persisted_target.resource_requirement_id != requirement.id
-            or (
-                source_is_protected_auto
-                and (
-                    persisted_source.locked
-                    or _text(persisted_source.source).upper() != "AUTO"
-                )
-            )
-            or (
-                not source_is_protected_auto
-                and (
-                    not persisted_source.locked
-                    or _text(persisted_source.source).upper() != "MANUAL"
-                )
-            )
+            or not persisted_source.locked
             or not persisted_target.locked
+            or _text(persisted_source.source).upper() != "MANUAL"
             or _text(persisted_target.source).upper() != "MANUAL"
             or persisted_target.operational_responsible_override_contact_id
             != persisted_source.operational_responsible_override_contact_id
@@ -1805,9 +1793,21 @@ class SqlCompositeAllocationCommandAdapter(CompositeAllocationCommandPort):
         if (
             persisted_source.resource_requirement_id != requirement.id
             or persisted_target.resource_requirement_id != requirement.id
-            or not persisted_source.locked
+            or (
+                source_is_protected_auto
+                and (
+                    persisted_source.locked
+                    or _text(persisted_source.source).upper() != "AUTO"
+                )
+            )
+            or (
+                not source_is_protected_auto
+                and (
+                    not persisted_source.locked
+                    or _text(persisted_source.source).upper() != "MANUAL"
+                )
+            )
             or not persisted_target.locked
-            or _text(persisted_source.source).upper() != "MANUAL"
             or _text(persisted_target.source).upper() != "MANUAL"
             or persisted_target.operational_responsible_override_contact_id
             != persisted_source.operational_responsible_override_contact_id
