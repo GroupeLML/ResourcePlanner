@@ -62,6 +62,7 @@ class PreservedAllocationInput:
     locked: bool
     outside_schedule: bool = False
     counts_as_allocated: bool = True
+    allocation_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -346,6 +347,7 @@ def build_allocation_plan(
         locked: bool,
         outside_schedule: bool,
         counts_as_allocated: bool = True,
+        allocation_type: str | None = None,
     ) -> None:
         canonical = canonical_hours(hours)
         if segment_id not in preservable_segment_ids or canonical < 0.01:
@@ -356,7 +358,11 @@ def build_allocation_plan(
                 resource_id=resource_id,
                 day=day,
                 hours=canonical,
-                allocation_type="Locked" if locked else "Preserved",
+                allocation_type=(
+                    "Locked"
+                    if locked
+                    else (str(allocation_type or "").strip() or "Preserved")
+                ),
                 locked=locked,
                 outside_schedule=outside_schedule,
                 counts_as_allocated=counts_as_allocated,
@@ -389,6 +395,7 @@ def build_allocation_plan(
             locked=bool(allocation.locked),
             outside_schedule=allocation.outside_schedule,
             counts_as_allocated=bool(allocation.counts_as_allocated),
+            allocation_type=allocation.allocation_type,
         )
 
     fixed_segments = sorted(
