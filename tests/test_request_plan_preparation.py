@@ -20,6 +20,7 @@ from app.infrastructure.sql import (
     RequestLine,
     RequestOperationalState,
     RequestRequirementPlanningIntent,
+    RequestShiftSurvivorProtection,
     Resource,
     ResourceAvailabilityRule,
     ResourceRequirement,
@@ -36,6 +37,7 @@ from app.infrastructure.sql.period_approved_sync import (
 from app.infrastructure.sql.plan_delta_query_repository import (
     SqlPlannerQueryRepositoryWithPlanDelta,
 )
+from app.infrastructure.sql.retained_placement import retained_counted_shifts
 from app.infrastructure.sql.request_plan_preparation import (
     LOCKED_HOURS_EXCEED_BUDGET,
     LOCKED_REQUIREMENT_REMOVAL,
@@ -161,6 +163,108 @@ class SharedRequestPlanPreparationTests(unittest.TestCase):
                         self.assertEqual(sum((spec.planned_hours for spec in plan.specs), Decimal("0")),
                                          Decimal("32" if has_reduction else "40"))
         self.assertEqual(counts, [1, 1, 1, 1])
+
+    def test_retained_protected_shift_counts_once_across_overlapping_authorities(self) -> None:
+        with transactional_session(self.factory) as session:
+            request = WorkforceRequest(
+                id="D-PROT",
+                project_id="P1",
+                status="En planification",
+            )
+            requirement = ResourceRequirement(
+                id="REQ-PROT",
+                project_id="P1",
+                workforce_request_id="D-PROT",
+                assigned_resource_id="R1",
+                start_date=D1,
+                end_date=D2,
+                planned_hours=Decimal("8"),
+                status="Planifié",
+                origin="REQUEST",
+            )
+            intent = RequestRequirementPlanningIntent(
+                id="INT-PROT",
+                workforce_request_id="D-PROT",
+                slot_identity_key='["PROT"]',
+                approved_entry_key='["PROT"]',
+                approval_revision_id="REV-PROT",
+                slot_index=0,
+                intent_mode="AUTO",
+                target_mode="EXPLICIT_RESOURCE",
+                target_resource_id="R1",
+                current_resource_requirement_id="REQ-PROT",
+            )
+            shift = Shift(
+                id="SHIFT-PROT",
+                resource_requirement_id="REQ-PROT",
+                resource_id="R1",
+                work_date=D1,
+                hours=Decimal("8"),
+                allocation_type="Flexible",
+                source="AUTO",
+                locked=True,
+            )
+            session.add_all((request, requirement, intent, shift))
+            session.flush()
+            reduction = RequestCompletionReduction(
+                id="RED-PROT",
+                planning_intent_id="INT-PROT",
+                workforce_request_id="D-PROT",
+                historical_approval_revision_id="REV-PROT",
+                approved_entry_key='["PROT"]',
+                original_shift_id="SHIFT-REMOVED",
+                shift_snapshot_text="{}",
+                reduction_hours=Decimal("8"),
+                effective_need_before=Decimal("16"),
+                effective_need_after=Decimal("8"),
+                command_id="CMD-PROT",
+                actor_user_id="U-PERF",
+                reconciliation_state="ACTIVE",
+            )
+            session.add(reduction)
+            session.flush()
+            session.add(
+                RequestShiftSurvivorProtection(
+                    id="SP-PROT",
+                    planning_intent_id="INT-PROT",
+                    shift_id="SHIFT-PROT",
+                    original_shift_id="SHIFT-PROT",
+                    originating_reduction_id="RED-PROT",
+                    active=True,
+                )
+            )
+            session.flush()
+
+            # locked + protected: the physical Shift is returned exactly once.
+            self.assertEqual(
+                [row.id for row in retained_counted_shifts(session, ("REQ-PROT",))],
+                ["SHIFT-PROT"],
+            )
+
+            # PRESERVE_EXISTING + protected: still one physical Shift.
+            shift.locked = False
+            intent.intent_mode = "PRESERVE_EXISTING"
+            session.flush()
+            self.assertEqual(
+                [row.id for row in retained_counted_shifts(session, ("REQ-PROT",))],
+                ["SHIFT-PROT"],
+            )
+
+            # completed + protected: still one physical Shift.
+            intent.intent_mode = "AUTO"
+            requirement.status = "Terminé"
+            session.flush()
+            self.assertEqual(
+                [
+                    row.id
+                    for row in retained_counted_shifts(
+                        session,
+                        ("REQ-PROT",),
+                        completed_requirement_ids=("REQ-PROT",),
+                    )
+                ],
+                ["SHIFT-PROT"],
+            )
 
     @staticmethod
     def _locked_shift(
