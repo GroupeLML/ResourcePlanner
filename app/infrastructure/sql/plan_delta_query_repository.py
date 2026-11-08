@@ -8,6 +8,7 @@ from decimal import Decimal
 from sqlalchemy import select, true
 from sqlalchemy.orm import Session
 
+from ...application.errors import ApplicationConflictError
 from ...application.plan_delta import (
     DemandApprovalStateReadModel,
     DemandAssetPlanDeltaItemReadModel,
@@ -1226,6 +1227,26 @@ class SqlPlannerQueryRepositoryWithPlanDelta(SqlPlannerQueryRepositoryWeb):
             prepared = self._plan_preparer.prepare_candidate_authoritative(
                 request,
                 current=current_requirements,
+            )
+        except ApplicationConflictError as exc:
+            entry_key = _text(exc.context.get("approved_entry_key"))
+            return delta(
+                demand_number=demand_number,
+                available=False,
+                reason=exc.code,
+                has_changes=False,
+                asset_add_count=asset_counts["ADD"],
+                asset_modify_count=asset_counts["MODIFY"],
+                asset_cancel_count=asset_counts["CANCEL"],
+                asset_items=asset_items,
+                diagnostics=(
+                    *asset_diagnostics,
+                    DemandPlanDeltaDiagnosticReadModel(
+                        code=exc.code,
+                        message=exc.message,
+                        spec_key=((entry_key,) if entry_key else None),
+                    ),
+                ),
             )
         except ValueError:
             prepared = None
