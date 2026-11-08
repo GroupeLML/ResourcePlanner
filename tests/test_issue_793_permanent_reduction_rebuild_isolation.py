@@ -31,6 +31,7 @@ from app.infrastructure.sql.idempotency import CommandIdempotencyReceipt
 from app.infrastructure.sql.operational_choice_models import RequestOperationalState
 from app.infrastructure.sql.planning_audit import PlanningChangeHistory
 from app.infrastructure.sql.planning_version import SqlPlanningMutationVersionRepository
+from app.infrastructure.sql.request_plan_preparation import SqlRequestPlanPreparer
 from app.infrastructure.sql.planning_intent_repository import (
     SqlRequestRequirementPlanningIntentRepository,
 )
@@ -2843,6 +2844,11 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                     {"2026-11-03", WEDNESDAY},
                 )
                 line_a_segment_id = eric_before["segment_id"]
+                line_a_identity = (
+                    eric_before["approved_entry_key"],
+                    eric_before["slot_index"],
+                    eric_before["slot_identity_key"],
+                )
                 line_b_id = timmy_before["source_request_line_id"]
                 self.assertIsNotNone(line_b_id)
 
@@ -2873,6 +2879,47 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                     self.assertEqual(changed.status_code, 200, changed.text)
                     self.assertTrue(changed.json()["reapproval_required"])
                     self.assertEqual(changed.json()["status"], "Soumise")
+
+                    with factory() as session:
+                        request_candidate = session.scalar(
+                            select(WorkforceRequest).where(
+                                WorkforceRequest.legacy_demand_number == number
+                            )
+                        )
+                        assert request_candidate is not None
+                        current_candidate = tuple(
+                            session.scalars(
+                                select(ResourceRequirement).where(
+                                    ResourceRequirement.workforce_request_id
+                                    == request_candidate.id,
+                                    ResourceRequirement.status != "Annulé",
+                                )
+                            )
+                        )
+                        candidate_plan = SqlRequestPlanPreparer(
+                            session
+                        ).prepare_candidate_authoritative(
+                            request_candidate,
+                            current=current_candidate,
+                        )
+                        candidate_line_a = [
+                            spec
+                            for spec in candidate_plan.specs
+                            if spec.approved_entry_key == line_a_identity[0]
+                            and int(spec.slot_index) == int(line_a_identity[1])
+                        ]
+                        self.assertEqual(len(candidate_line_a), 1)
+                        self.assertEqual(
+                            (
+                                candidate_line_a[0].approved_entry_key,
+                                int(candidate_line_a[0].slot_index),
+                            ),
+                            line_a_identity[:2],
+                        )
+                        self.assertEqual(
+                            candidate_line_a[0].placement_not_before_date.isoformat(),
+                            "2026-11-03",
+                        )
 
                     with factory() as session:
                         before_reads = self._capture(
@@ -3111,6 +3158,13 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                         )
                     eric = self._by_target(reduced_state, ERIC_ID)
                     timmy = self._by_target(reduced_state, TIMMY_ID)
+                    self.assertIsNone(eric["placement_not_before_date"])
+                    self.assertIsNone(timmy["placement_not_before_date"])
+                    partial_line_a_identity = (
+                        eric["approved_entry_key"],
+                        eric["slot_index"],
+                        eric["slot_identity_key"],
+                    )
                     self.assertEqual(eric["effective_need"], Decimal("20.00"))
                     self.assertEqual(eric["covered_hours"], Decimal("20.00"))
                     survivors = {
@@ -3146,6 +3200,47 @@ class Issue793PermanentReductionRebuildIsolationTests(TestCase):
                         },
                     )
                     self.assertEqual(changed.status_code, 200, changed.text)
+
+                    with factory() as session:
+                        request_candidate = session.scalar(
+                            select(WorkforceRequest).where(
+                                WorkforceRequest.legacy_demand_number == number
+                            )
+                        )
+                        assert request_candidate is not None
+                        current_candidate = tuple(
+                            session.scalars(
+                                select(ResourceRequirement).where(
+                                    ResourceRequirement.workforce_request_id
+                                    == request_candidate.id,
+                                    ResourceRequirement.status != "Annulé",
+                                )
+                            )
+                        )
+                        candidate_plan = SqlRequestPlanPreparer(
+                            session
+                        ).prepare_candidate_authoritative(
+                            request_candidate,
+                            current=current_candidate,
+                        )
+                        candidate_line_a = [
+                            spec
+                            for spec in candidate_plan.specs
+                            if spec.approved_entry_key == partial_line_a_identity[0]
+                            and int(spec.slot_index)
+                            == int(partial_line_a_identity[1])
+                        ]
+                        self.assertEqual(len(candidate_line_a), 1)
+                        self.assertEqual(
+                            (
+                                candidate_line_a[0].approved_entry_key,
+                                int(candidate_line_a[0].slot_index),
+                            ),
+                            partial_line_a_identity[:2],
+                        )
+                        self.assertIsNone(
+                            candidate_line_a[0].placement_not_before_date
+                        )
 
                     delta = client.get(f"/api/v1/demands/{number}/plan-delta")
                     self.assertEqual(delta.status_code, 200, delta.text)
