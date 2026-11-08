@@ -20,6 +20,7 @@ from app.infrastructure.sql import (
     RequestLine,
     RequestOperationalState,
     RequestRequirementPlanningIntent,
+    RequestShiftSurvivorProtection,
     Resource,
     ResourceAvailabilityRule,
     ResourceRequirement,
@@ -36,6 +37,7 @@ from app.infrastructure.sql.period_approved_sync import (
 from app.infrastructure.sql.plan_delta_query_repository import (
     SqlPlannerQueryRepositoryWithPlanDelta,
 )
+from app.infrastructure.sql.retained_placement import retained_counted_shifts
 from app.infrastructure.sql.request_plan_preparation import (
     LOCKED_HOURS_EXCEED_BUDGET,
     LOCKED_REQUIREMENT_REMOVAL,
@@ -161,6 +163,261 @@ class SharedRequestPlanPreparationTests(unittest.TestCase):
                         self.assertEqual(sum((spec.planned_hours for spec in plan.specs), Decimal("0")),
                                          Decimal("32" if has_reduction else "40"))
         self.assertEqual(counts, [1, 1, 1, 1])
+
+    def test_retained_protected_shift_counts_once_across_overlapping_authorities(self) -> None:
+        with transactional_session(self.factory) as session:
+            request = WorkforceRequest(
+                id="D-PROT",
+                project_id="P1",
+                status="En planification",
+            )
+            requirement = ResourceRequirement(
+                id="REQ-PROT",
+                project_id="P1",
+                workforce_request_id="D-PROT",
+                assigned_resource_id="R1",
+                start_date=D1,
+                end_date=D2,
+                planned_hours=Decimal("8"),
+                status="Planifié",
+                origin="REQUEST",
+            )
+            from datetime import datetime, timezone
+
+            session.add(request)
+            session.flush()
+            session.add(requirement)
+            session.flush()
+            revision = RequestApprovalRevision(
+                id="REV-PROT",
+                workforce_request_id="D-PROT",
+                request_version=1,
+                approved_at=datetime.now(timezone.utc),
+                authorization_fingerprint="b" * 64,
+                payload_text='{"request": {}, "authorization": {"entries": []}}',
+            )
+            session.add(revision)
+            session.flush()
+            intent = RequestRequirementPlanningIntent(
+                id="INT-PROT",
+                workforce_request_id="D-PROT",
+                slot_identity_key='["PROT"]',
+                approved_entry_key='["PROT"]',
+                approval_revision_id="REV-PROT",
+                slot_index=0,
+                intent_mode="AUTO",
+                target_mode="EXPLICIT_RESOURCE",
+                target_resource_id="R1",
+                current_resource_requirement_id="REQ-PROT",
+            )
+            shift = Shift(
+                id="SHIFT-PROT",
+                resource_requirement_id="REQ-PROT",
+                resource_id="R1",
+                work_date=D1,
+                hours=Decimal("8"),
+                allocation_type="Flexible",
+                source="AUTO",
+                locked=True,
+            )
+            session.add_all((intent, shift))
+            session.flush()
+            reduction = RequestCompletionReduction(
+                id="RED-PROT",
+                planning_intent_id="INT-PROT",
+                workforce_request_id="D-PROT",
+                historical_approval_revision_id="REV-PROT",
+                approved_entry_key='["PROT"]',
+                original_shift_id="SHIFT-REMOVED",
+                shift_snapshot_text="{}",
+                reduction_hours=Decimal("8"),
+                effective_need_before=Decimal("16"),
+                effective_need_after=Decimal("8"),
+                command_id="CMD-PROT",
+                actor_user_id="U-PERF",
+                reconciliation_state="ACTIVE",
+            )
+            session.add(reduction)
+            session.flush()
+            session.add(
+                RequestShiftSurvivorProtection(
+                    id="SP-PROT",
+                    planning_intent_id="INT-PROT",
+                    shift_id="SHIFT-PROT",
+                    original_shift_id="SHIFT-PROT",
+                    originating_reduction_id="RED-PROT",
+                    active=True,
+                )
+            )
+            session.flush()
+
+            # locked + protected: the physical Shift is returned exactly once.
+            self.assertEqual(
+                [row.id for row in retained_counted_shifts(session, ("REQ-PROT",))],
+                ["SHIFT-PROT"],
+            )
+
+            # PRESERVE_EXISTING + protected: still one physical Shift.
+            shift.locked = False
+            intent.intent_mode = "PRESERVE_EXISTING"
+            session.flush()
+            self.assertEqual(
+                [row.id for row in retained_counted_shifts(session, ("REQ-PROT",))],
+                ["SHIFT-PROT"],
+            )
+
+            # completed + protected: still one physical Shift.
+            intent.intent_mode = "AUTO"
+            requirement.status = "Terminé"
+            session.flush()
+            self.assertEqual(
+                [
+                    row.id
+                    for row in retained_counted_shifts(
+                        session,
+                        ("REQ-PROT",),
+                        completed_requirement_ids=("REQ-PROT",),
+                    )
+                ],
+                ["SHIFT-PROT"],
+            )
+
+    def test_candidate_activation_cannot_bypass_durable_survivor_coverage(self) -> None:
+        from datetime import datetime, timezone
+
+        with transactional_session(self.factory) as session:
+            request = WorkforceRequest(
+                id="D-PROT-CAND",
+                legacy_demand_number="DEM-PROT-CAND",
+                project_id="P1",
+                line_mode=True,
+                status="Soumise",
+            )
+            line = RequestLine(
+                id="L-PROT-CAND",
+                workforce_request_id=request.id,
+                position=0,
+                kind="WORKFORCE",
+                slot_count=1,
+                desired_start=D1,
+                desired_end=D1,
+                estimated_hours=Decimal("4"),
+                confirmation="Confirmée",
+                active=True,
+            )
+            requirement = ResourceRequirement(
+                id="REQ-PROT-CAND",
+                legacy_segment_id="SEG-PROT-CAND",
+                project_id="P1",
+                workforce_request_id=request.id,
+                source_request_line_id=line.id,
+                assigned_resource_id="R1",
+                start_date=D1,
+                end_date=D1,
+                planned_hours=Decimal("8"),
+                status="Planifié",
+                origin="REQUEST",
+                approved_entry_key="ENTRY-PROT-CAND",
+            )
+            session.add(request)
+            session.flush()
+            session.add(line)
+            session.flush()
+            session.add(requirement)
+            session.flush()
+            revision = RequestApprovalRevision(
+                id="REV-PROT-CAND",
+                workforce_request_id=request.id,
+                request_version=1,
+                approved_at=datetime.now(timezone.utc),
+                authorization_fingerprint="c" * 64,
+                payload_text='{"request": {}, "authorization": {"entries": []}}',
+            )
+            session.add(revision)
+            session.flush()
+            intent = RequestRequirementPlanningIntent(
+                id="INT-PROT-CAND",
+                workforce_request_id=request.id,
+                slot_identity_key='["PROT-CAND"]',
+                approved_entry_key="ENTRY-PROT-CAND",
+                approval_revision_id=revision.id,
+                source_request_line_id=line.id,
+                slot_index=0,
+                intent_mode="AUTO",
+                target_mode="EXPLICIT_RESOURCE",
+                target_resource_id="R1",
+                current_resource_requirement_id=requirement.id,
+            )
+            survivor = Shift(
+                id="SHIFT-PROT-CAND",
+                resource_requirement_id=requirement.id,
+                resource_id="R1",
+                work_date=D1,
+                hours=Decimal("8"),
+                allocation_type="Flexible",
+                source="AUTO",
+                locked=False,
+            )
+            session.add_all((intent, survivor))
+            session.flush()
+            reduction = RequestCompletionReduction(
+                id="RED-PROT-CAND",
+                planning_intent_id=intent.id,
+                workforce_request_id=request.id,
+                historical_approval_revision_id=revision.id,
+                source_request_line_id=line.id,
+                approved_entry_key="ENTRY-PROT-CAND",
+                resource_requirement_id=requirement.id,
+                original_shift_id="SHIFT-REMOVED-CAND",
+                shift_snapshot_text="{}",
+                reduction_hours=Decimal("1"),
+                effective_need_before=Decimal("9"),
+                effective_need_after=Decimal("8"),
+                command_id="CMD-PROT-CAND",
+                actor_user_id="U-PERF",
+                reconciliation_state="ACTIVE",
+            )
+            session.add(reduction)
+            session.flush()
+            session.add(
+                RequestShiftSurvivorProtection(
+                    id="SP-PROT-CAND",
+                    planning_intent_id=intent.id,
+                    shift_id=survivor.id,
+                    original_shift_id=survivor.id,
+                    originating_reduction_id=reduction.id,
+                    active=True,
+                )
+            )
+            session.flush()
+
+            preparer = SqlRequestPlanPreparer(session)
+            plan = preparer.prepare(request, current=[requirement])
+            conflicts = preparer.locked_conflicts(
+                request,
+                [requirement],
+                plan.specs,
+                pre_mutation_effective_hours_by_requirement={
+                    requirement.id: 8.0,
+                },
+            )
+            self.assertEqual([row.code for row in conflicts], [LOCKED_HOURS_EXCEED_BUDGET])
+            context = conflicts[0].overallocation_context
+            self.assertIsNotNone(context)
+            self.assertEqual(context["locked_hours"], 8.0)
+            self.assertEqual(context["current_excess_hours"], 0.0)
+            self.assertEqual(context["excess_hours"], 4.0)
+
+            acknowledged = preparer.locked_conflicts(
+                request,
+                [requirement],
+                plan.specs,
+                acknowledged_overallocation_requirement_ids=(requirement.id,),
+                pre_mutation_effective_hours_by_requirement={
+                    requirement.id: 8.0,
+                },
+            )
+            self.assertEqual(acknowledged, ())
 
     @staticmethod
     def _locked_shift(

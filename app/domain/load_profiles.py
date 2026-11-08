@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import date
 
+from .allocation_rules import apportion_canonical_hours
+
 
 LOAD_PROFILE_UNIFORM = "UNIFORM"
 LOAD_PROFILE_FRONT_LOADED = "FRONT_LOADED"
@@ -79,34 +81,20 @@ def _round_preserving_total(
     capacities: Sequence[float],
     weights: Sequence[float],
 ) -> tuple[float, ...]:
-    rounded = [round(max(value, 0.0), 4) for value in raw]
-    wanted = round(float(target), 4)
-    delta = round(wanted - sum(rounded), 4)
-    if abs(delta) <= 0.00005:
-        return tuple(rounded)
+    """Canonicalize weighted planning output to exact persisted cents.
 
-    order = sorted(range(len(rounded)), key=lambda index: (-weights[index], index))
-    if delta > 0:
-        for index in order:
-            room = round(max(float(capacities[index]) - rounded[index], 0.0), 4)
-            if room <= 0:
-                continue
-            amount = min(delta, room)
-            rounded[index] = round(rounded[index] + amount, 4)
-            delta = round(delta - amount, 4)
-            if delta <= 0.00005:
-                break
-    else:
-        remaining = -delta
-        for index in reversed(order):
-            if rounded[index] <= 0:
-                continue
-            amount = min(remaining, rounded[index])
-            rounded[index] = round(rounded[index] - amount, 4)
-            remaining = round(remaining - amount, 4)
-            if remaining <= 0.00005:
-                break
-    return tuple(rounded)
+    Largest fractional remainders win first. Exact ties retain the existing profile
+    priority: higher profile weight, then earlier chronological index.
+    """
+    tie_order = tuple(
+        sorted(range(len(raw)), key=lambda index: (-weights[index], index))
+    )
+    return apportion_canonical_hours(
+        target,
+        raw,
+        capacities,
+        tie_order=tie_order,
+    )
 
 
 def spread_profile_hours(
@@ -169,5 +157,5 @@ def spread_profile_hours(
     return {
         day: hours
         for (day, _capacity), hours in zip(ordered, rounded)
-        if hours > 0.00005
+        if hours >= 0.01
     }

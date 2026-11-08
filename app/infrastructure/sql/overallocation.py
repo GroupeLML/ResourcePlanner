@@ -914,21 +914,33 @@ class OverallocationAuditedSegmentRepository(SegmentRepositoryPort):
                     if after_excess <= TOLERANCE_HOURS
                     else "Réduction surallocation manuelle"
                 )
+                audit_before = {
+                    **before_values,
+                    "planned_hours": projection.get("current_planned_hours"),
+                    "operational_base_hours": projection.get(
+                        "operational_base_hours"
+                    ),
+                    "current_excess_hours": before_excess,
+                }
+                audit_after = {
+                    **after_values,
+                    "planned_hours": projection.get("planned_hours"),
+                    "base_planned_hours": projection.get("base_planned_hours"),
+                    "covered_hours": projection.get("projected_locked_hours"),
+                    "excess_hours": after_excess,
+                }
+                if after_excess > before_excess + TOLERANCE_HOURS:
+                    # Reaching this repository after an increased-excess guard means
+                    # the canonical exception was explicitly acknowledged and
+                    # authorized by the application service.
+                    audit_after["overallocation_policy"] = KEEP_EXCEPTION
                 self._journal.append(
                     entity_type=ENTITY_SEGMENT,
                     entity_id=entity_id,
                     entity_reference=entity_reference,
                     action=action,
-                    before={
-                        **before_values,
-                        "planned_hours": projection.get("current_planned_hours"),
-                        "overallocated_hours": before_excess,
-                    },
-                    after={
-                        **after_values,
-                        "planned_hours": projection.get("planned_hours"),
-                        "overallocated_hours": after_excess,
-                    },
+                    before=audit_before,
+                    after=audit_after,
                 )
             return
 

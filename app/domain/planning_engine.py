@@ -4,7 +4,13 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Mapping, Sequence
 
-from .allocation_rules import remaining_segment_hours, spread_hours
+from .allocation_rules import (
+    canonical_hours,
+    fill_canonical_hours,
+    remaining_segment_hours,
+    residual_capacity,
+    spread_hours,
+)
 from .load_profiles import (
     LOAD_PROFILE_BACK_LOADED,
     LOAD_PROFILE_BELL,
@@ -56,6 +62,7 @@ class PreservedAllocationInput:
     locked: bool
     outside_schedule: bool = False
     counts_as_allocated: bool = True
+    allocation_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -237,16 +244,15 @@ def _outside_schedule_slots(
             *_profile_day_sort_key(segment, item[1], item[2]),
         )
     )
-    remaining = float(hours)
-    result: list[tuple[date, float]] = []
-    for _priority, day, _capacity in candidates:
-        if remaining <= 0.001:
-            break
-        amount = min(float(daily_limit), remaining)
-        if amount > 0:
-            result.append((day, round(amount, 4)))
-            remaining -= amount
-    return result
+    canonical = fill_canonical_hours(
+        hours,
+        [(day, daily_limit) for _priority, day, _capacity in candidates],
+    )
+    return [
+        (day, amount)
+        for _priority, day, _capacity in candidates
+        if (amount := canonical.get(day, 0.0)) >= 0.01
+    ]
 
 
 
@@ -341,27 +347,35 @@ def build_allocation_plan(
         locked: bool,
         outside_schedule: bool,
         counts_as_allocated: bool = True,
+        allocation_type: str | None = None,
     ) -> None:
-        if segment_id not in preservable_segment_ids or hours <= 0:
+        canonical = canonical_hours(hours)
+        if segment_id not in preservable_segment_ids or canonical < 0.01:
             return
         preserved.append(
             PlannedAllocation(
                 segment_id=segment_id,
                 resource_id=resource_id,
                 day=day,
-                hours=round(hours, 4),
-                allocation_type="Locked" if locked else "Preserved",
+                hours=canonical,
+                allocation_type=(
+                    "Locked"
+                    if locked
+                    else (str(allocation_type or "").strip() or "Preserved")
+                ),
                 locked=locked,
                 outside_schedule=outside_schedule,
                 counts_as_allocated=counts_as_allocated,
                 preserved=True,
             )
         )
-        consumed_by_segment[segment_id] = consumed_by_segment.get(segment_id, 0.0) + hours
+        consumed_by_segment[segment_id] = canonical_hours(
+            consumed_by_segment.get(segment_id, 0.0) + canonical
+        )
         preserved_days_by_segment.setdefault(segment_id, set()).add(day)
         if counts_as_allocated:
             key = (resource_id, day)
-            normal_used[key] = normal_used.get(key, 0.0) + hours
+            normal_used[key] = canonical_hours(normal_used.get(key, 0.0) + canonical)
 
     for allocation in locked_allocations:
         register_preserved(
@@ -381,6 +395,7 @@ def build_allocation_plan(
             locked=bool(allocation.locked),
             outside_schedule=allocation.outside_schedule,
             counts_as_allocated=bool(allocation.counts_as_allocated),
+            allocation_type=allocation.allocation_type,
         )
 
     fixed_segments = sorted(
@@ -416,11 +431,11 @@ def build_allocation_plan(
         window = _capacity_window(segment, capacity_by_resource_day)
         residual: list[tuple[date, float]] = []
         for day, raw_capacity in window:
-            room = max(
-                raw_capacity - normal_used.get((segment.resource_id, day), 0.0),
-                0.0,
+            room = residual_capacity(
+                raw_capacity,
+                flexible_hours=normal_used.get((segment.resource_id, day), 0.0),
             )
-            if room > 0:
+            if room >= 0.01:
                 residual.append((day, room))
 
         preferred = _preferred_active_day_window(
@@ -436,19 +451,19 @@ def build_allocation_plan(
         )
         for day, hours in spread.items():
             key = (segment.resource_id, day)
-            normal_used[key] = normal_used.get(key, 0.0) + hours
+            normal_used[key] = canonical_hours(normal_used.get(key, 0.0) + hours)
             allocations.append(
                 PlannedAllocation(
                     segment_id=segment.segment_id,
                     resource_id=segment.resource_id,
                     day=day,
-                    hours=round(hours, 4),
+                    hours=canonical_hours(hours),
                     allocation_type=allocation_type,
                 )
             )
 
-        missing = max(remaining - sum(spread.values()), 0.0)
-        if missing <= 0.001:
+        missing = canonical_hours(max(remaining - sum(spread.values()), 0.0))
+        if missing < 0.01:
             return
 
         slots = _outside_schedule_slots(
@@ -460,15 +475,15 @@ def build_allocation_plan(
         )
         placed_outside = 0.0
         for day, hours in slots:
-            placed_outside += hours
+            placed_outside = canonical_hours(placed_outside + hours)
             if segment.overtime_allowed:
-                overtime_total += hours
+                overtime_total = canonical_hours(overtime_total + hours)
                 allocations.append(
                     PlannedAllocation(
                         segment_id=segment.segment_id,
                         resource_id=segment.resource_id,
                         day=day,
-                        hours=round(hours, 4),
+                        hours=canonical_hours(hours),
                         allocation_type=allocation_type,
                         outside_schedule=True,
                     )
@@ -480,17 +495,17 @@ def build_allocation_plan(
                         segment_id=segment.segment_id,
                         resource_id=segment.resource_id,
                         day=day,
-                        hours=round(hours, 4),
+                        hours=canonical_hours(hours),
                         allocation_type=missing_allocation_type,
                         counts_as_allocated=False,
                     )
                 )
 
-        residual_missing = max(missing - placed_outside, 0.0)
+        residual_missing = canonical_hours(max(missing - placed_outside, 0.0))
         if segment.overtime_allowed:
-            missing_total += residual_missing
+            missing_total = canonical_hours(missing_total + residual_missing)
         else:
-            missing_total += missing
+            missing_total = canonical_hours(missing_total + missing)
 
     for segment in fixed_segments:
         place_segment(segment, "Fixe")
@@ -506,21 +521,23 @@ def build_allocation_plan(
             item.segment_id,
         )
     )
-    requested = sum(float(segment.hours) for segment in active_segments)
-    allocated = sum(
-        float(item.hours)
-        for item in allocations
-        if item.counts_as_allocated and item.segment_id in segment_map
+    requested = canonical_hours(sum(float(segment.hours) for segment in active_segments))
+    allocated = canonical_hours(
+        sum(
+            float(item.hours)
+            for item in allocations
+            if item.counts_as_allocated and item.segment_id in segment_map
+        )
     )
     diagnostics = _active_day_diagnostics(active_segments, allocations)
     return PlanResult(
         allocations=tuple(allocations),
         segment_count=len(active_segments),
         locked_allocation_count=sum(1 for item in preserved if item.locked),
-        requested_hours=round(requested, 4),
-        allocated_hours=round(allocated, 4),
-        unallocated_hours=round(max(requested - allocated, missing_total), 4),
-        overtime_hours=round(overtime_total, 4),
+        requested_hours=canonical_hours(requested),
+        allocated_hours=canonical_hours(allocated),
+        unallocated_hours=canonical_hours(max(requested - allocated, missing_total)),
+        overtime_hours=canonical_hours(overtime_total),
         missing_allocation_count=missing_count,
         active_day_diagnostics=diagnostics,
     )

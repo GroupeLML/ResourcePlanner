@@ -68,6 +68,9 @@ from .planning_repository import SqlPlanningReadRepository
 from .same_resource_periods import SqlSameResourcePeriodCoordinator
 from .planning_version import SqlPlanningMutationVersionRepository
 from .request_version import acquire_request_aggregate_version
+from .survivor_protection_repository import (
+    SqlRequestShiftSurvivorProtectionRepository,
+)
 from .user_view_context_repository import SqlUserViewContextRepository
 
 
@@ -408,14 +411,37 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
         *,
         excluding_shift_id: str | None = None,
     ) -> Decimal:
-        statement = select(func.coalesce(func.sum(Shift.hours), 0)).where(
+        """Sum canonical physical Shift rows, never hidden raw sub-cent storage."""
+        statement = select(Shift.hours).where(
             Shift.resource_requirement_id == requirement_id,
             (Shift.allocation_type.is_(None))
             | (Shift.allocation_type != MISSING_ALLOCATION_TYPE),
         )
         if excluding_shift_id:
             statement = statement.where(Shift.id != excluding_shift_id)
-        return _decimal(self._session.scalar(statement) or 0)
+        return sum(
+            (_decimal(value) for value in self._session.scalars(statement).all()),
+            Decimal("0.00"),
+        ).quantize(CENT)
+
+    def _counted_survivor_shifts(
+        self,
+        requirement_id: str,
+        *,
+        excluding_shift_id: str,
+    ) -> tuple[Shift, ...]:
+        return tuple(
+            self._session.scalars(
+                select(Shift)
+                .where(
+                    Shift.resource_requirement_id == requirement_id,
+                    Shift.id != excluding_shift_id,
+                    (Shift.allocation_type.is_(None))
+                    | (Shift.allocation_type != MISSING_ALLOCATION_TYPE),
+                )
+                .order_by(Shift.work_date, Shift.id)
+            ).all()
+        )
 
     @staticmethod
     def _assert_counted_shift(shift: Shift) -> None:
@@ -1310,6 +1336,15 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
         self._session.add(release)
 
         previous = self._journal.shift_snapshot(shift.id)
+        # Explicit Return Shift identifies the physical placement being removed:
+        # retire exactly its survivor protection before canonical asset cleanup/delete.
+        SqlRequestShiftSurvivorProtectionRepository(
+            self._session
+        ).retire_deleted_shift(
+            intent=intent,
+            shift=shift,
+            reason="RETURN_SHIFT_TO_WORK_QUEUE",
+        )
         SqlAssetService(self._session, actor=self._actor_name).delete_shift_ad_hoc_assignment(
             shift=shift
         )
@@ -1391,7 +1426,17 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
         intent.target_resource_id = None
         requirement.assigned_resource_id = None
         assets = SqlAssetService(self._session, actor=self._actor_name)
+        protection_repository = SqlRequestShiftSurvivorProtectionRepository(
+            self._session
+        )
         for shift in shifts:
+            # Explicit Return Segment retires each protected physical placement in
+            # the returned scope before canonical asset cleanup/delete.
+            protection_repository.retire_deleted_shift(
+                intent=intent,
+                shift=shift,
+                reason="RETURN_SEGMENT_TO_WORK_QUEUE",
+            )
             assets.delete_shift_ad_hoc_assignment(shift=shift)
             self._session.delete(shift)
         self._session.flush()
@@ -1536,14 +1581,29 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
             reconciled_approval_revision_id=revision.id,
         )
         self._session.add(reduction)
-        survivor_ids = tuple(
-            self._session.scalars(
-                select(Shift.id).where(
-                    Shift.resource_requirement_id == requirement.id,
-                    Shift.id != shift.id,
-                )
-            ).all()
+        self._session.flush()
+
+        survivor_rows = self._counted_survivor_shifts(
+            requirement.id,
+            excluding_shift_id=shift.id,
         )
+        durable_survivors = SqlRequestShiftSurvivorProtectionRepository(
+            self._session
+        )
+        durable_survivors.protect_survivors(
+            intent=intent,
+            reduction=reduction,
+            survivors=survivor_rows,
+        )
+        # A Shift protected by an earlier reduction may itself become the explicit
+        # target of a later reduction. Retire only that target link; existing survivor
+        # links retain their original provenance.
+        durable_survivors.retire_deleted_shift(
+            intent=intent,
+            shift=shift,
+            reason="PERMANENT_REDUCTION_TARGET",
+        )
+
         previous = self._journal.shift_snapshot(shift.id)
         SqlAssetService(self._session, actor=self._actor_name).delete_shift_ad_hoc_assignment(
             shift=shift
@@ -1558,7 +1618,9 @@ class SqlRequestWorkQueueCommandAdapter(RequestWorkQueueCommandPort):
             if _text(requirement.status) != "Terminé":
                 requirement.status = "Annulé"
         self._session.flush()
-        self._planning.rebuild(preserve_shift_ids=survivor_ids)
+        # Durable SQL protection is the authority. No transient survivor IDs are
+        # required for this permanent-reduction rebuild.
+        self._planning.rebuild()
         if previous is not None:
             entity_id, entity_reference, parent_reference, before = previous
             self._journal.append(

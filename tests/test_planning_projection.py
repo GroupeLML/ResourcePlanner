@@ -5,7 +5,7 @@ from pathlib import Path
 from types import MappingProxyType
 import unittest
 
-from app.domain.planning_engine import MISSING_ALLOCATION_TYPE, LockedAllocationInput, SegmentInput
+from app.domain.planning_engine import MISSING_ALLOCATION_TYPE, LockedAllocationInput, SegmentInput, build_allocation_plan
 from app.domain.planning_projection import (
     PlanningCalculationSnapshot,
     project_planning_snapshot,
@@ -193,6 +193,119 @@ class PlanningProjectionTests(unittest.TestCase):
         )
         self.assertTrue(calculation.persisted_allocations[0].locked)
         self.assertEqual(calculation.persisted_allocations[0].allocation_type, "Locked")
+
+    def test_sql_resource_ids_remain_distinct_when_display_names_match(self) -> None:
+        snapshot = PlanningSnapshot.capture(
+            segments=[
+                {
+                    "IDSegment": "S-A",
+                    "ResourceID": "R-A",
+                    "Technicien": "Même nom",
+                    "DateDebut": D1,
+                    "DateFin": D1,
+                    "HeuresPrevues": 8,
+                    "Statut": "Planifié",
+                    "TypePlanification": "Flexible",
+                },
+                {
+                    "IDSegment": "S-B",
+                    "ResourceID": "R-B",
+                    "Technicien": "Même nom",
+                    "DateDebut": D1,
+                    "DateFin": D1,
+                    "HeuresPrevues": 8,
+                    "Statut": "Planifié",
+                    "TypePlanification": "Flexible",
+                },
+            ],
+            demands=[],
+            allocations=[
+                {
+                    "IDAllocation": "LOCK-A",
+                    "IDSegment": "S-A",
+                    "ResourceID": "R-A",
+                    "Technicien": "Même nom",
+                    "Date": D1,
+                    "Heures": 2,
+                    "Verrouillee": "Oui",
+                    "TypeAllocation": "Flexible",
+                },
+                {
+                    "IDAllocation": "AUTO-B",
+                    "IDSegment": "S-B",
+                    "ResourceID": "R-B",
+                    "Technicien": "Même nom",
+                    "Date": D1,
+                    "Heures": 2,
+                    "Verrouillee": "Non",
+                    "TypeAllocation": "Flexible",
+                },
+            ],
+            availability=[
+                {
+                    "ID": "STD-A",
+                    "ResourceID": "R-A",
+                    "Technicien": "Même nom",
+                    "Type": "Horaire standard",
+                    "Actif": "Oui",
+                    "JoursSemaine": "Lun",
+                    "HeureDebut": "08:00",
+                    "HeureFin": "16:00",
+                },
+                {
+                    "ID": "STD-B",
+                    "ResourceID": "R-B",
+                    "Technicien": "Même nom",
+                    "Type": "Horaire standard",
+                    "Actif": "Oui",
+                    "JoursSemaine": "Lun",
+                    "HeureDebut": "08:00",
+                    "HeureFin": "12:00",
+                },
+            ],
+            technicians=[
+                {"resource_id": "R-A", "name": "Même nom"},
+                {"resource_id": "R-B", "name": "Même nom"},
+            ],
+        )
+
+        calculation = project_planning_snapshot(snapshot)
+
+        self.assertEqual(
+            {row.resource_id for row in calculation.segments},
+            {"R-A", "R-B"},
+        )
+        self.assertEqual(
+            calculation.capacity_by_resource_day[("R-A", D1)],
+            8.0,
+        )
+        self.assertEqual(
+            calculation.capacity_by_resource_day[("R-B", D1)],
+            4.0,
+        )
+        self.assertEqual(
+            calculation.locked_allocations[0].resource_id,
+            "R-A",
+        )
+        self.assertEqual(
+            {
+                row.resource_id for row in calculation.persisted_allocations
+            },
+            {"R-A", "R-B"},
+        )
+
+        result = build_allocation_plan(
+            calculation.segments,
+            calculation.locked_allocations,
+            calculation.capacity_by_resource_day,
+            outside_schedule_eligible_by_resource_day=(
+                calculation.outside_schedule_eligible_by_resource_day
+            ),
+        )
+        self.assertEqual(
+            {row.resource_id for row in result.allocations},
+            {"R-A", "R-B"},
+        )
 
     def test_capacity_and_eligibility_maps_are_read_only(self) -> None:
         calculation = project_planning_snapshot(self._source_snapshot())

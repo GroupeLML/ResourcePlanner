@@ -15,6 +15,7 @@ from ...application.command_ports import (
     PlanningCommandPort,
 )
 from ...application.repository_ports import PlanningMutationVersionPort
+from ...domain.allocation_rules import canonical_hours
 from ...domain.availability_rules import (
     OutsideStandardHoursDecision,
     outside_standard_hours_decision_for_day,
@@ -50,10 +51,14 @@ from .operational_choice_models import (
     PlanningWorkQueueRestoration,
     RequestRequirementPlanningIntent,
 )
+from .retained_placement import dedupe_locked_allocations
 from .segment_asset_guard import assert_segment_asset_mutation_compatible
 from .planning_version import SqlPlanningMutationVersionRepository
 from .segment_repository import SqlSegmentRepository
 from .same_resource_periods import SqlSameResourcePeriodCoordinator
+from .survivor_protection_repository import (
+    SqlRequestShiftSurvivorProtectionRepository,
+)
 
 
 INACTIVE_REQUIREMENT_STATUSES = {"Annulé", "Terminé"}
@@ -153,7 +158,15 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
                 + ", ".join(calculation.unsupported_segment_ids)
             )
 
+        # preserve_shift_ids remains a transient transport for legacy command
+        # paths only. #793 durable survivor authority is always reread from SQL on
+        # every rebuild, including fresh-session/unrelated rebuilds.
         preserve_ids = {str(value) for value in preserve_shift_ids if str(value)}
+        durable_survivors = SqlRequestShiftSurvivorProtectionRepository(
+            self._session
+        ).active_rows()
+        preserve_ids.update(row.shift.id for row in durable_survivors)
+
         terminal_survivor_ids = set(
             self._session.scalars(
                 select(Shift.id)
@@ -188,12 +201,13 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
         temporary_inputs = tuple(
             PreservedAllocationInput(
                 segment_id=_text(requirement.legacy_segment_id) or requirement.id,
-                resource_id=resource.name,
+                resource_id=resource.id,
                 day=shift.work_date,
                 hours=float(shift.hours),
                 locked=bool(shift.locked),
                 outside_schedule=bool(shift.outside_standard_hours),
                 counts_as_allocated=shift.allocation_type != MISSING_ALLOCATION_TYPE,
+                allocation_type=shift.allocation_type,
             )
             for shift, requirement, resource in preserved_rows
         )
@@ -214,34 +228,14 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
             for segment in calculation.segments
             if segment.segment_id not in suppressed_segment_ids
         )
-        preserved_locked_counts: dict[tuple[str, str, date, float], int] = {}
-        for item in temporary_inputs:
-            if not item.locked:
-                continue
-            key = (
-                item.segment_id,
-                item.resource_id,
-                item.day,
-                round(float(item.hours), 4),
-            )
-            preserved_locked_counts[key] = preserved_locked_counts.get(key, 0) + 1
-
-        engine_locked_rows = []
-        for allocation in calculation.locked_allocations:
-            if allocation.segment_id in suppressed_segment_ids:
-                continue
-            key = (
-                allocation.segment_id,
-                allocation.resource_id,
-                allocation.day,
-                round(float(allocation.hours), 4),
-            )
-            duplicate_count = preserved_locked_counts.get(key, 0)
-            if duplicate_count:
-                preserved_locked_counts[key] = duplicate_count - 1
-                continue
-            engine_locked_rows.append(allocation)
-        engine_locked = tuple(engine_locked_rows)
+        engine_locked = dedupe_locked_allocations(
+            tuple(
+                allocation
+                for allocation in calculation.locked_allocations
+                if allocation.segment_id not in suppressed_segment_ids
+            ),
+            temporary_inputs,
+        )
         preserved_capacity_segment_ids = {
             item.segment_id for item in temporary_inputs
         }
@@ -270,9 +264,11 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
             | terminal_survivor_ids
         )
 
-        # Keep active locked user decisions plus the narrowly scoped survivor rows
-        # explicitly preserved for this one mutation. Other automatic rows remain
-        # disposable engine output.
+        # Keep active locked user decisions plus all rows selected through
+        # transient preservation or durable #793 survivor authority. Other automatic
+        # rows remain disposable engine output. Durable AUTO survivors stay AUTO;
+        # their preserved coverage is passed to the pure engine, which generates only
+        # the residual need not already covered by those physical rows.
         existing = self._session.scalars(select(Shift)).all()
         for shift in existing:
             if shift.id not in protected_ids:
@@ -285,7 +281,7 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
             for requirement in requirements
         }
         resources = self._session.scalars(select(Resource)).all()
-        resource_by_name = {resource.name: resource for resource in resources}
+        resource_by_id = {resource.id: resource for resource in resources}
 
         for allocation in result.allocations:
             if allocation.preserved:
@@ -295,19 +291,29 @@ class SqlPlanningCommandAdapter(PlanningCommandPort):
                 raise RuntimeError(
                     f"Segment {allocation.segment_id} introuvable pendant la persistance du plan."
                 )
-            resource = resource_by_name.get(allocation.resource_id)
+            resource = resource_by_id.get(allocation.resource_id)
             if resource is None:
                 raise RuntimeError(
-                    f"Ressource {allocation.resource_id} introuvable pendant la persistance du plan."
+                    "Identité ressource Planning inconnue pendant la persistance du plan: "
+                    f"{allocation.resource_id}."
                 )
 
             missing = not allocation.counts_as_allocated
+            canonical_allocation_hours = _decimal(canonical_hours(allocation.hours))
+            if canonical_allocation_hours < Decimal("0.01"):
+                raise RuntimeError(
+                    "Le moteur Planning a produit un quart physique inférieur au cent canonique."
+                )
+            if _decimal(allocation.hours) != canonical_allocation_hours:
+                raise RuntimeError(
+                    "Le moteur Planning a produit une quantité physique hors précision canonique."
+                )
             self._session.add(
                 Shift(
                     resource_requirement_id=requirement.id,
                     resource_id=resource.id,
                     work_date=allocation.day,
-                    hours=_decimal(allocation.hours),
+                    hours=canonical_allocation_hours,
                     allocation_type=allocation.allocation_type,
                     source="AUTO",
                     locked=False,
@@ -821,6 +827,9 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             day=day,
             hours=hours,
         )
+        # ADR-034/#793: this command mutates the existing physical Shift in place.
+        # Its durable survivor protection follows the same Shift.id; only commands
+        # that delete/replace that physical identity retire the protection.
 
         shift.resource_id = resource.id
         shift.work_date = day
@@ -877,6 +886,8 @@ class SqlAllocationCommandAdapter(AllocationCommandPort):
             day=day,
             hours=_decimal(shift.hours),
         )
+        # ADR-034/#793: moving an allocation preserves the physical Shift.id.
+        # Keep any active survivor protection attached to that authoritative row.
 
         shift.resource_id = resource.id
         shift.work_date = day

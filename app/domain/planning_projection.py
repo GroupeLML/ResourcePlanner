@@ -93,15 +93,48 @@ def _plan_type(row: dict[str, Any]) -> str:
     return value if value in PLAN_TYPES else "Flexible"
 
 
+
+def _resource_identity(row: Mapping[str, Any]) -> str:
+    """Return the canonical Planning resource key with legacy-name fallback.
+
+    SQL snapshots provide ResourceID. Legacy/Excel snapshots intentionally keep
+    their historical display-name key and remain supported outside the authoritative
+    SQL Planning runtime.
+    """
+    return str(
+        row.get("ResourceID")
+        or row.get("resource_id")
+        or row.get("Technicien")
+        or row.get("name")
+        or ""
+    ).strip()
+
+
+def _availability_for_engine(
+    availability_rows: Sequence[dict[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    """Normalize SQL availability rows onto the same canonical resource key space."""
+    normalized: list[dict[str, Any]] = []
+    for row in availability_rows:
+        resource_id = _resource_identity(row)
+        if not resource_id or str(row.get("Type") or "").strip() == "Jour férié":
+            normalized.append(row)
+            continue
+        copy = dict(row)
+        copy["Technicien"] = resource_id
+        normalized.append(copy)
+    return tuple(normalized)
+
 def _schedulable_resource_ids(
     technician_rows: Sequence[dict[str, Any]],
     availability_rows: Sequence[dict[str, Any]],
 ) -> set[str]:
-    configured = {str(row.get("name") or "").strip() for row in technician_rows}
+    configured = {_resource_identity(row) for row in technician_rows}
+    engine_availability = _availability_for_engine(availability_rows)
     return {
         resource_id
         for resource_id in configured
-        if resource_id and has_standard_schedule(availability_rows, resource_id)
+        if resource_id and has_standard_schedule(engine_availability, resource_id)
     }
 
 
@@ -116,7 +149,7 @@ def _segment_inputs(
 
     for row in segment_rows:
         status = str(row.get("Statut") or "")
-        resource_id = str(row.get("Technicien") or "").strip()
+        resource_id = _resource_identity(row)
         hours = _number(row.get("HeuresPrevues"))
         if status in {"Annulé", "Terminé"} or resource_id not in schedulable or hours <= 0:
             continue
@@ -184,7 +217,7 @@ def _locked_inputs(
         if not _truthy(row.get("Verrouillee")):
             continue
         day = date_from_value(row.get("Date"))
-        resource_id = str(row.get("Technicien") or "").strip()
+        resource_id = _resource_identity(row)
         segment_id = str(row.get("IDSegment") or "").strip()
         hours = _number(row.get("Heures"))
         if (
@@ -218,7 +251,7 @@ def _capacity_snapshot(
             key = (segment.resource_id, cursor)
             if key not in result:
                 result[key] = availability_hours_for_day(
-                    availability_rows,
+                    _availability_for_engine(availability_rows),
                     segment.resource_id,
                     cursor,
                 )
@@ -237,7 +270,7 @@ def _outside_schedule_eligibility_snapshot(
             key = (segment.resource_id, cursor)
             if key not in result:
                 result[key] = outside_schedule_eligible_for_day(
-                    availability_rows,
+                    _availability_for_engine(availability_rows),
                     segment.resource_id,
                     cursor,
                 )
@@ -257,7 +290,7 @@ def _persisted_projection(
         if str(row.get("TypeAllocation") or "").strip() == MISSING_ALLOCATION_TYPE:
             continue
         day = date_from_value(row.get("Date"))
-        resource_id = str(row.get("Technicien") or "").strip()
+        resource_id = _resource_identity(row)
         hours = _number(row.get("Heures"))
         if not day or not resource_id or hours <= 0:
             continue

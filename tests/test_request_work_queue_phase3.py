@@ -20,6 +20,7 @@ from app.infrastructure.sql import (
     ResourceAvailabilityRule,
     RequestOperationalState,
     RequestRequirementPlanningIntent,
+    RequestShiftSurvivorProtection,
     ResourceRequirement,
     Shift,
     SqlPlanningCommandAdapter,
@@ -721,26 +722,48 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                         request_context=payload["request"],
                         authorization_entry=entry,
                     )
-                    session.add(
-                        RequestCompletionReduction(
-                            planning_intent_id=intent.id,
-                            workforce_request_id=request.id,
-                            historical_approval_revision_id=revision.id,
-                            source_request_line_id=intent.source_request_line_id,
-                            approved_entry_key=intent.approved_entry_key,
-                            resource_requirement_id=requirement.id,
-                            original_shift_id="SHIFT-HIST-COMPAT-778",
-                            shift_snapshot_text="{}",
-                            reduction_hours=Decimal("8.00"),
-                            effective_need_before=Decimal("40.00"),
-                            effective_need_after=Decimal("32.00"),
-                            actor_user_id=TEST_ADMIN_USER_ID,
-                            command_id="compatible-reapproval-reduction-778",
-                            reconciliation_state="ACTIVE",
-                            authorization_fingerprint=fingerprint,
-                            reconciled_approval_revision_id=revision.id,
-                        )
+                    reduction = RequestCompletionReduction(
+                        planning_intent_id=intent.id,
+                        workforce_request_id=request.id,
+                        historical_approval_revision_id=revision.id,
+                        source_request_line_id=intent.source_request_line_id,
+                        approved_entry_key=intent.approved_entry_key,
+                        resource_requirement_id=requirement.id,
+                        original_shift_id="SHIFT-HIST-COMPAT-778",
+                        shift_snapshot_text="{}",
+                        reduction_hours=Decimal("8.00"),
+                        effective_need_before=Decimal("40.00"),
+                        effective_need_after=Decimal("32.00"),
+                        actor_user_id=TEST_ADMIN_USER_ID,
+                        command_id="compatible-reapproval-reduction-778",
+                        reconciliation_state="ACTIVE",
+                        authorization_fingerprint=fingerprint,
+                        reconciled_approval_revision_id=revision.id,
                     )
+                    session.add(reduction)
+                    requirement.assigned_resource_id = "R-778-P3"
+                    requirement.status = "Planifié"
+                    survivor = Shift(
+                        id="SHIFT-COMPAT-PROTECTED-778",
+                        legacy_allocation_id="ALLOC-COMPAT-PROTECTED-778",
+                        resource_requirement_id=requirement.id,
+                        resource_id="R-778-P3",
+                        work_date=requirement.start_date,
+                        hours=Decimal("8.00"),
+                        source="AUTO",
+                        locked=False,
+                    )
+                    session.add(survivor)
+                    session.flush()
+                    protection = RequestShiftSurvivorProtection(
+                        id="SP-COMPAT-PROTECTED-778",
+                        planning_intent_id=intent.id,
+                        shift_id=survivor.id,
+                        original_shift_id=survivor.id,
+                        originating_reduction_id=reduction.id,
+                        active=True,
+                    )
+                    session.add(protection)
                     session.flush()
                     SqlPeriodAwareApprovedDemandSyncAdapter(
                         session
@@ -793,6 +816,29 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                     self.assertEqual(
                         reduction.reconciled_approval_revision_id,
                         current_requirement.approval_revision_id,
+                    )
+                    current_survivor = session.get(
+                        Shift,
+                        "SHIFT-COMPAT-PROTECTED-778",
+                    )
+                    current_protection = session.get(
+                        RequestShiftSurvivorProtection,
+                        "SP-COMPAT-PROTECTED-778",
+                    )
+                    self.assertIsNotNone(current_survivor)
+                    self.assertEqual(
+                        current_survivor.resource_requirement_id,
+                        current_requirement.id,
+                    )
+                    self.assertIsNotNone(current_protection)
+                    self.assertTrue(current_protection.active)
+                    self.assertEqual(
+                        current_protection.shift_id,
+                        "SHIFT-COMPAT-PROTECTED-778",
+                    )
+                    self.assertEqual(
+                        current_protection.originating_reduction_id,
+                        reduction.id,
                     )
             finally:
                 engine.dispose()
@@ -1067,6 +1113,36 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                         intent,
                         Decimal("2.00"),
                     )
+                    reduction = session.scalar(
+                        select(RequestCompletionReduction).where(
+                            RequestCompletionReduction.planning_intent_id == intent.id
+                        )
+                    )
+                    self.assertIsNotNone(reduction)
+                    requirement.assigned_resource_id = "R-778-P3"
+                    requirement.status = "Planifié"
+                    survivor = Shift(
+                        id="SHIFT-INCOMPAT-PROTECTED-778",
+                        legacy_allocation_id="ALLOC-INCOMPAT-PROTECTED-778",
+                        resource_requirement_id=requirement.id,
+                        resource_id="R-778-P3",
+                        work_date=requirement.start_date,
+                        hours=Decimal("6.00"),
+                        source="AUTO",
+                        locked=False,
+                    )
+                    session.add(survivor)
+                    session.flush()
+                    protection = RequestShiftSurvivorProtection(
+                        id="SP-INCOMPAT-PROTECTED-778",
+                        planning_intent_id=intent.id,
+                        shift_id=survivor.id,
+                        original_shift_id=survivor.id,
+                        originating_reduction_id=reduction.id,
+                        active=True,
+                    )
+                    session.add(protection)
+                    session.flush()
                     SqlPeriodAwareApprovedDemandSyncAdapter(
                         session
                     ).sync_operational_choices(number)
@@ -1085,6 +1161,21 @@ class RequestWorkQueuePhase3Tests(unittest.TestCase):
                         "reduction_rebase_required",
                     )
                     self.assertEqual(requirement.planned_hours, Decimal("6.00"))
+                    unchanged_survivor = session.get(
+                        Shift,
+                        "SHIFT-INCOMPAT-PROTECTED-778",
+                    )
+                    unchanged_protection = session.get(
+                        RequestShiftSurvivorProtection,
+                        "SP-INCOMPAT-PROTECTED-778",
+                    )
+                    self.assertIsNotNone(unchanged_survivor)
+                    self.assertIsNotNone(unchanged_protection)
+                    self.assertTrue(unchanged_protection.active)
+                    self.assertEqual(
+                        unchanged_protection.shift_id,
+                        "SHIFT-INCOMPAT-PROTECTED-778",
+                    )
             finally:
                 engine.dispose()
 

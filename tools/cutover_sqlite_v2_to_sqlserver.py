@@ -73,6 +73,7 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
             "planning_work_queue_releases",
             "planning_work_queue_restorations",
             "request_completion_reductions",
+            "request_shift_survivor_protections",
             "erp_sync_control",
             "erp_sync_occurrences",
             "erp_sync_attempts",
@@ -258,6 +259,9 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
     "request_completion_reductions": _keep(
         "Réductions post-approbation append-only du besoin courant ADR-034."
     ),
+    "request_shift_survivor_protections": _keep(
+        "Autorité durable #793 liant les survivants physiques à leur slot et réduction d'origine."
+    ),
     "request_lines": _keep("Lignes métier des demandes V2."),
     "request_line_competencies": _keep("Compétences demandées par ligne."),
     "resource_requirement_competencies": _keep("Snapshot des compétences matérialisées."),
@@ -426,6 +430,16 @@ RELATIONSHIP_CONTROLS: dict[str, tuple[str, ...]] = {
         "actor_user_id",
         "absorbed_by_revision_id",
         "reconciled_approval_revision_id",
+    ),
+    "request_shift_survivor_protections": (
+        "id",
+        "planning_intent_id",
+        "shift_id",
+        "original_shift_id",
+        "originating_reduction_id",
+        "active",
+        "retired_at",
+        "retired_reason",
     ),
     "shifts": ("id", "resource_requirement_id", "resource_id"),
     "delivery_plans": ("id", "work_package_id"),

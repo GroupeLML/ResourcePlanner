@@ -8,6 +8,7 @@ from decimal import Decimal
 from sqlalchemy import select, true
 from sqlalchemy.orm import Session
 
+from ...application.errors import ApplicationConflictError
 from ...application.plan_delta import (
     DemandApprovalStateReadModel,
     DemandAssetPlanDeltaItemReadModel,
@@ -24,7 +25,11 @@ from ...domain.plan_comparison import (
     AllocationProjection,
     compare_allocation_plans,
 )
-from ...domain.planning_engine import build_allocation_plan
+from ...domain.planning_engine import (
+    MISSING_ALLOCATION_TYPE,
+    PreservedAllocationInput,
+    build_allocation_plan,
+)
 from ...domain.planning_projection import project_planning_snapshot
 from ...domain.planning_snapshot import PlanningSnapshot
 from .approval_revision_models import (
@@ -54,6 +59,7 @@ from .models import (
 from .operational_choice_models import RequestOperationalState
 from .planning_repository import SqlPlanningReadRepository
 from .request_plan_preparation import SqlRequestPlanPreparer
+from .retained_placement import dedupe_locked_allocations, retained_counted_shifts
 from .web_query_repository import SqlPlannerQueryRepositoryWeb
 
 
@@ -89,21 +95,25 @@ def _item_from_difference(
     difference: AllocationDifference,
     *,
     change: str,
-    resource_id_by_name: dict[str, str] | None = None,
+    resource_name_by_id: dict[str, str] | None = None,
 ) -> DemandPlanDeltaItemReadModel:
     current = difference.legacy_hours > 0
     proposed = difference.shadow_hours > 0
     return DemandPlanDeltaItemReadModel(
         change=change,
         segment_id=difference.segment_id,
-        current_resource_name=difference.resource_id if current else None,
-        proposed_resource_name=difference.resource_id if proposed else None,
-        current_resource_id=(
-            (resource_id_by_name or {}).get(difference.resource_id) if current else None
+        current_resource_name=(
+            (resource_name_by_id or {}).get(difference.resource_id, difference.resource_id)
+            if current
+            else None
         ),
-        proposed_resource_id=(
-            (resource_id_by_name or {}).get(difference.resource_id) if proposed else None
+        proposed_resource_name=(
+            (resource_name_by_id or {}).get(difference.resource_id, difference.resource_id)
+            if proposed
+            else None
         ),
+        current_resource_id=difference.resource_id if current else None,
+        proposed_resource_id=difference.resource_id if proposed else None,
         current_date=difference.day if current else None,
         proposed_date=difference.day if proposed else None,
         current_hours=float(difference.legacy_hours),
@@ -123,7 +133,7 @@ def _item_from_difference(
 def _delta_items(
     differences: tuple[AllocationDifference, ...],
     *,
-    resource_id_by_name: dict[str, str] | None = None,
+    resource_name_by_id: dict[str, str] | None = None,
 ) -> tuple[DemandPlanDeltaItemReadModel, ...]:
     """Turn semantic-key differences into coordinator-friendly add/move/change/cancel rows."""
 
@@ -136,7 +146,7 @@ def _delta_items(
             direct.append(_item_from_difference(
                 difference,
                 change="MODIFY",
-                resource_id_by_name=resource_id_by_name,
+                resource_name_by_id=resource_name_by_id,
             ))
         elif difference.legacy_hours > 0:
             old_only[difference.segment_id].append(difference)
@@ -162,7 +172,7 @@ def _delta_items(
                 direct.append(_item_from_difference(
                     old,
                     change="CANCEL",
-                    resource_id_by_name=resource_id_by_name,
+                    resource_name_by_id=resource_name_by_id,
                 ))
                 continue
             new = new_rows[pair_index]
@@ -171,10 +181,16 @@ def _delta_items(
                 DemandPlanDeltaItemReadModel(
                     change="MOVE",
                     segment_id=segment_id,
-                    current_resource_name=old.resource_id,
-                    proposed_resource_name=new.resource_id,
-                    current_resource_id=(resource_id_by_name or {}).get(old.resource_id),
-                    proposed_resource_id=(resource_id_by_name or {}).get(new.resource_id),
+                    current_resource_name=(resource_name_by_id or {}).get(
+                        old.resource_id,
+                        old.resource_id,
+                    ),
+                    proposed_resource_name=(resource_name_by_id or {}).get(
+                        new.resource_id,
+                        new.resource_id,
+                    ),
+                    current_resource_id=old.resource_id,
+                    proposed_resource_id=new.resource_id,
                     current_date=old.day,
                     proposed_date=new.day,
                     current_hours=float(old.legacy_hours),
@@ -192,7 +208,7 @@ def _delta_items(
                 direct.append(_item_from_difference(
                     new,
                     change="ADD",
-                    resource_id_by_name=resource_id_by_name,
+                    resource_name_by_id=resource_name_by_id,
                 ))
 
     order = {"CANCEL": 0, "MOVE": 1, "MODIFY": 2, "ADD": 3}
@@ -363,7 +379,7 @@ class SqlPlannerQueryRepositoryWithPlanDelta(SqlPlannerQueryRepositoryWeb):
             while cursor <= end:
                 capacity = availability_hours_for_day(
                     snapshot.availability,
-                    proposed_resource.name,
+                    proposed_resource.id,
                     cursor,
                 )
                 if capacity > 0:
@@ -399,6 +415,7 @@ class SqlPlannerQueryRepositoryWithPlanDelta(SqlPlannerQueryRepositoryWeb):
             "NoDemande": _text(request.legacy_demand_number) or request.id,
             "NumeroProjet": project.number,
             "NomProjet": project.name,
+            "ResourceID": resource.id if resource is not None else None,
             "Technicien": resource.name if resource is not None else None,
             "DateDebut": start_date,
             "DateFin": end_date,
@@ -626,7 +643,7 @@ class SqlPlannerQueryRepositoryWithPlanDelta(SqlPlannerQueryRepositoryWeb):
             return None
 
         try:
-            prepared = self._plan_preparer.prepare(
+            prepared = self._plan_preparer.prepare_candidate_authoritative(
                 request,
                 current=current,
             )
@@ -674,6 +691,7 @@ class SqlPlannerQueryRepositoryWithPlanDelta(SqlPlannerQueryRepositoryWeb):
                     "ClasseRessourceRequise": spec.required_resource_class,
                     "CompetenceRequise": spec.required_competency,
                     "JoursActifsCibles": spec.desired_active_days,
+                    "PlacementNotBeforeDate": spec.placement_not_before_date,
                 }
             )
         return proposed
@@ -1206,9 +1224,29 @@ class SqlPlannerQueryRepositoryWithPlanDelta(SqlPlannerQueryRepositoryWeb):
             )
 
         try:
-            prepared = self._plan_preparer.prepare(
+            prepared = self._plan_preparer.prepare_candidate_authoritative(
                 request,
                 current=current_requirements,
+            )
+        except ApplicationConflictError as exc:
+            entry_key = _text(exc.context.get("approved_entry_key"))
+            return delta(
+                demand_number=demand_number,
+                available=False,
+                reason=exc.code,
+                has_changes=False,
+                asset_add_count=asset_counts["ADD"],
+                asset_modify_count=asset_counts["MODIFY"],
+                asset_cancel_count=asset_counts["CANCEL"],
+                asset_items=asset_items,
+                diagnostics=(
+                    *asset_diagnostics,
+                    DemandPlanDeltaDiagnosticReadModel(
+                        code=exc.code,
+                        message=exc.message,
+                        spec_key=((entry_key,) if entry_key else None),
+                    ),
+                ),
             )
         except ValueError:
             prepared = None
@@ -1291,11 +1329,49 @@ class SqlPlannerQueryRepositoryWithPlanDelta(SqlPlannerQueryRepositoryWeb):
                 has_changes=False,
             )
 
+        requirement_by_id = {
+            requirement.id: requirement for requirement in current_requirements
+        }
+        retained_rows = retained_counted_shifts(
+            self._delta_session,
+            tuple(requirement_by_id),
+            completed_requirement_ids=(
+                requirement.id
+                for requirement in current_requirements
+                if requirement.status == "Terminé"
+            ),
+        )
+        retained_inputs = tuple(
+            PreservedAllocationInput(
+                segment_id=_identifier(requirement_by_id[shift.resource_requirement_id]),
+                resource_id=shift.resource_id,
+                day=shift.work_date,
+                hours=float(shift.hours),
+                locked=bool(shift.locked),
+                outside_schedule=bool(shift.outside_standard_hours),
+                counts_as_allocated=(
+                    shift.allocation_type != MISSING_ALLOCATION_TYPE
+                ),
+                allocation_type=shift.allocation_type,
+            )
+            for shift in retained_rows
+            if shift.resource_requirement_id in requirement_by_id
+        )
+        retained_segment_ids = {
+            item.segment_id for item in retained_inputs
+        }
         proposed_result = build_allocation_plan(
             proposed_calculation.segments,
-            proposed_calculation.locked_allocations,
+            dedupe_locked_allocations(
+                proposed_calculation.locked_allocations,
+                retained_inputs,
+            ),
             proposed_calculation.capacity_by_resource_day,
-            preserve_locked_segment_ids=proposed_calculation.preserved_segment_ids,
+            preserved_allocations=retained_inputs,
+            preserve_locked_segment_ids=(
+                set(proposed_calculation.preserved_segment_ids)
+                | retained_segment_ids
+            ),
             outside_schedule_eligible_by_resource_day=(
                 proposed_calculation.outside_schedule_eligible_by_resource_day
             ),
@@ -1304,13 +1380,13 @@ class SqlPlannerQueryRepositoryWithPlanDelta(SqlPlannerQueryRepositoryWeb):
             current_calculation.persisted_allocations,
             _allocation_projection(proposed_result),
         )
-        resource_id_by_name = {
-            resource.name: resource.id
+        resource_name_by_id = {
+            resource.id: resource.name
             for resource in self._delta_session.scalars(select(Resource)).all()
         }
         items = _delta_items(
             comparison.differences,
-            resource_id_by_name=resource_id_by_name,
+            resource_name_by_id=resource_name_by_id,
         )
         counts = {
             name: sum(1 for item in items if item.change == name)

@@ -75,6 +75,20 @@ class PlanComparisonTests(unittest.TestCase):
         )
         self.assertTrue(comparison.matches)
 
+    def test_real_business_allocation_type_change_remains_semantic(self) -> None:
+        comparison = compare_allocation_plans(
+            [self.allocation(hours=8, allocation_type="Flexible")],
+            [self.allocation(hours=8, allocation_type="Fixe")],
+        )
+        self.assertFalse(comparison.matches)
+        self.assertEqual(
+            {(row.allocation_type, row.legacy_hours, row.shadow_hours) for row in comparison.differences},
+            {
+                ("Flexible", 8.0, 0.0),
+                ("Fixe", 0.0, 8.0),
+            },
+        )
+
     def test_resource_and_outside_schedule_are_semantic_keys(self) -> None:
         resource_diff = compare_allocation_plans(
             [self.allocation(hours=2, resource="RES-1")],

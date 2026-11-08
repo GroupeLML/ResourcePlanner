@@ -29,6 +29,7 @@ from app.infrastructure.sql import (
     PlanningWorkQueueRestoration,
     Project,
     RequestCompletionReduction,
+    RequestShiftSurvivorProtection,
     RequestLine,
     RequestOperationalState,
     RequestRequirementPlanningIntent,
@@ -700,6 +701,11 @@ class Issue777SqlServerConcurrencyTests(unittest.TestCase):
                     )
                 )
             if intent_ids:
+                session.execute(
+                    delete(RequestShiftSurvivorProtection).where(
+                        RequestShiftSurvivorProtection.planning_intent_id.in_(intent_ids)
+                    )
+                )
                 session.execute(
                     delete(RequestCompletionReduction).where(
                         RequestCompletionReduction.planning_intent_id.in_(intent_ids)

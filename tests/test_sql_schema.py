@@ -5,7 +5,7 @@ from datetime import date
 from pathlib import Path
 import unittest
 
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import ForeignKeyConstraint, create_engine, inspect
 from sqlalchemy.dialects import mssql, postgresql, sqlite
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.schema import CreateIndex, CreateTable
@@ -95,6 +95,7 @@ EXPECTED_TABLES = {
     "planning_work_queue_releases",
     "planning_work_queue_restorations",
     "request_completion_reductions",
+    "request_shift_survivor_protections",
     "request_lines",
     "request_line_competencies",
     "resource_requirement_competencies",
@@ -300,11 +301,70 @@ class SqlSchemaTests(unittest.TestCase):
         approval_revisions = Base.metadata.tables["request_approval_revisions"].c
         approval_references = Base.metadata.tables["request_approval_references"].c
         operational_states = Base.metadata.tables["request_operational_states"].c
+        survivor_protections = Base.metadata.tables[
+            "request_shift_survivor_protections"
+        ].c
         resource_classes = Base.metadata.tables["resource_class_configs"].c
         task_class_standards = Base.metadata.tables["task_class_standards"].c
         project_task_overrides = Base.metadata.tables["project_task_class_overrides"].c
 
         self.assertFalse(operational_states.budget_overrides_text.nullable)
+        self.assertFalse(survivor_protections.planning_intent_id.nullable)
+        self.assertTrue(survivor_protections.shift_id.nullable)
+        self.assertFalse(survivor_protections.original_shift_id.nullable)
+        self.assertFalse(survivor_protections.originating_reduction_id.nullable)
+        self.assertFalse(survivor_protections.active.nullable)
+        self.assertTrue(survivor_protections.retired_at.nullable)
+        self.assertTrue(survivor_protections.retired_reason.nullable)
+        self.assertEqual(
+            {fk.column.table.name for fk in survivor_protections.shift_id.foreign_keys},
+            {"shifts"},
+        )
+        self.assertEqual(
+            {
+                fk.target_fullname
+                for fk in survivor_protections.planning_intent_id.foreign_keys
+            },
+            {
+                "request_requirement_planning_intents.id",
+                "request_completion_reductions.planning_intent_id",
+            },
+        )
+        survivor_table = Base.metadata.tables["request_shift_survivor_protections"]
+        direct_intent_fk = next(
+            fk
+            for fk in survivor_protections.planning_intent_id.foreign_keys
+            if fk.target_fullname == "request_requirement_planning_intents.id"
+        )
+        self.assertEqual(
+            [column.name for column in direct_intent_fk.constraint.columns],
+            ["planning_intent_id"],
+        )
+        reduction_provenance_fk = next(
+            constraint
+            for constraint in survivor_table.constraints
+            if isinstance(constraint, ForeignKeyConstraint)
+            and constraint.name
+            == "fk_request_shift_survivor_protection_reduction_intent"
+        )
+        self.assertEqual(
+            [column.name for column in reduction_provenance_fk.columns],
+            ["originating_reduction_id", "planning_intent_id"],
+        )
+        self.assertEqual(
+            [element.target_fullname for element in reduction_provenance_fk.elements],
+            [
+                "request_completion_reductions.id",
+                "request_completion_reductions.planning_intent_id",
+            ],
+        )
+        self.assertEqual(
+            {
+                fk.target_fullname
+                for fk in survivor_protections.originating_reduction_id.foreign_keys
+            },
+            {"request_completion_reductions.id"},
+        )
         self.assertTrue(work_packages.task_catalog_item_id.nullable)
         self.assertTrue(work_packages.resource_class_code.nullable)
         self.assertEqual(

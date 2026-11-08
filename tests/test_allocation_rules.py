@@ -34,6 +34,15 @@ class AllocationRulesTests(unittest.TestCase):
     def test_residual_capacity_never_becomes_negative(self) -> None:
         self.assertEqual(residual_capacity(8, fixed_hours=10), 0)
 
+    def test_residual_capacity_preserves_each_legitimate_cent_after_decimal_subtraction(self) -> None:
+        self.assertEqual(residual_capacity(8.00, flexible_hours=7.90), 0.10)
+        self.assertEqual(residual_capacity(8.00, flexible_hours=7.95), 0.05)
+        self.assertEqual(residual_capacity(8.00, flexible_hours=7.99), 0.01)
+
+    def test_residual_capacity_does_not_round_subcent_room_up(self) -> None:
+        self.assertEqual(residual_capacity(8.004, flexible_hours=8.00), 0.0)
+        self.assertEqual(residual_capacity(8.009, flexible_hours=8.00), 0.0)
+
     def test_spread_hours_is_proportional(self) -> None:
         result = spread_hours(8, [(D1, 8), (D2, 8)])
         self.assertEqual(result, {D1: 4.0, D2: 4.0})
