@@ -7,14 +7,13 @@ import json
 import re
 from typing import Any
 
-from sqlalchemy import and_, case, delete, func, select, true, update
+from sqlalchemy import and_, case, delete, func, select, update
 from sqlalchemy.orm import Session
 
 from ...application.read_models import SegmentReadModel
 from ...application.repository_ports import SegmentRepositoryPort
 from ...domain.confirmation import CONFIRMATION_CONFIRMED, normalize_confirmation
 from ...domain.effective_need import resolve_effective_slot_need
-from ...domain.planning_engine import MISSING_ALLOCATION_TYPE
 from ...domain.load_profiles import normalize_load_profile
 from ...domain.operational_contacts import (
     PROVENANCE_OPERATIONAL_CAPTURE,
@@ -27,7 +26,6 @@ from .operational_contact_repository import SqlOperationalContactRepository
 from .planning_intent_repository import SqlRequestRequirementPlanningIntentRepository
 from .retained_placement import retained_coverage_hours
 from .operational_choice_models import (
-    PLANNING_INTENT_PRESERVE_EXISTING,
     RequestCompletionReduction,
     RequestOperationalState,
     RequestRequirementPlanningIntent,
