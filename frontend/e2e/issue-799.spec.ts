@@ -236,10 +236,10 @@ test("799 projette une période d'actif depuis un quart et depuis Actifs sur tou
       allocations: Array<any>;
     };
     expect(
-      assetState.requirements.filter((row) => row.requirement_id === shiftPeriod.requirement_id),
+      assetState.requirements.filter((row) => row.id === shiftPeriod.requirement_id),
     ).toHaveLength(1);
     expect(
-      assetState.allocations.filter((row) => row.allocation_id === shiftPeriod.allocation_id),
+      assetState.allocations.filter((row) => row.id === shiftPeriod.allocation_id),
     ).toHaveLength(1);
 
     await page.reload();
