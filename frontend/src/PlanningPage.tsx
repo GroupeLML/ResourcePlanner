@@ -2352,7 +2352,7 @@ export default function PlanningPage({
         </aside>
       </div>
 
-      {!detached && snapshot && (
+      {snapshot && (
         <AssetPlanningPanel
           snapshot={snapshot}
           canManage={canManagePlanning && !loading}
