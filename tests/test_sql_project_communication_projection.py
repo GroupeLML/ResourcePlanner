@@ -1330,7 +1330,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     )
                     changed = ProjectCommunicationService(
                         repository
-                    ).preview(week_start=WEEK)
+                    ).project_preview(week_start=WEEK)
                     draft = next(
                         row for row in changed.drafts if row.project_id == "P1"
                     )
@@ -1356,6 +1356,54 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 description="Inspection urgente",
                 hours="1",
             )
+            asset_engine = create_sql_engine(database_url)
+            asset_factory = create_session_factory(asset_engine)
+            try:
+                with asset_factory.begin() as session:
+                    session.add(
+                        AssetType(
+                            id="TYPE-MAIL-708B",
+                            code="EQ-708B-MAIL",
+                            label="Équipement",
+                            category="EQUIPMENT",
+                        )
+                    )
+                    session.flush()
+                    session.add(
+                        Asset(
+                            id="ASSET-MAIL-708B",
+                            code="NAC-MAIL-708B",
+                            label="Nacelle courriel 708B",
+                            asset_type_id="TYPE-MAIL-708B",
+                        )
+                    )
+                    session.add(
+                        AssetRequirement(
+                            id="AREQ-MAIL-708B",
+                            project_id="P1",
+                            origin="SHIFT_AD_HOC",
+                            shift_id="S-QS-DEFAULT",
+                            asset_type_id="TYPE-MAIL-708B",
+                            start_date=WEEK,
+                            end_date=WEEK,
+                            status="Affecté",
+                        )
+                    )
+                    session.flush()
+                    session.add(
+                        AssetAllocation(
+                            id="ALLOC-MAIL-708B",
+                            asset_requirement_id="AREQ-MAIL-708B",
+                            asset_id="ASSET-MAIL-708B",
+                            operator_resource_id="R1",
+                            start_date=WEEK,
+                            end_date=WEEK,
+                            locked=True,
+                            source="MANUAL",
+                        )
+                    )
+            finally:
+                asset_engine.dispose()
             transport = FakeProjectDraftTransport()
             smtp = FakeSmtpDeliveryClient()
             app = create_api_app(
@@ -1388,6 +1436,10 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertIn("Technicien ressource", preview_body)
                 self.assertIn("2 h", preview_body)
                 self.assertIn("1 h", preview_body)
+                self.assertIn(
+                    "Actif : Équipement — Nacelle courriel 708B",
+                    preview_body,
+                )
 
                 prepared = client.post(
                     "/api/v1/communications/project-batches",
