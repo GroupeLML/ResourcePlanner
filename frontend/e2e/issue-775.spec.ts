@@ -202,16 +202,39 @@ test("797 Attitré propose les employés ERP actifs hors Planning et conserve le
     await expect(reloadedFields.getByRole("checkbox", { name: "Attitré" })).toBeChecked();
     await expect(reloadedFields.getByRole("combobox")).toHaveValue(officeResourceId);
 
-    await reloadedFields.getByRole("combobox").selectOption(aliceResourceId);
-    await reloadedCatalog
-      .locator(".asset-unit-editor")
-      .getByRole("button", { name: "Enregistrer l’unité" })
-      .click();
+    const transferDate = localIso(addDays(new Date(), 1));
+    const reloadedResourceSelect = reloadedFields.getByRole("combobox");
+    await reloadedResourceSelect.selectOption(aliceResourceId);
+    await expect(reloadedResourceSelect).toHaveValue(aliceResourceId);
+    const transferDateInput = reloadedFields.getByLabel("Date effective du transfert");
+    await expect(transferDateInput).toHaveValue(transferDate);
+
+    const [transferResponse] = await Promise.all([
+      page.waitForResponse((response) => (
+        response.request().method() === "POST"
+        && response.url().includes("/api/v1/assets/continuous-resource-assignments/")
+        && response.url().endsWith("/transfer")
+      )),
+      reloadedCatalog
+        .locator(".asset-unit-editor")
+        .getByRole("button", { name: "Enregistrer l’unité" })
+        .click(),
+    ]);
+    expect(transferResponse.status(), await transferResponse.text()).toBe(201);
+    const transferRequest = transferResponse.request().postDataJSON() as {
+      resource_id: string;
+      asset_id: string;
+      effective_from: string;
+      expected_planning_version: number;
+    };
+    expect(transferRequest.resource_id).toBe(aliceResourceId);
+    expect(transferRequest.asset_id).toBe(vehicle.assetId);
+    expect(transferRequest.effective_from).toBe(transferDate);
     await expect(reloadedCatalog.locator(".asset-catalog-notice")).toContainText(
       "Unité enregistrée.",
     );
 
-    canonical = await unitState(page, vehicle.assetId);
+    canonical = await unitState(page, vehicle.assetId, transferDate);
     expect(canonical.assignment?.operator_resource_id).toBe(aliceResourceId);
   } finally {
     await context.close();
