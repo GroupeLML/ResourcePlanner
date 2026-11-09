@@ -346,6 +346,7 @@ export default function AssetPlanningPanel({
   const [unavailableStart, setUnavailableStart] = useState(snapshot.start);
   const [unavailableEnd, setUnavailableEnd] = useState(snapshot.end);
   const [unavailableReason, setUnavailableReason] = useState("");
+  const [unitOccupancyExpanded, setUnitOccupancyExpanded] = useState(true);
   const retryKeys = useRef(new Map<string, string>());
 
   const typesById = useMemo(
@@ -637,7 +638,10 @@ export default function AssetPlanningPanel({
     }
   }
 
-  const visibleAssets = snapshot.assets.filter((asset) => asset.active);
+  const activeAssets = snapshot.assets.filter((asset) => asset.active);
+  const unitOccupancyAssets = activeAssets.filter(
+    (asset) => asset.visible_in_unit_occupancy,
+  );
   const unassigned = snapshot.asset_requirements.filter((row) => !row.asset_id).length;
 
   return (
@@ -727,7 +731,7 @@ export default function AssetPlanningPanel({
                   disabled={Boolean(busy)}
                 >
                   <option value="">Sélectionner…</option>
-                  {visibleAssets.map((asset) => (
+                  {activeAssets.map((asset) => (
                     <option value={asset.id} key={asset.id}>
                       {asset.code} — {asset.label}
                     </option>
@@ -785,16 +789,33 @@ export default function AssetPlanningPanel({
         </div>
       </div>
 
-      <div className="asset-capacity-panel">
+      <div className="asset-capacity-panel" data-testid="asset-unit-occupancy-panel">
         <div className="asset-section-heading">
-          <strong>Occupation par unité</strong>
-          <span>1 unité disponible ou occupée par jour — aucune conversion en heures humaines</span>
+          <div>
+            <strong>Occupation par unité</strong>
+            <span>1 unité disponible ou occupée par jour — aucune conversion en heures humaines</span>
+          </div>
+          <button
+            type="button"
+            className="text-button"
+            data-testid="asset-unit-occupancy-toggle"
+            aria-expanded={unitOccupancyExpanded}
+            aria-controls="asset-unit-occupancy-content"
+            onClick={() => setUnitOccupancyExpanded((value) => !value)}
+          >
+            {unitOccupancyExpanded ? "Réduire" : "Développer"}
+          </button>
         </div>
-        <div className="asset-capacity-scroll">
+        {unitOccupancyExpanded && (
+          <div
+            className="asset-capacity-scroll"
+            id="asset-unit-occupancy-content"
+            data-testid="asset-unit-occupancy-content"
+          >
           <div className="asset-capacity-grid" style={{ gridTemplateColumns: `minmax(180px, 1.2fr) repeat(${days.length}, minmax(92px, 1fr))` }}>
             <div className="asset-capacity-header">Actif</div>
             {days.map((day) => <div className="asset-capacity-header" key={day}>{day.slice(5)}</div>)}
-            {visibleAssets.map((asset) => {
+            {unitOccupancyAssets.map((asset) => {
               const type = typesById.get(asset.asset_type_id);
               return (
                 <div className="asset-capacity-row" key={asset.id}>
@@ -863,6 +884,7 @@ export default function AssetPlanningPanel({
             })}
           </div>
         </div>
+        )}
       </div>
     </section>
   );
