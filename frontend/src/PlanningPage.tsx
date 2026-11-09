@@ -82,6 +82,7 @@ import {
   splitAllocationAtomic,
 } from "./manualOverallocationApi";
 import AssetPlanningPanel from "./AssetPlanningPanel";
+import AssetUnitOccupancyPanel from "./AssetUnitOccupancyPanel";
 import DemandDetail from "./DemandDetail";
 import DemandWorkflowPage from "./DemandWorkflowPage";
 import ManualAllocationEditor from "./ManualAllocationEditor";
@@ -2352,13 +2353,17 @@ export default function PlanningPage({
         </aside>
       </div>
 
-      {snapshot && (
+      {!detached && snapshot && (
         <AssetPlanningPanel
           snapshot={snapshot}
           canManage={canManagePlanning && !loading}
           onRefresh={() => setRefreshKey((value) => value + 1)}
           onOpenDemand={canReadDemands ? setDetailDemandNumber : undefined}
         />
+      )}
+
+      {detached && snapshot && (
+        <AssetUnitOccupancyPanel snapshot={snapshot} />
       )}
 
       {assetAssignment && snapshot && (
