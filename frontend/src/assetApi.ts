@@ -410,6 +410,22 @@ export type DirectAssetReservationResult = {
   planning_version: number;
 };
 
+export type ContinuousResourceCandidate = {
+  resource_id: string;
+  display_name: string;
+};
+
+export type ContinuousResourceCandidates = {
+  candidates: ContinuousResourceCandidate[];
+};
+
+export function getContinuousResourceCandidates(signal?: AbortSignal) {
+  return getJson<ContinuousResourceCandidates>(
+    "/api/v1/assets/continuous-resource-candidates",
+    signal,
+  );
+}
+
 export type ContinuousVehicleAssignment = {
   requirement_id: string;
   allocation_id: string;
