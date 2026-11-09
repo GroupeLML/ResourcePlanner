@@ -23,6 +23,7 @@ import {
   updateSegmentReservation,
 } from "./assetApi";
 import DirectAssetReservationForm from "./DirectAssetReservationForm";
+import AssetUnitOccupancyPanel from "./AssetUnitOccupancyPanel";
 
 const STALE_CODES = new Set([
   "planning_version_conflict",
@@ -346,31 +347,12 @@ export default function AssetPlanningPanel({
   const [unavailableStart, setUnavailableStart] = useState(snapshot.start);
   const [unavailableEnd, setUnavailableEnd] = useState(snapshot.end);
   const [unavailableReason, setUnavailableReason] = useState("");
-  const [unitOccupancyExpanded, setUnitOccupancyExpanded] = useState(true);
   const retryKeys = useRef(new Map<string, string>());
 
-  const typesById = useMemo(
-    () => new Map(snapshot.asset_types.map((row) => [row.id, row])),
-    [snapshot.asset_types],
-  );
   const assetsById = useMemo(
     () => new Map(snapshot.assets.map((row) => [row.id, row])),
     [snapshot.assets],
   );
-  const capacityByAssetDay = useMemo(
-    () => new Map(snapshot.asset_capacity.map((row) => [`${row.asset_id}:${row.day}`, row])),
-    [snapshot.asset_capacity],
-  );
-  const days = useMemo(() => {
-    const result: string[] = [];
-    const cursor = new Date(`${snapshot.start}T12:00:00`);
-    const end = new Date(`${snapshot.end}T12:00:00`);
-    while (cursor <= end) {
-      result.push(cursor.toISOString().slice(0, 10));
-      cursor.setDate(cursor.getDate() + 1);
-    }
-    return result;
-  }, [snapshot.start, snapshot.end]);
 
   async function reserve(
     requirement: AssetRequirementPlanningReadModel,
@@ -639,9 +621,6 @@ export default function AssetPlanningPanel({
   }
 
   const activeAssets = snapshot.assets.filter((asset) => asset.active);
-  const unitOccupancyAssets = activeAssets.filter(
-    (asset) => asset.visible_in_unit_occupancy,
-  );
   const unassigned = snapshot.asset_requirements.filter((row) => !row.asset_id).length;
 
   return (
@@ -789,103 +768,7 @@ export default function AssetPlanningPanel({
         </div>
       </div>
 
-      <div className="asset-capacity-panel" data-testid="asset-unit-occupancy-panel">
-        <div className="asset-section-heading">
-          <div>
-            <strong>Occupation par unité</strong>
-            <span>1 unité disponible ou occupée par jour — aucune conversion en heures humaines</span>
-          </div>
-          <button
-            type="button"
-            className="text-button"
-            data-testid="asset-unit-occupancy-toggle"
-            aria-expanded={unitOccupancyExpanded}
-            aria-controls="asset-unit-occupancy-content"
-            onClick={() => setUnitOccupancyExpanded((value) => !value)}
-          >
-            {unitOccupancyExpanded ? "Réduire" : "Développer"}
-          </button>
-        </div>
-        {unitOccupancyExpanded && (
-          <div
-            className="asset-capacity-scroll"
-            id="asset-unit-occupancy-content"
-            data-testid="asset-unit-occupancy-content"
-          >
-          <div className="asset-capacity-grid" style={{ gridTemplateColumns: `minmax(180px, 1.2fr) repeat(${days.length}, minmax(92px, 1fr))` }}>
-            <div className="asset-capacity-header">Actif</div>
-            {days.map((day) => <div className="asset-capacity-header" key={day}>{day.slice(5)}</div>)}
-            {unitOccupancyAssets.map((asset) => {
-              const type = typesById.get(asset.asset_type_id);
-              return (
-                <div className="asset-capacity-row" key={asset.id}>
-                  <div className="asset-capacity-identity">
-                    <strong>{asset.code} — {asset.label}</strong>
-                    <span>{type?.label || asset.asset_type_id}</span>
-                  </div>
-                  {days.map((day) => {
-                    const capacity = capacityByAssetDay.get(`${asset.id}:${day}`);
-                    const occupiedUnits = Number(capacity?.occupied_units ?? 0);
-                    const visibleOccupations = capacity?.visible_occupations ?? [];
-                    const hasHiddenOccupancy = Boolean(capacity?.has_hidden_occupancy);
-                    const state = capacity?.unavailable
-                      ? "Indisponible"
-                      : occupiedUnits > 0
-                        ? (
-                          visibleOccupations.length === 0 && hasHiddenOccupancy
-                            ? "Occupé hors périmètre"
-                            : "Occupé"
-                        )
-                        : "Libre";
-                    const stateClass = capacity?.unavailable
-                      ? "unavailable"
-                      : occupiedUnits > 0
-                        ? "occupied"
-                        : "free";
-                    return (
-                      <div
-                        className={`asset-capacity-cell is-${stateClass}`}
-                        key={day}
-                      >
-                        <strong>{state}</strong>
-                        {visibleOccupations.length > 0 && (
-                          <div className="asset-capacity-occupations">
-                            {visibleOccupations.map((occupation) => (
-                              <div
-                                className="asset-capacity-occupation"
-                                key={occupation.allocation_id}
-                              >
-                                {occupation.project_number && <span>{occupation.project_number}</span>}
-                                {occupation.operator_resource_name && (
-                                  <small>{resourceDisplayName(occupation.operator_resource_name)}</small>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                        {hasHiddenOccupancy
-                          && (visibleOccupations.length > 0 || capacity?.unavailable) && (
-                          <small className="asset-capacity-hidden">
-                            {visibleOccupations.length > 0
-                              ? "+ occupation hors périmètre"
-                              : "Occupation hors périmètre"}
-                          </small>
-                        )}
-                        {occupiedUnits > 1 && (
-                          <small className="asset-capacity-conflict">
-                            {occupiedUnits} occupations · conflit
-                          </small>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-        )}
-      </div>
+      <AssetUnitOccupancyPanel snapshot={snapshot} />
     </section>
   );
 }

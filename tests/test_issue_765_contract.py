@@ -19,8 +19,30 @@ class Issue765ContractTests(unittest.TestCase):
         self.assertIn("detached?: boolean", planning)
         self.assertIn("Ressources et quarts — ", planning)
         self.assertIn("!detached && snapshot", planning)
-        self.assertIn("AssetPlanningPanel", planning)
+        self.assertIn("detached && snapshot", planning)
+        self.assertIn("<AssetPlanningPanel", planning)
+        self.assertIn("<AssetUnitOccupancyPanel", planning)
         self.assertNotIn("DetachedPlanningPage.tsx", app)
+
+    def test_detached_workspace_reuses_asset_planning_panel_and_backend_visibility_contract(self) -> None:
+        planning = (ROOT / "frontend" / "src" / "PlanningPage.tsx").read_text(
+            encoding="utf-8"
+        )
+        occupancy = (ROOT / "frontend" / "src" / "AssetUnitOccupancyPanel.tsx").read_text(
+            encoding="utf-8"
+        )
+        api = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
+
+        self.assertIn("!detached && snapshot", planning)
+        self.assertIn("detached && snapshot", planning)
+        self.assertIn("<AssetPlanningPanel", planning)
+        self.assertIn("<AssetUnitOccupancyPanel", planning)
+        self.assertIn("asset.visible_in_unit_occupancy", occupancy)
+        self.assertIn('data-testid="asset-unit-occupancy-toggle"', occupancy)
+        self.assertIn("aria-expanded={expanded}", occupancy)
+        self.assertIn("visible_in_unit_occupancy: boolean", api)
+        self.assertNotIn("resource_period_mode", planning)
+        self.assertNotIn("continuous_unit_occupancy", planning)
 
     def test_detach_button_serializes_context_and_handles_popup_block(self) -> None:
         planning = (ROOT / "frontend" / "src" / "PlanningPage.tsx").read_text(

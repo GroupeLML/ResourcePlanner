@@ -39,6 +39,50 @@ async function openCoordinator(browser: Browser, disableBroadcast = false) {
   return { context, page };
 }
 
+async function openAdmin(browser: Browser) {
+  const context = await browser.newContext({
+    baseURL: BASE_URL,
+    locale: "fr-CA",
+    extraHTTPHeaders: { "X-E2E-Role": "ADMIN" },
+  });
+  const page = await context.newPage();
+  await page.goto("/");
+  await expect(page.locator(".sidebar-footer")).toContainText("Administrateur");
+  return { context, page };
+}
+
+async function assetCatalog(page: Page) {
+  const response = await page.request.get("/api/v1/assets/catalog");
+  expect(response.ok(), await response.text()).toBeTruthy();
+  return response.json() as Promise<{
+    types: Array<{ id: string; code: string; category: string }>;
+    assets: Array<{ id: string; code: string; label: string; asset_type_id: string }>;
+    planning_version: number;
+  }>;
+}
+
+async function assetPlanningVersion(page: Page) {
+  const response = await page.request.get("/api/v1/assets/requirements");
+  expect(response.ok(), await response.text()).toBeTruthy();
+  const payload = await response.json() as { planning_version: number };
+  return payload.planning_version;
+}
+
+async function createAssetFixture(page: Page, typeId: string, code: string, label: string) {
+  const response = await page.request.post("/api/v1/assets", {
+    data: { code, label, asset_type_id: typeId },
+  });
+  expect(response.status(), await response.text()).toBe(201);
+  return response.json() as Promise<{ id: string; code: string }>;
+}
+
+async function occupancyAssetLabels(page: Page) {
+  return page
+    .getByTestId("asset-unit-occupancy-content")
+    .locator(".asset-capacity-identity strong")
+    .allTextContents();
+}
+
 async function expectDetachedUrlContext(
   page: Page,
   expected: { week: string; query: string; scope: "mine" | "global" },
@@ -126,6 +170,7 @@ test("765 ouvre un Planning détaché avec contexte et synchronise les mutations
     await expect(detached.locator(".app-sidebar")).toHaveCount(0);
     await expect(detached.locator(".metric-grid")).toHaveCount(0);
     await expect(detached.locator(".asset-planning-panel")).toHaveCount(0);
+    await expect(detached.getByTestId("asset-unit-occupancy-panel")).toBeVisible();
     await expect(detached.getByText("Ressources et quarts", { exact: true }).first()).toBeVisible();
     await expect(detached.getByLabel("Recherche")).toHaveValue("Alice");
 
@@ -198,6 +243,195 @@ test("765 ouvre un Planning détaché avec contexte et synchronise les mutations
     await reopened.close();
   } finally {
     await context.close();
+  }
+});
+
+test("796 réutilise Occupation par unité dans la vraie fenêtre détachée", async ({ browser }) => {
+  test.setTimeout(180_000);
+  const admin = await openAdmin(browser);
+  const currentDay = new Date();
+  const weekStart = startOfWeek(currentDay);
+  const weekStartIso = localIso(weekStart);
+  const todayIso = localIso(currentDay);
+  const tomorrowIso = localIso(addDays(currentDay, 1));
+  const scheduledWeek = addDays(weekStart, 14);
+  const scheduledIso = localIso(scheduledWeek);
+  let ordinaryAssetId = "";
+  let activeAssetId = "";
+  let scheduledAssetId = "";
+  let activeRequirementId = "";
+
+  try {
+    const catalog = await assetCatalog(admin.page);
+    const vehicleType = catalog.types.find((row) => row.code === "VEH-744");
+    expect(vehicleType).toBeTruthy();
+
+    ordinaryAssetId = (await createAssetFixture(
+      admin.page,
+      vehicleType!.id,
+      "VEH-796-ORD",
+      "Véhicule ordinaire 796",
+    )).id;
+    activeAssetId = (await createAssetFixture(
+      admin.page,
+      vehicleType!.id,
+      "VEH-796-ACT",
+      "Véhicule continu actif 796",
+    )).id;
+    scheduledAssetId = (await createAssetFixture(
+      admin.page,
+      vehicleType!.id,
+      "VEH-796-SCH",
+      "Véhicule continu planifié 796",
+    )).id;
+
+    let version = await assetPlanningVersion(admin.page);
+    const active = await admin.page.request.post("/api/v1/assets/continuous-resource-assignments", {
+      headers: { "Idempotency-Key": "796-active-continuous" },
+      data: {
+        resource_id: "R-ALICE",
+        asset_id: activeAssetId,
+        start_date: todayIso,
+        expected_planning_version: version,
+      },
+    });
+    expect(active.status(), await active.text()).toBe(201);
+    const activePayload = await active.json() as {
+      requirement_id: string;
+      planning_version: number;
+    };
+    activeRequirementId = activePayload.requirement_id;
+    version = activePayload.planning_version;
+
+    const scheduled = await admin.page.request.post("/api/v1/assets/continuous-resource-assignments", {
+      headers: { "Idempotency-Key": "796-scheduled-continuous" },
+      data: {
+        resource_id: "R-BOB",
+        asset_id: scheduledAssetId,
+        start_date: scheduledIso,
+        expected_planning_version: version,
+      },
+    });
+    expect(scheduled.status(), await scheduled.text()).toBe(201);
+    version = (await scheduled.json() as { planning_version: number }).planning_version;
+
+    const maintenance = await admin.page.request.post(
+      `/api/v1/assets/${encodeURIComponent(activeAssetId)}/unavailability`,
+      {
+        data: {
+          start_date: todayIso,
+          end_date: tomorrowIso,
+          reason: "Entretien 796 pendant attribution continue",
+          expected_planning_version: version,
+        },
+      },
+    );
+    expect(maintenance.status(), await maintenance.text()).toBe(201);
+
+    const coordinator = await openCoordinator(browser);
+    try {
+      const page = coordinator.page;
+      const mine = page.getByRole("button", { name: "Mon périmètre" });
+      await mine.click();
+      await expect(mine).toHaveClass(/active/);
+
+      await page.getByRole("button", { name: /^Filtres/ }).click();
+      await page.getByLabel("Recherche").fill("Alice");
+
+      const mainOccupancy = page.getByTestId("asset-unit-occupancy-content");
+      await expect(mainOccupancy).toContainText("VEH-796-ORD");
+      await expect(mainOccupancy).not.toContainText("VEH-796-ACT");
+      await expect(mainOccupancy).toContainText("VEH-796-SCH");
+
+      const mainWeekText = await page.locator(".planning-sticky-heading h1").innerText();
+      const mainLabels = (await occupancyAssetLabels(page)).sort();
+
+      const [detached] = await Promise.all([
+        coordinator.context.waitForEvent("page"),
+        page.getByRole("button", { name: "Ouvrir dans une fenêtre séparée" }).click(),
+      ]);
+      await detached.waitForLoadState("domcontentloaded");
+      await expectDetachedUrlContext(detached, {
+        week: weekStartIso,
+        query: "Alice",
+        scope: "mine",
+      });
+
+      const detachedOccupancy = detached.getByTestId("asset-unit-occupancy-content");
+      await expect(detachedOccupancy).toContainText("VEH-796-ORD");
+      await expect(detachedOccupancy).not.toContainText("VEH-796-ACT");
+      await expect(detachedOccupancy).toContainText("VEH-796-SCH");
+      expect((await occupancyAssetLabels(detached)).sort()).toEqual(mainLabels);
+
+      const toggle = detached.getByTestId("asset-unit-occupancy-toggle");
+      await expect(toggle).toHaveAttribute("aria-expanded", "true");
+      await toggle.click();
+      await expect(toggle).toHaveAttribute("aria-expanded", "false");
+      await expect(detached.getByTestId("asset-unit-occupancy-content")).toHaveCount(0);
+      await expect(detached.getByLabel("Recherche")).toHaveValue("Alice");
+      const detachedWeekHeading = detached.locator(".planning-sticky-heading h1");
+      await expect(detachedWeekHeading).toContainText("Ressources et quarts");
+      await expect(detachedWeekHeading).toContainText(mainWeekText);
+
+      await toggle.click();
+      await expect(toggle).toHaveAttribute("aria-expanded", "true");
+      await expect(detached.getByTestId("asset-unit-occupancy-content")).toContainText("VEH-796-ORD");
+      await expect(detached.getByLabel("Recherche")).toHaveValue("Alice");
+      await expect(detached.getByRole("button", { name: "Mon périmètre" })).toHaveClass(/active/);
+
+      version = await assetPlanningVersion(admin.page);
+      const revoked = await admin.page.request.post(
+        `/api/v1/assets/continuous-resource-assignments/${encodeURIComponent(activeRequirementId)}/revoke`,
+        {
+          headers: { "Idempotency-Key": "796-revoke-active-continuous" },
+          data: {
+            effective_from: tomorrowIso,
+            expected_planning_version: version,
+          },
+        },
+      );
+      expect(revoked.status(), await revoked.text()).toBe(200);
+
+      await page.getByRole("button", { name: /Suivante/ }).click();
+      await detached.getByRole("button", { name: /Suivante/ }).click();
+      const nextWeek = localIso(addDays(weekStart, 7));
+      await expect.poll(() => new URL(detached.url()).searchParams.get("week")).toBe(nextWeek);
+      await expect(detached.getByLabel("Recherche")).toHaveValue("Alice");
+      await expect(detached.getByRole("button", { name: "Mon périmètre" })).toHaveClass(/active/);
+      await expect(page.getByTestId("asset-unit-occupancy-content")).toContainText("VEH-796-ACT");
+      await expect(detached.getByTestId("asset-unit-occupancy-content")).toContainText("VEH-796-ACT");
+      expect((await occupancyAssetLabels(detached)).sort()).toEqual(
+        (await occupancyAssetLabels(page)).sort(),
+      );
+
+      await page.getByRole("button", { name: /Suivante/ }).click();
+      await detached.getByRole("button", { name: /Suivante/ }).click();
+      await expect(page.getByTestId("asset-unit-occupancy-content")).not.toContainText("VEH-796-SCH");
+      await expect(detached.getByTestId("asset-unit-occupancy-content")).not.toContainText("VEH-796-SCH");
+      await expect(detached.getByTestId("asset-unit-occupancy-content")).toContainText("VEH-796-ORD");
+      expect((await occupancyAssetLabels(detached)).sort()).toEqual(
+        (await occupancyAssetLabels(page)).sort(),
+      );
+
+      await detached.close();
+    } finally {
+      await coordinator.context.close();
+    }
+  } finally {
+    for (const assetId of [ordinaryAssetId, activeAssetId, scheduledAssetId].filter(Boolean)) {
+      const version = await assetPlanningVersion(admin.page);
+      const deactivated = await admin.page.request.patch(
+        `/api/v1/assets/${encodeURIComponent(assetId)}/active`,
+        {
+          data: {
+            active: false,
+            expected_planning_version: version,
+          },
+        },
+      );
+      expect(deactivated.ok(), await deactivated.text()).toBeTruthy();
+    }
+    await admin.context.close();
   }
 });
 
