@@ -273,7 +273,7 @@ export type ShiftAssetCandidates = {
 };
 
 export type ShiftAssetAssignmentResult = {
-  operation: "ASSIGN" | "CHANGE" | "RELEASE" | "DESIGNATE_PROJECT_OPERATOR";
+  operation: "ASSIGN" | "CHANGE" | "RELEASE" | "DESIGNATE_PROJECT_OPERATOR" | "CREATE";
   shift_id: string;
   requirement_id: string;
   requirement_origin: string;
@@ -283,6 +283,10 @@ export type ShiftAssetAssignmentResult = {
   qualification_state: string | null;
   shift_source: string;
   shift_locked: boolean;
+  context_resource_id?: string | null;
+  resource_period_mode?: "BOUNDED" | null;
+  start_date?: string | null;
+  end_date?: string | null;
   planning_version: number;
 };
 
