@@ -161,7 +161,11 @@ def _project_payload(project: ProjectCommunicationProject) -> tuple[object, ...]
                     tuple(resource.allocation_types),
                     tuple(resource.confirmations),
                     bool(resource.outside_schedule),
-                    tuple(_asset_payload(asset) for asset in resource.assets),
+                    *(
+                        (("assets", tuple(_asset_payload(asset) for asset in resource.assets)),)
+                        if resource.assets
+                        else ()
+                    ),
                     tuple(resource.diagnostics),
                 )
                 for resource in task.resources
