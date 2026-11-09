@@ -2072,6 +2072,328 @@ class ShiftAssetCommandTests(unittest.TestCase):
             None,
         )
 
+    def _seed_799_request_window(self) -> tuple[str, str]:
+        end = DAY + timedelta(days=3)
+        created = self.client.post(
+            "/api/v1/demands",
+            json=routed_demand_payload(
+                {
+                    "project_number": "P-560B",
+                    "submit": True,
+                    "lines": [
+                        {
+                            "kind": "ASSET",
+                            "asset_type_id": "TYPE-560B",
+                            "desired_start": DAY.isoformat(),
+                            "desired_end": end.isoformat(),
+                        },
+                        {
+                            "kind": "WORKFORCE",
+                            "desired_start": DAY.isoformat(),
+                            "desired_end": end.isoformat(),
+                            "estimated_hours": 32,
+                        },
+                    ],
+                }
+            ),
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        number = created.json()["demand_number"]
+        demand = self.client.get(f"/api/v1/demands/{number}").json()
+        approved = self.client.post(
+            f"/api/v1/demands/{number}/approve",
+            json={"expected_version": demand["version"]},
+        )
+        self.assertEqual(approved.status_code, 200, approved.text)
+
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory.begin() as session:
+                request = session.scalar(
+                    select(WorkforceRequest).where(
+                        WorkforceRequest.legacy_demand_number == number
+                    )
+                )
+                self.assertIsNotNone(request)
+                assert request is not None
+                human_requirement = session.scalar(
+                    select(ResourceRequirement).where(
+                        ResourceRequirement.workforce_request_id == request.id,
+                        ResourceRequirement.origin
+                        != AssetRequirementOrigin.REQUEST.value,
+                    )
+                )
+                if human_requirement is None:
+                    human_requirement = session.scalar(
+                        select(ResourceRequirement).where(
+                            ResourceRequirement.workforce_request_id == request.id
+                        )
+                    )
+                self.assertIsNotNone(human_requirement)
+                assert human_requirement is not None
+                request_asset_requirement = session.scalar(
+                    select(AssetRequirement).where(
+                        AssetRequirement.workforce_request_id == request.id,
+                        AssetRequirement.origin == AssetRequirementOrigin.REQUEST.value,
+                    )
+                )
+                self.assertIsNotNone(request_asset_requirement)
+                assert request_asset_requirement is not None
+                shift_id = f"SHIFT-799-REQUEST-{new_id()}"
+                session.add(
+                    Shift(
+                        id=shift_id,
+                        resource_requirement_id=human_requirement.id,
+                        resource_id="RESOURCE-SKILLED",
+                        work_date=DAY,
+                        hours=Decimal("8"),
+                        source="MANUAL",
+                        locked=True,
+                    )
+                )
+                return shift_id, request_asset_requirement.id
+        finally:
+            engine.dispose()
+
+    def test_799_request_subinterval_excluding_clicked_shift_preserves_request_authority(self) -> None:
+        end = DAY + timedelta(days=3)
+        sub_start = DAY + timedelta(days=1)
+        shift_id, requirement_id = self._seed_799_request_window()
+
+        initial = self._set_asset(
+            shift_id=shift_id,
+            asset_id="ASSET-A",
+            version=self._version(),
+            key="799-request-window-initial",
+            requirement_id=requirement_id,
+            start_date=DAY,
+            end_date=end,
+        )
+        self.assertEqual(initial.status_code, 200, initial.text)
+        initial_payload = initial.json()
+        self.assertEqual(initial_payload["requirement_origin"], "REQUEST")
+        allocation_id = initial_payload["allocation_id"]
+
+        automatic = self._set_asset(
+            shift_id=shift_id,
+            asset_id="ASSET-A",
+            version=initial_payload["planning_version"],
+            key="799-request-subinterval-auto",
+            start_date=sub_start,
+            end_date=end,
+        )
+        self.assertEqual(automatic.status_code, 200, automatic.text)
+        automatic_payload = automatic.json()
+        self.assertEqual(automatic_payload["requirement_origin"], "REQUEST")
+        self.assertEqual(automatic_payload["requirement_id"], requirement_id)
+        self.assertEqual(automatic_payload["allocation_id"], allocation_id)
+
+        restored = self._set_asset(
+            shift_id=shift_id,
+            asset_id="ASSET-A",
+            version=automatic_payload["planning_version"],
+            key="799-request-window-restore",
+            requirement_id=requirement_id,
+            start_date=DAY,
+            end_date=end,
+        )
+        self.assertEqual(restored.status_code, 200, restored.text)
+
+        explicit = self._set_asset(
+            shift_id=shift_id,
+            asset_id="ASSET-A",
+            version=restored.json()["planning_version"],
+            key="799-request-subinterval-explicit",
+            requirement_id=requirement_id,
+            start_date=sub_start,
+            end_date=end,
+        )
+        self.assertEqual(explicit.status_code, 200, explicit.text)
+        explicit_payload = explicit.json()
+        self.assertEqual(explicit_payload["requirement_origin"], "REQUEST")
+        self.assertEqual(explicit_payload["requirement_id"], requirement_id)
+        self.assertEqual(explicit_payload["allocation_id"], allocation_id)
+
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory() as session:
+                requirement = session.get(AssetRequirement, requirement_id)
+                allocation = session.get(AssetAllocation, allocation_id)
+                self.assertIsNotNone(requirement)
+                self.assertIsNotNone(allocation)
+                assert requirement is not None and allocation is not None
+                self.assertEqual(requirement.origin, "REQUEST")
+                self.assertEqual(requirement.start_date, DAY)
+                self.assertEqual(requirement.end_date, end)
+                self.assertEqual(allocation.start_date, sub_start)
+                self.assertEqual(allocation.end_date, end)
+                self.assertEqual(
+                    session.scalar(
+                        select(func.count())
+                        .select_from(AssetRequirement)
+                        .where(
+                            AssetRequirement.origin == "RESOURCE_PERIOD",
+                            AssetRequirement.context_resource_id == "RESOURCE-SKILLED",
+                        )
+                    ),
+                    0,
+                )
+        finally:
+            engine.dispose()
+
+    def test_799_request_outside_approved_window_still_rejects_without_conversion(self) -> None:
+        end = DAY + timedelta(days=3)
+        shift_id, requirement_id = self._seed_799_request_window()
+        initial = self._set_asset(
+            shift_id=shift_id,
+            asset_id="ASSET-A",
+            version=self._version(),
+            key="799-request-outside-initial",
+            requirement_id=requirement_id,
+            start_date=DAY,
+            end_date=end,
+        )
+        self.assertEqual(initial.status_code, 200, initial.text)
+        payload = initial.json()
+
+        blocked = self._set_asset(
+            shift_id=shift_id,
+            asset_id="ASSET-A",
+            version=payload["planning_version"],
+            key="799-request-outside-blocked",
+            requirement_id=requirement_id,
+            start_date=DAY - timedelta(days=1),
+            end_date=end,
+        )
+        self.assertEqual(blocked.status_code, 422, blocked.text)
+        self.assertEqual(
+            blocked.json()["error"]["code"],
+            "asset_outside_approved_window",
+        )
+        self.assertEqual(self._version(), payload["planning_version"])
+
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory() as session:
+                requirement = session.get(AssetRequirement, requirement_id)
+                allocation = session.get(AssetAllocation, payload["allocation_id"])
+                self.assertIsNotNone(requirement)
+                self.assertIsNotNone(allocation)
+                assert requirement is not None and allocation is not None
+                self.assertEqual(requirement.origin, "REQUEST")
+                self.assertEqual(allocation.start_date, DAY)
+                self.assertEqual(allocation.end_date, end)
+                self.assertEqual(
+                    session.scalar(
+                        select(func.count())
+                        .select_from(AssetRequirement)
+                        .where(
+                            AssetRequirement.origin == "RESOURCE_PERIOD",
+                            AssetRequirement.context_resource_id == "RESOURCE-SKILLED",
+                        )
+                    ),
+                    0,
+                )
+        finally:
+            engine.dispose()
+
+    def test_799_new_bounded_period_excluding_clicked_shift_is_rejected(self) -> None:
+        end = DAY + timedelta(days=3)
+        blocked = self._set_asset(
+            asset_id="ASSET-A",
+            version=self._version(),
+            key="799-new-bounded-excludes-clicked",
+            start_date=DAY + timedelta(days=1),
+            end_date=end,
+        )
+        self.assertEqual(blocked.status_code, 422, blocked.text)
+        self.assertEqual(
+            blocked.json()["error"]["code"],
+            "asset_resource_period_shift_date_required",
+        )
+        requirement, allocation, shift = self._ad_hoc_state()
+        self.assertIsNone(requirement)
+        self.assertIsNone(allocation)
+        self.assertEqual(shift.source, "AUTO")
+        self.assertFalse(shift.locked)
+
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory() as session:
+                self.assertEqual(
+                    session.scalar(
+                        select(func.count())
+                        .select_from(AssetRequirement)
+                        .where(
+                            AssetRequirement.origin == "RESOURCE_PERIOD",
+                            AssetRequirement.context_resource_id == "RESOURCE-SKILLED",
+                        )
+                    ),
+                    0,
+                )
+        finally:
+            engine.dispose()
+
+    def test_799_ad_hoc_transition_excluding_clicked_shift_rolls_back(self) -> None:
+        end = DAY + timedelta(days=3)
+        initial = self._set_asset(
+            asset_id="ASSET-A",
+            version=self._version(),
+            key="799-excluding-transition-initial",
+            start_date=DAY,
+            end_date=DAY,
+        )
+        self.assertEqual(initial.status_code, 200, initial.text)
+        payload = initial.json()
+
+        blocked = self._set_asset(
+            asset_id="ASSET-A",
+            version=payload["planning_version"],
+            key="799-excluding-transition-blocked",
+            start_date=DAY + timedelta(days=1),
+            end_date=end,
+        )
+        self.assertEqual(blocked.status_code, 422, blocked.text)
+        self.assertEqual(
+            blocked.json()["error"]["code"],
+            "asset_resource_period_shift_date_required",
+        )
+        self.assertEqual(self._version(), payload["planning_version"])
+
+        requirement, allocation, shift = self._ad_hoc_state()
+        self.assertIsNotNone(requirement)
+        self.assertIsNotNone(allocation)
+        assert requirement is not None and allocation is not None
+        self.assertEqual(requirement.id, payload["requirement_id"])
+        self.assertEqual(allocation.id, payload["allocation_id"])
+        self.assertEqual(allocation.asset_id, "ASSET-A")
+        self.assertEqual(allocation.start_date, DAY)
+        self.assertEqual(allocation.end_date, DAY)
+        self.assertEqual(shift.source, "MANUAL")
+        self.assertTrue(shift.locked)
+
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory() as session:
+                self.assertEqual(
+                    session.scalar(
+                        select(func.count())
+                        .select_from(AssetRequirement)
+                        .where(
+                            AssetRequirement.origin == "RESOURCE_PERIOD",
+                            AssetRequirement.context_resource_id == "RESOURCE-SKILLED",
+                        )
+                    ),
+                    0,
+                )
+        finally:
+            engine.dispose()
+
     def test_799_explicit_single_day_shift_assignment_stays_shift_ad_hoc(self) -> None:
         assigned = self._set_asset(
             asset_id="ASSET-A",
