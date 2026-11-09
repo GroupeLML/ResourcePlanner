@@ -1572,7 +1572,7 @@ class ShiftAssetCommandTests(unittest.TestCase):
         self.assertEqual(blocked.json()["error"]["code"], "asset_double_booking")
         self.assertEqual(
             self._version(),
-            blocker.json()["planning_version"],
+            assigned.json()["planning_version"],
         )
 
         requirement, allocation, shift = self._ad_hoc_state()
