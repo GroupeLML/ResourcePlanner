@@ -75,6 +75,26 @@ class Issue775ContractTests(unittest.TestCase):
         self.assertNotIn("assignment_start_date", panel)
         self.assertNotIn("is_assigned", panel)
 
+    def test_attitre_selector_uses_dedicated_backend_beneficiary_candidates(self) -> None:
+        panel = (ROOT / "frontend" / "src" / "AssetCatalogPanel.tsx").read_text(
+            encoding="utf-8"
+        )
+        editor = (
+            ROOT / "frontend" / "src" / "AssetContinuousAssignmentEditor.tsx"
+        ).read_text(encoding="utf-8")
+        api = (ROOT / "frontend" / "src" / "assetApi.ts").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("getContinuousResourceCandidates", panel)
+        self.assertIn("continuousCandidates", panel)
+        self.assertIn("candidates={continuousCandidates}", panel)
+        self.assertIn("/api/v1/assets/continuous-resource-candidates", api)
+        self.assertIn("ContinuousResourceCandidate", editor)
+        self.assertIn("resource.resource_id", editor)
+        self.assertIn("resource.display_name", editor)
+        self.assertNotIn(".filter((row) => row.active)", editor)
+
     def test_hidden_continuous_assignment_remains_checked_without_resource_leak(self) -> None:
         editor = (
             ROOT / "frontend" / "src" / "AssetContinuousAssignmentEditor.tsx"
