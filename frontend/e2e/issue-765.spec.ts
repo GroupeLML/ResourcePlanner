@@ -249,10 +249,12 @@ test("765 ouvre un Planning détaché avec contexte et synchronise les mutations
 test("796 réutilise Occupation par unité dans la vraie fenêtre détachée", async ({ browser }) => {
   test.setTimeout(180_000);
   const admin = await openAdmin(browser);
-  const today = startOfWeek(new Date());
-  const todayIso = localIso(today);
-  const tomorrowIso = localIso(addDays(today, 1));
-  const scheduledWeek = addDays(today, 14);
+  const currentDay = new Date();
+  const weekStart = startOfWeek(currentDay);
+  const weekStartIso = localIso(weekStart);
+  const todayIso = localIso(currentDay);
+  const tomorrowIso = localIso(addDays(currentDay, 1));
+  const scheduledWeek = addDays(weekStart, 14);
   const scheduledIso = localIso(scheduledWeek);
   let ordinaryAssetId = "";
   let activeAssetId = "";
@@ -350,7 +352,7 @@ test("796 réutilise Occupation par unité dans la vraie fenêtre détachée", a
       ]);
       await detached.waitForLoadState("domcontentloaded");
       await expectDetachedUrlContext(detached, {
-        week: todayIso,
+        week: weekStartIso,
         query: "Alice",
         scope: "mine",
       });
@@ -390,7 +392,7 @@ test("796 réutilise Occupation par unité dans la vraie fenêtre détachée", a
 
       await page.getByRole("button", { name: /Suivante/ }).click();
       await detached.getByRole("button", { name: /Suivante/ }).click();
-      const nextWeek = localIso(addDays(today, 7));
+      const nextWeek = localIso(addDays(weekStart, 7));
       await expect.poll(() => new URL(detached.url()).searchParams.get("week")).toBe(nextWeek);
       await expect(detached.getByLabel("Recherche")).toHaveValue("Alice");
       await expect(detached.getByRole("button", { name: "Mon périmètre" })).toHaveClass(/active/);
