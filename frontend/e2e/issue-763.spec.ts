@@ -102,6 +102,8 @@ test("763 subdivise Installation électrique à partir du sous-groupe projeté p
     const parentHeading = parent.locator(".resource-group-heading");
     await expect(parentHeading.locator(".resource-group-title strong")).toHaveText("Installation électrique");
     await expect(parentHeading).toHaveAttribute("aria-expanded", "true");
+    await expect(parent.locator(":scope > .unplanned-candidate-row")).toHaveCount(0);
+    await expect(parent.locator(":scope > .resource-row")).toHaveCount(0);
 
     const companion = parent.locator('.resource-subgroup[data-resource-subgroup="COMPANION"]');
     const apprentice = parent.locator('.resource-subgroup[data-resource-subgroup="APPRENTICE"]');
@@ -110,6 +112,10 @@ test("763 subdivise Installation électrique à partir du sous-groupe projeté p
     await expect(companion.locator(".resource-subgroup-heading strong")).toHaveText("Compagnons électriciens");
     await expect(apprentice.locator(".resource-subgroup-heading strong")).toHaveText("Apprentis électriciens");
     await expect(other.locator(".resource-subgroup-heading strong")).toHaveText("Autres / Non classé");
+    await expect(parent.locator(":scope > .resource-subgroup").first()).toHaveAttribute(
+      "data-resource-subgroup",
+      "COMPANION",
+    );
 
     await expect.poll(() => names(companion)).toEqual(["E2E Compagnon"]);
     await expect.poll(() => names(apprentice)).toEqual([
@@ -157,6 +163,8 @@ test("763 subdivise Installation électrique à partir du sous-groupe projeté p
 
     const programmeur = page.locator('.resource-group[data-resource-class="PROGRAMMEUR"]');
     await expect(programmeur.locator(".resource-subgroup")).toHaveCount(0);
+    await expect(programmeur.locator(":scope > .unplanned-candidate-row")).toHaveCount(0);
+    await expect(programmeur.locator(":scope > .resource-row")).toHaveCount(1);
     await expect.poll(() => names(programmeur)).toEqual(["E2E Programmeur contrôle"]);
 
     await expect(page.locator('.resource-group[data-resource-class="INSTALL_ELEC_COMPAGNON"]')).toHaveCount(0);
