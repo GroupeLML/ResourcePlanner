@@ -148,7 +148,9 @@ test("818 garde les cartes Demandes lisibles et fait défiler la liste à fort v
     const baselineCard = cards.filter({ hasText: baselineCardNumber });
     const highVolumeHeight = (await baselineCard.boundingBox())!.height;
 
-    const search = page.getByLabel("Recherche");
+    const search = page
+      .locator(".demand-filter-bar")
+      .getByRole("textbox", { name: "Recherche", exact: true });
     await search.fill(baselineCardNumber);
     await expect(cards).toHaveCount(1);
     await expect(heading.locator("strong")).toHaveText("1 demande(s)");
