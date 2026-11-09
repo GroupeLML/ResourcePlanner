@@ -6,7 +6,7 @@ import {
   AssetCatalogItem,
   AssetPlanningState,
   AssetTypeCatalogItem,
-  ContinuousResourceCandidate,
+  type ContinuousResourceCandidate,
   addAssetUnavailability,
   createAsset,
   createAssetType,
