@@ -2132,18 +2132,19 @@ class ShiftAssetCommandTests(unittest.TestCase):
                 )
                 self.assertIsNotNone(request_asset_requirement)
                 assert request_asset_requirement is not None
-                shift_id = f"SHIFT-799-REQUEST-{number}"
-                session.add(
-                    Shift(
-                        id=shift_id,
-                        resource_requirement_id=human_requirement.id,
-                        resource_id="RESOURCE-SKILLED",
-                        work_date=DAY,
-                        hours=Decimal("8"),
-                        source="MANUAL",
-                        locked=True,
+                shift_id = f"SHIFT-799-REQUEST-${number}-MON"
+                for offset, suffix in enumerate(("MON", "TUE", "WED", "THU")):
+                    session.add(
+                        Shift(
+                            id=f"SHIFT-799-REQUEST-${number}-${suffix}",
+                            resource_requirement_id=human_requirement.id,
+                            resource_id="RESOURCE-SKILLED",
+                            work_date=DAY + timedelta(days=offset),
+                            hours=Decimal("8"),
+                            source="MANUAL",
+                            locked=True,
+                        )
                     )
-                )
                 return shift_id, request_asset_requirement.id
         finally:
             engine.dispose()
