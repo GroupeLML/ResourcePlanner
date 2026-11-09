@@ -72,7 +72,7 @@ test("818 garde les cartes Demandes lisibles et fait défiler la liste à fort v
       });
     });
 
-    await page.route("**/api/v1/demands/*/detail?**", async (route) => {
+    await page.route("**/api/v1/demands/*/detail**", async (route) => {
       const pathParts = new URL(route.request().url()).pathname.split("/");
       const demandNumber = decodeURIComponent(pathParts[pathParts.length - 2]);
       const demand = fixtureByNumber.get(demandNumber);
@@ -138,7 +138,7 @@ test("818 garde les cartes Demandes lisibles et fait défiler la liste à fort v
       await expect(card.locator(".demand-project strong")).toBeVisible();
     }
 
-    const quickActionCard = cards.first();
+    const quickActionCard = cards.filter({ hasText: "DMO-818-01" });
     await expect(quickActionCard.locator(".demand-card-quick-actions")).toBeVisible();
     const regularCardHeight = heights[1];
     const quickActionHeight = (await quickActionCard.boundingBox())!.height;
