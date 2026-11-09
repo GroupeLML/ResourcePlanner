@@ -117,6 +117,44 @@ test("762 profile unité véhicule pilote le contrat continu #744", async ({ bro
     await expect(editor.getByTestId("asset-continuous-assignment-state")).toContainText(
       `Fin prévue : ${today}`,
     );
+
+    // #795: Planning consumes the backend-projected per-window unit visibility.
+    await navigateMain(page, "Planning");
+    const currentWeekHeading = page.getByRole("heading", { level: 1 });
+    await expect(currentWeekHeading).toContainText("Semaine du");
+    const currentWeekText = await currentWeekHeading.innerText();
+
+    const filtersToggle = page.getByRole("button", { name: /^Filtres/ });
+    await filtersToggle.click();
+    const search = page.getByLabel("Recherche");
+    await search.fill("Alice");
+
+    const occupancyPanel = page.getByTestId("asset-unit-occupancy-panel");
+    const occupancyContent = page.getByTestId("asset-unit-occupancy-content");
+    await expect(occupancyContent).toContainText("NAC-01");
+    await expect(occupancyContent).not.toContainText("VEH-762-03");
+
+    const occupancyToggle = page.getByTestId("asset-unit-occupancy-toggle");
+    await expect(occupancyToggle).toHaveAttribute("aria-expanded", "true");
+    await occupancyToggle.click();
+    await expect(occupancyToggle).toHaveAttribute("aria-expanded", "false");
+    await expect(occupancyContent).toHaveCount(0);
+    await expect(search).toHaveValue("Alice");
+    await expect(currentWeekHeading).toHaveText(currentWeekText);
+
+    await occupancyToggle.click();
+    await expect(occupancyToggle).toHaveAttribute("aria-expanded", "true");
+    await expect(page.getByTestId("asset-unit-occupancy-content")).toContainText("NAC-01");
+    await expect(search).toHaveValue("Alice");
+    await expect(currentWeekHeading).toHaveText(currentWeekText);
+
+    // The dated revocation above ends VEH-762-03 after today. In the next
+    // Planning week, no continuous interval overlaps the viewed window and the
+    // same canonical unit is projected back into Occupation par unité.
+    await page.getByRole("button", { name: /Suivante/ }).click();
+    await expect(currentWeekHeading).not.toHaveText(currentWeekText);
+    await expect(page.getByLabel("Recherche")).toHaveValue("Alice");
+    await expect(page.getByTestId("asset-unit-occupancy-content")).toContainText("VEH-762-03");
   } finally {
     await context.close();
   }
