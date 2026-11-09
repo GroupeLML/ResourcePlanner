@@ -27,6 +27,10 @@ from app.domain.operational_contacts import (
 )
 from app.infrastructure.sql import (
     AppUser,
+    Asset,
+    AssetAllocation,
+    AssetRequirement,
+    AssetType,
     Base,
     BusinessContact,
     ORIGIN_QUICK_SHIFT,
@@ -1053,6 +1057,288 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     delta_payload["snapshot_fingerprint"],
                     delta_payload["baseline_fingerprint"],
                 )
+
+    def test_708b_assets_follow_canonical_shift_applicability_change_release_and_dedup(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    session.add_all(
+                        [
+                            AssetType(
+                                id="TYPE-VEH-708B",
+                                code="VEH",
+                                label="Véhicule",
+                                category="VEHICLE",
+                            ),
+                            AssetType(
+                                id="TYPE-EQ-708B",
+                                code="EQ",
+                                label="Équipement",
+                                category="EQUIPMENT",
+                            ),
+                        ]
+                    )
+                    session.flush()
+                    session.add_all(
+                        [
+                            Asset(
+                                id="ASSET-VEH-708B",
+                                code="V-708B",
+                                label="Camion 708B",
+                                asset_type_id="TYPE-VEH-708B",
+                            ),
+                            Asset(
+                                id="ASSET-VEH-NEW-708B",
+                                code="V-NEW-708B",
+                                label="Camion remplacement 708B",
+                                asset_type_id="TYPE-VEH-708B",
+                            ),
+                            Asset(
+                                id="ASSET-EQ-708B",
+                                code="EQ-708B",
+                                label="Nacelle 708B",
+                                asset_type_id="TYPE-EQ-708B",
+                            ),
+                            Asset(
+                                id="ASSET-OTHER-708B",
+                                code="OTHER-708B",
+                                label="Actif autre ressource",
+                                asset_type_id="TYPE-EQ-708B",
+                            ),
+                            Asset(
+                                id="ASSET-FUTURE-708B",
+                                code="FUTURE-708B",
+                                label="Actif hors date",
+                                asset_type_id="TYPE-EQ-708B",
+                            ),
+                            Asset(
+                                id="ASSET-CONTEXT-708B",
+                                code="CTX-708B",
+                                label="Actif segment sans opérateur",
+                                asset_type_id="TYPE-EQ-708B",
+                            ),
+                        ]
+                    )
+                    session.add(
+                        Shift(
+                            id="S1-SECOND-708B",
+                            resource_requirement_id="REQ1",
+                            resource_id="R1",
+                            work_date=WEEK,
+                            hours=Decimal("1"),
+                            allocation_type="Flexible",
+                            outside_standard_hours=False,
+                        )
+                    )
+                    session.flush()
+                    session.add_all(
+                        [
+                            AssetRequirement(
+                                id="AREQ-SHIFT-708B",
+                                project_id="P1",
+                                origin="SHIFT_AD_HOC",
+                                shift_id="S1",
+                                asset_type_id="TYPE-EQ-708B",
+                                start_date=WEEK,
+                                end_date=WEEK,
+                                status="Affecté",
+                            ),
+                            AssetRequirement(
+                                id="AREQ-CONT-708B",
+                                project_id=None,
+                                origin="RESOURCE_PERIOD",
+                                context_resource_id="R1",
+                                asset_type_id="TYPE-VEH-708B",
+                                start_date=WEEK,
+                                end_date=None,
+                                resource_period_mode="CONTINUOUS",
+                                status="Affecté",
+                            ),
+                            AssetRequirement(
+                                id="AREQ-OTHER-708B",
+                                project_id=None,
+                                origin="RESOURCE_PERIOD",
+                                context_resource_id="R2",
+                                asset_type_id="TYPE-EQ-708B",
+                                start_date=WEEK,
+                                end_date=None,
+                                resource_period_mode="CONTINUOUS",
+                                status="Affecté",
+                            ),
+                            AssetRequirement(
+                                id="AREQ-FUTURE-708B",
+                                project_id=None,
+                                origin="RESOURCE_PERIOD",
+                                context_resource_id="R1",
+                                asset_type_id="TYPE-EQ-708B",
+                                start_date=date(2026, 9, 22),
+                                end_date=date(2026, 9, 22),
+                                resource_period_mode="BOUNDED",
+                                status="Affecté",
+                            ),
+                            AssetRequirement(
+                                id="AREQ-CONTEXT-708B",
+                                project_id="P1",
+                                origin="SEGMENT",
+                                resource_requirement_id="REQ1",
+                                asset_type_id="TYPE-EQ-708B",
+                                start_date=WEEK,
+                                end_date=WEEK,
+                                status="Affecté",
+                            ),
+                        ]
+                    )
+                    session.flush()
+                    session.add_all(
+                        [
+                            AssetAllocation(
+                                id="ALLOC-SHIFT-708B",
+                                asset_requirement_id="AREQ-SHIFT-708B",
+                                asset_id="ASSET-EQ-708B",
+                                operator_resource_id="R1",
+                                start_date=WEEK,
+                                end_date=WEEK,
+                                locked=True,
+                                source="MANUAL",
+                            ),
+                            AssetAllocation(
+                                id="ALLOC-CONT-708B",
+                                asset_requirement_id="AREQ-CONT-708B",
+                                asset_id="ASSET-VEH-708B",
+                                operator_resource_id="R1",
+                                start_date=WEEK,
+                                end_date=None,
+                                locked=True,
+                                source="MANUAL",
+                            ),
+                            AssetAllocation(
+                                id="ALLOC-OTHER-708B",
+                                asset_requirement_id="AREQ-OTHER-708B",
+                                asset_id="ASSET-OTHER-708B",
+                                operator_resource_id="R2",
+                                start_date=WEEK,
+                                end_date=None,
+                                locked=True,
+                                source="MANUAL",
+                            ),
+                            AssetAllocation(
+                                id="ALLOC-FUTURE-708B",
+                                asset_requirement_id="AREQ-FUTURE-708B",
+                                asset_id="ASSET-FUTURE-708B",
+                                operator_resource_id="R1",
+                                start_date=date(2026, 9, 22),
+                                end_date=date(2026, 9, 22),
+                                locked=True,
+                                source="MANUAL",
+                            ),
+                            AssetAllocation(
+                                id="ALLOC-CONTEXT-708B",
+                                asset_requirement_id="AREQ-CONTEXT-708B",
+                                asset_id="ASSET-CONTEXT-708B",
+                                operator_resource_id=None,
+                                start_date=WEEK,
+                                end_date=WEEK,
+                                locked=True,
+                                source="MANUAL",
+                            ),
+                        ]
+                    )
+
+                with factory() as session:
+                    repository = SqlProjectCommunicationRepository(
+                        session,
+                        operational_contacts=OperationalContactService(
+                            SqlOperationalContactRepository(session)
+                        ),
+                    )
+                    assignments = repository.list_assignments(
+                        week_start=WEEK,
+                        week_end=date(2026, 9, 27),
+                    )
+                    r1_rows = [
+                        row
+                        for row in assignments
+                        if row.resource_id == "R1"
+                    ]
+                    self.assertEqual(len(r1_rows), 2)
+                    by_shift = {row.shift_id: row for row in r1_rows}
+                    self.assertEqual(
+                        {asset.asset_label for asset in by_shift["S1"].assets},
+                        {"Nacelle 708B", "Camion 708B"},
+                    )
+                    self.assertEqual(
+                        {asset.asset_label for asset in by_shift["S1-SECOND-708B"].assets},
+                        {"Camion 708B"},
+                    )
+                    self.assertNotIn(
+                        "Actif autre ressource",
+                        {
+                            asset.asset_label
+                            for row in r1_rows
+                            for asset in row.assets
+                        },
+                    )
+                    self.assertNotIn(
+                        "Actif hors date",
+                        {
+                            asset.asset_label
+                            for row in r1_rows
+                            for asset in row.assets
+                        },
+                    )
+                    self.assertNotIn(
+                        "Actif segment sans opérateur",
+                        {
+                            asset.asset_label
+                            for row in r1_rows
+                            for asset in row.assets
+                        },
+                    )
+
+                    projection = ProjectCommunicationService(
+                        repository
+                    ).preview(week_start=WEEK)
+                    draft = next(
+                        row
+                        for row in projection.drafts
+                        if row.project_id == "P1"
+                    )
+                    self.assertIn(
+                        "Actif : Véhicule — Camion 708B / Équipement — Nacelle 708B",
+                        draft.body,
+                    )
+                    self.assertEqual(draft.body.count("Camion 708B"), 1)
+                    self.assertEqual(draft.body.count("Nacelle 708B"), 1)
+
+                with factory.begin() as session:
+                    continuous = session.get(AssetAllocation, "ALLOC-CONT-708B")
+                    owned = session.get(AssetRequirement, "AREQ-SHIFT-708B")
+                    assert continuous is not None
+                    assert owned is not None
+                    continuous.asset_id = "ASSET-VEH-NEW-708B"
+                    owned.status = "Annulé"
+
+                with factory() as session:
+                    repository = SqlProjectCommunicationRepository(
+                        session,
+                        operational_contacts=OperationalContactService(
+                            SqlOperationalContactRepository(session)
+                        ),
+                    )
+                    changed = ProjectCommunicationService(
+                        repository
+                    ).preview(week_start=WEEK)
+                    draft = next(
+                        row for row in changed.drafts if row.project_id == "P1"
+                    )
+                    self.assertIn("Véhicule — Camion remplacement 708B", draft.body)
+                    self.assertNotIn("Camion 708B", draft.body)
+                    self.assertNotIn("Nacelle 708B", draft.body)
+            finally:
+                engine.dispose()
 
     def test_quick_shift_default_origin_label_is_hidden_across_preview_graph_and_smtp(self) -> None:
         with TemporaryDirectory() as directory:
