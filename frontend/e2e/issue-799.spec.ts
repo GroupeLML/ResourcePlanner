@@ -56,12 +56,6 @@ async function shiftsForDemand(
     .sort((left, right) => String(left.work_date).localeCompare(String(right.work_date)));
 }
 
-async function selectComboboxOption(page: Page, label: string, option: string) {
-  const input = page.getByRole("combobox", { name: label, exact: true });
-  await input.fill(option);
-  await page.getByRole("option", { name: option, exact: true }).click();
-}
-
 async function expectAssetOnEveryShift(
   page: Page,
   resourceName: string,
