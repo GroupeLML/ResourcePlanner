@@ -1576,6 +1576,46 @@ class SqlAssetService:
             asset=asset,
             explicit_requirement_id=requirement_id,
         )
+        if (
+            requirement is None
+            and asset is not None
+            and start_date is not None
+            and end_date is not None
+            and (
+                start_date != shift.work_date
+                or end_date != shift.work_date
+            )
+        ):
+            if not start_date <= shift.work_date <= end_date:
+                raise ApplicationValidationError(
+                    "La période d'actif doit couvrir la date du quart d'origine.",
+                    code="asset_resource_period_shift_date_required",
+                    context={
+                        "shift_id": shift.id,
+                        "shift_work_date": shift.work_date.isoformat(),
+                        "start_date": start_date.isoformat(),
+                        "end_date": end_date.isoformat(),
+                    },
+                )
+            result = self._create_direct_reservation(
+                origin=AssetRequirementOrigin.RESOURCE_PERIOD,
+                project_id=None,
+                context_resource_id=shift.resource_id,
+                asset_type_id=asset.asset_type_id,
+                asset_id=asset.id,
+                start_date=start_date,
+                end_date=end_date,
+                operator_resource_id=shift.resource_id,
+                expected_version=expected_version,
+                resource_period_mode=ResourcePeriodMode.BOUNDED,
+            )
+            return {
+                **result,
+                "shift_id": shift.id,
+                "shift_source": shift.source,
+                "shift_locked": bool(shift.locked),
+            }
+
         created_requirement = False
         if requirement is None:
             if asset is None:
