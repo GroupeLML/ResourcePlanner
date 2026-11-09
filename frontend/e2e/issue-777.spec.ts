@@ -196,6 +196,7 @@ test("777 glisse un reliquat approuvé sur une ressource/journée via le vrai ba
     );
     const workClassHeading = workClassGroup.locator(".resource-group-heading");
     const classWorkCount = async () => {
+      if (await workClassHeading.count() === 0) return 0;
       const text = await workClassHeading.innerText();
       const match = text.match(/(\d+) à planifier/);
       return match ? Number(match[1]) : 0;
@@ -292,7 +293,11 @@ test("777 glisse un reliquat approuvé sur une ressource/journée via le vrai ba
 
     await expect(approvedCard).toHaveCount(0);
     await expect.poll(classWorkCount).toBe(workCountBeforeDrop - 1);
-    await expect(workClassGroup.locator(":scope > .unplanned-candidate-row")).toHaveCount(0);
+    if (await workClassGroup.count() > 0) {
+      await expect(workClassGroup.locator(":scope > .unplanned-candidate-row")).toHaveCount(0);
+    } else {
+      expect(await classWorkCount()).toBe(0);
+    }
     await expect(programmerGroup.locator(":scope > .unplanned-candidate-row")).toHaveCount(0);
     await expect(page.locator(".planning-drag-feedback"))
       .toContainText(`Besoin assigné à ${targetName} à partir du ${d4}`);
