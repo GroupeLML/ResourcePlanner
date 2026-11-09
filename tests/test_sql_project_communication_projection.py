@@ -1300,7 +1300,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
 
                     projection = ProjectCommunicationService(
                         repository
-                    ).preview(week_start=WEEK)
+                    ).project_preview(week_start=WEEK)
                     draft = next(
                         row
                         for row in projection.drafts
