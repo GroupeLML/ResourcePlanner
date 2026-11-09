@@ -88,11 +88,18 @@ class Issue775ContractTests(unittest.TestCase):
 
         self.assertIn("getContinuousResourceCandidates", panel)
         self.assertIn("continuousCandidates", panel)
+        self.assertIn("continuousCandidatesError", panel)
+        self.assertIn("continuousCandidatesLoading", panel)
         self.assertIn("candidates={continuousCandidates}", panel)
+        self.assertIn("getAssetCatalog(controller.signal),", panel)
+        self.assertIn("getAssetPlanningState(controller.signal),", panel)
+        self.assertNotIn("getContinuousResourceCandidates(controller.signal),\n    ])", panel)
         self.assertIn("/api/v1/assets/continuous-resource-candidates", api)
         self.assertIn("ContinuousResourceCandidate", editor)
         self.assertIn("resource.resource_id", editor)
         self.assertIn("resource.display_name", editor)
+        self.assertIn("asset-continuous-candidates-error", editor)
+        self.assertIn("candidatesLoading || Boolean(candidatesError)", editor)
         self.assertNotIn(".filter((row) => row.active)", editor)
 
     def test_hidden_continuous_assignment_remains_checked_without_resource_leak(self) -> None:
