@@ -62,6 +62,42 @@ test("704 affiche une candidate sous la ressource proposée sans créer de quart
     await route.fulfill({ response, contentType: "application/json", body: JSON.stringify(body) });
   });
 
+  await page.route("**/api/v1/planning/actions**", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    const url = new URL(route.request().url());
+    const start = url.searchParams.get("start") || day;
+    const end = url.searchParams.get("end") || start;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([{
+        kind: "APPROVAL",
+        reference: "DMO-704",
+        demand_number: "DMO-704",
+        segment_id: null,
+        project_number: "P-704",
+        project_name: "Projet ressource proposée",
+        task_code: "704",
+        task_label: "Installation",
+        start_date: start,
+        end_date: end,
+        planned_hours: 8,
+        required_resource_class: null,
+        required_competency: null,
+        required_competency_id: null,
+        priority: null,
+        status: "Soumise",
+        confirmation: "Confirmée",
+        project_manager: null,
+        requester: null,
+        emergency_override_active: false,
+      }]),
+    });
+  });
+
   try {
     await page.goto("/");
     // The Planning snapshot is loaded asynchronously after the initial document.
@@ -73,14 +109,21 @@ test("704 affiche une candidate sous la ressource proposée sans créer de quart
     await expect(candidate).toBeVisible();
     await expect(candidate).toContainText("en attente d’approbation");
     await expect(candidate).toHaveAttribute("draggable", "false");
-    await expect(page.locator(".unplanned-candidate-row .pending-ghost-card").filter({ hasText: "DMO-704" })).toHaveCount(0);
+    await expect(page.locator(".resource-group .unplanned-candidate-row")).toHaveCount(0);
+    const workQueueApproval = page
+      .locator(".planning-work-queue .planning-action-card.action-approval")
+      .filter({ hasText: "DMO-704" });
+    await expect(workQueueApproval).toHaveCount(1);
+    await expect(workQueueApproval).toBeVisible();
 
     unresolved = true;
     await page.reload();
     await expect(page.locator(`.planning-day-cell[data-resource-id="${resourceId}"] .pending-ghost-card`)
       .filter({ hasText: "DMO-704" })).toHaveCount(0);
-    await expect(page.locator(".unplanned-candidate-row .pending-ghost-card")
-      .filter({ hasText: "DMO-704" }).first()).toBeVisible();
+    await expect(page.locator(".resource-group .unplanned-candidate-row")).toHaveCount(0);
+    await expect(page
+      .locator(".planning-work-queue .planning-action-card.action-approval")
+      .filter({ hasText: "DMO-704" })).toBeVisible();
   } finally {
     await context.close();
   }

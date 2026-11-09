@@ -2298,16 +2298,6 @@ export default function PlanningPage({
                       </span>
                       <span>{rows.length} ressource(s){workCount > 0 ? ` · ${workCount} à planifier` : ""}</span>
                     </button>
-                    {!collapsed && workCount > 0 && (
-                      <UnplannedWorkRow
-                        days={days}
-                        candidates={classWork.candidates}
-                        assignments={classWork.assignments}
-                        onOpenDemand={canReadDemands ? setDetailDemandNumber : undefined}
-                        onOpenSegment={canManagePlanning ? setEditingSegmentId : undefined}
-                        dragEnabled={canManagePlanning && !dropBusy}
-                      />
-                    )}
                     {!collapsed && className === "INSTALL_ELEC" && electricalSubgroups.map((subgroup) => {
                       const subgroupKey = planningSubgroupCollapseKey(subgroup.code);
                       const subgroupCollapsed = collapsedClasses.has(subgroupKey);

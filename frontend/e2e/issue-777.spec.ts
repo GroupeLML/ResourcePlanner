@@ -176,6 +176,36 @@ test("777 glisse un reliquat approuvé sur une ressource/journée via le vrai ba
     await expect(approvedCard).toHaveCount(1);
     await expect(approvedCard).toBeVisible();
     await expect(approvedCard).toHaveAttribute("draggable", "true");
+
+    const programmerGroup = page.locator('.resource-group[data-resource-class="PROGRAMMEUR"]');
+    const programmerHeading = programmerGroup.locator(".resource-group-heading");
+    await expect(programmerHeading).toHaveAttribute("aria-expanded", "true");
+    await expect(programmerGroup.locator(":scope > .unplanned-candidate-row")).toHaveCount(0);
+    expect(await programmerGroup.locator(":scope > .resource-row").count()).toBeGreaterThan(0);
+
+    await programmerHeading.click();
+    await expect(programmerHeading).toHaveAttribute("aria-expanded", "false");
+    await expect(programmerGroup.locator(":scope > .resource-row")).toHaveCount(0);
+    await programmerHeading.click();
+    await expect(programmerHeading).toHaveAttribute("aria-expanded", "true");
+    await expect(programmerGroup.locator(":scope > .unplanned-candidate-row")).toHaveCount(0);
+
+    const workClass = String(initialAssignment.required_resource_class || "Non classé");
+    const workClassGroup = page.locator(
+      `.resource-group[data-resource-class="${workClass.replace(/"/g, '\\"')}"]`,
+    );
+    const workClassHeading = workClassGroup.locator(".resource-group-heading");
+    const classWorkCount = async () => {
+      if (await workClassHeading.count() === 0) return 0;
+      const text = await workClassHeading.innerText();
+      const match = text.match(/(\d+) à planifier/);
+      return match ? Number(match[1]) : 0;
+    };
+    await expect(workClassHeading).toBeVisible();
+    await expect(workClassGroup.locator(":scope > .unplanned-candidate-row")).toHaveCount(0);
+    const workCountBeforeDrop = await classWorkCount();
+    expect(workCountBeforeDrop).toBeGreaterThan(0);
+
     const segmentId = await approvedCard.getAttribute("data-segment-id");
     expect(segmentId).toBeTruthy();
 
@@ -262,6 +292,13 @@ test("777 glisse un reliquat approuvé sur une ressource/journée via le vrai ba
     expect(afterDrop.reduce((sum, row) => sum + Number(row.hours), 0)).toBe(40);
 
     await expect(approvedCard).toHaveCount(0);
+    await expect.poll(classWorkCount).toBe(workCountBeforeDrop - 1);
+    if (await workClassGroup.count() > 0) {
+      await expect(workClassGroup.locator(":scope > .unplanned-candidate-row")).toHaveCount(0);
+    } else {
+      expect(await classWorkCount()).toBe(0);
+    }
+    await expect(programmerGroup.locator(":scope > .unplanned-candidate-row")).toHaveCount(0);
     await expect(page.locator(".planning-drag-feedback"))
       .toContainText(`Besoin assigné à ${targetName} à partir du ${d4}`);
   } finally {

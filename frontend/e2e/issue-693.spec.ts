@@ -125,33 +125,52 @@ test("693 projette le même besoin par classe et dans la file jusqu'à couvertur
     await expect(workQueue).toContainText("À planifier");
     await expect(page.locator(".planning-action-panel")).toHaveCount(1);
 
-    const candidate = page.locator(".pending-ghost-card").filter({ hasText: "DMO-693" }).first();
+    const candidate = workQueue
+      .locator(".planning-action-card.action-approval")
+      .filter({ hasText: "DMO-693" });
+    await expect(candidate).toHaveCount(1);
     await expect(candidate).toBeVisible();
-    await expect(candidate).toContainText("en attente d’approbation");
+    await expect(candidate).toContainText("À approuver");
+    await expect(candidate).toContainText("Tentative");
     await expect(candidate).toHaveAttribute("draggable", "false");
-    await expect(page.locator('.resource-group[data-resource-class="PROGRAMMATION"] .resource-group-heading')).toBeVisible();
+    const candidateClassGroup = page.locator(
+      '.resource-group[data-resource-class="PROGRAMMATION"]',
+    );
+    await expect(candidateClassGroup.locator(".resource-group-heading")).toBeVisible();
+    await expect(candidateClassGroup.locator(":scope > .unplanned-candidate-row")).toHaveCount(0);
 
     phase = "partial";
     await page.reload();
 
-    await expect(page.locator(".pending-ghost-card").filter({ hasText: "DMO-693" })).toHaveCount(0);
-    const approved = page.locator(".approved-unplanned-card").filter({ hasText: "DMO-693" }).first();
+    await expect(
+      workQueue.locator(".planning-action-card.action-approval").filter({ hasText: "DMO-693" }),
+    ).toHaveCount(0);
+    const approved = workQueue
+      .locator(".planning-action-card.action-assignment")
+      .filter({ hasText: "DMO-693" });
+    await expect(approved).toHaveCount(1);
     await expect(approved).toBeVisible();
-    await expect(approved).toContainText("Reliquat 6 h");
+    await expect(approved).toContainText("6 h");
     await expect(approved).toHaveAttribute("draggable", "true");
     await expect(workQueue).toContainText("Approuvé · reliquat à couvrir");
 
-    const classHeading = page.locator('.resource-group[data-resource-class="PROGRAMMATION"] .resource-group-heading');
+    const classGroup = page.locator('.resource-group[data-resource-class="PROGRAMMATION"]');
+    const classHeading = classGroup.locator(".resource-group-heading");
+    await expect(classGroup.locator(":scope > .unplanned-candidate-row")).toHaveCount(0);
     await classHeading.click();
-    await expect(approved).toBeHidden();
+    await expect(classHeading).toHaveAttribute("aria-expanded", "false");
+    await expect(approved).toBeVisible();
     await classHeading.click();
+    await expect(classHeading).toHaveAttribute("aria-expanded", "true");
     await expect(approved).toBeVisible();
 
     phase = "covered";
     await page.reload();
 
-    await expect(page.locator(".approved-unplanned-card").filter({ hasText: "DMO-693" })).toHaveCount(0);
-    await expect(page.locator(".pending-ghost-card").filter({ hasText: "DMO-693" })).toHaveCount(0);
+    await expect(workQueue.locator(".planning-action-card.action-assignment").filter({ hasText: "DMO-693" })).toHaveCount(0);
+    await expect(
+      workQueue.locator(".planning-action-card.action-approval").filter({ hasText: "DMO-693" }),
+    ).toHaveCount(0);
     await expect(workQueue).toContainText("Aucune action de planification");
   } finally {
     await context.close();

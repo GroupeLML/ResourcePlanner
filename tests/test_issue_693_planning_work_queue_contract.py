@@ -24,7 +24,7 @@ def test_693_backend_queue_projects_actual_uncovered_residual_and_class() -> Non
     assert "required_resource_class: str | None = None" in models
 
 
-def test_693_react_has_one_side_queue_and_one_class_work_projection() -> None:
+def test_693_react_has_one_side_queue_and_preserves_class_work_count_authority() -> None:
     page = PAGE.read_text(encoding="utf-8")
     panel = PANEL.read_text(encoding="utf-8")
     api = API.read_text(encoding="utf-8")
@@ -32,7 +32,6 @@ def test_693_react_has_one_side_queue_and_one_class_work_projection() -> None:
     assert page.count("<PlanningActionPanel") == 1
     assert page.index('<aside className="pending-panel planning-work-queue">') < page.index("<PlanningActionPanel")
     assert "visibleClassWork" in page
-    assert "UnplannedWorkRow" in page
     assert "approved-unplanned-card" in page
     assert "Approuvé · prêt à planifier" in page
     assert "Reliquat {hours(action.planned_hours)} h" in page
@@ -44,3 +43,16 @@ def test_693_react_has_one_side_queue_and_one_class_work_projection() -> None:
     assert "<strong>À approuver</strong>" in panel
     assert "<strong>À planifier</strong>" in panel
     assert "required_resource_class: string | null;" in api
+
+    class_render_start = page.index("{visibleResourceGroups.map(([className, rows]) => {")
+    class_render_end = page.index('<aside className="pending-panel planning-work-queue">', class_render_start)
+    class_render = page[class_render_start:class_render_end]
+
+    assert 'const classWork = visibleClassWork.get(className) ?? { candidates: [], assignments: [] };' in class_render
+    assert "const workCount = classWork.candidates.length + classWork.assignments.length;" in class_render
+    assert '{workCount > 0 ? ` · ${workCount} à planifier` : ""}' in class_render
+    assert "<UnplannedWorkRow" not in class_render
+    assert '!collapsed && className === "INSTALL_ELEC" && electricalSubgroups.map' in class_render
+    assert '!collapsed && className !== "INSTALL_ELEC" && rows.map(renderResourceRow)' in class_render
+    assert "INSTALL_ELEC_SUBGROUP_ORDER" in page
+    assert "UnplannedWorkRow" in page
