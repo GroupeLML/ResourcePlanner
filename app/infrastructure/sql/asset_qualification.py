@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from sqlalchemy import select, true
 from sqlalchemy.orm import Session
 
-from ...domain.reservable_assets import AssetRequirementOrigin
+from ...domain.reservable_assets import AssetRequirementOrigin, ResourcePeriodMode
 from .asset_models import AssetAllocation, AssetRequirement, AssetTypeCompetency
 from .models import Competency, Resource, ResourceCompetency, ResourceRequirement, Shift
 
