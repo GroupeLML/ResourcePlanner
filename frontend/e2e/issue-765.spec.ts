@@ -169,7 +169,7 @@ test("765 ouvre un Planning détaché avec contexte et synchronise les mutations
 
     await expect(detached.locator(".app-sidebar")).toHaveCount(0);
     await expect(detached.locator(".metric-grid")).toHaveCount(0);
-    await expect(detached.locator(".asset-planning-panel")).toBeVisible();
+    await expect(detached.locator(".asset-planning-panel")).toHaveCount(0);
     await expect(detached.getByTestId("asset-unit-occupancy-panel")).toBeVisible();
     await expect(detached.getByText("Ressources et quarts", { exact: true }).first()).toBeVisible();
     await expect(detached.getByLabel("Recherche")).toHaveValue("Alice");
