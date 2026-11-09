@@ -228,6 +228,75 @@ Under the default manual workflow, the Product Owner decides whether to authoriz
 
 Phasing does **not** by itself require Architect involvement. Escalate to the Architect only when the implementation reveals a genuine architecture question, a contradiction with an accepted ADR/invariant, or a required architecture gate. A large workload, timeout risk or multiple implementation defects are not architecture reasons on their own.
 
+
+---
+
+## 3C. Production merge risk assessment
+
+RessourcePlanner is a live production system. Every PR intended to merge into `main` must receive a **Production Merge Risk Assessment** from the orchestrator before the Product Owner authorizes merge.
+
+This gate applies even when:
+
+- CI is fully green;
+- the change appears small;
+- no migration is present;
+- the change is test-only or frontend-only;
+- the implementation already passed an architecture review.
+
+The purpose is not to block routine delivery. It is to determine whether the normal production promotion procedure remains sufficient or whether the merged change requires additional operator steps, a special deployment runbook, an Architect conformance review, or a temporary deployment hold.
+
+### Required assessment basis
+
+Assess the exact PR head that is proposed for merge. Review the actual changed files and current production/deployment contracts rather than relying only on the issue title or DEV summary.
+
+At minimum consider:
+
+- **database/schema** — Alembic migrations, backfills, constraints, data rewrites, destructive operations, compatibility with existing production rows;
+- **Planning/data preservation** — whether deployment, startup, migration, rebuild, resync or later automatic work could delete, move, regenerate or overwrite existing Shifts, requirements, assignments, reductions, allocations or audit history;
+- **startup/background work** — lifespan jobs, schedulers, queues, startup reconciliation, catch-up behavior, automatic maintenance or any process that may mutate data after restart;
+- **external integrations** — Acumatica, M365, SMTP or other systems; whether deployment can trigger reads/writes automatically;
+- **runtime/configuration** — new environment variables, changed defaults, secrets, ports, Docker/Compose dependencies, worker counts or configuration precedence;
+- **authorization/security** — changes that could widen production access or mutation authority;
+- **deployment mechanics** — whether the current production promotion script and documented drain → migrate → start → readiness sequence remain valid;
+- **rollback compatibility** — whether PREV/code rollback is compatible with the post-deploy schema and persisted state; never assume automatic Alembic downgrade is safe;
+- **operational availability** — expected downtime, drain requirements, long-running work or conditions that may require an explicit maintenance window.
+
+### Required output
+
+The orchestrator must report a compact assessment containing:
+
+1. **Risk level:** `LOW`, `MEDIUM`, `HIGH` or `CRITICAL`.
+2. **Production data risk:** what existing production data can or cannot be changed merely by deployment/startup.
+3. **Automatic behavior risk:** whether restart can start background/scheduled/integration work.
+4. **Migration/config risk:** migrations and new/changed runtime configuration.
+5. **Rollback note:** whether normal PREV application rollback remains compatible.
+6. **Deployment disposition:** exactly one of:
+   - `STANDARD PROMOTION`
+   - `STANDARD PROMOTION + OPERATOR STEPS`
+   - `SPECIAL RUNBOOK REQUIRED`
+   - `DO NOT DEPLOY`
+7. **Required operator steps:** backup, drain, feature disablement, preflight, one-shot migration, readiness/smoke checks, manual activation, or other concrete steps when applicable.
+
+For a routine LOW-risk change, this may be only a few lines. Do not inflate the report mechanically.
+
+### Merge decision rules
+
+- `LOW`: normal Product Owner merge may proceed when all other gates are satisfied.
+- `MEDIUM`: merge may proceed only when required operator steps are clear and compatible with the current production procedure.
+- `HIGH`: before merge, establish and review a safe deployment procedure/runbook. Use Architect conformance review when deployment behavior touches accepted architecture, durable background authority, migration ordering, recovery/fencing, security, or another cross-cutting invariant.
+- `CRITICAL`: do not merge or deploy until the blocking production-safety issue is explicitly resolved and reviewed.
+
+If the risk assessment discovers that the current production promotion script is no longer sufficient, do **not** defer that discovery until deployment day. Establish the new safe procedure before authorizing merge.
+
+A green CI run proves repository behavior under CI conditions; it does not by itself prove that production configuration, current durable state, backups, live writers or external integrations are safe for deployment.
+
+### DEV handoff contribution
+
+The DEV agent should include concise **production-impact notes** in its final handoff when the change affects migrations, startup, background jobs, integrations, configuration, deployment, rollback compatibility or production data semantics.
+
+Those notes are evidence for the Product Owner/orchestrator. They do not replace the independent Production Merge Risk Assessment on the exact merge head.
+
+
 ---
 
 ## 4. Scope discipline
@@ -644,6 +713,7 @@ PR complete
 → Product Owner observes CI/review evidence
 → if red: Product Owner returns corrective instructions
 → if green and review is required: Product Owner obtains the review
+→ Product Owner performs the Production Merge Risk Assessment from section 3C
 → Product Owner decides whether to merge
 ```
 
@@ -677,6 +747,7 @@ Before the DEV handoff, verify:
 - appropriate local/targeted validation has been performed;
 - migrations/documentation are updated when required;
 - no known blocking defect remains;
+- production-impact notes are reported when section 3C applies;
 - no stop condition from this file applies.
 
 When auto-merge has been explicitly authorized and armed, the DEV agent stops rather than polling CI. Under the default manual workflow, no auto-merge is required at handoff. If repository protection, required approval or another rule prevents an explicitly authorized auto-merge, report that blocker; do not circumvent it.
@@ -896,6 +967,7 @@ For normal autonomous implementation work, an item is DONE only when:
 - appropriate targeted tests pass;
 - relevant regression tests pass;
 - required CI is green;
+- the Production Merge Risk Assessment has been completed on the merge head and its deployment disposition is acceptable;
 - the PR is merged;
 - required migrations are present;
 - durable documentation is updated when necessary;
