@@ -60,6 +60,7 @@ from .asset_qualification import (
     QUALIFICATION_POLICY_ANY_ASSIGNED_WORKFORCE,
     QUALIFICATION_SATISFIED,
     QUALIFICATION_SKILL_MISMATCH,
+    continuous_beneficiary_resource_active,
     eligible_operator_resources,
     evaluate_asset_qualification,
     required_competencies,
@@ -2211,6 +2212,21 @@ class SqlAssetService:
             )
         return project
 
+    def continuous_resource_candidates(self) -> tuple[dict[str, str], ...]:
+        self._require_actor_permission(
+            PERMISSION_MANAGE_PLANNING,
+            code="asset_assignment_authority_required",
+            message="L'attribution continue d'un actif n'est pas autorisée.",
+        )
+        rows = self.session.scalars(
+            select(Resource).order_by(Resource.name, Resource.id)
+        ).all()
+        return tuple(
+            {"resource_id": row.id, "display_name": row.name}
+            for row in rows
+            if continuous_beneficiary_resource_active(row)
+        )
+
     def _direct_resource(self, resource_id: str) -> Resource:
         resource = self.session.get(Resource, resource_id)
         if resource is None or not resource.active:
@@ -2218,6 +2234,16 @@ class SqlAssetService:
                 "Ressource absente ou inactive.",
                 code="asset_context_resource_unavailable",
             )
+        return resource
+
+    def _continuous_beneficiary_resource(self, resource_id: str) -> Resource:
+        resource = self.session.get(Resource, resource_id)
+        if not continuous_beneficiary_resource_active(resource):
+            raise ApplicationValidationError(
+                "Employé bénéficiaire absent ou inactif.",
+                code="asset_continuous_beneficiary_unavailable",
+            )
+        assert resource is not None
         return resource
 
     def _validate_direct_allocation_state(
@@ -2461,7 +2487,10 @@ class SqlAssetService:
                     "La ressource est requise.",
                     code="asset_context_resource_required",
                 )
-            self._direct_resource(context_resource_id)
+            if resource_period_mode == ResourcePeriodMode.CONTINUOUS:
+                self._continuous_beneficiary_resource(context_resource_id)
+            else:
+                self._direct_resource(context_resource_id)
             if operator_resource_id != context_resource_id:
                 raise ApplicationConflictError(
                     "La ressource bénéficiaire doit être l'opérateur de la période.",
@@ -3170,7 +3199,7 @@ class SqlAssetService:
             allocation.asset_id,
             asset_id,
         )
-        new_resource = self._direct_resource(resource_id)
+        new_resource = self._continuous_beneficiary_resource(resource_id)
         new_asset, new_asset_type = self._active_asset(asset_id)
         if new_asset_type.category != "VEHICLE":
             raise ApplicationValidationError(
