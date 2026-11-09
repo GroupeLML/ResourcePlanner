@@ -130,7 +130,8 @@ test("693 projette le même besoin par classe et dans la file jusqu'à couvertur
       .filter({ hasText: "DMO-693" });
     await expect(candidate).toHaveCount(1);
     await expect(candidate).toBeVisible();
-    await expect(candidate).toContainText("Soumise");
+    await expect(candidate).toContainText("À approuver");
+    await expect(candidate).toContainText("Tentative");
     await expect(candidate).toHaveAttribute("draggable", "false");
     const candidateClassGroup = page.locator(
       '.resource-group[data-resource-class="PROGRAMMATION"]',
