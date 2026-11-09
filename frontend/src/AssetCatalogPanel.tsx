@@ -106,6 +106,8 @@ export default function AssetCatalogPanel({
   const [notice, setNotice] = useState<{ tone: "info" | "success" | "error"; text: string } | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [continuousCandidates, setContinuousCandidates] = useState<ContinuousResourceCandidate[]>([]);
+  const [continuousCandidatesLoading, setContinuousCandidatesLoading] = useState(false);
+  const [continuousCandidatesError, setContinuousCandidatesError] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -114,14 +116,10 @@ export default function AssetCatalogPanel({
     Promise.all([
       getAssetCatalog(controller.signal),
       getAssetPlanningState(controller.signal),
-      canManagePlanning
-        ? getContinuousResourceCandidates(controller.signal)
-        : Promise.resolve({ candidates: [] as ContinuousResourceCandidate[] }),
     ])
-      .then(([nextCatalog, nextState, continuousCandidatePayload]) => {
+      .then(([nextCatalog, nextState]) => {
         setCatalog(nextCatalog);
         setPlanningState(nextState);
-        setContinuousCandidates(continuousCandidatePayload.candidates);
         setSelectedTypeId((current) => {
           if (current && nextCatalog.types.some((row) => row.id === current)) return current;
           return nextCatalog.types.find((row) => row.active)?.id ?? nextCatalog.types[0]?.id ?? null;
@@ -133,6 +131,36 @@ export default function AssetCatalogPanel({
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [refreshKey]);
+
+  useEffect(() => {
+    if (!canManagePlanning) {
+      setContinuousCandidates([]);
+      setContinuousCandidatesError(null);
+      setContinuousCandidatesLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    setContinuousCandidatesLoading(true);
+    setContinuousCandidatesError(null);
+    getContinuousResourceCandidates(controller.signal)
+      .then((payload) => {
+        setContinuousCandidates(payload.candidates);
+      })
+      .catch((reason: unknown) => {
+        if (reason instanceof DOMException && reason.name === "AbortError") return;
+        setContinuousCandidates([]);
+        setContinuousCandidatesError(
+          messageFromError(
+            reason,
+            "Impossible de charger les employés disponibles pour l’attribution continue.",
+          ),
+        );
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setContinuousCandidatesLoading(false);
       });
     return () => controller.abort();
   }, [canManagePlanning, refreshKey]);
@@ -684,6 +712,8 @@ export default function AssetCatalogPanel({
                             controller={continuousAssignment}
                             resources={resources}
                             candidates={continuousCandidates}
+                            candidatesLoading={continuousCandidatesLoading}
+                            candidatesError={continuousCandidatesError}
                             creating={creatingAsset}
                             creatingCanAssign={canManagePlanning}
                           />
