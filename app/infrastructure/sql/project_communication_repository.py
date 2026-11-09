@@ -15,15 +15,19 @@ from ...domain.confirmation import effective_confirmation
 from ...domain.planning_engine import MISSING_ALLOCATION_TYPE
 from ...domain.reservable_assets import AssetRequirementOrigin
 from ...domain.project_communication import (
+    ProjectCommunicationAsset,
     ProjectCommunicationAssignment,
     ProjectCommunicationParticipant,
 )
-from .asset_models import AssetAllocation, AssetRequirement
+from .asset_models import Asset, AssetAllocation, AssetRequirement, AssetType
 from .asset_qualification import (
     QUALIFICATION_SATISFIED,
     evaluate_asset_qualifications,
 )
-from .asset_shift_projection import asset_shift_association
+from .asset_shift_projection import (
+    ASSOCIATION_SEGMENT_CONTEXT,
+    asset_shift_association,
+)
 from .business_contact_models import BusinessContact
 from .identity_models import AppUser
 from .models import (
@@ -275,11 +279,18 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
         asset_rows = (
             tuple(
                 self._session.execute(
-                    select(AssetAllocation, AssetRequirement)
+                    select(
+                        AssetAllocation,
+                        AssetRequirement,
+                        Asset,
+                        AssetType,
+                    )
                     .join(
                         AssetRequirement,
                         AssetAllocation.asset_requirement_id == AssetRequirement.id,
                     )
+                    .join(Asset, Asset.id == AssetAllocation.asset_id)
+                    .join(AssetType, AssetType.id == Asset.asset_type_id)
                     .where(
                         or_(*asset_scope),
                         AssetRequirement.status != "Annulé",
@@ -295,10 +306,10 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
             self._session,
             pairs=tuple(
                 (asset_requirement, allocation)
-                for allocation, asset_requirement in asset_rows
+                for allocation, asset_requirement, _asset, _asset_type in asset_rows
             ),
         )
-        for allocation, asset_requirement in asset_rows:
+        for allocation, asset_requirement, _asset, _asset_type in asset_rows:
             qualification = qualifications[
                 (asset_requirement.id, allocation.id)
             ]
@@ -345,6 +356,47 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                             shift.id,
                             [],
                         ).append(diagnostic)
+
+        assets_by_shift: dict[str, list[ProjectCommunicationAsset]] = {}
+        for shift, human_requirement, _resource, _project in rows:
+            seen_allocations: set[str] = set()
+            for allocation, asset_requirement, asset, asset_type in asset_rows:
+                association = asset_shift_association(
+                    requirement=asset_requirement,
+                    allocation=allocation,
+                    shift=shift,
+                    human_requirement=human_requirement,
+                )
+                if (
+                    association is None
+                    or association == ASSOCIATION_SEGMENT_CONTEXT
+                    or allocation.id in seen_allocations
+                ):
+                    continue
+                seen_allocations.add(allocation.id)
+                assets_by_shift.setdefault(shift.id, []).append(
+                    ProjectCommunicationAsset(
+                        allocation_id=allocation.id,
+                        asset_id=asset.id,
+                        asset_code=_text(asset.code) or asset.id,
+                        asset_label=_text(asset.label) or _text(asset.code) or asset.id,
+                        asset_type_label=(
+                            _text(asset_type.label)
+                            or _text(asset_type.code)
+                            or asset_type.id
+                        ),
+                        asset_category=_text(asset_type.category),
+                        association_kind=association,
+                    )
+                )
+            assets_by_shift.setdefault(shift.id, []).sort(
+                key=lambda value: (
+                    value.asset_type_label.casefold(),
+                    value.asset_label.casefold(),
+                    value.asset_code.casefold(),
+                    value.allocation_id,
+                )
+            )
 
         resolutions = {
             resolution.shift_id: resolution
@@ -489,6 +541,7 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                     project_manager=manager,
                     operational_responsible=resolution.operational_responsible,
                     project_co_managers=co_managers,
+                    assets=tuple(assets_by_shift.get(shift.id, ())),
                     diagnostics=diagnostics,
                 )
             )
