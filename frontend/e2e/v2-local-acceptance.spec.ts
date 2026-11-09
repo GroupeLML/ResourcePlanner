@@ -2610,6 +2610,9 @@ test("#794/708B schedule communication preview hides Quick Shift provenance and 
   const { d1 } = acceptanceDates();
   const { context, page } = await openAs(browser, "COORDINATOR");
   let allocationId: string | null = null;
+  let approvalScopeId: string | null = null;
+  let mappedAssetTypeId: string | null = null;
+  let approvalScopeMappingAdded = false;
 
   try {
     const created = await page.request.post("/api/v1/quick-shifts", {
@@ -2651,6 +2654,7 @@ test("#794/708B schedule communication preview hides Quick Shift provenance and 
       candidates: Array<{
         id: string;
         label: string;
+        asset_type_id: string;
         asset_type_label: string;
         allowed: boolean;
         available: boolean;
@@ -2665,6 +2669,43 @@ test("#794/708B schedule communication preview hides Quick Shift provenance and 
       ),
     );
     expect(communicationAsset).toBeTruthy();
+    mappedAssetTypeId = communicationAsset!.asset_type_id;
+
+    const approvalAdmin = await openAs(browser, "ADMIN");
+    try {
+      const scopesResponse = await approvalAdmin.page.request.get(
+        "/api/v1/admin/approval-scopes",
+      );
+      expect(scopesResponse.ok(), await scopesResponse.text()).toBeTruthy();
+      const scopes = await scopesResponse.json() as Array<{
+        id: string;
+        code: string;
+        active: boolean;
+        version: number;
+        asset_type_ids: string[];
+      }>;
+      const assetApprovalScope = scopes.find(
+        (scope) => scope.active && scope.code === "AUTOMATION",
+      );
+      expect(assetApprovalScope).toBeTruthy();
+      approvalScopeId = assetApprovalScope!.id;
+
+      if (!assetApprovalScope!.asset_type_ids.includes(mappedAssetTypeId)) {
+        const mapped = await approvalAdmin.page.request.put(
+          "/api/v1/admin/approval-scopes/"
+            + encodeURIComponent(assetApprovalScope!.id)
+            + "/asset-types/"
+            + encodeURIComponent(mappedAssetTypeId),
+          {
+            data: { expected_version: assetApprovalScope!.version },
+          },
+        );
+        expect(mapped.status(), await mapped.text()).toBe(200);
+        approvalScopeMappingAdded = true;
+      }
+    } finally {
+      await closeContext(approvalAdmin.context);
+    }
 
     const assignedAsset = await page.request.put(
       "/api/v1/assets/shifts/"
@@ -2703,6 +2744,36 @@ test("#794/708B schedule communication preview hides Quick Shift provenance and 
         "/api/v1/allocations/" + encodeURIComponent(allocationId),
       );
       expect(cleanup.ok(), await cleanup.text()).toBeTruthy();
+    }
+    if (approvalScopeMappingAdded && approvalScopeId && mappedAssetTypeId) {
+      const cleanupAdmin = await openAs(browser, "ADMIN");
+      try {
+        const scopesResponse = await cleanupAdmin.page.request.get(
+          "/api/v1/admin/approval-scopes",
+        );
+        expect(scopesResponse.ok(), await scopesResponse.text()).toBeTruthy();
+        const scopes = await scopesResponse.json() as Array<{
+          id: string;
+          version: number;
+          asset_type_ids: string[];
+        }>;
+        const approvalScope = scopes.find((scope) => scope.id === approvalScopeId);
+        expect(approvalScope).toBeTruthy();
+        if (approvalScope!.asset_type_ids.includes(mappedAssetTypeId)) {
+          const unmapped = await cleanupAdmin.page.request.delete(
+            "/api/v1/admin/approval-scopes/"
+              + encodeURIComponent(approvalScopeId)
+              + "/asset-types/"
+              + encodeURIComponent(mappedAssetTypeId),
+            {
+              data: { expected_version: approvalScope!.version },
+            },
+          );
+          expect(unmapped.status(), await unmapped.text()).toBe(200);
+        }
+      } finally {
+        await closeContext(cleanupAdmin.context);
+      }
     }
     await closeContext(context);
   }
