@@ -56,20 +56,24 @@ async function shiftsForDemand(
     .sort((left, right) => String(left.work_date).localeCompare(String(right.work_date)));
 }
 
+function resourceRow(page: Page, resourceId: string) {
+  return page
+    .locator(`.resource-identity[data-resource-id="${resourceId}"]`)
+    .locator("..");
+}
+
 async function expectAssetOnEveryShift(
   page: Page,
-  resourceName: string,
+  resourceId: string,
   demandNumber: string,
   days: string[],
   assetCode: string,
 ) {
-  const row = page.locator(".resource-row")
-    .filter({ has: page.locator(".resource-identity", { hasText: resourceName }) })
-    .first();
+  const row = resourceRow(page, resourceId);
   await expect(row).toBeVisible();
   for (const day of days) {
     const card = row
-      .locator(`.planning-drop-day[data-day="${day}"] .shift-card`)
+      .locator(`.planning-drop-day[data-resource-id="${resourceId}"][data-day="${day}"] .shift-card`)
       .filter({ hasText: demandNumber });
     await expect(card).toHaveCount(1);
     await expect(card.locator(".shift-assets")).toContainText(assetCode);
@@ -86,13 +90,59 @@ test("799 projette une période d'actif depuis un quart et depuis Actifs sur tou
   const d3 = localIso(addDays(monday, 2));
   const d4 = localIso(addDays(monday, 3));
   const days = [d1, d2, d3, d4];
+  const suffix = fixtureKey.slice(0, 8).toUpperCase();
+  const resourceName = `Ressource E2E 799 ${suffix}`;
+  let resourceId = "";
+  let availabilityId = "";
+  let assetAId = "";
+  let assetBId = "";
+  let shiftPeriodRequirementId = "";
+  let directPeriodRequirementId = "";
+  let segmentId = "";
 
   try {
     const resourcesResponse = await page.request.get("/api/v1/resources?active_only=false");
     expect(resourcesResponse.ok(), await resourcesResponse.text()).toBeTruthy();
-    const resources = await resourcesResponse.json() as Array<{ id: string; name: string }>;
+    const resources = await resourcesResponse.json() as Array<{
+      id: string;
+      name: string;
+      resource_class: string | null;
+      competencies: string | null;
+      competency_ids: string[];
+    }>;
     const alice = resources.find((row) => row.name === "Alice");
     expect(alice, "Ressource Alice introuvable dans la fixture E2E").toBeTruthy();
+
+    const resourceCreate = await page.request.post("/api/v1/resources", {
+      headers: { "X-E2E-Role": "ADMIN" },
+      data: {
+        name: resourceName,
+        resource_class: alice!.resource_class,
+        competencies: alice!.competencies,
+        competency_ids: alice!.competency_ids,
+        active: true,
+        sort_order: 7990,
+      },
+    });
+    expect(resourceCreate.status(), await resourceCreate.text()).toBe(201);
+    resourceId = String((await resourceCreate.json()).resource_id);
+
+    const availabilityCreate = await page.request.post("/api/v1/availability-rules", {
+      headers: {
+        "X-E2E-Role": "ADMIN",
+        "Idempotency-Key": `${fixtureKey}-availability`,
+      },
+      data: {
+        availability_type: "Horaire standard",
+        resource_id: resourceId,
+        weekdays: "Lun,Mar,Mer,Jeu,Ven",
+        start_time: "08:00:00",
+        end_time: "16:00:00",
+        active: true,
+      },
+    });
+    expect(availabilityCreate.status(), await availabilityCreate.text()).toBe(201);
+    availabilityId = String((await availabilityCreate.json()).rule_id);
 
     const catalogResponse = await page.request.get("/api/v1/assets/catalog");
     expect(catalogResponse.ok(), await catalogResponse.text()).toBeTruthy();
@@ -102,7 +152,6 @@ test("799 projette une période d'actif depuis un quart et depuis Actifs sur tou
     const vehicleType = catalog.types.find((row) => row.code === "VEH-744" && row.active);
     expect(vehicleType, "Type VEH-744 introuvable dans la fixture E2E").toBeTruthy();
 
-    const suffix = fixtureKey.slice(0, 8).toUpperCase();
     const assetACode = `A799-${suffix}`;
     const assetBCode = `B799-${suffix}`;
     const createAsset = async (code: string, label: string) => {
@@ -116,8 +165,8 @@ test("799 projette une période d'actif depuis un quart et depuis Actifs sur tou
       expect(response.status(), await response.text()).toBe(201);
       return String((await response.json()).id);
     };
-    const assetAId = await createAsset(assetACode, `Actif #799 quart ${suffix}`);
-    const assetBId = await createAsset(assetBCode, `Actif #799 section ${suffix}`);
+    assetAId = await createAsset(assetACode, `Actif #799 quart ${suffix}`);
+    assetBId = await createAsset(assetBCode, `Actif #799 section ${suffix}`);
 
     const createdDemand = await page.request.post("/api/v1/demands", {
       data: {
@@ -126,7 +175,7 @@ test("799 projette une période d'actif depuis un quart et depuis Actifs sur tou
         desired_end: d4,
         estimated_hours: 32,
         task_code: "210",
-        proposed_technician: "Alice",
+        proposed_technician: resourceName,
         description: `Projection actif #799 ${suffix}`,
         submit: true,
       },
@@ -157,9 +206,10 @@ test("799 projette une période d'actif depuis un quart et depuis Actifs sur tou
       (row) => row.kind === "ASSIGNMENT" && row.demand_number === demandNumber,
     );
     expect(assignment).toBeTruthy();
+    segmentId = String(assignment.segment_id);
     const assigned = await page.request.post(
-      `/api/v1/segments/${encodeURIComponent(String(assignment.segment_id))}/assign`,
-      { data: { resource_id: alice!.id } },
+      `/api/v1/segments/${encodeURIComponent(segmentId)}/assign`,
+      { data: { resource_id: resourceId } },
     );
     expect(assigned.status(), await assigned.text()).toBe(200);
 
@@ -170,11 +220,9 @@ test("799 projette une période d'actif depuis un quart et depuis Actifs sur tou
     await page.locator(".main-nav").getByRole("button", { name: /Planning opérationnel/i }).click();
     await page.getByRole("button", { name: "Aujourd’hui", exact: true }).click();
 
-    const aliceRow = page.locator(".resource-row")
-      .filter({ has: page.locator(".resource-identity", { hasText: "Alice" }) })
-      .first();
-    const mondayCard = aliceRow
-      .locator(`.planning-drop-day[data-day="${d1}"] .shift-card`)
+    const row = resourceRow(page, resourceId);
+    const mondayCard = row
+      .locator(`.planning-drop-day[data-resource-id="${resourceId}"][data-day="${d1}"] .shift-card`)
       .filter({ hasText: demandNumber });
     await expect(mondayCard).toHaveCount(1);
     await mondayCard.getByRole("button", { name: /Assigner un actif/i }).click();
@@ -205,19 +253,20 @@ test("799 projette une période d'actif depuis un quart et depuis Actifs sur tou
       start_date: string;
       end_date: string;
     };
+    shiftPeriodRequirementId = shiftPeriod.requirement_id;
     expect(shiftPeriod.requirement_origin).toBe("RESOURCE_PERIOD");
     expect(shiftPeriod.resource_period_mode).toBe("BOUNDED");
-    expect(shiftPeriod.context_resource_id).toBe(alice!.id);
-    expect(shiftPeriod.operator_resource_id).toBe(alice!.id);
+    expect(shiftPeriod.context_resource_id).toBe(resourceId);
+    expect(shiftPeriod.operator_resource_id).toBe(resourceId);
     expect(shiftPeriod.start_date).toBe(d1);
     expect(shiftPeriod.end_date).toBe(d4);
 
-    await expectAssetOnEveryShift(page, "Alice", demandNumber, days, assetACode);
+    await expectAssetOnEveryShift(page, resourceId, demandNumber, days, assetACode);
 
     shifts = await shiftsForDemand(page, d1, d4, demandNumber);
     for (const shift of shifts) {
       const inherited = shift.related_asset_reservations.filter(
-        (row: any) => row.allocation_id === shiftPeriod.allocation_id,
+        (item: any) => item.allocation_id === shiftPeriod.allocation_id,
       );
       expect(inherited).toHaveLength(1);
       expect(inherited[0].association_kind).toBe("INHERITED_RESOURCE_PERIOD");
@@ -230,23 +279,23 @@ test("799 projette une période d'actif depuis un quart et depuis Actifs sur tou
       allocations: Array<any>;
     };
     expect(
-      assetState.requirements.filter((row) => row.id === shiftPeriod.requirement_id),
+      assetState.requirements.filter((item) => item.id === shiftPeriod.requirement_id),
     ).toHaveLength(1);
     expect(
-      assetState.allocations.filter((row) => row.id === shiftPeriod.allocation_id),
+      assetState.allocations.filter((item) => item.id === shiftPeriod.allocation_id),
     ).toHaveLength(1);
 
     await page.reload();
     await page.locator(".main-nav").getByRole("button", { name: /Planning opérationnel/i }).click();
     await page.getByRole("button", { name: "Aujourd’hui", exact: true }).click();
-    await expectAssetOnEveryShift(page, "Alice", demandNumber, days, assetACode);
+    await expectAssetOnEveryShift(page, resourceId, demandNumber, days, assetACode);
 
     const directPanel = page.locator(".asset-direct-reservation-panel");
     await expect(directPanel).toBeVisible();
     await directPanel.getByLabel("Réserver pour").selectOption("RESOURCE_PERIOD");
     const resourceInput = directPanel.getByRole("combobox", { name: "Ressource", exact: true });
-    await resourceInput.fill("Alice");
-    await directPanel.getByRole("option", { name: "Alice", exact: true }).click();
+    await resourceInput.fill(resourceName);
+    await directPanel.getByRole("option", { name: resourceName, exact: true }).click();
     await directPanel.getByLabel("Type d’actif").selectOption(vehicleType!.id);
     await directPanel.getByLabel("Unité").selectOption(assetBId);
     await directPanel.getByLabel("Début réel").fill(d1);
@@ -260,22 +309,24 @@ test("799 projette une période d'actif depuis un quart et depuis Actifs sur tou
     const directMutationResponse = await directMutation;
     expect(directMutationResponse.status(), await directMutationResponse.text()).toBe(201);
     const directPeriod = await directMutationResponse.json() as {
+      requirement_id: string;
       requirement_origin: string;
       resource_period_mode: string;
       allocation_id: string;
       context_resource_id: string;
       operator_resource_id: string;
     };
+    directPeriodRequirementId = directPeriod.requirement_id;
     expect(directPeriod.requirement_origin).toBe("RESOURCE_PERIOD");
     expect(directPeriod.resource_period_mode).toBe("BOUNDED");
-    expect(directPeriod.context_resource_id).toBe(alice!.id);
-    expect(directPeriod.operator_resource_id).toBe(alice!.id);
+    expect(directPeriod.context_resource_id).toBe(resourceId);
+    expect(directPeriod.operator_resource_id).toBe(resourceId);
 
-    await expectAssetOnEveryShift(page, "Alice", demandNumber, days, assetBCode);
+    await expectAssetOnEveryShift(page, resourceId, demandNumber, days, assetBCode);
     shifts = await shiftsForDemand(page, d1, d4, demandNumber);
     for (const shift of shifts) {
       const inherited = shift.related_asset_reservations.filter(
-        (row: any) => row.allocation_id === directPeriod.allocation_id,
+        (item: any) => item.allocation_id === directPeriod.allocation_id,
       );
       expect(inherited).toHaveLength(1);
       expect(inherited[0].association_kind).toBe("INHERITED_RESOURCE_PERIOD");
@@ -284,11 +335,70 @@ test("799 projette une période d'actif depuis un quart et depuis Actifs sur tou
     await page.reload();
     await page.locator(".main-nav").getByRole("button", { name: /Planning opérationnel/i }).click();
     await page.getByRole("button", { name: "Aujourd’hui", exact: true }).click();
-    await expectAssetOnEveryShift(page, "Alice", demandNumber, days, assetACode);
-    await expectAssetOnEveryShift(page, "Alice", demandNumber, days, assetBCode);
+    await expectAssetOnEveryShift(page, resourceId, demandNumber, days, assetACode);
+    await expectAssetOnEveryShift(page, resourceId, demandNumber, days, assetBCode);
 
     expect(await planningVersion(page)).toBeGreaterThan(1);
   } finally {
+    for (const requirementId of [directPeriodRequirementId, shiftPeriodRequirementId].filter(Boolean)) {
+      try {
+        const version = await planningVersion(page);
+        await page.request.delete(
+          `/api/v1/assets/resource-period-reservations/${encodeURIComponent(requirementId)}`,
+          {
+            params: { expected_planning_version: version },
+            headers: { "Idempotency-Key": `${fixtureKey}-release-${requirementId}` },
+          },
+        );
+      } catch {
+        // Failure-safe cleanup continues with the remaining fixture objects.
+      }
+    }
+    if (segmentId) {
+      try {
+        await page.request.post(
+          `/api/v1/segments/${encodeURIComponent(segmentId)}/cancel`,
+        );
+      } catch {
+        // Failure-safe cleanup continues.
+      }
+    }
+    for (const assetId of [assetAId, assetBId].filter(Boolean)) {
+      try {
+        const version = await planningVersion(page);
+        await page.request.patch(
+          `/api/v1/assets/${encodeURIComponent(assetId)}/active`,
+          {
+            data: {
+              active: false,
+              expected_planning_version: version,
+            },
+          },
+        );
+      } catch {
+        // Failure-safe cleanup continues.
+      }
+    }
+    if (availabilityId) {
+      try {
+        await page.request.post(
+          `/api/v1/availability-rules/${encodeURIComponent(availabilityId)}/deactivate`,
+          { headers: { "X-E2E-Role": "ADMIN" } },
+        );
+      } catch {
+        // Failure-safe cleanup continues.
+      }
+    }
+    if (resourceId) {
+      try {
+        await page.request.post(
+          `/api/v1/resources/${encodeURIComponent(resourceId)}/deactivate`,
+          { headers: { "X-E2E-Role": "ADMIN" } },
+        );
+      } catch {
+        // Failure-safe cleanup continues.
+      }
+    }
     await context.close();
   }
 });
