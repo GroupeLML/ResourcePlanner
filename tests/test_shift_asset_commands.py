@@ -1993,6 +1993,391 @@ class ShiftAssetCommandTests(unittest.TestCase):
         # per asset relation or qualification.
         self.assertLessEqual(statements, 9)
 
+    def _seed_799_shifts(
+        self,
+        days: tuple[date, ...],
+        *,
+        duplicate_day: date | None = None,
+    ) -> dict[date, list[str]]:
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        created: dict[date, list[str]] = {}
+        try:
+            with factory.begin() as session:
+                human = session.get(ResourceRequirement, "HUMAN-SKILLED")
+                self.assertIsNotNone(human)
+                assert human is not None
+                human.start_date = min((DAY, *days))
+                human.end_date = max((DAY, *days))
+                for index, work_date in enumerate(days, start=1):
+                    if work_date == DAY:
+                        created.setdefault(work_date, []).append("ALLOC-SKILLED")
+                        continue
+                    shift_id = f"SHIFT-799-{index}"
+                    allocation_id = f"ALLOC-799-{index}"
+                    session.add(
+                        Shift(
+                            id=shift_id,
+                            legacy_allocation_id=allocation_id,
+                            resource_requirement_id=human.id,
+                            resource_id="RESOURCE-SKILLED",
+                            work_date=work_date,
+                            hours=Decimal("8"),
+                            source="AUTO",
+                            locked=False,
+                        )
+                    )
+                    created.setdefault(work_date, []).append(allocation_id)
+                if duplicate_day is not None:
+                    session.add(
+                        Shift(
+                            id="SHIFT-799-DUPLICATE",
+                            legacy_allocation_id="ALLOC-799-DUPLICATE",
+                            resource_requirement_id=human.id,
+                            resource_id="RESOURCE-SKILLED",
+                            work_date=duplicate_day,
+                            hours=Decimal("4"),
+                            source="MANUAL",
+                            locked=True,
+                        )
+                    )
+                    created.setdefault(duplicate_day, []).append(
+                        "ALLOC-799-DUPLICATE"
+                    )
+        finally:
+            engine.dispose()
+        return created
+
+    @staticmethod
+    def _related_allocation(shift: dict, allocation_id: str) -> dict | None:
+        return next(
+            (
+                row
+                for row in shift["related_asset_reservations"]
+                if row["allocation_id"] == allocation_id
+            ),
+            None,
+        )
+
+    def test_799_explicit_single_day_shift_assignment_stays_shift_ad_hoc(self) -> None:
+        assigned = self._set_asset(
+            asset_id="ASSET-A",
+            version=self._version(),
+            key="799-single-day",
+            start_date=DAY,
+            end_date=DAY,
+        )
+        self.assertEqual(assigned.status_code, 200, assigned.text)
+        payload = assigned.json()
+        self.assertEqual(payload["requirement_origin"], "SHIFT_AD_HOC")
+
+        requirement, allocation, shift = self._ad_hoc_state()
+        self.assertIsNotNone(requirement)
+        self.assertIsNotNone(allocation)
+        assert requirement is not None and allocation is not None
+        self.assertEqual(requirement.shift_id, shift.id)
+        self.assertIsNone(requirement.context_resource_id)
+        self.assertIsNone(requirement.resource_period_mode)
+        self.assertEqual(requirement.start_date, DAY)
+        self.assertEqual(requirement.end_date, DAY)
+        self.assertEqual(allocation.start_date, DAY)
+        self.assertEqual(allocation.end_date, DAY)
+        self.assertEqual(allocation.operator_resource_id, "RESOURCE-SKILLED")
+
+    def test_799_shift_multiday_uses_one_bounded_period_and_projects_every_shift(self) -> None:
+        end = DAY + timedelta(days=3)
+        shift_ids = self._seed_799_shifts(
+            tuple(DAY + timedelta(days=offset) for offset in range(4)),
+            duplicate_day=DAY + timedelta(days=1),
+        )
+        assigned = self._set_asset(
+            asset_id="ASSET-A",
+            version=self._version(),
+            key="799-multiday",
+            start_date=DAY,
+            end_date=end,
+        )
+        self.assertEqual(assigned.status_code, 200, assigned.text)
+        payload = assigned.json()
+        self.assertEqual(payload["operation"], "CREATE")
+        self.assertEqual(payload["requirement_origin"], "RESOURCE_PERIOD")
+        self.assertEqual(payload["resource_period_mode"], "BOUNDED")
+        self.assertEqual(payload["context_resource_id"], "RESOURCE-SKILLED")
+        self.assertEqual(payload["operator_resource_id"], "RESOURCE-SKILLED")
+        self.assertEqual(payload["start_date"], DAY.isoformat())
+        self.assertEqual(payload["end_date"], end.isoformat())
+        allocation_id = payload["allocation_id"]
+
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory() as session:
+                requirement = session.get(
+                    AssetRequirement,
+                    payload["requirement_id"],
+                )
+                self.assertIsNotNone(requirement)
+                assert requirement is not None
+                self.assertEqual(requirement.origin, "RESOURCE_PERIOD")
+                self.assertEqual(requirement.resource_period_mode, "BOUNDED")
+                self.assertEqual(
+                    requirement.context_resource_id,
+                    "RESOURCE-SKILLED",
+                )
+                self.assertIsNone(requirement.shift_id)
+                self.assertEqual(requirement.start_date, DAY)
+                self.assertEqual(requirement.end_date, end)
+                allocations = session.scalars(
+                    select(AssetAllocation).where(
+                        AssetAllocation.asset_requirement_id == requirement.id
+                    )
+                ).all()
+                self.assertEqual(len(allocations), 1)
+                self.assertEqual(allocations[0].id, allocation_id)
+                self.assertEqual(
+                    allocations[0].operator_resource_id,
+                    "RESOURCE-SKILLED",
+                )
+                self.assertEqual(allocations[0].start_date, DAY)
+                self.assertEqual(allocations[0].end_date, end)
+                origin_shift = session.get(Shift, "SHIFT-SKILLED")
+                self.assertIsNotNone(origin_shift)
+                assert origin_shift is not None
+                self.assertEqual(origin_shift.source, "AUTO")
+                self.assertFalse(origin_shift.locked)
+        finally:
+            engine.dispose()
+
+        projected = self.client.get(
+            "/api/v1/shifts",
+            params={"start": DAY.isoformat(), "end": end.isoformat()},
+        )
+        self.assertEqual(projected.status_code, 200, projected.text)
+        rows = {row["allocation_id"]: row for row in projected.json()}
+        for work_date, allocation_ids in shift_ids.items():
+            for shift_allocation_id in allocation_ids:
+                inherited = self._related_allocation(
+                    rows[shift_allocation_id],
+                    allocation_id,
+                )
+                self.assertIsNotNone(
+                    inherited,
+                    f"{shift_allocation_id} on {work_date} did not inherit period",
+                )
+                assert inherited is not None
+                self.assertEqual(
+                    inherited["association_kind"],
+                    "INHERITED_RESOURCE_PERIOD",
+                )
+                self.assertEqual(inherited["origin"], "RESOURCE_PERIOD")
+
+    def test_799_bounded_projection_honors_boundaries_and_missing_shift_days(self) -> None:
+        end = DAY + timedelta(days=3)
+        shift_ids = self._seed_799_shifts(
+            (
+                DAY + timedelta(days=1),
+                DAY + timedelta(days=3),
+            )
+        )
+        created = self.client.post(
+            "/api/v1/assets/resource-period-reservations",
+            headers={"Idempotency-Key": "799-assets-baseline-partial-start"},
+            json={
+                "resource_id": "RESOURCE-SKILLED",
+                "asset_type_id": "TYPE-560B",
+                "asset_id": "ASSET-B",
+                "start_date": (DAY + timedelta(days=1)).isoformat(),
+                "end_date": end.isoformat(),
+                "expected_planning_version": self._version(),
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        payload = created.json()
+        self.assertEqual(payload["resource_period_mode"], "BOUNDED")
+        allocation_id = payload["allocation_id"]
+
+        projected = self.client.get(
+            "/api/v1/shifts",
+            params={"start": DAY.isoformat(), "end": end.isoformat()},
+        )
+        self.assertEqual(projected.status_code, 200, projected.text)
+        rows = {row["allocation_id"]: row for row in projected.json()}
+        self.assertIsNone(
+            self._related_allocation(rows["ALLOC-SKILLED"], allocation_id)
+        )
+        for allocation_ids in shift_ids.values():
+            for shift_allocation_id in allocation_ids:
+                inherited = self._related_allocation(
+                    rows[shift_allocation_id],
+                    allocation_id,
+                )
+                self.assertIsNotNone(inherited)
+                assert inherited is not None
+                self.assertEqual(
+                    inherited["association_kind"],
+                    "INHERITED_RESOURCE_PERIOD",
+                )
+
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory() as session:
+                allocation = session.get(AssetAllocation, allocation_id)
+                self.assertIsNotNone(allocation)
+                assert allocation is not None
+                self.assertEqual(
+                    allocation.start_date,
+                    DAY + timedelta(days=1),
+                )
+                self.assertEqual(allocation.end_date, end)
+                self.assertEqual(
+                    session.scalar(
+                        select(func.count())
+                        .select_from(AssetAllocation)
+                        .where(AssetAllocation.id == allocation_id)
+                    ),
+                    1,
+                )
+        finally:
+            engine.dispose()
+
+        released = self.client.delete(
+            f"/api/v1/assets/resource-period-reservations/{payload['requirement_id']}",
+            params={
+                "expected_planning_version": payload["planning_version"],
+            },
+            headers={"Idempotency-Key": "799-assets-baseline-release"},
+        )
+        self.assertEqual(released.status_code, 200, released.text)
+
+        partial_end = self.client.post(
+            "/api/v1/assets/resource-period-reservations",
+            headers={"Idempotency-Key": "799-assets-baseline-partial-end"},
+            json={
+                "resource_id": "RESOURCE-SKILLED",
+                "asset_type_id": "TYPE-560B",
+                "asset_id": "ASSET-C",
+                "start_date": DAY.isoformat(),
+                "end_date": (DAY + timedelta(days=2)).isoformat(),
+                "expected_planning_version": released.json()["planning_version"],
+            },
+        )
+        self.assertEqual(partial_end.status_code, 201, partial_end.text)
+        partial_payload = partial_end.json()
+        projected = self.client.get(
+            "/api/v1/shifts",
+            params={"start": DAY.isoformat(), "end": end.isoformat()},
+        )
+        self.assertEqual(projected.status_code, 200, projected.text)
+        rows = {row["allocation_id"]: row for row in projected.json()}
+        self.assertIsNotNone(
+            self._related_allocation(
+                rows["ALLOC-SKILLED"],
+                partial_payload["allocation_id"],
+            )
+        )
+        for shift_allocation_id in shift_ids.get(end, []):
+            self.assertIsNone(
+                self._related_allocation(
+                    rows[shift_allocation_id],
+                    partial_payload["allocation_id"],
+                )
+            )
+
+    def test_799_shift_bounded_period_uses_resource_period_update_and_release(self) -> None:
+        end = DAY + timedelta(days=3)
+        assigned = self._set_asset(
+            asset_id="ASSET-A",
+            version=self._version(),
+            key="799-manage-create",
+            start_date=DAY,
+            end_date=end,
+        )
+        self.assertEqual(assigned.status_code, 200, assigned.text)
+        payload = assigned.json()
+
+        shortened_end = DAY + timedelta(days=2)
+        updated = self.client.put(
+            f"/api/v1/assets/resource-period-reservations/{payload['requirement_id']}",
+            headers={"Idempotency-Key": "799-manage-update"},
+            json={
+                "asset_id": "ASSET-B",
+                "start_date": DAY.isoformat(),
+                "end_date": shortened_end.isoformat(),
+                "expected_planning_version": payload["planning_version"],
+            },
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
+        changed = updated.json()
+        self.assertEqual(changed["requirement_id"], payload["requirement_id"])
+        self.assertEqual(changed["allocation_id"], payload["allocation_id"])
+        self.assertEqual(changed["asset_id"], "ASSET-B")
+        self.assertEqual(changed["resource_period_mode"], "BOUNDED")
+        self.assertEqual(changed["end_date"], shortened_end.isoformat())
+
+        released = self.client.delete(
+            f"/api/v1/assets/resource-period-reservations/{payload['requirement_id']}",
+            params={
+                "expected_planning_version": changed["planning_version"],
+            },
+            headers={"Idempotency-Key": "799-manage-release"},
+        )
+        self.assertEqual(released.status_code, 200, released.text)
+        self.assertEqual(released.json()["operation"], "RELEASE")
+
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory() as session:
+                self.assertIsNone(
+                    session.get(AssetRequirement, payload["requirement_id"])
+                )
+                self.assertIsNone(
+                    session.get(AssetAllocation, payload["allocation_id"])
+                )
+                origin_shift = session.get(Shift, "SHIFT-SKILLED")
+                self.assertIsNotNone(origin_shift)
+                assert origin_shift is not None
+                self.assertEqual(origin_shift.source, "AUTO")
+                self.assertFalse(origin_shift.locked)
+        finally:
+            engine.dispose()
+
+    def test_799_continuous_resource_period_still_projects_through_same_helper(self) -> None:
+        today = date.today()
+        shift_ids = self._seed_799_shifts((today,))
+        created = self.client.post(
+            "/api/v1/assets/continuous-resource-assignments",
+            headers={"Idempotency-Key": "799-continuous-baseline"},
+            json={
+                "resource_id": "RESOURCE-SKILLED",
+                "asset_id": "ASSET-C",
+                "start_date": today.isoformat(),
+                "expected_planning_version": self._version(),
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        payload = created.json()
+        self.assertEqual(payload["resource_period_mode"], "CONTINUOUS")
+
+        projected = self.client.get(
+            "/api/v1/shifts",
+            params={"start": today.isoformat(), "end": today.isoformat()},
+        )
+        self.assertEqual(projected.status_code, 200, projected.text)
+        rows = {row["allocation_id"]: row for row in projected.json()}
+        for allocation_id in shift_ids[today]:
+            inherited = self._related_allocation(
+                rows[allocation_id],
+                payload["allocation_id"],
+            )
+            self.assertIsNotNone(inherited)
+            assert inherited is not None
+            self.assertEqual(
+                inherited["association_kind"],
+                "INHERITED_RESOURCE_PERIOD",
+            )
+
     def test_capacity_grid_reads_shift_with_asset_assignment(self) -> None:
         assigned = self._set_asset(
             asset_id="ASSET-A",
