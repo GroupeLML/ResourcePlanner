@@ -369,7 +369,9 @@ test("796 réutilise Occupation par unité dans la vraie fenêtre détachée", a
       await expect(toggle).toHaveAttribute("aria-expanded", "false");
       await expect(detached.getByTestId("asset-unit-occupancy-content")).toHaveCount(0);
       await expect(detached.getByLabel("Recherche")).toHaveValue("Alice");
-      await expect(detached.locator(".planning-sticky-heading h1")).toHaveText(mainWeekText);
+      const detachedWeekHeading = detached.locator(".planning-sticky-heading h1");
+      await expect(detachedWeekHeading).toContainText("Ressources et quarts");
+      await expect(detachedWeekHeading).toContainText(mainWeekText);
 
       await toggle.click();
       await expect(toggle).toHaveAttribute("aria-expanded", "true");
