@@ -278,7 +278,9 @@ test("799 projette une période d'actif depuis un quart et depuis Actifs sur tou
 
     const changeDialog = page.getByRole("dialog", { name: "Changer l’actif" });
     await expect(changeDialog).toBeVisible();
-    await expect(changeDialog.getByRole("combobox", { name: "Actif", exact: true })).toHaveValue(assetAId);
+    await expect(
+      changeDialog.getByRole("combobox", { name: "Actif", exact: true }),
+    ).toHaveAttribute("data-combobox-value", assetAId);
     await changeDialog.getByLabel("Date début réelle").fill(d1);
     await changeDialog.getByLabel("Date fin réelle").fill(d4);
 
