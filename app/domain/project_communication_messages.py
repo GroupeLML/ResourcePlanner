@@ -8,6 +8,7 @@ from typing import Sequence
 
 from .operational_contacts import ContactResolution, STATUS_RESOLVED
 from .project_communication import (
+    ProjectCommunicationAsset,
     ProjectCommunicationDay,
     ProjectCommunicationParticipant,
     ProjectCommunicationProject,
@@ -134,6 +135,18 @@ def _responsible_payload(value: ContactResolution) -> tuple[object, ...]:
     )
 
 
+def _asset_payload(value: ProjectCommunicationAsset) -> tuple[object, ...]:
+    return (
+        value.allocation_id,
+        value.asset_id,
+        value.asset_code,
+        value.asset_label,
+        value.asset_type_label,
+        value.asset_category,
+        value.association_kind,
+    )
+
+
 def _project_payload(project: ProjectCommunicationProject) -> tuple[object, ...]:
     days: list[object] = []
     for day in project.days:
@@ -148,6 +161,7 @@ def _project_payload(project: ProjectCommunicationProject) -> tuple[object, ...]
                     tuple(resource.allocation_types),
                     tuple(resource.confirmations),
                     bool(resource.outside_schedule),
+                    tuple(_asset_payload(asset) for asset in resource.assets),
                     tuple(resource.diagnostics),
                 )
                 for resource in task.resources
@@ -476,6 +490,14 @@ def _project_header(project: ProjectCommunicationProject) -> list[str]:
     return lines
 
 
+def _asset_display(value: ProjectCommunicationAsset) -> str:
+    type_label = (value.asset_type_label or "").strip()
+    category = (value.asset_category or "").strip()
+    prefix = type_label or category
+    label = (value.asset_label or value.asset_code or value.asset_id).strip()
+    return f"{prefix} — {label}" if prefix else label
+
+
 def _resource_suffix(resource) -> str:
     signals: list[str] = []
     if any(value == "Tentative" for value in resource.confirmations):
@@ -546,9 +568,15 @@ def _project_body(
                         )
                     elif assignments_by_resource.get(resource.resource_id):
                         responsible_suffix = " · Responsable : Non résolu"
+                asset_suffix = (
+                    " · Actif : "
+                    + " / ".join(_asset_display(asset) for asset in resource.assets)
+                    if resource.assets
+                    else ""
+                )
                 lines.append(
                     f"  • {resource.resource_name} — {resource.hours:g} h"
-                    f"{_resource_suffix(resource)}{responsible_suffix}"
+                    f"{_resource_suffix(resource)}{asset_suffix}{responsible_suffix}"
                 )
     return "\n".join(lines)
 
@@ -827,6 +855,18 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
                         ),
                         outside_schedule=bool(
                             resource_row.get("outside_schedule")
+                        ),
+                        assets=tuple(
+                            ProjectCommunicationAsset(
+                                allocation_id=str(asset_row.get("allocation_id") or ""),
+                                asset_id=str(asset_row.get("asset_id") or ""),
+                                asset_code=str(asset_row.get("asset_code") or ""),
+                                asset_label=str(asset_row.get("asset_label") or ""),
+                                asset_type_label=str(asset_row.get("asset_type_label") or ""),
+                                asset_category=str(asset_row.get("asset_category") or ""),
+                                association_kind=str(asset_row.get("association_kind") or ""),
+                            )
+                            for asset_row in resource_row.get("assets") or ()
                         ),
                         diagnostics=tuple(
                             resource_row.get("diagnostics") or ()
