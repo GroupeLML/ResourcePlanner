@@ -69,10 +69,8 @@ async function expectAssetOnEveryShift(
   days: string[],
   assetCode: string,
 ) {
-  const row = resourceRow(page, resourceId);
-  await expect(row).toBeVisible();
   for (const day of days) {
-    const card = row
+    const card = page
       .locator(`.planning-drop-day[data-resource-id="${resourceId}"][data-day="${day}"] .shift-card`)
       .filter({ hasText: demandNumber });
     await expect(card).toHaveCount(1);
@@ -217,11 +215,17 @@ test("799 projette une période d'actif depuis un quart et depuis Actifs sur tou
     expect(shifts).toHaveLength(4);
     expect(shifts.map((row) => row.work_date)).toEqual(days);
 
+    await page.reload();
     await page.locator(".main-nav").getByRole("button", { name: /Planning opérationnel/i }).click();
     await page.getByRole("button", { name: "Aujourd’hui", exact: true }).click();
 
-    const row = resourceRow(page, resourceId);
-    const mondayCard = row
+    const resourceIdentity = page.locator(
+      `.resource-identity[data-resource-id="${resourceId}"]`,
+    );
+    await expect(resourceIdentity).toHaveCount(1);
+    await expect(resourceIdentity).toBeVisible();
+
+    const mondayCard = page
       .locator(`.planning-drop-day[data-resource-id="${resourceId}"][data-day="${d1}"] .shift-card`)
       .filter({ hasText: demandNumber });
     await expect(mondayCard).toHaveCount(1);
