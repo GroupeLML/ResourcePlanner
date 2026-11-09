@@ -508,6 +508,17 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
             idempotency_key=idempotency_key,
         )
 
+    @router.get("/continuous-resource-candidates")
+    def continuous_resource_candidates(
+        request: Request,
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        return {
+            "candidates": list(
+                service(session, request).continuous_resource_candidates()
+            )
+        }
+
     @router.get("/continuous-resource-assignments")
     def continuous_vehicle_assignments(
         resource_id: str,
