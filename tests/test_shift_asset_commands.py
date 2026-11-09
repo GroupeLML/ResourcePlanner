@@ -2119,17 +2119,9 @@ class ShiftAssetCommandTests(unittest.TestCase):
                 assert request is not None
                 human_requirement = session.scalar(
                     select(ResourceRequirement).where(
-                        ResourceRequirement.workforce_request_id == request.id,
-                        ResourceRequirement.origin
-                        != AssetRequirementOrigin.REQUEST.value,
+                        ResourceRequirement.workforce_request_id == request.id
                     )
                 )
-                if human_requirement is None:
-                    human_requirement = session.scalar(
-                        select(ResourceRequirement).where(
-                            ResourceRequirement.workforce_request_id == request.id
-                        )
-                    )
                 self.assertIsNotNone(human_requirement)
                 assert human_requirement is not None
                 request_asset_requirement = session.scalar(
@@ -2140,7 +2132,7 @@ class ShiftAssetCommandTests(unittest.TestCase):
                 )
                 self.assertIsNotNone(request_asset_requirement)
                 assert request_asset_requirement is not None
-                shift_id = f"SHIFT-799-REQUEST-{new_id()}"
+                shift_id = f"SHIFT-799-REQUEST-{number}"
                 session.add(
                     Shift(
                         id=shift_id,
