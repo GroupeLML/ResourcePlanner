@@ -89,6 +89,14 @@ async function unitState(page: Page, assetId: string, asOf?: string) {
   }>;
 }
 
+async function continuousCandidates(page: Page) {
+  const response = await page.request.get("/api/v1/assets/continuous-resource-candidates");
+  expect(response.ok(), await response.text()).toBeTruthy();
+  return response.json() as Promise<{
+    candidates: Array<{ resource_id: string; display_name: string }>;
+  }>;
+}
+
 async function continuousCount(page: Page, resourceId: string, assetId: string) {
   const response = await page.request.get(
     `/api/v1/assets/continuous-resource-assignments?resource_id=${encodeURIComponent(resourceId)}`,
@@ -159,9 +167,17 @@ test("797 Attitré propose les employés ERP actifs hors Planning et conserve le
     await fields.getByRole("checkbox", { name: "Attitré" }).check();
 
     const resourceSelect = fields.getByRole("combobox");
+    const candidatePayload = await continuousCandidates(page);
+    const aliceCandidates = candidatePayload.candidates.filter(
+      (candidate) => candidate.display_name === "Alice",
+    );
+    expect(aliceCandidates).toHaveLength(1);
+    const aliceResourceId = aliceCandidates[0].resource_id;
+
     await expect(resourceSelect.locator(`option[value="${officeResourceId}"]`))
       .toHaveText("Employé bureau E2E 797");
-    await expect(resourceSelect.locator('option[value="R-ALICE"]')).toHaveCount(1);
+    await expect(resourceSelect.locator(`option[value="${aliceResourceId}"]`))
+      .toHaveText("Alice");
     await expect(resourceSelect.locator(`option[value="${inactiveResourceId}"]`))
       .toHaveCount(0);
 
@@ -186,7 +202,7 @@ test("797 Attitré propose les employés ERP actifs hors Planning et conserve le
     await expect(reloadedFields.getByRole("checkbox", { name: "Attitré" })).toBeChecked();
     await expect(reloadedFields.getByRole("combobox")).toHaveValue(officeResourceId);
 
-    await reloadedFields.getByRole("combobox").selectOption("R-ALICE");
+    await reloadedFields.getByRole("combobox").selectOption(aliceResourceId);
     await reloadedCatalog
       .locator(".asset-unit-editor")
       .getByRole("button", { name: "Enregistrer l’unité" })
@@ -196,7 +212,7 @@ test("797 Attitré propose les employés ERP actifs hors Planning et conserve le
     );
 
     canonical = await unitState(page, vehicle.assetId);
-    expect(canonical.assignment?.operator_resource_id).toBe("R-ALICE");
+    expect(canonical.assignment?.operator_resource_id).toBe(aliceResourceId);
   } finally {
     await context.close();
   }
