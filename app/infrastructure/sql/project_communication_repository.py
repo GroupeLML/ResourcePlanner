@@ -26,7 +26,14 @@ from .asset_qualification import (
 from .asset_shift_projection import asset_shift_association
 from .business_contact_models import BusinessContact
 from .identity_models import AppUser
-from .models import Project, Resource, ResourceRequirement, Shift, WorkforceRequest
+from .models import (
+    ORIGIN_QUICK_SHIFT,
+    Project,
+    Resource,
+    ResourceRequirement,
+    Shift,
+    WorkforceRequest,
+)
 from .project_manager_resolution_repository import (
     SqlProjectManagerResolutionRepository,
 )
@@ -152,6 +159,13 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
         task_label: str | None,
     ) -> tuple[str, tuple[str, ...]]:
         snapshot = _text(requirement.description)
+        if (
+            requirement.origin == ORIGIN_QUICK_SHIFT
+            and snapshot.casefold() == "quart rapide"
+        ):
+            # Quick Shift keeps this durable backend description/provenance, but
+            # communications must not expose that implementation origin.
+            snapshot = ""
         generic_snapshots = {
             "Besoin approuvé",
             "Période approuvée",

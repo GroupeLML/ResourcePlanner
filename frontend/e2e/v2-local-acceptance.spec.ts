@@ -2606,6 +2606,63 @@ test("materialized demand cancellation is requested, reviewed, rejected or accep
   await closeContext(requester.context);
 });
 
+test("#794 schedule communication preview hides default Quick Shift provenance", async ({ browser }) => {
+  const { d1 } = acceptanceDates();
+  const { context, page } = await openAs(browser, "COORDINATOR");
+  let allocationId: string | null = null;
+
+  try {
+    const created = await page.request.post("/api/v1/quick-shifts", {
+      headers: { "Idempotency-Key": "issue-794-communication-preview" },
+      data: {
+        project_number: "P-251",
+        technician: "Alice",
+        day: d1,
+        hours: 1,
+        confirmation: "Confirmée",
+      },
+    });
+    expect(created.status(), await created.text()).toBe(201);
+    const payload = await created.json() as {
+      segment_id: string;
+      allocation_id: string;
+    };
+    allocationId = payload.allocation_id;
+
+    const segment = await page.request.get(
+      "/api/v1/segments/" + encodeURIComponent(payload.segment_id),
+    );
+    expect(segment.ok(), await segment.text()).toBeTruthy();
+    const segmentPayload = await segment.json() as {
+      origin: string;
+      description: string;
+    };
+    expect(segmentPayload.origin).toBe("QUICK_SHIFT");
+    expect(segmentPayload.description).toBe("Quart rapide");
+
+    await navigateMain(page, "Communications");
+    await page.getByLabel("Semaine du").fill(d1);
+    await page.getByRole("button", { name: "Générer la prévisualisation" }).click();
+
+    const draft = page.locator(".draft-card").filter({ hasText: "Projet P-251" }).first();
+    await expect(draft).toBeVisible();
+    const body = draft.locator("textarea");
+    await expect(body).not.toHaveValue(/Quart rapide/i);
+    await expect(body).not.toHaveValue(/Quick Shift/i);
+    await expect(body).toHaveValue(/Travaux planifiés/);
+    await expect(body).toHaveValue(/Alice/);
+    await expect(body).toHaveValue(/1 h/);
+  } finally {
+    if (allocationId) {
+      const cleanup = await page.request.delete(
+        "/api/v1/allocations/" + encodeURIComponent(allocationId),
+      );
+      expect(cleanup.ok(), await cleanup.text()).toBeTruthy();
+    }
+    await closeContext(context);
+  }
+});
+
 test("ERP first-baseline bootstrap uses retained failed manifests then explicit RETRY", async ({ browser }) => {
   test.setTimeout(120_000);
   const { context, page } = await openAs(browser, "ADMIN");
