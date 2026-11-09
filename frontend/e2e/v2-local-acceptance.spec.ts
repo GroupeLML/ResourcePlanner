@@ -2707,6 +2707,25 @@ test("#794/708B schedule communication preview hides Quick Shift provenance and 
       await closeContext(approvalAdmin.context);
     }
 
+    const refreshedCandidatesResponse = await page.request.get(
+      "/api/v1/assets/shifts/"
+        + encodeURIComponent(allocationId)
+        + "/assignment/candidates",
+    );
+    expect(
+      refreshedCandidatesResponse.ok(),
+      await refreshedCandidatesResponse.text(),
+    ).toBeTruthy();
+    const refreshedCandidatesPayload = await refreshedCandidatesResponse.json() as typeof candidatesPayload;
+    const refreshedCommunicationAsset = refreshedCandidatesPayload.candidates.find(
+      (candidate) => candidate.id === communicationAsset!.id,
+    );
+    expect(refreshedCommunicationAsset).toBeTruthy();
+    expect(refreshedCommunicationAsset!.asset_type_id).toBe(mappedAssetTypeId);
+    expect(refreshedCommunicationAsset!.allowed).toBeTruthy();
+    expect(refreshedCommunicationAsset!.available).toBeTruthy();
+    expect(refreshedCommunicationAsset!.selection_mode).toBe("ASSIGN");
+
     const assignedAsset = await page.request.put(
       "/api/v1/assets/shifts/"
         + encodeURIComponent(allocationId)
@@ -2714,9 +2733,9 @@ test("#794/708B schedule communication preview hides Quick Shift provenance and 
       {
         headers: { "Idempotency-Key": "708b-communication-asset-assignment" },
         data: {
-          asset_id: communicationAsset!.id,
+          asset_id: refreshedCommunicationAsset!.id,
           asset_requirement_id: null,
-          expected_planning_version: candidatesPayload.planning_version,
+          expected_planning_version: refreshedCandidatesPayload.planning_version,
         },
       },
     );
@@ -2736,8 +2755,8 @@ test("#794/708B schedule communication preview hides Quick Shift provenance and 
     await expect(body).toHaveValue(/1 h/);
     await expect(body).toHaveValue(/Actif :/);
     const previewText = await body.inputValue();
-    expect(previewText).toContain(communicationAsset!.asset_type_label);
-    expect(previewText).toContain(communicationAsset!.label);
+    expect(previewText).toContain(refreshedCommunicationAsset!.asset_type_label);
+    expect(previewText).toContain(refreshedCommunicationAsset!.label);
   } finally {
     if (allocationId) {
       const cleanup = await page.request.delete(
