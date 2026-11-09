@@ -369,12 +369,16 @@ export function ContinuousVehicleAssignmentFields({
   controller,
   resources,
   candidates,
+  candidatesLoading,
+  candidatesError,
   creating,
   creatingCanAssign,
 }: {
   controller: ReturnType<typeof useContinuousVehicleAssignmentDraft>;
   resources: ResourceReadModel[];
   candidates: ContinuousResourceCandidate[];
+  candidatesLoading: boolean;
+  candidatesError: string | null;
   creating: boolean;
   creatingCanAssign: boolean;
 }) {
@@ -464,7 +468,7 @@ export function ContinuousVehicleAssignmentFields({
                 Ressource
                 <select
                   value={draft.resourceId}
-                  disabled={controlsDisabled}
+                  disabled={controlsDisabled || candidatesLoading || Boolean(candidatesError)}
                   onChange={(event) => setResourceId(event.target.value)}
                   required={draft.assigned}
                 >
@@ -481,6 +485,16 @@ export function ContinuousVehicleAssignmentFields({
                   ))}
                 </select>
               </label>
+              {candidatesLoading && (
+                <div className="subtle-status" data-testid="asset-continuous-candidates-loading">
+                  Chargement des employés disponibles…
+                </div>
+              )}
+              {candidatesError && (
+                <div className="inline-error" role="alert" data-testid="asset-continuous-candidates-error">
+                  {candidatesError}
+                </div>
+              )}
               <label>
                 {assignment?.effective_state === "ACTIVE"
                   && draft.resourceId !== assignment.operator_resource_id
