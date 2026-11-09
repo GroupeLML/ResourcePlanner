@@ -6,11 +6,13 @@ import {
   AssetCatalogItem,
   AssetPlanningState,
   AssetTypeCatalogItem,
+  ContinuousResourceCandidate,
   addAssetUnavailability,
   createAsset,
   createAssetType,
   getAssetCatalog,
   getAssetPlanningState,
+  getContinuousResourceCandidates,
   removeAssetUnavailability,
   setAssetActive,
   setAssetApprover,
@@ -103,6 +105,7 @@ export default function AssetCatalogPanel({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: "info" | "success" | "error"; text: string } | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [continuousCandidates, setContinuousCandidates] = useState<ContinuousResourceCandidate[]>([]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -111,10 +114,14 @@ export default function AssetCatalogPanel({
     Promise.all([
       getAssetCatalog(controller.signal),
       getAssetPlanningState(controller.signal),
+      canManagePlanning
+        ? getContinuousResourceCandidates(controller.signal)
+        : Promise.resolve({ candidates: [] as ContinuousResourceCandidate[] }),
     ])
-      .then(([nextCatalog, nextState]) => {
+      .then(([nextCatalog, nextState, continuousCandidatePayload]) => {
         setCatalog(nextCatalog);
         setPlanningState(nextState);
+        setContinuousCandidates(continuousCandidatePayload.candidates);
         setSelectedTypeId((current) => {
           if (current && nextCatalog.types.some((row) => row.id === current)) return current;
           return nextCatalog.types.find((row) => row.active)?.id ?? nextCatalog.types[0]?.id ?? null;
@@ -128,7 +135,7 @@ export default function AssetCatalogPanel({
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [refreshKey]);
+  }, [canManagePlanning, refreshKey]);
 
   const selectedType = useMemo(
     () => catalog?.types.find((row) => row.id === selectedTypeId) ?? null,
@@ -676,6 +683,7 @@ export default function AssetCatalogPanel({
                           <ContinuousVehicleAssignmentFields
                             controller={continuousAssignment}
                             resources={resources}
+                            candidates={continuousCandidates}
                             creating={creatingAsset}
                             creatingCanAssign={canManagePlanning}
                           />
