@@ -1067,6 +1067,17 @@ h1 { font-size: 1.6rem; }
 }
 .asset-section-heading { padding: .62rem .7rem; border-bottom: 1px solid var(--border); }
 .asset-section-heading strong { font-size: .75rem; }
+.asset-requirement-groups { display: grid; }
+.asset-requirement-group + .asset-requirement-group { border-top: 1px solid var(--border); }
+.asset-requirement-group-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: .7rem;
+  padding: .5rem .7rem;
+  background: #f6f8fb;
+}
+.asset-requirement-group-heading strong { font-size: .7rem; }
 .asset-requirement-list,
 .asset-unavailability-list { display: grid; gap: .45rem; padding: .6rem; }
 .asset-requirement-card {
