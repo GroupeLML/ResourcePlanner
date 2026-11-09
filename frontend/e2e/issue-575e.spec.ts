@@ -43,6 +43,9 @@ test("575E relie navigation REQUEST et trois contextes de réservation directe",
   test.setTimeout(120_000);
   const { context, page } = await createCoordinator(browser);
   const captured: Record<string, Record<string, unknown>> = {};
+  let requestReserved = false;
+  let planningSnapshotRequests = 0;
+  let requirementReservationMutations = 0;
 
   try {
     await page.route("**/api/v1/projects?**", async (route) => {
@@ -62,6 +65,7 @@ test("575E relie navigation REQUEST et trois contextes de réservation directe",
     });
 
     await page.route("**/api/v1/planning/snapshot?**", async (route) => {
+      planningSnapshotRequests += 1;
       const response = await route.fetch();
       const body = await response.json() as Record<string, any>;
       const start = String(body.start);
@@ -120,19 +124,40 @@ test("575E relie navigation REQUEST et trois contextes de réservation directe",
         start_date: start,
         end_date: end,
         usage_hours: 8,
-        status: "À affecter",
-        allocation_id: null,
-        asset_id: null,
-        asset_code: null,
-        asset_label: null,
-        allocation_start_date: null,
-        allocation_end_date: null,
+        status: requestReserved ? "Réservé" : "À affecter",
+        allocation_id: requestReserved ? "ALLOC-REQUEST-575E" : null,
+        asset_id: requestReserved ? "ASSET-575E" : null,
+        asset_code: requestReserved ? "TRUCK-575E-A" : null,
+        asset_label: requestReserved ? "Camion acceptation" : null,
+        allocation_start_date: requestReserved ? start : null,
+        allocation_end_date: requestReserved ? end : null,
         allocation_locked: false,
         operator_resource_id: null,
         operator_resource_name: null,
         qualification_state: "SATISFIED",
         required_competency_ids: [],
         required_competency_names: [],
+      };
+      const reservedNeed = {
+        ...requestNeed,
+        requirement_id: "AREQ-RESERVED-575E",
+        origin: "RESOURCE_PERIOD",
+        request_id: null,
+        demand_number: null,
+        source_request_line_id: null,
+        approval_revision_id: null,
+        approved_entry_key: null,
+        context_resource_id: "R-575E",
+        resource_period_mode: "BOUNDED",
+        status: "Réservé",
+        allocation_id: "ALLOC-RESERVED-575E",
+        asset_id: "ASSET-575E",
+        asset_code: "TRUCK-575E-A",
+        asset_label: "Camion acceptation",
+        allocation_start_date: start,
+        allocation_end_date: end,
+        operator_resource_id: "R-575E",
+        operator_resource_name: "Ressource 575E",
       };
 
       await route.fulfill({
@@ -166,7 +191,7 @@ test("575E relie navigation REQUEST et trois contextes de réservation directe",
               active: true,
             },
           ],
-          asset_requirements: [requestNeed],
+          asset_requirements: [requestNeed, reservedNeed],
           asset_allocations: [],
           asset_unavailability: [],
           asset_capacity: [],
@@ -174,6 +199,31 @@ test("575E relie navigation REQUEST et trois contextes de réservation directe",
         },
       });
     });
+
+    await page.route(
+      "**/api/v1/assets/requirements/AREQ-REQUEST-575E/reservation",
+      async (route) => {
+        if (route.request().method() !== "PUT") {
+          await route.continue();
+          return;
+        }
+        requirementReservationMutations += 1;
+        const payload = route.request().postDataJSON() as {
+          asset_id: string | null;
+          expected_planning_version: number;
+        };
+        requestReserved = Boolean(payload.asset_id);
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            planning_version: payload.expected_planning_version + 1,
+            allocation_id: requestReserved ? "ALLOC-REQUEST-575E" : null,
+            changed: true,
+          }),
+        });
+      },
+    );
 
     for (const [path, key] of [
       ["project-reservations", "PROJECT_DIRECT"],
@@ -205,7 +255,54 @@ test("575E relie navigation REQUEST et trois contextes de réservation directe",
     const panel = page.locator(".asset-planning-panel");
     await expect(panel.getByRole("heading", { name: "Actifs et réservations" })).toBeVisible();
 
-    const requestCard = panel.locator('.asset-requirement-card[data-requirement-id="AREQ-REQUEST-575E"]');
+    const approvedPanel = panel.getByTestId("approved-asset-requirements");
+    const parentToggle = panel.getByTestId("approved-asset-requirements-toggle");
+    const unreservedGroup = panel.getByTestId("unreserved-asset-requirements");
+    const reservedGroup = panel.getByTestId("reserved-asset-requirements");
+    const unreservedToggle = panel.getByTestId("unreserved-asset-requirements-toggle");
+    const reservedToggle = panel.getByTestId("reserved-asset-requirements-toggle");
+
+    await expect(approvedPanel).toContainText("Besoins approuvés");
+    await expect(unreservedGroup).toContainText("À réserver (1)");
+    await expect(reservedGroup).toContainText("Réservé (1)");
+    await expect(
+      unreservedGroup.locator('.asset-requirement-card[data-requirement-id="AREQ-REQUEST-575E"]'),
+    ).toHaveCount(1);
+    await expect(
+      reservedGroup.locator('.asset-requirement-card[data-requirement-id="AREQ-REQUEST-575E"]'),
+    ).toHaveCount(0);
+    await expect(
+      reservedGroup.locator('.asset-requirement-card[data-requirement-id="AREQ-RESERVED-575E"]'),
+    ).toHaveCount(1);
+
+    const beforeCollapseUrl = page.url();
+    const beforeCollapseSnapshots = planningSnapshotRequests;
+    const beforeCollapseMutations = requirementReservationMutations;
+
+    await reservedToggle.click();
+    await expect(reservedToggle).toHaveAttribute("aria-expanded", "false");
+    await expect(panel.getByTestId("reserved-asset-requirements-content")).toHaveCount(0);
+
+    await parentToggle.click();
+    await expect(parentToggle).toHaveAttribute("aria-expanded", "false");
+    await expect(panel.getByTestId("approved-asset-requirements-content")).toHaveCount(0);
+
+    await parentToggle.click();
+    await expect(parentToggle).toHaveAttribute("aria-expanded", "true");
+    await expect(panel.getByTestId("unreserved-asset-requirements-content")).toBeVisible();
+    await expect(panel.getByTestId("reserved-asset-requirements-content")).toHaveCount(0);
+    await expect(reservedToggle).toHaveAttribute("aria-expanded", "false");
+
+    expect(page.url()).toBe(beforeCollapseUrl);
+    expect(planningSnapshotRequests).toBe(beforeCollapseSnapshots);
+    expect(requirementReservationMutations).toBe(beforeCollapseMutations);
+
+    await reservedToggle.click();
+    await expect(panel.getByTestId("reserved-asset-requirements-content")).toBeVisible();
+
+    const requestCard = unreservedGroup.locator(
+      '.asset-requirement-card[data-requirement-id="AREQ-REQUEST-575E"]',
+    );
     await expect(requestCard).toContainText("Fenêtre autorisée");
     await expect(requestCard).toContainText("Budget d’usage 8 h");
     await requestCard.getByRole("button", { name: "Ouvrir la demande source" }).click();
@@ -213,6 +310,64 @@ test("575E relie navigation REQUEST et trois contextes de réservation directe",
     await page.getByRole("dialog", { name: "Détail de la demande DMO-575E" })
       .getByRole("button", { name: "Fermer" })
       .click();
+
+    const requestUnit = requestCard.locator('label:has(> span:text-is("Unité")) select');
+    await requestUnit.selectOption("ASSET-575E");
+    const [reserveMutation] = await Promise.all([
+      page.waitForResponse((response) => (
+        response.request().method() === "PUT"
+        && response.url().includes(
+          "/api/v1/assets/requirements/AREQ-REQUEST-575E/reservation",
+        )
+      )),
+      requestCard.getByRole("button", { name: "Enregistrer la réservation" }).click(),
+    ]);
+    expect(reserveMutation.status()).toBe(200);
+    await expect(unreservedGroup).toContainText("À réserver (0)");
+    await expect(reservedGroup).toContainText("Réservé (2)");
+    await expect(panel.getByTestId("unreserved-asset-requirements-content")).toContainText(
+      "Aucun besoin à réserver",
+    );
+    const movedReservedCard = reservedGroup.locator(
+      '.asset-requirement-card[data-requirement-id="AREQ-REQUEST-575E"]',
+    );
+    await expect(movedReservedCard).toHaveCount(1);
+    await expect(unreservedGroup.locator(
+      '.asset-requirement-card[data-requirement-id="AREQ-REQUEST-575E"]',
+    )).toHaveCount(0);
+
+    await movedReservedCard.locator('label:has(> span:text-is("Unité")) select').selectOption("");
+    const [releaseMutation] = await Promise.all([
+      page.waitForResponse((response) => (
+        response.request().method() === "PUT"
+        && response.url().includes(
+          "/api/v1/assets/requirements/AREQ-REQUEST-575E/reservation",
+        )
+      )),
+      movedReservedCard.getByRole("button", { name: "Libérer" }).click(),
+    ]);
+    expect(releaseMutation.status()).toBe(200);
+    await expect(unreservedGroup).toContainText("À réserver (1)");
+    await expect(reservedGroup).toContainText("Réservé (1)");
+    await expect(unreservedGroup.locator(
+      '.asset-requirement-card[data-requirement-id="AREQ-REQUEST-575E"]',
+    )).toHaveCount(1);
+    await expect(reservedGroup.locator(
+      '.asset-requirement-card[data-requirement-id="AREQ-REQUEST-575E"]',
+    )).toHaveCount(0);
+
+    await unreservedToggle.click();
+    await expect(unreservedToggle).toHaveAttribute("aria-expanded", "false");
+    await expect(panel.getByTestId("unreserved-asset-requirements-content")).toHaveCount(0);
+    await unreservedToggle.click();
+    await expect(unreservedToggle).toHaveAttribute("aria-expanded", "true");
+
+    const occupancyToggle = panel.getByTestId("asset-unit-occupancy-toggle");
+    await expect(occupancyToggle).toHaveAttribute("aria-expanded", "true");
+    await occupancyToggle.click();
+    await expect(occupancyToggle).toHaveAttribute("aria-expanded", "false");
+    await occupancyToggle.click();
+    await expect(occupancyToggle).toHaveAttribute("aria-expanded", "true");
 
     const form = panel.locator(".asset-direct-reservation-panel");
     const unitSelect = form.locator('label:has(> span:text-is("Unité")) select');
