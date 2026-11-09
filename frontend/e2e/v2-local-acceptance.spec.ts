@@ -2606,10 +2606,13 @@ test("materialized demand cancellation is requested, reviewed, rejected or accep
   await closeContext(requester.context);
 });
 
-test("#794 schedule communication preview hides default Quick Shift provenance", async ({ browser }) => {
+test("#794/708B schedule communication preview hides Quick Shift provenance and shows assigned asset", async ({ browser }) => {
   const { d1 } = acceptanceDates();
   const { context, page } = await openAs(browser, "COORDINATOR");
   let allocationId: string | null = null;
+  let approvalScopeId: string | null = null;
+  let mappedAssetTypeId: string | null = null;
+  let approvalScopeMappingAdded = false;
 
   try {
     const created = await page.request.post("/api/v1/quick-shifts", {
@@ -2640,6 +2643,104 @@ test("#794 schedule communication preview hides default Quick Shift provenance",
     expect(segmentPayload.origin).toBe("QUICK_SHIFT");
     expect(segmentPayload.description).toBe("Quart rapide");
 
+    const candidatesResponse = await page.request.get(
+      "/api/v1/assets/shifts/"
+        + encodeURIComponent(allocationId)
+        + "/assignment/candidates",
+    );
+    expect(candidatesResponse.ok(), await candidatesResponse.text()).toBeTruthy();
+    const candidatesPayload = await candidatesResponse.json() as {
+      planning_version: number;
+      candidates: Array<{
+        id: string;
+        label: string;
+        asset_type_id: string;
+        asset_type_label: string;
+        allowed: boolean;
+        available: boolean;
+        selection_mode: string;
+      }>;
+    };
+    const communicationAsset = candidatesPayload.candidates.find(
+      (candidate) => (
+        candidate.allowed
+        && candidate.available
+        && candidate.selection_mode === "ASSIGN"
+      ),
+    );
+    expect(communicationAsset).toBeTruthy();
+    mappedAssetTypeId = communicationAsset!.asset_type_id;
+
+    const approvalAdmin = await openAs(browser, "ADMIN");
+    try {
+      const scopesResponse = await approvalAdmin.page.request.get(
+        "/api/v1/admin/approval-scopes",
+      );
+      expect(scopesResponse.ok(), await scopesResponse.text()).toBeTruthy();
+      const scopes = await scopesResponse.json() as Array<{
+        id: string;
+        code: string;
+        active: boolean;
+        version: number;
+        asset_type_ids: string[];
+      }>;
+      const assetApprovalScope = scopes.find(
+        (scope) => scope.active && scope.code === "AUTOMATION",
+      );
+      expect(assetApprovalScope).toBeTruthy();
+      approvalScopeId = assetApprovalScope!.id;
+
+      if (!assetApprovalScope!.asset_type_ids.includes(mappedAssetTypeId)) {
+        const mapped = await approvalAdmin.page.request.put(
+          "/api/v1/admin/approval-scopes/"
+            + encodeURIComponent(assetApprovalScope!.id)
+            + "/asset-types/"
+            + encodeURIComponent(mappedAssetTypeId),
+          {
+            data: { expected_version: assetApprovalScope!.version },
+          },
+        );
+        expect(mapped.status(), await mapped.text()).toBe(200);
+        approvalScopeMappingAdded = true;
+      }
+    } finally {
+      await closeContext(approvalAdmin.context);
+    }
+
+    const refreshedCandidatesResponse = await page.request.get(
+      "/api/v1/assets/shifts/"
+        + encodeURIComponent(allocationId)
+        + "/assignment/candidates",
+    );
+    expect(
+      refreshedCandidatesResponse.ok(),
+      await refreshedCandidatesResponse.text(),
+    ).toBeTruthy();
+    const refreshedCandidatesPayload = await refreshedCandidatesResponse.json() as typeof candidatesPayload;
+    const refreshedCommunicationAsset = refreshedCandidatesPayload.candidates.find(
+      (candidate) => candidate.id === communicationAsset!.id,
+    );
+    expect(refreshedCommunicationAsset).toBeTruthy();
+    expect(refreshedCommunicationAsset!.asset_type_id).toBe(mappedAssetTypeId);
+    expect(refreshedCommunicationAsset!.allowed).toBeTruthy();
+    expect(refreshedCommunicationAsset!.available).toBeTruthy();
+    expect(refreshedCommunicationAsset!.selection_mode).toBe("ASSIGN");
+
+    const assignedAsset = await page.request.put(
+      "/api/v1/assets/shifts/"
+        + encodeURIComponent(allocationId)
+        + "/assignment",
+      {
+        headers: { "Idempotency-Key": "708b-communication-asset-assignment" },
+        data: {
+          asset_id: refreshedCommunicationAsset!.id,
+          asset_requirement_id: null,
+          expected_planning_version: refreshedCandidatesPayload.planning_version,
+        },
+      },
+    );
+    expect(assignedAsset.status(), await assignedAsset.text()).toBe(200);
+
     await navigateMain(page, "Communications");
     await page.getByLabel("Semaine du").fill(d1);
     await page.getByRole("button", { name: "Générer la prévisualisation" }).click();
@@ -2652,12 +2753,46 @@ test("#794 schedule communication preview hides default Quick Shift provenance",
     await expect(body).toHaveValue(/Travaux planifiés/);
     await expect(body).toHaveValue(/Alice/);
     await expect(body).toHaveValue(/1 h/);
+    await expect(body).toHaveValue(/Actif :/);
+    const previewText = await body.inputValue();
+    expect(previewText).toContain(refreshedCommunicationAsset!.asset_type_label);
+    expect(previewText).toContain(refreshedCommunicationAsset!.label);
   } finally {
     if (allocationId) {
       const cleanup = await page.request.delete(
         "/api/v1/allocations/" + encodeURIComponent(allocationId),
       );
       expect(cleanup.ok(), await cleanup.text()).toBeTruthy();
+    }
+    if (approvalScopeMappingAdded && approvalScopeId && mappedAssetTypeId) {
+      const cleanupAdmin = await openAs(browser, "ADMIN");
+      try {
+        const scopesResponse = await cleanupAdmin.page.request.get(
+          "/api/v1/admin/approval-scopes",
+        );
+        expect(scopesResponse.ok(), await scopesResponse.text()).toBeTruthy();
+        const scopes = await scopesResponse.json() as Array<{
+          id: string;
+          version: number;
+          asset_type_ids: string[];
+        }>;
+        const approvalScope = scopes.find((scope) => scope.id === approvalScopeId);
+        expect(approvalScope).toBeTruthy();
+        if (approvalScope!.asset_type_ids.includes(mappedAssetTypeId)) {
+          const unmapped = await cleanupAdmin.page.request.delete(
+            "/api/v1/admin/approval-scopes/"
+              + encodeURIComponent(approvalScopeId)
+              + "/asset-types/"
+              + encodeURIComponent(mappedAssetTypeId),
+            {
+              data: { expected_version: approvalScope!.version },
+            },
+          );
+          expect(unmapped.status(), await unmapped.text()).toBe(200);
+        }
+      } finally {
+        await closeContext(cleanupAdmin.context);
+      }
     }
     await closeContext(context);
   }

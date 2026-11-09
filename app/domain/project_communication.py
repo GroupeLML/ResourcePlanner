@@ -8,6 +8,17 @@ from .operational_contacts import ContactResolution
 
 
 @dataclass(frozen=True, slots=True)
+class ProjectCommunicationAsset:
+    allocation_id: str
+    asset_id: str
+    asset_code: str
+    asset_label: str
+    asset_type_label: str
+    asset_category: str
+    association_kind: str
+
+
+@dataclass(frozen=True, slots=True)
 class ProjectCommunicationParticipant:
     contact_id: str | None
     user_id: str | None
@@ -39,6 +50,7 @@ class ProjectCommunicationAssignment:
     project_manager: ProjectCommunicationParticipant
     operational_responsible: ContactResolution
     project_co_managers: tuple[ProjectCommunicationParticipant, ...] = ()
+    assets: tuple[ProjectCommunicationAsset, ...] = ()
     diagnostics: tuple[str, ...] = ()
 
 
@@ -52,6 +64,7 @@ class ProjectCommunicationResource:
     allocation_types: tuple[str, ...]
     confirmations: tuple[str, ...]
     outside_schedule: bool
+    assets: tuple[ProjectCommunicationAsset, ...] = ()
     diagnostics: tuple[str, ...] = ()
 
 
@@ -202,6 +215,7 @@ def build_project_communication_projection(
                 "allocation_types": [],
                 "confirmations": [],
                 "outside_schedule": False,
+                "assets": {},
                 "diagnostics": [],
             }
             resources[row.resource_id] = resource
@@ -210,6 +224,8 @@ def build_project_communication_projection(
         resource["allocation_types"].append(row.allocation_type)
         resource["confirmations"].append(row.confirmation)
         resource["outside_schedule"] = bool(resource["outside_schedule"]) or bool(row.outside_schedule)
+        for asset in row.assets:
+            resource["assets"].setdefault(asset.allocation_id, asset)
         resource["diagnostics"].extend(row.resource_contact.diagnostics)
         resource["diagnostics"].extend(row.diagnostics)
 
@@ -237,6 +253,18 @@ def build_project_communication_projection(
                             allocation_types=_unique(resource["allocation_types"]),
                             confirmations=_unique(resource["confirmations"]),
                             outside_schedule=bool(resource["outside_schedule"]),
+                            assets=tuple(
+                                resource["assets"][key]
+                                for key in sorted(
+                                    resource["assets"],
+                                    key=lambda value: (
+                                        resource["assets"][value].asset_type_label.casefold(),
+                                        resource["assets"][value].asset_label.casefold(),
+                                        resource["assets"][value].asset_code.casefold(),
+                                        value,
+                                    ),
+                                )
+                            ),
                             diagnostics=_unique(resource["diagnostics"]),
                         )
                     )

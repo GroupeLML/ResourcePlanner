@@ -5,6 +5,7 @@ import unittest
 
 from app.domain.operational_contacts import ContactResolution, STATUS_RESOLVED
 from app.domain.project_communication import (
+    ProjectCommunicationAsset,
     ProjectCommunicationDay,
     ProjectCommunicationParticipant,
     ProjectCommunicationProject,
@@ -81,6 +82,7 @@ def resource(
     hours: float = 8.0,
     confirmation: str = "Confirmée",
     outside: bool = False,
+    assets: tuple[ProjectCommunicationAsset, ...] = (),
 ) -> ProjectCommunicationResource:
     return ProjectCommunicationResource(
         resource_id=resource_id,
@@ -96,6 +98,7 @@ def resource(
         allocation_types=("Flexible",),
         confirmations=(confirmation,),
         outside_schedule=outside,
+        assets=assets,
     )
 
 
@@ -167,6 +170,80 @@ def projection(*projects: ProjectCommunicationProject) -> ProjectCommunicationPr
 
 
 class ProjectCommunicationMessageTests(unittest.TestCase):
+    def test_resource_line_without_asset_is_unchanged(self) -> None:
+        batch = build_project_confirmation_batch(
+            projection(
+                project(
+                    resources=(
+                        resource("R1", "Alice", address=email("alice")),
+                    )
+                )
+            )
+        )
+        body = batch.drafts[0].body
+        self.assertIn("  • Alice — 8 h", body)
+        self.assertNotIn("Actif :", body)
+
+    def test_resource_line_renders_multiple_assets_with_type_labels_once(self) -> None:
+        vehicle = ProjectCommunicationAsset(
+            allocation_id="ALLOC-V",
+            asset_id="ASSET-V",
+            asset_code="V-12",
+            asset_label="Camion 12",
+            asset_type_label="Véhicule",
+            asset_category="VEHICLE",
+            association_kind="INHERITED_RESOURCE_PERIOD",
+        )
+        equipment = ProjectCommunicationAsset(
+            allocation_id="ALLOC-E",
+            asset_id="ASSET-E",
+            asset_code="EQ-7",
+            asset_label="Nacelle 7",
+            asset_type_label="Équipement",
+            asset_category="EQUIPMENT",
+            association_kind="OWNED_SHIFT",
+        )
+        batch = build_project_confirmation_batch(
+            projection(
+                project(
+                    resources=(
+                        resource(
+                            "R1",
+                            "Alice",
+                            address=email("alice"),
+                            assets=(vehicle, equipment),
+                        ),
+                    )
+                )
+            )
+        )
+        body = batch.drafts[0].body
+        self.assertIn(
+            "Actif : Véhicule — Camion 12 / Équipement — Nacelle 7",
+            body,
+        )
+        self.assertEqual(body.count("Camion 12"), 1)
+        self.assertEqual(body.count("Nacelle 7"), 1)
+
+        restored = deserialize_project_projection(
+            serialize_project_projection(
+                projection(
+                    project(
+                        resources=(
+                            resource(
+                                "R1",
+                                "Alice",
+                                address=email("alice"),
+                                assets=(vehicle, equipment),
+                            ),
+                        )
+                    )
+                )
+            )
+        )
+        restored_assets = restored.projects[0].days[0].tasks[0].resources[0].assets
+        self.assertEqual(restored_assets, (vehicle, equipment))
+
     def test_french_long_date_is_derived_from_real_date(self) -> None:
         self.assertEqual(
             french_long_date(date(2026, 9, 22)),
