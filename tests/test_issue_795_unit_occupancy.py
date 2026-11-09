@@ -48,6 +48,8 @@ class Issue795UnitOccupancyProjectionTests(unittest.TestCase):
                     active=True,
                 )
             )
+            session.flush()
+
             for asset_id in (
                 "ASSET-ORDINARY",
                 "ASSET-BOUNDED",
@@ -67,6 +69,7 @@ class Issue795UnitOccupancyProjectionTests(unittest.TestCase):
                         active=True,
                     )
                 )
+            session.flush()
 
             self._add_period(
                 session,
@@ -163,6 +166,7 @@ class Issue795UnitOccupancyProjectionTests(unittest.TestCase):
                 status="Réservé",
             )
         )
+        session.flush()
         session.add(
             AssetAllocation(
                 id=f"ALLOC-{suffix}",
