@@ -550,6 +550,27 @@ class SqlAssetPlanningQuery:
                 .order_by(AssetAllocation.asset_id, AssetAllocation.start_date, AssetAllocation.id)
             ).all()
         )
+        continuous_unit_occupancy_hidden_asset_ids = set(
+            self._session.scalars(
+                select(AssetAllocation.asset_id)
+                .join(
+                    AssetRequirement,
+                    AssetRequirement.id == AssetAllocation.asset_requirement_id,
+                )
+                .where(
+                    AssetRequirement.status != "Annulé",
+                    AssetRequirement.origin
+                    == AssetRequirementOrigin.RESOURCE_PERIOD.value,
+                    AssetRequirement.resource_period_mode
+                    == ResourcePeriodMode.CONTINUOUS.value,
+                    AssetAllocation.start_date <= end,
+                    or_(
+                        AssetAllocation.end_date.is_(None),
+                        AssetAllocation.end_date >= start,
+                    ),
+                )
+            ).all()
+        )
         unavailability_rows = tuple(
             self._session.scalars(
                 select(AssetUnavailability)
@@ -880,6 +901,9 @@ class SqlAssetPlanningQuery:
                     label=row.label,
                     asset_type_id=row.asset_type_id,
                     active=bool(row.active),
+                    visible_in_unit_occupancy=(
+                        row.id not in continuous_unit_occupancy_hidden_asset_ids
+                    ),
                 )
                 for row in asset_rows
             ),
