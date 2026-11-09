@@ -479,6 +479,7 @@ class AssetReadModel:
     label: str
     asset_type_id: str
     active: bool
+    visible_in_unit_occupancy: bool = True
 
 
 @dataclass(frozen=True, slots=True)
