@@ -89,6 +89,14 @@ async function unitState(page: Page, assetId: string, asOf?: string) {
   }>;
 }
 
+async function continuousCandidates(page: Page) {
+  const response = await page.request.get("/api/v1/assets/continuous-resource-candidates");
+  expect(response.ok(), await response.text()).toBeTruthy();
+  return response.json() as Promise<{
+    candidates: Array<{ resource_id: string; display_name: string }>;
+  }>;
+}
+
 async function continuousCount(page: Page, resourceId: string, assetId: string) {
   const response = await page.request.get(
     `/api/v1/assets/continuous-resource-assignments?resource_id=${encodeURIComponent(resourceId)}`,
@@ -101,6 +109,137 @@ async function continuousCount(page: Page, resourceId: string, assetId: string) 
     (row) => row.asset_id === assetId && row.resource_period_mode === "CONTINUOUS",
   ).length;
 }
+
+test("797 Attitré propose les employés ERP actifs hors Planning et conserve le flux canonique", async ({ browser }) => {
+  test.setTimeout(180_000);
+  const { context, page } = await openAdmin(browser);
+  const today = localIso(new Date());
+  let officeResourceId = "";
+  let inactiveResourceId = "";
+
+  try {
+    const office = await page.request.post("/api/v1/resources", {
+      headers: { "Idempotency-Key": "797-office-resource" },
+      data: {
+        name: "Employé bureau E2E 797",
+        email: null,
+        residence_city: null,
+        resource_class: null,
+        competencies: null,
+        competency_ids: [],
+        note: "Fixture #797 sans classe ni horaire Planning",
+        active: false,
+        sort_order: 7970,
+        external_id: "ERP-797-OFFICE",
+      },
+    });
+    expect(office.status(), await office.text()).toBe(201);
+    officeResourceId = (await office.json() as { resource_id: string }).resource_id;
+
+    const inactive = await page.request.post("/api/v1/resources", {
+      headers: { "Idempotency-Key": "797-inactive-resource" },
+      data: {
+        name: "Employé inactif E2E 797",
+        email: null,
+        residence_city: null,
+        resource_class: null,
+        competencies: null,
+        competency_ids: [],
+        note: "Fixture #797 inactive",
+        active: false,
+        sort_order: 7971,
+        external_id: null,
+      },
+    });
+    expect(inactive.status(), await inactive.text()).toBe(201);
+    inactiveResourceId = (await inactive.json() as { resource_id: string }).resource_id;
+
+    const vehicle = await createVehicleByApi(
+      page,
+      "VEH-797-OFFICE",
+      "Camion E2E 797 bureau",
+    );
+
+    const catalog = await selectVehicle(page, "VEH-797-OFFICE");
+    const unitEditor = catalog.locator(".asset-unit-editor");
+    const fields = unitEditor.getByTestId("asset-continuous-assignment-fields");
+    await expect(fields).toBeVisible();
+    await fields.getByRole("checkbox", { name: "Attitré" }).check();
+
+    const resourceSelect = fields.getByRole("combobox");
+    const candidatePayload = await continuousCandidates(page);
+    const aliceCandidates = candidatePayload.candidates.filter(
+      (candidate) => candidate.display_name === "Alice",
+    );
+    expect(aliceCandidates).toHaveLength(1);
+    const aliceResourceId = aliceCandidates[0].resource_id;
+
+    await expect(resourceSelect.locator(`option[value="${officeResourceId}"]`))
+      .toHaveText("Employé bureau E2E 797");
+    await expect(resourceSelect.locator(`option[value="${aliceResourceId}"]`))
+      .toHaveText("Alice");
+    await expect(resourceSelect.locator(`option[value="${inactiveResourceId}"]`))
+      .toHaveCount(0);
+
+    await resourceSelect.selectOption(officeResourceId);
+    await fields.getByLabel("Date effective").fill(today);
+    await unitEditor.getByRole("button", { name: "Enregistrer l’unité" }).click();
+    await expect(catalog.locator(".asset-catalog-notice")).toContainText(
+      "Unité enregistrée.",
+    );
+
+    let canonical = await unitState(page, vehicle.assetId);
+    expect(canonical.has_continuous_assignment).toBeTruthy();
+    expect(canonical.assignment?.resource_period_mode).toBe("CONTINUOUS");
+    expect(canonical.assignment?.operator_resource_id).toBe(officeResourceId);
+
+    await page.reload();
+    await page.locator(".main-nav").getByRole("button", { name: /Ressources/i }).click();
+    const reloadedCatalog = await selectVehicle(page, "VEH-797-OFFICE");
+    const reloadedFields = reloadedCatalog
+      .locator(".asset-unit-editor")
+      .getByTestId("asset-continuous-assignment-fields");
+    await expect(reloadedFields.getByRole("checkbox", { name: "Attitré" })).toBeChecked();
+    await expect(reloadedFields.getByRole("combobox")).toHaveValue(officeResourceId);
+
+    const transferDate = localIso(addDays(new Date(), 1));
+    const reloadedResourceSelect = reloadedFields.getByRole("combobox");
+    await reloadedResourceSelect.selectOption(aliceResourceId);
+    await expect(reloadedResourceSelect).toHaveValue(aliceResourceId);
+    const transferDateInput = reloadedFields.getByLabel("Date effective du transfert");
+    await expect(transferDateInput).toHaveValue(transferDate);
+
+    const [transferResponse] = await Promise.all([
+      page.waitForResponse((response) => (
+        response.request().method() === "POST"
+        && response.url().includes("/api/v1/assets/continuous-resource-assignments/")
+        && response.url().endsWith("/transfer")
+      )),
+      reloadedCatalog
+        .locator(".asset-unit-editor")
+        .getByRole("button", { name: "Enregistrer l’unité" })
+        .click(),
+    ]);
+    expect(transferResponse.status(), await transferResponse.text()).toBe(201);
+    const transferRequest = transferResponse.request().postDataJSON() as {
+      resource_id: string;
+      asset_id: string;
+      effective_from: string;
+      expected_planning_version: number;
+    };
+    expect(transferRequest.resource_id).toBe(aliceResourceId);
+    expect(transferRequest.asset_id).toBe(vehicle.assetId);
+    expect(transferRequest.effective_from).toBe(transferDate);
+    await expect(reloadedCatalog.locator(".asset-catalog-notice")).toContainText(
+      "Unité enregistrée.",
+    );
+
+    canonical = await unitState(page, vehicle.assetId, transferDate);
+    expect(canonical.assignment?.operator_resource_id).toBe(aliceResourceId);
+  } finally {
+    await context.close();
+  }
+});
 
 test("775 restaure une attribution CONTINUOUS dans le formulaire Unité sans doublon", async ({ browser }) => {
   test.setTimeout(150_000);

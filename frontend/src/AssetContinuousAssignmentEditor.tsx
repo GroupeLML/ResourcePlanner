@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, type ResourceReadModel } from "./api";
 import {
   type AssetAssignmentAuthority,
+  type ContinuousResourceCandidate,
   type ContinuousVehicleAssignment,
   type ContinuousVehicleUnitState,
   cancelContinuousVehicleAssignment,
@@ -367,11 +368,17 @@ export function useContinuousVehicleAssignmentDraft({
 export function ContinuousVehicleAssignmentFields({
   controller,
   resources,
+  candidates,
+  candidatesLoading,
+  candidatesError,
   creating,
   creatingCanAssign,
 }: {
   controller: ReturnType<typeof useContinuousVehicleAssignmentDraft>;
   resources: ResourceReadModel[];
+  candidates: ContinuousResourceCandidate[];
+  candidatesLoading: boolean;
+  candidatesError: string | null;
   creating: boolean;
   creatingCanAssign: boolean;
 }) {
@@ -391,11 +398,16 @@ export function ContinuousVehicleAssignmentFields({
   } = controller;
 
   const selectableResources = useMemo(
-    () => resources
-      .filter((row) => row.active)
+    () => candidates
       .slice()
-      .sort((left, right) => resourceDisplayName(left.name).localeCompare(resourceDisplayName(right.name), "fr-CA")),
-    [resources],
+      .sort((left, right) => (
+        resourceDisplayName(left.display_name).localeCompare(
+          resourceDisplayName(right.display_name),
+          "fr-CA",
+        )
+        || left.resource_id.localeCompare(right.resource_id)
+      )),
+    [candidates],
   );
   const currentResource = assignment?.operator_resource_id
     ? resources.find((row) => row.id === assignment.operator_resource_id) ?? null
@@ -456,7 +468,7 @@ export function ContinuousVehicleAssignmentFields({
                 Ressource
                 <select
                   value={draft.resourceId}
-                  disabled={controlsDisabled}
+                  disabled={controlsDisabled || candidatesLoading || Boolean(candidatesError)}
                   onChange={(event) => setResourceId(event.target.value)}
                   required={draft.assigned}
                 >
@@ -467,12 +479,22 @@ export function ContinuousVehicleAssignmentFields({
                     </option>
                   )}
                   {selectableResources.map((resource) => (
-                    <option value={resource.id} key={resource.id}>
-                      {resourceDisplayName(resource.name)}
+                    <option value={resource.resource_id} key={resource.resource_id}>
+                      {resourceDisplayName(resource.display_name)}
                     </option>
                   ))}
                 </select>
               </label>
+              {candidatesLoading && (
+                <div className="subtle-status" data-testid="asset-continuous-candidates-loading">
+                  Chargement des employés disponibles…
+                </div>
+              )}
+              {candidatesError && (
+                <div className="inline-error" role="alert" data-testid="asset-continuous-candidates-error">
+                  {candidatesError}
+                </div>
+              )}
               <label>
                 {assignment?.effective_state === "ACTIVE"
                   && draft.resourceId !== assignment.operator_resource_id

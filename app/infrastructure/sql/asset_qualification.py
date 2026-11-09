@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from sqlalchemy import select, true
 from sqlalchemy.orm import Session
 
-from ...domain.reservable_assets import AssetRequirementOrigin
+from ...domain.reservable_assets import AssetRequirementOrigin, ResourcePeriodMode
 from .asset_models import AssetAllocation, AssetRequirement, AssetTypeCompetency
 from .models import Competency, Resource, ResourceCompetency, ResourceRequirement, Shift
 
@@ -24,6 +24,21 @@ QUALIFICATION_SATISFIED = "SATISFIED"
 QUALIFICATION_MISSING_OPERATOR = "MISSING_OPERATOR"
 QUALIFICATION_SKILL_MISMATCH = "SKILL_MISMATCH"
 QUALIFICATION_NO_OVERLAP = "NO_OVERLAP"
+
+
+def continuous_beneficiary_resource_active(resource: Resource | None) -> bool:
+    """Return employee eligibility for a CONTINUOUS asset beneficiary.
+
+    ERP-linked resources use canonical ERP employment state. Purely local resources
+    retain local activation as their canonical employee/resource state. This is
+    intentionally distinct from Planning schedulability.
+    """
+
+    if resource is None:
+        return False
+    if resource.external_id:
+        return bool(resource.erp_active)
+    return bool(resource.active)
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,7 +163,15 @@ def evaluate_asset_qualification(
         )
 
     operator = session.get(Resource, allocation.operator_resource_id)
-    if operator is None or not operator.active:
+    operator_active = (
+        continuous_beneficiary_resource_active(operator)
+        if (
+            requirement.origin == AssetRequirementOrigin.RESOURCE_PERIOD.value
+            and requirement.resource_period_mode == ResourcePeriodMode.CONTINUOUS.value
+        )
+        else bool(operator is not None and operator.active)
+    )
+    if not operator_active:
         return AssetQualification(
             state=QUALIFICATION_SKILL_MISMATCH,
             required_competency_ids=required_ids,
@@ -322,7 +345,15 @@ def evaluate_asset_qualifications(
             continue
 
         operator = operators.get(allocation.operator_resource_id)
-        if operator is None or not operator.active:
+        operator_active = (
+            continuous_beneficiary_resource_active(operator)
+            if (
+                requirement.origin == AssetRequirementOrigin.RESOURCE_PERIOD.value
+                and requirement.resource_period_mode == ResourcePeriodMode.CONTINUOUS.value
+            )
+            else bool(operator is not None and operator.active)
+        )
+        if not operator_active:
             result[key] = AssetQualification(
                 state=QUALIFICATION_SKILL_MISMATCH,
                 required_competency_ids=required_ids,

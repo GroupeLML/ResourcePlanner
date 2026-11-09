@@ -87,6 +87,21 @@ class DirectAssetReservationTests(unittest.TestCase):
                         name="Technicien inactif",
                         active=False,
                     ),
+                    Resource(
+                        id="RESOURCE-OFFICE",
+                        name="Employé bureau actif",
+                        external_id="ERP-OFFICE",
+                        active=False,
+                        erp_active=True,
+                        resource_class=None,
+                    ),
+                    Resource(
+                        id="RESOURCE-ERP-INACTIVE",
+                        name="Employé ERP inactif",
+                        external_id="ERP-INACTIVE",
+                        active=True,
+                        erp_active=False,
+                    ),
                     Competency(
                         id="COMP-575C",
                         name="Permis 575C",
@@ -119,6 +134,10 @@ class DirectAssetReservationTests(unittest.TestCase):
                     ),
                     ResourceCompetency(
                         resource_id="RESOURCE-SKILLED-B",
+                        competency_id="COMP-575C",
+                    ),
+                    ResourceCompetency(
+                        resource_id="RESOURCE-OFFICE",
                         competency_id="COMP-575C",
                     ),
                     AssetTypeCompetency(
@@ -673,6 +692,120 @@ class DirectAssetReservationTests(unittest.TestCase):
                 "expected_planning_version": version or self._version(),
             },
         )
+
+    def test_continuous_resource_candidates_use_employee_activation_not_planning_activation(self) -> None:
+        response = self.client.get("/api/v1/assets/continuous-resource-candidates")
+        self.assertEqual(response.status_code, 200, response.text)
+        candidates = response.json()["candidates"]
+        ids = [row["resource_id"] for row in candidates]
+
+        self.assertIn("RESOURCE-SKILLED", ids)
+        self.assertIn("RESOURCE-OFFICE", ids)
+        self.assertNotIn("RESOURCE-INACTIVE", ids)
+        self.assertNotIn("RESOURCE-ERP-INACTIVE", ids)
+        self.assertEqual(ids.count("RESOURCE-OFFICE"), 1)
+        office = next(row for row in candidates if row["resource_id"] == "RESOURCE-OFFICE")
+        self.assertEqual(
+            office,
+            {
+                "resource_id": "RESOURCE-OFFICE",
+                "display_name": "Employé bureau actif",
+            },
+        )
+
+    def test_continuous_resource_candidates_require_manage_planning(self) -> None:
+        with TestClient(
+            create_api_app(
+                self.url,
+                auth_resolver=TEST_PROJECT_MANAGER_AUTH_RESOLVER,
+            ),
+            raise_server_exceptions=False,
+        ) as project_manager:
+            response = project_manager.get(
+                "/api/v1/assets/continuous-resource-candidates"
+            )
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertEqual(
+            response.json()["error"]["code"],
+            "asset_assignment_authority_required",
+        )
+
+    def test_continuous_assignment_accepts_erp_active_office_employee_and_transfers(self) -> None:
+        created = self._continuous_create(
+            resource_id="RESOURCE-OFFICE",
+            key="continuous-office-797",
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        payload = created.json()
+        self.assertEqual(payload["context_resource_id"], "RESOURCE-OFFICE")
+        self.assertEqual(payload["operator_resource_id"], "RESOURCE-OFFICE")
+        self.assertEqual(payload["qualification_state"], "SATISFIED")
+
+        state = self.client.get(
+            "/api/v1/assets/continuous-vehicle-units/ASSET-A"
+        )
+        self.assertEqual(state.status_code, 200, state.text)
+        self.assertEqual(
+            state.json()["assignment"]["operator_resource_id"],
+            "RESOURCE-OFFICE",
+        )
+
+        transferred = self.client.post(
+            f"/api/v1/assets/continuous-resource-assignments/{payload['requirement_id']}/transfer",
+            headers={"Idempotency-Key": "continuous-office-transfer-797"},
+            json={
+                "resource_id": "RESOURCE-SKILLED-B",
+                "asset_id": "ASSET-A",
+                "effective_from": (date.today() + timedelta(days=1)).isoformat(),
+                "expected_planning_version": state.json()["planning_version"],
+            },
+        )
+        self.assertEqual(transferred.status_code, 201, transferred.text)
+        self.assertEqual(
+            transferred.json()["context_resource_id"],
+            "RESOURCE-SKILLED-B",
+        )
+
+    def test_existing_continuous_assignment_to_now_inactive_employee_remains_manageable(self) -> None:
+        created = self._continuous_create(
+            resource_id="RESOURCE-OFFICE",
+            key="continuous-office-inactivate-797",
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory.begin() as session:
+                office = session.get(Resource, "RESOURCE-OFFICE")
+                assert office is not None
+                office.erp_active = False
+        finally:
+            engine.dispose()
+
+        state = self.client.get("/api/v1/assets/continuous-vehicle-units/ASSET-A")
+        self.assertEqual(state.status_code, 200, state.text)
+        self.assertEqual(
+            state.json()["assignment"]["operator_resource_id"],
+            "RESOURCE-OFFICE",
+        )
+
+        candidates = self.client.get("/api/v1/assets/continuous-resource-candidates")
+        self.assertEqual(candidates.status_code, 200, candidates.text)
+        self.assertNotIn(
+            "RESOURCE-OFFICE",
+            [row["resource_id"] for row in candidates.json()["candidates"]],
+        )
+
+        revoked = self.client.post(
+            f"/api/v1/assets/continuous-resource-assignments/{created.json()['requirement_id']}/revoke",
+            headers={"Idempotency-Key": "continuous-office-revoke-797"},
+            json={
+                "effective_from": (date.today() + timedelta(days=1)).isoformat(),
+                "expected_planning_version": state.json()["planning_version"],
+            },
+        )
+        self.assertEqual(revoked.status_code, 200, revoked.text)
 
     def test_continuous_vehicle_create_is_open_and_backend_projects_state(self) -> None:
         version = self._version()

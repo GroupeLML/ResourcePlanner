@@ -6,11 +6,13 @@ import {
   AssetCatalogItem,
   AssetPlanningState,
   AssetTypeCatalogItem,
+  type ContinuousResourceCandidate,
   addAssetUnavailability,
   createAsset,
   createAssetType,
   getAssetCatalog,
   getAssetPlanningState,
+  getContinuousResourceCandidates,
   removeAssetUnavailability,
   setAssetActive,
   setAssetApprover,
@@ -103,6 +105,9 @@ export default function AssetCatalogPanel({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: "info" | "success" | "error"; text: string } | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [continuousCandidates, setContinuousCandidates] = useState<ContinuousResourceCandidate[]>([]);
+  const [continuousCandidatesLoading, setContinuousCandidatesLoading] = useState(false);
+  const [continuousCandidatesError, setContinuousCandidatesError] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -129,6 +134,36 @@ export default function AssetCatalogPanel({
       });
     return () => controller.abort();
   }, [refreshKey]);
+
+  useEffect(() => {
+    if (!canManagePlanning) {
+      setContinuousCandidates([]);
+      setContinuousCandidatesError(null);
+      setContinuousCandidatesLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    setContinuousCandidatesLoading(true);
+    setContinuousCandidatesError(null);
+    getContinuousResourceCandidates(controller.signal)
+      .then((payload) => {
+        setContinuousCandidates(payload.candidates);
+      })
+      .catch((reason: unknown) => {
+        if (reason instanceof DOMException && reason.name === "AbortError") return;
+        setContinuousCandidates([]);
+        setContinuousCandidatesError(
+          messageFromError(
+            reason,
+            "Impossible de charger les employés disponibles pour l’attribution continue.",
+          ),
+        );
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setContinuousCandidatesLoading(false);
+      });
+    return () => controller.abort();
+  }, [canManagePlanning, refreshKey]);
 
   const selectedType = useMemo(
     () => catalog?.types.find((row) => row.id === selectedTypeId) ?? null,
@@ -676,6 +711,9 @@ export default function AssetCatalogPanel({
                           <ContinuousVehicleAssignmentFields
                             controller={continuousAssignment}
                             resources={resources}
+                            candidates={continuousCandidates}
+                            candidatesLoading={continuousCandidatesLoading}
+                            candidatesError={continuousCandidatesError}
                             creating={creatingAsset}
                             creatingCanAssign={canManagePlanning}
                           />
