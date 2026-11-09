@@ -1576,25 +1576,47 @@ class SqlAssetService:
             asset=asset,
             explicit_requirement_id=requirement_id,
         )
+        if (start_date is None) != (end_date is None):
+            raise ApplicationValidationError(
+                "Les dates réelles de réservation doivent être fournies ensemble.",
+                code="asset_reservation_dates_required",
+            )
+        parsed_start_date: date | None = None
+        parsed_end_date: date | None = None
+        if start_date is not None and end_date is not None:
+            try:
+                parsed_start_date = date.fromisoformat(start_date)
+                parsed_end_date = date.fromisoformat(end_date)
+            except (TypeError, ValueError) as exc:
+                raise ApplicationValidationError(
+                    "Date de réservation invalide.",
+                    code="asset_reservation_date_invalid",
+                ) from exc
+            if parsed_start_date > parsed_end_date:
+                raise ApplicationValidationError(
+                    "La date de début doit précéder ou égaler la date de fin.",
+                    code="asset_reservation_window_invalid",
+                )
+
         if (
             requirement is None
             and asset is not None
-            and start_date is not None
-            and end_date is not None
+            and parsed_start_date is not None
+            and parsed_end_date is not None
             and (
-                start_date != shift.work_date
-                or end_date != shift.work_date
+                parsed_start_date != shift.work_date
+                or parsed_end_date != shift.work_date
             )
         ):
-            if not start_date <= shift.work_date <= end_date:
+            if not parsed_start_date <= shift.work_date <= parsed_end_date:
                 raise ApplicationValidationError(
                     "La période d'actif doit couvrir la date du quart d'origine.",
                     code="asset_resource_period_shift_date_required",
                     context={
                         "shift_id": shift.id,
                         "shift_work_date": shift.work_date.isoformat(),
-                        "start_date": start_date.isoformat(),
-                        "end_date": end_date.isoformat(),
+                        "start_date": parsed_start_date.isoformat(),
+                        "end_date": parsed_end_date.isoformat(),
                     },
                 )
             result = self._create_direct_reservation(
@@ -1603,8 +1625,8 @@ class SqlAssetService:
                 context_resource_id=shift.resource_id,
                 asset_type_id=asset.asset_type_id,
                 asset_id=asset.id,
-                start_date=start_date,
-                end_date=end_date,
+                start_date=parsed_start_date,
+                end_date=parsed_end_date,
                 operator_resource_id=shift.resource_id,
                 expected_version=expected_version,
                 resource_period_mode=ResourcePeriodMode.BOUNDED,
@@ -1667,11 +1689,6 @@ class SqlAssetService:
                 code="shift_asset_requirement_origin_invalid",
             )
 
-        if (start_date is None) != (end_date is None):
-            raise ApplicationValidationError(
-                "Les dates réelles de réservation doivent être fournies ensemble.",
-                code="asset_reservation_dates_required",
-            )
         previous = self._allocation_for_requirement(requirement.id)
         authority_proof = self._require_assignment_authorities(
             previous.asset_id if previous is not None else None,
@@ -1761,8 +1778,8 @@ class SqlAssetService:
             begin, end = self._resolve_request_reservation_dates(
                 requirement=requirement,
                 previous=previous,
-                start_date=start_date,
-                end_date=end_date,
+                start_date=parsed_start_date,
+                end_date=parsed_end_date,
             )
             operator_resource_id = (
                 previous.operator_resource_id
