@@ -94,6 +94,8 @@ test("799 projette une période d'actif depuis un quart et depuis Actifs sur tou
   let availabilityId = "";
   let assetAId = "";
   let assetBId = "";
+  let adHocRequirementId = "";
+  let originShiftAllocationId = "";
   let shiftPeriodRequirementId = "";
   let directPeriodRequirementId = "";
   let segmentId = "";
@@ -229,22 +231,63 @@ test("799 projette une période d'actif depuis un quart et depuis Actifs sur tou
       .locator(`.planning-drop-day[data-resource-id="${resourceId}"][data-day="${d1}"] .shift-card`)
       .filter({ hasText: demandNumber });
     await expect(mondayCard).toHaveCount(1);
+    originShiftAllocationId = String(shifts[0].allocation_id);
     await mondayCard.getByRole("button", { name: /Assigner un actif/i }).click();
 
-    const dialog = page.getByRole("dialog", { name: "Assigner un actif" });
-    await expect(dialog).toBeVisible();
-    const assetInput = dialog.getByRole("combobox", { name: "Actif", exact: true });
+    const assignDialog = page.getByRole("dialog", { name: "Assigner un actif" });
+    await expect(assignDialog).toBeVisible();
+    const assetInput = assignDialog.getByRole("combobox", { name: "Actif", exact: true });
     await assetInput.fill(assetACode);
-    await dialog.getByRole("option", { name: new RegExp(assetACode) }).click();
-    await dialog.getByLabel("Date début réelle").fill(d1);
-    await dialog.getByLabel("Date fin réelle").fill(d4);
+    await assignDialog.getByRole("option", { name: new RegExp(assetACode) }).click();
+    await assignDialog.getByLabel("Date début réelle").fill(d1);
+    await assignDialog.getByLabel("Date fin réelle").fill(d1);
+
+    const oneDayMutation = page.waitForResponse((response) => (
+      response.request().method() === "PUT"
+      && new URL(response.url()).pathname
+        === `/api/v1/assets/shifts/${encodeURIComponent(originShiftAllocationId)}/assignment`
+    ));
+    await assignDialog.getByRole("button", { name: "Assigner l’actif", exact: true }).click();
+    const oneDayMutationResponse = await oneDayMutation;
+    expect(oneDayMutationResponse.status(), await oneDayMutationResponse.text()).toBe(200);
+    const oneDay = await oneDayMutationResponse.json() as {
+      requirement_id: string;
+      requirement_origin: string;
+      allocation_id: string;
+      asset_id: string;
+      start_date?: string;
+      end_date?: string;
+    };
+    adHocRequirementId = oneDay.requirement_id;
+    expect(oneDay.requirement_origin).toBe("SHIFT_AD_HOC");
+    expect(oneDay.asset_id).toBe(assetAId);
+
+    await expect(mondayCard.locator(".shift-assets")).toContainText(assetACode);
+    for (const day of [d2, d3, d4]) {
+      const laterCard = page
+        .locator(`.planning-drop-day[data-resource-id="${resourceId}"][data-day="${day}"] .shift-card`)
+        .filter({ hasText: demandNumber });
+      await expect(laterCard).toHaveCount(1);
+      await expect(laterCard.locator(".shift-assets")).not.toContainText(assetACode);
+    }
+
+    await mondayCard.locator(".shift-card-main").click();
+    const shiftEditor = page.getByRole("dialog", { name: "Modifier le quart" });
+    await expect(shiftEditor).toBeVisible();
+    await shiftEditor.getByRole("button", { name: "Changer", exact: true }).click();
+
+    const changeDialog = page.getByRole("dialog", { name: "Changer l’actif" });
+    await expect(changeDialog).toBeVisible();
+    await expect(changeDialog.getByRole("combobox", { name: "Actif", exact: true })).toHaveValue(assetAId);
+    await changeDialog.getByLabel("Date début réelle").fill(d1);
+    await changeDialog.getByLabel("Date fin réelle").fill(d4);
 
     const shiftMutation = page.waitForResponse((response) => (
       response.request().method() === "PUT"
       && new URL(response.url()).pathname
-        === `/api/v1/assets/shifts/${encodeURIComponent(String(shifts[0].allocation_id))}/assignment`
+        === `/api/v1/assets/shifts/${encodeURIComponent(originShiftAllocationId)}/assignment`
     ));
-    await dialog.getByRole("button", { name: "Assigner l’actif", exact: true }).click();
+    await changeDialog.getByRole("button", { name: "Changer l’actif", exact: true }).click();
     const shiftMutationResponse = await shiftMutation;
     expect(shiftMutationResponse.status(), await shiftMutationResponse.text()).toBe(200);
     const shiftPeriod = await shiftMutationResponse.json() as {
@@ -256,6 +299,8 @@ test("799 projette une période d'actif depuis un quart et depuis Actifs sur tou
       operator_resource_id: string;
       start_date: string;
       end_date: string;
+      replaced_requirement_id: string;
+      replaced_allocation_id: string;
     };
     shiftPeriodRequirementId = shiftPeriod.requirement_id;
     expect(shiftPeriod.requirement_origin).toBe("RESOURCE_PERIOD");
@@ -264,6 +309,9 @@ test("799 projette une période d'actif depuis un quart et depuis Actifs sur tou
     expect(shiftPeriod.operator_resource_id).toBe(resourceId);
     expect(shiftPeriod.start_date).toBe(d1);
     expect(shiftPeriod.end_date).toBe(d4);
+    expect(shiftPeriod.replaced_requirement_id).toBe(oneDay.requirement_id);
+    expect(shiftPeriod.replaced_allocation_id).toBe(oneDay.allocation_id);
+    adHocRequirementId = "";
 
     await expectAssetOnEveryShift(page, resourceId, demandNumber, days, assetACode);
 
@@ -288,6 +336,12 @@ test("799 projette une période d'actif depuis un quart et depuis Actifs sur tou
     expect(
       assetState.allocations.filter((item) => item.id === shiftPeriod.allocation_id),
     ).toHaveLength(1);
+    expect(
+      assetState.requirements.filter((item) => item.id === oneDay.requirement_id),
+    ).toHaveLength(0);
+    expect(
+      assetState.allocations.filter((item) => item.id === oneDay.allocation_id),
+    ).toHaveLength(0);
 
     await page.reload();
     await page.locator(".main-nav").getByRole("button", { name: /Planning opérationnel/i }).click();
@@ -344,6 +398,24 @@ test("799 projette une période d'actif depuis un quart et depuis Actifs sur tou
 
     expect(await planningVersion(page)).toBeGreaterThan(1);
   } finally {
+    if (adHocRequirementId && originShiftAllocationId) {
+      try {
+        const version = await planningVersion(page);
+        await page.request.put(
+          `/api/v1/assets/shifts/${encodeURIComponent(originShiftAllocationId)}/assignment`,
+          {
+            headers: { "Idempotency-Key": `${fixtureKey}-release-ad-hoc` },
+            data: {
+              asset_id: null,
+              asset_requirement_id: adHocRequirementId,
+              expected_planning_version: version,
+            },
+          },
+        );
+      } catch {
+        // Failure-safe cleanup continues with the remaining fixture objects.
+      }
+    }
     for (const requirementId of [directPeriodRequirementId, shiftPeriodRequirementId].filter(Boolean)) {
       try {
         const version = await planningVersion(page);
