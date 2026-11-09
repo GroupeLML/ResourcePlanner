@@ -1708,18 +1708,18 @@ class SqlAssetService:
             assert asset is not None
             assert parsed_start_date is not None
             assert parsed_end_date is not None
-            if not parsed_start_date <= shift.work_date <= parsed_end_date:
-                raise ApplicationValidationError(
-                    "La période d'actif doit couvrir la date du quart d'origine.",
-                    code="asset_resource_period_shift_date_required",
-                    context={
-                        "shift_id": shift.id,
-                        "shift_work_date": shift.work_date.isoformat(),
-                        "start_date": parsed_start_date.isoformat(),
-                        "end_date": parsed_end_date.isoformat(),
-                    },
-                )
             if requirement is None:
+                if not parsed_start_date <= shift.work_date <= parsed_end_date:
+                    raise ApplicationValidationError(
+                        "La période d'actif doit couvrir la date du quart d'origine.",
+                        code="asset_resource_period_shift_date_required",
+                        context={
+                            "shift_id": shift.id,
+                            "shift_work_date": shift.work_date.isoformat(),
+                            "start_date": parsed_start_date.isoformat(),
+                            "end_date": parsed_end_date.isoformat(),
+                        },
+                    )
                 result = self._create_direct_reservation(
                     origin=AssetRequirementOrigin.RESOURCE_PERIOD,
                     project_id=None,
@@ -1739,6 +1739,17 @@ class SqlAssetService:
                     "shift_locked": bool(shift.locked),
                 }
             if requirement.origin == AssetRequirementOrigin.SHIFT_AD_HOC.value:
+                if not parsed_start_date <= shift.work_date <= parsed_end_date:
+                    raise ApplicationValidationError(
+                        "La période d'actif doit couvrir la date du quart d'origine.",
+                        code="asset_resource_period_shift_date_required",
+                        context={
+                            "shift_id": shift.id,
+                            "shift_work_date": shift.work_date.isoformat(),
+                            "start_date": parsed_start_date.isoformat(),
+                            "end_date": parsed_end_date.isoformat(),
+                        },
+                    )
                 return self._transition_shift_ad_hoc_to_bounded(
                     shift=shift,
                     requirement=requirement,
