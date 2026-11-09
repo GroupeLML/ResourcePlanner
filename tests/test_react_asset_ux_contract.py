@@ -104,6 +104,43 @@ class ReactAssetUxContractTests(unittest.TestCase):
         self.assertIn("Occupé hors périmètre", occupancy)
         self.assertNotIn("snapshot.asset_allocations.filter", occupancy)
 
+    def test_approved_asset_requirements_group_from_snapshot_and_collapse_locally(self) -> None:
+        panel = (ROOT / "frontend" / "src" / "AssetPlanningPanel.tsx").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "snapshot.asset_requirements.filter((row) => !row.asset_id)",
+            panel,
+        )
+        self.assertIn(
+            "snapshot.asset_requirements.filter((row) => Boolean(row.asset_id))",
+            panel,
+        )
+        self.assertIn("unreservedRequirements.length", panel)
+        self.assertIn("reservedRequirements.length", panel)
+        self.assertIn("À réserver ({unreservedRequirements.length})", panel)
+        self.assertIn("Réservé ({reservedRequirements.length})", panel)
+        self.assertIn('data-testid="approved-asset-requirements-toggle"', panel)
+        self.assertIn('data-testid="unreserved-asset-requirements-toggle"', panel)
+        self.assertIn('data-testid="reserved-asset-requirements-toggle"', panel)
+        self.assertIn("aria-expanded={approvedRequirementsExpanded}", panel)
+        self.assertIn("aria-expanded={unreservedExpanded}", panel)
+        self.assertIn("aria-expanded={reservedExpanded}", panel)
+        self.assertIn(
+            "setApprovedRequirementsExpanded((value) => !value)",
+            panel,
+        )
+        self.assertIn("setUnreservedExpanded((value) => !value)", panel)
+        self.assertIn("setReservedExpanded((value) => !value)", panel)
+        self.assertIn("unreservedRequirements.map((requirement) => (", panel)
+        self.assertIn("reservedRequirements.map((requirement) => (", panel)
+        self.assertEqual(panel.count("<AssetRequirementCard"), 2)
+        self.assertEqual(panel.count("key={requirement.requirement_id}"), 2)
+        self.assertIn("Aucun besoin à réserver dans cette fenêtre.", panel)
+        self.assertIn("Aucun besoin réservé dans cette fenêtre.", panel)
+        self.assertIn("<AssetUnitOccupancyPanel snapshot={snapshot} />", panel)
+
     def test_request_asset_dates_are_explicit_and_distinct_from_window(self) -> None:
         panel = (ROOT / "frontend" / "src" / "AssetPlanningPanel.tsx").read_text(encoding="utf-8")
         dialog = (ROOT / "frontend" / "src" / "ShiftAssetAssignmentDialog.tsx").read_text(encoding="utf-8")

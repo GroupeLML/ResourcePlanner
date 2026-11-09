@@ -347,11 +347,22 @@ export default function AssetPlanningPanel({
   const [unavailableStart, setUnavailableStart] = useState(snapshot.start);
   const [unavailableEnd, setUnavailableEnd] = useState(snapshot.end);
   const [unavailableReason, setUnavailableReason] = useState("");
+  const [approvedRequirementsExpanded, setApprovedRequirementsExpanded] = useState(true);
+  const [unreservedExpanded, setUnreservedExpanded] = useState(true);
+  const [reservedExpanded, setReservedExpanded] = useState(true);
   const retryKeys = useRef(new Map<string, string>());
 
   const assetsById = useMemo(
     () => new Map(snapshot.assets.map((row) => [row.id, row])),
     [snapshot.assets],
+  );
+  const unreservedRequirements = useMemo(
+    () => snapshot.asset_requirements.filter((row) => !row.asset_id),
+    [snapshot.asset_requirements],
+  );
+  const reservedRequirements = useMemo(
+    () => snapshot.asset_requirements.filter((row) => Boolean(row.asset_id)),
+    [snapshot.asset_requirements],
   );
 
   async function reserve(
@@ -621,7 +632,7 @@ export default function AssetPlanningPanel({
   }
 
   const activeAssets = snapshot.assets.filter((asset) => asset.active);
-  const unassigned = snapshot.asset_requirements.filter((row) => !row.asset_id).length;
+  const unassigned = unreservedRequirements.length;
 
   return (
     <section className="asset-planning-panel" aria-label="Planning des actifs">
@@ -669,30 +680,112 @@ export default function AssetPlanningPanel({
       )}
 
       <div className="asset-planning-columns">
-        <div className="asset-requirements-panel">
+        <div className="asset-requirements-panel" data-testid="approved-asset-requirements">
           <div className="asset-section-heading">
-            <strong>Besoins approuvés</strong>
-            <span>Sélection d’unité manuelle seulement</span>
+            <div>
+              <strong>Besoins approuvés</strong>
+              <span>Sélection d’unité manuelle seulement</span>
+            </div>
+            <button
+              type="button"
+              className="text-button"
+              data-testid="approved-asset-requirements-toggle"
+              aria-expanded={approvedRequirementsExpanded}
+              aria-controls="approved-asset-requirements-content"
+              onClick={() => setApprovedRequirementsExpanded((value) => !value)}
+            >
+              {approvedRequirementsExpanded ? "Réduire" : "Développer"}
+            </button>
           </div>
-          <div className="asset-requirement-list">
-            {snapshot.asset_requirements.length === 0 ? (
-              <div className="asset-empty">Aucun besoin d’actif approuvé dans cette fenêtre.</div>
-            ) : snapshot.asset_requirements.map((requirement) => (
-              <AssetRequirementCard
-                key={`${requirement.requirement_id}:${requirement.asset_id ?? "unassigned"}`}
-                requirement={requirement}
-                snapshot={snapshot}
-                canManage={canManage}
-                busy={
-                  busy === `reserve:${requirement.requirement_id}`
-                  || busy === `operator:${requirement.requirement_id}`
-                }
-                onReserve={(row, assetId, startDate, endDate) => void reserve(row, assetId, startDate, endDate)}
-                onOperator={(row, resourceId) => void assignOperator(row, resourceId)}
-                onOpenDemand={onOpenDemand}
-              />
-            ))}
-          </div>
+          {approvedRequirementsExpanded && (
+            <div
+              className="asset-requirement-groups"
+              id="approved-asset-requirements-content"
+              data-testid="approved-asset-requirements-content"
+            >
+              <section className="asset-requirement-group" data-testid="unreserved-asset-requirements">
+                <div className="asset-requirement-group-heading">
+                  <strong>À réserver ({unreservedRequirements.length})</strong>
+                  <button
+                    type="button"
+                    className="text-button"
+                    data-testid="unreserved-asset-requirements-toggle"
+                    aria-expanded={unreservedExpanded}
+                    aria-controls="unreserved-asset-requirements-content"
+                    onClick={() => setUnreservedExpanded((value) => !value)}
+                  >
+                    {unreservedExpanded ? "Réduire" : "Développer"}
+                  </button>
+                </div>
+                {unreservedExpanded && (
+                  <div
+                    className="asset-requirement-list"
+                    id="unreserved-asset-requirements-content"
+                    data-testid="unreserved-asset-requirements-content"
+                  >
+                    {unreservedRequirements.length === 0 ? (
+                      <div className="asset-empty">Aucun besoin à réserver dans cette fenêtre.</div>
+                    ) : unreservedRequirements.map((requirement) => (
+                    <AssetRequirementCard
+                      key={requirement.requirement_id}
+                      requirement={requirement}
+                      snapshot={snapshot}
+                      canManage={canManage}
+                      busy={
+                        busy === `reserve:${requirement.requirement_id}`
+                        || busy === `operator:${requirement.requirement_id}`
+                      }
+                      onReserve={(row, assetId, startDate, endDate) => void reserve(row, assetId, startDate, endDate)}
+                      onOperator={(row, resourceId) => void assignOperator(row, resourceId)}
+                      onOpenDemand={onOpenDemand}
+                    />
+                  ))}
+                  </div>
+                )}
+              </section>
+
+              <section className="asset-requirement-group" data-testid="reserved-asset-requirements">
+                <div className="asset-requirement-group-heading">
+                  <strong>Réservé ({reservedRequirements.length})</strong>
+                  <button
+                    type="button"
+                    className="text-button"
+                    data-testid="reserved-asset-requirements-toggle"
+                    aria-expanded={reservedExpanded}
+                    aria-controls="reserved-asset-requirements-content"
+                    onClick={() => setReservedExpanded((value) => !value)}
+                  >
+                    {reservedExpanded ? "Réduire" : "Développer"}
+                  </button>
+                </div>
+                {reservedExpanded && (
+                  <div
+                    className="asset-requirement-list"
+                    id="reserved-asset-requirements-content"
+                    data-testid="reserved-asset-requirements-content"
+                  >
+                    {reservedRequirements.length === 0 ? (
+                      <div className="asset-empty">Aucun besoin réservé dans cette fenêtre.</div>
+                    ) : reservedRequirements.map((requirement) => (
+                    <AssetRequirementCard
+                      key={requirement.requirement_id}
+                      requirement={requirement}
+                      snapshot={snapshot}
+                      canManage={canManage}
+                      busy={
+                        busy === `reserve:${requirement.requirement_id}`
+                        || busy === `operator:${requirement.requirement_id}`
+                      }
+                      onReserve={(row, assetId, startDate, endDate) => void reserve(row, assetId, startDate, endDate)}
+                      onOperator={(row, resourceId) => void assignOperator(row, resourceId)}
+                      onOpenDemand={onOpenDemand}
+                    />
+                  ))}
+                  </div>
+                )}
+              </section>
+            </div>
+          )}
         </div>
 
         <div className="asset-unavailability-panel">
