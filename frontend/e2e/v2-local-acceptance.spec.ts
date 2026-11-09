@@ -2640,6 +2640,47 @@ test("#794 schedule communication preview hides default Quick Shift provenance",
     expect(segmentPayload.origin).toBe("QUICK_SHIFT");
     expect(segmentPayload.description).toBe("Quart rapide");
 
+    const candidatesResponse = await page.request.get(
+      "/api/v1/assets/shifts/"
+        + encodeURIComponent(allocationId)
+        + "/assignment/candidates",
+    );
+    expect(candidatesResponse.ok(), await candidatesResponse.text()).toBeTruthy();
+    const candidatesPayload = await candidatesResponse.json() as {
+      planning_version: number;
+      candidates: Array<{
+        id: string;
+        label: string;
+        asset_type_label: string;
+        allowed: boolean;
+        available: boolean;
+        selection_mode: string;
+      }>;
+    };
+    const communicationAsset = candidatesPayload.candidates.find(
+      (candidate) => (
+        candidate.allowed
+        && candidate.available
+        && candidate.selection_mode === "ASSIGN"
+      ),
+    );
+    expect(communicationAsset).toBeTruthy();
+
+    const assignedAsset = await page.request.put(
+      "/api/v1/assets/shifts/"
+        + encodeURIComponent(allocationId)
+        + "/assignment",
+      {
+        headers: { "Idempotency-Key": "708b-communication-asset-assignment" },
+        data: {
+          asset_id: communicationAsset!.id,
+          asset_requirement_id: null,
+          expected_planning_version: candidatesPayload.planning_version,
+        },
+      },
+    );
+    expect(assignedAsset.status(), await assignedAsset.text()).toBe(200);
+
     await navigateMain(page, "Communications");
     await page.getByLabel("Semaine du").fill(d1);
     await page.getByRole("button", { name: "Générer la prévisualisation" }).click();
@@ -2652,6 +2693,10 @@ test("#794 schedule communication preview hides default Quick Shift provenance",
     await expect(body).toHaveValue(/Travaux planifiés/);
     await expect(body).toHaveValue(/Alice/);
     await expect(body).toHaveValue(/1 h/);
+    await expect(body).toHaveValue(/Actif :/);
+    const previewText = await body.inputValue();
+    expect(previewText).toContain(communicationAsset!.asset_type_label);
+    expect(previewText).toContain(communicationAsset!.label);
   } finally {
     if (allocationId) {
       const cleanup = await page.request.delete(
