@@ -345,7 +345,15 @@ def evaluate_asset_qualifications(
             continue
 
         operator = operators.get(allocation.operator_resource_id)
-        if operator is None or not operator.active:
+        operator_active = (
+            continuous_beneficiary_resource_active(operator)
+            if (
+                requirement.origin == AssetRequirementOrigin.RESOURCE_PERIOD.value
+                and requirement.resource_period_mode == ResourcePeriodMode.CONTINUOUS.value
+            )
+            else bool(operator is not None and operator.active)
+        )
+        if not operator_active:
             result[key] = AssetQualification(
                 state=QUALIFICATION_SKILL_MISMATCH,
                 required_competency_ids=required_ids,
