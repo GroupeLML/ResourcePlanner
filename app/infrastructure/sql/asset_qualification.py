@@ -26,6 +26,21 @@ QUALIFICATION_SKILL_MISMATCH = "SKILL_MISMATCH"
 QUALIFICATION_NO_OVERLAP = "NO_OVERLAP"
 
 
+def continuous_beneficiary_resource_active(resource: Resource | None) -> bool:
+    """Return employee eligibility for a CONTINUOUS asset beneficiary.
+
+    ERP-linked resources use canonical ERP employment state. Purely local resources
+    retain local activation as their canonical employee/resource state. This is
+    intentionally distinct from Planning schedulability.
+    """
+
+    if resource is None:
+        return False
+    if resource.external_id:
+        return bool(resource.erp_active)
+    return bool(resource.active)
+
+
 @dataclass(frozen=True, slots=True)
 class AssetQualification:
     state: str
@@ -148,7 +163,15 @@ def evaluate_asset_qualification(
         )
 
     operator = session.get(Resource, allocation.operator_resource_id)
-    if operator is None or not operator.active:
+    operator_active = (
+        continuous_beneficiary_resource_active(operator)
+        if (
+            requirement.origin == AssetRequirementOrigin.RESOURCE_PERIOD.value
+            and requirement.resource_period_mode == ResourcePeriodMode.CONTINUOUS.value
+        )
+        else bool(operator is not None and operator.active)
+    )
+    if not operator_active:
         return AssetQualification(
             state=QUALIFICATION_SKILL_MISMATCH,
             required_competency_ids=required_ids,
