@@ -29,6 +29,7 @@ from app.infrastructure.sql import (
     AppUser,
     Base,
     BusinessContact,
+    ORIGIN_QUICK_SHIFT,
     Project,
     ProjectCoManager,
     RequestLine,
@@ -59,6 +60,7 @@ TEST_DOMAIN = "example.test"
 class FakeSmtpDeliveryClient:
     def __init__(self) -> None:
         self.attempt_subjects: list[str] = []
+        self.attempt_bodies: list[str] = []
         self.attempt_cc: list[tuple[str, ...]] = []
         self._failed_once = False
 
@@ -67,6 +69,7 @@ class FakeSmtpDeliveryClient:
 
     def send_message(self, configuration, message, *, message_id: str) -> str:
         self.attempt_subjects.append(message.subject)
+        self.attempt_bodies.append(message.body)
         self.attempt_cc.append(tuple(message.cc_emails))
         if "2000" in message.subject and not self._failed_once:
             self._failed_once = True
@@ -130,6 +133,53 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                         work_date=WEEK,
                         hours=Decimal("2"),
                         allocation_type="Flexible",
+                        outside_standard_hours=False,
+                    )
+                )
+        finally:
+            engine.dispose()
+
+    @staticmethod
+    def _add_quick_shift(
+        database_url: str,
+        *,
+        requirement_id: str,
+        shift_id: str,
+        description: str,
+        hours: str = "2",
+    ) -> None:
+        engine = create_sql_engine(database_url)
+        factory = create_session_factory(engine)
+        try:
+            with factory.begin() as session:
+                session.add(
+                    ResourceRequirement(
+                        id=requirement_id,
+                        project_id="P1",
+                        workforce_request_id=None,
+                        approved_contact_context_status="NOT_APPLICABLE",
+                        assigned_resource_id="R1",
+                        start_date=WEEK,
+                        end_date=WEEK,
+                        planned_hours=Decimal(hours),
+                        description=description,
+                        status="Planifié",
+                        planning_type="Fixe",
+                        confirmation="Confirmée",
+                        origin=ORIGIN_QUICK_SHIFT,
+                    )
+                )
+                session.flush()
+                session.add(
+                    Shift(
+                        id=shift_id,
+                        resource_requirement_id=requirement_id,
+                        resource_id="R1",
+                        work_date=WEEK,
+                        hours=Decimal(hours),
+                        allocation_type="Fixe",
+                        source="MANUAL",
+                        locked=True,
                         outside_standard_hours=False,
                     )
                 )
@@ -1003,6 +1053,142 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     delta_payload["snapshot_fingerprint"],
                     delta_payload["baseline_fingerprint"],
                 )
+
+    def test_quick_shift_default_origin_label_is_hidden_across_preview_graph_and_smtp(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            self._add_quick_shift(
+                database_url,
+                requirement_id="REQ-QS-DEFAULT",
+                shift_id="S-QS-DEFAULT",
+                description="Quart rapide",
+            )
+            self._add_quick_shift(
+                database_url,
+                requirement_id="REQ-QS-CUSTOM",
+                shift_id="S-QS-CUSTOM",
+                description="Inspection urgente",
+                hours="1",
+            )
+            transport = FakeProjectDraftTransport()
+            smtp = FakeSmtpDeliveryClient()
+            app = create_api_app(
+                database_url,
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+                communication_transport=transport,
+                smtp_client=smtp,
+            )
+
+            with TestClient(app) as client:
+                preview_response = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23"
+                )
+                self.assertEqual(
+                    preview_response.status_code,
+                    200,
+                    preview_response.text,
+                )
+                preview = preview_response.json()
+                project_draft = next(
+                    row for row in preview["drafts"] if row["project_id"] == "P1"
+                )
+                preview_body = project_draft["body"]
+                self.assertNotIn("Quart rapide", preview_body)
+                self.assertNotIn("Quick Shift", preview_body)
+                self.assertIn("Travaux planifiés", preview_body)
+                self.assertIn("Inspection urgente", preview_body)
+                self.assertIn("Installation approuvée", preview_body)
+                self.assertIn("Technicien ressource", preview_body)
+                self.assertIn("2 h", preview_body)
+                self.assertIn("1 h", preview_body)
+
+                prepared = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": preview["snapshot_fingerprint"],
+                        "reviews": [],
+                    },
+                )
+                self.assertEqual(prepared.status_code, 201, prepared.text)
+                batch = prepared.json()
+                batch_id = batch["id"]
+                persisted_body = next(
+                    message["body"]
+                    for message in batch["messages"]
+                    if message["project_id"] == "P1"
+                )
+                self.assertEqual(persisted_body, preview_body)
+
+                approved = client.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/approve"
+                )
+                self.assertEqual(approved.status_code, 200, approved.text)
+                created = client.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/create-drafts"
+                )
+                self.assertEqual(created.status_code, 200, created.text)
+                self.assertEqual(len(transport.messages), 1)
+                self.assertEqual(transport.messages[0].body, preview_body)
+
+                configured = client.put(
+                    "/api/v1/admin/settings/smtp",
+                    json={
+                        "host": "smtp.example.invalid",
+                        "port": 587,
+                        "security": "STARTTLS",
+                        "username": None,
+                        "password": None,
+                        "clear_password": False,
+                        "from_email": "planning" + chr(64) + TEST_DOMAIN,
+                        "from_name": "RessourcePlanner",
+                        "reply_to": None,
+                        "timeout_seconds": 20,
+                        "enabled": True,
+                    },
+                )
+                self.assertEqual(configured.status_code, 200, configured.text)
+                sent = client.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/send-smtp"
+                )
+                self.assertEqual(sent.status_code, 200, sent.text)
+                self.assertEqual(smtp.attempt_bodies, [preview_body])
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory() as session:
+                    default_requirement = session.get(
+                        ResourceRequirement,
+                        "REQ-QS-DEFAULT",
+                    )
+                    custom_requirement = session.get(
+                        ResourceRequirement,
+                        "REQ-QS-CUSTOM",
+                    )
+                    self.assertIsNotNone(default_requirement)
+                    self.assertIsNotNone(custom_requirement)
+                    assert default_requirement is not None
+                    assert custom_requirement is not None
+                    self.assertEqual(
+                        default_requirement.origin,
+                        ORIGIN_QUICK_SHIFT,
+                    )
+                    self.assertEqual(
+                        default_requirement.description,
+                        "Quart rapide",
+                    )
+                    self.assertEqual(
+                        custom_requirement.origin,
+                        ORIGIN_QUICK_SHIFT,
+                    )
+                    self.assertEqual(
+                        custom_requirement.description,
+                        "Inspection urgente",
+                    )
+            finally:
+                engine.dispose()
 
     def test_project_create_drafts_passes_persisted_to_and_cc_to_transport(self) -> None:
         with TemporaryDirectory() as directory:
