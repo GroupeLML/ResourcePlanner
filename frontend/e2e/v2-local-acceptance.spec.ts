@@ -2616,7 +2616,7 @@ test("#794 schedule communication preview hides default Quick Shift provenance",
       headers: { "Idempotency-Key": "issue-794-communication-preview" },
       data: {
         project_number: "P-251",
-        technician: "R-ALICE",
+        technician: "Alice",
         day: d1,
         hours: 1,
         confirmation: "Confirmée",
