@@ -2606,7 +2606,7 @@ test("materialized demand cancellation is requested, reviewed, rejected or accep
   await closeContext(requester.context);
 });
 
-test("#794 schedule communication preview hides default Quick Shift provenance", async ({ browser }) => {
+test("#794/708B schedule communication preview hides Quick Shift provenance and shows assigned asset", async ({ browser }) => {
   const { d1 } = acceptanceDates();
   const { context, page } = await openAs(browser, "COORDINATOR");
   let allocationId: string | null = null;
