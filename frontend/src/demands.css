@@ -141,6 +141,8 @@
   padding: .45rem;
   display: grid;
   gap: .4rem;
+  grid-auto-rows: max-content;
+  align-content: start;
 }
 
 .demand-list-empty,
