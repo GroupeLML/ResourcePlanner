@@ -1412,6 +1412,7 @@ export type AssetPlanningReadModel = {
   label: string;
   asset_type_id: string;
   active: boolean;
+  visible_in_unit_occupancy: boolean;
 };
 
 export type AssetRequirementPlanningReadModel = DemandDetailAssetRequirementReadModel;
