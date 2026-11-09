@@ -18,9 +18,28 @@ class Issue765ContractTests(unittest.TestCase):
 
         self.assertIn("detached?: boolean", planning)
         self.assertIn("Ressources et quarts — ", planning)
-        self.assertIn("!detached && snapshot", planning)
-        self.assertIn("AssetPlanningPanel", planning)
+        self.assertIn("{snapshot && (", planning)
+        self.assertIn("<AssetPlanningPanel", planning)
+        self.assertNotIn("!detached && snapshot", planning)
         self.assertNotIn("DetachedPlanningPage.tsx", app)
+
+    def test_detached_workspace_reuses_asset_planning_panel_and_backend_visibility_contract(self) -> None:
+        planning = (ROOT / "frontend" / "src" / "PlanningPage.tsx").read_text(
+            encoding="utf-8"
+        )
+        panel = (ROOT / "frontend" / "src" / "AssetPlanningPanel.tsx").read_text(
+            encoding="utf-8"
+        )
+        api = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
+
+        self.assertIn("<AssetPlanningPanel", planning)
+        self.assertNotIn("!detached && snapshot", planning)
+        self.assertIn("asset.visible_in_unit_occupancy", panel)
+        self.assertIn('data-testid="asset-unit-occupancy-toggle"', panel)
+        self.assertIn("aria-expanded={unitOccupancyExpanded}", panel)
+        self.assertIn("visible_in_unit_occupancy: boolean", api)
+        self.assertNotIn("resource_period_mode", planning)
+        self.assertNotIn("continuous_unit_occupancy", planning)
 
     def test_detach_button_serializes_context_and_handles_popup_block(self) -> None:
         planning = (ROOT / "frontend" / "src" / "PlanningPage.tsx").read_text(
