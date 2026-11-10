@@ -43,6 +43,9 @@ declare global {
     RESOURCEPLANNER_CONFIG?: {
       environment?: string;
     };
+    RESOURCEPLANNER_BUILD?: {
+      revision?: string;
+    };
   }
 }
 
@@ -59,6 +62,13 @@ function requestedViewFromUrl(): View | null {
 const SIDEBAR_COMPACT_STORAGE_KEY = "resourceplanner.sidebar.compact";
 const RUNTIME_ENVIRONMENT = (window.RESOURCEPLANNER_CONFIG?.environment || "PROD").trim().toUpperCase();
 const IS_DEV_ENVIRONMENT = RUNTIME_ENVIRONMENT === "DEV";
+const RAW_DEPLOYED_GIT_REVISION = (window.RESOURCEPLANNER_BUILD?.revision || "").trim();
+const DEPLOYED_GIT_REVISION = /^[0-9a-f]{40}$/i.test(RAW_DEPLOYED_GIT_REVISION)
+  ? RAW_DEPLOYED_GIT_REVISION.toLowerCase()
+  : null;
+const DEPLOYED_GIT_REVISION_LABEL = DEPLOYED_GIT_REVISION
+  ? `Révision déployée : ${DEPLOYED_GIT_REVISION}`
+  : "Révision déployée : indisponible";
 
 function displayInitials(displayName: string) {
   const parts = displayName.trim().split(/\s+/).filter(Boolean);
@@ -299,7 +309,13 @@ export default function App() {
             ☰
           </button>
           <div>
-            <span className="topbar-context">RessourcePlanner V2</span>
+            <span
+              className="topbar-context"
+              title={DEPLOYED_GIT_REVISION_LABEL}
+              aria-label={`RessourcePlanner V2 — ${DEPLOYED_GIT_REVISION_LABEL}`}
+            >
+              RessourcePlanner V2
+            </span>
             <strong>{currentItem?.label}</strong>
           </div>
           <DevUserSwitcher />

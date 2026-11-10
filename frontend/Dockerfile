@@ -1,4 +1,8 @@
+ARG RESOURCEPLANNER_GIT_REVISION=unavailable
+
 FROM node:22-alpine AS build
+
+ARG RESOURCEPLANNER_GIT_REVISION
 
 WORKDIR /src/frontend
 
@@ -7,9 +11,14 @@ RUN npm install --no-audit --no-fund
 
 COPY frontend/ ./
 
-RUN npm run build
+RUN printf '%s' "$RESOURCEPLANNER_GIT_REVISION" | grep -Eq '^(unavailable|[0-9a-fA-F]{40})$' \
+    && printf 'window.RESOURCEPLANNER_BUILD = Object.freeze({ revision: "%s" });\n' "$RESOURCEPLANNER_GIT_REVISION" > public/build-meta.js \
+    && npm run build
 
 FROM nginx:1.28-alpine AS runtime
+
+ARG RESOURCEPLANNER_GIT_REVISION
+LABEL org.opencontainers.image.revision="$RESOURCEPLANNER_GIT_REVISION"
 
 ENV NGINX_ENVSUBST_FILTER=RESOURCEPLANNER_FRAME_ANCESTORS \
     RESOURCEPLANNER_FRAME_ANCESTORS="'self'" \

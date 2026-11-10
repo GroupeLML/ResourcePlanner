@@ -201,6 +201,7 @@ jobs:
     env:
       RESOURCEPLANNER_IMAGE_TAG: ci
       RESOURCEPLANNER_HTTP_PORT: "18080"
+      RESOURCEPLANNER_GIT_REVISION: ${{ github.event.pull_request.head.sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -215,6 +216,14 @@ jobs:
           docker compose -f deploy/synology/compose.yml config >/tmp/resourceplanner-synology-compose.yml
       - name: Build and start Docker runtime
         run: docker compose up -d --build
+      - name: Validate frontend image revision metadata
+        run: |
+          frontend_image="$(docker compose images -q frontend)"
+          test -n "$frontend_image"
+          image_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$frontend_image")"
+          test "$image_revision" = "$RESOURCEPLANNER_GIT_REVISION"
+          docker run --rm --entrypoint cat "$frontend_image" /usr/share/nginx/html/build-meta.js \
+            | grep -F "$RESOURCEPLANNER_GIT_REVISION"
       - name: Validate packaged SQL Server driver
         run: |
           docker compose exec -T backend python - <<'PY'
@@ -272,6 +281,9 @@ jobs:
             sleep 2
           done
           test "$ready" = "1"
+          curl -fsSI http://127.0.0.1:18080/build-meta.js \
+            | tr -d '\r' \
+            | grep -Fqi 'Cache-Control: no-store, no-cache, must-revalidate'
           curl -fsS http://127.0.0.1:18080/health | grep -q '"status":"ok"'
           curl -fsS http://127.0.0.1:18080/ | grep -qi '<html'
           curl -fsS 'http://127.0.0.1:18080/api/v1/auth/me' >/tmp/auth.json
