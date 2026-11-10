@@ -142,6 +142,8 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
+      args:
+        RESOURCEPLANNER_GIT_REVISION: "${RESOURCEPLANNER_GIT_REVISION:-unavailable}"
     image: ${RESOURCEPLANNER_FRONTEND_IMAGE:-resourceplanner-frontend}:${RESOURCEPLANNER_IMAGE_TAG:-local}
     depends_on:
       backend:
