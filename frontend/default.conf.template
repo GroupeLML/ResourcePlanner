@@ -49,6 +49,9 @@ server {
     }
 
     location = /build-meta.js {
+        add_header Content-Security-Policy "frame-ancestors ${RESOURCEPLANNER_FRAME_ANCESTORS}" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "same-origin" always;
         add_header Cache-Control "no-store, no-cache, must-revalidate" always;
         expires -1;
         try_files $uri =404;
