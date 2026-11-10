@@ -59,7 +59,7 @@ test("822 ouvre Demandes sans sélection puis charge uniquement après intention
     await navigateDemands(page);
 
     const list = page.locator(".demand-list");
-    expect(await list.locator(".demand-card").count()).toBeGreaterThanOrEqual(2);
+    await expect.poll(async () => list.locator(".demand-card").count()).toBeGreaterThanOrEqual(2);
     await expect(
       page.getByText("Aucune demande actuellement sélectionnée", { exact: true }),
     ).toBeVisible();
