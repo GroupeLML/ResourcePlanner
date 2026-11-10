@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -67,6 +68,16 @@ test("821 affiche un état explicite quand la métadonnée de build est invalide
 test("821 recharge la révision B dans le même contexte après remplacement de l'image", async ({ browser }) => {
   const revisionA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   const revisionB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const nginxConfig = readFileSync(new URL("../default.conf.template", import.meta.url), "utf8");
+  const buildMetaLocation = nginxConfig.match(
+    /location = \/build-meta\.js \{([\s\S]*?)\n    \}/,
+  )?.[1] ?? "";
+  const cacheControl = buildMetaLocation.match(
+    /add_header Cache-Control "([^"]+)" always;/,
+  )?.[1];
+
+  expect(cacheControl).toBe("no-store, no-cache, must-revalidate");
+
   let activeRevision = revisionA;
   let metadataRequests = 0;
 
@@ -75,7 +86,7 @@ test("821 recharge la révision B dans le même contexte après remplacement de 
       metadataRequests += 1;
       response.writeHead(200, {
         "Content-Type": "application/javascript",
-        "Cache-Control": "no-store, no-cache, must-revalidate",
+        "Cache-Control": cacheControl!,
         "Expires": "Thu, 01 Jan 1970 00:00:01 GMT",
       });
       response.end(
