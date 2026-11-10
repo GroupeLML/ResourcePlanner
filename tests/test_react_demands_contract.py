@@ -85,6 +85,41 @@ class ReactDemandsContractTests(unittest.TestCase):
         self.assertNotIn("Contexte backend v{selectedDetail.version}", demands)
         self.assertNotIn("Version {detail.version}", detail)
 
+    def test_default_demands_selection_requires_explicit_intent(self) -> None:
+        source = (ROOT / "frontend" / "src" / "DemandsPage.tsx").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "current && demandRows.some((row) => row.number === current)",
+            source,
+        )
+        self.assertNotIn("return demandRows[0]?.number ?? null", source)
+        self.assertNotIn("setSelectedNumber(demands[0]?.number ?? null)", source)
+        self.assertIn("setSelectedNumber(null)", source)
+        self.assertIn("Aucune demande actuellement sélectionnée", source)
+        self.assertIn(
+            "Sélectionnez une demande dans la liste de gauche ou créez un nouveau brouillon.",
+            source,
+        )
+
+    def test_explicit_demand_and_creation_entry_points_remain_intentional(self) -> None:
+        demands = (ROOT / "frontend" / "src" / "DemandsPage.tsx").read_text(
+            encoding="utf-8"
+        )
+        workspace = (ROOT / "frontend" / "src" / "DemandsWorkspace.tsx").read_text(
+            encoding="utf-8"
+        )
+        app = (ROOT / "frontend" / "src" / "App.tsx").read_text(encoding="utf-8")
+
+        self.assertIn("setSelectedNumber(initialDemandNumber)", demands)
+        self.assertIn("beginCreate(initialCreateContext)", demands)
+        self.assertIn("<DemandsPage initialDemandNumber={initialDemandNumber} />", workspace)
+        self.assertIn("<DemandsPage initialCreateContext={initialCreateContext} />", workspace)
+        self.assertIn("<DemandsWorkspace initialDemandNumber={demandToOpen} />", app)
+        self.assertIn("<DemandsWorkspace initialCreateContext={demandCreateContext} />", app)
+        self.assertIn("await reloadDemand(result.demand_number)", demands)
+
     def test_creation_reuses_idempotency_key_for_identical_retry(self) -> None:
         source = (ROOT / "frontend" / "src" / "DemandsPage.tsx").read_text(
             encoding="utf-8"
