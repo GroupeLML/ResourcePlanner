@@ -47,6 +47,7 @@ class FrontendRevisionContractTests(unittest.TestCase):
             ROOT / "frontend" / "20-resourceplanner-runtime-config.sh"
         ).read_text(encoding="utf-8")
         app = (ROOT / "frontend" / "src" / "App.tsx").read_text(encoding="utf-8")
+        nginx = (ROOT / "frontend" / "default.conf.template").read_text(encoding="utf-8")
 
         self.assertIn('<script src="/build-meta.js"></script>', index)
         self.assertLess(
@@ -60,6 +61,9 @@ class FrontendRevisionContractTests(unittest.TestCase):
         self.assertIn("Révision déployée : indisponible", app)
         self.assertIn("title={DEPLOYED_GIT_REVISION_LABEL}", app)
         self.assertNotIn("github.com", app.casefold())
+        self.assertIn("location = /build-meta.js", nginx)
+        self.assertIn('Cache-Control "no-store, no-cache, must-revalidate" always', nginx)
+        self.assertIn("expires -1", nginx)
 
 
 if __name__ == "__main__":
