@@ -222,7 +222,8 @@ jobs:
           test -n "$frontend_image"
           image_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$frontend_image")"
           test "$image_revision" = "$RESOURCEPLANNER_GIT_REVISION"
-          curl -fsS http://127.0.0.1:18080/build-meta.js | grep -F "$RESOURCEPLANNER_GIT_REVISION"
+          docker run --rm --entrypoint cat "$frontend_image" /usr/share/nginx/html/build-meta.js \
+            | grep -F "$RESOURCEPLANNER_GIT_REVISION"
       - name: Validate packaged SQL Server driver
         run: |
           docker compose exec -T backend python - <<'PY'
