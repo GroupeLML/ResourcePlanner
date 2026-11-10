@@ -397,10 +397,11 @@ export default function DemandsPage({
         setAssets(assetCatalog.assets);
         setContacts(contactRows);
         setRequesters(requesterRows);
-        setSelectedNumber((current) => {
-          if (current && demandRows.some((row) => row.number === current)) return current;
-          return demandRows[0]?.number ?? null;
-        });
+        setSelectedNumber((current) => (
+          current && demandRows.some((row) => row.number === current)
+            ? current
+            : null
+        ));
       })
       .catch((reason: unknown) => {
         if (reason instanceof DOMException && reason.name === "AbortError") return;
@@ -411,6 +412,14 @@ export default function DemandsPage({
       });
     return () => controller.abort();
   }, [scope, scopeLoading, canManageDemands, initialCreateContext]);
+
+  useEffect(() => {
+    if (creating || selectedNumber || !selectedDemand) return;
+    setSelectedDemand(null);
+    setSelectedDetail(null);
+    setDemandContactLink(null);
+    setLineContactResolutions({});
+  }, [creating, selectedNumber, selectedDemand]);
 
   useEffect(() => {
     if (creating || !selectedNumber) return;
@@ -1369,7 +1378,7 @@ export default function DemandsPage({
                     if (!confirmDiscardChanges()) return;
                     setCreating(false);
                     setEditorDirty(false);
-                    setSelectedNumber(demands[0]?.number ?? null);
+                    setSelectedNumber(null);
                   }} disabled={saving}>Annuler</button>
                 )}
                 <button type="submit" className="primary-button" disabled={saving || (!creating && detailLoading)}>
@@ -1379,8 +1388,8 @@ export default function DemandsPage({
             </form>
           ) : (
             <div className="demand-editor-empty">
-              <strong>Aucune demande sélectionnée</strong>
-              <span>Sélectionne une demande ou crée un nouveau brouillon.</span>
+              <strong>Aucune demande actuellement sélectionnée</strong>
+              <span>Sélectionnez une demande dans la liste de gauche ou créez un nouveau brouillon.</span>
             </div>
           )}
           {!creating && selectedDemand && (
