@@ -1,3 +1,6 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+
 import { Browser, expect, test } from "@playwright/test";
 
 const BASE_URL = process.env.RESOURCEPLANNER_E2E_BASE_URL || "http://127.0.0.1:8765";
@@ -57,5 +60,71 @@ test("821 affiche un état explicite quand la métadonnée de build est invalide
     );
   } finally {
     await context.close();
+  }
+});
+
+
+test("821 recharge la révision B dans le même contexte après remplacement de l'image", async ({ browser }) => {
+  const revisionA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const revisionB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  let activeRevision = revisionA;
+  let metadataRequests = 0;
+
+  const server = createServer((request, response) => {
+    if (request.url === "/build-meta.js") {
+      metadataRequests += 1;
+      response.writeHead(200, {
+        "Content-Type": "application/javascript",
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        "Expires": "Thu, 01 Jan 1970 00:00:01 GMT",
+      });
+      response.end(
+        `window.RESOURCEPLANNER_BUILD = Object.freeze({ revision: "${activeRevision}" });\n`,
+      );
+      return;
+    }
+
+    response.writeHead(200, {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+    });
+    response.end(`<!doctype html>
+<html lang="fr">
+  <body>
+    <span id="rp-label">RessourcePlanner V2</span>
+    <script src="/build-meta.js"></script>
+    <script>
+      const raw = (window.RESOURCEPLANNER_BUILD?.revision || "").trim();
+      const revision = /^[0-9a-f]{40}$/i.test(raw) ? raw.toLowerCase() : null;
+      document.getElementById("rp-label").title = revision
+        ? "Révision déployée : " + revision
+        : "Révision déployée : indisponible";
+    </script>
+  </body>
+</html>`);
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as AddressInfo;
+  const origin = `http://127.0.0.1:${address.port}`;
+  const context = await browser.newContext();
+
+  try {
+    const page = await context.newPage();
+    await page.goto(origin);
+    const shellLabel = page.getByText("RessourcePlanner V2", { exact: true });
+    await expect(shellLabel).toHaveAttribute("title", `Révision déployée : ${revisionA}`);
+    expect(metadataRequests).toBe(1);
+
+    activeRevision = revisionB;
+    await page.reload();
+
+    await expect(shellLabel).toHaveAttribute("title", `Révision déployée : ${revisionB}`);
+    expect(metadataRequests).toBe(2);
+  } finally {
+    await context.close();
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
   }
 });
