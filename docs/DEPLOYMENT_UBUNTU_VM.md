@@ -80,6 +80,37 @@ La promotion de production reste **explicite** :
 
 Le déploiement ne doit pas être déclenché silencieusement par chaque push Git.
 
+### Révision source immuable des images
+
+Les scripts d'exploitation propres à la VM (`build.sh`, `deploy-dev.sh`,
+`promote-prod.sh`, etc.) ne sont pas versionnés dans ce dépôt. Lorsqu'ils
+construisent les images à partir d'un checkout Git, ils doivent déléguer la
+construction versionnée au helper du dépôt :
+
+```bash
+sh tools/build_resourceplanner_images.sh
+```
+
+Ce helper :
+
+- dérive le SHA Git complet de `HEAD` depuis le checkout réellement construit;
+- refuse une construction déployable depuis un checkout sale;
+- injecte ce SHA uniquement au build de l'image frontend;
+- laisse le frontend afficher explicitement `indisponible` lorsqu'une image est
+  construite en dehors de ce chemin sans métadonnée valide.
+
+Après la construction et les tests DEV, une promotion PROD doit continuer à
+réutiliser exactement la même image, sans rebuild. La révision compilée dans
+`build-meta.js` et le label OCI `org.opencontainers.image.revision` restent
+donc identiques pendant la promotion. Une variable runtime PROD ne peut pas
+réécrire cette révision.
+
+Le déploiement de l'image déjà construite reste explicite, par exemple :
+
+```bash
+docker compose up -d --no-build
+```
+
 ## Configuration et secrets
 
 Les secrets restent hors Git et hors images Docker.
