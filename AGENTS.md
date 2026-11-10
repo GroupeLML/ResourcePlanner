@@ -290,6 +290,23 @@ If the risk assessment discovers that the current production promotion script is
 
 A green CI run proves repository behavior under CI conditions; it does not by itself prove that production configuration, current durable state, backups, live writers or external integrations are safe for deployment.
 
+### PR record when the final assessment changes
+
+If the final exact-head **Production Merge Risk Assessment** materially differs from the PMRA or production-impact assessment already recorded in the PR, the orchestrator must post the final assessment to the PR before recommending merge.
+
+Material differences include a changed:
+
+- risk level;
+- deployment disposition;
+- rollback guidance;
+- required operator steps;
+- production-data or automatic-behavior conclusion;
+- other production-safety conclusion that would change how the PR should be merged or deployed.
+
+The PR comment must identify the exact assessed head and make clear that the final assessment supersedes the earlier provisional assessment for merge authorization.
+
+Do not post a redundant comment when the final assessment is substantively unchanged.
+
 ### DEV handoff contribution
 
 The DEV agent should include concise **production-impact notes** in its final handoff when the change affects migrations, startup, background jobs, integrations, configuration, deployment, rollback compatibility or production data semantics.

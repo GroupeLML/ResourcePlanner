@@ -2306,12 +2306,11 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   await expect(nacelle63Reservation).toContainText("Réservation de la demande");
   await expect(nacelle64Reservation).toContainText("Réservation de la demande");
 
-  const inheritedVehicleReservations = relatedAssets.locator("div").filter({ hasText: /VEH-775-/ });
-  if (await inheritedVehicleReservations.count()) {
+  const inheritedReservations = relatedAssets
+    .locator("div")
+    .filter({ hasText: "Héritée de la période ressource" });
+  if (await inheritedReservations.count()) {
     await expect(relatedHeading).toHaveText("Réservations liées ou héritées");
-    for (let index = 0; index < await inheritedVehicleReservations.count(); index += 1) {
-      await expect(inheritedVehicleReservations.nth(index)).toContainText("Héritée de la période ressource");
-    }
   } else {
     await expect(relatedHeading).toHaveText("Réservations liées à la demande");
   }

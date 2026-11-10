@@ -1496,6 +1496,103 @@ class SqlAssetService:
             "planning_version": self.version.current_version(),
         }
 
+    def _transition_shift_ad_hoc_to_bounded(
+        self,
+        *,
+        shift: Shift,
+        requirement: AssetRequirement,
+        asset: Asset,
+        start_date: date,
+        end_date: date,
+        expected_version: int,
+    ) -> dict:
+        if requirement.shift_id != shift.id:
+            raise ApplicationConflictError(
+                "Le besoin ad hoc appartient à un autre quart.",
+                code="shift_asset_requirement_owner_conflict",
+            )
+        previous = self._allocation_for_requirement(requirement.id)
+        if previous is None:
+            raise ApplicationConflictError(
+                "Le besoin ad hoc ne possède plus d'affectation active.",
+                code="shift_asset_assignment_not_found",
+            )
+
+        replacement_authority = self._require_assignment_authorities(
+            previous.asset_id,
+            asset.id,
+        )
+        old_requirement_id = requirement.id
+        old_allocation_id = previous.id
+        before = {
+            "requirement_id": old_requirement_id,
+            "allocation_id": old_allocation_id,
+            "origin": requirement.origin,
+            "shift_id": requirement.shift_id,
+            "asset_id": previous.asset_id,
+            "operator_resource_id": previous.operator_resource_id,
+            "start_date": previous.start_date,
+            "end_date": previous.end_date,
+            "shift_source": shift.source,
+            "shift_locked": bool(shift.locked),
+            "assignment_authority": replacement_authority,
+        }
+
+        # Remove only the exact Shift-owned reservation inside this transaction.
+        # The subsequent bounded validation sees every other allocation normally.
+        # Any failure rolls this deletion back with the request transaction.
+        self.session.delete(previous)
+        self.session.flush()
+        self.session.delete(requirement)
+        self.session.flush()
+
+        result = self._create_direct_reservation(
+            origin=AssetRequirementOrigin.RESOURCE_PERIOD,
+            project_id=None,
+            context_resource_id=shift.resource_id,
+            asset_type_id=asset.asset_type_id,
+            asset_id=asset.id,
+            start_date=start_date,
+            end_date=end_date,
+            operator_resource_id=shift.resource_id,
+            expected_version=expected_version,
+            resource_period_mode=ResourcePeriodMode.BOUNDED,
+        )
+        self.audit.append(
+            entity_type="ASSET_ALLOCATION",
+            entity_id=old_allocation_id,
+            entity_reference=old_requirement_id,
+            parent_reference=shift.id,
+            action="Remplacement réservation ad hoc par période ressource",
+            before=before,
+            after={
+                "requirement_id": result["requirement_id"],
+                "allocation_id": result["allocation_id"],
+                "origin": result["requirement_origin"],
+                "resource_period_mode": result["resource_period_mode"],
+                "asset_id": result["asset_id"],
+                "operator_resource_id": result["operator_resource_id"],
+                "start_date": result["start_date"],
+                "end_date": result["end_date"],
+                "context_resource_id": result["context_resource_id"],
+                "replaced_requirement_id": old_requirement_id,
+                "replaced_allocation_id": old_allocation_id,
+                "shift_id": shift.id,
+                "shift_source": shift.source,
+                "shift_locked": bool(shift.locked),
+                "assignment_authority": replacement_authority,
+            },
+        )
+        self.session.flush()
+        return {
+            **result,
+            "shift_id": shift.id,
+            "shift_source": shift.source,
+            "shift_locked": bool(shift.locked),
+            "replaced_requirement_id": old_requirement_id,
+            "replaced_allocation_id": old_allocation_id,
+        }
+
     def set_shift_asset(
         self,
         *,
@@ -1576,6 +1673,92 @@ class SqlAssetService:
             asset=asset,
             explicit_requirement_id=requirement_id,
         )
+        if (start_date is None) != (end_date is None):
+            raise ApplicationValidationError(
+                "Les dates réelles de réservation doivent être fournies ensemble.",
+                code="asset_reservation_dates_required",
+            )
+        parsed_start_date: date | None = None
+        parsed_end_date: date | None = None
+        if start_date is not None and end_date is not None:
+            try:
+                parsed_start_date = date.fromisoformat(start_date)
+                parsed_end_date = date.fromisoformat(end_date)
+            except (TypeError, ValueError) as exc:
+                raise ApplicationValidationError(
+                    "Date de réservation invalide.",
+                    code="asset_reservation_date_invalid",
+                ) from exc
+            if parsed_start_date > parsed_end_date:
+                raise ApplicationValidationError(
+                    "La date de début doit précéder ou égaler la date de fin.",
+                    code="asset_reservation_window_invalid",
+                )
+
+        multi_day_intent = bool(
+            asset is not None
+            and parsed_start_date is not None
+            and parsed_end_date is not None
+            and (
+                parsed_start_date != shift.work_date
+                or parsed_end_date != shift.work_date
+            )
+        )
+        if multi_day_intent:
+            assert asset is not None
+            assert parsed_start_date is not None
+            assert parsed_end_date is not None
+            if requirement is None:
+                if not parsed_start_date <= shift.work_date <= parsed_end_date:
+                    raise ApplicationValidationError(
+                        "La période d'actif doit couvrir la date du quart d'origine.",
+                        code="asset_resource_period_shift_date_required",
+                        context={
+                            "shift_id": shift.id,
+                            "shift_work_date": shift.work_date.isoformat(),
+                            "start_date": parsed_start_date.isoformat(),
+                            "end_date": parsed_end_date.isoformat(),
+                        },
+                    )
+                result = self._create_direct_reservation(
+                    origin=AssetRequirementOrigin.RESOURCE_PERIOD,
+                    project_id=None,
+                    context_resource_id=shift.resource_id,
+                    asset_type_id=asset.asset_type_id,
+                    asset_id=asset.id,
+                    start_date=parsed_start_date,
+                    end_date=parsed_end_date,
+                    operator_resource_id=shift.resource_id,
+                    expected_version=expected_version,
+                    resource_period_mode=ResourcePeriodMode.BOUNDED,
+                )
+                return {
+                    **result,
+                    "shift_id": shift.id,
+                    "shift_source": shift.source,
+                    "shift_locked": bool(shift.locked),
+                }
+            if requirement.origin == AssetRequirementOrigin.SHIFT_AD_HOC.value:
+                if not parsed_start_date <= shift.work_date <= parsed_end_date:
+                    raise ApplicationValidationError(
+                        "La période d'actif doit couvrir la date du quart d'origine.",
+                        code="asset_resource_period_shift_date_required",
+                        context={
+                            "shift_id": shift.id,
+                            "shift_work_date": shift.work_date.isoformat(),
+                            "start_date": parsed_start_date.isoformat(),
+                            "end_date": parsed_end_date.isoformat(),
+                        },
+                    )
+                return self._transition_shift_ad_hoc_to_bounded(
+                    shift=shift,
+                    requirement=requirement,
+                    asset=asset,
+                    start_date=parsed_start_date,
+                    end_date=parsed_end_date,
+                    expected_version=expected_version,
+                )
+
         created_requirement = False
         if requirement is None:
             if asset is None:
@@ -1627,11 +1810,6 @@ class SqlAssetService:
                 code="shift_asset_requirement_origin_invalid",
             )
 
-        if (start_date is None) != (end_date is None):
-            raise ApplicationValidationError(
-                "Les dates réelles de réservation doivent être fournies ensemble.",
-                code="asset_reservation_dates_required",
-            )
         previous = self._allocation_for_requirement(requirement.id)
         authority_proof = self._require_assignment_authorities(
             previous.asset_id if previous is not None else None,
@@ -1721,8 +1899,8 @@ class SqlAssetService:
             begin, end = self._resolve_request_reservation_dates(
                 requirement=requirement,
                 previous=previous,
-                start_date=start_date,
-                end_date=end_date,
+                start_date=parsed_start_date,
+                end_date=parsed_end_date,
             )
             operator_resource_id = (
                 previous.operator_resource_id

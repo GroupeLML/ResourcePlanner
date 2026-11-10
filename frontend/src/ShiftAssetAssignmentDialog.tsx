@@ -288,7 +288,10 @@ export default function ShiftAssetAssignmentDialog({
 
   const current = shift.asset_assignment;
   const projectReuse = selectedCandidate?.selection_mode === "DESIGNATE_PROJECT_OPERATOR";
-  const noChange = mode === "change" && selectedAssetId === current?.asset_id;
+  const noChange = mode === "change"
+    && selectedAssetId === current?.asset_id
+    && reservationStart === (current?.start_date ?? shift.work_date)
+    && reservationEnd === (current?.end_date ?? shift.work_date);
   const saveDisabled = busy
     || (
       mode !== "release"
