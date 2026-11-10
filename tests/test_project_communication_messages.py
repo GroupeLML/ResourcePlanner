@@ -184,7 +184,7 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         self.assertIn("  • Alice — 8 h", body)
         self.assertNotIn("Actif :", body)
 
-    def test_resource_line_renders_multiple_assets_with_type_labels_once(self) -> None:
+    def test_resource_line_renders_multiple_assets_with_canonical_unit_codes(self) -> None:
         vehicle = ProjectCommunicationAsset(
             allocation_id="ALLOC-V",
             asset_id="ASSET-V",
@@ -218,12 +218,11 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
             )
         )
         body = batch.drafts[0].body
-        self.assertIn(
-            "Actif : Véhicule — Camion 12 / Équipement — Nacelle 7",
-            body,
-        )
-        self.assertEqual(body.count("Camion 12"), 1)
-        self.assertEqual(body.count("Nacelle 7"), 1)
+        self.assertIn("Actif : V-12 / EQ-7", body)
+        self.assertNotIn("Camion 12", body)
+        self.assertNotIn("Nacelle 7", body)
+        self.assertNotIn("Véhicule —", body)
+        self.assertNotIn("Équipement —", body)
 
         restored = deserialize_project_projection(
             serialize_project_projection(
