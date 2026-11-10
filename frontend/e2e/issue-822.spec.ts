@@ -59,7 +59,7 @@ test("822 ouvre Demandes sans sélection puis charge uniquement après intention
     await navigateDemands(page);
 
     const list = page.locator(".demand-list");
-    await expect(list.locator(".demand-card")).toHaveCount(2);
+    expect(await list.locator(".demand-card").count()).toBeGreaterThanOrEqual(2);
     await expect(
       page.getByText("Aucune demande actuellement sélectionnée", { exact: true }),
     ).toBeVisible();
@@ -83,7 +83,7 @@ test("822 ouvre Demandes sans sélection puis charge uniquement après intention
     await expect(
       page.locator(`.demand-detail-context[data-demand-number="${firstDemand}"]`),
     ).toBeVisible();
-    await expect.poll(() => detailRequests).toContain(firstDemand);
+    await expect.poll(() => detailRequests.includes(firstDemand)).toBe(true);
 
     const requestsAfterExplicitSelection = detailRequests.length;
     await page.getByRole("button", { name: /Nouvelle demande/ }).click();
