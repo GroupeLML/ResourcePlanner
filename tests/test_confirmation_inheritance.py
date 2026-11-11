@@ -377,20 +377,28 @@ class ConfirmationInheritanceApiTests(unittest.TestCase):
                 lines = [row for row in detail["demand"]["lines"] if row["active"]]
                 self.assertEqual([row["confirmation"] for row in lines], ["Tentative", "Confirmée"])
 
-                successor = [dict(row) for row in lines]
+                successor = [
+                    {
+                        "id": row["line_id"],
+                        "position": row["position"],
+                        "kind": row["kind"],
+                        "required_resource_class": row["required_resource_class"],
+                        "required_competency_ids": row["required_competency_ids"],
+                        "desired_start": row["desired_start"],
+                        "desired_end": row["desired_end"],
+                        "desired_active_days": row["desired_active_days"],
+                        "estimated_hours": row["estimated_hours"],
+                        "work_package_ref": row["work_package_ref"],
+                        "task_code": row["task_code"],
+                        "proposed_resource_id": row["proposed_resource_id"],
+                        "asset_type_id": row["asset_type_id"],
+                        "proposed_asset_id": row["proposed_asset_id"],
+                        "confirmation": row["confirmation"],
+                        "description": row["description"],
+                    }
+                    for row in lines
+                ]
                 successor[0]["confirmation"] = "Confirmée"
-                for row in successor:
-                    for key in (
-                        "required_resource_class_label",
-                        "work_package_name",
-                        "task_label",
-                        "proposed_resource",
-                        "asset_type_code",
-                        "asset_type_label",
-                        "proposed_asset_code",
-                        "proposed_asset_label",
-                    ):
-                        row.pop(key, None)
                 patched = client.patch(
                     f"/api/v1/demands/{number}",
                     json={
@@ -403,8 +411,6 @@ class ConfirmationInheritanceApiTests(unittest.TestCase):
                 )
                 self.assertEqual(patched.status_code, 200, patched.text)
 
-                engine = create_sql_engine(self._database(directory))
-                engine.dispose()
                 after = client.get(f"/api/v1/demands/{number}/detail").json()
                 after_lines = [row for row in after["demand"]["lines"] if row["active"]]
                 self.assertEqual(
