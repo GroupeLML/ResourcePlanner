@@ -92,6 +92,17 @@ class SqlDemandApprovalEnvelopePolicyRepository:
             approval_reference_known=True,
         )
 
+    def candidate_confirmations(
+        self,
+        demand_number: str,
+    ) -> dict[str, str]:
+        request = self._request(demand_number)
+        candidate = self._revisions.candidate_envelope(request)
+        return {
+            entry.identity.stable_key: entry.confirmation
+            for entry in candidate.entries
+        }
+
     def _append_history(
         self,
         request: WorkforceRequest,
