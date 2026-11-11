@@ -3,11 +3,13 @@ from __future__ import annotations
 from functools import partial
 
 from datetime import date, time
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.domain.confirmation import (
     CONFIRMATION_CONFIRMED,
@@ -18,12 +20,16 @@ from app.domain.confirmation import (
 from app.infrastructure.sql import (
     Base,
     Project,
+    RequestLine,
     Resource,
     ResourceAvailabilityRule,
+    ResourceRequirement,
+    WorkforceRequest,
     create_session_factory,
     create_sql_engine,
     transactional_session,
 )
+from app.infrastructure.sql.operational_choice_models import RequestOperationalState
 from app.server import create_api_app
 
 
@@ -90,7 +96,11 @@ class ConfirmationInheritanceApiTests(unittest.TestCase):
         return self._database_template.copy_to(directory)
 
     @staticmethod
-    def _create_and_approve_tentative(client: TestClient) -> str:
+    def _create_and_approve(
+        client: TestClient,
+        *,
+        confirmation: str,
+    ) -> str:
         created = client.post(
             "/api/v1/demands",
             json=routed_demand_payload({
@@ -99,7 +109,7 @@ class ConfirmationInheritanceApiTests(unittest.TestCase):
                 "desired_end": DAY.isoformat(),
                 "estimated_hours": 4,
                 "proposed_technician": "Alice",
-                "confirmation": "Tentative",
+                "confirmation": confirmation,
             }),
         )
         assert created.status_code == 201, created.text
@@ -127,6 +137,13 @@ class ConfirmationInheritanceApiTests(unittest.TestCase):
         assert assigned.status_code == 200, assigned.text
         return number
 
+    @staticmethod
+    def _create_and_approve_tentative(client: TestClient) -> str:
+        return ConfirmationInheritanceApiTests._create_and_approve(
+            client,
+            confirmation="Tentative",
+        )
+
     def test_request_confirmation_flows_to_requirement_and_auto_shift(self) -> None:
         with TemporaryDirectory() as directory:
             app = create_api_app(self._database(directory), actor_name="Jean")
@@ -142,6 +159,147 @@ class ConfirmationInheritanceApiTests(unittest.TestCase):
                 shift = next(row for row in shifts if row["segment_id"] == segment["segment_id"])
                 self.assertEqual(shift["confirmation"], "Tentative")
                 self.assertIsNone(shift["confirmation_override"])
+
+    def test_characterization_839_post_approval_demand_edit_leaves_active_planning_confirmation_stale(self) -> None:
+        """Characterize #839 without accepting the stale state as the target contract.
+
+        The candidate Demand/RequestLine edit succeeds in both directions, but the
+        active operational confirmation and materialized ResourceRequirement remain
+        at the approval-time value. Phase 2 is expected to invert the stale Planning
+        assertions while preserving the candidate/operational authority split.
+        """
+
+        for initial, target in (
+            ("Tentative", "Confirmée"),
+            ("Confirmée", "Tentative"),
+        ):
+            with self.subTest(initial=initial, target=target):
+                with TemporaryDirectory() as directory:
+                    database_url = self._database(directory)
+                    app = create_api_app(database_url, actor_name="Jean")
+                    with TestClient(app, raise_server_exceptions=False) as client:
+                        number = self._create_and_approve(
+                            client,
+                            confirmation=initial,
+                        )
+
+                        before_detail = client.get(f"/api/v1/demands/{number}")
+                        self.assertEqual(
+                            before_detail.status_code,
+                            200,
+                            before_detail.text,
+                        )
+                        version = before_detail.json()["version"]
+
+                        before_segment = next(
+                            row
+                            for row in client.get("/api/v1/segments").json()
+                            if row["demand_number"] == number
+                        )
+                        before_shift = next(
+                            row
+                            for row in client.get("/api/v1/shifts").json()
+                            if row["segment_id"] == before_segment["segment_id"]
+                        )
+                        self.assertEqual(before_segment["confirmation"], initial)
+                        self.assertEqual(before_shift["confirmation"], initial)
+
+                        edited = client.patch(
+                            f"/api/v1/demands/{number}",
+                            json={
+                                "confirmation": target,
+                                "expected_version": version,
+                                "comment": "Caractérisation #839",
+                            },
+                        )
+                        self.assertEqual(edited.status_code, 200, edited.text)
+
+                        after_detail = client.get(f"/api/v1/demands/{number}")
+                        self.assertEqual(
+                            after_detail.status_code,
+                            200,
+                            after_detail.text,
+                        )
+                        self.assertEqual(after_detail.json()["confirmation"], target)
+                        self.assertEqual(
+                            after_detail.json()["status"],
+                            "En planification",
+                        )
+
+                        after_segment = next(
+                            row
+                            for row in client.get("/api/v1/segments").json()
+                            if row["demand_number"] == number
+                        )
+                        after_shift = next(
+                            row
+                            for row in client.get("/api/v1/shifts").json()
+                            if row["segment_id"] == after_segment["segment_id"]
+                        )
+
+                        # Current defect: Planning still consumes the materialized
+                        # operational value captured at approval.
+                        self.assertEqual(after_segment["confirmation"], initial)
+                        self.assertEqual(after_shift["confirmation"], initial)
+                        self.assertIsNone(after_shift["confirmation_override"])
+
+                    engine = create_sql_engine(database_url)
+                    factory = create_session_factory(engine)
+                    try:
+                        with factory() as session:
+                            request = session.scalar(
+                                select(WorkforceRequest).where(
+                                    WorkforceRequest.legacy_demand_number == number
+                                )
+                            )
+                            self.assertIsNotNone(request)
+                            assert request is not None
+
+                            line = session.scalar(
+                                select(RequestLine).where(
+                                    RequestLine.workforce_request_id == request.id,
+                                    RequestLine.active.is_(True),
+                                )
+                            )
+                            requirement = session.scalar(
+                                select(ResourceRequirement).where(
+                                    ResourceRequirement.workforce_request_id
+                                    == request.id,
+                                    ResourceRequirement.status != "Annulé",
+                                )
+                            )
+                            operational = session.get(
+                                RequestOperationalState,
+                                request.id,
+                            )
+                            self.assertIsNotNone(line)
+                            self.assertIsNotNone(requirement)
+                            self.assertIsNotNone(operational)
+                            assert (
+                                line is not None
+                                and requirement is not None
+                                and operational is not None
+                            )
+
+                            # Candidate persistence has the edit.
+                            self.assertEqual(request.confirmation, target)
+                            self.assertEqual(line.confirmation, target)
+
+                            # Active Planning authority is stale because the normal
+                            # demand edit did not update the operational choice state
+                            # or resynchronize the materialized requirement.
+                            self.assertEqual(requirement.confirmation, initial)
+                            self.assertFalse(requirement.confirmation_overridden)
+                            self.assertEqual(operational.version, 1)
+                            confirmations = json.loads(
+                                operational.confirmations_text
+                            )
+                            self.assertEqual(
+                                next(iter(confirmations.values())),
+                                initial,
+                            )
+                    finally:
+                        engine.dispose()
 
     def test_segment_override_can_be_set_and_cleared_without_changing_request(self) -> None:
         with TemporaryDirectory() as directory:
