@@ -29,6 +29,7 @@ from ..domain.approval_envelope import (
     CHANGE_CONFIRMATION,
     DECISION_APPROVAL_REFERENCE_UNKNOWN,
     DECISION_EXPLICIT_EXCEPTION_REQUIRED,
+    DECISION_WITHIN_ENVELOPE,
     DECISION_INVALID,
     DECISION_REAPPROVAL_REQUIRED,
     REASON_DELEGATED_TOLERANCE,
@@ -952,7 +953,10 @@ class DemandService:
                     decision,
                     legacy_unknown_requires_reapproval=legacy_unknown_requires_reapproval,
                 )
-                if not reapproval_required:
+                if (
+                    not reapproval_required
+                    and decision.decision == DECISION_WITHIN_ENVELOPE
+                ):
                     self._converge_candidate_confirmation_changes(
                         number,
                         decision,
