@@ -70,7 +70,7 @@ class DemandRequesterIdentityTests(unittest.TestCase):
                         id="P2",
                         number="P-2",
                         name="Projet inactif identité",
-                        status="Inactif",
+                        status="Terminé",
                     ),
                 ]
             )
