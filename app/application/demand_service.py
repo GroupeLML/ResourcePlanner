@@ -622,11 +622,10 @@ class DemandService:
             code_prefix="operational_confirmation_sync",
             context={"demand_number": number},
         )
-        call_application_port(
-            self._planning.rebuild,
-            code_prefix="operational_confirmation_rebuild",
-            context={"demand_number": number},
-        )
+        # Confirmation-only changes do not alter work placement. Automatic Shifts
+        # intentionally store confirmation=None and inherit the synchronized
+        # ResourceRequirement confirmation at read time, so a generic rebuild
+        # would only replace otherwise-valid disposable AUTO Shift identities.
 
     def _candidate_decision_mutates_active_plan(
         self,
@@ -1358,7 +1357,7 @@ class DemandService:
     def set_operational_confirmation_command(
         self,
         command: DemandOperationalConfirmationCommand,
-    ) -> Mapping[str, Any]:
+    ) -> Mapping[str, Any] | None:
         number = self._required_identifier(command.number, entity="demand")
         existing = self._demand_or_not_found(number)
         self._assert_workflow_action(existing, ACTION_MODIFY)
@@ -1397,12 +1396,9 @@ class DemandService:
                 code_prefix="operational_confirmation_sync",
                 context={"demand_number": number},
             )
-            summary = call_application_port(
-                self._planning.rebuild,
-                code_prefix="operational_confirmation_rebuild",
-                context={"demand_number": number},
-            )
-        return dict(summary)
+            # ResourceRequirement.confirmation is the inherited authority for
+            # existing automatic Shifts. No placement regeneration is needed.
+        return None
 
     def submit_command(self, command: DemandSubmitCommand) -> None:
         number = self._required_identifier(command.number, entity="demand")
