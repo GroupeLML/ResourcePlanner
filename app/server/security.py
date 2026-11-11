@@ -110,7 +110,10 @@ def required_permission(method: str, path: str) -> str | None:
         return PERMISSION_ADMIN_USERS
     if path.startswith("/api/v1/communications"):
         return PERMISSION_MANAGE_COMMUNICATIONS
-    if path == "/api/v1/demand-requesters":
+    if path in {
+        "/api/v1/demand-requesters",
+        "/api/v1/demand-project-candidates",
+    }:
         return PERMISSION_MANAGE_DEMANDS
     if (
         path.startswith("/api/v1/integrations/acumatica/projects/tasks/sync")
