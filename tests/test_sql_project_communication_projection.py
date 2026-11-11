@@ -640,6 +640,71 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
         self.assertIsNone(tech.contact.contact_id)
         self.assertNotEqual(tech.contact.email, "tech" + chr(64) + TEST_DOMAIN)
 
+    def test_requester_is_resolved_from_canonical_app_user_and_added_to_project_to(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    session.add(
+                        AppUser(
+                            id="U-REQUESTER-826",
+                            issuer="urn:test",
+                            subject="requester-826",
+                            display_name="Demandeuse canonique",
+                            email="requester" + chr(64) + TEST_DOMAIN,
+                            roles_json='["PROJECT_MANAGER"]',
+                            active=True,
+                        )
+                    )
+                    request = session.get(WorkforceRequest, "D1")
+                    assert request is not None
+                    request.requester_user_id = "U-REQUESTER-826"
+                    request.requester_name = "Nom texte obsolète"
+
+                with factory() as session:
+                    projection = self._service(session).project_projection(
+                        week_start=WEEK
+                    )
+                    project = projection.projects[0]
+                    self.assertEqual(len(project.requesters), 1)
+                    requester = project.requesters[0]
+                    self.assertEqual(requester.user_id, "U-REQUESTER-826")
+                    self.assertEqual(requester.display_name, "Demandeuse canonique")
+                    self.assertEqual(
+                        requester.email,
+                        "requester" + chr(64) + TEST_DOMAIN,
+                    )
+
+                app = create_api_app(
+                    database_url,
+                    auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+                )
+                with TestClient(app) as client:
+                    preview = client.get(
+                        "/api/v1/communications/project-preview"
+                        "?week_start=2026-09-23"
+                    )
+                    self.assertEqual(preview.status_code, 200, preview.text)
+                    draft = preview.json()["drafts"][0]
+                    self.assertEqual(
+                        [row["email"] for row in draft["to_recipients"]],
+                        [
+                            "pm" + chr(64) + TEST_DOMAIN,
+                            "requester" + chr(64) + TEST_DOMAIN,
+                        ],
+                    )
+                    self.assertEqual(
+                        [row["email"] for row in draft["cc_recipients"]],
+                        [
+                            "resource-two" + chr(64) + TEST_DOMAIN,
+                            "resource-one" + chr(64) + TEST_DOMAIN,
+                        ],
+                    )
+            finally:
+                engine.dispose()
+
     def test_resource_without_app_user_uses_resource_email(self) -> None:
         with TemporaryDirectory() as directory:
             url = self._database(directory)
