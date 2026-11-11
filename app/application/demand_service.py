@@ -26,7 +26,6 @@ from .commands import (
     DemandUpdateCommand,
 )
 from ..domain.approval_envelope import (
-    envelope_entry_identity_from_stable_key,
     DECISION_APPROVAL_REFERENCE_UNKNOWN,
     DECISION_EXPLICIT_EXCEPTION_REQUIRED,
     DECISION_WITHIN_ENVELOPE,
@@ -557,13 +556,9 @@ class DemandService:
         self,
         number: str,
         *,
-        confirmation_scope_all_entries: bool,
-        confirmation_line_ids: frozenset[str],
+        previous_candidate_confirmations: Mapping[str, str],
         expected_operational_version: int | None,
     ) -> None:
-        if not confirmation_scope_all_entries and not confirmation_line_ids:
-            return
-
         policy = self._approval_envelope_policy
         if policy is None:
             raise ApplicationOperationError(
@@ -576,6 +571,15 @@ class DemandService:
             code_prefix="approval_envelope_candidate_confirmations",
             context={"demand_number": number},
         )
+        changed_entry_keys = tuple(
+            entry_key
+            for entry_key, candidate_confirmation in candidate_confirmations.items()
+            if previous_candidate_confirmations.get(entry_key)
+            != candidate_confirmation
+        )
+        if not changed_entry_keys:
+            return
+
         operational = call_application_port(
             lambda: self._operational_choice_repository().state_for_demand(number),
             code_prefix="operational_confirmation_state",
@@ -587,26 +591,12 @@ class DemandService:
                 code="operational_choice_state_missing",
                 context={"demand_number": number},
             )
-
-        updates: dict[str, str] = {}
-        for entry_key, candidate_confirmation in candidate_confirmations.items():
-            if not confirmation_scope_all_entries:
-                try:
-                    identity = envelope_entry_identity_from_stable_key(entry_key)
-                except ValueError as exc:
-                    raise ApplicationOperationError(
-                        "Une confirmation candidate utilise une identité approuvée invalide.",
-                        code="operational_confirmation_candidate_entry_invalid",
-                        context={
-                            "demand_number": number,
-                            "approved_entry_key": entry_key,
-                        },
-                    ) from exc
-                if identity.line_id not in confirmation_line_ids:
-                    continue
-            if operational.confirmations.get(entry_key) != candidate_confirmation:
-                updates[entry_key] = candidate_confirmation
-
+        updates = {
+            entry_key: candidate_confirmations[entry_key]
+            for entry_key in changed_entry_keys
+            if operational.confirmations.get(entry_key)
+            != candidate_confirmations[entry_key]
+        }
         if not updates:
             return
         if expected_operational_version is None:
@@ -929,26 +919,6 @@ class DemandService:
                 end if isinstance(end, date) else None,
             )
 
-        confirmation_scope_all_entries = bool(
-            "Confirmation" in data and not existing.line_mode
-        )
-        confirmation_line_ids: frozenset[str] = frozenset()
-        if "RequestLines" in data and existing.line_mode and isinstance(command.lines, tuple):
-            existing_confirmations = {
-                str(line.line_id): line.confirmation
-                for line in existing.lines
-                if line.active and str(line.line_id or "").strip()
-            }
-            confirmation_line_ids = frozenset(
-                str(line.line_id)
-                for line in command.lines
-                if (
-                    str(line.line_id or "").strip()
-                    and str(line.line_id) in existing_confirmations
-                    and existing_confirmations[str(line.line_id)] != line.confirmation
-                )
-            )
-
         was_approved = existing.status == "En planification"
         envelope_relevant_change = bool(
             BUSINESS_DEMAND_FIELDS.intersection(data)
@@ -974,6 +944,23 @@ class DemandService:
             audit_comment = f"{audit_comment} · {suffix}" if audit_comment else suffix
 
         with self._context("modify demand"):
+            previous_candidate_confirmations: Mapping[str, str] = {}
+            confirmation_candidate_may_change = (
+                "Confirmation" in data or "RequestLines" in data
+            )
+            if (
+                was_approved
+                and confirmation_candidate_may_change
+                and self._approval_envelope_policy is not None
+            ):
+                previous_candidate_confirmations = call_application_port(
+                    lambda: self._approval_envelope_policy.candidate_confirmations(
+                        number
+                    ),
+                    code_prefix="approval_envelope_candidate_confirmations_before",
+                    context={"demand_number": number},
+                )
+
             call_application_port(
                 lambda: self._demands.update(
                     number,
@@ -1006,8 +993,7 @@ class DemandService:
                 ):
                     self._converge_candidate_confirmation_changes(
                         number,
-                        confirmation_scope_all_entries=confirmation_scope_all_entries,
-                        confirmation_line_ids=confirmation_line_ids,
+                        previous_candidate_confirmations=previous_candidate_confirmations,
                         expected_operational_version=command.expected_operational_version,
                     )
                 return reapproval_required
