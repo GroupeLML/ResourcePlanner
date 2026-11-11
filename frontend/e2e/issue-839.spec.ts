@@ -191,7 +191,7 @@ test("839 propage Confirmé/Tentatif après approbation via édition et action r
     await openDemand(demandNumber);
     await page.getByLabel("Confirmation").selectOption("Confirmée");
     await page.getByRole("button", { name: "Enregistrer les modifications" }).click();
-    await expect(page.locator(".notice-panel")).toContainText("Modification enregistrée");
+    await expect(page.locator(".demand-notice")).toContainText("Modification enregistrée");
 
     after = await demandShifts(demandNumber);
     expect(after[0].confirmation).toBe("Confirmée");
