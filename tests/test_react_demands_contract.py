@@ -120,6 +120,38 @@ class ReactDemandsContractTests(unittest.TestCase):
         self.assertIn("<DemandsWorkspace initialCreateContext={demandCreateContext} />", app)
         self.assertIn("await reloadDemand(result.demand_number)", demands)
 
+    def test_new_demand_uses_backend_authorized_creation_project_candidates(self) -> None:
+        demands = (ROOT / "frontend" / "src" / "DemandsPage.tsx").read_text(
+            encoding="utf-8"
+        )
+        api = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
+
+        self.assertIn(
+            '"/api/v1/demand-project-candidates"',
+            api,
+        )
+        self.assertIn("getDemandProjectCandidates(controller.signal)", demands)
+        self.assertIn(
+            "const editorProjects = creating ? creationProjects : projects",
+            demands,
+        )
+        self.assertIn(
+            "options={editorProjectOptions.map((project) => ({",
+            demands,
+        )
+        self.assertIn(
+            "value={projects.find((project) => project.number === projectFilter)?.id ?? null}",
+            demands,
+        )
+        self.assertIn(
+            "getProjects(!initialCreateContext, controller.signal, scope)",
+            demands,
+        )
+        self.assertNotIn(
+            'getProjects(true, controller.signal, "global")',
+            demands,
+        )
+
     def test_creation_reuses_idempotency_key_for_identical_retry(self) -> None:
         source = (ROOT / "frontend" / "src" / "DemandsPage.tsx").read_text(
             encoding="utf-8"
