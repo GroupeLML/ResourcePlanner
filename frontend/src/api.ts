@@ -1527,6 +1527,7 @@ export type DemandWrite = {
   proposed_technician?: string | null;
   lines?: DemandLineWrite[];
   expected_version?: number;
+  expected_operational_version?: number;
 };
 
 export type DemandMutationResult = {
@@ -2487,6 +2488,24 @@ export function updateDemand(number: string, payload: DemandWrite, comment: stri
     `/api/v1/demands/${encodeURIComponent(number)}`,
     "PATCH",
     { ...editablePayload, comment },
+  );
+}
+
+export function updateDemandConfirmation(
+  number: string,
+  confirmation: "Tentative" | "Confirmée",
+  expectedRequestVersion: number,
+  expectedOperationalVersion: number,
+) {
+  return sendJson<DemandMutationResult>(
+    `/api/v1/demands/${encodeURIComponent(number)}`,
+    "PATCH",
+    {
+      confirmation,
+      expected_version: expectedRequestVersion,
+      expected_operational_version: expectedOperationalVersion,
+      comment: "Confirmation modifiée via action rapide React V2",
+    },
   );
 }
 
