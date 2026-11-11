@@ -44,7 +44,14 @@ test("839 propage Confirmé/Tentatif après approbation via édition et action r
   }
 
   async function openDemand(demandNumber: string) {
-    await page.goto("/demands");
+    await page.goto("/");
+    await page
+      .locator(".main-nav")
+      .getByRole("button", { name: /Demandes/i })
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "Demandes", level: 1 }),
+    ).toBeVisible();
     const card = page.locator(".demand-card").filter({ hasText: demandNumber });
     await expect(card).toHaveCount(1);
     await card.locator(".demand-card-select").click();
