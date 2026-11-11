@@ -320,6 +320,7 @@ class DemandUpdateCommand:
     proposed_technician: str | None | UnsetType = UNSET
     lines: tuple[DemandLineInput, ...] | UnsetType = UNSET
     expected_version: int | UnsetType = UNSET
+    expected_operational_version: int | None = None
 
     def __post_init__(self) -> None:
         required_text(
@@ -334,6 +335,18 @@ class DemandUpdateCommand:
                 "La version attendue doit être au moins 1.",
                 code="demand_version_invalid",
                 context={"field": "expected_version", "value": self.expected_version},
+            )
+        if (
+            self.expected_operational_version is not None
+            and self.expected_operational_version < 1
+        ):
+            raise ApplicationValidationError(
+                "La version opérationnelle attendue doit être au moins 1.",
+                code="operational_choice_version_invalid",
+                context={
+                    "field": "expected_operational_version",
+                    "value": self.expected_operational_version,
+                },
             )
         if isinstance(self.lines, tuple) and not self.lines:
             raise ApplicationValidationError(
