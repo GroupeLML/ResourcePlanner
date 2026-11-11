@@ -775,59 +775,6 @@ export default function ShiftEditor({
             </div>
           )}
 
-          {workQueueAction && workQueueAction.mode !== "permanent_reduction" && (
-            <div className="atomic-action-section" data-testid="request-work-queue-confirmation">
-              <div className="atomic-action-heading">
-                <div>
-                  <strong>
-                    {workQueueAction.mode === "return_shift"
-                      ? "Retourner ce quart à la File de Travail?"
-                      : workQueueAction.mode === "return_segment"
-                        ? "Retourner le segment à la File de Travail?"
-                        : "Supprimer définitivement ce quart?"}
-                  </strong>
-                  <span>
-                    {workQueueAction.mode === "return_shift"
-                      ? `Le quart de ${hoursLabel(workQueueAction.preview.shift_hours)} h sera retiré. Le segment ${workQueueAction.preview.segment_id} conservera son besoin approuvé et les heures redeviendront à planifier.`
-                      : `Tous les quarts opérationnels du segment ${workQueueAction.preview.segment_id} seront retirés et le besoin complet reviendra dans la File de Travail.`}
-                  </span>
-                </div>
-              </div>
-              {workQueueAction.ambiguousRetry && (
-                <div className="atomic-retry-note" role="status">
-                  Le résultat réseau est incertain. Réessayer conservera la même clé idempotente et les mêmes versions capturées.
-                </div>
-              )}
-              <div className="dialog-actions">
-                <button
-                  type="button"
-                  className="secondary-button"
-                  disabled={saving}
-                  onClick={() => {
-                    setWorkQueueAction(null);
-                    setError(null);
-                  }}
-                >
-                  Annuler
-                </button>
-                <button
-                  type="button"
-                  className="primary-button"
-                  disabled={saving}
-                  onClick={() => void executeWorkQueueAction()}
-                >
-                  {saving
-                    ? "Traitement…"
-                    : workQueueAction.ambiguousRetry
-                      ? "Réessayer la même commande"
-                      : workQueueAction.mode === "return_shift"
-                        ? "Retourner le quart"
-                        : "Retourner le segment"}
-                </button>
-              </div>
-            </div>
-          )}
-
           {overallocationChoice && (
             <div className="overallocation-choice" role="alert">
               <strong>Ce changement dépasse les heures prévues du segment.</strong>
@@ -1179,6 +1126,58 @@ export default function ShiftEditor({
                 </button>
               </div>
               {workQueuePreparing && <small>Chargement des versions et de l’autorisation active…</small>}
+              {workQueueAction && workQueueAction.mode !== "permanent_reduction" && (
+                <div className="atomic-action-section" data-testid="request-work-queue-confirmation">
+                  <div className="atomic-action-heading">
+                    <div>
+                      <strong>
+                        {workQueueAction.mode === "return_shift"
+                          ? "Retourner ce quart à la File de Travail?"
+                          : workQueueAction.mode === "return_segment"
+                            ? "Retourner le segment à la File de Travail?"
+                            : "Supprimer définitivement ce quart?"}
+                      </strong>
+                      <span>
+                        {workQueueAction.mode === "return_shift"
+                          ? `Le quart de ${hoursLabel(workQueueAction.preview.shift_hours)} h sera retiré. Le segment ${workQueueAction.preview.segment_id} conservera son besoin approuvé et les heures redeviendront à planifier.`
+                          : `Tous les quarts opérationnels du segment ${workQueueAction.preview.segment_id} seront retirés et le besoin complet reviendra dans la File de Travail.`}
+                      </span>
+                    </div>
+                  </div>
+                  {workQueueAction.ambiguousRetry && (
+                    <div className="atomic-retry-note" role="status">
+                      Le résultat réseau est incertain. Réessayer conservera la même clé idempotente et les mêmes versions capturées.
+                    </div>
+                  )}
+                  <div className="dialog-actions">
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={saving}
+                      onClick={() => {
+                        setWorkQueueAction(null);
+                        setError(null);
+                      }}
+                    >
+                      Annuler
+                    </button>
+                    <button
+                      type="button"
+                      className="primary-button"
+                      disabled={saving}
+                      onClick={() => void executeWorkQueueAction()}
+                    >
+                      {saving
+                        ? "Traitement…"
+                        : workQueueAction.ambiguousRetry
+                          ? "Réessayer la même commande"
+                          : workQueueAction.mode === "return_shift"
+                            ? "Retourner le quart"
+                            : "Retourner le segment"}
+                    </button>
+                  </div>
+                </div>
+              )}
             </section>
           )}
 
