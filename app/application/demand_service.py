@@ -27,6 +27,7 @@ from .commands import (
 )
 from ..domain.approval_envelope import (
     CHANGE_CONFIRMATION,
+    envelope_entry_identity_from_stable_key,
     DECISION_APPROVAL_REFERENCE_UNKNOWN,
     DECISION_EXPLICIT_EXCEPTION_REQUIRED,
     DECISION_WITHIN_ENVELOPE,
@@ -556,24 +557,14 @@ class DemandService:
     def _converge_candidate_confirmation_changes(
         self,
         number: str,
-        decision: EnvelopeDecision,
         *,
+        confirmation_scope_all_entries: bool,
+        confirmation_line_ids: frozenset[str],
         expected_operational_version: int | None,
     ) -> None:
-        entry_keys = tuple(
-            change.entry_key
-            for change in decision.changes
-            if change.code == CHANGE_CONFIRMATION and change.entry_key
-        )
-        if not entry_keys:
+        if not confirmation_scope_all_entries and not confirmation_line_ids:
             return
-        if expected_operational_version is None:
-            raise ApplicationValidationError(
-                "La version opérationnelle attendue est requise pour modifier "
-                "la confirmation d'une demande approuvée.",
-                code="operational_choice_expected_version_required",
-                context={"demand_number": number},
-            )
+
         policy = self._approval_envelope_policy
         if policy is None:
             raise ApplicationOperationError(
@@ -586,17 +577,55 @@ class DemandService:
             code_prefix="approval_envelope_candidate_confirmations",
             context={"demand_number": number},
         )
-        updates = {
-            entry_key: candidate_confirmations[entry_key]
-            for entry_key in entry_keys
-            if entry_key in candidate_confirmations
-        }
-        if len(updates) != len(set(entry_keys)):
+        operational = call_application_port(
+            lambda: self._operational_choice_repository().state_for_demand(number),
+            code_prefix="operational_confirmation_state",
+            context={"demand_number": number},
+        )
+        if operational is None:
             raise ApplicationOperationError(
-                "Une confirmation candidate ne correspond plus à l'entrée "
-                "approuvée attendue.",
-                code="operational_confirmation_candidate_entry_missing",
+                "L'état opérationnel actif est introuvable pour la confirmation.",
+                code="operational_choice_state_missing",
                 context={"demand_number": number},
+            )
+
+        updates: dict[str, str] = {}
+        for entry_key, candidate_confirmation in candidate_confirmations.items():
+            if not confirmation_scope_all_entries:
+                try:
+                    identity = envelope_entry_identity_from_stable_key(entry_key)
+                except ValueError as exc:
+                    raise ApplicationOperationError(
+                        "Une confirmation candidate utilise une identité approuvée invalide.",
+                        code="operational_confirmation_candidate_entry_invalid",
+                        context={
+                            "demand_number": number,
+                            "approved_entry_key": entry_key,
+                        },
+                    ) from exc
+                if identity.line_id not in confirmation_line_ids:
+                    continue
+            if operational.confirmations.get(entry_key) != candidate_confirmation:
+                updates[entry_key] = candidate_confirmation
+
+        if not updates:
+            return
+        if expected_operational_version is None:
+            raise ApplicationValidationError(
+                "La version opérationnelle attendue est requise pour modifier "
+                "la confirmation d'une demande approuvée.",
+                code="operational_choice_expected_version_required",
+                context={"demand_number": number},
+            )
+        if int(expected_operational_version) != int(operational.version):
+            raise ApplicationConflictError(
+                "Les choix opérationnels ont été modifiés depuis leur lecture.",
+                code="operational_choice_version_conflict",
+                context={
+                    "demand_number": number,
+                    "expected_version": int(expected_operational_version),
+                    "current_version": int(operational.version),
+                },
             )
         call_application_port(
             lambda: self._operational_choice_repository().set_confirmations(
@@ -901,6 +930,26 @@ class DemandService:
                 end if isinstance(end, date) else None,
             )
 
+        confirmation_scope_all_entries = bool(
+            "Confirmation" in data and not existing.line_mode
+        )
+        confirmation_line_ids: frozenset[str] = frozenset()
+        if "RequestLines" in data and existing.line_mode and isinstance(command.lines, tuple):
+            existing_confirmations = {
+                str(line.line_id): line.confirmation
+                for line in existing.lines
+                if line.active and str(line.line_id or "").strip()
+            }
+            confirmation_line_ids = frozenset(
+                str(line.line_id)
+                for line in command.lines
+                if (
+                    str(line.line_id or "").strip()
+                    and str(line.line_id) in existing_confirmations
+                    and existing_confirmations[str(line.line_id)] != line.confirmation
+                )
+            )
+
         was_approved = existing.status == "En planification"
         envelope_relevant_change = bool(
             BUSINESS_DEMAND_FIELDS.intersection(data)
@@ -958,7 +1007,8 @@ class DemandService:
                 ):
                     self._converge_candidate_confirmation_changes(
                         number,
-                        decision,
+                        confirmation_scope_all_entries=confirmation_scope_all_entries,
+                        confirmation_line_ids=confirmation_line_ids,
                         expected_operational_version=command.expected_operational_version,
                     )
                 return reapproval_required
