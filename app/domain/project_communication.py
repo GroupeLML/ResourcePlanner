@@ -50,6 +50,7 @@ class ProjectCommunicationAssignment:
     project_manager: ProjectCommunicationParticipant
     operational_responsible: ContactResolution
     project_co_managers: tuple[ProjectCommunicationParticipant, ...] = ()
+    requester: ProjectCommunicationParticipant | None = None
     assets: tuple[ProjectCommunicationAsset, ...] = ()
     diagnostics: tuple[str, ...] = ()
 
@@ -103,6 +104,7 @@ class ProjectCommunicationProject:
     project_manager: ProjectCommunicationParticipant
     days: tuple[ProjectCommunicationDay, ...]
     project_co_managers: tuple[ProjectCommunicationParticipant, ...] = ()
+    requesters: tuple[ProjectCommunicationParticipant, ...] = ()
     diagnostics: tuple[str, ...] = ()
 
 
@@ -159,6 +161,7 @@ def build_project_communication_projection(
                 "name": row.project_name,
                 "manager": row.project_manager,
                 "co_managers": row.project_co_managers,
+                "requesters": {},
                 "days": {},
                 "diagnostics": [],
             },
@@ -168,6 +171,14 @@ def build_project_communication_projection(
         project_diagnostics.extend(row.project_manager.diagnostics)
         for co_manager in row.project_co_managers:
             project_diagnostics.extend(co_manager.diagnostics)
+        if row.requester is not None:
+            requester_key = (
+                row.requester.contact_id or "",
+                row.requester.user_id or "",
+                (row.requester.email or "").strip().casefold(),
+            )
+            project["requesters"].setdefault(requester_key, row.requester)
+            project_diagnostics.extend(row.requester.diagnostics)
         project_diagnostics.extend(row.diagnostics)
         global_diagnostics.extend(row.diagnostics)
 
@@ -303,6 +314,10 @@ def build_project_communication_projection(
                 project_manager=project["manager"],
                 days=tuple(projected_days),
                 project_co_managers=tuple(project["co_managers"]),
+                requesters=tuple(
+                    project["requesters"][key]
+                    for key in sorted(project["requesters"])
+                ),
                 diagnostics=_unique(project["diagnostics"]),
             )
         )
