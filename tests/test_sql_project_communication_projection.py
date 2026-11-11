@@ -705,6 +705,36 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_requester_same_as_project_manager_is_deduplicated_by_canonical_identity(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    request = session.get(WorkforceRequest, "D1")
+                    assert request is not None
+                    request.requester_user_id = "U-PM"
+                    request.requester_name = "Nom historique différent"
+
+                app = create_api_app(
+                    database_url,
+                    auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+                )
+                with TestClient(app) as client:
+                    preview = client.get(
+                        "/api/v1/communications/project-preview"
+                        "?week_start=2026-09-23"
+                    )
+                    self.assertEqual(preview.status_code, 200, preview.text)
+                    draft = preview.json()["drafts"][0]
+                    self.assertEqual(
+                        [row["email"] for row in draft["to_recipients"]],
+                        ["pm" + chr(64) + TEST_DOMAIN],
+                    )
+            finally:
+                engine.dispose()
+
     def test_resource_without_app_user_uses_resource_email(self) -> None:
         with TemporaryDirectory() as directory:
             url = self._database(directory)
