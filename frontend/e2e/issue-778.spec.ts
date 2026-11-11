@@ -256,8 +256,19 @@ test("778 expose les trois actions ADR-034 et confirme leurs mutations", async (
     await expect(dialog.getByRole("button", { name: "Supprimer le quart manuel" })).toHaveCount(0);
 
     await actions.getByRole("button", { name: "Retourner ce quart à la File de Travail" }).click();
-    let confirm = dialog.getByTestId("request-work-queue-confirmation");
+    let confirm = actions.getByTestId("request-work-queue-confirmation");
+    await expect(confirm).toBeVisible();
+    await expect(dialog.getByTestId("request-work-queue-confirmation")).toHaveCount(1);
+    await expect(confirm).toContainText("Retourner ce quart à la File de Travail?");
     await expect(confirm).toContainText("Le quart de 8 h sera retiré");
+    await expect(confirm.getByRole("button", { name: "Annuler" })).toBeVisible();
+    await expect(confirm.getByRole("button", { name: "Retourner le quart" })).toBeVisible();
+    await confirm.getByRole("button", { name: "Annuler" }).click();
+    await expect(dialog.getByTestId("request-work-queue-confirmation")).toHaveCount(0);
+    expect(shiftPosts).toBe(0);
+
+    await actions.getByRole("button", { name: "Retourner ce quart à la File de Travail" }).click();
+    confirm = actions.getByTestId("request-work-queue-confirmation");
     await confirm.getByRole("button", { name: "Retourner le quart" }).click();
     await expect(dialog).toBeHidden();
     expect(shiftPosts).toBe(1);
@@ -269,10 +280,23 @@ test("778 expose les trois actions ADR-034 et confirme leurs mutations", async (
     expect(lastIdempotencyKey).toBeTruthy();
 
     dialog = await openShift();
-    await dialog.getByTestId("request-work-queue-actions")
+    const segmentActions = dialog.getByTestId("request-work-queue-actions");
+    await segmentActions
       .getByRole("button", { name: "Retourner le segment à la File de Travail" }).click();
-    confirm = dialog.getByTestId("request-work-queue-confirmation");
+    confirm = segmentActions.getByTestId("request-work-queue-confirmation");
+    await expect(confirm).toBeVisible();
+    await expect(dialog.getByTestId("request-work-queue-confirmation")).toHaveCount(1);
+    await expect(confirm).toContainText("Retourner le segment à la File de Travail?");
     await expect(confirm).toContainText("Tous les quarts opérationnels du segment SEG-778");
+    await expect(confirm.getByRole("button", { name: "Annuler" })).toBeVisible();
+    await expect(confirm.getByRole("button", { name: "Retourner le segment" })).toBeVisible();
+    await confirm.getByRole("button", { name: "Annuler" }).click();
+    await expect(dialog.getByTestId("request-work-queue-confirmation")).toHaveCount(0);
+    expect(segmentPosts).toBe(0);
+
+    await segmentActions
+      .getByRole("button", { name: "Retourner le segment à la File de Travail" }).click();
+    confirm = segmentActions.getByTestId("request-work-queue-confirmation");
     await confirm.getByRole("button", { name: "Retourner le segment" }).click();
     await expect(dialog).toBeHidden();
     expect(segmentPosts).toBe(1);
