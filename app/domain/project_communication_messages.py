@@ -495,11 +495,7 @@ def _project_header(project: ProjectCommunicationProject) -> list[str]:
 
 
 def _asset_display(value: ProjectCommunicationAsset) -> str:
-    type_label = (value.asset_type_label or "").strip()
-    category = (value.asset_category or "").strip()
-    prefix = type_label or category
-    label = (value.asset_label or value.asset_code or value.asset_id).strip()
-    return f"{prefix} — {label}" if prefix else label
+    return (value.asset_code or value.asset_id).strip()
 
 
 def _resource_suffix(resource) -> str:

@@ -1306,12 +1306,9 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                         for row in projection.drafts
                         if row.project_id == "P1"
                     )
-                    self.assertIn(
-                        "Actif : Véhicule — Camion 708B / Équipement — Nacelle 708B",
-                        draft.body,
-                    )
-                    self.assertEqual(draft.body.count("Camion 708B"), 1)
-                    self.assertEqual(draft.body.count("Nacelle 708B"), 1)
+                    self.assertIn("Actif : V-708B / EQ-708B", draft.body)
+                    self.assertNotIn("Camion 708B", draft.body)
+                    self.assertNotIn("Nacelle 708B", draft.body)
 
                 with factory.begin() as session:
                     continuous = session.get(AssetAllocation, "ALLOC-CONT-708B")
@@ -1334,7 +1331,8 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     draft = next(
                         row for row in changed.drafts if row.project_id == "P1"
                     )
-                    self.assertIn("Véhicule — Camion remplacement 708B", draft.body)
+                    self.assertIn("Actif : V-NEW-708B", draft.body)
+                    self.assertNotIn("Camion remplacement 708B", draft.body)
                     self.assertNotIn("Camion 708B", draft.body)
                     self.assertNotIn("Nacelle 708B", draft.body)
             finally:
@@ -1436,10 +1434,8 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertIn("Technicien ressource", preview_body)
                 self.assertIn("2 h", preview_body)
                 self.assertIn("1 h", preview_body)
-                self.assertIn(
-                    "Actif : Équipement — Nacelle courriel 708B",
-                    preview_body,
-                )
+                self.assertIn("Actif : NAC-MAIL-708B", preview_body)
+                self.assertNotIn("Nacelle courriel 708B", preview_body)
 
                 prepared = client.post(
                     "/api/v1/communications/project-batches",

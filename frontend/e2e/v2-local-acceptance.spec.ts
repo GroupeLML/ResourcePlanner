@@ -2652,6 +2652,7 @@ test("#794/708B schedule communication preview hides Quick Shift provenance and 
       planning_version: number;
       candidates: Array<{
         id: string;
+        code: string;
         label: string;
         asset_type_id: string;
         asset_type_label: string;
@@ -2754,8 +2755,8 @@ test("#794/708B schedule communication preview hides Quick Shift provenance and 
     await expect(body).toHaveValue(/1 h/);
     await expect(body).toHaveValue(/Actif :/);
     const previewText = await body.inputValue();
-    expect(previewText).toContain(refreshedCommunicationAsset!.asset_type_label);
-    expect(previewText).toContain(refreshedCommunicationAsset!.label);
+    expect(previewText).toContain("Actif :");
+    expect(previewText).toContain(refreshedCommunicationAsset!.code);
   } finally {
     if (allocationId) {
       const cleanup = await page.request.delete(
