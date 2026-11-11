@@ -14,9 +14,13 @@ from app.application.security import (
     ROLE_TECHNICIAN,
 )
 from app.infrastructure.sql import (
+    ApprovalScope,
+    ApprovalScopeApprover,
     Base,
     Project,
     SqlUserIdentityRepository,
+    TaskApprovalScopeMapping,
+    TaskCatalogEntry,
     WorkforceRequest,
     WorkforceRequestHistory,
     create_session_factory,
@@ -72,6 +76,20 @@ class DemandRequesterIdentityTests(unittest.TestCase):
                         name="Projet inactif identité",
                         status="Terminé",
                     ),
+                    TaskCatalogEntry(
+                        id="TASK-826",
+                        project_number="P-1",
+                        task_code="210",
+                        label="Tâche routable identité",
+                        active=True,
+                    ),
+                    ApprovalScope(
+                        id="SCOPE-826",
+                        code="SCOPE_826",
+                        label="Scope routage identité",
+                        active=True,
+                        version=1,
+                    ),
                 ]
             )
             identities = SqlUserIdentityRepository(session)
@@ -107,6 +125,18 @@ class DemandRequesterIdentityTests(unittest.TestCase):
                     roles=(ROLE_TECHNICIAN,),
                 ).user_id,
             }
+            session.add_all(
+                [
+                    TaskApprovalScopeMapping(
+                        task_catalog_item_id="TASK-826",
+                        approval_scope_id="SCOPE-826",
+                    ),
+                    ApprovalScopeApprover(
+                        approval_scope_id="SCOPE-826",
+                        app_user_id=users["pm2"],
+                    ),
+                ]
+            )
         engine.dispose()
         return url, users
 
@@ -173,6 +203,7 @@ class DemandRequesterIdentityTests(unittest.TestCase):
                     "/api/v1/demands",
                     json={
                         "project_number": "P-1",
+                        "task_code": "210",
                         "desired_start": "2026-09-22",
                         "estimated_hours": 8,
                     },
