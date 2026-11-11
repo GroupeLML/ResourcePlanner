@@ -107,6 +107,27 @@ class SqlUserViewContextRepository(UserViewContextRepositoryPort):
         )
 
 
+    def list_requester_demand_ids(
+        self,
+        local_user_id: str,
+    ) -> tuple[str, ...]:
+        """Return exact requests owned by the current canonical requester identity."""
+
+        user_id = str(local_user_id or "").strip()
+        if not user_id:
+            return ()
+        return tuple(
+            self._session.scalars(
+                select(WorkforceRequest.id)
+                .where(WorkforceRequest.requester_user_id == user_id)
+                .order_by(
+                    WorkforceRequest.created_at,
+                    WorkforceRequest.legacy_demand_number,
+                    WorkforceRequest.id,
+                )
+            ).all()
+        )
+
     def list_coordinated_demand_ids(
         self,
         local_user_id: str,

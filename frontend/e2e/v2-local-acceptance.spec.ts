@@ -5,7 +5,12 @@ import { createClientId, type ClientCrypto } from "../src/clientId";
 const BASE_URL = process.env.RESOURCEPLANNER_E2E_BASE_URL || "http://127.0.0.1:8765";
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-type Role = "ADMIN" | "PROJECT_MANAGER" | "COORDINATOR" | "TECHNICIAN";
+type Role =
+  | "ADMIN"
+  | "PROJECT_MANAGER"
+  | "PROJECT_MANAGER_OTHER"
+  | "COORDINATOR"
+  | "TECHNICIAN";
 
 const TEST_DOMAIN = "example.test";
 
@@ -20,6 +25,7 @@ function testPhone() {
 const DISPLAY_NAMES: Record<Role, string> = {
   ADMIN: "Administrateur E2E",
   PROJECT_MANAGER: "Chargé E2E",
+  PROJECT_MANAGER_OTHER: "Chargé externe 826",
   COORDINATOR: "Coordonnateur E2E",
   TECHNICIAN: "Technicien Alice",
 };
@@ -272,6 +278,113 @@ test("client IDs fall back to crypto.getRandomValues when randomUUID is unavaila
 
   expect(createClientId(cryptoApi)).toBe("00010203-0405-4607-8809-0a0b0c0d0e0f");
   expect(calls).toBe(1);
+});
+
+test("#826 project manager creates on another manager's active project without scope escalation", async ({ browser }) => {
+  const { d1 } = acceptanceDates();
+  const requester = await openAs(browser, "PROJECT_MANAGER_OTHER");
+
+  try {
+    const mineBefore = await requester.page.request.get(
+      "/api/v1/projects?scope=mine&active_only=true",
+    );
+    expect(mineBefore.ok(), await mineBefore.text()).toBeTruthy();
+    expect(
+      (await mineBefore.json() as Array<{ number: string }>).map((row) => row.number),
+    ).not.toContain("P-251");
+
+    const demandsBefore = await requester.page.request.get(
+      "/api/v1/demands?scope=mine",
+    );
+    expect(demandsBefore.ok(), await demandsBefore.text()).toBeTruthy();
+    expect(
+      (await demandsBefore.json() as Array<{ project_number: string | null }>)
+        .map((row) => row.project_number),
+    ).not.toContain("P-251");
+
+    const candidates = await requester.page.request.get(
+      "/api/v1/demand-project-candidates",
+    );
+    expect(candidates.ok(), await candidates.text()).toBeTruthy();
+    expect(
+      (await candidates.json() as Array<{ number: string; active: boolean }>)
+        .some((row) => row.number === "P-251" && row.active),
+    ).toBeTruthy();
+
+    const editor = await createDemand(requester.page, {
+      start: d1,
+      end: d1,
+      hours: "8",
+      activeDays: "1",
+      description: "Demande inter-projet #826",
+    });
+    await expect(editor.getByLabel("Demandeur")).toHaveValue("Chargé externe 826");
+    await editor.getByRole("button", { name: "Créer le brouillon" }).click();
+
+    const notice = requester.page.locator(".demand-notice");
+    await expect(notice).toContainText("créée en brouillon");
+    const number = demandNumberFrom(await notice.textContent());
+
+    const reread = await requester.page.request.get(
+      `/api/v1/demands/${encodeURIComponent(number)}`,
+    );
+    expect(reread.ok(), await reread.text()).toBeTruthy();
+    const demand = await reread.json() as {
+      project_number: string | null;
+      project_manager: string | null;
+      requester: string | null;
+      requester_user_id: string | null;
+    };
+    expect(demand.project_number).toBe("P-251");
+    expect(demand.project_manager).toBe("Chargé E2E");
+    expect(demand.requester).toBe("Chargé externe 826");
+    expect(demand.requester_user_id).toBeTruthy();
+
+    const mineAfter = await requester.page.request.get(
+      "/api/v1/projects?scope=mine&active_only=true",
+    );
+    expect(mineAfter.ok(), await mineAfter.text()).toBeTruthy();
+    expect(
+      (await mineAfter.json() as Array<{ number: string }>).map((row) => row.number),
+    ).not.toContain("P-251");
+
+    const scopedDemandsAfter = await requester.page.request.get(
+      "/api/v1/demands?scope=mine",
+    );
+    expect(scopedDemandsAfter.ok(), await scopedDemandsAfter.text()).toBeTruthy();
+    const p251Drafts = (
+      await scopedDemandsAfter.json() as Array<{
+        number: string;
+        project_number: string | null;
+      }>
+    ).filter((row) => row.project_number === "P-251");
+    expect(p251Drafts.map((row) => row.number)).toEqual([number]);
+
+    const primaryActions = requester.page.getByTestId("primary-demand-actions");
+    await expect(primaryActions.getByRole("button", { name: "Soumettre" })).toBeVisible();
+    await primaryActions.getByRole("button", { name: "Soumettre" }).click();
+    await expect(requester.page.locator(".demand-editor-heading .eyebrow")).toContainText("Soumise");
+
+    const scopedDemandsSubmitted = await requester.page.request.get(
+      "/api/v1/demands?scope=mine",
+    );
+    expect(
+      scopedDemandsSubmitted.ok(),
+      await scopedDemandsSubmitted.text(),
+    ).toBeTruthy();
+    const p251Submitted = (
+      await scopedDemandsSubmitted.json() as Array<{
+        number: string;
+        project_number: string | null;
+        status: string;
+      }>
+    ).filter((row) => row.project_number === "P-251");
+    expect(p251Submitted).toEqual([
+      expect.objectContaining({ number, status: "Soumise" }),
+    ]);
+  } finally {
+    await closeContext(requester.context);
+  }
 });
 
 test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite", async ({ browser }) => {

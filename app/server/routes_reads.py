@@ -94,7 +94,24 @@ def _demand_scope_context(
         principal,
         scope,
     )
-    return resolution.project_ids, resolution.demand_ids
+    if resolution.project_ids is None:
+        return resolution.project_ids, resolution.demand_ids
+
+    requester_reader = getattr(repository, "list_requester_demand_ids", None)
+    local_user_id = str(principal.local_user_id or "").strip()
+    requester_demand_ids = (
+        tuple(requester_reader(local_user_id))
+        if local_user_id and callable(requester_reader)
+        else ()
+    )
+    return (
+        resolution.project_ids,
+        tuple(
+            dict.fromkeys(
+                (*(resolution.demand_ids or ()), *requester_demand_ids)
+            )
+        ),
+    )
 
 
 def _planning_visibility(
@@ -272,6 +289,13 @@ def build_read_router(
     context_dependency = user_view_context_dependency or no_context_repository
     approval_dependency = approval_progress_dependency or no_context_repository
     operational_dependency = operational_contact_dependency or no_context_repository
+
+    @router.get("/demand-project-candidates")
+    def list_demand_project_candidates(
+        queries: PlannerQueryPort = Depends(query_dependency),
+    ) -> list[ProjectReadModel]:
+        """Return active projects admissible for explicit new-demand creation."""
+        return list(queries.list_projects(active_only=True))
 
     @router.get("/projects")
     def list_projects(

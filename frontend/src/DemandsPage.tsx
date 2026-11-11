@@ -22,6 +22,7 @@ import {
   getCompetencies,
   getDemandDetail,
   getDemandBusinessContacts,
+  getDemandProjectCandidates,
   getDemandRequesters,
   getDemands,
   getProjects,
@@ -301,6 +302,7 @@ export default function DemandsPage({
   const [demands, setDemands] = useState<DemandReadModel[]>([]);
   const [requesters, setRequesters] = useState<DemandRequesterReadModel[]>([]);
   const [projects, setProjects] = useState<ProjectReadModel[]>([]);
+  const [demandProjectCandidates, setDemandProjectCandidates] = useState<ProjectReadModel[]>([]);
   const [resources, setResources] = useState<ResourceReadModel[]>([]);
   const [competencies, setCompetencies] = useState<CompetencyReadModel[]>([]);
   const [resourceClasses, setResourceClasses] = useState<ResourceClassOptionReadModel[]>([]);
@@ -361,12 +363,26 @@ export default function DemandsPage({
       || loading
     ) return;
     initialCreateApplied.current = true;
-    if (!projects.some((row) => row.number === initialCreateContext.project_number)) {
+    if (
+      !demandProjectCandidates.some(
+        (row) => row.number === initialCreateContext.project_number,
+      )
+      && !projects.some(
+        (row) => row.number === initialCreateContext.project_number,
+      )
+    ) {
       setError(`Projet ${initialCreateContext.project_number} introuvable dans le périmètre courant.`);
       return;
     }
     beginCreate(initialCreateContext);
-  }, [initialCreateContext, projects, principal?.local_user_id, scopeLoading, loading]);
+  }, [
+    initialCreateContext,
+    demandProjectCandidates,
+    projects,
+    principal?.local_user_id,
+    scopeLoading,
+    loading,
+  ]);
 
   useEffect(() => {
     if (scopeLoading) return;
@@ -378,6 +394,9 @@ export default function DemandsPage({
       // WorkPackages from Moyen terme may belong to visible but inactive projects.
       // Keep the normal new-demand picker active-only; include history for this handoff.
       getProjects(!initialCreateContext, controller.signal, scope),
+      canManageDemands
+        ? getDemandProjectCandidates(controller.signal)
+        : Promise.resolve([] as ProjectReadModel[]),
       getResources(true, controller.signal),
       getCompetencies("", false, controller.signal),
       getResourceClassOptions(controller.signal),
@@ -387,9 +406,20 @@ export default function DemandsPage({
         ? getDemandRequesters(controller.signal)
         : Promise.resolve([] as DemandRequesterReadModel[]),
     ])
-      .then(([demandRows, projectRows, resourceRows, competencyRows, classRows, assetCatalog, contactRows, requesterRows]) => {
+      .then(([
+        demandRows,
+        projectRows,
+        demandProjectRows,
+        resourceRows,
+        competencyRows,
+        classRows,
+        assetCatalog,
+        contactRows,
+        requesterRows,
+      ]) => {
         setDemands(demandRows);
         setProjects(projectRows);
+        setDemandProjectCandidates(demandProjectRows);
         setResources([...resourceRows].sort(compareResourcesByDisplayName));
         setCompetencies(competencyRows);
         setResourceClasses(classRows);
@@ -523,9 +553,26 @@ export default function DemandsPage({
 
   const projectOptions = useMemo(() => sortProjectsRecentFirst(projects), [projects]);
 
+  const creationProjects = useMemo(() => {
+    const byId = new Map(demandProjectCandidates.map((project) => [project.id, project]));
+    if (initialCreateContext) {
+      const contextual = projects.find(
+        (project) => project.number === initialCreateContext.project_number,
+      );
+      if (contextual) byId.set(contextual.id, contextual);
+    }
+    return sortProjectsRecentFirst([...byId.values()]);
+  }, [demandProjectCandidates, initialCreateContext, projects]);
+
+  const editorProjects = creating ? creationProjects : projects;
+  const editorProjectOptions = useMemo(
+    () => sortProjectsRecentFirst(editorProjects),
+    [editorProjects],
+  );
+
   const selectedProject = useMemo(
-    () => projects.find((row) => row.number === form.project_number) ?? null,
-    [projects, form.project_number],
+    () => editorProjects.find((row) => row.number === form.project_number) ?? null,
+    [editorProjects, form.project_number],
   );
 
   const selectedWorkPackage = useMemo(
@@ -578,7 +625,7 @@ export default function DemandsPage({
 
   function beginCreate(context: DemandCreateContext | null = null) {
     if (!confirmDiscardChanges()) return;
-    const firstProject = context?.project_number ?? projectOptions[0]?.number ?? "";
+    const firstProject = context?.project_number ?? creationProjects[0]?.number ?? "";
     setDetailLoading(false);
     setCreating(true);
     setSelectedNumber(null);
@@ -982,7 +1029,7 @@ export default function DemandsPage({
                       selectedProject?.id
                       ?? (form.project_number ? historicalIdentity("project", form.project_number) : null)
                     }
-                    options={projectOptions.map((project) => ({
+                    options={editorProjectOptions.map((project) => ({
                       value: project.id,
                       label: `${project.number} — ${project.name}`,
                       searchText: [project.number, project.name, project.client].filter(Boolean).join(" "),
@@ -997,7 +1044,7 @@ export default function DemandsPage({
                         : null
                     }
                     onChange={(value) => {
-                      const projectNumber = projects.find((project) => project.id === value)?.number ?? "";
+                      const projectNumber = editorProjects.find((project) => project.id === value)?.number ?? "";
                       setEditorDirty(true);
                       setForm((current) => ({
                         ...current,

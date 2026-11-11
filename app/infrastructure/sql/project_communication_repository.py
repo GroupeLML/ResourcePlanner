@@ -48,6 +48,9 @@ DIAGNOSTIC_PROJECT_MANAGER_CONTACT_INVALID = "PROJECT_MANAGER_CONTACT_INVALID"
 DIAGNOSTIC_PROJECT_MANAGER_USER_MISSING = "PROJECT_MANAGER_USER_MISSING"
 DIAGNOSTIC_PROJECT_MANAGER_INACTIVE = "PROJECT_MANAGER_INACTIVE"
 DIAGNOSTIC_PROJECT_MANAGER_EMAIL_MISSING = "PROJECT_MANAGER_EMAIL_MISSING"
+DIAGNOSTIC_REQUESTER_USER_MISSING = "REQUESTER_USER_MISSING"
+DIAGNOSTIC_REQUESTER_INACTIVE = "REQUESTER_INACTIVE"
+DIAGNOSTIC_REQUESTER_EMAIL_MISSING = "REQUESTER_EMAIL_MISSING"
 DIAGNOSTIC_RESOURCE_INACTIVE = "RESOURCE_INACTIVE"
 DIAGNOSTIC_RESOURCE_ERP_INACTIVE = "RESOURCE_ERP_INACTIVE"
 DIAGNOSTIC_RESOURCE_EMAIL_MISSING = "RESOURCE_EMAIL_MISSING"
@@ -127,6 +130,46 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                 and manager.user_active is not False
                 and manager.contact_active is not False
             ),
+            diagnostics=_unique(diagnostics),
+        )
+
+    def _requester(
+        self,
+        *,
+        request: WorkforceRequest | None,
+        users_by_id: dict[str, AppUser],
+    ) -> ProjectCommunicationParticipant | None:
+        if request is None or not _text(request.requester_user_id):
+            return None
+
+        requester_id = _text(request.requester_user_id)
+        user = users_by_id.get(requester_id)
+        diagnostics: list[str] = []
+        if user is None:
+            diagnostics.append(DIAGNOSTIC_REQUESTER_USER_MISSING)
+            return ProjectCommunicationParticipant(
+                contact_id=None,
+                user_id=requester_id,
+                display_name=_text(request.requester_name) or "Demandeur indisponible",
+                email=None,
+                phone=None,
+                active=False,
+                diagnostics=_unique(diagnostics),
+            )
+
+        if not bool(user.active):
+            diagnostics.append(DIAGNOSTIC_REQUESTER_INACTIVE)
+        email = _text(user.email)
+        if not email:
+            diagnostics.append(DIAGNOSTIC_REQUESTER_EMAIL_MISSING)
+
+        return ProjectCommunicationParticipant(
+            contact_id=_text(user.business_contact_id) or None,
+            user_id=user.id,
+            display_name=_text(user.display_name) or _text(request.requester_name),
+            email=email or None,
+            phone=None,
+            active=bool(user.active),
             diagnostics=_unique(diagnostics),
         )
 
@@ -240,6 +283,19 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
             else []
         )
         requests_by_id = {row.id: row for row in requests}
+        requester_user_ids = {
+            _text(request.requester_user_id)
+            for request in requests
+            if _text(request.requester_user_id)
+        }
+        requester_users = (
+            self._session.scalars(
+                select(AppUser).where(AppUser.id.in_(requester_user_ids))
+            ).all()
+            if requester_user_ids
+            else []
+        )
+        requester_users_by_id = {row.id: row for row in requester_users}
 
         asset_qualification_diagnostics_by_shift: dict[str, list[str]] = {}
         shift_ids = tuple(
@@ -481,6 +537,10 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                 )
                 for co_manager in project_co_managers.get(project.id, ())
             )
+            requester = self._requester(
+                request=request,
+                users_by_id=requester_users_by_id,
+            )
             resource_contact = self._resource_contact(
                 resource=resource,
             )
@@ -504,6 +564,7 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                     for co_manager in co_managers
                     for diagnostic in co_manager.diagnostics
                 ]
+                + (list(requester.diagnostics) if requester is not None else [])
                 + list(resource_contact.diagnostics)
                 + operational_diagnostics
                 + list(
@@ -541,6 +602,7 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                     project_manager=manager,
                     operational_responsible=resolution.operational_responsible,
                     project_co_managers=co_managers,
+                    requester=requester,
                     assets=tuple(assets_by_shift.get(shift.id, ())),
                     diagnostics=diagnostics,
                 )

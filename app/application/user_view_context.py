@@ -109,6 +109,11 @@ class UserViewContextRepositoryPort(Protocol):
         local_user_id: str,
     ) -> tuple[str, ...]: ...
 
+    def list_requester_demand_ids(
+        self,
+        local_user_id: str,
+    ) -> tuple[str, ...]: ...
+
 
 def resolve_personal_resource(
     principal: AuthPrincipal,

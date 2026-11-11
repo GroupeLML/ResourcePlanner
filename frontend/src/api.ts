@@ -1847,6 +1847,10 @@ export function getProjects(
   return getJson<ProjectReadModel[]>(`/api/v1/projects?${params.toString()}`, signal);
 }
 
+export function getDemandProjectCandidates(signal?: AbortSignal) {
+  return getJson<ProjectReadModel[]>("/api/v1/demand-project-candidates", signal);
+}
+
 export function getAcumaticaIntegrationStatus(signal?: AbortSignal) {
   return getJson<AcumaticaIntegrationStatus>("/api/v1/integrations/acumatica", signal);
 }
