@@ -420,6 +420,7 @@ class VersionedOperationalChoicesApiTests(unittest.TestCase):
                 )
                 self.assertEqual(confirmed.status_code, 200, confirmed.text)
                 self.assertEqual(confirmed.json()["operational_version"], 2)
+                self.assertIsNone(confirmed.json()["planning"])
 
             engine = create_sql_engine(database_url)
             factory = create_session_factory(engine)
