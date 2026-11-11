@@ -53,6 +53,7 @@ test("839 propage Confirmé/Tentatif après approbation via édition et action r
 
   async function openPlanning() {
     await page.goto("/planning");
+    await page.getByRole("button", { name: "Aujourd’hui" }).click();
     await page.getByRole("button", { name: "Suivante →" }).click();
   }
 
