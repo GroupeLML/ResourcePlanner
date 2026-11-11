@@ -309,6 +309,7 @@ class DemandRequesterIdentityTests(unittest.TestCase):
                     json={
                         "project_number": "P-1",
                         "desired_start": "2026-09-22",
+                        "estimated_hours": 8,
                     },
                 )
                 self.assertEqual(created.status_code, 201, created.text)
