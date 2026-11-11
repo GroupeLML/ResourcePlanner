@@ -31,6 +31,7 @@ import {
   getWorkPackages,
   setDemandOperationalResponsible,
   updateDemand,
+  updateDemandConfirmation,
 } from "./api";
 import CompetencyPicker from "./CompetencyPicker";
 import SearchableCombobox from "./SearchableCombobox";
@@ -324,6 +325,7 @@ export default function DemandsPage({
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [confirmationPending, setConfirmationPending] = useState(false);
   const [editorDirty, setEditorDirty] = useState(false);
   const [contextDirty, setContextDirty] = useState(false);
   const [quickActionTarget, setQuickActionTarget] = useState<string | null>(null);
@@ -830,7 +832,15 @@ export default function DemandsPage({
       } else if (selectedDemand) {
         const result = await updateDemand(
           selectedDemand.number,
-          payload,
+          {
+            ...payload,
+            ...(selectedDetail?.policy.expected_operational_version != null
+              ? {
+                  expected_operational_version:
+                    selectedDetail.policy.expected_operational_version,
+                }
+              : {}),
+          },
           "Demande modifiée via React V2",
         );
         await reloadDemand(result.demand_number);
@@ -844,6 +854,47 @@ export default function DemandsPage({
       setError(messageFromError(reason));
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function toggleApprovedConfirmation() {
+    if (
+      !selectedDemand
+      || !selectedDetail
+      || confirmationPending
+      || editorDirty
+      || contextDirty
+      || selectedDemand.status !== "En planification"
+      || selectedDemand.line_mode
+    ) return;
+    const expectedOperationalVersion =
+      selectedDetail.policy.expected_operational_version;
+    if (expectedOperationalVersion == null) {
+      setError("La version opérationnelle de la demande est indisponible.");
+      return;
+    }
+    const target =
+      selectedDemand.confirmation === "Tentative" ? "Confirmée" : "Tentative";
+    setConfirmationPending(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await updateDemandConfirmation(
+        selectedDemand.number,
+        target,
+        selectedDemand.version,
+        expectedOperationalVersion,
+      );
+      await reloadDemand(selectedDemand.number);
+      setNotice(
+        target === "Tentative"
+          ? "Demande passée à Tentatif."
+          : "Demande passée à Confirmé.",
+      );
+    } catch (reason: unknown) {
+      setError(messageFromError(reason));
+    } finally {
+      setConfirmationPending(false);
     }
   }
 
@@ -1001,6 +1052,31 @@ export default function DemandsPage({
                         hasUnsavedChanges={editorDirty || contextDirty}
                         onChanged={() => reloadDemand(selectedDemand.number)}
                       />
+                      {selectedDemand.status === "En planification"
+                        && !selectedDemand.line_mode
+                        && selectedDetail?.policy.can_change_operational_choices
+                        && selectedDetail.policy.expected_operational_version != null && (
+                          <button
+                            type="button"
+                            className="text-button"
+                            data-testid="demand-confirmation-toggle"
+                            disabled={
+                              confirmationPending
+                              || editorDirty
+                              || contextDirty
+                            }
+                            onClick={toggleApprovedConfirmation}
+                            aria-label={
+                              selectedDemand.confirmation === "Tentative"
+                                ? "Passer la demande à Confirmé"
+                                : "Passer la demande à Tentatif"
+                            }
+                          >
+                            {selectedDemand.confirmation === "Tentative"
+                              ? "Confirmé"
+                              : "Tentatif"}
+                          </button>
+                        )}
                     </div>
                   </div>
                 )}
