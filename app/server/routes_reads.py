@@ -94,7 +94,24 @@ def _demand_scope_context(
         principal,
         scope,
     )
-    return resolution.project_ids, resolution.demand_ids
+    if resolution.project_ids is None:
+        return resolution.project_ids, resolution.demand_ids
+
+    requester_reader = getattr(repository, "list_requester_demand_ids", None)
+    local_user_id = str(principal.local_user_id or "").strip()
+    requester_demand_ids = (
+        tuple(requester_reader(local_user_id))
+        if local_user_id and callable(requester_reader)
+        else ()
+    )
+    return (
+        resolution.project_ids,
+        tuple(
+            dict.fromkeys(
+                (*(resolution.demand_ids or ()), *requester_demand_ids)
+            )
+        ),
+    )
 
 
 def _planning_visibility(

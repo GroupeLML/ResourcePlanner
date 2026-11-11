@@ -352,10 +352,36 @@ test("#826 project manager creates on another manager's active project without s
       "/api/v1/demands?scope=mine",
     );
     expect(scopedDemandsAfter.ok(), await scopedDemandsAfter.text()).toBeTruthy();
+    const p251Drafts = (
+      await scopedDemandsAfter.json() as Array<{
+        number: string;
+        project_number: string | null;
+      }>
+    ).filter((row) => row.project_number === "P-251");
+    expect(p251Drafts.map((row) => row.number)).toEqual([number]);
+
+    const primaryActions = requester.page.getByTestId("primary-demand-actions");
+    await expect(primaryActions.getByRole("button", { name: "Soumettre" })).toBeVisible();
+    await primaryActions.getByRole("button", { name: "Soumettre" }).click();
+    await expect(requester.page.locator(".demand-editor-heading .eyebrow")).toContainText("Soumise");
+
+    const scopedDemandsSubmitted = await requester.page.request.get(
+      "/api/v1/demands?scope=mine",
+    );
     expect(
-      (await scopedDemandsAfter.json() as Array<{ number: string }>)
-        .map((row) => row.number),
-    ).not.toContain(number);
+      scopedDemandsSubmitted.ok(),
+      await scopedDemandsSubmitted.text(),
+    ).toBeTruthy();
+    const p251Submitted = (
+      await scopedDemandsSubmitted.json() as Array<{
+        number: string;
+        project_number: string | null;
+        status: string;
+      }>
+    ).filter((row) => row.project_number === "P-251");
+    expect(p251Submitted).toEqual([
+      expect.objectContaining({ number, status: "Soumise" }),
+    ]);
   } finally {
     await closeContext(requester.context);
   }

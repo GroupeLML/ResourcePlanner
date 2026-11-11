@@ -113,6 +113,26 @@ class DemandRequesterIdentityTests(unittest.TestCase):
     def test_project_manager_can_create_on_other_active_project_without_scope_or_ownership_escalation(self) -> None:
         with TemporaryDirectory() as directory:
             database_url, users = self._database(directory)
+            sibling_app = create_api_app(
+                database_url,
+                auth_resolver=self._principal(
+                    users["pm2"],
+                    "PM Deux",
+                    (ROLE_PROJECT_MANAGER,),
+                    employee_external_id="EMP-PM2",
+                ),
+            )
+            with TestClient(sibling_app, raise_server_exceptions=False) as sibling_client:
+                sibling = sibling_client.post(
+                    "/api/v1/demands",
+                    json={
+                        "project_number": "P-1",
+                        "desired_start": "2026-09-23",
+                    },
+                )
+                self.assertEqual(sibling.status_code, 201, sibling.text)
+                sibling_number = sibling.json()["demand_number"]
+
             app = create_api_app(
                 database_url,
                 auth_resolver=self._principal(
@@ -131,6 +151,16 @@ class DemandRequesterIdentityTests(unittest.TestCase):
                 self.assertNotIn(
                     "P-1",
                     {row["number"] for row in before_scope.json()},
+                )
+
+                demands_before = client.get(
+                    "/api/v1/demands",
+                    params={"scope": "mine"},
+                )
+                self.assertEqual(demands_before.status_code, 200, demands_before.text)
+                self.assertNotIn(
+                    sibling_number,
+                    {row["number"] for row in demands_before.json()},
                 )
 
                 candidates = client.get("/api/v1/demand-project-candidates")
@@ -155,6 +185,68 @@ class DemandRequesterIdentityTests(unittest.TestCase):
                 self.assertEqual(reread.json()["requester"], "PM Un")
                 self.assertEqual(reread.json()["project_number"], "P-1")
                 self.assertEqual(reread.json()["project_manager"], "PM Deux")
+
+                draft_scope = client.get(
+                    "/api/v1/demands",
+                    params={"scope": "mine"},
+                )
+                self.assertEqual(draft_scope.status_code, 200, draft_scope.text)
+                draft_numbers = {row["number"] for row in draft_scope.json()}
+                self.assertIn(number, draft_numbers)
+                self.assertNotIn(sibling_number, draft_numbers)
+
+                draft_actions = client.get(
+                    f"/api/v1/demands/{number}/workflow-actions"
+                )
+                self.assertEqual(draft_actions.status_code, 200, draft_actions.text)
+                self.assertIn("submit", draft_actions.json()["available_actions"])
+                self.assertNotIn("approve", draft_actions.json()["available_actions"])
+
+                submitted = client.post(f"/api/v1/demands/{number}/submit")
+                self.assertEqual(submitted.status_code, 200, submitted.text)
+
+                submitted_scope = client.get(
+                    "/api/v1/demands",
+                    params={"scope": "mine"},
+                )
+                self.assertEqual(
+                    submitted_scope.status_code,
+                    200,
+                    submitted_scope.text,
+                )
+                submitted_rows = {
+                    row["number"]: row for row in submitted_scope.json()
+                }
+                self.assertIn(number, submitted_rows)
+                self.assertNotIn(sibling_number, submitted_rows)
+                self.assertEqual(submitted_rows[number]["status"], "Soumise")
+
+                submitted_actions = client.get(
+                    f"/api/v1/demands/{number}/workflow-actions"
+                )
+                self.assertEqual(
+                    submitted_actions.status_code,
+                    200,
+                    submitted_actions.text,
+                )
+                self.assertNotIn(
+                    "submit",
+                    submitted_actions.json()["available_actions"],
+                )
+                self.assertNotIn(
+                    "approve",
+                    submitted_actions.json()["available_actions"],
+                )
+                approve_action = next(
+                    row
+                    for row in submitted_actions.json()["actions"]
+                    if row["action"] == "approve"
+                )
+                self.assertFalse(approve_action["allowed"])
+                self.assertEqual(
+                    approve_action["reason_code"],
+                    "permission_denied",
+                )
 
                 after_scope = client.get(
                     "/api/v1/projects",
