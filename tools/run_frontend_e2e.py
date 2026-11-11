@@ -83,10 +83,12 @@ from app.server.frontend import attach_frontend
 
 E2E_TEAM_LEAD = "TEAM_LEAD"
 E2E_DELIVERY_TECHNICIAN = "DELIVERY_TECHNICIAN"
+E2E_PROJECT_MANAGER_OTHER = "PROJECT_MANAGER_OTHER"
 
 ROLE_IDENTITIES = {
     ROLE_ADMIN: ("Administrateur E2E", None),
     ROLE_PROJECT_MANAGER: ("Chargé E2E", "EMP-PM"),
+    E2E_PROJECT_MANAGER_OTHER: ("Chargé externe 826", "EMP-PM-826"),
     ROLE_COORDINATOR: ("Coordonnateur E2E", None),
     ROLE_MANAGER: ("Gestionnaire E2E", None),
     ROLE_TECHNICIAN: ("Technicien Alice", "EMP-ALICE"),
@@ -97,6 +99,7 @@ ROLE_IDENTITIES = {
 ROLE_APP_USER_SUBJECTS = {
     ROLE_ADMIN: "admin",
     ROLE_PROJECT_MANAGER: "project-manager",
+    E2E_PROJECT_MANAGER_OTHER: "project-manager-other",
     ROLE_COORDINATOR: "coordinator",
     ROLE_MANAGER: "manager",
     ROLE_TECHNICIAN: "technician-a",
@@ -107,6 +110,7 @@ ROLE_APP_USER_SUBJECTS = {
 ROLE_ASSIGNED_ROLES = {
     ROLE_ADMIN: (ROLE_ADMIN,),
     ROLE_PROJECT_MANAGER: (ROLE_PROJECT_MANAGER,),
+    E2E_PROJECT_MANAGER_OTHER: (ROLE_PROJECT_MANAGER,),
     ROLE_COORDINATOR: (ROLE_COORDINATOR,),
     ROLE_MANAGER: (ROLE_MANAGER,),
     ROLE_TECHNICIAN: (ROLE_TECHNICIAN,),
@@ -516,6 +520,7 @@ def _seed(database_url: str) -> None:
                 ("admin", "Administrateur Démo", (ROLE_ADMIN,), None, "admin"),
                 ("coordinator", "Coordonnateur Démo", (ROLE_COORDINATOR,), None, "coord"),
                 ("project-manager", "Chargé de projet Démo", (ROLE_PROJECT_MANAGER,), "EMP-PM", "pm"),
+                ("project-manager-other", "Chargé externe 826", (ROLE_PROJECT_MANAGER,), "EMP-PM-826", "pm826"),
                 ("manager", "Gestionnaire Démo", (ROLE_MANAGER,), None, "manager"),
                 ("team-lead", "Team Lead Démo", (ROLE_DELIVERY_CONTRIBUTOR,), None, "lead"),
                 ("delivery-technician", "Technicien Delivery Démo", (ROLE_TECHNICIAN, ROLE_DELIVERY_CONTRIBUTOR), None, "delivery"),
