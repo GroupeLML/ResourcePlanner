@@ -271,6 +271,69 @@ class ConfirmationInheritanceApiTests(unittest.TestCase):
                             before_window,
                         )
 
+                        reversed_edit = client.patch(
+                            f"/api/v1/demands/{number}",
+                            json={
+                                "confirmation": initial,
+                                "expected_version": after_detail["version"],
+                                "expected_operational_version": after_detail["policy"][
+                                    "expected_operational_version"
+                                ],
+                                "comment": "Régression séquentielle #839",
+                            },
+                        )
+                        self.assertEqual(
+                            reversed_edit.status_code,
+                            200,
+                            reversed_edit.text,
+                        )
+                        self.assertFalse(
+                            reversed_edit.json()["reapproval_required"]
+                        )
+
+                        reversed_detail = client.get(
+                            f"/api/v1/demands/{number}/detail"
+                        ).json()
+                        self.assertEqual(
+                            reversed_detail["demand"]["confirmation"],
+                            initial,
+                        )
+                        self.assertEqual(
+                            reversed_detail["approval_state"]["active_revision_id"],
+                            detail["approval_state"]["active_revision_id"],
+                        )
+                        self.assertEqual(
+                            reversed_detail["approval_state"]["operational_version"],
+                            detail["approval_state"]["operational_version"] + 2,
+                        )
+                        reversed_segment = next(
+                            row for row in client.get("/api/v1/segments").json()
+                            if row["demand_number"] == number
+                        )
+                        reversed_shift = next(
+                            row for row in client.get("/api/v1/shifts").json()
+                            if row["segment_id"] == reversed_segment["segment_id"]
+                        )
+                        self.assertEqual(reversed_segment["confirmation"], initial)
+                        self.assertEqual(reversed_shift["confirmation"], initial)
+                        self.assertEqual(
+                            (
+                                reversed_segment["segment_id"],
+                                reversed_shift["allocation_id"],
+                                reversed_shift["resource_id"],
+                                reversed_shift["hours"],
+                            ),
+                            before_identity,
+                        )
+                        self.assertEqual(
+                            (
+                                reversed_segment["start_date"],
+                                reversed_segment["end_date"],
+                                reversed_segment["planned_hours"],
+                            ),
+                            before_window,
+                        )
+
                     engine = create_sql_engine(database_url)
                     factory = create_session_factory(engine)
                     try:
@@ -295,13 +358,17 @@ class ConfirmationInheritanceApiTests(unittest.TestCase):
                             )
                             operational = session.get(RequestOperationalState, request.id)
                             assert line is not None and requirement is not None and operational is not None
-                            self.assertEqual(request.confirmation, target)
-                            self.assertEqual(line.confirmation, target)
-                            self.assertEqual(requirement.confirmation, target)
+                            self.assertEqual(request.confirmation, initial)
+                            self.assertEqual(line.confirmation, initial)
+                            self.assertEqual(requirement.confirmation, initial)
                             self.assertFalse(requirement.confirmation_overridden)
                             self.assertEqual(
                                 next(iter(json.loads(operational.confirmations_text).values())),
-                                target,
+                                initial,
+                            )
+                            self.assertEqual(
+                                operational.version,
+                                detail["approval_state"]["operational_version"] + 2,
                             )
                             revision_count_after = session.scalar(
                                 select(func.count(RequestApprovalRevision.id)).where(
@@ -424,6 +491,52 @@ class ConfirmationInheritanceApiTests(unittest.TestCase):
                 ]
                 self.assertEqual(confirmations.count("Confirmée"), 1)
                 self.assertEqual(confirmations.count("Tentative"), 1)
+
+                first_after = client.get(
+                    f"/api/v1/demands/{number}/detail"
+                ).json()
+                successor[0]["confirmation"] = "Tentative"
+                reversed_patch = client.patch(
+                    f"/api/v1/demands/{number}",
+                    json={
+                        "expected_version": first_after["version"],
+                        "expected_operational_version":
+                            first_after["policy"]["expected_operational_version"],
+                        "lines": successor,
+                        "comment": "Retour ligne seulement #839",
+                    },
+                )
+                self.assertEqual(
+                    reversed_patch.status_code,
+                    200,
+                    reversed_patch.text,
+                )
+                reversed_detail = client.get(
+                    f"/api/v1/demands/{number}/detail"
+                ).json()
+                reversed_lines = [
+                    row for row in reversed_detail["demand"]["lines"]
+                    if row["active"]
+                ]
+                self.assertEqual(
+                    [row["confirmation"] for row in reversed_lines],
+                    ["Tentative", "Tentative"],
+                )
+                reversed_confirmations = [
+                    row["confirmation"]
+                    for row in client.get("/api/v1/segments").json()
+                    if row["demand_number"] == number
+                ]
+                self.assertEqual(reversed_confirmations.count("Confirmée"), 0)
+                self.assertEqual(reversed_confirmations.count("Tentative"), 2)
+                self.assertEqual(
+                    reversed_detail["approval_state"]["active_revision_id"],
+                    detail["approval_state"]["active_revision_id"],
+                )
+                self.assertEqual(
+                    reversed_detail["approval_state"]["operational_version"],
+                    detail["approval_state"]["operational_version"] + 2,
+                )
 
     def test_segment_override_can_be_set_and_cleared_without_changing_request(self) -> None:
         with TemporaryDirectory() as directory:
