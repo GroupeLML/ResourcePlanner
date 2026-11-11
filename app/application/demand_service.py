@@ -556,9 +556,11 @@ class DemandService:
         self,
         number: str,
         *,
-        previous_candidate_confirmations: Mapping[str, str],
+        previous_candidate_confirmations: Mapping[str, str] | None,
         expected_operational_version: int | None,
     ) -> None:
+        if previous_candidate_confirmations is None:
+            return
         policy = self._approval_envelope_policy
         if policy is None:
             raise ApplicationOperationError(
@@ -944,7 +946,7 @@ class DemandService:
             audit_comment = f"{audit_comment} · {suffix}" if audit_comment else suffix
 
         with self._context("modify demand"):
-            previous_candidate_confirmations: Mapping[str, str] = {}
+            previous_candidate_confirmations: Mapping[str, str] | None = None
             confirmation_candidate_may_change = (
                 "Confirmation" in data or "RequestLines" in data
             )
