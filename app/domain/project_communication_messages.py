@@ -211,9 +211,18 @@ def _project_payload(project: ProjectCommunicationProject) -> tuple[object, ...]
             _participant_payload(manager)
             for manager in project.project_co_managers
         ),
-        tuple(
-            _participant_payload(requester)
-            for requester in project.requesters
+        *(
+            (
+                (
+                    "requesters",
+                    tuple(
+                        _participant_payload(requester)
+                        for requester in project.requesters
+                    ),
+                ),
+            )
+            if project.requesters
+            else ()
         ),
         tuple(days),
         tuple(project.diagnostics),
