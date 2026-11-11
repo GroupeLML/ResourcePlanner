@@ -491,6 +491,71 @@ class ConfirmationInheritanceApiTests(unittest.TestCase):
                 self.assertEqual(shift["confirmation"], "Confirmée")
                 self.assertEqual(shift["confirmation_override"], "Confirmée")
 
+    def test_839_requirement_and_shift_overrides_survive_demand_confirmation_convergence(self) -> None:
+        with TemporaryDirectory() as directory:
+            app = create_api_app(self._database(directory), actor_name="Jean")
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._create_and_approve_tentative(client)
+                segment = next(
+                    row
+                    for row in client.get("/api/v1/segments").json()
+                    if row["demand_number"] == number
+                )
+                segment_id = segment["segment_id"]
+
+                overridden = client.patch(
+                    f"/api/v1/segments/{segment_id}",
+                    json={"confirmation": "Confirmée"},
+                )
+                self.assertEqual(overridden.status_code, 200, overridden.text)
+                self.assertTrue(
+                    client.get(f"/api/v1/segments/{segment_id}").json()[
+                        "confirmation_overridden"
+                    ]
+                )
+
+                manual = client.post(
+                    f"/api/v1/segments/{segment_id}/allocations",
+                    json={
+                        "technician": "Alice",
+                        "day": DAY.isoformat(),
+                        "hours": 1,
+                        "confirmation": "Tentative",
+                    },
+                )
+                self.assertEqual(manual.status_code, 201, manual.text)
+                manual_id = manual.json()["allocation_id"]
+
+                detail = client.get(f"/api/v1/demands/{number}/detail").json()
+                changed = client.patch(
+                    f"/api/v1/demands/{number}",
+                    json={
+                        "confirmation": "Confirmée",
+                        "expected_version": detail["version"],
+                        "expected_operational_version":
+                            detail["policy"]["expected_operational_version"],
+                        "comment": "Préservation overrides #839",
+                    },
+                )
+                self.assertEqual(changed.status_code, 200, changed.text)
+
+                after_segment = client.get(
+                    f"/api/v1/segments/{segment_id}"
+                ).json()
+                self.assertEqual(after_segment["confirmation"], "Confirmée")
+                self.assertTrue(after_segment["confirmation_overridden"])
+
+                manual_shift = next(
+                    row
+                    for row in client.get("/api/v1/shifts").json()
+                    if row["allocation_id"] == manual_id
+                )
+                self.assertEqual(manual_shift["confirmation"], "Tentative")
+                self.assertEqual(
+                    manual_shift["confirmation_override"],
+                    "Tentative",
+                )
+
     def test_quick_shift_confirmation_is_owned_by_adhoc_requirement_and_inherited_by_shift(self) -> None:
         with TemporaryDirectory() as directory:
             app = create_api_app(self._database(directory), actor_name="Jean")
