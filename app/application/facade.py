@@ -303,7 +303,11 @@ class ApplicationFacade:
             demand_number=_identifier(command.number),
             confirmation=_identifier(command.confirmation),
             operational_version=state.version,
-            planning=PlanningResult.from_mapping(summary),
+            planning=(
+                PlanningResult.from_mapping(summary)
+                if summary is not None
+                else None
+            ),
         )
 
     def demand_workflow_state(self, number: str) -> DemandWorkflowReadModel:
