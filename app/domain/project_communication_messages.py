@@ -26,6 +26,8 @@ DIAGNOSTIC_TO_EMAIL_MISSING = "PROJECT_TO_EMAIL_MISSING"
 DIAGNOSTIC_TO_INACTIVE = "PROJECT_TO_INACTIVE"
 DIAGNOSTIC_CO_MANAGER_TO_EMAIL_MISSING = "PROJECT_CO_MANAGER_TO_EMAIL_MISSING"
 DIAGNOSTIC_CO_MANAGER_TO_INACTIVE = "PROJECT_CO_MANAGER_TO_INACTIVE"
+DIAGNOSTIC_REQUESTER_TO_EMAIL_MISSING = "PROJECT_REQUESTER_TO_EMAIL_MISSING"
+DIAGNOSTIC_REQUESTER_TO_INACTIVE = "PROJECT_REQUESTER_TO_INACTIVE"
 DIAGNOSTIC_CC_EMAIL_MISSING = "PROJECT_CC_EMAIL_MISSING"
 DIAGNOSTIC_CC_INACTIVE = "PROJECT_CC_INACTIVE"
 DIAGNOSTIC_SOURCE = "PROJECT_SOURCE_DIAGNOSTIC"
@@ -209,6 +211,10 @@ def _project_payload(project: ProjectCommunicationProject) -> tuple[object, ...]
             _participant_payload(manager)
             for manager in project.project_co_managers
         ),
+        tuple(
+            _participant_payload(requester)
+            for requester in project.requesters
+        ),
         tuple(days),
         tuple(project.diagnostics),
     )
@@ -313,6 +319,39 @@ def _recipient_diagnostics(
                 )
             )
 
+    for requester in project.requesters:
+        entity_id = (
+            requester.contact_id
+            or requester.user_id
+            or project.project_id
+        )
+        if not requester.active:
+            diagnostics.append(
+                _diagnostic(
+                    code=DIAGNOSTIC_REQUESTER_TO_INACTIVE,
+                    severity=SEVERITY_BLOCKING,
+                    entity_type="requester",
+                    entity_id=entity_id,
+                    message=(
+                        f"Le demandeur {requester.display_name} n'est pas "
+                        "un utilisateur actif et ne peut pas être destinataire To."
+                    ),
+                )
+            )
+        if not (requester.email or "").strip():
+            diagnostics.append(
+                _diagnostic(
+                    code=DIAGNOSTIC_REQUESTER_TO_EMAIL_MISSING,
+                    severity=SEVERITY_BLOCKING,
+                    entity_type="requester",
+                    entity_id=entity_id,
+                    message=(
+                        f"Le demandeur {requester.display_name} n'a pas de "
+                        "courriel canonique et ne peut pas être destinataire To."
+                    ),
+                )
+            )
+
     resources = _resource_participants(cc_sources)
     for resource_id, participant in sorted(resources.items()):
         if not participant.active:
@@ -393,7 +432,11 @@ def _to_recipients(
     recipients: list[ProjectCommunicationParticipant] = []
     seen_identities: set[tuple[str, str]] = set()
     seen_emails: set[str] = set()
-    for participant in (project.project_manager, *project.project_co_managers):
+    for participant in (
+        project.project_manager,
+        *project.project_co_managers,
+        *project.requesters,
+    ):
         identity = None
         if participant.contact_id:
             identity = ("contact", participant.contact_id)
@@ -921,6 +964,10 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
                 project_co_managers=tuple(
                     participant(value)
                     for value in project_row.get("project_co_managers") or ()
+                ),
+                requesters=tuple(
+                    participant(value)
+                    for value in project_row.get("requesters") or ()
                 ),
                 diagnostics=tuple(project_row.get("diagnostics") or ()),
             )
