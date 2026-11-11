@@ -32,6 +32,8 @@ class DemandRequesterIdentityTests(unittest.TestCase):
         user_id: str,
         display_name: str,
         roles: tuple[str, ...],
+        *,
+        employee_external_id: str | None = None,
     ):
         return static_auth_resolver(
             AuthPrincipal.from_roles(
@@ -40,6 +42,7 @@ class DemandRequesterIdentityTests(unittest.TestCase):
                 subject=f"subject:{user_id}",
                 display_name=display_name,
                 email=None,
+                employee_external_id=employee_external_id,
                 roles=roles,
                 auth_mode="test",
             )
@@ -53,7 +56,24 @@ class DemandRequesterIdentityTests(unittest.TestCase):
         Base.metadata.create_all(engine)
         factory = create_session_factory(engine)
         with factory.begin() as session:
-            session.add(Project(id="P1", number="P-1", name="Projet identité"))
+            session.add_all(
+                [
+                    Project(
+                        id="P1",
+                        number="P-1",
+                        name="Projet identité",
+                        project_manager_external_id="EMP-PM2",
+                        project_manager_name="PM Deux",
+                        status="Actif",
+                    ),
+                    Project(
+                        id="P2",
+                        number="P-2",
+                        name="Projet inactif identité",
+                        status="Inactif",
+                    ),
+                ]
+            )
             identities = SqlUserIdentityRepository(session)
             users = {
                 "pm1": identities.upsert(
@@ -61,6 +81,7 @@ class DemandRequesterIdentityTests(unittest.TestCase):
                     subject="pm1",
                     display_name="PM Un",
                     email=None,
+                    employee_external_id="EMP-PM1",
                     roles=(ROLE_PROJECT_MANAGER,),
                 ).user_id,
                 "pm2": identities.upsert(
@@ -68,6 +89,7 @@ class DemandRequesterIdentityTests(unittest.TestCase):
                     subject="pm2",
                     display_name="PM Deux",
                     email=None,
+                    employee_external_id="EMP-PM2",
                     roles=(ROLE_PROJECT_MANAGER,),
                 ).user_id,
                 "coord": identities.upsert(
@@ -87,6 +109,82 @@ class DemandRequesterIdentityTests(unittest.TestCase):
             }
         engine.dispose()
         return url, users
+
+    def test_project_manager_can_create_on_other_active_project_without_scope_or_ownership_escalation(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url, users = self._database(directory)
+            app = create_api_app(
+                database_url,
+                auth_resolver=self._principal(
+                    users["pm1"],
+                    "PM Un",
+                    (ROLE_PROJECT_MANAGER,),
+                    employee_external_id="EMP-PM1",
+                ),
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                before_scope = client.get(
+                    "/api/v1/projects",
+                    params={"scope": "mine", "active_only": "true"},
+                )
+                self.assertEqual(before_scope.status_code, 200, before_scope.text)
+                self.assertNotIn(
+                    "P-1",
+                    {row["number"] for row in before_scope.json()},
+                )
+
+                candidates = client.get("/api/v1/demand-project-candidates")
+                self.assertEqual(candidates.status_code, 200, candidates.text)
+                candidate_numbers = {row["number"] for row in candidates.json()}
+                self.assertIn("P-1", candidate_numbers)
+                self.assertNotIn("P-2", candidate_numbers)
+
+                created = client.post(
+                    "/api/v1/demands",
+                    json={
+                        "project_number": "P-1",
+                        "desired_start": "2026-09-22",
+                    },
+                )
+                self.assertEqual(created.status_code, 201, created.text)
+                number = created.json()["demand_number"]
+
+                reread = client.get(f"/api/v1/demands/{number}")
+                self.assertEqual(reread.status_code, 200, reread.text)
+                self.assertEqual(reread.json()["requester_user_id"], users["pm1"])
+                self.assertEqual(reread.json()["requester"], "PM Un")
+                self.assertEqual(reread.json()["project_number"], "P-1")
+                self.assertEqual(reread.json()["project_manager"], "PM Deux")
+
+                after_scope = client.get(
+                    "/api/v1/projects",
+                    params={"scope": "mine", "active_only": "true"},
+                )
+                self.assertEqual(after_scope.status_code, 200, after_scope.text)
+                self.assertNotIn(
+                    "P-1",
+                    {row["number"] for row in after_scope.json()},
+                )
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory() as session:
+                    project = session.get(Project, "P1")
+                    request = session.scalar(
+                        select(WorkforceRequest).where(
+                            WorkforceRequest.legacy_demand_number == number
+                        )
+                    )
+                    self.assertIsNotNone(project)
+                    self.assertIsNotNone(request)
+                    assert project is not None and request is not None
+                    self.assertEqual(project.project_manager_external_id, "EMP-PM2")
+                    self.assertEqual(project.project_manager_name, "PM Deux")
+                    self.assertEqual(request.requester_user_id, users["pm1"])
+                    self.assertEqual(request.requester_name, "PM Un")
+            finally:
+                engine.dispose()
 
     def test_project_manager_cannot_impersonate_requester_by_direct_api(self) -> None:
         with TemporaryDirectory() as directory:
@@ -234,6 +332,8 @@ class DemandRequesterIdentityTests(unittest.TestCase):
             with TestClient(technician_app, raise_server_exceptions=False) as client:
                 forbidden = client.get("/api/v1/demand-requesters")
                 self.assertEqual(forbidden.status_code, 403, forbidden.text)
+                project_candidates = client.get("/api/v1/demand-project-candidates")
+                self.assertEqual(project_candidates.status_code, 403, project_candidates.text)
 
 
 if __name__ == "__main__":
