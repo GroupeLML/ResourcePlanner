@@ -868,6 +868,79 @@ class SqlRequestOperationalChoiceRepository(DemandOperationalChoiceRepositoryPor
         self._session.flush()
         return self._read_model(updated)
 
+    def set_confirmations(
+        self,
+        demand_number: str,
+        confirmations_by_entry: Mapping[str, str],
+        *,
+        expected_version: int,
+    ) -> DemandOperationalChoiceReadModel:
+        request = self._request(demand_number)
+        revision, state = self._ensure_state(request)
+        business_number = _text(request.legacy_demand_number) or request.id
+        self._assert_expected_version(
+            state,
+            expected_version,
+            demand_number=business_number,
+        )
+        entries = {
+            _text(row.get("identity")): row
+            for row in self._snapshot_entries(revision)
+        }
+        normalized_updates = {
+            _text(entry_key): normalize_confirmation(value)
+            for entry_key, value in confirmations_by_entry.items()
+            if _text(entry_key)
+        }
+        unknown = sorted(set(normalized_updates) - set(entries))
+        if unknown:
+            raise ValueError(
+                "Une confirmation cible une entrée absente de la révision approuvée active."
+            )
+
+        selections = self._decode_mapping(state.selections_text)
+        confirmations = self._decode_mapping(state.confirmations_text)
+        budget_overrides = self._decode_mapping(state.budget_overrides_text)
+        changes: list[str] = []
+        for entry_key, normalized in normalized_updates.items():
+            previous = confirmations.get(entry_key)
+            if previous == normalized:
+                continue
+            confirmations[entry_key] = normalized
+            changes.append(
+                f"{entry_key}: {previous or 'héritée'} -> {normalized}"
+            )
+        if not changes:
+            return self._read_model(state)
+
+        updated = self._cas_write(
+            state,
+            selections=selections,
+            confirmations=confirmations,
+            budget_overrides=budget_overrides,
+            demand_number=business_number,
+        )
+        self._session.add(
+            WorkforceRequestHistory(
+                workforce_request_id=request.id,
+                action="Confirmation opérationnelle",
+                status=request.status,
+                comment="; ".join(changes),
+                details=json.dumps(
+                    {
+                        "approval_revision_id": revision.id,
+                        "operational_version": updated.version,
+                        "entries": sorted(normalized_updates),
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                actor_name=self._actor_name or None,
+                occurred_at=utc_now(),
+            )
+        )
+        self._session.flush()
+        return self._read_model(updated)
 
     def set_budget_override(
         self,
