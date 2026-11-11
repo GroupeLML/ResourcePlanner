@@ -133,7 +133,7 @@ class DemandRequesterIdentityTests(unittest.TestCase):
                     ),
                     ApprovalScopeApprover(
                         approval_scope_id="SCOPE-826",
-                        app_user_id=users["pm2"],
+                        app_user_id=users["coord"],
                     ),
                 ]
             )
