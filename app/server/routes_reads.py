@@ -273,6 +273,13 @@ def build_read_router(
     approval_dependency = approval_progress_dependency or no_context_repository
     operational_dependency = operational_contact_dependency or no_context_repository
 
+    @router.get("/demand-project-candidates")
+    def list_demand_project_candidates(
+        queries: PlannerQueryPort = Depends(query_dependency),
+    ) -> list[ProjectReadModel]:
+        """Return active projects admissible for explicit new-demand creation."""
+        return list(queries.list_projects(active_only=True))
+
     @router.get("/projects")
     def list_projects(
         request: Request,
