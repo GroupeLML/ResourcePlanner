@@ -26,7 +26,6 @@ from .commands import (
     DemandUpdateCommand,
 )
 from ..domain.approval_envelope import (
-    CHANGE_CONFIRMATION,
     envelope_entry_identity_from_stable_key,
     DECISION_APPROVAL_REFERENCE_UNKNOWN,
     DECISION_EXPLICIT_EXCEPTION_REQUIRED,
