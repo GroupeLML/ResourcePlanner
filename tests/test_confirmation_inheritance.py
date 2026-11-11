@@ -360,7 +360,7 @@ class ConfirmationInheritanceApiTests(unittest.TestCase):
                                 "desired_start": DAY.isoformat(),
                                 "desired_end": DAY.isoformat(),
                                 "estimated_hours": 4,
-                                "confirmation": "Confirmée",
+                                "confirmation": "Tentative",
                             },
                         ],
                     }),
@@ -375,7 +375,7 @@ class ConfirmationInheritanceApiTests(unittest.TestCase):
                 self.assertEqual(approved.status_code, 200, approved.text)
                 detail = client.get(f"/api/v1/demands/{number}/detail").json()
                 lines = [row for row in detail["demand"]["lines"] if row["active"]]
-                self.assertEqual([row["confirmation"] for row in lines], ["Tentative", "Confirmée"])
+                self.assertEqual([row["confirmation"] for row in lines], ["Tentative", "Tentative"])
 
                 successor = [
                     {
@@ -415,14 +415,15 @@ class ConfirmationInheritanceApiTests(unittest.TestCase):
                 after_lines = [row for row in after["demand"]["lines"] if row["active"]]
                 self.assertEqual(
                     [row["confirmation"] for row in after_lines],
-                    ["Confirmée", "Confirmée"],
+                    ["Confirmée", "Tentative"],
                 )
                 confirmations = [
                     row["confirmation"]
                     for row in client.get("/api/v1/segments").json()
                     if row["demand_number"] == number
                 ]
-                self.assertEqual(confirmations.count("Confirmée"), 2)
+                self.assertEqual(confirmations.count("Confirmée"), 1)
+                self.assertEqual(confirmations.count("Tentative"), 1)
 
     def test_segment_override_can_be_set_and_cleared_without_changing_request(self) -> None:
         with TemporaryDirectory() as directory:
