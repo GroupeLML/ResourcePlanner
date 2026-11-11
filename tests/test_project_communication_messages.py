@@ -114,6 +114,7 @@ def project(
     task_description: str = "Installation de poteaux",
     responsible_contact: ContactResolution | None = None,
     co_managers: tuple[ProjectCommunicationParticipant, ...] = (),
+    requesters: tuple[ProjectCommunicationParticipant, ...] = (),
 ) -> ProjectCommunicationProject:
     pm = participant(
         "Chargé Démo",
@@ -158,6 +159,7 @@ def project(
         project_manager=pm,
         days=tuple(days),
         project_co_managers=co_managers,
+        requesters=requesters,
     )
 
 
@@ -301,6 +303,65 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
             [email("bob")],
         )
         self.assertTrue(draft.approvable)
+
+    def test_requester_is_additive_to_manager_and_existing_cc_recipients(self) -> None:
+        requester = participant(
+            "Demandeuse",
+            contact_id="C-REQ",
+            user_id="U-REQ",
+            address=email("requester"),
+        )
+        draft = build_project_confirmation_batch(
+            projection(project(requesters=(requester,)))
+        ).drafts[0]
+
+        self.assertEqual(
+            [row.email for row in draft.to_recipients],
+            [email("pm"), email("requester")],
+        )
+        self.assertEqual(
+            {row.email for row in draft.cc_recipients},
+            {email("alice"), email("bob")},
+        )
+
+        restored = deserialize_project_projection(
+            serialize_project_projection(
+                projection(project(requesters=(requester,)))
+            )
+        )
+        self.assertEqual(restored.projects[0].requesters, (requester,))
+
+    def test_requester_same_as_project_manager_is_not_duplicated_in_to(self) -> None:
+        requester = participant(
+            "Même personne",
+            contact_id="C-PM",
+            user_id="U-PM",
+            address=email("pm"),
+        )
+        draft = build_project_confirmation_batch(
+            projection(project(requesters=(requester,)))
+        ).drafts[0]
+
+        self.assertEqual(
+            [row.email for row in draft.to_recipients],
+            [email("pm")],
+        )
+
+    def test_requester_same_email_is_deduplicated_without_display_name_matching(self) -> None:
+        requester = participant(
+            "Nom complètement différent",
+            contact_id="C-REQ-DIFFERENT",
+            user_id="U-REQ-DIFFERENT",
+            address=email("pm"),
+        )
+        draft = build_project_confirmation_batch(
+            projection(project(requesters=(requester,)))
+        ).drafts[0]
+
+        self.assertEqual(
+            [row.email for row in draft.to_recipients],
+            [email("pm")],
+        )
 
     def test_cc_is_deduplicated_by_explicit_email_and_excludes_to(self) -> None:
         shared = email("shared")
