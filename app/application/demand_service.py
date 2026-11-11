@@ -26,6 +26,7 @@ from .commands import (
     DemandUpdateCommand,
 )
 from ..domain.approval_envelope import (
+    CHANGE_CONFIRMATION,
     DECISION_APPROVAL_REFERENCE_UNKNOWN,
     DECISION_EXPLICIT_EXCEPTION_REQUIRED,
     DECISION_INVALID,
@@ -551,6 +552,81 @@ class DemandService:
             context={"demand_number": number},
         )
 
+    def _converge_candidate_confirmation_changes(
+        self,
+        number: str,
+        decision: EnvelopeDecision,
+        *,
+        expected_operational_version: int | None,
+    ) -> None:
+        entry_keys = tuple(
+            change.entry_key
+            for change in decision.changes
+            if change.code == CHANGE_CONFIRMATION and change.entry_key
+        )
+        if not entry_keys:
+            return
+        if expected_operational_version is None:
+            raise ApplicationValidationError(
+                "La version opérationnelle attendue est requise pour modifier "
+                "la confirmation d'une demande approuvée.",
+                code="operational_choice_expected_version_required",
+                context={"demand_number": number},
+            )
+        policy = self._approval_envelope_policy
+        if policy is None:
+            raise ApplicationOperationError(
+                "La politique d'enveloppe approuvée n'est pas disponible.",
+                code="approval_envelope_policy_unavailable",
+                context={"demand_number": number},
+            )
+        candidate_confirmations = call_application_port(
+            lambda: policy.candidate_confirmations(number),
+            code_prefix="approval_envelope_candidate_confirmations",
+            context={"demand_number": number},
+        )
+        updates = {
+            entry_key: candidate_confirmations[entry_key]
+            for entry_key in entry_keys
+            if entry_key in candidate_confirmations
+        }
+        if len(updates) != len(set(entry_keys)):
+            raise ApplicationOperationError(
+                "Une confirmation candidate ne correspond plus à l'entrée "
+                "approuvée attendue.",
+                code="operational_confirmation_candidate_entry_missing",
+                context={"demand_number": number},
+            )
+        call_application_port(
+            lambda: self._operational_choice_repository().set_confirmations(
+                number,
+                updates,
+                expected_version=expected_operational_version,
+            ),
+            code_prefix="operational_confirmation",
+            context={"demand_number": number},
+        )
+        sync_operational = getattr(
+            self._approved_sync,
+            "sync_operational_choices",
+            None,
+        )
+        if not callable(sync_operational):
+            raise ApplicationOperationError(
+                "La synchronisation des choix opérationnels n'est pas disponible.",
+                code="operational_choice_sync_unavailable",
+            )
+        call_application_port(
+            lambda: sync_operational(number),
+            code_prefix="operational_confirmation_sync",
+            context={"demand_number": number},
+        )
+        call_application_port(
+            self._planning.rebuild,
+            code_prefix="operational_confirmation_rebuild",
+            context={"demand_number": number},
+        )
+
     def _candidate_decision_mutates_active_plan(
         self,
         decision: EnvelopeDecision,
@@ -871,11 +947,18 @@ class DemandService:
                     context={"demand_number": number},
                     legacy_unknown_requires_reapproval=legacy_unknown_requires_reapproval,
                 )
-                return self._handle_candidate_envelope_decision(
+                reapproval_required = self._handle_candidate_envelope_decision(
                     number,
                     decision,
                     legacy_unknown_requires_reapproval=legacy_unknown_requires_reapproval,
                 )
+                if not reapproval_required:
+                    self._converge_candidate_confirmation_changes(
+                        number,
+                        decision,
+                        expected_operational_version=command.expected_operational_version,
+                    )
+                return reapproval_required
             if existing.status == "Soumise" and envelope_relevant_change:
                 self._refresh_submitted_approval_cycle_if_subject_changed(
                     number,
