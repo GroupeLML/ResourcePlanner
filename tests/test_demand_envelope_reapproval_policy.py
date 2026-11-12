@@ -104,7 +104,11 @@ class DemandEnvelopeReapprovalPolicyTests(unittest.TestCase):
                     "desired_end": D2.isoformat(),
                     "estimated_hours": hours,
                     "confirmation": confirmation,
-                    "proposed_technician": proposed_technician,
+                    **(
+                        {"proposed_technician": proposed_technician}
+                        if proposed_technician is not None
+                        else {}
+                    ),
                     "submit": True,
                 }),
             )
