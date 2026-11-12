@@ -204,7 +204,12 @@ test("839 propage Confirmé/Tentatif après approbation via édition et action r
 
     // Retain browser acceptance for the normal editor path, not only the quick action.
     await openDemand(demandNumber);
-    await page.getByLabel("Confirmation").selectOption("Confirmée");
+    const confirmationSelect = page
+      .locator("label")
+      .filter({ has: page.getByText("Confirmation", { exact: true }) })
+      .locator("select");
+    await expect(confirmationSelect).toHaveCount(1);
+    await confirmationSelect.selectOption("Confirmée");
     await page.getByRole("button", { name: "Enregistrer les modifications" }).click();
     await expect(page.locator(".demand-notice")).toContainText("Modification enregistrée");
 
