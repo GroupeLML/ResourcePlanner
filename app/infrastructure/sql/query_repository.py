@@ -19,6 +19,8 @@ from ...application.query_models import (
     MediumTermUnlinkedSegmentReadModel,
     PendingDemandCandidateWindowReadModel,
     PendingDemandLoadReadModel,
+    PlanningActionAssetRequirementReadModel,
+    PlanningActionCompetencyReadModel,
     PlanningActionReadModel,
     PlanningCapacityGridReadModel,
     PlanningContinuousVehicleReadModel,
@@ -85,6 +87,7 @@ from .demand_repository import SqlDemandRepository
 from .models import (
     Competency,
     Project,
+    RequestLine,
     Resource,
     ResourceAvailabilityRule,
     ResourceCompetency,
@@ -1524,6 +1527,143 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             demand_ids=demand_ids,
             resource_ids=resource_ids,
         )
+
+        requirement_ids = tuple(
+            dict.fromkeys(
+                requirement_id
+                for requirement_id in (
+                    _optional_text(segment.requirement_id)
+                    for segment in assignment_segments
+                )
+                if requirement_id is not None
+            )
+        )
+        requirements_by_id: dict[str, ResourceRequirement] = {}
+        request_lines_by_id: dict[str, RequestLine] = {}
+        proposed_resource_names: dict[str, str] = {}
+        priority_competencies_by_requirement: dict[
+            str, list[PlanningActionCompetencyReadModel]
+        ] = {}
+        requested_assets_by_request: dict[
+            str,
+            list[PlanningActionAssetRequirementReadModel],
+        ] = {}
+
+        if requirement_ids:
+            requirements = tuple(
+                self._session.scalars(
+                    select(ResourceRequirement).where(
+                        ResourceRequirement.id.in_(requirement_ids)
+                    )
+                ).all()
+            )
+            requirements_by_id = {row.id: row for row in requirements}
+
+            source_line_ids = tuple(
+                dict.fromkeys(
+                    row.source_request_line_id
+                    for row in requirements
+                    if row.source_request_line_id
+                )
+            )
+            if source_line_ids:
+                request_lines_by_id = {
+                    row.id: row
+                    for row in self._session.scalars(
+                        select(RequestLine).where(RequestLine.id.in_(source_line_ids))
+                    ).all()
+                }
+                proposed_resource_ids = tuple(
+                    dict.fromkeys(
+                        row.proposed_resource_id
+                        for row in request_lines_by_id.values()
+                        if row.proposed_resource_id
+                    )
+                )
+                if proposed_resource_ids:
+                    proposed_resource_names = {
+                        row.id: row.name
+                        for row in self._session.scalars(
+                            select(Resource).where(Resource.id.in_(proposed_resource_ids))
+                        ).all()
+                    }
+
+            competency_rows = self._session.execute(
+                select(
+                    ResourceRequirementCompetency.resource_requirement_id,
+                    Competency.id,
+                    Competency.name,
+                    Competency.sort_order,
+                )
+                .join(
+                    Competency,
+                    Competency.id == ResourceRequirementCompetency.competency_id,
+                )
+                .where(
+                    ResourceRequirementCompetency.resource_requirement_id.in_(
+                        requirement_ids
+                    ),
+                    Competency.sort_order >= 0,
+                    Competency.sort_order <= 20,
+                )
+                .order_by(
+                    ResourceRequirementCompetency.resource_requirement_id,
+                    Competency.sort_order,
+                    Competency.name,
+                    Competency.id,
+                )
+            ).all()
+            for requirement_id, competency_id, name, priority in competency_rows:
+                priority_competencies_by_requirement.setdefault(
+                    str(requirement_id), []
+                ).append(
+                    PlanningActionCompetencyReadModel(
+                        competency_id=str(competency_id),
+                        name=str(name),
+                        priority=int(priority),
+                    )
+                )
+
+            request_ids = tuple(
+                dict.fromkeys(
+                    row.workforce_request_id
+                    for row in requirements
+                    if row.workforce_request_id
+                )
+            )
+            if request_ids:
+                asset_rows = self._session.execute(
+                    select(
+                        AssetRequirement.workforce_request_id,
+                        AssetRequirement.source_request_line_id,
+                        AssetType.id,
+                        AssetType.label,
+                    )
+                    .join(
+                        AssetType,
+                        AssetType.id == AssetRequirement.asset_type_id,
+                    )
+                    .where(
+                        AssetRequirement.origin == AssetRequirementOrigin.REQUEST.value,
+                        AssetRequirement.workforce_request_id.in_(request_ids),
+                        AssetRequirement.status != "Annulé",
+                    )
+                    .order_by(
+                        AssetRequirement.workforce_request_id,
+                        AssetRequirement.source_request_line_id,
+                        AssetRequirement.slot_index,
+                        AssetType.label,
+                    )
+                ).all()
+                for request_id, _source_line_id, asset_type_id, label in asset_rows:
+                    projected = PlanningActionAssetRequirementReadModel(
+                        asset_type_id=str(asset_type_id),
+                        label=str(label),
+                    )
+                    bucket = requested_assets_by_request.setdefault(str(request_id), [])
+                    if projected not in bucket:
+                        bucket.append(projected)
+
         for segment in assignment_segments:
             if segment.remaining_hours <= 0.01:
                 # #693: the work queue follows actual counted Shift coverage, not the
@@ -1551,6 +1691,44 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                     continue
             if segment.start_date is None or segment.end_date is None:
                 continue
+
+            requirement_id = _optional_text(segment.requirement_id)
+            requirement = (
+                requirements_by_id.get(requirement_id)
+                if requirement_id is not None
+                else None
+            )
+            source_line = (
+                request_lines_by_id.get(requirement.source_request_line_id)
+                if requirement is not None and requirement.source_request_line_id
+                else None
+            )
+            proposed_resource = None
+            if source_line is not None and source_line.proposed_resource_id:
+                proposed_resource = _optional_text(
+                    proposed_resource_names.get(source_line.proposed_resource_id)
+                )
+            if proposed_resource is None and demand is not None:
+                proposed_resource = _optional_text(demand.proposed_resource)
+
+            requested_assets: tuple[
+                PlanningActionAssetRequirementReadModel, ...
+            ] = ()
+            if requirement is not None and requirement.workforce_request_id:
+                requested_assets = tuple(
+                    requested_assets_by_request.get(
+                        str(requirement.workforce_request_id),
+                        [],
+                    )
+                )
+
+            priority_competencies = tuple(
+                priority_competencies_by_requirement.get(
+                    requirement_id or "",
+                    [],
+                )
+            )
+
             result.append(
                 PlanningActionReadModel(
                     kind="ASSIGNMENT",
@@ -1580,6 +1758,9 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                     approval_revision_id=segment.approval_revision_id,
                     operational_version=segment.operational_version,
                     placement_not_before_date=segment.placement_not_before_date,
+                    proposed_resource=proposed_resource,
+                    requested_assets=requested_assets,
+                    priority_competencies=priority_competencies,
                 )
             )
 

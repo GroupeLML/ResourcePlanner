@@ -103,6 +103,17 @@ test("781 garde la ressource proposée advisory jusqu'au placement Planning expl
     );
     expect(approved.status(), await approved.text()).toBe(200);
 
+    const planningActions = await page.request.get(
+      `/api/v1/planning/actions?start=${day}&end=${day}&scope=global`,
+    );
+    expect(planningActions.ok(), await planningActions.text()).toBeTruthy();
+    const assignmentAction = (await planningActions.json() as Array<any>).find(
+      (row) => row.kind === "ASSIGNMENT" && row.demand_number === demandNumber,
+    );
+    expect(assignmentAction).toBeTruthy();
+    const segmentId = String(assignmentAction.segment_id);
+    expect(segmentId).not.toBe("");
+
     const afterApproval = await page.request.get(
       `/api/v1/shifts?start=${day}&end=${day}`,
     );
@@ -116,9 +127,9 @@ test("781 garde la ressource proposée advisory jusqu'au placement Planning expl
     await page.locator(".main-nav").getByRole("button", { name: /Planning opérationnel/i }).click();
     await page.getByRole("button", { name: "Suivante →" }).click();
 
-    const card = page
-      .locator(".planning-work-queue .planning-action-card.action-assignment")
-      .filter({ hasText: demandNumber });
+    const card = page.locator(
+      `.planning-work-queue .planning-action-card.action-assignment[data-segment-id="${segmentId}"]`,
+    );
     await expect(card).toHaveCount(1);
     await expect(card).toBeVisible();
     await expect(card).toHaveAttribute("draggable", "true");

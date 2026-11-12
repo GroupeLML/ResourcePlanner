@@ -110,9 +110,9 @@ test("704 affiche une candidate sous la ressource proposée sans créer de quart
     await expect(candidate).toContainText("en attente d’approbation");
     await expect(candidate).toHaveAttribute("draggable", "false");
     await expect(page.locator(".resource-group .unplanned-candidate-row")).toHaveCount(0);
-    const workQueueApproval = page
-      .locator(".planning-work-queue .planning-action-card.action-approval")
-      .filter({ hasText: "DMO-704" });
+    const workQueueApproval = page.locator(
+      '.planning-work-queue .planning-action-card.action-approval[data-action-reference="DMO-704"]',
+    );
     await expect(workQueueApproval).toHaveCount(1);
     await expect(workQueueApproval).toBeVisible();
 
@@ -121,9 +121,9 @@ test("704 affiche une candidate sous la ressource proposée sans créer de quart
     await expect(page.locator(`.planning-day-cell[data-resource-id="${resourceId}"] .pending-ghost-card`)
       .filter({ hasText: "DMO-704" })).toHaveCount(0);
     await expect(page.locator(".resource-group .unplanned-candidate-row")).toHaveCount(0);
-    await expect(page
-      .locator(".planning-work-queue .planning-action-card.action-approval")
-      .filter({ hasText: "DMO-704" })).toBeVisible();
+    await expect(page.locator(
+      '.planning-work-queue .planning-action-card.action-approval[data-action-reference="DMO-704"]',
+    )).toBeVisible();
   } finally {
     await context.close();
   }

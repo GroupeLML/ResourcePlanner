@@ -78,7 +78,8 @@ class ReactPlanningDragDropContractTests(unittest.TestCase):
         page = (ROOT / "frontend" / "src" / "PlanningPage.tsx").read_text(encoding="utf-8")
 
         self.assertIn("writeSegmentDrag", panel)
-        self.assertIn("Glisser pour définir la cible automatique", panel)
+        self.assertIn("draggable={draggable}", panel)
+        self.assertNotIn("Glisser pour définir la cible automatique</span>", panel)
         self.assertIn("Trouver une ressource", panel)
         self.assertIn("Modifier le segment", panel)
         self.assertIn("assignSegment(payload.segment_id", page)

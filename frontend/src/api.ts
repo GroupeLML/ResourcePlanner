@@ -1173,6 +1173,17 @@ export type PendingDemandLoadReadModel = {
   candidate_windows: PendingDemandCandidateWindowReadModel[];
 };
 
+export type PlanningActionCompetencyReadModel = {
+  competency_id: string;
+  name: string;
+  priority: number;
+};
+
+export type PlanningActionAssetRequirementReadModel = {
+  asset_type_id: string;
+  label: string;
+};
+
 export type PlanningActionReadModel = {
   kind: "APPROVAL" | "ASSIGNMENT";
   reference: string;
@@ -1197,6 +1208,9 @@ export type PlanningActionReadModel = {
   approval_revision_id?: string | null;
   operational_version?: number | null;
   placement_not_before_date?: string | null;
+  proposed_resource: string | null;
+  requested_assets: PlanningActionAssetRequirementReadModel[];
+  priority_competencies: PlanningActionCompetencyReadModel[];
 };
 
 export type CoordinatorDashboardKpiReadModel = {

@@ -283,6 +283,8 @@ h1 { font-size: 1.6rem; }
 .planning-action-list { display: grid; gap: .5rem; }
 .planning-action-card { border: 1px solid var(--border); border-left: 4px solid #d7a338; border-radius: 9px; padding: .65rem; background: #fffdf8; }
 .planning-action-card.action-assignment { border-left-color: #315ea8; background: #f8fbff; }
+.planning-action-card.action-assignment.confirmation-confirmed { border-left-color: var(--good); background: var(--good-soft); }
+.planning-action-card.action-assignment.confirmation-tentative { border-left-color: #d6a31f; background: #fff8d9; }
 .planning-action-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: .55rem; }
 .planning-action-card-heading > div { min-width: 0; }
 .planning-action-card-heading strong { font-size: .72rem; }
@@ -290,6 +292,10 @@ h1 { font-size: 1.6rem; }
 .action-assignment .planning-action-kicker { color: var(--accent); }
 .planning-action-meta { display: flex; flex-wrap: wrap; gap: .26rem; margin-top: .45rem; }
 .planning-action-meta span { padding: .13rem .3rem; border-radius: 999px; background: white; color: #606a78; font-size: .56rem; }
+.work-queue-proposed-resource { flex-basis: 100%; font-size: .67rem; color: var(--ink); }
+.work-queue-priority-competency { padding: .13rem .32rem; border-radius: 999px; background: #eef3ff; color: #2d4e88; font-size: .58rem; }
+.work-queue-requested-asset { border: 1px solid #d6dce5; }
+.work-queue-confirmation { font-weight: 800; }
 .planning-action-buttons { display: flex; gap: .35rem; flex-wrap: wrap; margin-top: .55rem; }
 .planning-action-buttons button,
 .recommendation-heading button,
