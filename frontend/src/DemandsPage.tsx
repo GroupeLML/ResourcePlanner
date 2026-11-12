@@ -154,7 +154,7 @@ function lineDefaultsFromForm(form: FormState, resources: ResourceReadModel[]): 
     proposed_resource_id: proposed?.id ?? "",
     asset_type_id: "",
     proposed_asset_id: "",
-    ...(form.confirmation ? { confirmation: form.confirmation } : {}),
+    confirmation: form.confirmation,
     description: "",
   };
 }
