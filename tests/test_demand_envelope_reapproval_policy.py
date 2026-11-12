@@ -489,7 +489,10 @@ class DemandEnvelopeReapprovalPolicyTests(unittest.TestCase):
                     reference = session.get(RequestApprovalReference, request.id)
                     assert reference is not None
                     self.assertEqual(reference.active_revision_id, original_revision)
-                    self.assertEqual(requirement.planned_hours, 4.8)
+                    self.assertEqual(
+                        requirement.planned_hours,
+                        Decimal("4.80"),
+                    )
                     self.assertEqual(requirement.start_date, D1)
                     self.assertEqual(requirement.end_date, D2)
                     self.assertEqual(requirement.confirmation, "Tentative")
@@ -599,7 +602,10 @@ class DemandEnvelopeReapprovalPolicyTests(unittest.TestCase):
                     reference = session.get(RequestApprovalReference, request.id)
                     assert reference is not None
                     self.assertEqual(reference.active_revision_id, original_revision)
-                    self.assertEqual(requirement.planned_hours, 4.8)
+                    self.assertEqual(
+                        requirement.planned_hours,
+                        Decimal("4.80"),
+                    )
                     self.assertEqual(requirement.start_date, D1)
                     self.assertEqual(requirement.end_date, D2)
                     self.assertEqual(requirement.confirmation, "Confirmée")
@@ -757,7 +763,10 @@ class DemandEnvelopeReapprovalPolicyTests(unittest.TestCase):
                     reference = session.get(RequestApprovalReference, request.id)
                     assert reference is not None
                     self.assertEqual(reference.active_revision_id, original_revision)
-                    self.assertEqual(requirement.planned_hours, 4)
+                    self.assertEqual(
+                        requirement.planned_hours,
+                        Decimal("4.00"),
+                    )
                     self.assertEqual(requirement.start_date, D1)
                     self.assertEqual(requirement.end_date, D2)
                     self.assertEqual(requirement.confirmation, "Confirmée")
