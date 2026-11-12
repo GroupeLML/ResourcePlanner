@@ -299,6 +299,19 @@ class PendingDemandLoadReadModel:
 
 
 @dataclass(frozen=True, slots=True)
+class PlanningActionCompetencyReadModel:
+    competency_id: str
+    name: str
+    priority: int
+
+
+@dataclass(frozen=True, slots=True)
+class PlanningActionAssetRequirementReadModel:
+    asset_type_id: str
+    label: str
+
+
+@dataclass(frozen=True, slots=True)
 class PlanningActionReadModel:
     """One coordinator action shown above the operational planning board."""
 
@@ -325,6 +338,9 @@ class PlanningActionReadModel:
     approval_revision_id: str | None = None
     operational_version: int | None = None
     placement_not_before_date: date | None = None
+    proposed_resource: str | None = None
+    requested_assets: tuple[PlanningActionAssetRequirementReadModel, ...] = ()
+    priority_competencies: tuple[PlanningActionCompetencyReadModel, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
