@@ -152,6 +152,51 @@ class ReactDemandsContractTests(unittest.TestCase):
             demands,
         )
 
+    def test_840_new_draft_defaults_are_empty_without_breaking_contextual_creation(self) -> None:
+        source = (ROOT / "frontend" / "src" / "DemandsPage.tsx").read_text(
+            encoding="utf-8"
+        )
+        line_editor = (ROOT / "frontend" / "src" / "DemandLinesEditor.tsx").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('confirmation: "" | "Tentative" | "Confirmée"', source)
+        self.assertIn('confirmation: ""', source)
+        self.assertIn(
+            'const firstProject = context?.project_number ?? "";',
+            source,
+        )
+        self.assertNotIn(
+            'context?.project_number ?? creationProjects[0]?.number',
+            source,
+        )
+        self.assertIn(
+            '(creating && !form.project_number ? "" : "Non défini")',
+            source,
+        )
+        self.assertIn(
+            '<option value="">Sélectionner une confirmation…</option>',
+            source,
+        )
+        self.assertIn(
+            '...(form.confirmation ? { confirmation: form.confirmation } : {})',
+            source,
+        )
+        self.assertIn("beginCreate(initialCreateContext)", source)
+        self.assertIn(
+            'work_package_ref: context?.work_package_ref ?? ""',
+            source,
+        )
+        self.assertIn(
+            'task_code: context?.task_code ?? ""',
+            source,
+        )
+        self.assertIn('confirmation: "" | "Tentative" | "Confirmée"', line_editor)
+        self.assertIn(
+            '<option value="">Sélectionner une confirmation…</option>',
+            line_editor,
+        )
+
     def test_creation_reuses_idempotency_key_for_identical_retry(self) -> None:
         source = (ROOT / "frontend" / "src" / "DemandsPage.tsx").read_text(
             encoding="utf-8"
