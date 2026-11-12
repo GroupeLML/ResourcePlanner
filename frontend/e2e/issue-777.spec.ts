@@ -279,7 +279,6 @@ test("777 glisse un reliquat approuvé sur une ressource/journée via le vrai ba
 
     await page.reload();
     await page.locator(".main-nav").getByRole("button", { name: /Planning opérationnel/i }).click();
-    await page.getByRole("button", { name: "Suivante →" }).click();
     approvedCard = page.locator(
       `.planning-work-queue .planning-action-card.action-assignment[data-segment-id="${segmentId}"]`,
     );
@@ -342,7 +341,6 @@ test("777 glisse un reliquat approuvé sur une ressource/journée via le vrai ba
 
     await page.reload();
     await page.locator(".main-nav").getByRole("button", { name: /Planning opérationnel/i }).click();
-    await page.getByRole("button", { name: "Suivante →" }).click();
     approvedCard = page.locator(
       `.planning-work-queue .planning-action-card.action-assignment[data-segment-id="${segmentId}"]`,
     );
