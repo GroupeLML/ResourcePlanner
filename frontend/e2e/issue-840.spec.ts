@@ -48,11 +48,11 @@ test("#840 normal new demand starts without implicit project or confirmation", a
       .locator("strong");
     await expect(managerValue).toHaveText("");
 
-    // Existing draft validation remains project-first; #840 adds no new rule.
+    // Existing draft validation remains project-first; the required
+    // combobox is blocked by native form validation before React save runs.
     await page.getByRole("button", { name: "Créer le brouillon" }).click();
-    await expect(page.locator(".error-panel")).toContainText(
-      "Sélectionne un projet actif.",
-    );
+    await expect(project).toBeInvalid();
+    await expect(page.locator(".demand-notice")).toHaveCount(0);
 
     const candidatesResponse = await page.request.get(
       "/api/v1/demand-project-candidates",
