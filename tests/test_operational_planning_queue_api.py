@@ -58,11 +58,25 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
             session.add_all(
                 [
                     Competency(
+                        id="C-ZERO",
+                        name="Priorité zéro",
+                        description="Borne basse #832",
+                        active=True,
+                        sort_order=0,
+                    ),
+                    Competency(
                         id="C-PLC",
                         name="PLC",
                         description="Programmation automate",
                         active=True,
                         sort_order=10,
+                    ),
+                    Competency(
+                        id="C-TWENTY",
+                        name="Priorité vingt",
+                        description="Borne haute #832",
+                        active=True,
+                        sort_order=20,
                     ),
                     Competency(
                         id="C-HIGH",
@@ -111,8 +125,13 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
                     preferred_resource_id="R-ALICE",
                 )
             )
-            session.add(
-                ResourceCompetency(resource_id="R-ALICE", competency_id="C-PLC")
+            session.add_all(
+                [
+                    ResourceCompetency(resource_id="R-ALICE", competency_id="C-ZERO"),
+                    ResourceCompetency(resource_id="R-ALICE", competency_id="C-PLC"),
+                    ResourceCompetency(resource_id="R-ALICE", competency_id="C-TWENTY"),
+                    ResourceCompetency(resource_id="R-ALICE", competency_id="C-HIGH"),
+                ]
             )
             for resource_id in ("R-ALICE", "R-BOB"):
                 session.add(
@@ -262,7 +281,15 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
                 [
                     ResourceRequirementCompetency(
                         resource_requirement_id=target.id,
+                        competency_id="C-ZERO",
+                    ),
+                    ResourceRequirementCompetency(
+                        resource_requirement_id=target.id,
                         competency_id="C-PLC",
+                    ),
+                    ResourceRequirementCompetency(
+                        resource_requirement_id=target.id,
+                        competency_id="C-TWENTY",
                     ),
                     ResourceRequirementCompetency(
                         resource_requirement_id=target.id,
@@ -382,7 +409,19 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
             )
             self.assertEqual(
                 assignment["priority_competencies"],
-                [{"competency_id": "C-PLC", "name": "PLC", "priority": 10}],
+                [
+                    {
+                        "competency_id": "C-ZERO",
+                        "name": "Priorité zéro",
+                        "priority": 0,
+                    },
+                    {"competency_id": "C-PLC", "name": "PLC", "priority": 10},
+                    {
+                        "competency_id": "C-TWENTY",
+                        "name": "Priorité vingt",
+                        "priority": 20,
+                    },
+                ],
             )
             self.assertEqual(assignment["confirmation"], "Confirmée")
 
