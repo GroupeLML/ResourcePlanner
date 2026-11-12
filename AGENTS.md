@@ -226,8 +226,37 @@ If complexity is discovered unexpectedly during a DEV turn, the DEV agent should
 
 Under the default manual workflow, the Product Owner decides whether to authorize that next phase.
 
-Phasing does **not** by itself require Architect involvement. Escalate to the Architect only when the implementation reveals a genuine architecture question, a contradiction with an accepted ADR/invariant, or a required architecture gate. A large workload, timeout risk or multiple implementation defects are not architecture reasons on their own.
+Phasing does **not** by itself require Architect involvement. A large workload, timeout risk, file count, CI failure count or ordinary debugging difficulty are not architecture reasons on their own. Apply the Architect policy below instead.
 
+
+### Architect review and exceptional implementation
+
+The Product Owner classifies Architect involvement from the WorkItem, accepted ADRs, implementation evidence and production risk:
+
+- **ARCHITECT REVIEW REQUIRED** when a new architectural decision or ADR is needed; implementation conflicts with accepted architecture or established invariants; an explicit architecture gate applies; a material architecture, access-control, concurrency, recovery or data-preservation question cannot be resolved from established contracts; or section 3C requires architectural conformance review for HIGH production risk.
+- **ARCHITECT REVIEW RECOMMENDED** for significant changes affecting critical accepted contracts, including Planning authority and durable Shift preservation; permanent reductions, rebuilds or resynchronization; approval, delegation, CAS or concurrency guarantees; SQL Server transaction/persistence invariants; ERP scheduling, fencing or compensation; and other sensitive mutation/access behavior. These are risk indicators, not automatic mandatory-review triggers. The Product Owner retains discretion and should record a brief rationale when declining a materially relevant recommended review.
+- **ARCHITECT REVIEW NOT NECESSARY** for routine frontend work, straightforward corrections, isolated fixture/test defects, ordinary CI failures, or implementation that clearly preserves established architecture.
+
+The Main Architect normally analyzes architecture questions, produces or reviews ADR decisions, reviews implementation against accepted architecture, reports precise findings to the Product Owner, distinguishes architecture defects from ordinary implementation problems, recommends corrections, and performs narrow re-reviews when appropriate. Review is normally read-only:
+
+```text
+Architect review
+→ Product Owner evaluates findings
+→ DEV corrects the existing PR
+→ Architect performs a narrow re-review when required
+```
+
+A request for review, diagnosis, architectural advice or re-review is not permission to modify implementation code.
+
+Direct implementation by the Main Architect is exceptional and requires explicit Product Owner authorization. It is appropriate only for a bounded specialist correction where normal DEV ownership is demonstrably insufficient to control material architectural or data-integrity risk. Before code changes, the Product Owner must identify the issue and existing PR/branch, the precise problem, why DEV ownership is insufficient, the authorized files/behaviors/invariants, whether the takeover is full or phase-bounded, required validation and handoff evidence, exclusions/stop conditions, and the independent-review requirement. The Main Architect must preserve the existing PR unless explicitly told otherwise, follow normal repository/testing/CI rules, report the exact head/files/tests/risks, stop at the GitHub handoff, and must not approve or merge its own implementation.
+
+When the Main Architect directly modifies **production implementation code**, independent Secondary Architect review of that exact PR head is mandatory before the Product Owner authorizes merge. The Secondary Architect independently checks the authorized scope, implementation, tests, relevant ADRs, critical invariants, closure of blocking findings, and directly related regressions or risks. The Secondary Architect does not automatically become the implementer; the Product Owner assigns any further bounded correction.
+
+Secondary Architect review is not routinely required merely because the Main Architect reviewed a PR, identified findings, performed a targeted re-review, produced an ADR recommendation, or reviewed complex DEV-owned work. Documentation-only architecture analysis/review without implementation changes does not by itself trigger Secondary Architect review. The Product Owner may also request a narrow independent opinion for a substantial unresolved architecture disagreement.
+
+For each PR, keep the classification lightweight: Architect review need is `REQUIRED`, `RECOMMENDED`, or `NOT NECESSARY`; implementation ownership remains `DEV — DEFAULT` unless `ARCHITECT — EXCEPTIONALLY AUTHORIZED` is explicitly established.
+
+DevCockpit or a supported browser extension may surface evidence and handoffs but must not independently authorize Architect implementation, start an architecture gate, or request Secondary Architect review solely from automated status signals.
 
 ---
 
