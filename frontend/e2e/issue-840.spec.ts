@@ -23,7 +23,7 @@ test("#840 normal new demand starts without implicit project or confirmation", a
 
   async function startNormalDraft() {
     await page.getByRole("button", { name: "+ Nouvelle demande" }).click();
-    await expect(page.getByRole("combobox", { name: "Projet" })).toBeVisible();
+    await expect(page.getByRole("combobox", { name: "Projet", exact: true })).toBeVisible();
   }
 
   function confirmationSelect() {
@@ -37,7 +37,7 @@ test("#840 normal new demand starts without implicit project or confirmation", a
     await openDemands();
     await startNormalDraft();
 
-    const project = page.getByRole("combobox", { name: "Projet" });
+    const project = page.getByRole("combobox", { name: "Projet", exact: true });
     await expect(project).toHaveAttribute("data-combobox-value", "");
     await expect(project).toHaveValue("");
     await expect(confirmationSelect()).toHaveValue("");
