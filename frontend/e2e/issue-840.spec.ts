@@ -51,7 +51,20 @@ test("#840 normal new demand starts without implicit project or confirmation", a
     // Existing draft validation remains project-first; the required
     // combobox is blocked by native form validation before React save runs.
     await page.getByRole("button", { name: "Créer le brouillon" }).click();
-    await expect(project).toBeInvalid();
+    expect(
+      await project.evaluate((element) => {
+        const input = element as HTMLInputElement;
+        return {
+          checkValidity: input.checkValidity(),
+          validityValid: input.validity.valid,
+          valueMissing: input.validity.valueMissing,
+        };
+      }),
+    ).toEqual({
+      checkValidity: false,
+      validityValid: false,
+      valueMissing: true,
+    });
     await expect(page.locator(".demand-notice")).toHaveCount(0);
 
     const candidatesResponse = await page.request.get(
