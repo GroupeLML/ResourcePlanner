@@ -329,12 +329,15 @@ class DemandEnvelopeReapprovalPolicyTests(unittest.TestCase):
                     after_effort["approval_state"]["operational_version"],
                     initial_operational_version + 1,
                 )
+            with TestClient(admin_app, raise_server_exceptions=False) as observer:
                 effort_shift = next(
                     row
-                    for row in client.get("/api/v1/shifts").json()
+                    for row in observer.get("/api/v1/shifts").json()
                     if row["demand_number"] == number
                 )
                 self.assertEqual(effort_shift["hours"], 4.8)
+
+            with TestClient(pm_app, raise_server_exceptions=False) as client:
 
                 confirmed = client.patch(
                     f"/api/v1/demands/{number}",
@@ -354,9 +357,10 @@ class DemandEnvelopeReapprovalPolicyTests(unittest.TestCase):
                     confirmed_detail["approval_state"]["operational_version"],
                     after_effort["approval_state"]["operational_version"] + 1,
                 )
+            with TestClient(admin_app, raise_server_exceptions=False) as observer:
                 confirmed_shift = next(
                     row
-                    for row in client.get("/api/v1/shifts").json()
+                    for row in observer.get("/api/v1/shifts").json()
                     if row["demand_number"] == number
                 )
                 self.assertEqual(confirmed_shift["confirmation"], "Confirmée")
@@ -375,6 +379,7 @@ class DemandEnvelopeReapprovalPolicyTests(unittest.TestCase):
                     ),
                 )
 
+            with TestClient(pm_app, raise_server_exceptions=False) as client:
                 tentative = client.patch(
                     f"/api/v1/demands/{number}",
                     json={
@@ -393,9 +398,10 @@ class DemandEnvelopeReapprovalPolicyTests(unittest.TestCase):
                     tentative_detail["approval_state"]["operational_version"],
                     confirmed_detail["approval_state"]["operational_version"] + 1,
                 )
+            with TestClient(admin_app, raise_server_exceptions=False) as observer:
                 tentative_shift = next(
                     row
-                    for row in client.get("/api/v1/shifts").json()
+                    for row in observer.get("/api/v1/shifts").json()
                     if row["demand_number"] == number
                 )
                 self.assertEqual(tentative_shift["confirmation"], "Tentative")
@@ -500,9 +506,10 @@ class DemandEnvelopeReapprovalPolicyTests(unittest.TestCase):
                     after["approval_state"]["operational_version"],
                     original_operational_version + 2,
                 )
+            with TestClient(admin_app, raise_server_exceptions=False) as observer:
                 shift = next(
                     row
-                    for row in client.get("/api/v1/shifts").json()
+                    for row in observer.get("/api/v1/shifts").json()
                     if row["demand_number"] == number
                 )
                 self.assertEqual(shift["hours"], 4.8)
@@ -618,12 +625,14 @@ class DemandEnvelopeReapprovalPolicyTests(unittest.TestCase):
                 demand = client.get(f"/api/v1/demands/{number}").json()
                 self.assertEqual(demand["estimated_hours"], 4)
                 self.assertEqual(demand["confirmation"], "Tentative")
+            with TestClient(admin_app, raise_server_exceptions=False) as observer:
                 shift = next(
                     row
-                    for row in client.get("/api/v1/shifts").json()
+                    for row in observer.get("/api/v1/shifts").json()
                     if row["demand_number"] == number
                 )
                 self.assertEqual(shift["allocation_id"], baseline_shift["allocation_id"])
+                self.assertEqual(shift["segment_id"], baseline_shift["segment_id"])
                 self.assertEqual(shift["hours"], 4)
                 self.assertEqual(shift["resource_id"], baseline_shift["resource_id"])
                 self.assertEqual(shift["confirmation"], "Confirmée")
