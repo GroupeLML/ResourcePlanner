@@ -1540,11 +1540,12 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
         )
         requirements_by_id: dict[str, ResourceRequirement] = {}
         request_lines_by_id: dict[str, RequestLine] = {}
+        proposed_resource_names: dict[str, str] = {}
         priority_competencies_by_requirement: dict[
             str, list[PlanningActionCompetencyReadModel]
         ] = {}
-        requested_assets_by_request_line: dict[
-            tuple[str, str | None],
+        requested_assets_by_request: dict[
+            str,
             list[PlanningActionAssetRequirementReadModel],
         ] = {}
 
@@ -1572,6 +1573,20 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                         select(RequestLine).where(RequestLine.id.in_(source_line_ids))
                     ).all()
                 }
+                proposed_resource_ids = tuple(
+                    dict.fromkeys(
+                        row.proposed_resource_id
+                        for row in request_lines_by_id.values()
+                        if row.proposed_resource_id
+                    )
+                )
+                if proposed_resource_ids:
+                    proposed_resource_names = {
+                        row.id: row.name
+                        for row in self._session.scalars(
+                            select(Resource).where(Resource.id.in_(proposed_resource_ids))
+                        ).all()
+                    }
 
             competency_rows = self._session.execute(
                 select(
@@ -1640,19 +1655,14 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                         AssetType.label,
                     )
                 ).all()
-                for request_id, source_line_id, asset_type_id, label in asset_rows:
-                    requested_assets_by_request_line.setdefault(
-                        (
-                            str(request_id),
-                            str(source_line_id) if source_line_id is not None else None,
-                        ),
-                        [],
-                    ).append(
-                        PlanningActionAssetRequirementReadModel(
-                            asset_type_id=str(asset_type_id),
-                            label=str(label),
-                        )
+                for request_id, _source_line_id, asset_type_id, label in asset_rows:
+                    projected = PlanningActionAssetRequirementReadModel(
+                        asset_type_id=str(asset_type_id),
+                        label=str(label),
                     )
+                    bucket = requested_assets_by_request.setdefault(str(request_id), [])
+                    if projected not in bucket:
+                        bucket.append(projected)
 
         for segment in assignment_segments:
             if segment.remaining_hours <= 0.01:
@@ -1695,9 +1705,8 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             )
             proposed_resource = None
             if source_line is not None and source_line.proposed_resource_id:
-                proposed = self._session.get(Resource, source_line.proposed_resource_id)
-                proposed_resource = (
-                    _optional_text(proposed.name) if proposed is not None else None
+                proposed_resource = _optional_text(
+                    proposed_resource_names.get(source_line.proposed_resource_id)
                 )
             if proposed_resource is None and demand is not None:
                 proposed_resource = _optional_text(demand.proposed_resource)
@@ -1706,16 +1715,10 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                 PlanningActionAssetRequirementReadModel, ...
             ] = ()
             if requirement is not None and requirement.workforce_request_id:
-                request_key = str(requirement.workforce_request_id)
-                line_key = (
-                    str(requirement.source_request_line_id)
-                    if requirement.source_request_line_id
-                    else None
-                )
                 requested_assets = tuple(
-                    requested_assets_by_request_line.get(
-                        (request_key, line_key),
-                        requested_assets_by_request_line.get((request_key, None), []),
+                    requested_assets_by_request.get(
+                        str(requirement.workforce_request_id),
+                        [],
                     )
                 )
 
